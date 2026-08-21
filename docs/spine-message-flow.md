@@ -8,7 +8,7 @@ them (see [tcaches](#tcaches)).
 The tiles: **Network** (QUIC + discv5), **Control** (`PeerManager` + `SyncEngine` +
 `GossipHandler` — gossipsub decode/encode runs in-tile, not as its own tile),
 **BeaconState** (state transition + fork choice), **Storage** (disk + backfill),
-**ClientServer** (hosting the `engine_api` client and the `beacon_api` server; the
+**ApplicationBoundary** (hosting the `engine_api` client and the `beacon_api` server; the
 server side consumes `beacon_events` and `sync_target` to report node status),
 **DataColumns** (column validation, DA tracking, EL blob fetch — split out of Storage).
 
@@ -18,7 +18,7 @@ flowchart LR
   CTL["Control<br/><i>PeerManager + SyncEngine + GossipHandler</i>"]
   BS["BeaconState<br/><i>state · fork choice</i>"]
   ST["Storage<br/><i>disk · backfill</i>"]
-  EN["ClientServer<br/><i>engine_api client · beacon_api server</i>"]
+  EN["ApplicationBoundary<br/><i>engine_api client · beacon_api server</i>"]
   DC["DataColumns<br/><i>column validation · DA · EL blobs</i>"]
 
   %% ---- inbound ----
@@ -78,11 +78,11 @@ Solid arrows are spine queues (`queue : MessageType`), one per consumer since qu
 SPMC. The gossip handler's other traffic is in-tile, not on the spine: its `PeerEvent`s
 (gossipsub scoring/misbehaviour) go straight to the `PeerManager`, `PeerControl` is
 forwarded to the handler directly, and its fork digest is set from the `Status` Control
-already consumes. Two queues are omitted from the diagram: `engine_health` (ClientServer
+already consumes. Two queues are omitted from the diagram: `engine_health` (ApplicationBoundary
 produces it, no tile consumes it) and `peer_stats` (Network produces connection stats,
 Control produces score breakdowns; consumed out-of-process by surfer's Peers tab, which
 joins the spine as a broadcast reader the same way its Events pane does). The
-DataColumns↔ClientServer edges carry only the `GetBlobs` variants (EL-mempool blob
+DataColumns↔ApplicationBoundary edges carry only the `GetBlobs` variants (EL-mempool blob
 fetch); the queues are broadcast, so DataColumns sees every `EngineResp` and ignores the
 rest.
 
@@ -96,14 +96,14 @@ rest.
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage, DataColumns | ref → `incoming_rpc` |
 | `peer_events` | `PeerEvent` | Network, BeaconState, Storage, DataColumns | Control | mostly inline; `SendGossip` ref → `outgoing_gossip`, `PublishDataColumn` ref → `incoming_rpc` |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
-| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns, ClientServer | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
+| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns, ApplicationBoundary | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
 | `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
-| `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns, ClientServer | inline |
+| `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns, ApplicationBoundary | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
 | `syncing_strategy` | `SyncingStrategy` | Control | Storage, DataColumns | inline |
-| `engine_reqs` | `EngineReq` | BeaconState, DataColumns _(GetBlobs)_ | ClientServer | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
-| `engine_resps` | `EngineResp` | ClientServer | BeaconState, DataColumns _(GetBlobs)_ | ref → `incoming_engine_resp` |
-| `engine_health` | `EngineHealthEvent` | ClientServer | _none (currently unconsumed)_ | inline |
+| `engine_reqs` | `EngineReq` | BeaconState, DataColumns _(GetBlobs)_ | ApplicationBoundary | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
+| `engine_resps` | `EngineResp` | ApplicationBoundary | BeaconState, DataColumns _(GetBlobs)_ | ref → `incoming_engine_resp` |
+| `engine_health` | `EngineHealthEvent` | ApplicationBoundary | _none (currently unconsumed)_ | inline |
 | `peer_stats` | `PeerStats` | Network _(P2p)_, Control _(Scores, Topic)_ | _none in-process (surfer)_ | inline |
 
 ## TCaches
@@ -113,12 +113,12 @@ Bulk-byte rings that the queue messages reference, so payloads cross tiles witho
 | TCache | Producer | Consumer(s) | Payload |
 |--------|----------|-------------|---------|
 | `incoming_gossip` | Network | Control _(gossip, random access)_ | raw gossipsub protobuf from the wire |
-| `ssz_gossip` | Control _(gossip)_ | BeaconState, DataColumns (live + persist), Storage (persist), ClientServer | decompressed gossip SSZ |
+| `ssz_gossip` | Control _(gossip)_ | BeaconState, DataColumns (live + persist), Storage (persist), ApplicationBoundary | decompressed gossip SSZ |
 | `outgoing_gossip` | Control _(gossip)_ | Network | gossip protobuf: mcache copies of incoming messages, local publishes, IDONTWANT/IWANT control frames |
-| `incoming_rpc` | Network | BeaconState, DataColumns (live + persist), Storage (live + persist), ClientServer, Control (column republish) | RPC response bodies (BeaconBlock / DataColumnSidecar) |
+| `incoming_rpc` | Network | BeaconState, DataColumns (live + persist), Storage (live + persist), ApplicationBoundary, Control (column republish) | RPC response bodies (BeaconBlock / DataColumnSidecar) |
 | `outgoing_rpc` _(multi-producer)_ | Control, Storage | Network | RPC request bodies (we ask) + served response bodies (we answer) |
 | `replay_blocks` | Storage | BeaconState | persisted block SSZ replayed at startup |
-| `incoming_engine_resp` | ClientServer | BeaconState, DataColumns (GetBlobs) | EL responses (payloads, blobs, bodies) |
+| `incoming_engine_resp` | ApplicationBoundary | BeaconState, DataColumns (GetBlobs) | EL responses (payloads, blobs, bodies) |
 | `el_data_columns` | DataColumns | Storage | column sidecars reconstructed from EL-mempool blobs |
 
 ---

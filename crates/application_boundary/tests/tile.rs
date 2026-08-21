@@ -6,9 +6,9 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::{BeaconApi, PeerCounts, SlotStatus};
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
-use silver_client_server::ClientServerTile;
 use silver_common::{
     BeaconStateEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr, Identify, Keypair,
     SilverSpine, SyncUpdate, TCache, TCacheProducer, ssz_view::STATUS_V2_SIZE,
@@ -31,7 +31,8 @@ fn beacon(bind: &Bind) -> BeaconApi {
     // Every `loop_body` below samples the peer gauges; left at the default
     // base that is the counter file a node running on this machine serves.
     PeerCounters::init_with_base(
-        std::env::temp_dir().join(format!("silver_client_server_test_{}", std::process::id())),
+        std::env::temp_dir()
+            .join(format!("silver_application_boundary_test_{}", std::process::id())),
         "silver",
     )
     .unwrap();
@@ -110,7 +111,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
 fn serves_identity_over_tcp() {
     let base = TempDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::parse("127.0.0.1:0")),
         engine: engine(no_el(), ["cs_tcp_gossip", "cs_tcp_rpc", "cs_tcp_resp"]),
     };
@@ -139,7 +140,7 @@ fn serves_identity_over_uds() {
     let base = TempDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let socket = base.path().join("beacon_api.sock");
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::Unix(socket.clone())),
         engine: engine(no_el(), ["cs_uds_gossip", "cs_uds_rpc", "cs_uds_resp"]),
     };
@@ -177,7 +178,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
         jwt_secret: jwt_path.to_str().unwrap().to_string(),
         ..EngineConfig::default()
     };
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::parse("127.0.0.1:0")),
         engine: engine(config, ["cs_flight_gossip", "cs_flight_rpc", "cs_flight_resp"]),
     };
@@ -186,7 +187,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
     inj.consume(|_: EngineResp, _| {});
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut crank = |tile: &mut ClientServerTile, el: &mut FakeEl, msg: &str| {
+    let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl, msg: &str| {
         assert!(Instant::now() < deadline, "timeout: {msg}");
         tile.loop_body(&mut adapter);
         el.pump();
@@ -257,7 +258,7 @@ fn pool_cap_gates_spine_intake() {
         max_connections: 3,
         ..EngineConfig::default()
     };
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::parse("127.0.0.1:0")),
         engine: engine(config, ["cs_cap_gossip", "cs_cap_rpc", "cs_cap_resp"]),
     };
@@ -266,7 +267,7 @@ fn pool_cap_gates_spine_intake() {
     inj.consume(|_: EngineResp, _| {});
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut crank = |tile: &mut ClientServerTile, el: &mut FakeEl, msg: &str| {
+    let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl, msg: &str| {
         assert!(Instant::now() < deadline, "timeout: {msg}");
         tile.loop_body(&mut adapter);
         el.pump();
@@ -328,7 +329,7 @@ fn pool_cap_gates_spine_intake() {
 fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     let base = TempDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::parse("127.0.0.1:0")),
         engine: engine(no_el(), ["cs_status_gossip", "cs_status_rpc", "cs_status_resp"]),
     };
@@ -382,7 +383,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
         max_connections: 3,
         ..EngineConfig::default()
     };
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::parse("127.0.0.1:0")),
         engine: engine(config, ["cs_sat_gossip", "cs_sat_rpc", "cs_sat_resp"]),
     };
@@ -391,7 +392,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
     inj.consume(|_: EngineResp, _| {});
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut crank = |tile: &mut ClientServerTile, el: &mut FakeEl, msg: &str| {
+    let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl, msg: &str| {
         assert!(Instant::now() < deadline, "timeout: {msg}");
         tile.loop_body(&mut adapter);
         el.pump();
@@ -442,7 +443,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 fn node_status_tracks_the_peer_gauges() {
     let base = TempDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = ClientServerTile {
+    let mut tile = ApplicationBoundaryTile {
         beacon: beacon(&Bind::parse("127.0.0.1:0")),
         engine: engine(no_el(), ["cs_peers_gossip", "cs_peers_rpc", "cs_peers_resp"]),
     };

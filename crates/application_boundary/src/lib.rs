@@ -4,12 +4,12 @@ use silver_common::{BeaconStateEvent, SilverSpine, SyncUpdate};
 use silver_engine_api::EngineApi;
 use silver_peer::PeerCounters;
 
-pub struct ClientServerTile {
+pub struct ApplicationBoundaryTile {
     pub beacon: BeaconApi,
     pub engine: EngineApi,
 }
 
-impl Tile<SilverSpine> for ClientServerTile {
+impl Tile<SilverSpine> for ApplicationBoundaryTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.engine.intake(adapter);
         self.engine.spin(adapter);
@@ -20,7 +20,7 @@ impl Tile<SilverSpine> for ClientServerTile {
     }
 }
 
-impl ClientServerTile {
+impl ApplicationBoundaryTile {
     fn refresh_node_status(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let status = self.beacon.node_status_mut();
 

@@ -1,10 +1,10 @@
 [workspace]
 members = [
+  "crates/application_boundary",
   "crates/beacon_api",
   "crates/beacon_state/data",
   "crates/beacon_state/tile",
   "crates/bin",
-  "crates/client_server",
   "crates/common",
   "crates/config",
   "crates/config/chain_spec",
@@ -69,11 +69,11 @@ inherits = "dev"
 opt-level = 3
 
 [workspace.dependencies]
+silver_application_boundary = { path = "crates/application_boundary" }
 silver_beacon_api = { path = "crates/beacon_api" }
 silver_beacon_state = { path = "crates/beacon_state/tile" }
 silver_beacon_state_data = { path = "crates/beacon_state/data" }
 silver_chain_spec = { path = "crates/config/chain_spec" }
-silver_client_server = { path = "crates/client_server" }
 silver_columns = { path = "crates/columns" }
 silver_common = { path = "crates/common" }
 silver_config = { path = "crates/config" }

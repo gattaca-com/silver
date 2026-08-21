@@ -7,7 +7,7 @@ status: proposed
 Every tile is an OS thread pinned to a dedicated CPU core, and API traffic —
 serving the beacon API, calling the engine API — is latency-tolerant work
 dominated by network round-trips that cannot justify two pinned cores. All API
-access is consolidated into a single `client_server` tile hosting two
+access is consolidated into a single `application_boundary` tile hosting two
 transport-free crates: `beacon_api` (HTTP server) and `engine_api` (HTTP
 client, renamed from `engine`). Hosted crates are hardcoded and composed by
 plain function calls in the tile's `loop_body` — no plugin registry, no

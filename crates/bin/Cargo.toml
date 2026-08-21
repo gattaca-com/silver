@@ -6,10 +6,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+silver_application_boundary.workspace = true
 silver_beacon_api.workspace = true
 silver_beacon_state.workspace = true
 silver_beacon_state_data.workspace = true
-silver_client_server.workspace = true
 silver_columns.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true

@@ -4427,10 +4427,10 @@ dependencies = [
  "mimalloc",
  "quinn-proto",
  "rand 0.8.6",
+ "silver_application_boundary",
  "silver_beacon_api",
  "silver_beacon_state",
  "silver_beacon_state_data",
- "silver_client_server",
  "silver_columns",
  "silver_common",
  "silver_config",
@@ -4443,6 +4443,23 @@ dependencies = [
  "silver_peer",
  "silver_storage",
  "tracing",
+]
+
+[[package]]
+name = "silver_application_boundary"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "hex",
+ "serde_json",
+ "silver_beacon_api",
+ "silver_beacon_state_data",
+ "silver_common",
+ "silver_config",
+ "silver_engine_api",
+ "silver_httpcore",
+ "silver_peer",
+ "tempfile",
 ]
 
 [[package]]
@@ -4511,23 +4528,6 @@ dependencies = [
  "hex",
  "serde",
  "toml",
-]
-
-[[package]]
-name = "silver_client_server"
-version = "0.0.1"
-dependencies = [
- "flux",
- "hex",
- "serde_json",
- "silver_beacon_api",
- "silver_beacon_state_data",
- "silver_common",
- "silver_config",
- "silver_engine_api",
- "silver_httpcore",
- "silver_peer",
- "tempfile",
 ]
 
 [[package]]

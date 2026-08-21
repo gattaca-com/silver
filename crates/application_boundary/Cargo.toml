@@ -1,5 +1,5 @@
 [package]
-name = "silver_client_server"
+name = "silver_application_boundary"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true

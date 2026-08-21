@@ -7,10 +7,10 @@ use flux::{
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
+use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_client_server::ClientServerTile;
 use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
@@ -285,7 +285,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
     );
-    let client_server_tile = ClientServerTile { beacon: beacon_api, engine: engine_api };
+    let application_boundary_tile =
+        ApplicationBoundaryTile { beacon: beacon_api, engine: engine_api };
 
     // Spine
     let spine = SilverSpine::new(None);
@@ -300,7 +301,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
         attach_tile(
-            client_server_tile,
+            application_boundary_tile,
             scoped_spine,
             TileConfig::new(5, Some(ThreadNiceness::Highest)),
         );
