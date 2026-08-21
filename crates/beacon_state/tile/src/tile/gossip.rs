@@ -574,6 +574,7 @@ impl BeaconStateTile {
             return Err(Feedback::Reject(None));
         }
         let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
+            BeaconStateCounters::AttestationUnknownRoot.inc();
             return Err(Feedback::Ignore);
         };
         match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {
