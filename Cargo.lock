@@ -4596,6 +4596,7 @@ dependencies = [
  "silver_chain_spec",
  "silver_common",
  "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const fn default_u64<const V: u64>() -> u64 {
     V
@@ -83,11 +83,13 @@ impl ForkName {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct SpecConfig {
-    /// The network's own name for itself. Silver derives nothing from it; it
-    /// is carried because a validator client builds its runtime config from
-    /// the spec this node serves and labels its logs with this string.
-    #[serde(default = "default_config_name")]
-    pub config_name: String,
+    /// Upstream `CONFIG_NAME`, which the canonical mainnet/sepolia/hoodi
+    /// configs all set and devnet files are the ones to omit. Teku's
+    /// `--network auto` preloads the builtin config this names, and client
+    /// test suites assert the key is present, so `network_name` derives one
+    /// from `genesis_fork_version` rather than serving none.
+    #[serde(default, deserialize_with = "name_unless_empty")]
+    pub config_name: Option<String>,
     /// Genesis (phase-0) fork version. Used as the `current_version` in the
     /// genesis fork-data root, which is the domain mixed into deposit
     /// signatures (`DOMAIN_DEPOSIT`). 0x00000000 mainnet, 0x10000910 Hoodi.
@@ -255,10 +257,6 @@ pub struct SpecConfig {
     pub ejection_balance: u64,
 }
 
-fn default_config_name() -> String {
-    "mainnet".to_owned()
-}
-
 /// Mainnet's merge threshold, crossed 2022-09-15.
 const fn default_terminal_total_difficulty() -> u128 {
     58_750_000_000_000_000_000_000
@@ -278,6 +276,12 @@ fn default_blob_schedule() -> Vec<BlobParameters> {
         epoch: 419072,
         max_blobs_per_block: 21,
     }]
+}
+
+/// `CONFIG_NAME: ''` names no network, so it reads as a name absent rather
+/// than as a network called "".
+fn name_unless_empty<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.filter(|name| !name.is_empty()))
 }
 
 /// Serde adapter for `0x`-prefixed hex (`0x06000000`), which is the format
@@ -431,13 +435,40 @@ impl SpecConfig {
         }
     }
 
+    /// What this node calls the network it runs: `CONFIG_NAME` when the
+    /// config file names one, and the name its `genesis_fork_version` carries
+    /// otherwise.
     pub fn network_name(&self) -> String {
-        match self.genesis_fork_version {
-            [0x00, 0x00, 0x00, 0x00] => "mainnet".to_owned(),
-            [0x90, 0x00, 0x00, 0x69] => "sepolia".to_owned(),
-            [0x10, 0x00, 0x09, 0x10] => "hoodi".to_owned(),
-            version => format!("0x{}", hex::encode(version)),
+        if let Some(name) = &self.config_name {
+            return name.clone();
         }
+        match self.known_network() {
+            Some(name) => name.to_owned(),
+            // go-eth2-client turns every `0x`-prefixed hex spec value into a
+            // byte slice, so a devnet named after its bare fork version
+            // would break its consumers reading `CONFIG_NAME` as a string.
+            None => format!("devnet-{}", hex::encode(self.genesis_fork_version)),
+        }
+    }
+
+    /// The network `genesis_fork_version` picks out, for the networks silver
+    /// knows by name; `None` for a devnet.
+    fn known_network(&self) -> Option<&'static str> {
+        match self.genesis_fork_version {
+            [0x00, 0x00, 0x00, 0x00] => Some("mainnet"),
+            [0x90, 0x00, 0x00, 0x69] => Some("sepolia"),
+            [0x10, 0x00, 0x09, 0x10] => Some("hoodi"),
+            _ => None,
+        }
+    }
+
+    /// The network `genesis_fork_version` picks out when an explicit
+    /// `CONFIG_NAME` contradicts it — a misconfiguration, since a validator
+    /// client trusts both. A devnet fork version picks out nothing, so it
+    /// contradicts no name.
+    pub fn misnamed_network(&self) -> Option<&'static str> {
+        let known = self.known_network()?;
+        (self.config_name.as_deref()? != known).then_some(known)
     }
 
     /// Hoodi testnet (launched 2025-03-17), transcribed from
@@ -450,7 +481,7 @@ impl SpecConfig {
     /// `BLOB_SCHEDULE`.
     pub fn hoodi() -> Self {
         Self {
-            config_name: "hoodi".to_owned(),
+            config_name: None,
             // Hoodi fork-version pattern is `0xN0000910`.
             genesis_fork_version: default_fork_version::<0x10000910>(),
             min_genesis_active_validator_count: 16_384,
@@ -511,7 +542,7 @@ impl SpecConfig {
 
     pub fn mainnet() -> Self {
         Self {
-            config_name: default_config_name(),
+            config_name: None,
             genesis_fork_version: default_fork_version::<0x00000000>(),
             min_genesis_active_validator_count: 16_384,
             min_genesis_time: 1_606_824_000,
@@ -595,7 +626,7 @@ mod tests {
         assert_eq!(spec.gloas_fork_epoch, u64::MAX);
         assert_eq!(spec.deposit_chain_id, 1);
         assert_eq!(spec.deposit_network_id, 1);
-        assert_eq!(spec.config_name, "mainnet");
+        assert_eq!(spec.network_name(), "mainnet");
         assert_eq!(spec.min_genesis_time, 1_606_824_000);
         assert_eq!(spec.genesis_delay, 604_800);
         assert_eq!(spec.seconds_per_eth1_block, 14);
@@ -619,7 +650,7 @@ mod tests {
     #[test]
     fn hoodi_matches_its_upstream_config_file() {
         let spec = SpecConfig::hoodi();
-        assert_eq!(spec.config_name, "hoodi");
+        assert_eq!(spec.network_name(), "hoodi");
         assert_eq!(spec.min_genesis_time, 1_742_212_800);
         assert_eq!(spec.genesis_delay, 600);
         assert_eq!(spec.seconds_per_eth1_block, 12);
@@ -797,10 +828,72 @@ mod tests {
         assert_eq!(SpecConfig::hoodi().network_name(), "hoodi");
     }
 
+    /// A config file naming only a network's diffs still identifies it: the
+    /// name follows `GENESIS_FORK_VERSION`, not the mainnet defaults filling
+    /// in around it.
     #[test]
-    fn a_devnet_is_named_by_its_fork_version() {
-        let devnet =
+    fn a_nameless_config_is_named_by_its_fork_version() {
+        let sepolia: SpecConfig = toml::from_str(r#"GENESIS_FORK_VERSION = "0x90000069""#).unwrap();
+        assert_eq!(sepolia.config_name, None);
+        assert_eq!(sepolia.network_name(), "sepolia");
+    }
+
+    /// go-eth2-client decodes any `0x`-prefixed hex spec value into a byte
+    /// slice, so a devnet's name must not look like one.
+    #[test]
+    fn a_devnet_is_named_by_its_unprefixed_fork_version() {
+        let devnet: SpecConfig = toml::from_str(r#"GENESIS_FORK_VERSION = "0x10000038""#).unwrap();
+        assert_eq!(devnet.network_name(), "devnet-10000038");
+
+        let literal =
             SpecConfig { genesis_fork_version: [0x10, 0x00, 0x00, 0x38], ..SpecConfig::mainnet() };
-        assert_eq!(devnet.network_name(), "0x10000038");
+        assert_eq!(literal.network_name(), "devnet-10000038");
+    }
+
+    #[test]
+    fn an_empty_config_name_is_no_name_at_all() {
+        let spec: SpecConfig = toml::from_str(r#"CONFIG_NAME = """#).unwrap();
+        assert_eq!(spec.config_name, None);
+        assert_eq!(spec.network_name(), "mainnet");
+    }
+
+    #[test]
+    fn an_explicit_config_name_wins_over_the_fork_version() {
+        let spec: SpecConfig = toml::from_str(
+            r#"
+            CONFIG_NAME = "my-devnet"
+            GENESIS_FORK_VERSION = "0x10000038"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(spec.network_name(), "my-devnet");
+    }
+
+    #[test]
+    fn only_a_named_network_can_be_misnamed() {
+        let misnamed =
+            SpecConfig { config_name: Some("mainnet".to_owned()), ..SpecConfig::hoodi() };
+        assert_eq!(misnamed.misnamed_network(), Some("hoodi"));
+        assert_eq!(misnamed.network_name(), "mainnet", "the explicit name is still served");
+
+        let agreeing = SpecConfig { config_name: Some("hoodi".to_owned()), ..SpecConfig::hoodi() };
+        assert_eq!(agreeing.misnamed_network(), None);
+
+        assert_eq!(SpecConfig::hoodi().misnamed_network(), None, "nothing to disagree with");
+
+        let devnet = SpecConfig {
+            config_name: Some("mainnet".to_owned()),
+            genesis_fork_version: [0x10, 0x00, 0x00, 0x38],
+            ..SpecConfig::mainnet()
+        };
+        assert_eq!(devnet.misnamed_network(), None, "a devnet fork version names no network");
+    }
+
+    /// The comparison is deliberately exact: Teku looks its builtin config up
+    /// by the name verbatim, and every upstream config spells it lowercase.
+    #[test]
+    fn a_miscased_name_still_disagrees_with_its_fork_version() {
+        let spec = SpecConfig { config_name: Some("Mainnet".to_owned()), ..SpecConfig::mainnet() };
+        assert_eq!(spec.misnamed_network(), Some("mainnet"));
     }
 }

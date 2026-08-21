@@ -242,7 +242,7 @@ pub(crate) fn spec_body(spec: &SpecConfig) -> Vec<u8> {
     json.key("PRESET_BASE");
     json.string(PRESET_BASE);
     json.key("CONFIG_NAME");
-    json.string(&spec.config_name);
+    json.string(&spec.network_name());
 
     for fork in ForkName::ALL {
         json.key(fork_version_key(fork));
@@ -577,6 +577,24 @@ mod tests {
         let spec = spec_map(&SpecConfig { seconds_per_slot: 4, ..SpecConfig::mainnet() });
         assert_eq!(spec["SECONDS_PER_SLOT"], "4");
         assert_eq!(spec["SLOT_DURATION_MS"], "4000");
+    }
+
+    /// Teku's `--network auto` preloads a builtin base config by
+    /// `CONFIG_NAME` while signing domains come from the fork versions, so a
+    /// body contradicting itself hands the client two different networks.
+    #[test]
+    fn config_name_is_the_network_the_fork_version_names() {
+        let sepolia =
+            SpecConfig { genesis_fork_version: [0x90, 0x00, 0x00, 0x69], ..SpecConfig::mainnet() };
+        assert_eq!(spec_map(&sepolia)["CONFIG_NAME"], "sepolia");
+
+        let devnet =
+            SpecConfig { genesis_fork_version: [0x10, 0x00, 0x00, 0x38], ..SpecConfig::mainnet() };
+        assert_eq!(spec_map(&devnet)["CONFIG_NAME"], devnet.network_name());
+        assert_eq!(spec_map(&devnet)["CONFIG_NAME"], "devnet-10000038");
+
+        let named = SpecConfig { config_name: Some("my-devnet".to_owned()), ..devnet };
+        assert_eq!(spec_map(&named)["CONFIG_NAME"], "my-devnet");
     }
 
     #[test]

@@ -185,7 +185,19 @@ impl Config {
     /// external IP, ports, secret key) here, so no source edits are needed.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let text = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&text)?)
+        let config: Self = toml::from_str(&text)?;
+
+        let spec = &config.chain_config.spec;
+        if let Some(network) = spec.misnamed_network() {
+            tracing::warn!(
+                config_name = %spec.network_name(),
+                genesis_fork_version = %hex::encode(spec.genesis_fork_version),
+                network,
+                "CONFIG_NAME disagrees with the network GENESIS_FORK_VERSION names"
+            );
+        }
+
+        Ok(config)
     }
 
     pub fn with_discovery_port(mut self, port: u16) -> Self {
@@ -416,6 +428,34 @@ mod tests {
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
+    }
+
+    /// A devnet copying mainnet's `CONFIG_NAME` still runs — `from_file`
+    /// warns about the contradiction rather than rejecting the file, since
+    /// only the operator can say which half is the typo.
+    #[test]
+    fn a_config_name_contradicting_its_fork_version_still_loads() {
+        let path =
+            std::env::temp_dir().join(format!("silver_misnamed_{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"
+            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
+            fork_digest = "8c9f62fe"
+            next_fork_version = "06000000"
+
+            [chain_config.spec]
+            CONFIG_NAME = "mainnet"
+            GENESIS_FORK_VERSION = "0x10000910"
+        "#,
+        )
+        .unwrap();
+
+        let cfg = Config::from_file(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(cfg.chain_config.spec.misnamed_network(), Some("hoodi"));
+        assert_eq!(cfg.chain_config.spec.network_name(), "mainnet");
     }
 
     #[test]
