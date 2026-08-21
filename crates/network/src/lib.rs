@@ -29,6 +29,9 @@ silver_common::declare_counters! {
         DisconnectAppClosed,
         DisconnectLocal,
         DisconnectOther,
+        // A peer's read-timeout gave up on our response (their reset carried
+        // the response-timeout code): direct we-are-slow signal.
+        RemoteResponseTimeout,
     }
 }
 

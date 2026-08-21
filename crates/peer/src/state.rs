@@ -60,8 +60,8 @@ pub(crate) struct PeerState {
     pub behaviour_penalty: f64, // P7, quadratic over threshold
 
     // Per-heartbeat rate-limit counters; reset every `heartbeat_interval`.
-    pub ihaves_received: u16, // gates P7 via max_ihave_messages
-    pub iwant_ids_sent: u16,  // gates P7 via max_ihave_length
+    pub ihaves_received: u16, // caps IWANT issuance via max_ihave_length
+    pub iwant_ids_sent: u16,  // caps the per-heartbeat IWANT budget
 
     // Outbound protocol rate-limit state.
     pub outbound_rpc_limits: RpcRateLimitSet,
@@ -144,6 +144,15 @@ pub(crate) struct TopicScore {
     /// True once `mesh_message_deliveries_activation_s` has elapsed since
     /// graft — deficit scoring only applies after this.
     pub mesh_active: bool,
+    /// Grafted by `opportunistic_graft` into a sub-median mesh. Exempt from
+    /// mesh-capped eviction until the activation window elapses, so the
+    /// trim falls on the poor performers the graft targets.
+    pub opportunistic: bool,
+    /// Consecutive remote prunes arriving within `QUICK_PRUNE_WINDOW` of
+    /// graft — the signature of a saturated remote mesh trimming us at its
+    /// heartbeat. Scales our re-graft backoff; reset by any prune after a
+    /// longer residency.
+    pub quick_prunes: u8,
     // P3b
     pub mesh_failure_penalty: f64,
     // P4

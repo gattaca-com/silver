@@ -166,6 +166,16 @@ impl StreamState {
         }
     }
 
+    pub fn in_setup(&self) -> bool {
+        matches!(
+            self,
+            StreamState::Negotiate(_) |
+                StreamState::OutgoingIdentify(_) |
+                StreamState::IncomingIdentify(_) |
+                StreamState::OutgoingRpc { rpc: RpcOut::WriteRequest(_), .. }
+        )
+    }
+
     pub fn is_receive_only(&self, protocol: StreamProtocol) -> bool {
         match self {
             StreamState::Negotiate(state) => matches!(state, NegotiateState::OutReading { .. }),

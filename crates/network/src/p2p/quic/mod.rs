@@ -42,6 +42,9 @@ pub fn create_server_config(keypair: &Keypair) -> Result<ServerConfig, Error> {
 pub enum SendResult {
     Ok,
     StreamCreationError,
+    /// RPC response targeted a stream no longer in the map (closed/reset
+    /// before the response was enqueued).
+    StreamGone,
     MessageDropped,
     UnknownPeer,
 }

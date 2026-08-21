@@ -249,10 +249,11 @@ impl PeerManager {
 
     /// Dispatch an inbound RPC event. For requests this gates on the
     /// per-peer rate limit, then handles Status/Ping/Goodbye/MetaData
-    /// inline (response on `emit`); block/data-column requests are
-    /// admitted but not yet forwarded (TODO). For responses this maps
-    /// errors to severity, updates peer database via `handle_event`,
-    /// and releases the outbound in-flight slot on a terminal chunk.
+    /// inline (response on `emit`); block/column/envelope requests are
+    /// ignored here — the storage tile consumes the same `RpcInbound`
+    /// stream and serves them. For responses this maps errors to severity,
+    /// updates peer database via `handle_event`, and releases the outbound
+    /// in-flight slot on a terminal chunk.
     pub fn on_rpc_inbound(
         &mut self,
         rpc: RpcInbound,

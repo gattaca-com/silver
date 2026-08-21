@@ -290,9 +290,25 @@ pub enum PeerEvent {
         /// Failed send was an outbound RPC request: the PM must release the
         /// `outbound_in_flight` slot admitted for it, else it leaks.
         rpc_request: bool,
+        /// Response targeted a stream already closed/reset, as opposed to
+        /// stream-credit exhaustion opening a new request stream.
+        stream_gone: bool,
     },
     P2pStreamClosed {
         stream_id: P2pStreamId,
+    },
+    /// Storage tile finished (or aborted) serving an inbound RPC request;
+    /// the PM logs it with peer identity.
+    RpcServeOutcome {
+        p2p_peer: usize,
+        protocol: StreamProtocol,
+        units_total: u32,
+        units_sent: u32,
+        /// Terminated with ResourceUnavailable on a missing unit rather than
+        /// draining to `Complete`.
+        missing: bool,
+        first_chunk_ms: u64,
+        elapsed_ms: u64,
     },
     P2pOutboundMessageDropped {
         p2p_peer: usize,
@@ -1100,6 +1116,11 @@ pub struct P2pConnectionStats {
     pub tx_blocking: u64,
     pub rx_datagrams: u64,
     pub tx_datagrams: u64,
+    /// Live stream states on the connection. Climbing toward the remote's
+    /// MAX_STREAMS limit precedes "cannot create stream" bursts.
+    pub streams: u64,
+    /// Peer dialed us (QUIC server side), as opposed to us dialing them.
+    pub inbound: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -22,10 +22,22 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{SendResult, stream::StreamIoImpl},
-        streams::{AcquiredRpcOutbound, StreamState},
+        streams::{AcquiredRpcOutbound, StreamError, StreamState},
         tls::peer_id_from_certificate,
     },
 };
+
+const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Application error codes on abnormal stream teardown, so the remote can
+/// tell a protocol violation from our read-timeout giving up on its slow
+/// response (the latter is a they-are-slow signal at the receiver, counted
+/// as `RemoteResponseTimeout`).
+const STREAM_ERR_CODE_PROTOCOL: u32 = 1;
+const STREAM_ERR_CODE_RESPONSE_TIMEOUT: u32 = 2;
+/// Whole-life budget for an inbound RPC stream (negotiate + request +
+/// serve). Generous so a large by-range serve to a slow peer survives.
+const INBOUND_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Peer {
     id: RemotePeer,
@@ -135,18 +147,31 @@ impl Peer {
         tracing::debug!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
         self.dirty = true;
 
-        if let Some(stream) = match &msg {
+        let stream = match &msg {
             AcquiredRpcOutbound::Request(req) => {
-                self.open_stream(req.request.protocol()).and_then(|id| self.streams.get_mut(&id))
+                match self
+                    .open_stream(req.request.protocol())
+                    .and_then(|id| self.streams.get_mut(&id))
+                {
+                    Some(stream) => stream,
+                    None => return SendResult::StreamCreationError,
+                }
             }
-            AcquiredRpcOutbound::Response(rsp) => self.streams.get_mut(&rsp.stream_id.stream_id()),
-        } {
-            if let OutboundBuffer::Rpc(buffer) = &mut stream.out_buffer {
-                let dropped = buffer.add_msg(msg);
-                stream.needs_spin = true;
-                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+            AcquiredRpcOutbound::Response(rsp) => {
+                match self.streams.get_mut(&rsp.stream_id.stream_id()) {
+                    Some(stream) => stream,
+                    None => {
+                        tracing::debug!(stream_id = ?rsp.stream_id, "rpc response: stream gone");
+                        return SendResult::StreamGone;
+                    }
+                }
             }
         };
+        if let OutboundBuffer::Rpc(buffer) = &mut stream.out_buffer {
+            let dropped = buffer.add_msg(msg);
+            stream.needs_spin = true;
+            return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+        }
         SendResult::StreamCreationError
     }
 
@@ -171,6 +196,38 @@ impl Peer {
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
     }
 
+    /// Stream-leak diagnostics: one line per over-populated connection
+    /// listing each stream's protocol, state, direction, age and queue, so
+    /// a stuck state names itself. Steady state is 2 gossip + transient
+    /// RPC.
+    #[allow(dead_code)]
+    pub(crate) fn log_stream_census(&mut self, now: Instant) {
+        const CENSUS_MIN_STREAMS: usize = 5;
+        if self.streams.len() < CENSUS_MIN_STREAMS {
+            return;
+        }
+        let census: Vec<String> = self
+            .streams
+            .values_mut()
+            .map(|s| {
+                format!(
+                    "{:?}:{}:{}:{}s:q{}",
+                    s.p2p_id.protocol(),
+                    s.state.get_mut().name(),
+                    if s.p2p_id.is_incoming() { "in" } else { "out" },
+                    now.saturating_duration_since(s.created_at).as_secs(),
+                    s.out_buffer.len(),
+                )
+            })
+            .collect();
+        tracing::info!(
+            id = ?self.id,
+            count = census.len(),
+            streams = census.join(" | "),
+            "stream census"
+        );
+    }
+
     /// Returns connection stats for peers connected > 30 seconds.
     pub(crate) fn stats(&self, now: Instant) -> Option<P2pConnectionStats> {
         (now - self.created_at > Duration::from_secs(10)).then(|| {
@@ -186,6 +243,8 @@ impl Peer {
                 tx_blocking: stats.frame_tx.data_blocked,
                 rx_datagrams: stats.udp_rx.datagrams,
                 tx_datagrams: stats.udp_tx.datagrams,
+                streams: self.streams.len() as u64,
+                inbound: self.connection.side() == Side::Server,
             }
         })
     }
@@ -215,6 +274,8 @@ impl Peer {
             state: Cell::new(stream),
             out_buffer,
             needs_spin: true,
+            setup_deadline: None,
+            created_at: Instant::now(),
         });
         Some(id)
     }
@@ -387,7 +448,7 @@ impl Peer {
         let state = stream.state.get_mut();
         stream.needs_spin =
             state.awaiting_alloc() || (state.write_idle() && !stream.out_buffer.is_empty());
-        if let Some(d) = state.deadline() {
+        if let Some(d) = stream.wake_deadline() {
             self.next_deadline = Some(self.next_deadline.map_or(d, |cur| cur.min(d)));
         }
 
@@ -425,6 +486,8 @@ impl Peer {
                         state: Cell::new(StreamState::new_inbound()),
                         out_buffer: OutboundBuffer::Unset,
                         needs_spin: true,
+                        setup_deadline: None,
+                        created_at: Instant::now(),
                     });
                     on_event(NetEvent::StreamReady { stream: p2p_id });
                     tracing::debug!(?p2p_id, "stream open");
@@ -438,6 +501,17 @@ impl Peer {
                 // This event is emitted after we call 'finish()' on the send side of
                 // the stream. Indicates that data was sent and acked.
                 tracing::debug!(?id, "send half finished");
+                // Fully-served inbound stream: response acked, nothing left
+                // to write. Reclaim here — quinn requesters reclaim it for
+                // us via a spurious STOP_SENDING (`stop_send`), but netty
+                // (teku) just FINs and the state would leak.
+                if let Some(stream) = self.streams.get_mut(&id) &&
+                    stream.p2p_id.is_incoming() &&
+                    stream.is_complete() &&
+                    stream.out_buffer.is_empty()
+                {
+                    self.remove_stream(id);
+                }
             }
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
                 if let Some(stream) = self.streams.get_mut(&id) {
@@ -511,7 +585,7 @@ where
         let state = stream.state.get_mut();
         stream.needs_spin =
             state.awaiting_alloc() || (state.write_idle() && !stream.out_buffer.is_empty());
-        if let Some(d) = state.deadline() {
+        if let Some(d) = stream.wake_deadline() {
             *next_deadline = Some(next_deadline.map_or(d, |cur| cur.min(d)));
         }
 
@@ -560,7 +634,7 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
 
 fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
     match id.protocol() {
-        StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(1024)),
+        StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(4096)),
         StreamProtocol::BeaconBlocksByRange |
         StreamProtocol::BeaconBlocksByRoot |
         StreamProtocol::DataColumnSidecarsByRange |
@@ -583,6 +657,8 @@ struct Stream {
     /// credit). Fresh streams are born flagged — the initial negotiate
     /// write, and bytes delivered with `Opened`, emit no event.
     needs_spin: bool,
+    setup_deadline: Option<Instant>,
+    created_at: Instant,
 }
 
 enum SpinResult {
@@ -603,6 +679,23 @@ impl Stream {
     where
         E: FnMut(crate::NetEvent),
     {
+        if self.state.get_mut().in_setup() {
+            let deadline = *self.setup_deadline.get_or_insert(now + STREAM_SETUP_TIMEOUT);
+            if now >= deadline {
+                return self.timed_out("stream setup timeout", connection, on_event);
+            }
+        }
+
+        // Inbound RPC streams have no state-machine deadline of their own:
+        // a starved request read, a response lost before enqueue, or an
+        // unacked FIN would otherwise park the stream forever (observed as
+        // aged `IncomingRpc` census entries from teku).
+        if matches!(self.state.get_mut(), StreamState::IncomingRpc { .. }) &&
+            now >= self.created_at + INBOUND_RPC_TIMEOUT
+        {
+            return self.timed_out("inbound rpc timeout", connection, on_event);
+        }
+
         let state = self.state.take();
         // Capture the phase before `spin` consumes `state`, so a stream
         // error/teardown log can report which protocol phase it failed in.
@@ -666,8 +759,14 @@ impl Stream {
                     "stream error"
                 );
                 let id = self.p2p_id.stream_id();
-                let _ = connection.send_stream(id).finish();
-                let _ = connection.recv_stream(id).stop(VarInt::from_u32(1));
+                let code = if matches!(e, StreamError::ReadResponseTimeout) {
+                    STREAM_ERR_CODE_RESPONSE_TIMEOUT
+                } else {
+                    STREAM_ERR_CODE_PROTOCOL
+                };
+                // reset, not finish: see the setup-timeout teardown above.
+                let _ = connection.send_stream(id).reset(VarInt::from_u32(code));
+                let _ = connection.recv_stream(id).stop(VarInt::from_u32(code));
 
                 // TODO error info.
                 on_event(NetEvent::StreamClosed { stream: self.p2p_id });
@@ -677,6 +776,45 @@ impl Stream {
     }
 
     /// Remote peer has called 'stop' on their recv stream (our send side).
+    fn timed_out<E>(
+        &mut self,
+        reason: &'static str,
+        connection: &mut Connection,
+        on_event: &mut E,
+    ) -> SpinResult
+    where
+        E: FnMut(crate::NetEvent),
+    {
+        tracing::warn!(
+            id = ?self.p2p_id,
+            protocol = ?self.p2p_id.protocol(),
+            state = self.state.get_mut().name(),
+            reason,
+            "stream timeout"
+        );
+        let id = self.p2p_id.stream_id();
+        // reset, not finish: FIN queues behind buffered data the stalled
+        // peer isn't draining, so the stream — and its MAX_STREAMS credit —
+        // would leak at the QUIC layer.
+        let _ = connection.send_stream(id).reset(VarInt::from_u32(1));
+        let _ = connection.recv_stream(id).stop(VarInt::from_u32(1));
+        on_event(NetEvent::StreamClosed { stream: self.p2p_id });
+        SpinResult::End
+    }
+
+    /// Earliest instant this stream needs an unprompted poll: setup and
+    /// inbound-RPC lifetime budgets, or the state machine's own deadline.
+    fn wake_deadline(&mut self) -> Option<Instant> {
+        let state = self.state.get_mut();
+        if state.in_setup() {
+            self.setup_deadline
+        } else if matches!(state, StreamState::IncomingRpc { .. }) {
+            Some(self.created_at + INBOUND_RPC_TIMEOUT)
+        } else {
+            state.deadline()
+        }
+    }
+
     fn stop_send<E>(
         &mut self,
         error_code: VarInt,
@@ -687,6 +825,9 @@ impl Stream {
         E: FnMut(crate::NetEvent),
     {
         let _ = connection.send_stream(self.p2p_id.stream_id()).reset(VarInt::from_u32(0));
+        if error_code.into_inner() == STREAM_ERR_CODE_RESPONSE_TIMEOUT as u64 {
+            crate::NetworkCounters::RemoteResponseTimeout.inc();
+        }
         if self.state.get_mut().is_receive_only(self.p2p_id.protocol()) {
             return SpinResult::Ok;
         }
@@ -1109,6 +1250,104 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn stream_setup_timeout_reaps_unnegotiated_stream() {
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+
+        let t0 = Instant::now();
+        pair.client_peer.open_stream(StreamProtocol::Ping).unwrap();
+
+        let PeerPair { client_ep, client_peer, .. } = &mut pair;
+        let mut cb = |h, e| client_ep.handle_event(h, e);
+        let closed = Cell::new(0usize);
+        let mut on_event = |e: NetEvent| {
+            if matches!(e, NetEvent::StreamClosed { .. }) {
+                closed.set(closed.get() + 1);
+            }
+        };
+
+        client_peer.spin(t0, &mut cb, &mut client_h.context, &mut on_event, &FxHashSet::default());
+        assert_eq!(client_peer.streams.len(), 1);
+
+        client_peer.spin(
+            t0 + STREAM_SETUP_TIMEOUT / 2,
+            &mut cb,
+            &mut client_h.context,
+            &mut on_event,
+            &FxHashSet::default(),
+        );
+        assert_eq!(client_peer.streams.len(), 1);
+        assert_eq!(closed.get(), 0);
+
+        client_peer.spin(
+            t0 + STREAM_SETUP_TIMEOUT + Duration::from_secs(1),
+            &mut cb,
+            &mut client_h.context,
+            &mut on_event,
+            &FxHashSet::default(),
+        );
+        assert!(client_peer.streams.is_empty());
+        assert_eq!(closed.get(), 1);
+    }
+
+    /// A negotiated inbound RPC stream whose request never arrives must be
+    /// reaped by `INBOUND_RPC_TIMEOUT` — only the server is spun past the
+    /// deadline, so the reap can't be masked by the client's own teardown.
+    #[test]
+    fn inbound_rpc_timeout_reaps_unanswered_stream() {
+        use silver_common::{RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound};
+
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+
+        let t0 = Instant::now();
+        let request = RpcOutbound::Request(RpcRequestOutbound {
+            application_id: 7,
+            peer: pair.client_peer.id.connection,
+            request: RpcRequest::Ping([0u8; 8]),
+        });
+        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.rpc_consumer));
+        assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
+
+        // Step until the server has read the request; nothing ever responds,
+        // so its stream parks in `WriteResponse(Idle)` — the leak shape.
+        let mut server_got_request = false;
+        for _ in 0..300 {
+            let mut noop_c = |_: NetEvent| {};
+            let mut scb = |e: NetEvent| {
+                if matches!(e, NetEvent::RpcInbound(RpcInbound::Request(_))) {
+                    server_got_request = true;
+                }
+            };
+            pair.step(t0, &mut client_h, &mut server_h, &mut noop_c, &mut scb);
+            if server_got_request {
+                break;
+            }
+        }
+        assert!(server_got_request, "server never read the ping request");
+        assert!(
+            pair.server_peer.streams.values().any(|s| s.p2p_id.protocol() == StreamProtocol::Ping),
+            "server should hold the unanswered inbound ping stream"
+        );
+
+        let PeerPair { server_ep, server_peer, .. } = &mut pair;
+        let mut cb = |h, e| server_ep.handle_event(h, e);
+        let mut on_event = |_: NetEvent| {};
+        server_peer.spin(
+            t0 + INBOUND_RPC_TIMEOUT + Duration::from_secs(1),
+            &mut cb,
+            &mut server_h.context,
+            &mut on_event,
+            &FxHashSet::default(),
+        );
+        assert!(
+            !server_peer.streams.values().any(|s| s.p2p_id.protocol() == StreamProtocol::Ping),
+            "unanswered inbound rpc stream survived its timeout"
+        );
     }
 
     /// Negotiation completion is observed indirectly by sending a tiny

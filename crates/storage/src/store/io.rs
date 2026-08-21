@@ -8,6 +8,7 @@ use std::{
     fs::File,
     io::{Error, ErrorKind, Read, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use flux_profiler::timed;
@@ -265,6 +266,7 @@ impl Store {
                     stream_id: query.stream_id,
                     response: RpcResponse::Complete,
                 }))));
+                emit(IoEvent::PeerEvent(query.outcome(false)));
                 continue;
             };
             reads += 1;
@@ -288,6 +290,8 @@ impl Store {
                     emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
                         RpcResponseOutbound { stream_id: query.stream_id, response },
                     ))));
+                    query.units_sent += 1;
+                    query.first_chunk_at.get_or_insert_with(Instant::now);
                     self.query_queue.push_back(query);
                 }
                 ServeResult::Missing => {
@@ -298,6 +302,7 @@ impl Store {
                     emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
                         RpcResponseOutbound { stream_id: query.stream_id, response },
                     ))));
+                    emit(IoEvent::PeerEvent(query.outcome(true)));
                 }
                 ServeResult::ProducerFull => {
                     // Tcache full — un-consume and retry this request first

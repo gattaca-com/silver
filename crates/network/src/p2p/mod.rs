@@ -137,14 +137,16 @@ impl P2p {
         for _ in 0..batch.min(self.peers.len()) {
             let next = self
                 .peers
-                .iter()
-                .filter(|(h, _)| h.0 > self.stats_cursor)
-                .min_by_key(|(h, _)| h.0)
-                .or_else(|| self.peers.iter().min_by_key(|(h, _)| h.0));
-            let Some((handle, peer)) = next else {
+                .keys()
+                .filter(|h| h.0 > self.stats_cursor)
+                .min_by_key(|h| h.0)
+                .or_else(|| self.peers.keys().min_by_key(|h| h.0))
+                .copied();
+            let Some(handle) = next else {
                 return;
             };
             self.stats_cursor = handle.0;
+            let Some(peer) = self.peers.get_mut(&handle) else { return };
             if let Some(stats) = peer.stats(now) {
                 emit(stats);
             }

@@ -3,21 +3,16 @@ use std::{
     io::{Error, Read},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    DataKind, Enr, P2pStreamId, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead, TRandomAccess,
-    TRead,
-    merkle::B256,
-    ssz_view::{
-        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
-        ExecutionPayloadEnvelopesByRangeRequestView, ExecutionPayloadEnvelopesByRootRequestView,
-        MAX_REQUEST_BLOCKS_DENEB,
-    },
+    merkle::B256, ssz_view::{
+        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView, DataColumnsByRootRequestView, ExecutionPayloadEnvelopesByRangeRequestView, ExecutionPayloadEnvelopesByRootRequestView, MAX_REQUEST_BLOCKS_DENEB
+    }, DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, TRead
 };
 
 use crate::StorageCounters;
@@ -213,6 +208,39 @@ impl QueryUnit {
 struct PendingQuery {
     stream_id: P2pStreamId,
     units: VecDeque<QueryUnit>,
+    received_at: Instant,
+    first_chunk_at: Option<Instant>,
+    units_total: u32,
+    units_sent: u32,
+}
+
+impl PendingQuery {
+    fn new(stream_id: P2pStreamId, units: VecDeque<QueryUnit>) -> Self {
+        Self {
+            stream_id,
+            received_at: Instant::now(),
+            first_chunk_at: None,
+            units_total: units.len() as u32,
+            units_sent: 0,
+            units,
+        }
+    }
+
+    /// The `RpcServeOutcome` for this query terminating now.
+    fn outcome(&self, missing: bool) -> PeerEvent {
+        PeerEvent::RpcServeOutcome {
+            p2p_peer: self.stream_id.peer(),
+            protocol: self.stream_id.protocol(),
+            units_total: self.units_total,
+            units_sent: self.units_sent,
+            missing,
+            first_chunk_ms: self
+                .first_chunk_at
+                .map(|t| t.duration_since(self.received_at).as_millis() as u64)
+                .unwrap_or(0),
+            elapsed_ms: self.received_at.elapsed().as_millis() as u64,
+        }
+    }
 }
 
 /// Unified blocks and data columns disk store.
@@ -561,7 +589,7 @@ impl Store {
         // TODO should not return 'Complete' should return rate limit error
         if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
             tracing::warn!(?stream_id, "queries at capacity");
-            self.query_queue.push_back(PendingQuery { stream_id, units: VecDeque::new() });
+            self.query_queue.push_back(PendingQuery::new(stream_id, VecDeque::new()));
             return;
         }
 
@@ -608,29 +636,33 @@ impl Store {
                 with_root_request(
                     rpc_consumer,
                     read,
-                    DataColumnsByRootIdentifierView::check_size,
+                    DataColumnsByRootRequestView::check_size,
                     |buf| {
-                        let root = DataColumnsByRootIdentifierView::block_root(buf);
-                        let request_columns = DataColumnsByRootIdentifierView::columns(buf)
-                            .chunks_exact(8)
-                            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+                        let ids = DataColumnsByRootRequestView::count(buf);
+                        tracing::info!(?stream_id, ids, len = buf.len(), "storage query");
 
-                        tracing::info!(?stream_id, ?root, "storage query");
+                        for i in 0..ids {
+                            let id = DataColumnsByRootRequestView::identifier(buf, i);
+                            let root = DataColumnsByRootIdentifierView::block_root(id);
+                            let request_columns = DataColumnsByRootIdentifierView::columns(id)
+                                .chunks_exact(8)
+                                .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
 
-                        // Serve a specific block's columns regardless of
-                        // canonicity: unfinalized (by block_root) first, else
-                        // the finalized flat store.
-                        if let Some(slot) = self.unfinalized_columns.slot_of(root) {
-                            for column in request_columns {
-                                units.push_back(QueryUnit::UnfinalizedColumn {
-                                    slot,
-                                    block_root: *root,
-                                    column,
-                                });
-                            }
-                        } else if let Some(&slot) = self.root_index.get(root) {
-                            for column in request_columns {
-                                units.push_back(QueryUnit::Column { slot, column });
+                            // Serve a specific block's columns regardless of
+                            // canonicity: unfinalized (by block_root) first,
+                            // else the finalized flat store.
+                            if let Some(slot) = self.unfinalized_columns.slot_of(root) {
+                                for column in request_columns {
+                                    units.push_back(QueryUnit::UnfinalizedColumn {
+                                        slot,
+                                        block_root: *root,
+                                        column,
+                                    });
+                                }
+                            } else if let Some(&slot) = self.root_index.get(root) {
+                                for column in request_columns {
+                                    units.push_back(QueryUnit::Column { slot, column });
+                                }
                             }
                         }
                     },
@@ -657,11 +689,14 @@ impl Store {
                 with_root_request(
                     rpc_consumer,
                     read,
-                    BeaconBlocksByRootRequestView::check_size,
+                    |buf| {
+                        tracing::info!("BeaconBlocksByRoot len {}", buf.len());
+                        BeaconBlocksByRootRequestView::check_size(buf)
+                    },
                     |buf| {
                         let count = BeaconBlocksByRootRequestView::count(buf);
 
-                        tracing::info!(?stream_id, count, "storage query");
+                        tracing::info!(?stream_id, count, len = buf.len(), "storage query");
 
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
@@ -669,13 +704,28 @@ impl Store {
                             // canonicity: unfinalized fork tree first, then the
                             // finalized flat store.
                             if let Some((slot, parent_root)) = self.unfinalized.get(root) {
+                                tracing::info!(
+                                    block_root = hex::encode(root),
+                                    slot,
+                                    "serve unfinalized block"
+                                );
                                 units.push_back(QueryUnit::UnfinalizedBlock {
                                     slot,
                                     parent_root,
                                     block_root: *root,
                                 });
                             } else if let Some(&slot) = self.root_index.get(root) {
+                                tracing::info!(
+                                    block_root = hex::encode(root),
+                                    slot,
+                                    "serve finalized block"
+                                );
                                 units.push_back(QueryUnit::Block { slot });
+                            } else {
+                                tracing::warn!(
+                                    block_root = hex::encode(root),
+                                    "BlockByRoot - root not found"
+                                );
                             }
                         }
                     },
@@ -724,7 +774,7 @@ impl Store {
             // Unhandled request kind: no response (matches prior behaviour).
             _ => return,
         }
-        self.query_queue.push_back(PendingQuery { stream_id, units });
+        self.query_queue.push_back(PendingQuery::new(stream_id, units));
     }
 
     fn resolve_canonical_range(
@@ -783,6 +833,10 @@ fn with_root_request(
         check_size(buf)
     {
         resolve(buf);
+    } else {
+        // Fall through with no units: the caller still enqueues the query,
+        // so the peer gets an immediate bare `Complete`, not a hung stream.
+        tracing::warn!("root request buffer not resolved!");
     }
 }
 
@@ -1329,13 +1383,19 @@ mod tests {
         assert_col(&responses[0], &a3);
         assert_col(&responses[1], &a7);
 
-        // DataColumnsByRoot for the fork B's column 3: served despite B being
-        // non-canonical. SSZ: block_root | offset(=36) | column list.
-        let mut byroot = [0u8; 44];
-        byroot[0..32].copy_from_slice(&root_b);
-        byroot[32..36].copy_from_slice(&36u32.to_le_bytes());
-        byroot[36..44].copy_from_slice(&3u64.to_le_bytes());
-        let mut br_res = req_producer.reserve(44, true).unwrap();
+        // DataColumnsByRoot spanning both roots in one request: A's column 7
+        // and non-canonical B's column 3. Wire format is
+        // List[DataColumnsByRootIdentifier]: outer offset table (u32 LE per
+        // element), then per element root | inner offset(=36) | column list.
+        let mut byroot = Vec::new();
+        byroot.extend_from_slice(&8u32.to_le_bytes()); // element 0 at 8
+        byroot.extend_from_slice(&52u32.to_le_bytes()); // element 1 at 8 + 44
+        for (root, column) in [(&root_a, 7u64), (&root_b, 3u64)] {
+            byroot.extend_from_slice(root);
+            byroot.extend_from_slice(&36u32.to_le_bytes());
+            byroot.extend_from_slice(&column.to_le_bytes());
+        }
+        let mut br_res = req_producer.reserve(byroot.len(), true).unwrap();
         br_res.write_all(&byroot).unwrap();
         br_res.flush().unwrap();
         let byroot_ssz = br_res.read();
@@ -1350,8 +1410,40 @@ mod tests {
                 _ => {}
             })
             .unwrap();
-        assert_eq!(br.len(), 2); // B column 3 + Complete
-        assert_col(&br[0], &b3);
+        assert_eq!(br.len(), 3); // A column 7, B column 3, Complete
+        assert_col(&br[0], &a7);
+        assert_col(&br[1], &b3);
+
+        // A bare identifier (no outer offset table — the pre-fix encoding) is
+        // rejected: no units resolve, the peer still gets an immediate bare
+        // Complete rather than a hung stream.
+        let mut bare = [0u8; 44];
+        bare[0..32].copy_from_slice(&root_b);
+        bare[32..36].copy_from_slice(&36u32.to_le_bytes());
+        bare[36..44].copy_from_slice(&3u64.to_le_bytes());
+        let mut bare_res = req_producer.reserve(44, true).unwrap();
+        bare_res.write_all(&bare).unwrap();
+        bare_res.flush().unwrap();
+        let bare_ssz = bare_res.read();
+        store.rpc_request(&mut req_consumer, RpcRequestInbound {
+            stream_id: sid,
+            request: RpcRequest::DataColumnsByRoot(bare_ssz),
+        });
+        let mut rejected = vec![];
+        store
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => rejected.push(s),
+                _ => {}
+            })
+            .unwrap();
+        assert_eq!(rejected.len(), 1, "malformed by-root request answers a bare Complete");
+        assert!(matches!(
+            &rejected[0],
+            P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                response: RpcResponse::Complete,
+                ..
+            }))
+        ));
 
         // Finalize on A at slot 42: promote A's columns, prune B's.
         store.update_head(slot, root_a, slot, root_a);
