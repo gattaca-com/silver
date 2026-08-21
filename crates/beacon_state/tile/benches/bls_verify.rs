@@ -211,7 +211,30 @@ fn build_ef_block() -> SigBatch {
     batch
 }
 
-// ---- (4) Top-level registration -------------------------------------------
+// ---- (4) Gossip attestation flush batch ------------------------------------
+
+/// A full `ATT_BATCH_CAP` gossip flush: 256 individual attesters spread
+/// over `n_msgs` distinct signing roots (live subnets share
+/// `AttestationData` across committees, so 1-4 roots is typical).
+fn build_att_batch(n_msgs: usize) -> SigBatch {
+    let mut batch = SigBatch::new();
+    for i in 0..256u64 {
+        let (sk, pk) = keypair(1000 + i);
+        let mut msg = [0u8; 32];
+        msg[0] = (i as usize % n_msgs) as u8;
+        batch.push_one(&pk, &sk.sign(&msg, DST, &[]).to_bytes(), msg);
+    }
+    batch
+}
+
+fn bench_att_batches(c: &mut Criterion) {
+    for n_msgs in [2, 256] {
+        let mut g = c.benchmark_group(format!("att_batch_256x{n_msgs}"));
+        bench_pair(&mut g, || build_att_batch(n_msgs));
+    }
+}
+
+// ---- (5) Top-level registration -------------------------------------------
 
 fn bench_pair<F: Fn() -> SigBatch>(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
@@ -236,5 +259,5 @@ fn bench_envelopes(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_verify_single_attestation, bench_envelopes);
+criterion_group!(benches, bench_verify_single_attestation, bench_envelopes, bench_att_batches);
 criterion_main!(benches);

@@ -10,9 +10,9 @@ use silver_beacon_state_data::{
     Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsEvent, EngineResp, NewGossipMsg, ReplayBlock,
-    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead,
-    hex32,
+    BeaconStateEvent, BlockSource, DataColumnsEvent, EngineResp, GossipTopic, NewGossipMsg,
+    ReplayBlock, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
+    TRandomAccess, TRead, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -130,6 +130,9 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
+    att_batch: Vec<NewGossipMsg>,
+    att_pending: Vec<(NewGossipMsg, gossip::PreparedAttestation)>,
+    att_sig_batch: bls::SigBatch,
     fork_data_roots: ForkDataRoots,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
@@ -233,6 +236,9 @@ impl BeaconStateTile {
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
+            att_batch: Vec::with_capacity(gossip::ATT_BATCH_CAP),
+            att_pending: Vec::with_capacity(gossip::ATT_BATCH_CAP),
+            att_sig_batch: bls::SigBatch::new(),
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
@@ -583,6 +589,11 @@ impl BeaconStateTile {
     /// dispatch; in Syncing mode drop it (PM drives sync).
     fn on_gossip(&mut self, m: NewGossipMsg, following: bool, producers: &mut Producers) {
         if following {
+            if matches!(m.topic, GossipTopic::BeaconAttestation(_)) {
+                self.defer_attestation(m, producers);
+                return;
+            }
+            self.flush_attestations(producers);
             self.handle_gossip(m.ssz, m, true, false, producers);
         } else {
             tracing::trace!(
@@ -746,6 +757,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
+        self.flush_attestations(&mut adapter.producers);
         self.gossip_consumer.free();
 
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
