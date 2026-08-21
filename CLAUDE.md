@@ -1,18 +1,26 @@
 # CLAUDE.md
 
-Guidance for working in **silver** — gattaca's high-performance Ethereum consensus client.
+Guidance for working on **silver** — Gattaca's high-performance Ethereum consensus client.
+
+## Communication
+
+- Report to me using ASD-STE100 Simplified Technical English.
+- Be concise and direct.
+- Use short sentences and the active voice.
+- Give one instruction in each sentence.
+- Use the same term for the same item.
+- Do not change commands, code, identifiers, or quotations to meet these language rules.
 
 ## Philosophy
 
 Two principles drive every rule below:
 
-- **Simplicity.** Simplicity is the foundation of capability, not the opposite of it. Lines
-  of code matter — the best code is the code you didn't write. Favour fewer abstractions,
-  fewer layers, fewer traits, fewer macros. Reach for the language's existing tools before
-  inventing new ones.
-- **Performance.** Performance is a feature, not an afterthought. Hot paths (state apply,
-  finalization, hashing, gossip) are measured. When two designs are equally clear, pick the
-  faster one; when the fast one is less clear, justify it and measure it.
+- **Simplicity.** Simplicity is the foundation of capability, not the opposite of it.
+  Favour fewer abstractions, fewer layers, fewer traits, fewer macros. Reach for
+  the language's existing tools before inventing new ones.
+- **Performance.** Performance is a feature, not an afterthought. Hot paths (state transitions,
+  finalization, hashing, gossip ingestion and propagation) are measured. When two designs are equally clear,
+  pick the faster one; when the fast one is less clear, justify it and measure it.
 
 These reinforce each other: a smaller, flatter, well-named codebase is both simpler to
 reason about and faster to run.
@@ -20,7 +28,7 @@ reason about and faster to run.
 ## Project shape
 
 - Binary is `crates/bin`; everything else is a `silver_*` library crate.
-- Crates are organised as **tiles** — independent components that communicate over channels.
+- Most crates are organised as **tiles** — independent components that communicate over channels.
 - The beacon state is **not** a monolith: it's a bag of per-tier *groups* (validators,
   balances, participation, …), each a finalized base + a ring of per-fork deltas.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
@@ -150,3 +158,4 @@ boundaries — not the same implementation sprinkled across more files.
 - **Minimal diff.** Don't "improve" working code outside the task. But code the *current
   diff introduced* is in scope to fix even when the fix is larger/non-local (extracting a new
   module, rewiring imports) — edit size is not a scope test.
+
