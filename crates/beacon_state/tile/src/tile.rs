@@ -548,8 +548,6 @@ impl BeaconStateTile {
             // Covers epochs with no blocks, where no post-apply hook fired.
             let state_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
             self.precompute_next_epoch_shuffling(state_epoch);
-            let view = self.state.read_view(self.last_applied);
-            self.shuffling_cache.try_cache_committee_aggs(&view, state_epoch + 1);
         }
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
