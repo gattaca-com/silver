@@ -3,6 +3,10 @@
 
 use std::time::{Duration, Instant};
 
+use silver_beacon_state::ssz_hash::{hash_tree_root_block_header, hash_tree_root_state};
+use silver_beacon_state_data::{
+    BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
+};
 use silver_common::{profiler::InProcessReader, ssz_view::StatusView};
 use silver_metrics::{TimingStats, fold_stats};
 
@@ -27,6 +31,49 @@ pub struct ReplayOutcome {
     pub wall_elapsed: Duration,
     pub final_slot: u64,
     pub head_state_root: [u8; 32],
+}
+
+/// Restart-equivalence gate: stream the finalized base out through the
+/// production checkpoint cursor, reload it the way bootstrap does, and require
+/// the re-derived `seed_anchor` block root to equal the fork-choice finalized
+/// root. Catches a tier persisting its boot-time base while staying
+/// live-correct — invisible to the head state-root check.
+fn verify_checkpoint_restart(harness: &PmBsHarness) {
+    let reader = harness.state_reader();
+    let mut cursor = reader.begin_checkpoint().expect("published snapshot");
+    let (mut ssz, mut pubkeys_raw, mut buf) = (Vec::new(), Vec::new(), Vec::new());
+    loop {
+        match reader.checkpoint_chunk(&mut cursor, &mut buf).expect("checkpoint chunk") {
+            CheckpointChunk::Ssz => ssz.extend_from_slice(&buf),
+            CheckpointChunk::Pubkeys => pubkeys_raw.extend_from_slice(&buf),
+            CheckpointChunk::Restarted => {
+                ssz.clear();
+                pubkeys_raw.clear();
+            }
+            CheckpointChunk::Done => break,
+        }
+    }
+
+    let pubkeys = decode_checkpoint_pubkeys(&pubkeys_raw).expect("pubkeys sidecar");
+    let state = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), Some(&pubkeys))
+        .expect("decompose persisted checkpoint");
+    let mut owner = BeaconStateOwner::new(state);
+    let anchor = owner.roll_fresh();
+    let rv = owner.read_view(anchor);
+
+    let state_root = hash_tree_root_state(&rv);
+    let mut header = rv.slot.state().latest_block_header;
+    if header.state_root == [0u8; 32] {
+        header.state_root = state_root;
+    }
+    let block_root = hash_tree_root_block_header(&header);
+    assert_eq!(
+        block_root,
+        harness.fork_choice_finalized_root(),
+        "restart from the persisted checkpoint (slot {}) would fail the parent precheck",
+        cursor.slot(),
+    );
+    eprintln!("perf: checkpoint restart re-derives the finalized block root ✓");
 }
 
 /// Replay `fixtures.blocks` onto a freshly-built `PmBsHarness` anchored
@@ -122,6 +169,9 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
     let drainer = recorder.collect();
     let fxt = fxt_requested().then(|| drainer.fxt_trace());
+
+    // After `collect` so the persist + full re-hash stay out of the timings.
+    verify_checkpoint_restart(&harness);
 
     ReplayOutcome {
         stats: fold_stats(&drainer),

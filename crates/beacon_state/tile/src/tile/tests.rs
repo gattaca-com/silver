@@ -2,9 +2,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, EpochState, EpochStateFinalized,
-    Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotStateId,
-    ValSeed, Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, ColumnGroup, ColumnSpec, EpochState,
+    EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
+    PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotStateId, StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
@@ -1705,6 +1705,223 @@ fn multi_fork_finalize_promotes_and_rebases() {
     //     bundle (not the stale pre-finalize one).
     assert_eq!(tile.last_applied, d_rebased, "head bundle refreshed");
     assert_ne!(tile.last_applied, d_id, "stale head bundle replaced");
+}
+
+/// Write a sentinel into every tier on a fork, finalize it, and require the
+/// encoded→decomposed state to carry each sentinel and match the live head's
+/// field roots — the check a restart's `seed_anchor` performs. A tier missing
+/// its `finalize` wiring stays live-correct (reads go through fork ids) but
+/// persists its boot-time base: the slashings checkpoint-corruption bug.
+#[test]
+fn finalize_promotes_every_tier_into_checkpoint_encode() {
+    fn set1<C: ColumnSpec>(
+        g: &mut ColumnGroup<C>,
+        parent: Id<ColumnGroup<C>>,
+        ix: u32,
+        v: C::Val,
+    ) -> Id<ColumnGroup<C>> {
+        let mut w = g.roll_from(parent);
+        w.set(ix, v);
+        w.commit()
+    }
+
+    let mut tile = make_tile();
+    // Real keys: decompose re-derives decompressed pubkeys from the encoded
+    // registry, so they must be valid points.
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let anchor_id = tile.last_applied;
+
+    const F_ROOT: B256 = [0x0F; 32];
+    let f_cp = Checkpoint { epoch: 0, root: F_ROOT };
+
+    let f_id = {
+        let mut g = tile.state.write();
+        let bs = &mut *g;
+
+        let mut w = bs.slot_states.roll_from(anchor_id.slot_idx);
+        w.state_mut().slot = 1;
+        w.state_mut().eth1_deposit_index = 77;
+        let slot_idx = w.commit();
+
+        let mut w = bs.eth1.roll_from(anchor_id.eth1_idx);
+        w.push(Eth1Data { deposit_root: [0xE1; 32], deposit_count: 17, block_hash: [0xE2; 32] });
+        let eth1_idx = w.commit();
+
+        let mut w = bs.pending.roll_from(anchor_id.pending_idx);
+        w.deposits.push(PendingDeposit {
+            pubkey: placeholder_pubkey(0),
+            withdrawal_credentials: Withdrawals::default(),
+            amount: 888,
+            signature: [0u8; 96],
+            slot: 0,
+        });
+        let pending_idx = w.commit();
+
+        let mut w = bs.validators.roll_from(anchor_id.validators_idx);
+        w.set_effective_balance(0, 31_000_000_000);
+        let validators_idx = w.commit();
+
+        let mut w = bs.epoch.roll_inheriting(anchor_id.epoch_idx);
+        w.state_mut().deposit_balance_to_consume = 55;
+        let epoch_idx = Some(w.commit());
+
+        let mut w = bs.longtail.roll_inheriting(anchor_id.longtail_idx);
+        w.push_historical_summary(HistoricalSummary {
+            block_summary_root: [0xB5; 32],
+            state_summary_root: [0x55; 32],
+        });
+        let longtail_idx = Some(w.commit());
+
+        // Deliberately no `..anchor_id` shorthand: every field is written out,
+        // so adding a field to `StateId` is a compile error here. Whoever adds
+        // one must then write a sentinel for it in this test and call its
+        // `finalize` in `promote_and_rebase`. Builders get no sentinel: the
+        // field is Gloas-only and a Fulu encode never reads it.
+        let a = &anchor_id;
+        StateId {
+            slot_idx,
+            eth1_idx,
+            pending_idx,
+            validators_idx,
+            epoch_idx,
+            longtail_idx,
+            balances_idx: set1(&mut bs.balances, a.balances_idx, 0, 111),
+            previous_participation_idx: set1(
+                &mut bs.previous_participation,
+                a.previous_participation_idx,
+                0,
+                5,
+            ),
+            current_participation_idx: set1(
+                &mut bs.current_participation,
+                a.current_participation_idx,
+                0,
+                6,
+            ),
+            inactivity_idx: set1(&mut bs.inactivity, a.inactivity_idx, 0, 42),
+            slashings_idx: set1(&mut bs.slashings, a.slashings_idx, 3, 999),
+            block_roots_idx: set1(&mut bs.block_roots, a.block_roots_idx, 1, [0xB1; 32]),
+            state_roots_idx: set1(&mut bs.state_roots, a.state_roots_idx, 1, [0x51; 32]),
+            randao_mixes_idx: set1(&mut bs.randao_mixes, a.randao_mixes_idx, 0, [0xAA; 32]),
+            builders_idx: a.builders_idx,
+        }
+    };
+
+    tile.fork_choice.on_block(BlockImport {
+        slot: 1,
+        block_root: F_ROOT,
+        parent_root: ANCHOR_ROOT,
+        execution_block_hash: [0u8; 32],
+        justified: f_cp,
+        finalized: f_cp,
+        unrealized_justified: f_cp,
+        unrealized_finalized: f_cp,
+        state_id: f_id,
+        bid_block_hash: [0u8; 32],
+        parent_payload_status: PayloadStatus::Full,
+        payload_verified: true,
+        is_gloas: false,
+    });
+    tile.last_applied = f_id;
+    tile.last_applied_block_root = F_ROOT;
+    tile.fork_choice.finalized_checkpoint = f_cp;
+    tile.state.publish_state_id(f_id);
+
+    tile.maybe_finalize();
+    assert_eq!(
+        tile.state.state().slot_states.finalized_view().slot_number(),
+        1,
+        "finalize did not promote"
+    );
+
+    let mut ssz = Vec::new();
+    tile.state.state().encode_ssz(&mut ssz).expect("encode");
+    let reloaded =
+        BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose own encode");
+    let mut owner = BeaconStateOwner::new(reloaded);
+    let reload_anchor = owner.roll_fresh();
+    let rv = owner.read_view(reload_anchor);
+
+    assert_eq!(rv.slot.state().slot, 1, "slot scalars");
+    assert_eq!(rv.slot.state().eth1_deposit_index, 77, "slot scalars");
+    assert_eq!(rv.balances.get(0), 111, "balances");
+    assert_eq!(rv.previous_participation.get(0), 5, "previous_participation");
+    assert_eq!(rv.current_participation.get(0), 6, "current_participation");
+    assert_eq!(rv.inactivity.get(0), 42, "inactivity");
+    assert_eq!(rv.slashings.get(3), 999, "slashings");
+    assert_eq!(rv.block_roots.at_slot(1), [0xB1; 32], "block_roots");
+    assert_eq!(rv.state_roots.get(1), [0x51; 32], "state_roots");
+    assert_eq!(rv.randao_mixes.get(0), [0xAA; 32], "randao_mixes");
+    assert_eq!(rv.eth1.len(), 1, "eth1 votes");
+    assert_eq!(rv.eth1.iter().next().unwrap().deposit_count, 17, "eth1 votes");
+    assert_eq!(rv.pending.deposits.len(), 1, "pending deposits");
+    assert_eq!(rv.pending.deposits.get(0).amount, 888, "pending deposits");
+    assert_eq!(rv.validators.effective_balance(0), 31_000_000_000, "validators");
+    assert_eq!(rv.epoch.state().deposit_balance_to_consume, 55, "epoch scalars");
+    assert_eq!(rv.longtail.historical_summaries_len(), 1, "historical summaries");
+    assert_eq!(
+        rv.longtail.historical_summary(0).unwrap().block_summary_root,
+        [0xB5; 32],
+        "historical summaries"
+    );
+
+    // Reload must match the live head field-by-field, so a divergence names
+    // the guilty field instead of "root mismatch".
+    const FIELD_NAMES: [&str; 38] = [
+        "genesis_time",
+        "genesis_validators_root",
+        "slot",
+        "fork",
+        "latest_block_header",
+        "block_roots",
+        "state_roots",
+        "historical_roots",
+        "eth1_data",
+        "eth1_data_votes",
+        "eth1_deposit_index",
+        "validators",
+        "balances",
+        "randao_mixes",
+        "slashings",
+        "previous_epoch_participation",
+        "current_epoch_participation",
+        "justification_bits",
+        "previous_justified_checkpoint",
+        "current_justified_checkpoint",
+        "finalized_checkpoint",
+        "inactivity_scores",
+        "current_sync_committee",
+        "next_sync_committee",
+        "latest_execution_payload_header",
+        "next_withdrawal_index",
+        "next_withdrawal_validator_index",
+        "historical_summaries",
+        "deposit_requests_start_index",
+        "deposit_balance_to_consume",
+        "exit_balance_to_consume",
+        "earliest_exit_epoch",
+        "consolidation_balance_to_consume",
+        "earliest_consolidation_epoch",
+        "pending_deposits",
+        "pending_partial_withdrawals",
+        "pending_consolidations",
+        "proposer_lookahead",
+    ];
+    let live = tile.state.read_view(tile.last_applied);
+    let field_roots = |v: &StateReadView| {
+        let eph = ssz_hash::hash_execution_payload_header(
+            &v.slot.state().latest_execution_payload_header,
+        );
+        ssz_hash::hash_common_fields(v, eph)
+    };
+    for ((name, reload_root), live_root) in
+        FIELD_NAMES.iter().zip(field_roots(&rv)).zip(field_roots(&live))
+    {
+        assert_eq!(
+            reload_root, live_root,
+            "persisted checkpoint diverges from the live state at `{name}`"
+        );
+    }
 }
 
 // ── fork_digest (standalone `compute_fork_digest`, no tile state) ──

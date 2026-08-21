@@ -7,7 +7,10 @@ use crate::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
         ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
     },
-    merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_vector, merkleize, uint64_chunk},
+    merkle::{
+        MerkleStack, ZERO_HASHES, const_hash_concat, hash_concat, hash_fixed_bytes, hash_vector,
+        merkleize, uint64_chunk,
+    },
 };
 
 const EPH_FIXED_PART: usize = 584;
@@ -197,7 +200,7 @@ impl Default for Immutable {
             genesis_time: 0,
             genesis_validators_root: B256::default(),
             historical_roots: Box::default(),
-            historical_roots_hash: B256::default(),
+            historical_roots_hash: const { MerkleStack::empty_list_root(HISTORICAL_ROOTS_LIMIT) },
             genesis_fork_version: Version::default(),
             capella_fork_version: Version::default(),
             gloas_fork_version: GLOAS_FORK_VERSION,
@@ -398,6 +401,15 @@ impl SyncCommittee {
             self.pubkeys.iter().map(|pk| hash_fixed_bytes(pk)),
         );
         hash_concat(&pubkeys_root, &hash_fixed_bytes(&self.aggregate_pubkey))
+    }
+
+    /// `Self::default().hash_root()` at compile time — the all-zero committee
+    /// is zero subtrees: a zero pubkey merkleizes to `ZERO_HASHES[1]`, the
+    /// 512-vector of those to `ZERO_HASHES[1 + 9]`. A default-built state must
+    /// hash identically to its own decomposed encode.
+    pub const fn default_root() -> B256 {
+        const PUBKEYS_DEPTH: usize = SYNC_COMMITTEE_SIZE.trailing_zeros() as usize;
+        const_hash_concat(&ZERO_HASHES[1 + PUBKEYS_DEPTH], &ZERO_HASHES[1])
     }
 }
 

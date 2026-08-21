@@ -171,6 +171,7 @@ impl BeaconStateTile {
         bs.previous_participation.finalize(&promoted, survivors, |s| s.previous_participation_idx);
         bs.current_participation.finalize(&promoted, survivors, |s| s.current_participation_idx);
         bs.inactivity.finalize(&promoted, survivors, |s| s.inactivity_idx);
+        bs.slashings.finalize(&promoted, survivors, |s| s.slashings_idx);
         bs.block_roots.finalize(&promoted, survivors, |s| s.block_roots_idx);
         bs.state_roots.finalize(&promoted, survivors, |s| s.state_roots_idx);
         bs.randao_mixes.finalize(&promoted, survivors, |s| s.randao_mixes_idx);

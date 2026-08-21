@@ -348,34 +348,57 @@ mod tests {
     #[test]
     fn stress_reported_loss_accounts_for_all_production() {
         let _guard = ShmemGuard::new();
-        let reader = InProcessReader::start();
 
         const CALLS: u64 = 10_000_000;
-        std::thread::Builder::new()
-            .name("stress-producer".to_owned())
-            .spawn(|| {
-                for _ in 0..CALLS {
-                    tick();
-                }
-            })
-            .unwrap()
-            .join()
-            .unwrap();
+        // Whether the producer laps the ring is a scheduling race — on a
+        // loaded machine the reader can keep pace. Retry until an overrun
+        // happens, scoping every metric to that attempt's uniquely named
+        // producer thread so lossless attempts can't leak into the accounting.
+        const ATTEMPTS: usize = 5;
+        let mut lossy_run = None;
+        for attempt in 0..ATTEMPTS {
+            let reader = InProcessReader::start();
+            let producer = format!("stress-producer-{attempt}");
+            std::thread::Builder::new()
+                .name(producer.clone())
+                .spawn(|| {
+                    for _ in 0..CALLS {
+                        tick();
+                    }
+                })
+                .unwrap()
+                .join()
+                .unwrap();
 
-        let stats = fold_stats(&reader.collect());
-        assert!(stats.missed_events(), "overrun must be reported");
+            let stats = fold_stats(&reader.collect());
+            if stats.threads.iter().any(|t| t.name == producer && t.loss.is_lossy()) {
+                lossy_run = Some((stats, producer));
+                break;
+            }
+        }
+        let (stats, producer) =
+            lossy_run.expect("no attempt overran the ring despite lapping it many times over");
 
         let report: serde_json::Value = serde_json::from_str(&stats.to_json("stress")).unwrap();
         let thread = report["threads"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|t| t["thread"] == "stress-producer")
+            .find(|t| t["thread"] == producer.as_str())
             .expect("producer thread reported");
         let missed = thread["missed_events"].as_u64().unwrap();
         let dropped = thread["dropped_marks"].as_u64().unwrap();
-        let (_, retained) = stats.aggregate_leaf("tick");
-        let (_, gaps) = stats.aggregate_leaf("<missed>");
+
+        let paths = &stats.threads.iter().find(|t| t.name == producer).unwrap().paths;
+        let leaf_count = |leaf: &str| {
+            paths
+                .iter()
+                .filter(|s| s.path.last().is_some_and(|id| stats.meta.names[id].ends_with(leaf)))
+                .map(|s| s.metrics.count)
+                .sum::<u64>()
+        };
+        let retained = leaf_count("tick");
+        let gaps = leaf_count("<missed>");
 
         let produced_marks = 2 * CALLS;
         println!(

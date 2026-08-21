@@ -3,7 +3,9 @@
 
 use flux::utils::ArrayVec;
 
-use super::hash::{B256, ZERO_HASHES, ZERO_HASHES_LEN, hash_concat, mix_in_length};
+use super::hash::{
+    B256, ZERO_HASHES, ZERO_HASHES_LEN, const_hash_concat, hash_concat, mix_in_length,
+};
 
 #[inline]
 const fn depth_for(capacity: usize) -> u8 {
@@ -30,6 +32,12 @@ impl MerkleStack {
     /// with a static capacity get a compile-time constant.
     pub const fn empty_root(capacity: usize) -> B256 {
         ZERO_HASHES[depth_for(capacity) as usize]
+    }
+
+    /// `hash_tree_root` of an empty `List[_, capacity]`:
+    /// [`empty_root`](Self::empty_root) with the zero length mixed in.
+    pub const fn empty_list_root(capacity: usize) -> B256 {
+        const_hash_concat(&Self::empty_root(capacity), &[0u8; 32])
     }
 
     /// Absorb a leaf, combining upward with any left-sibling already parked at

@@ -37,13 +37,24 @@ impl Clone for SyncCommittees {
 
 impl Default for SyncCommittees {
     fn default() -> Self {
+        let root = const { SyncCommittee::default_root() };
         Self {
             current: SyncCommittee::default(),
             next: SyncCommittee::default(),
             indices: [0; SYNC_COMMITTEE_SIZE],
-            current_root: B256::default(),
-            next_root: B256::default(),
+            current_root: root,
+            next_root: root,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncCommittee;
+
+    #[test]
+    fn default_committee_root_matches_recompute() {
+        assert_eq!(SyncCommittee::default_root(), SyncCommittee::default().hash_root());
     }
 }
 
