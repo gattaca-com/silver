@@ -8,17 +8,17 @@ version.workspace = true
 [dependencies]
 flux.workspace = true
 silver_beacon_api.workspace = true
+silver_beacon_state_data.workspace = true
 silver_common.workspace = true
+silver_config.workspace = true
 silver_engine_api.workspace = true
+silver_httpcore.workspace = true
 silver_peer.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
 serde_json.workspace = true
-silver_beacon_state_data.workspace = true
-silver_config.workspace = true
 silver_engine_api = { workspace = true, features = ["test-el"] }
-silver_httpcore.workspace = true
 tempfile = "3"
 
 [lints]

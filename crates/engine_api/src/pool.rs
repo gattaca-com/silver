@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mio::{Events, Interest, Poll, Token};
-use silver_httpcore::{ClientConnection, Stream, frame_request};
+use mio::{Events, Interest, Registry, Token, event::Event};
+use silver_httpcore::{ClientConnection, Stream, TokenRange, frame_request};
 
 use crate::{EngineError, JwtSecret};
 
@@ -18,6 +18,11 @@ const READ_BUF_CAPACITY: usize = 10 * 1024 * 1024;
 // Sized for the largest expected outgoing request: newPayload with a full
 // block (~30M gas of transactions, hex-encoded in JSON) plus HTTP headers.
 const WRITE_BUF_CAPACITY: usize = 10 * 1024 * 1024;
+
+/// The first-run healthcheck trio issues three requests against one
+/// `has_capacity` gate, so the pool can exceed `max_connections` by two
+/// connections, once.
+pub(crate) const HEALTHCHECK_OVERSHOOT: usize = 2;
 
 #[derive(Clone)]
 pub(crate) enum Endpoint {
@@ -85,7 +90,7 @@ impl PooledConnection {
         self.request_started.is_some_and(|started| now.duration_since(started) > timeout)
     }
 
-    fn enqueue(&mut self, rpc_id: u64, body: &[u8], poll: &mut Poll) {
+    fn enqueue(&mut self, rpc_id: u64, body: &[u8], registry: &Registry) {
         debug_assert!(self.is_free(), "enqueue on busy connection");
         let out = self.machine.begin_request();
         frame_request(out, &self.host, body, Some(self.jwt.bearer_token()), true);
@@ -93,79 +98,73 @@ impl PooledConnection {
         self.request_started = Some(Instant::now());
 
         match self.conn {
-            Conn::Disconnected => self.connect(poll),
-            Conn::Connected(_) => self.update_interest(poll),
+            Conn::Disconnected => self.connect(registry),
+            Conn::Connected(_) => self.update_interest(registry),
             Conn::Connecting(_) => {}
         }
     }
 
-    fn handle_events<F>(&mut self, events: &Events, poll: &mut Poll, on_complete: &mut F)
+    fn handle_event<F>(&mut self, event: &Event, registry: &Registry, on_complete: &mut F)
     where
         F: FnMut(u64, Result<&mut [u8], EngineError>),
     {
-        for event in events.iter() {
-            if event.token() != self.token {
-                continue;
-            }
-            match &self.conn {
-                Conn::Disconnected => {}
-                Conn::Connecting(stream) => {
-                    if event.is_error() || event.is_read_closed() || event.is_write_closed() {
-                        self.fail(poll, on_complete, "connect failed");
-                        break;
-                    }
-                    if event.is_writable() {
-                        if stream.connect_complete().is_ok() {
-                            let Conn::Connecting(stream) =
-                                std::mem::replace(&mut self.conn, Conn::Disconnected)
-                            else {
-                                unreachable!()
-                            };
-                            self.conn = Conn::Connected(stream);
-                            self.update_interest(poll);
-                        } else {
-                            self.fail(poll, on_complete, "connect failed");
-                            break;
-                        }
+        debug_assert_eq!(event.token(), self.token, "event routed to the wrong connection");
+        match &self.conn {
+            Conn::Disconnected => {}
+            Conn::Connecting(stream) => {
+                if event.is_error() || event.is_read_closed() || event.is_write_closed() {
+                    self.fail(registry, on_complete, "connect failed");
+                    return;
+                }
+                if event.is_writable() {
+                    if stream.connect_complete().is_ok() {
+                        let Conn::Connecting(stream) =
+                            std::mem::replace(&mut self.conn, Conn::Disconnected)
+                        else {
+                            unreachable!()
+                        };
+                        self.conn = Conn::Connected(stream);
+                        self.update_interest(registry);
+                    } else {
+                        self.fail(registry, on_complete, "connect failed");
                     }
                 }
-                Conn::Connected(_) => {
-                    if event.is_error() {
-                        self.fail(poll, on_complete, "connection error");
-                        break;
+            }
+            Conn::Connected(_) => {
+                if event.is_error() {
+                    self.fail(registry, on_complete, "connection error");
+                    return;
+                }
+                if event.is_writable() {
+                    if let Err(e) = self.do_write() {
+                        let msg = e.to_string();
+                        self.fail(registry, on_complete, &msg);
+                        return;
                     }
-                    if event.is_writable() {
-                        if let Err(e) = self.do_write() {
-                            let msg = e.to_string();
-                            self.fail(poll, on_complete, &msg);
-                            break;
-                        }
-                        self.update_interest(poll);
+                    self.update_interest(registry);
+                }
+                if event.is_readable() {
+                    // Drain data before checking is_read_closed: when the
+                    // remote sends a response + FIN in one exchange
+                    // (EPOLLIN|EPOLLRDHUP), we must read the response first.
+                    // do_read returns Err on EOF, so the return below covers
+                    // that close path too.
+                    if let Err(e) = self.do_read(on_complete) {
+                        let msg = e.to_string();
+                        self.fail(registry, on_complete, &msg);
+                        return;
                     }
-                    if event.is_readable() {
-                        // Drain data before checking is_read_closed: when the
-                        // remote sends a response + FIN in one exchange
-                        // (EPOLLIN|EPOLLRDHUP), we must read the response
-                        // first. do_read returns Err on EOF, so the break
-                        // below covers that close path too.
-                        if let Err(e) = self.do_read(on_complete) {
-                            let msg = e.to_string();
-                            self.fail(poll, on_complete, &msg);
-                            break;
-                        }
-                    }
-                    if event.is_read_closed() {
-                        // Remote closed with no (more) data — in_flight will
-                        // never get a response.
-                        self.fail(poll, on_complete, "connection closed");
-                        break;
-                    }
+                }
+                if event.is_read_closed() {
+                    // Remote closed with no (more) data — in_flight will
+                    // never get a response.
+                    self.fail(registry, on_complete, "connection closed");
                 }
             }
         }
     }
 
-    fn connect(&mut self, poll: &mut Poll) {
+    fn connect(&mut self, registry: &Registry) {
         let stream = match &self.endpoint {
             Endpoint::Http(endpoint) => {
                 let addr = if let Some(a) = self.addr {
@@ -188,7 +187,7 @@ impl PooledConnection {
         };
         match stream {
             Ok(mut stream) => {
-                if poll.registry().register(&mut stream, self.token, Interest::WRITABLE).is_ok() {
+                if registry.register(&mut stream, self.token, Interest::WRITABLE).is_ok() {
                     self.conn = Conn::Connecting(stream);
                 }
             }
@@ -242,7 +241,7 @@ impl PooledConnection {
         Ok(())
     }
 
-    fn fail<F>(&mut self, poll: &mut Poll, on_complete: &mut F, msg: &str)
+    fn fail<F>(&mut self, registry: &Registry, on_complete: &mut F, msg: &str)
     where
         F: FnMut(u64, Result<&mut [u8], EngineError>),
     {
@@ -258,11 +257,11 @@ impl PooledConnection {
         self.machine.reset();
         let old = std::mem::replace(&mut self.conn, Conn::Disconnected);
         if let Conn::Connecting(mut stream) | Conn::Connected(mut stream) = old {
-            let _ = poll.registry().deregister(&mut stream);
+            let _ = registry.deregister(&mut stream);
         }
     }
 
-    fn update_interest(&mut self, poll: &mut Poll) {
+    fn update_interest(&mut self, registry: &Registry) {
         let interest = if self.pending_id.is_none() {
             Interest::READABLE
         } else {
@@ -272,7 +271,7 @@ impl PooledConnection {
             Conn::Connecting(s) | Conn::Connected(s) => s,
             Conn::Disconnected => return,
         };
-        let _ = poll.registry().reregister(stream, self.token, interest);
+        let _ = registry.reregister(stream, self.token, interest);
     }
 }
 
@@ -288,6 +287,7 @@ pub(crate) struct HttpPool {
     connections: Vec<PooledConnection>,
     endpoint: Endpoint,
     jwt: JwtSecret,
+    tokens: TokenRange,
     max_connections: usize,
     request_timeout: Duration,
 }
@@ -296,37 +296,63 @@ impl HttpPool {
     pub(crate) fn new(
         endpoint: Endpoint,
         jwt: JwtSecret,
+        tokens: TokenRange,
         max_connections: usize,
         request_timeout: Duration,
     ) -> Self {
-        let connections = vec![PooledConnection::new(endpoint.clone(), jwt.clone(), Token(0))];
-        Self { connections, endpoint, jwt, max_connections, request_timeout }
+        let tokens_needed = max_connections.checked_add(HEALTHCHECK_OVERSHOOT);
+        assert!(
+            tokens_needed.is_some_and(|needed| needed <= tokens.span()),
+            "engine api needs a token per pooled connection: a cap of {max_connections} plus the \
+             healthcheck's overshoot of {HEALTHCHECK_OVERSHOOT} does not fit a span of {}",
+            tokens.span()
+        );
+        let connections = vec![PooledConnection::new(endpoint.clone(), jwt.clone(), tokens.at(0))];
+        Self { connections, endpoint, jwt, tokens, max_connections, request_timeout }
     }
 
     /// `enqueue` never refuses work; every caller gates on this before
-    /// submitting. The first-run healthcheck trio issues three requests
-    /// against one gate check, so the pool can overshoot `max_connections`
-    /// by at most two connections, once.
+    /// submitting.
     pub(crate) fn has_capacity(&self) -> bool {
         self.connections.iter().any(PooledConnection::is_free) ||
             self.connections.len() < self.max_connections
     }
 
-    pub(crate) fn enqueue(&mut self, rpc_id: u64, body: &[u8], poll: &mut Poll) {
+    pub(crate) fn enqueue(&mut self, rpc_id: u64, body: &[u8], registry: &Registry) {
         if let Some(conn) = self.connections.iter_mut().find(|c| c.is_free()) {
-            conn.enqueue(rpc_id, body, poll);
+            conn.enqueue(rpc_id, body, registry);
         } else {
             let mut new_conn = PooledConnection::new(
                 self.endpoint.clone(),
                 self.jwt.clone(),
-                Token(self.connections.len()),
+                self.tokens.at(self.connections.len()),
             );
-            new_conn.enqueue(rpc_id, body, poll);
+            new_conn.enqueue(rpc_id, body, registry);
             self.connections.push(new_conn);
         }
     }
 
-    pub(crate) fn poll_events<F>(&mut self, events: &Events, poll: &mut Poll, on_complete: &mut F)
+    pub(crate) fn dispatch_events<F>(
+        &mut self,
+        events: &Events,
+        registry: &Registry,
+        on_complete: &mut F,
+    ) where
+        F: FnMut(u64, Result<&mut [u8], EngineError>),
+    {
+        self.fail_stranded_and_expired(registry, on_complete);
+
+        // The batch is the whole loop's, and a pooled connection's token is
+        // `tokens.at(its index)`, so one pass indexing by offset costs
+        // O(events) where a pass per connection costs O(connections × events).
+        for event in events.iter() {
+            let Some(index) = self.tokens.offset_of(event.token()) else { continue };
+            let Some(conn) = self.connections.get_mut(index) else { continue };
+            conn.handle_event(event, registry, on_complete);
+        }
+    }
+
+    fn fail_stranded_and_expired<F>(&mut self, registry: &Registry, on_complete: &mut F)
     where
         F: FnMut(u64, Result<&mut [u8], EngineError>),
     {
@@ -336,31 +362,66 @@ impl HttpPool {
             // even start (resolve/connect/register error): no event will ever
             // arrive for it, so fail the rpc here or it is stranded forever.
             if matches!(conn.conn, Conn::Disconnected) && conn.pending_id.is_some() {
-                conn.fail(poll, on_complete, "connect failed to start");
+                conn.fail(registry, on_complete, "connect failed to start");
             } else if conn.expired(now, self.request_timeout) {
-                conn.fail(poll, on_complete, "request timed out");
+                conn.fail(registry, on_complete, "request timed out");
             }
-            conn.handle_events(events, poll, on_complete);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::net::UnixListener;
+    use std::{os::unix::net::UnixListener, path::Path};
 
+    use silver_httpcore::Readiness;
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
         EngineClient,
-        client::{ReqKind, poll, send_fcu},
+        client::{ReqKind, send_fcu},
         test_el::{FCU_VALID_RESULT, FakeEl, write_jwt},
         types::ForkchoiceState,
     };
 
     /// Longer than any test's 10 s spin deadline: the sweep never fires.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// The sole tenant of its readiness loop, which the tile shares with the
+    /// beacon-api server in production and each test here owns for itself.
+    struct Client {
+        readiness: Readiness,
+        engine: EngineClient,
+    }
+
+    impl Client {
+        fn uds(
+            socket: &Path,
+            jwt: &Path,
+            max_connections: usize,
+            request_timeout: Duration,
+        ) -> Self {
+            let readiness = Readiness::new(16);
+            let engine = EngineClient::new_uds(
+                readiness.registry(),
+                TokenRange::whole(),
+                socket,
+                jwt.to_str().unwrap(),
+                max_connections,
+                request_timeout,
+            );
+            Self { readiness, engine }
+        }
+
+        fn poll<F>(&mut self, on_complete: F)
+        where
+            F: FnMut(ReqKind, Result<&mut [u8], EngineError>),
+        {
+            self.readiness.wait(Duration::ZERO);
+            self.engine.dispatch(self.readiness.events(), on_complete);
+        }
+    }
 
     fn fcu_state(byte: u8) -> ForkchoiceState {
         ForkchoiceState {
@@ -385,15 +446,14 @@ mod tests {
         let socket = dir.path().join("engine.sock");
         let mut el = FakeEl::uds(&socket);
 
-        let mut client =
-            EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 32, LONG_TIMEOUT);
+        let mut client = Client::uds(&socket, &jwt_path, 32, LONG_TIMEOUT);
         let block_root = [7u8; 32];
-        send_fcu(&mut client, block_root, fcu_state(1), None);
+        send_fcu(&mut client.engine, block_root, fcu_state(1), None);
 
         let mut responded = false;
         let mut completed: Option<([u8; 32], Vec<u8>)> = None;
         spin_until("fcu round trip over uds", || {
-            poll(&mut client, |kind, response| {
+            client.poll(|kind, response| {
                 let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
                 completed = Some((root, response.expect("fcu response").to_vec()));
             });
@@ -426,15 +486,14 @@ mod tests {
 
         // max_connections = 1: after the failure, has_capacity() can only be
         // true again if the zombie connection was actually freed.
-        let mut client =
-            EngineClient::new_uds(&missing_socket, jwt_path.to_str().unwrap(), 1, LONG_TIMEOUT);
+        let mut client = Client::uds(&missing_socket, &jwt_path, 1, LONG_TIMEOUT);
         let block_root = [3u8; 32];
-        send_fcu(&mut client, block_root, fcu_state(3), None);
-        assert!(!client.has_capacity(), "request occupies the only connection");
+        send_fcu(&mut client.engine, block_root, fcu_state(3), None);
+        assert!(!client.engine.has_capacity(), "request occupies the only connection");
 
         let mut failed: Option<[u8; 32]> = None;
         spin_until("connect failure surfaces as rpc error", || {
-            poll(&mut client, |kind, response| {
+            client.poll(|kind, response| {
                 let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
                 assert!(response.is_err(), "unstartable connect must fail the rpc");
                 failed = Some(root);
@@ -443,7 +502,7 @@ mod tests {
         });
 
         assert_eq!(failed.unwrap(), block_root);
-        assert!(client.has_capacity(), "failed connection must be reusable");
+        assert!(client.engine.has_capacity(), "failed connection must be reusable");
     }
 
     #[test]
@@ -453,15 +512,14 @@ mod tests {
         let socket = dir.path().join("engine.sock");
         let mut el = FakeEl::uds(&socket);
 
-        let mut client =
-            EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 32, LONG_TIMEOUT);
+        let mut client = Client::uds(&socket, &jwt_path, 32, LONG_TIMEOUT);
         let block_root = [9u8; 32];
-        send_fcu(&mut client, block_root, fcu_state(2), None);
+        send_fcu(&mut client.engine, block_root, fcu_state(2), None);
 
         let mut request_seen = false;
         let mut failure: Option<[u8; 32]> = None;
         spin_until("in-flight request failed on connection close", || {
-            poll(&mut client, |kind, response| {
+            client.poll(|kind, response| {
                 let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
                 assert!(response.is_err(), "closed connection must fail the rpc");
                 failure = Some(root);
@@ -484,17 +542,12 @@ mod tests {
         let socket = dir.path().join("engine.sock");
         let mut el = FakeEl::uds(&socket);
 
-        let mut client = EngineClient::new_uds(
-            &socket,
-            jwt_path.to_str().unwrap(),
-            1,
-            Duration::from_millis(200),
-        );
-        send_fcu(&mut client, [1u8; 32], fcu_state(1), None);
+        let mut client = Client::uds(&socket, &jwt_path, 1, Duration::from_millis(200));
+        send_fcu(&mut client.engine, [1u8; 32], fcu_state(1), None);
 
         let mut timed_out: Option<[u8; 32]> = None;
         spin_until("unanswered request times out", || {
-            poll(&mut client, |kind, response| {
+            client.poll(|kind, response| {
                 let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
                 assert!(response.is_err(), "unanswered request must fail the rpc");
                 timed_out = Some(root);
@@ -505,13 +558,13 @@ mod tests {
 
         assert_eq!(timed_out.unwrap(), [1u8; 32]);
         assert_eq!(el.requests.len(), 1, "the EL received the request it never answered");
-        assert!(client.has_capacity(), "timed-out connection must be reusable");
+        assert!(client.engine.has_capacity(), "timed-out connection must be reusable");
 
-        send_fcu(&mut client, [2u8; 32], fcu_state(2), None);
+        send_fcu(&mut client.engine, [2u8; 32], fcu_state(2), None);
         let mut answered = false;
         let mut completed: Option<[u8; 32]> = None;
         spin_until("next request served on the freed connection", || {
-            poll(&mut client, |kind, response| {
+            client.poll(|kind, response| {
                 let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
                 assert!(response.is_ok(), "answered request must succeed");
                 completed = Some(root);
@@ -533,15 +586,14 @@ mod tests {
         let socket = dir.path().join("engine.sock");
         let mut el = FakeEl::uds(&socket);
 
-        let mut client =
-            EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 1, Duration::from_secs(2));
-        send_fcu(&mut client, [4u8; 32], fcu_state(4), None);
+        let mut client = Client::uds(&socket, &jwt_path, 1, Duration::from_secs(2));
+        send_fcu(&mut client.engine, [4u8; 32], fcu_state(4), None);
 
         let answer_at = Instant::now() + Duration::from_millis(400);
         let mut answered = false;
         let mut completed: Option<[u8; 32]> = None;
         spin_until("slow but in-deadline response succeeds", || {
-            poll(&mut client, |kind, response| {
+            client.poll(|kind, response| {
                 let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
                 assert!(response.is_ok(), "response inside the deadline must not fail");
                 completed = Some(root);
@@ -556,6 +608,23 @@ mod tests {
         assert_eq!(completed.unwrap(), [4u8; 32]);
     }
 
+    /// A range with no room for the healthcheck's overshoot would have the
+    /// pool allocating into a neighbouring tenant's tokens, so it is refused
+    /// at construction.
+    #[test]
+    #[should_panic(expected = "does not fit a span")]
+    fn a_range_too_small_for_the_connection_cap_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let jwt = JwtSecret::from_file(write_jwt(dir.path()).to_str().unwrap()).unwrap();
+        HttpPool::new(
+            Endpoint::Uds(dir.path().join("engine.sock")),
+            jwt,
+            TokenRange::new(0, 8),
+            8,
+            LONG_TIMEOUT,
+        );
+    }
+
     /// A blackholed connect (SYN dropped) is not cheaply reproducible in a unit
     /// test, so the pool is driven directly: with no events ever delivered the
     /// connection stays in `Connecting`, which is the state such a connect is
@@ -568,17 +637,22 @@ mod tests {
         let _listener = UnixListener::bind(&socket).unwrap();
 
         let jwt = JwtSecret::from_file(jwt_path.to_str().unwrap()).unwrap();
-        let mut pool = HttpPool::new(Endpoint::Uds(socket), jwt, 1, Duration::from_millis(100));
-        let mut poll = Poll::new().unwrap();
-        let events = Events::with_capacity(1);
+        let mut pool = HttpPool::new(
+            Endpoint::Uds(socket),
+            jwt,
+            TokenRange::whole(),
+            1,
+            Duration::from_millis(100),
+        );
+        let readiness = Readiness::new(1);
 
-        pool.enqueue(7, b"{}", &mut poll);
+        pool.enqueue(7, b"{}", readiness.registry());
         assert!(matches!(pool.connections[0].conn, Conn::Connecting(_)));
         assert!(!pool.has_capacity());
 
         std::thread::sleep(Duration::from_millis(150));
         let mut failed: Option<(u64, bool)> = None;
-        pool.poll_events(&events, &mut poll, &mut |rpc_id, response| {
+        pool.dispatch_events(readiness.events(), readiness.registry(), &mut |rpc_id, response| {
             failed = Some((rpc_id, response.is_err()));
         });
 

@@ -1,14 +1,17 @@
 use std::time::{Duration, Instant};
 
 use flux::spine::SpineAdapter;
+use mio::{Events, Registry};
 use silver_common::{
     ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TProducer, TRandomAccess,
 };
 use silver_config::EngineConfig;
+use silver_httpcore::TokenRange;
 
 use crate::{
     EngineClient,
-    client::{ReqKind, exchange_capabilities, get_client_version, get_sync_status, poll},
+    client::{ReqKind, exchange_capabilities, get_client_version, get_sync_status},
+    pool::HEALTHCHECK_OVERSHOOT,
     req_handlers::{handle_request, handle_request_no_el},
     resp_handlers::*,
 };
@@ -33,7 +36,15 @@ pub struct EngineApi {
 }
 
 impl EngineApi {
+    /// Sockets the pool can hold registered at once: one per pooled
+    /// connection, plus the healthcheck's overshoot of the cap.
+    pub const fn max_sockets(max_connections: usize) -> usize {
+        max_connections + HEALTHCHECK_OVERSHOOT
+    }
+
     pub fn new(
+        registry: &Registry,
+        tokens: TokenRange,
         config: EngineConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
@@ -44,6 +55,8 @@ impl EngineApi {
             None
         } else {
             Some(EngineClient::new(
+                registry,
+                tokens,
                 &config.execution_endpoint,
                 &config.jwt_secret,
                 config.max_connections,
@@ -107,7 +120,7 @@ impl EngineApi {
         }
     }
 
-    pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>, events: &Events) {
         let mut negotiated_get_payload_method: Option<&'static str> = None;
 
         {
@@ -130,7 +143,7 @@ impl EngineApi {
                 run_healthcheck(client, first_run, healthcheck_pending, healthcheck_deadline);
             }
 
-            poll(client, |req_kind, response| match req_kind {
+            client.dispatch(events, |req_kind, response| match req_kind {
                 ReqKind::Capabilities => {
                     negotiated_get_payload_method = Some(handle_capabilities_response(response));
                 }

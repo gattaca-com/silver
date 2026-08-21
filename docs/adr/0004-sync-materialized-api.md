@@ -46,7 +46,9 @@ Amended 2026-08-21: `poll(Duration::ZERO)` is the busy-spin build's mechanism, n
 the decision. Under `flux/park` a tile that reports no work parks unless it has
 registered an `mio::Waker` with the flux work signal, and that signal fires on
 spine publishes alone, so a parked tile would sleep through an inbound request. A
-park build therefore wants the waker and a non-zero timeout, which in turn wants
-this tile's two `Poll`s — the beacon-api server's and the engine-api client's — to
-become one readiness loop, since blocking in either starves the other. The
-interleaving above follows from that one loop, not from the timeout being zero.
+park build therefore needs the waker and a non-zero timeout, and both need one
+readiness loop, since blocking in either of two would starve the other. The tile
+serves the beacon-api server and the engine-api client from a single `Poll`, each
+registering through its own share of the token space, so the interleaving above
+follows from that loop rather than from the timeout being zero. The waker and the
+timeout are what remain.

@@ -4,10 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mio::{Events, Interest, Poll, Token};
+use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{Enr, Identify, Keypair};
-use silver_httpcore::{AfterResponse, Bind, Listener, ParsedRequest, ServerConnection, Stream};
+use silver_httpcore::{
+    AfterResponse, Bind, Listener, ParsedRequest, ServerConnection, Stream, TokenRange,
+};
 
 use crate::{
     NodeStatus,
@@ -65,6 +67,95 @@ impl Connection {
             None => quiet_for > idle_timeout,
         }
     }
+
+    fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
+        &mut self,
+        registry: &Registry,
+        event: &Event,
+        now: Instant,
+        request_handler: &F,
+    ) -> io::Result<bool> {
+        if self.linger_since.is_some() {
+            return self.drain_discarded(now);
+        }
+
+        if event.is_readable() {
+            // A full buffer is not yet a verdict: a body declared past the cap
+            // is answered from headers already buffered. Exhaustion ends the
+            // connection only once there is nothing left to answer with.
+            let mut exhausted = None;
+            loop {
+                let space = match self.http.read_space() {
+                    Ok(space) => space,
+                    Err(e) => {
+                        exhausted = Some(e);
+                        break;
+                    }
+                };
+                match self.stream.read(space) {
+                    Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                    Ok(n) => {
+                        self.last_activity = now;
+                        self.http.commit_read(n);
+                    }
+                    Err(e) if would_block(&e) => break,
+                    Err(e) if interrupted(&e) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+
+            if self.http.dispatch(request_handler) {
+                registry.reregister(&mut self.stream, event.token(), Interest::WRITABLE)?;
+            } else if let Some(e) = exhausted {
+                return Err(e);
+            }
+            return Ok(false);
+        }
+
+        if event.is_writable() {
+            if !self.http.pending_write().is_empty() {
+                loop {
+                    match self.stream.write(self.http.pending_write()) {
+                        Ok(0) => {
+                            return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
+                        }
+                        Ok(n) => {
+                            self.last_activity = now;
+                            self.http.commit_write(n);
+                            if self.http.pending_write().is_empty() {
+                                break;
+                            }
+                        }
+                        Err(e) if would_block(&e) => return Ok(false),
+                        Err(e) if interrupted(&e) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                match self.http.after_response(request_handler) {
+                    AfterResponse::Close => return Ok(true),
+                    AfterResponse::Linger => {
+                        // The FIN tells the peer its answer is whole while the
+                        // socket stays readable, so a body still on its way is
+                        // drained instead of resetting the connection that
+                        // carried the answer.
+                        self.stream.shutdown_write()?;
+                        self.linger_since = Some(now);
+                        registry.reregister(&mut self.stream, event.token(), Interest::READABLE)?;
+                        return self.drain_discarded(now);
+                    }
+                    AfterResponse::ResponsePending => {
+                        registry.reregister(&mut self.stream, event.token(), Interest::WRITABLE)?
+                    }
+                    AfterResponse::AwaitRequest => {
+                        registry.reregister(&mut self.stream, event.token(), Interest::READABLE)?
+                    }
+                }
+            }
+            return Ok(false);
+        }
+
+        Ok(false)
+    }
 }
 
 /// Schedules the idle scan so that `pump` walks the connection map at most
@@ -91,13 +182,13 @@ impl IdleSweep {
 }
 
 pub struct BeaconApi {
-    poll: Poll,
-    events: Events,
+    registry: Registry,
+    tokens: TokenRange,
     listeners: Vec<Listener>,
     max_connections: usize,
     idle: IdleSweep,
     linger: Linger,
-    current_token: Token,
+    next_connection_offset: usize,
     connections: HashMap<Token, Connection>,
     router: Router,
     ctx: ApiCtx,
@@ -106,6 +197,8 @@ pub struct BeaconApi {
 impl BeaconApi {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        registry: &Registry,
+        tokens: TokenRange,
         binds: &[Bind],
         max_connections: usize,
         idle_timeout: Duration,
@@ -116,25 +209,34 @@ impl BeaconApi {
         state: BeaconStateReader,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
-        let poll = Poll::new().unwrap();
+        let tokens_needed = binds.len().checked_add(max_connections);
+        assert!(
+            tokens_needed.is_some_and(|needed| needed <= tokens.span()),
+            "beacon api needs a token per listener and per connection: {} listeners plus a cap \
+             of {max_connections} does not fit a span of {}",
+            binds.len(),
+            tokens.span()
+        );
+
+        let registry = registry.try_clone().expect("mio Registry::try_clone failed");
         let listeners = binds
             .iter()
             .enumerate()
             .map(|(index, bind)| {
                 let mut listener = Listener::bind(bind)
                     .unwrap_or_else(|e| panic!("beacon api bind {bind:?}: {e}"));
-                poll.registry().register(&mut listener, Token(index), Interest::READABLE).unwrap();
+                registry.register(&mut listener, tokens.at(index), Interest::READABLE).unwrap();
                 listener
             })
             .collect::<Vec<_>>();
 
         Self {
-            poll,
-            events: Events::with_capacity(1024),
+            registry,
+            tokens,
             max_connections,
             idle: IdleSweep::new(idle_timeout),
             linger: Linger::default(),
-            current_token: Token(listeners.len()),
+            next_connection_offset: listeners.len(),
             listeners,
             connections: HashMap::new(),
             router: Router::new(ROUTES),
@@ -151,64 +253,19 @@ impl BeaconApi {
         &mut self.ctx.node_status
     }
 
-    pub fn pump(&mut self) -> bool {
-        self.poll.poll(&mut self.events, Some(Duration::ZERO)).unwrap();
+    pub fn pump(&mut self, events: &Events) -> bool {
         let now = Instant::now();
 
         let mut did_work = false;
-        for event in &self.events {
-            match self.listeners.get(event.token().0) {
-                Some(listener) => loop {
-                    let mut stream = match listener.accept() {
-                        Ok(stream) => stream,
-                        Err(e) if would_block(&e) => break,
-                        Err(e) => {
-                            tracing::warn!("accept failed: {e}");
-                            break;
-                        }
-                    };
-
-                    did_work = true;
-                    // Accept-and-close at the cap: with edge-triggered
-                    // registration, leaving the stream in the backlog would go
-                    // silent until the next SYN retriggers the listener.
-                    if self.connections.len() >= self.max_connections {
-                        tracing::warn!(
-                            "beacon api connection cap {} reached, dropping new connection",
-                            self.max_connections
-                        );
-                        continue;
-                    }
-                    let token = next(&mut self.current_token, self.listeners.len());
-                    self.poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
-                    self.connections.insert(token, Connection {
-                        stream,
-                        http: ServerConnection::new(),
-                        last_activity: now,
-                        linger_since: None,
-                    });
-                },
-                None => {
-                    let token = event.token();
-                    if let Some(conn) = self.connections.get_mut(&token) {
-                        did_work = true;
-                        match handle_event(self.poll.registry(), conn, event, now, &|req, out| {
-                            self.router.dispatch(req, &self.ctx, out)
-                        }) {
-                            Ok(true) => {
-                                let _ = self.poll.registry().deregister(&mut conn.stream);
-                                self.connections.remove(&token);
-                            }
-                            Ok(false) => {}
-                            Err(e) => {
-                                tracing::warn!("connection error: {e}");
-                                let _ = self.poll.registry().deregister(&mut conn.stream);
-                                self.connections.remove(&token);
-                            }
-                        };
-                    }
-                }
-            }
+        for event in events.iter() {
+            // The batch is the whole loop's; only tokens inside this server's
+            // range are its own sockets.
+            let Some(offset) = self.tokens.offset_of(event.token()) else { continue };
+            did_work |= if offset < self.listeners.len() {
+                self.accept_all(offset, now)
+            } else {
+                self.serve(event, now)
+            };
         }
 
         if self.idle.due(now) {
@@ -218,8 +275,83 @@ impl BeaconApi {
         did_work
     }
 
+    fn accept_all(&mut self, listener_index: usize, now: Instant) -> bool {
+        let mut did_work = false;
+        loop {
+            let mut stream = match self.listeners[listener_index].accept() {
+                Ok(stream) => stream,
+                Err(e) if would_block(&e) => break,
+                Err(e) => {
+                    tracing::warn!("accept failed: {e}");
+                    break;
+                }
+            };
+
+            did_work = true;
+            // Accept-and-close at the cap: with edge-triggered registration,
+            // leaving the stream in the backlog would go silent until the next
+            // SYN retriggers the listener.
+            if self.connections.len() >= self.max_connections {
+                tracing::warn!(
+                    "beacon api connection cap {} reached, dropping new connection",
+                    self.max_connections
+                );
+                continue;
+            }
+            let token = self.take_connection_token();
+            self.registry.register(&mut stream, token, Interest::READABLE).unwrap();
+            self.connections.insert(token, Connection {
+                stream,
+                http: ServerConnection::new(),
+                last_activity: now,
+                linger_since: None,
+            });
+        }
+        did_work
+    }
+
+    fn serve(&mut self, event: &Event, now: Instant) -> bool {
+        let token = event.token();
+        let Some(conn) = self.connections.get_mut(&token) else { return false };
+        match conn.handle_event(&self.registry, event, now, &|req, out| {
+            self.router.dispatch(req, &self.ctx, out)
+        }) {
+            Ok(true) => {
+                let _ = self.registry.deregister(&mut conn.stream);
+                self.connections.remove(&token);
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("connection error: {e}");
+                let _ = self.registry.deregister(&mut conn.stream);
+                self.connections.remove(&token);
+            }
+        };
+        true
+    }
+
+    /// Connections close in any order while the cursor only advances, so the
+    /// offset it lands on may still be held. The range holds every socket the
+    /// server can register at once, so probing forward ends on a free one.
+    fn take_connection_token(&mut self) -> Token {
+        assert!(
+            self.connections.len() < self.max_connections,
+            "beacon api connection cap {} must gate every token taken",
+            self.max_connections
+        );
+        loop {
+            let offset = self.next_connection_offset;
+            self.next_connection_offset =
+                if offset + 1 >= self.tokens.span() { self.listeners.len() } else { offset + 1 };
+            let token = self.tokens.at(offset);
+            if !self.connections.contains_key(&token) {
+                return token;
+            }
+        }
+    }
+
     fn close_expired(&mut self, now: Instant) -> bool {
-        let Self { connections, poll, idle, linger, .. } = self;
+        let Self { connections, registry, idle, linger, .. } = self;
         let before = connections.len();
         connections.retain(|_, conn| {
             if !conn.expired(now, idle.timeout, linger) {
@@ -235,109 +367,11 @@ impl BeaconApi {
                     now.duration_since(conn.last_activity)
                 ),
             }
-            let _ = poll.registry().deregister(&mut conn.stream);
+            let _ = registry.deregister(&mut conn.stream);
             false
         });
         connections.len() != before
     }
-}
-
-fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
-    registry: &mio::Registry,
-    conn: &mut Connection,
-    event: &mio::event::Event,
-    now: Instant,
-    request_handler: &F,
-) -> io::Result<bool> {
-    if conn.linger_since.is_some() {
-        return conn.drain_discarded(now);
-    }
-
-    if event.is_readable() {
-        // A full buffer is not yet a verdict: a body declared past the cap is
-        // answered from headers already buffered. Exhaustion ends the
-        // connection only once there is nothing left to answer with.
-        let mut exhausted = None;
-        loop {
-            let space = match conn.http.read_space() {
-                Ok(space) => space,
-                Err(e) => {
-                    exhausted = Some(e);
-                    break;
-                }
-            };
-            match conn.stream.read(space) {
-                Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                Ok(n) => {
-                    conn.last_activity = now;
-                    conn.http.commit_read(n);
-                }
-                Err(e) if would_block(&e) => break,
-                Err(e) if interrupted(&e) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-
-        if conn.http.dispatch(request_handler) {
-            registry.reregister(&mut conn.stream, event.token(), Interest::WRITABLE)?;
-        } else if let Some(e) = exhausted {
-            return Err(e);
-        }
-        return Ok(false);
-    }
-
-    if event.is_writable() {
-        if !conn.http.pending_write().is_empty() {
-            loop {
-                match conn.stream.write(conn.http.pending_write()) {
-                    Ok(0) => {
-                        return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
-                    }
-                    Ok(n) => {
-                        conn.last_activity = now;
-                        conn.http.commit_write(n);
-                        if conn.http.pending_write().is_empty() {
-                            break;
-                        }
-                    }
-                    Err(e) if would_block(&e) => return Ok(false),
-                    Err(e) if interrupted(&e) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            match conn.http.after_response(request_handler) {
-                AfterResponse::Close => return Ok(true),
-                AfterResponse::Linger => {
-                    // The FIN tells the peer its answer is whole while the
-                    // socket stays readable, so a body still on its way is
-                    // drained instead of resetting the connection that
-                    // carried the answer.
-                    conn.stream.shutdown_write()?;
-                    conn.linger_since = Some(now);
-                    registry.reregister(&mut conn.stream, event.token(), Interest::READABLE)?;
-                    return conn.drain_discarded(now);
-                }
-                AfterResponse::ResponsePending => {
-                    registry.reregister(&mut conn.stream, event.token(), Interest::WRITABLE)?
-                }
-                AfterResponse::AwaitRequest => {
-                    registry.reregister(&mut conn.stream, event.token(), Interest::READABLE)?
-                }
-            }
-        }
-        return Ok(false);
-    }
-
-    Ok(false)
-}
-
-/// Connection tokens sit above the listener range `0..reserved`, which the
-/// wrap must skip to avoid aliasing an accept socket.
-fn next(current: &mut Token, reserved: usize) -> Token {
-    let tok = Token(current.0);
-    let n = current.0.wrapping_add(1);
-    current.0 = if n < reserved { reserved } else { n };
-    tok
 }
 
 fn would_block(err: &io::Error) -> bool {
@@ -359,47 +393,63 @@ mod tests {
     };
 
     use silver_beacon_state_data::BeaconStateOwner;
+    use silver_httpcore::Readiness;
 
     use super::*;
-
-    #[test]
-    fn token_wrap_skips_the_listener_range() {
-        let reserved = 3;
-
-        let mut cur = Token(usize::MAX);
-        let assigned = next(&mut cur, reserved);
-        assert!(assigned.0 >= reserved, "returned token must not alias a listener");
-        assert_eq!(cur, Token(reserved), "the wrap must land above the listener range");
-
-        let mut cur = Token(reserved);
-        assert_eq!(next(&mut cur, reserved), Token(reserved));
-        assert_eq!(cur, Token(reserved + 1));
-    }
 
     /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
 
-    fn api_bound_to(binds: &[Bind], max_connections: usize, idle_timeout: Duration) -> BeaconApi {
-        let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
-        let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-        BeaconApi::new(
-            binds,
-            max_connections,
-            idle_timeout,
-            &keypair,
-            local_enr,
-            &Identify::default(),
-            &SpecConfig::mainnet(),
-            BeaconStateOwner::empty_test(0).reader(),
-        )
+    /// The sole tenant of its readiness loop, which the tile owns in
+    /// production and every test here owns for itself.
+    struct Server {
+        readiness: Readiness,
+        api: BeaconApi,
     }
 
-    fn api_with(max_connections: usize, idle_timeout: Duration) -> BeaconApi {
-        api_bound_to(&[Bind::parse("127.0.0.1:0")], max_connections, idle_timeout)
+    impl Server {
+        fn new(
+            tokens: TokenRange,
+            binds: &[Bind],
+            max_connections: usize,
+            idle_timeout: Duration,
+        ) -> Self {
+            let readiness = Readiness::new(1024);
+            let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
+            let local_enr = Enr::empty(keypair.secret_key()).unwrap();
+            let api = BeaconApi::new(
+                readiness.registry(),
+                tokens,
+                binds,
+                max_connections,
+                idle_timeout,
+                &keypair,
+                local_enr,
+                &Identify::default(),
+                &SpecConfig::mainnet(),
+                BeaconStateOwner::empty_test(0).reader(),
+            );
+            Self { readiness, api }
+        }
+
+        fn pump(&mut self) -> bool {
+            self.readiness.wait(Duration::ZERO);
+            self.api.pump(self.readiness.events())
+        }
     }
 
-    fn tcp_addrs(api: &BeaconApi) -> Vec<SocketAddr> {
-        api.local_addrs()
+    fn server_bound_to(binds: &[Bind], max_connections: usize, idle_timeout: Duration) -> Server {
+        Server::new(TokenRange::whole(), binds, max_connections, idle_timeout)
+    }
+
+    fn server_with(max_connections: usize, idle_timeout: Duration) -> Server {
+        server_bound_to(&[Bind::parse("127.0.0.1:0")], max_connections, idle_timeout)
+    }
+
+    fn tcp_addrs(server: &Server) -> Vec<SocketAddr> {
+        server
+            .api
+            .local_addrs()
             .into_iter()
             .map(|bind| {
                 let Bind::Tcp(addr) = bind else { panic!("expected tcp bind") };
@@ -408,32 +458,106 @@ mod tests {
             .collect()
     }
 
-    fn tcp_addr(api: &BeaconApi) -> SocketAddr {
-        tcp_addrs(api)[0]
+    fn tcp_addr(server: &Server) -> SocketAddr {
+        tcp_addrs(server)[0]
     }
 
-    fn pump_until(api: &mut BeaconApi, msg: &str, mut done: impl FnMut(&BeaconApi) -> bool) {
+    fn pump_until(server: &mut Server, msg: &str, mut done: impl FnMut(&Server) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !done(api) {
+        while !done(server) {
             assert!(Instant::now() < deadline, "timeout: {msg}");
-            api.pump();
+            server.pump();
             std::thread::sleep(Duration::from_millis(1));
         }
     }
 
-    fn serve<T>(api: &mut BeaconApi, client: JoinHandle<T>, msg: &str) -> T {
-        pump_until(api, msg, |_| client.is_finished());
+    fn serve<T>(server: &mut Server, client: JoinHandle<T>, msg: &str) -> T {
+        pump_until(server, msg, |_| client.is_finished());
         client.join().unwrap()
     }
 
     fn serve_both<T>(
-        api: &mut BeaconApi,
+        server: &mut Server,
         first: JoinHandle<T>,
         second: JoinHandle<T>,
         msg: &str,
     ) -> (T, T) {
-        pump_until(api, msg, |_| first.is_finished() && second.is_finished());
+        pump_until(server, msg, |_| first.is_finished() && second.is_finished());
         (first.join().unwrap(), second.join().unwrap())
+    }
+
+    /// Connection tokens must stay inside this server's share of the loop and
+    /// above its listener offsets: a wrap that lands on a listener would have
+    /// the server answering an accept socket as if it were a connection, and
+    /// one that leaves the range would collide with another tenant.
+    #[test]
+    fn connection_tokens_wrap_inside_the_range_above_the_listeners() {
+        let span = 8;
+        let tokens = TokenRange::new(64, span);
+        let binds = [Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")];
+        let mut server = Server::new(tokens, &binds, span - binds.len(), LONG_TIMEOUT);
+
+        let assigned = std::iter::repeat_with(|| server.api.take_connection_token())
+            .take(2 * span)
+            .collect::<Vec<_>>();
+
+        assert_eq!(assigned[0], Token(64 + binds.len()), "the first token clears the listeners");
+        for token in &assigned {
+            let offset = tokens.offset_of(*token).expect("token inside the server's range");
+            assert!(offset >= binds.len(), "{token:?} aliases a listener");
+        }
+        assert_eq!(assigned[span - binds.len()], assigned[0], "the wrap lands where it started");
+    }
+
+    /// A range with no room for every socket at once has nowhere for the
+    /// connection allocator to probe to, so it is refused at construction.
+    #[test]
+    #[should_panic(expected = "does not fit a span")]
+    fn a_range_too_small_for_the_connection_cap_is_rejected() {
+        Server::new(TokenRange::new(0, 8), &[Bind::parse("127.0.0.1:0")], 64, LONG_TIMEOUT);
+    }
+
+    /// Connections close in any order while the cursor only advances, so the
+    /// offset it wraps onto can still belong to a connection that outlived a
+    /// later one. Handing that offset out again replaces the map entry, which
+    /// drops the older connection and closes its socket unannounced.
+    #[test]
+    fn a_recycled_offset_skips_the_connection_still_holding_it() {
+        let span = 3;
+        let tokens = TokenRange::new(64, span);
+        let binds = [Bind::parse("127.0.0.1:0")];
+        let mut server = Server::new(tokens, &binds, span - binds.len(), LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
+
+        let long_lived = connect(addr);
+        long_lived.set_nonblocking(true).unwrap();
+        pump_until(&mut server, "long-lived connection accepted", |server| {
+            server.api.connections.len() == 1
+        });
+        let held = *server.api.connections.keys().next().expect("one connection");
+        assert_eq!(held, tokens.at(binds.len()), "the first connection clears the listeners");
+
+        // Takes the last offset of the range and gives it straight back,
+        // leaving the cursor wrapped onto the offset still held above.
+        drop(connect(addr));
+        pump_until(&mut server, "short-lived connection accepted and reaped", |server| {
+            server.api.connections.len() == 1 && server.api.next_connection_offset == binds.len()
+        });
+
+        let _newcomer = connect(addr);
+        let mut probe = [0u8; 1];
+        pump_until(&mut server, "newcomer accepted", |server| {
+            server.api.connections.len() == 2 || matches!((&long_lived).read(&mut probe), Ok(0))
+        });
+        assert_eq!(
+            server.api.connections.len(),
+            2,
+            "the newcomer took the offset a live connection holds"
+        );
+        assert!(
+            matches!((&long_lived).read(&mut probe), Err(e) if would_block(&e)),
+            "the long-lived connection lost the socket its offset was handed away with"
+        );
     }
 
     fn connect(addr: SocketAddr) -> TcpStream {
@@ -512,25 +636,25 @@ mod tests {
     #[test]
     #[should_panic(expected = "at least one bind")]
     fn an_empty_bind_list_is_rejected() {
-        api_bound_to(&[], 64, LONG_TIMEOUT);
+        server_bound_to(&[], 64, LONG_TIMEOUT);
     }
 
     #[test]
     fn every_tcp_listener_serves_the_api() {
-        let mut api = api_bound_to(
+        let mut server = server_bound_to(
             &[Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")],
             64,
             LONG_TIMEOUT,
         );
 
-        let addrs = tcp_addrs(&api);
+        let addrs = tcp_addrs(&server);
         assert_eq!(addrs.len(), 2, "one resolved address per bind");
         assert_ne!(addrs[0], addrs[1], "each bind resolves to its own port");
         assert!(addrs.iter().all(|addr| addr.port() != 0), "port-0 binds resolve: {addrs:?}");
 
         let (first_addr, second_addr) = (addrs[0], addrs[1]);
         let (first, second) = serve_both(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || get_identity(connect(first_addr))),
             std::thread::spawn(move || get_identity(connect(second_addr))),
             "both tcp listeners served",
@@ -543,13 +667,13 @@ mod tests {
     fn tcp_and_uds_listeners_serve_side_by_side() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
-        let mut api = api_bound_to(
+        let mut server = server_bound_to(
             &[Bind::parse("127.0.0.1:0"), Bind::Unix(socket.clone())],
             64,
             LONG_TIMEOUT,
         );
 
-        let addrs = api.local_addrs();
+        let addrs = server.api.local_addrs();
         let [Bind::Tcp(tcp_addr), Bind::Unix(uds_path)] = &addrs[..] else {
             panic!("expected a tcp bind and a uds bind: {addrs:?}")
         };
@@ -557,7 +681,7 @@ mod tests {
 
         let tcp_addr = *tcp_addr;
         let (over_tcp, over_uds) = serve_both(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || get_identity(connect(tcp_addr))),
             std::thread::spawn(move || get_identity(connect_uds(&socket))),
             "tcp and uds listeners served",
@@ -570,16 +694,16 @@ mod tests {
     /// listener refuses clients arriving on any other.
     #[test]
     fn connection_cap_is_shared_across_listeners() {
-        let mut api = api_bound_to(
+        let mut server = server_bound_to(
             &[Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")],
             1,
             LONG_TIMEOUT,
         );
-        let addrs = tcp_addrs(&api);
+        let addrs = tcp_addrs(&server);
         let (held, other) = (addrs[0], addrs[1]);
 
         let held_open = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(held);
                 write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
@@ -595,15 +719,15 @@ mod tests {
             "first listener's client took the only slot",
         );
 
-        assert_eq!(api.connections.len(), 1);
+        assert_eq!(server.api.connections.len(), 1);
         assert!(
-            api.connections.keys().all(|token| token.0 >= 2),
+            server.api.connections.keys().all(|token| token.0 >= 2),
             "connection tokens must clear the listener range: {:?}",
-            api.connections.keys().collect::<Vec<_>>()
+            server.api.connections.keys().collect::<Vec<_>>()
         );
 
         let denied = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(other);
                 let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -618,10 +742,12 @@ mod tests {
         );
 
         drop(held_open);
-        pump_until(&mut api, "closed connection reaped", |api| api.connections.is_empty());
+        pump_until(&mut server, "closed connection reaped", |server| {
+            server.api.connections.is_empty()
+        });
 
         let response = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || get_identity(connect(other))),
             "second listener served once the slot freed",
         );
@@ -630,11 +756,11 @@ mod tests {
 
     #[test]
     fn connection_cap_drops_excess_then_recovers() {
-        let mut api = api_with(1, LONG_TIMEOUT);
-        let addr = tcp_addr(&api);
+        let mut server = server_with(1, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
 
         let held_open = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
@@ -652,7 +778,7 @@ mod tests {
         );
 
         let denied = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -667,10 +793,12 @@ mod tests {
         );
 
         drop(held_open);
-        pump_until(&mut api, "closed connection reaped", |api| api.connections.is_empty());
+        pump_until(&mut server, "closed connection reaped", |server| {
+            server.api.connections.is_empty()
+        });
 
         let response = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
@@ -689,11 +817,11 @@ mod tests {
     /// at parse time.
     #[test]
     fn partial_request_is_reaped_after_the_idle_deadline() {
-        let mut api = api_with(64, Duration::from_millis(200));
-        let addr = tcp_addr(&api);
+        let mut server = server_with(64, Duration::from_millis(200));
+        let addr = tcp_addr(&server);
 
         let received = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
@@ -703,18 +831,18 @@ mod tests {
         );
 
         assert!(received.is_empty(), "half a request must not be answered: {received:?}");
-        assert!(api.connections.is_empty(), "reaped connection must leave the map");
+        assert!(server.api.connections.is_empty(), "reaped connection must leave the map");
     }
 
     /// An operator large enough to declare more body than the read buffer
     /// holds gets a status back rather than a connection that goes quiet.
     #[test]
     fn a_body_declared_past_the_read_cap_is_answered_with_413() {
-        let mut api = api_with(64, LONG_TIMEOUT);
-        let addr = tcp_addr(&api);
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
 
         let received = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 declare_oversized_body(&mut stream);
@@ -724,8 +852,8 @@ mod tests {
         );
 
         assert_eq!(received, PAYLOAD_TOO_LARGE, "{}", String::from_utf8_lossy(&received));
-        pump_until(&mut api, "answered connection closed on the peer's own close", |api| {
-            api.connections.is_empty()
+        pump_until(&mut server, "answered connection closed on the peer's own close", |server| {
+            server.api.connections.is_empty()
         });
     }
 
@@ -736,18 +864,18 @@ mod tests {
     /// nothing.
     #[test]
     fn a_client_still_streaming_when_the_413_is_framed_reads_all_of_it() {
-        let mut api = api_with(64, LONG_TIMEOUT);
-        let addr = tcp_addr(&api);
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
 
         let received = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || stream_body_past_the_answer(connect(addr))),
             "413 delivered to a client still sending",
         );
 
         assert_answer_survived(received);
-        pump_until(&mut api, "lingering connection closed once the peer went away", |api| {
-            api.connections.is_empty()
+        pump_until(&mut server, "lingering connection closed once the peer went away", |server| {
+            server.api.connections.is_empty()
         });
     }
 
@@ -757,18 +885,20 @@ mod tests {
     fn a_client_still_streaming_over_uds_reads_all_of_the_413() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
-        let mut api = api_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
 
         let received = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || stream_body_past_the_answer(connect_uds(&socket))),
             "413 delivered over uds to a client still sending",
         );
 
         assert_answer_survived(received);
-        pump_until(&mut api, "lingering uds connection closed once the peer went away", |api| {
-            api.connections.is_empty()
-        });
+        pump_until(
+            &mut server,
+            "lingering uds connection closed once the peer went away",
+            |server| server.api.connections.is_empty(),
+        );
     }
 
     fn assert_answer_survived(received: io::Result<Vec<u8>>) {
@@ -784,11 +914,12 @@ mod tests {
     /// slot for as long as it cares to keep sending.
     #[test]
     fn a_client_that_never_stops_sending_is_dropped_at_the_linger_cap() {
-        let mut api = api_with(64, Duration::from_millis(800));
+        let mut server = server_with(64, Duration::from_millis(800));
         // A peer that never pauses keeps the wait between reads at zero, so the
         // total cap is the only one that can end it.
-        api.linger = Linger { idle: Duration::from_millis(400), total: Duration::from_millis(200) };
-        let addr = tcp_addr(&api);
+        server.api.linger =
+            Linger { idle: Duration::from_millis(400), total: Duration::from_millis(200) };
+        let addr = tcp_addr(&server);
 
         let flooding = std::thread::spawn(move || {
             let mut stream = connect(addr);
@@ -804,11 +935,15 @@ mod tests {
         });
 
         let midway = Instant::now() + Duration::from_millis(100);
-        pump_until(&mut api, "server pumped past the answer", |_| Instant::now() >= midway);
-        assert_eq!(api.connections.len(), 1, "the answered connection must drain, not close");
+        pump_until(&mut server, "server pumped past the answer", |_| Instant::now() >= midway);
+        assert_eq!(
+            server.api.connections.len(),
+            1,
+            "the answered connection must drain, not close"
+        );
 
-        pump_until(&mut api, "flooding client dropped at the linger cap", |api| {
-            api.connections.is_empty()
+        pump_until(&mut server, "flooding client dropped at the linger cap", |server| {
+            server.api.connections.is_empty()
         });
         assert!(flooding.join().unwrap(), "the server must be the one to end it");
     }
@@ -819,9 +954,10 @@ mod tests {
     #[test]
     fn a_lingering_connection_that_goes_quiet_is_dropped_at_the_idle_cap() {
         let idle_timeout = Duration::from_secs(2);
-        let mut api = api_with(64, idle_timeout);
-        api.linger = Linger { idle: Duration::from_millis(100), total: Duration::from_secs(30) };
-        let addr = tcp_addr(&api);
+        let mut server = server_with(64, idle_timeout);
+        server.api.linger =
+            Linger { idle: Duration::from_millis(100), total: Duration::from_secs(30) };
+        let addr = tcp_addr(&server);
 
         let (release, on_release) = std::sync::mpsc::channel::<()>();
         let holding = std::thread::spawn(move || {
@@ -832,10 +968,12 @@ mod tests {
             answer
         });
 
-        pump_until(&mut api, "oversized declaration accepted", |api| api.connections.len() == 1);
+        pump_until(&mut server, "oversized declaration accepted", |server| {
+            server.api.connections.len() == 1
+        });
         let answered = Instant::now();
-        pump_until(&mut api, "quiet lingering connection dropped at the idle cap", |api| {
-            api.connections.is_empty()
+        pump_until(&mut server, "quiet lingering connection dropped at the idle cap", |server| {
+            server.api.connections.is_empty()
         });
         let held_for = answered.elapsed();
         assert!(held_for < idle_timeout / 2, "held for {held_for:?}, as if it were still serving");
@@ -847,11 +985,11 @@ mod tests {
     #[test]
     fn idle_keep_alive_connection_is_reaped_after_the_idle_deadline() {
         let idle_timeout = Duration::from_millis(200);
-        let mut api = api_with(64, idle_timeout);
-        let addr = tcp_addr(&api);
+        let mut server = server_with(64, idle_timeout);
+        let addr = tcp_addr(&server);
 
         let (received, alive_for) = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 // Timed from before the request: the server's activity stamp
@@ -866,19 +1004,19 @@ mod tests {
 
         assert!(received.starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(alive_for >= idle_timeout, "closed before the deadline, after {alive_for:?}");
-        assert!(api.connections.is_empty(), "reaped connection must leave the map");
+        assert!(server.api.connections.is_empty(), "reaped connection must leave the map");
     }
 
     #[test]
     fn traffic_refreshes_the_idle_deadline() {
         let idle_timeout = Duration::from_millis(400);
-        let mut api = api_with(64, idle_timeout);
-        let addr = tcp_addr(&api);
+        let mut server = server_with(64, idle_timeout);
+        let addr = tcp_addr(&server);
 
         // Five requests spaced a quarter of the deadline apart run well past it
         // in total; each read/write must push the deadline out.
         let _still_open = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 let mut chunk = [0u8; 1024];
@@ -893,25 +1031,27 @@ mod tests {
             "keep-alive client kept alive by its own traffic",
         );
 
-        assert_eq!(api.connections.len(), 1, "an active connection must survive the sweep");
+        assert_eq!(server.api.connections.len(), 1, "an active connection must survive the sweep");
     }
 
     /// Connection exhaustion scenario end to end: a hung client owns the only
     /// slot, so every other client is refused until the sweep frees it.
     #[test]
     fn idle_sweep_frees_a_slot_held_at_the_cap() {
-        let mut api = api_with(1, Duration::from_millis(800));
-        let addr = tcp_addr(&api);
+        let mut server = server_with(1, Duration::from_millis(800));
+        let addr = tcp_addr(&server);
 
         let hung = std::thread::spawn(move || {
             let mut stream = connect(addr);
             write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
             read_to_eof(stream)
         });
-        pump_until(&mut api, "hung client holds the only slot", |api| api.connections.len() == 1);
+        pump_until(&mut server, "hung client holds the only slot", |server| {
+            server.api.connections.len() == 1
+        });
 
         let denied = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -925,10 +1065,10 @@ mod tests {
             "the held slot must refuse other clients: {denied:?}"
         );
 
-        assert!(serve(&mut api, hung, "hung client reaped").is_empty());
+        assert!(serve(&mut server, hung, "hung client reaped").is_empty());
 
         let response = serve(
-            &mut api,
+            &mut server,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
                 write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")

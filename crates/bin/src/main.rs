@@ -8,7 +8,6 @@ use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
-use silver_beacon_api::BeaconApi;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
 use silver_columns::tile::DataColumnsTile;
@@ -21,7 +20,6 @@ use silver_common::{
 use silver_config::Config;
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};
-use silver_engine_api::EngineApi;
 use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
 use silver_network::{Context, NetworkTile, P2p};
@@ -237,19 +235,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         !config.disable_weak_subjectivity_check(),
         state,
     );
-    let beacon_api_binds =
-        config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
-    let beacon_api = BeaconApi::new(
-        &beacon_api_binds,
-        config.beacon_api_max_connections(),
-        config.beacon_api_idle_timeout(),
-        &keypair,
-        local_enr,
-        &identify,
-        &spec,
-        beacon_state_tile.reader(),
-    );
-
     let state_reader = beacon_state_tile.reader();
 
     let storage_tile = StorageTile::new(
@@ -279,14 +264,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         el_producer,
     );
 
-    let engine_api = EngineApi::new(
+    let beacon_api_binds =
+        config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
+    let application_boundary_tile = ApplicationBoundaryTile::new(
+        &beacon_api_binds,
+        config.beacon_api_max_connections(),
+        config.beacon_api_idle_timeout(),
+        &keypair,
+        local_enr,
+        &identify,
+        &spec,
+        beacon_state_tile.reader(),
         config.engine_config(),
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
     );
-    let application_boundary_tile =
-        ApplicationBoundaryTile { beacon: beacon_api, engine: engine_api };
 
     // Spine
     let spine = SilverSpine::new(None);

@@ -3,7 +3,7 @@ use std::time::Duration;
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{Enr, Identify, Keypair};
-use silver_httpcore::Bind;
+use silver_httpcore::{Bind, Readiness, TokenRange};
 
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| "0.0.0.0:5051".into());
@@ -13,7 +13,10 @@ fn main() {
     // Never-published reader: state endpoints answer 503, as pre-bootstrap.
     let state = BeaconStateOwner::empty_test(0).reader();
 
+    let mut readiness = Readiness::new(1024);
     let mut api = BeaconApi::new(
+        readiness.registry(),
+        TokenRange::whole(),
         &binds,
         64,
         Duration::from_secs(75),
@@ -25,7 +28,8 @@ fn main() {
     );
     println!("serving on {:?}", api.local_addrs());
     loop {
-        api.pump();
+        readiness.wait(Duration::ZERO);
+        api.pump(readiness.events());
         std::thread::sleep(Duration::from_millis(1));
     }
 }

@@ -9,9 +9,10 @@ use std::{
 };
 
 use silver_engine_api::{
-    EngineClient, ReqKind, poll, send_new_payload,
+    EngineClient, ReqKind, send_new_payload,
     test_el::{FakeEl, write_jwt},
 };
+use silver_httpcore::{Readiness, TokenRange};
 
 thread_local! {
     static ALLOCATION_EVENTS: Cell<u64> = const { Cell::new(0) };
@@ -55,7 +56,12 @@ fn unix_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
-fn complete_round_trip(client: &mut EngineClient, el: &mut FakeEl, request_index: usize) {
+fn complete_round_trip(
+    readiness: &mut Readiness,
+    client: &mut EngineClient,
+    el: &mut FakeEl,
+    request_index: usize,
+) {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut responded = false;
     let mut done = false;
@@ -67,7 +73,8 @@ fn complete_round_trip(client: &mut EngineClient, el: &mut FakeEl, request_index
             el.respond(request_index, NEW_PAYLOAD_VALID);
             responded = true;
         }
-        poll(client, |kind, response| {
+        readiness.wait(Duration::ZERO);
+        client.dispatch(readiness.events(), |kind, response| {
             assert!(matches!(kind, ReqKind::NewPayload(_)));
             response.expect("newPayload response");
             done = true;
@@ -82,11 +89,18 @@ fn warm_new_payload_send_allocates_nothing() {
     let jwt_path = write_jwt(dir.path());
     let socket = dir.path().join("engine.sock");
     let mut el = FakeEl::uds(&socket);
-    let mut client =
-        EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 4, Duration::from_secs(60));
+    let mut readiness = Readiness::new(16);
+    let mut client = EngineClient::new_uds(
+        readiness.registry(),
+        TokenRange::whole(),
+        &socket,
+        jwt_path.to_str().unwrap(),
+        4,
+        Duration::from_secs(60),
+    );
 
     send_new_payload(&mut client, SIGNED_BLOCK_SSZ, [0u8; 32]).unwrap();
-    complete_round_trip(&mut client, &mut el, 0);
+    complete_round_trip(&mut readiness, &mut client, &mut el, 0);
     let mut request_index = 1;
     assert!(allocation_events() > 0, "counting allocator must observe the cold path");
 
@@ -96,14 +110,14 @@ fn warm_new_payload_send_allocates_nothing() {
     for _ in 0..5 {
         let second = unix_secs();
         send_new_payload(&mut client, SIGNED_BLOCK_SSZ, [1u8; 32]).unwrap();
-        complete_round_trip(&mut client, &mut el, request_index);
+        complete_round_trip(&mut readiness, &mut client, &mut el, request_index);
         request_index += 1;
 
         let before = allocation_events();
         send_new_payload(&mut client, SIGNED_BLOCK_SSZ, [2u8; 32]).unwrap();
         let events = allocation_events() - before;
 
-        complete_round_trip(&mut client, &mut el, request_index);
+        complete_round_trip(&mut readiness, &mut client, &mut el, request_index);
         request_index += 1;
         if unix_secs() == second {
             assert_eq!(events, 0, "warm newPayload send performed {events} heap allocations");
