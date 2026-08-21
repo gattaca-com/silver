@@ -1,18 +1,17 @@
 # CLAUDE.md
 
-Guidance for working in **silver** — gattaca's high-performance Ethereum consensus client.
+Guidance for working on **silver** — Gattaca's high-performance Ethereum consensus client.
 
 ## Philosophy
 
 Two principles drive every rule below:
 
-- **Simplicity.** Simplicity is the foundation of capability, not the opposite of it. Lines
-  of code matter — the best code is the code you didn't write. Favour fewer abstractions,
-  fewer layers, fewer traits, fewer macros. Reach for the language's existing tools before
-  inventing new ones.
-- **Performance.** Performance is a feature, not an afterthought. Hot paths (state apply,
-  finalization, hashing, gossip) are measured. When two designs are equally clear, pick the
-  faster one; when the fast one is less clear, justify it and measure it.
+- **Simplicity.** Simplicity is the foundation of capability, not the opposite of it.
+  Favour fewer abstractions, fewer layers, fewer traits, fewer macros. Reach for
+  the language's existing tools before inventing new ones.
+- **Performance.** Performance is a feature, not an afterthought. Hot paths (state transitions,
+  finalization, hashing, gossip ingestion and propagation) are measured. When two designs are equally clear,
+  pick the faster one; when the fast one is less clear, justify it and measure it.
 
 These reinforce each other: a smaller, flatter, well-named codebase is both simpler to
 reason about and faster to run.
@@ -20,7 +19,7 @@ reason about and faster to run.
 ## Project shape
 
 - Binary is `crates/bin`; everything else is a `silver_*` library crate.
-- Crates are organised as **tiles** — independent components that communicate over channels.
+- Most crates are organised as **tiles** — independent components that communicate over channels.
 - The beacon state is **not** a monolith: it's a bag of per-tier *groups* (validators,
   balances, participation, …), each a finalized base + a ring of per-fork deltas.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
@@ -149,4 +148,37 @@ boundaries — not the same implementation sprinkled across more files.
 
 - **Minimal diff.** Don't "improve" working code outside the task. But code the *current
   diff introduced* is in scope to fix even when the fix is larger/non-local (extracting a new
-  module, rewiring imports) — edit size is not a scope test.
+  module, rewiring imports) — edit size is not a scope test. Performance and avoidance of
+  undue coupling (e.g. between tiles) take priority over this rule.
+
+## Communication
+
+Applies to prose you write into:
+
+- commit messages
+- GitHub issues, and comments on issues
+- pull request descriptions, and review comments
+- code comments
+- documentation committed to the repository
+
+Rules:
+
+- Default to sentences under 25 words.
+  - Write a longer sentence when splitting it would hide how the parts relate.
+  - Use a list if the content does not fit in one sentence.
+- Do not split a sentence into fragments to meet the limit.
+- One main clause per sentence. Subordinate clauses are fine.
+- Use the active voice.
+- Use no more than three nouns in a noun cluster.
+- Use one term per concept, and one concept per term.
+- State uncertainty and untested assumptions in reviews, issues, and pull request descriptions.
+  - Do not drop them for brevity.
+- Reproduce commands, code, identifiers, paths, and quotations verbatim.
+  - These rules do not apply to them.
+- Do not try to fix the language produced by others to follow these rules.
+  - For example, this document.
+
+## Issue tracking
+
+Track project work in GitHub issues. Only use Linear or other platforms when
+explicitly asked.
