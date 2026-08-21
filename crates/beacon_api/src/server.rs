@@ -195,8 +195,18 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
     request_handler: &F,
 ) -> io::Result<bool> {
     if event.is_readable() {
+        // A full buffer is not yet a verdict: a body declared past the cap is
+        // answered from headers already buffered. Exhaustion ends the
+        // connection only once there is nothing left to answer with.
+        let mut exhausted = None;
         loop {
-            let space = conn.http.read_space()?;
+            let space = match conn.http.read_space() {
+                Ok(space) => space,
+                Err(e) => {
+                    exhausted = Some(e);
+                    break;
+                }
+            };
             match conn.stream.read(space) {
                 Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
                 Ok(n) => {
@@ -211,6 +221,8 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
 
         if conn.http.dispatch(request_handler) {
             registry.reregister(&mut conn.stream, event.token(), Interest::WRITABLE)?;
+        } else if let Some(e) = exhausted {
+            return Err(e);
         }
         return Ok(false);
     }
@@ -591,6 +603,38 @@ mod tests {
 
         assert!(received.is_empty(), "half a request must not be answered: {received:?}");
         assert!(api.connections.is_empty(), "reaped connection must leave the map");
+    }
+
+    /// go-eth2-client and Prysm post a whole validator set unchunked, so an
+    /// operator large enough to declare more body than the read buffer holds
+    /// gets a status back rather than a connection that goes quiet.
+    #[test]
+    fn a_body_declared_past_the_read_cap_is_answered_with_413() {
+        let mut api = api_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&api);
+
+        let received = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                write!(
+                    stream,
+                    "POST /eth/v1/validator/register_validator HTTP/1.1\r\nHost: x\r\n\
+                     Content-Length: {}\r\n\r\n",
+                    64 << 20
+                )
+                .unwrap();
+                read_to_eof(stream)
+            }),
+            "oversized declaration answered",
+        );
+
+        assert!(
+            received.starts_with(b"HTTP/1.1 413 Payload Too Large\r\n"),
+            "unexpected response: {}",
+            String::from_utf8_lossy(&received)
+        );
+        assert!(api.connections.is_empty(), "the answered connection must close");
     }
 
     #[test]

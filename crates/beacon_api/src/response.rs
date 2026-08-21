@@ -38,6 +38,11 @@ impl<'a> Response<'a> {
         self.send(200, Some(content_type), &[], b"");
     }
 
+    /// The success of a schema that declares no content under its 200.
+    pub(crate) fn ok(&mut self) {
+        self.send(200, None, &[], b"");
+    }
+
     pub(crate) fn send(
         &mut self,
         code: u16,

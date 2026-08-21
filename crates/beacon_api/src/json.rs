@@ -423,13 +423,7 @@ impl Json<'_> {
         }
         self.end_array();
     }
-}
 
-/// The one container no endpoint calls yet, in the same schema field order. It
-/// landed ahead of the commit that will call it; the allow stops here so
-/// dead-code checking stays real for the writers already wired up.
-#[allow(dead_code)]
-impl Json<'_> {
     pub(crate) fn liveness(&mut self, index: u64, is_live: bool) {
         self.begin_object();
         self.key("index");

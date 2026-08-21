@@ -18,12 +18,14 @@ pub struct ParsedRequest<'a> {
     pub keep_alive: bool,
 }
 
-/// `Incomplete` means "no verdict yet, feed me more bytes"; `Malformed` means
-/// the bytes can never become a request, so no amount of waiting helps.
+/// `Incomplete` means "no verdict yet, feed me more bytes"; `Malformed` and
+/// `TooLarge` mean the bytes can never become a request this connection
+/// serves, so no amount of waiting helps.
 enum ParseOutcome<'a> {
     Complete { consumed: usize, request: ParsedRequest<'a> },
     Incomplete,
     Malformed,
+    TooLarge,
 }
 
 impl<'a> ParsedRequest<'a> {
@@ -64,6 +66,11 @@ impl<'a> ParsedRequest<'a> {
         let Some(total) = headers_end.checked_add(content_length) else {
             return ParseOutcome::Malformed;
         };
+        // The declared length settles this before a body byte arrives: filling
+        // the cap first would spend it and still leave nothing to answer with.
+        if total > READ_BUF_MAX {
+            return ParseOutcome::TooLarge;
+        }
         if buf.len() < total {
             return ParseOutcome::Incomplete;
         }
@@ -141,20 +148,25 @@ impl ServerConnection {
         self.read_end += n;
     }
 
+    /// Framing is lost — either never established, or declared past what the
+    /// read buffer holds so the body bytes are unreadable — and there is
+    /// nothing left to resynchronise on: answer, drop the whole buffer and let
+    /// the caller close once the answer has drained.
+    fn reject(&mut self, status: &str) -> bool {
+        self.keep_alive = false;
+        frame_response(&mut self.write_buf, status, None, b"");
+        self.read_pos = 0;
+        self.read_end = 0;
+        true
+    }
+
     pub fn dispatch<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(&mut self, handler: &F) -> bool {
         let (consumed, req) =
             match ParsedRequest::parse(&self.read_buf[self.read_pos..self.read_end]) {
                 ParseOutcome::Complete { consumed, request } => (consumed, request),
                 ParseOutcome::Incomplete => return false,
-                // Framing is lost, so there is nothing left to resynchronise
-                // on: answer, drop the whole buffer and let the caller close.
-                ParseOutcome::Malformed => {
-                    self.keep_alive = false;
-                    frame_response(&mut self.write_buf, "400 Bad Request", None, b"");
-                    self.read_pos = 0;
-                    self.read_end = 0;
-                    return true;
-                }
+                ParseOutcome::Malformed => return self.reject("400 Bad Request"),
+                ParseOutcome::TooLarge => return self.reject("413 Payload Too Large"),
             };
         if req.version != 1 {
             tracing::warn!("rejecting HTTP/1.0 request");
@@ -303,17 +315,26 @@ mod tests {
             ParseOutcome::Complete { consumed, request } => (consumed, request),
             ParseOutcome::Incomplete => panic!("expected a complete request, got Incomplete"),
             ParseOutcome::Malformed => panic!("expected a complete request, got Malformed"),
+            ParseOutcome::TooLarge => panic!("expected a complete request, got TooLarge"),
         }
     }
 
-    fn reject_and_close(request: &[u8]) {
+    fn oversized_post(declared: usize) -> Vec<u8> {
+        format!("POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: {declared}\r\n\r\n")
+            .into_bytes()
+    }
+
+    fn reject_and_close(request: &[u8], status: &str) {
         let mut conn = ServerConnection::new();
         feed(&mut conn, request);
 
         assert!(conn.dispatch(&|_, _: &mut Vec<u8>| {
-            panic!("malformed request must not reach the handler")
+            panic!("a rejected request must not reach the handler")
         }));
-        assert_eq!(conn.pending_write(), b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(
+            conn.pending_write(),
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes()
+        );
 
         drain(&mut conn);
         assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
@@ -438,6 +459,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_content_length_past_the_read_cap_is_too_large() {
+        for declared in [READ_BUF_MAX, READ_BUF_MAX + 1] {
+            assert!(matches!(
+                ParsedRequest::parse(&oversized_post(declared)),
+                ParseOutcome::TooLarge
+            ));
+        }
+    }
+
+    #[test]
     fn parse_content_length_overflowing_the_header_end_is_malformed() {
         let req = format!(
             "POST /foo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
@@ -448,24 +479,38 @@ mod tests {
 
     #[test]
     fn dispatch_unparseable_request_line_writes_400_then_closes() {
-        reject_and_close(b"NOT A VALID REQUEST\r\n\r\n");
+        reject_and_close(b"NOT A VALID REQUEST\r\n\r\n", "400 Bad Request");
     }
 
     #[test]
     fn dispatch_more_headers_than_fit_writes_400_then_closes() {
-        reject_and_close(&overlong_header_req());
+        reject_and_close(&overlong_header_req(), "400 Bad Request");
     }
 
     #[test]
     fn dispatch_invalid_content_length_writes_400_then_closes() {
-        reject_and_close(b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n");
+        reject_and_close(
+            b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n",
+            "400 Bad Request",
+        );
     }
 
     #[test]
     fn dispatch_content_length_beyond_usize_writes_400_then_closes() {
         reject_and_close(
             b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
+            "400 Bad Request",
         );
+    }
+
+    /// A validator client posting its whole registry unchunked declares the
+    /// size up front, so the headers alone are enough to answer: the body
+    /// bytes that would not fit never have to arrive.
+    #[test]
+    fn dispatch_content_length_past_the_read_cap_writes_413_then_closes() {
+        for declared in [READ_BUF_MAX, READ_BUF_MAX + 1, usize::MAX - 1024] {
+            reject_and_close(&oversized_post(declared), "413 Payload Too Large");
+        }
     }
 
     #[test]
@@ -655,27 +700,11 @@ mod tests {
         assert_eq!(conn.pending_write(), b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n/second");
     }
 
+    /// A request that declares nothing and never ends has no verdict to be
+    /// answered with, so the cap is where the connection runs out.
     #[test]
     fn read_space_exhausted_rejects_request_too_large() {
         let mut conn = ServerConnection::new();
-        feed(
-            &mut conn,
-            b"POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: 33554432\r\n\r\n",
-        );
-
-        let err = fill_with_junk_until_reject(&mut conn);
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(err.to_string(), "request too large");
-    }
-
-    #[test]
-    fn body_just_over_cap_rejects_with_identical_error() {
-        let mut conn = ServerConnection::new();
-        let header = format!(
-            "POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: {READ_BUF_MAX}\r\n\r\n"
-        );
-        feed(&mut conn, header.as_bytes());
-
         let err = fill_with_junk_until_reject(&mut conn);
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "request too large");

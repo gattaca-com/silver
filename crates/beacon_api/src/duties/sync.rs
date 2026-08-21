@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
 
 use crate::{
     duties::{CURRENTLY_SYNCING, DutyWindow, OutOfWindow, RequestedEpoch},
-    ids::{MAX_BODY_IDS, parse_uint64},
+    ids::submitted_indices,
     response::Response,
     router::Request,
     routes::ApiCtx,
@@ -23,7 +23,7 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     let Some(requested) = RequestedEpoch::parse(req, ctx, resp) else {
         return;
     };
-    let indices = match requested_indices(req.body) {
+    let indices = match submitted_indices(req.body) {
         Ok(indices) => indices,
         Err(message) => {
             resp.error(400, message);
@@ -106,24 +106,4 @@ impl<'a> CommitteeSeats<'a> {
             .map(|&position| position as u64)
             .collect()
     }
-}
-
-/// `GetSyncCommitteeDutiesBody`: an array of `Uint64` — quoted decimal
-/// strings — with `minItems: 1`. Deduplicated, so a validator named twice is
-/// answered once.
-fn requested_indices(body: &[u8]) -> Result<Vec<u64>, &'static str> {
-    let submitted: Vec<&str> = serde_json::from_slice(body).map_err(|_| "invalid request body")?;
-    if submitted.is_empty() {
-        return Err("no validator index in request body");
-    }
-    if submitted.len() > MAX_BODY_IDS {
-        return Err("too many validator indices in request body");
-    }
-    let mut indices = submitted
-        .iter()
-        .map(|text| parse_uint64(text).ok_or("invalid validator index"))
-        .collect::<Result<Vec<_>, _>>()?;
-    indices.sort_unstable();
-    indices.dedup();
-    Ok(indices)
 }

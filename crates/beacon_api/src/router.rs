@@ -4,6 +4,8 @@ use crate::{response::Response, routes::ApiCtx};
 
 const MAX_PARAMS: usize = 4;
 
+const JSON_MEDIA_TYPE: &str = "application/json";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Method {
     Get,
@@ -30,7 +32,31 @@ pub(crate) struct Request<'a> {
     pub(crate) path: &'a str,
     pub(crate) params: Params<'a>,
     pub(crate) query: &'a str,
+    pub(crate) content_type: Option<&'a str>,
     pub(crate) body: &'a [u8],
+}
+
+impl Request<'_> {
+    /// Whether the body is one this API will read as JSON — a request naming
+    /// no media type included. The schemas that declare a 415 are the ones
+    /// that also take an SSZ body, and a client sending SSZ says so: Teku
+    /// posts `registerValidator` as `application/octet-stream` first and turns
+    /// SSZ off for the session on the 415, so any other code there loses the
+    /// registrations with no retry.
+    pub(crate) fn body_is_json(&self) -> bool {
+        let Some(media_type) = self.media_type() else {
+            return true;
+        };
+        media_type.eq_ignore_ascii_case(JSON_MEDIA_TYPE)
+    }
+
+    /// The `Content-Type` header's media type, without the parameters that may
+    /// follow it. `None` for a header that names none at all.
+    fn media_type(&self) -> Option<&str> {
+        let content_type = self.content_type?;
+        let media_type = content_type.split(';').next().unwrap_or_default().trim();
+        (!media_type.is_empty()).then_some(media_type)
+    }
 }
 
 pub(crate) struct Params<'a> {
@@ -114,6 +140,7 @@ impl Router {
                 path: req.path,
                 params,
                 query: req.query,
+                content_type: req.content_type,
                 body: req.body,
             };
             (route.handler)(&request, ctx, &mut Response::new(out));
@@ -214,6 +241,58 @@ mod tests {
         joined.push(b'|');
         joined.extend_from_slice(req.body);
         resp.json(&joined);
+    }
+
+    fn echo_media_type(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
+        let verdict = if req.body_is_json() { "json" } else { "other" };
+        resp.json(format!("{:?}|{verdict}", req.media_type()).as_bytes());
+    }
+
+    fn posted_with(content_type: Option<&str>) -> Vec<u8> {
+        let router = Router::new(&[(Method::Post, "/submit", echo_media_type)]);
+        let mut out = Vec::new();
+        let req = ParsedRequest {
+            method: "POST",
+            path: "/submit",
+            query: "",
+            body: b"",
+            accept: None,
+            content_type,
+            eth_consensus_version: None,
+            version: 1,
+            keep_alive: true,
+        };
+        router.dispatch(&req, &preboot_ctx(), &mut out);
+        out
+    }
+
+    #[test]
+    fn the_content_type_header_reaches_the_handler() {
+        assert_eq!(
+            body(&posted_with(Some("application/octet-stream"))),
+            b"Some(\"application/octet-stream\")|other"
+        );
+        assert_eq!(body(&posted_with(None)), b"None|json");
+    }
+
+    /// RFC 9110 makes the media type case-insensitive and lets parameters
+    /// follow it; a header that names none at all leaves the body unlabelled,
+    /// which is the same verdict as sending no header.
+    #[test]
+    fn a_json_media_type_is_recognized_however_it_is_spelled() {
+        for header in [
+            "application/json",
+            "Application/JSON",
+            "application/json; charset=utf-8",
+            " application/json ",
+        ] {
+            assert!(body(&posted_with(Some(header))).ends_with(b"|json"), "{header}");
+        }
+        for header in ["application/octet-stream", "text/plain", "application/jsonx"] {
+            assert!(body(&posted_with(Some(header))).ends_with(b"|other"), "{header}");
+        }
+        assert_eq!(body(&posted_with(Some(""))), b"None|json");
+        assert_eq!(body(&posted_with(Some("; charset=utf-8"))), b"None|json");
     }
 
     #[test]
