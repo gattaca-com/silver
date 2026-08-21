@@ -3,9 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{
-    B256, BeaconStateReader, Epoch, ForkName, SpecConfig, StateReadView,
-};
+use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
@@ -80,10 +78,6 @@ pub(crate) struct ApiCtx {
     pub(crate) statics: StaticBodies,
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
-    /// Read per request rather than baked into `statics`: the proposer duties'
-    /// v2 dependent root is defined against the epoch from which EIP-7917's
-    /// deterministic lookahead schedules an epoch a boundary in advance.
-    pub(crate) fulu_fork_epoch: Epoch,
 }
 
 impl ApiCtx {
@@ -98,7 +92,6 @@ impl ApiCtx {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             state,
             node_status: NodeStatus::default(),
-            fulu_fork_epoch: spec.fork_epoch(ForkName::Fulu),
         }
     }
 

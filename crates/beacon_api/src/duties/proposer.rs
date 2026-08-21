@@ -20,8 +20,7 @@ pub(crate) fn get_proposer_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Re
 }
 
 pub(crate) fn get_proposer_duties_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let dependent = DependentEpoch::PrecedingSinceFulu { fulu_fork_epoch: ctx.fulu_fork_epoch };
-    respond_with_proposers(req, ctx, resp, dependent);
+    respond_with_proposers(req, ctx, resp, DependentEpoch::Preceding);
 }
 
 fn respond_with_proposers(
@@ -100,13 +99,11 @@ impl EpochProposers {
 enum DependentEpoch {
     /// The epoch asked about (`apis/validator/duties/proposer.yaml`).
     Requested,
-    /// The epoch before it (`proposer.v2.yaml`), which is where the lookahead
-    /// an epoch's proposers come from was seeded — the deterministic lookahead
-    /// of EIP-7917, and the reason a v2 exists at all. Fulu's own activation
-    /// epoch is the exception: its lookahead is seeded by the fork transition,
-    /// at its own boundary, so it and every epoch before it fall back to
-    /// [`Self::Requested`].
-    PrecedingSinceFulu { fulu_fork_epoch: Epoch },
+    /// The epoch before it (`proposer.v2.yaml`), which is where EIP-7917's
+    /// deterministic lookahead seeded that epoch's proposers — and the reason
+    /// a v2 exists at all. Silver holds Fulu states and later ones only, so no
+    /// epoch it answers for had its proposers seeded at a different boundary.
+    Preceding,
 }
 
 impl DependentEpoch {
@@ -118,19 +115,15 @@ impl DependentEpoch {
     /// head is in the epoch it asked for, so the answer is the head block's
     /// root.
     fn root(self, view: &StateReadView<'_>, head_root: B256, epoch: Epoch) -> Option<B256> {
-        let dependent = self.of(epoch);
+        let dependent = match self {
+            Self::Requested => epoch,
+            Self::Preceding => epoch.saturating_sub(1),
+        };
         if dependent > view.slot.current_epoch() {
             return Some(head_root);
         }
         view.block_roots
             .recorded_at((dependent * SLOTS_PER_EPOCH).saturating_sub(1), view.slot.slot_number())
-    }
-
-    fn of(self, epoch: Epoch) -> Epoch {
-        match self {
-            Self::PrecedingSinceFulu { fulu_fork_epoch } if epoch > fulu_fork_epoch => epoch - 1,
-            Self::Requested | Self::PrecedingSinceFulu { .. } => epoch,
-        }
     }
 }
 

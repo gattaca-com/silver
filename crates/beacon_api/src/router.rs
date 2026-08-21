@@ -39,10 +39,9 @@ pub(crate) struct Request<'a> {
 impl Request<'_> {
     /// Whether the body is one this API will read as JSON — a request naming
     /// no media type included. The schemas that declare a 415 are the ones
-    /// that also take an SSZ body, and a client sending SSZ says so: Teku
-    /// posts `registerValidator` as `application/octet-stream` first and turns
-    /// SSZ off for the session on the 415, so any other code there loses the
-    /// registrations with no retry.
+    /// that also take an SSZ body, and a client sending SSZ says so: an
+    /// SSZ-first client keys its downgrade to JSON on the 415 alone, so any
+    /// other answer there loses the body with no retry.
     pub(crate) fn body_is_json(&self) -> bool {
         let Some(media_type) = self.media_type() else {
             return true;

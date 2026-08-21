@@ -330,9 +330,10 @@ mod tests {
         }
     }
 
-    /// Teku posts `registerValidator` as SSZ first and turns SSZ off for the
-    /// session on a 415; under any other code the registrations are lost with
-    /// no retry.
+    /// An SSZ-first client keys its downgrade to JSON on the 415 alone. Teku
+    /// carries that downgrade in its registration request behind a flag its
+    /// shipped client hardcodes off; were it on, any other code here would
+    /// lose the registrations with no retry.
     #[test]
     fn a_non_json_content_type_is_a_415_on_the_one_schema_that_declares_it() {
         let body = format!("[{}]", registration());

@@ -137,10 +137,6 @@ struct Fixture {
     empty_slots: Vec<Slot>,
     validator_count: usize,
     sync_committee_indices: [u32; SYNC_COMMITTEE_SIZE],
-    /// Silver holds Fulu states and later ones only — it has no Electra state
-    /// transition and no upgrade into Fulu — so the default fixture is a chain
-    /// that has been Fulu throughout.
-    fulu_fork_epoch: Epoch,
 }
 
 impl Default for Fixture {
@@ -150,7 +146,6 @@ impl Default for Fixture {
             empty_slots: Vec::new(),
             validator_count: VALIDATOR_COUNT,
             sync_committee_indices: seated_indices(),
-            fulu_fork_epoch: 0,
         }
     }
 }
@@ -193,8 +188,7 @@ impl Fixture {
         owner.set_head_block_root(head_root);
         owner.publish_state_id(head);
 
-        let spec = SpecConfig { fulu_fork_epoch: self.fulu_fork_epoch, ..SpecConfig::mainnet() };
-        let mut ctx = test_ctx(&spec, owner.reader());
+        let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status = synced_at(self.state_slot);
         ctx
     }
@@ -346,9 +340,9 @@ fn the_next_epoch_reads_the_far_half_of_the_lookahead() {
     );
 }
 
-/// `proposer.v2.yaml` names `compute_start_slot_at_epoch(epoch - 1) - 1`, one
-/// epoch further back than v1: the boundary the lookahead an epoch's
-/// proposers came from was seeded at. Both epochs the window serves therefore
+/// `proposer.v2.yaml` names `compute_start_slot_at_epoch(epoch - 1) - 1` for
+/// every epoch, one further back than v1: the boundary the lookahead an
+/// epoch's proposers came from was seeded at. Both epochs the window serves
 /// depend on a slot `block_roots` already records, so v2 never falls back to
 /// the head block's root the way v1 does for the next epoch — and the duties
 /// themselves are the same list.
@@ -359,33 +353,6 @@ fn v2_depends_on_the_epoch_before_the_one_asked_for() {
         let answered = ok_body(&get_proposers_v(&ctx, 2, &epoch.to_string()));
         assert_eq!(answered, expected_proposers(epoch, block_root_of(dependent_slot)));
         assert!(!answered.contains(&root_text(block_root_of(HEAD_SLOT))), "{answered}");
-    }
-}
-
-/// v2's rule is the one EIP-7917 introduced, so it holds from Fulu on and no
-/// earlier: the activation epoch's own lookahead is seeded by the fork
-/// transition at its own boundary, and no epoch before it has a lookahead at
-/// all. Both fall back to v1's dependent root — which is what a client
-/// calling v2 on a chain that schedules Fulu ahead of it must be answered
-/// with.
-#[test]
-fn v2_falls_back_to_v1s_dependent_root_up_to_the_fulu_activation_epoch() {
-    let activating = Fixture { fulu_fork_epoch: HEAD_EPOCH, ..Default::default() }.published();
-    for epoch in [HEAD_EPOCH, NEXT_EPOCH] {
-        assert_eq!(
-            ok_body(&get_proposers_v(&activating, 2, &epoch.to_string())),
-            expected_proposers(epoch, block_root_of(DEPENDENT_SLOT)),
-            "epoch {epoch}"
-        );
-    }
-
-    let unreached = Fixture { fulu_fork_epoch: NEXT_EPOCH, ..Default::default() }.published();
-    for epoch in [HEAD_EPOCH, NEXT_EPOCH] {
-        assert_eq!(
-            ok_body(&get_proposers_v(&unreached, 2, &epoch.to_string())),
-            ok_body(&get_proposers(&unreached, &epoch.to_string())),
-            "epoch {epoch}"
-        );
     }
 }
 
