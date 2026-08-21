@@ -301,6 +301,12 @@ impl BeaconStateTile {
         self.fork_choice.finalized_checkpoint.epoch
     }
 
+    /// Fork-choice finalized block root — what a restart's `seed_anchor`
+    /// re-derives from the persisted checkpoint. Test/harness surface.
+    pub fn fork_choice_finalized_root(&self) -> B256 {
+        self.fork_choice.finalized_checkpoint.root
+    }
+
     /// `(current_justified, finalized)` as seen by the canonical head's
     /// post-state. Reads the epoch delta if the head fork owns one; otherwise
     /// falls back to the finalized base epoch state.

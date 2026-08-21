@@ -91,6 +91,6 @@ pub const ZERO_HASHES: [B256; ZERO_HASHES_LEN] = {
     zh
 };
 
-const fn const_hash_concat(a: &B256, b: &B256) -> B256 {
+pub const fn const_hash_concat(a: &B256, b: &B256) -> B256 {
     sha2_const_stable::Sha256::new().update(a).update(b).finalize()
 }

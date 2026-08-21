@@ -20,7 +20,7 @@ pub type Eth1Id = Id<Eth1Group>;
 /// inline fixed-capacity list (never reallocates — the lock-free checkpoint
 /// read can't dangle); forks carry only their appends since finalization.
 pub struct Eth1Group {
-    finalized: Eth1Votes,
+    finalized: Box<Eth1Votes>,
     deltas: Ring<Self>,
 }
 
@@ -30,7 +30,7 @@ impl RingGroup for Eth1Group {
 
 impl Eth1Group {
     pub fn new(finalized: Eth1Votes) -> Self {
-        Self { finalized, deltas: Ring::new(SLOTS_RING_N) }
+        Self { finalized: Box::new(finalized), deltas: Ring::new(SLOTS_RING_N) }
     }
 
     #[inline]
