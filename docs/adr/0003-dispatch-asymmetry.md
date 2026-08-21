@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Dispatch: table for server routes, enum match for client methods

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Hand-rolled HTTP over mio; no async runtime, no TLS

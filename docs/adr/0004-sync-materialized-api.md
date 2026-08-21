@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Synchronous handlers, materialized responses, no streaming
@@ -12,8 +12,8 @@ interleave per readiness event: a slow API consumer never stalls engine
 calls, and vice versa.
 
 This holds for every request/response endpoint in the targeted surface:
-verified against the beacon-APIs spec and five validator clients (see
-`.local/beacon-api-vc-surface.md`, untracked), nothing a validator client
+verified against the beacon-APIs spec and five validator clients (Teku,
+Lighthouse, Nimbus, Prysm, Vouch), nothing a validator client
 requires streams or long-polls except the `/eth/v1/events` SSE stream.
 
 Amended 2026-08-18: SSE is in scope — validator clients will not be asked
@@ -41,3 +41,12 @@ delay engine traffic, however non-blocking the transport beneath it. Both
 follow from serving a request/response API on the thread that drives the
 execution client, not from any one endpoint, and neither is bounded by the
 connection write buffer, which releases its capacity after each response.
+
+Amended 2026-08-21: `poll(Duration::ZERO)` is the busy-spin build's mechanism, not
+the decision. Under `flux/park` a tile that reports no work parks unless it has
+registered an `mio::Waker` with the flux work signal, and that signal fires on
+spine publishes alone, so a parked tile would sleep through an inbound request. A
+park build therefore wants the waker and a non-zero timeout, which in turn wants
+this tile's two `Poll`s — the beacon-api server's and the engine-api client's — to
+become one readiness loop, since blocking in either starves the other. The
+interleaving above follows from that one loop, not from the timeout being zero.

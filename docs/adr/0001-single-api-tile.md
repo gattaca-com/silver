@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # One tile hosts all API access
@@ -21,6 +21,4 @@ cheap cost. The spine contract is unchanged: producers and consumers of
 Separate tiles per API surface (status quo — wastes a core per surface); a
 `Hosted` trait + registry (speculative generality for exactly two crates);
 per-crate transport ownership behind a port trait (generics leak into every
-hosted crate's signatures). Four independent designs were produced and
-compared; see `.local/client-server-design.md` (untracked design notes) for
-the full comparison.
+hosted crate's signatures).
