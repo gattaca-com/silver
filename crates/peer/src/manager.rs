@@ -1363,14 +1363,17 @@ impl PeerManager {
         }
     }
 
-    /// Dial backoff earned by a Goodbye, `None` = stay dialable. The
-    /// score-ban family matches lighthouse's 12h `BANNED_BEFORE_DECAY`;
-    /// TooManyPeers is a routine excess-peer shed that expects us back;
-    /// wrong-network codes are futile to redial until a fork change.
+    /// Dial backoff earned by a Goodbye, `None` = stay dialable. Banned
+    /// matches lighthouse's 12h `BANNED_BEFORE_DECAY`; BadScore is only
+    /// their *disconnect* threshold — the score keeps decaying and their
+    /// slowest component (attestation P3b) fades in ~30 min; TooManyPeers
+    /// is a routine excess-peer shed that expects us back; wrong-network
+    /// codes are futile to redial until a fork change.
     fn goodbye_dial_backoff(code: u64) -> Option<Duration> {
         match code {
             GOODBYE_CLIENT_SHUTDOWN => None,
             129 => Some(Duration::from_secs(5 * 60)),
+            250 => Some(Duration::from_secs(30 * 60)),
             3 => Some(Duration::from_secs(3600)),
             _ => Some(REMOTE_BAN_TTL),
         }
