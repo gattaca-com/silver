@@ -369,9 +369,13 @@ impl BeaconStateTile {
 
         self.assert_within_weak_subjectivity();
 
+        // Warm {E-1, E, E+1} shufflings and aggregates before the first
+        // message, so no block or attestation pays a shuffle inline.
         let anchor_epoch = slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(anchor);
+        self.shuffling_cache.ensure_window(&view, anchor_epoch + 1);
         self.shuffling_cache.ensure_window(&view, anchor_epoch);
+        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch + 1);
         self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch);
     }
 
@@ -538,6 +542,15 @@ impl BeaconStateTile {
     /// a state advance occurred.
     fn slot_tick(&mut self, slot: Slot) -> bool {
         let advanced = self.on_slot_start(slot);
+        if advanced {
+            // Head-derived epoch, never the wall clock (wall-clock epochs
+            // diverge from the head during sync and poison the cache).
+            // Covers epochs with no blocks, where no post-apply hook fired.
+            let state_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
+            self.precompute_next_epoch_shuffling(state_epoch);
+            let view = self.state.read_view(self.last_applied);
+            self.shuffling_cache.try_cache_committee_aggs(&view, state_epoch + 1);
+        }
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
         self.attestation_pool.prune_before(floor);

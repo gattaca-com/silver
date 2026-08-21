@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Epoch, RandaoMixesView, SLOTS_PER_EPOCH};
 use silver_common::merkle::sha256;
 
@@ -81,6 +82,7 @@ impl Seed {
     /// Shuffle a list of indices in place using the swap-or-not algorithm.
     /// Backwards iteration (rounds 89→0) to match the spec's committee
     /// derivation: `result[i] = original[compute_shuffled_index(i)]`.
+    #[timed]
     pub fn shuffle(&self, indices: &mut [u32]) {
         let seed = &self.0;
         let n = indices.len();
@@ -113,9 +115,7 @@ impl Seed {
                 if j & 0x07 == 0x07 {
                     byte_v = source[(j & 0xff) >> 3];
                 }
-                if (byte_v >> (j & 0x07)) & 1 == 1 {
-                    indices.swap(i, j);
-                }
+                swap_iff_bit(indices, i, j, byte_v >> (j & 0x07));
             }
 
             // Second half: pairs (i, end - loop_iter).
@@ -134,9 +134,7 @@ impl Seed {
                 if j & 0x07 == 0x07 {
                     byte_v = source[(j & 0xff) >> 3];
                 }
-                if (byte_v >> (j & 0x07)) & 1 == 1 {
-                    indices.swap(i, j);
-                }
+                swap_iff_bit(indices, i, j, byte_v >> (j & 0x07));
             }
         }
     }
@@ -182,6 +180,16 @@ impl Seed {
         }
         index
     }
+}
+
+/// Swap `indices[i]` and `indices[j]` iff `bit`'s low bit is set, branchlessly:
+/// the bit is a coin flip, so a conditional swap mispredicts half the time.
+#[inline(always)]
+fn swap_iff_bit(indices: &mut [u32], i: usize, j: usize, bit: u8) {
+    let mask = ((bit & 1) as u32).wrapping_neg();
+    let t = (indices[i] ^ indices[j]) & mask;
+    indices[i] ^= t;
+    indices[j] ^= t;
 }
 
 #[inline]

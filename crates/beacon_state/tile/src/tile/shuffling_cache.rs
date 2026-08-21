@@ -8,7 +8,8 @@ use crate::{
     stf,
 };
 
-const MAX_SHUFFLING_CACHE: usize = 4;
+// Steady state holds {E-1, E, E+1} plus reorg/precompute transients.
+const MAX_SHUFFLING_CACHE: usize = 6;
 
 pub struct ShufflingCache {
     entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
@@ -55,6 +56,7 @@ impl ShufflingEntry {
 
     /// One aggregate pubkey per beacon committee of the epoch. No-op once
     /// filled, or while the entry holds no shuffling.
+    #[timed]
     fn fill_committee_aggs(
         &mut self,
         view: &StateReadView,
@@ -122,7 +124,7 @@ impl ShufflingCache {
 
     #[timed]
     fn compute_and_cache(&mut self, view: &StateReadView, epoch: Epoch, mix: B256) {
-        let slot = self.find_slot();
+        let slot = self.find_slot(epoch);
         self.entries[slot].make_valid_for(view, epoch, mix);
     }
 
@@ -142,23 +144,19 @@ impl ShufflingCache {
         }
     }
 
-    /// Empty slot first, otherwise lowest-epoch among live entries. Mix is
-    /// frozen data not tied to any arena slot, so there's no "dead gen"
-    /// staleness to check — entries simply become uninteresting once the
-    /// chain advances past their epoch.
-    fn find_slot(&self) -> usize {
-        let mut best_live = 0;
-        let mut best_live_epoch = u64::MAX;
-        for (i, entry) in self.entries.iter().enumerate() {
-            if !entry.is_valid {
-                return i;
-            }
-            if entry.epoch < best_live_epoch {
-                best_live_epoch = entry.epoch;
-                best_live = i;
-            }
+    /// Empty slot first, otherwise the lowest-epoch live entry outside
+    /// `inserted_epoch ± 1` (falling back to plain lowest): an insert must
+    /// never evict its window partner, or `ensure_window`'s second insert
+    /// could evict its first when far-epoch entries crowd the cache.
+    fn find_slot(&self, inserted_epoch: Epoch) -> usize {
+        if let Some(empty) = self.entries.iter().position(|e| !e.is_valid) {
+            return empty;
         }
-        best_live
+        self.entries
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, e)| (e.epoch.abs_diff(inserted_epoch) <= 1, e.epoch))
+            .map_or(0, |(slot, _)| slot)
     }
 
     fn get(&self, epoch: Epoch, mix: B256) -> Option<&ShufflingEntry> {
@@ -198,5 +196,51 @@ impl ShufflingCache {
         let curr = self.get(block_epoch, curr_mix).expect("ensure_window cached current epoch");
         let prev = self.get(prev_epoch, prev_mix).expect("ensure_window cached previous epoch");
         stf::ShufflingRef { curr: curr.shuffling(), prev: prev.shuffling() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_with_epochs(epochs: &[Epoch]) -> Box<ShufflingCache> {
+        let mut cache = ShufflingCache::with_capacity(0);
+        for (entry, &epoch) in cache.entries.iter_mut().zip(epochs) {
+            entry.epoch = epoch;
+            entry.is_valid = true;
+        }
+        cache
+    }
+
+    #[test]
+    fn find_slot_prefers_empty() {
+        let cache = cache_with_epochs(&[10, 11, 12]);
+        assert!(cache.find_slot(11) >= 3);
+    }
+
+    #[test]
+    fn find_slot_never_evicts_adjacent_epochs() {
+        let cache = cache_with_epochs(&[10, 11, 12, 100, 101, 102]);
+        // {10, 11, 12} are within ±1 of the insert; lowest eligible is 100.
+        assert_eq!(cache.find_slot(11), 3);
+    }
+
+    #[test]
+    fn find_slot_window_pair_survives_far_epoch_squatters() {
+        let mut cache = cache_with_epochs(&[50, 51, 52, 53, 54, 55]);
+        // ensure_window(10) inserts 10 then 9: the first insert takes the
+        // lowest live slot, and the second must not evict it.
+        let first = cache.find_slot(10);
+        assert_eq!(cache.entries[first].epoch, 50);
+        cache.entries[first].epoch = 10;
+        let second = cache.find_slot(9);
+        assert_ne!(second, first);
+        assert_eq!(cache.entries[second].epoch, 51);
+    }
+
+    #[test]
+    fn find_slot_falls_back_to_lowest_when_all_adjacent() {
+        let cache = cache_with_epochs(&[10, 11, 12, 11, 10, 12]);
+        assert_eq!(cache.find_slot(11), 0);
     }
 }
