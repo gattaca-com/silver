@@ -41,7 +41,8 @@ pub struct SigBatch {
 /// the spec's MAX_* limits: 1 (block) + 1 (randao) + 16×2 (proposer
 /// slashings) + 1×2 (attester slashings) + 8 (attestations) + 16 (exits) +
 /// 16 (bls_changes) + 1 (sync_aggregate) = 77. Round up.
-const SIG_BATCH_CAP: usize = 128;
+/// But for batched attestations this can be much larger..
+const SIG_BATCH_CAP: usize = 1024;
 
 impl Default for SigBatch {
     fn default() -> Self {

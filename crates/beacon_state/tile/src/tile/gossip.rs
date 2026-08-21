@@ -27,7 +27,7 @@ use crate::{
     merkle, ssz_hash, stf, validate,
 };
 
-pub(super) const ATT_BATCH_CAP: usize = 256;
+pub(super) const ATT_BATCH_CAP: usize = 1024;
 
 pub(super) struct PreparedAttestation {
     buf: [u8; SINGLE_ATT_SIZE],
@@ -241,10 +241,8 @@ impl BeaconStateTile {
             BeaconStateCounters::AttestationBatchFallback.inc();
         }
 
-        //let pending = std::mem::take(&mut self.att_pending);
         let mut accepted = false;
         while !self.att_pending.is_empty() {
-            //for (m, p) in &pending {
             let (m, p) = self.att_pending.swap_remove(0);
             let valid =
                 batch_ok || bls::verify_one_checked(&p.pubkey, &p.signature, &p.signing_root);
