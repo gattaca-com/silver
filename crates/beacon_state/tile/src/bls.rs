@@ -37,6 +37,7 @@ impl PubkeyAggregator {
     /// Batched affine addition — one shared inversion for the whole set,
     /// ~1.8× the serial `AggregatePublicKey::add_public_key` loop. `None`
     /// for an empty set (no identity element to report).
+    #[timed]
     fn sum<'a>(&mut self, pks: impl IntoIterator<Item = &'a PublicKey>) -> Option<blst_p1> {
         self.0.clear();
         self.0.extend(pks.into_iter().map(|pk| pk as *const PublicKey as *const blst_p1_affine));

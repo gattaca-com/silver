@@ -1,6 +1,8 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, SLOTS_PER_EPOCH, StateId};
+use silver_beacon_state_data::{
+    B256, BeaconBlockHeader, Checkpoint, Epoch, SLOTS_PER_EPOCH, StateId,
+};
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TCacheRead, hex32,
     ssz_view::{self, SignedBeaconBlockView},
@@ -87,10 +89,20 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
-        let view = self.state.read_view(self.last_applied);
-        self.shuffling_cache.try_cache_committee_aggs(&view, block_slot / SLOTS_PER_EPOCH);
+        self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
 
         f
+    }
+
+    /// Warm epoch `block_epoch + 1`'s attester shuffling and committee
+    /// aggregates on the head post-state: its inputs (the `E-1` randao mix,
+    /// the active set) are fixed once `block_epoch` begins, so the boundary
+    /// block's inline `ensure_window` becomes a cache hit and every block's
+    /// `collect_sigs` gets the aggregate-subtract path.
+    pub(super) fn precompute_next_epoch_shuffling(&mut self, block_epoch: Epoch) {
+        let view = self.state.read_view(self.last_applied);
+        self.shuffling_cache.ensure_window(&view, block_epoch + 1);
+        self.shuffling_cache.try_cache_committee_aggs(&view, block_epoch + 1);
     }
 
     pub(super) fn replay_block(&mut self, read: TCacheRead) {
@@ -122,6 +134,10 @@ impl BeaconStateTile {
                 "replayed block: {:?}",
                 feedback
             ),
+        }
+
+        if matches!(feedback, Feedback::Accept(_)) {
+            self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
         }
     }
 

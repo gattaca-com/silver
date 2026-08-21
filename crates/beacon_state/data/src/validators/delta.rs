@@ -444,6 +444,7 @@ impl<'a> ValidatorsView<'a> {
         sum
     }
 
+    #[timed]
     pub fn active_indices_into(self, epoch: Epoch, out: &mut Vec<u32>) {
         out.clear();
         let mut act = self.iter_activation_epochs();
