@@ -78,6 +78,10 @@ pub(crate) struct PeerState {
     pub cached_score: f64,
     pub score_valid_at: Instant,
     pub last_breakdown: ScoreBreakdown,
+    /// TooManyPeers goodbye emitted; the connection is on its way down —
+    /// keeps `manage_peers` from re-selecting it while the flush + shutdown
+    /// completes.
+    pub goodbye_sent: bool,
 
     // Graylisted but kept for data-column coverage; dedups the spare log.
     pub evict_spared: bool,
@@ -105,6 +109,7 @@ impl PeerState {
             cached_score: 0.0,
             score_valid_at: now,
             last_breakdown: ScoreBreakdown::default(),
+            goodbye_sent: false,
             evict_spared: false,
         }
     }

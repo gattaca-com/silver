@@ -10,7 +10,8 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequestOutbound, SilverSpine
+    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
+    RpcInbound, RpcOutbound, RpcRequestOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -95,7 +96,7 @@ impl NetworkTile {
                 self.inner.p2p_endpoint.disconnect(p2p_connection, now);
             }
             PeerControl::P2pPeerGoodbye { p2p_connection, code } => {
-                    let goodbye = RpcOutbound::Request(RpcRequestOutbound {
+                let goodbye = RpcOutbound::Request(RpcRequestOutbound {
                     application_id: 0,
                     peer: p2p_connection,
                     request: silver_common::RpcRequest::Goodbye((code as u64).to_le_bytes()),

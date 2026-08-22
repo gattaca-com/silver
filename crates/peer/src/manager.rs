@@ -970,28 +970,44 @@ impl PeerManager {
         }
     }
 
+    /// Trim over-population: past `max_priority_peers` + 10% inbound
+    /// headroom, goodbye (TooManyPeers) the worst strictly-negative scorers
+    /// back toward `max_priority_peers`. Neutral peers — including fresh
+    /// connections, which start at 0 — are never trimmed: with no negatives
+    /// we stay over cap until scores differentiate. Per-beat cap keeps
+    /// removal a trickle rather than a burst.
     fn manage_peers(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        // + 10% for inbound calls.
-        if self.peers.len() > self.params.max_priority_peers  + self.params.max_priority_peers / 10 {
-            // Remove upto 256 negative or zero scored peers. 
-            let to_remove = (self.params.max_priority_peers - self.peers.len()).min(256);
-            let mut candidates = [(0usize, f64::MAX); 256];
-            let mut offset = 0;
-            for (id, peer) in &self.peers {
-                if peer.cached_score <= 0.0 {
-                    candidates[offset] = (*id, peer.cached_score);
-                    offset += 1;
-                    if offset == candidates.len() {
-                        break;
-                    }
+        const MAX_GOODBYES_PER_BEAT: usize = 16;
+        let cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
+        if self.peers.len() <= cap {
+            return;
+        }
+        let excess = self.peers.len() - self.params.max_priority_peers;
+
+        // Bounded scan, no alloc: gather up to array-size negative
+        // candidates (first found, not globally worst), goodbye the worst
+        // of those.
+        let mut candidates = [(0usize, 0.0f64); 256];
+        let mut found = 0;
+        for (id, peer) in &self.peers {
+            if peer.cached_score < 0.0 && !peer.goodbye_sent {
+                candidates[found] = (*id, peer.cached_score);
+                found += 1;
+                if found == candidates.len() {
+                    break;
                 }
             }
-            candidates[..to_remove].sort_by(|(_, a), (_, b)| a.total_cmp(b));
-            for (id, _) in &candidates[..to_remove] {
-                emit(PeerControl::P2pPeerGoodbye { p2p_connection: *id, code: 129 })
-            }
         }
-    } 
+        let candidates = &mut candidates[..found];
+        candidates.sort_unstable_by(|(_, a), (_, b)| a.total_cmp(b));
+
+        let to_remove = excess.min(MAX_GOODBYES_PER_BEAT).min(found);
+        for (id, _) in &candidates[..to_remove] {
+            let Some(peer) = self.peers.get_mut(id) else { continue };
+            peer.goodbye_sent = true;
+            emit(PeerControl::P2pPeerGoodbye { p2p_connection: *id, code: 129 });
+        }
+    }
 
     fn maybe_request_discovery(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         if self.peers.len() >= self.params.target_peers {
@@ -1928,6 +1944,38 @@ pub(crate) mod tests {
 
         let s = mgr.score(1).unwrap();
         assert!((s - -45.0).abs() < 1e-9, "expected -45, got {s}");
+    }
+
+    #[test]
+    fn manage_peers_trims_worst_negatives_only_once() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_priority_peers = 4;
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        for conn in 1..=6usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+        mgr.peers.get_mut(&1).unwrap().cached_score = -5.0;
+        mgr.peers.get_mut(&2).unwrap().cached_score = -2.0;
+        cap.0.clear();
+
+        // 6 peers > cap(4): excess 2 — exactly the two negatives go, the
+        // four neutral (fresh) peers are never trimmed.
+        mgr.manage_peers(&mut |event| cap.0.push(event));
+        let goodbyes: Vec<usize> = cap
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                PeerControl::P2pPeerGoodbye { p2p_connection, code: 129 } => Some(*p2p_connection),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(goodbyes, vec![1, 2]);
+
+        // Already-goodbyed peers are not re-selected while they drain.
+        cap.0.clear();
+        mgr.manage_peers(&mut |event| cap.0.push(event));
+        assert!(cap.0.is_empty());
     }
 
     #[test]

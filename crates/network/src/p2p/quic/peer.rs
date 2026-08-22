@@ -13,7 +13,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    rpc_rate_limit::RpcRateLimitSet, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead
+    P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet,
 };
 
 use crate::{
@@ -400,7 +400,7 @@ impl Peer {
             on_event,
         );
         for id in to_remove {
-            self.remove_stream(id);
+            self.end_stream(id, now);
         }
 
         // Read-response timeouts only fire inside a spin; sweep everything
@@ -419,7 +419,7 @@ impl Peer {
                 on_event,
             );
             for id in to_remove {
-                self.remove_stream(id);
+                self.end_stream(id, now);
             }
         }
     }
@@ -441,11 +441,7 @@ impl Peer {
         let result =
             stream.spin(&mut self.connection, context, now, &mut self.inbound_rpc_limits, on_event);
         if let SpinResult::End = result {
-            if stream.p2p_id.protocol() == StreamProtocol::Goodbye {
-                self.shutdown(now);
-            }
-            self.remove_stream(id);
-
+            self.end_stream(id, now);
             return;
         }
 
@@ -539,6 +535,21 @@ impl Peer {
             }
             quinn_proto::StreamEvent::Available { dir: _ } => {}
         }
+    }
+
+    /// Stream state machine reached its end. A flushed outbound Goodbye
+    /// additionally closes the whole connection — the goodbye contract:
+    /// send, then hang up. Inbound goodbye streams don't shut down here;
+    /// the PM owns that disconnect (and a rate-limit-dropped goodbye flood
+    /// must not hand the flooder a connection close).
+    fn end_stream(&mut self, id: StreamId, now: Instant) {
+        if let Some(stream) = self.streams.get(&id) &&
+            stream.p2p_id.protocol() == StreamProtocol::Goodbye &&
+            !stream.p2p_id.is_incoming()
+        {
+            self.shutdown(now);
+        }
+        self.remove_stream(id);
     }
 
     fn remove_stream(&mut self, id: StreamId) {
