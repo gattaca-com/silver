@@ -59,7 +59,7 @@ pub fn broadcast(c: &mut Criterion) {
                             false,
                             None,
                         );
-                        let p2p = P2p::new(keypair, server_endpoint);
+                        let p2p = P2p::new(keypair, server_endpoint, 1024);
 
                         let context = Context {
                             gossip_producer: gi_producer,
@@ -136,7 +136,7 @@ pub fn broadcast(c: &mut Criterion) {
                     };
 
                     let addr = "127.0.0.1:20002";
-                    let mut p2p = P2p::new(keypair, client_endpoint);
+                    let mut p2p = P2p::new(keypair, client_endpoint, 1024);
                     p2p.connect(
                         server_id.clone(),
                         "127.0.0.1:20001".parse().unwrap(),

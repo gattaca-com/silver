@@ -22,6 +22,7 @@ silver_common::declare_counters! {
         // (the "zombie": peer never responded).
         DialTimeoutZombie,
         InboundAccepted,
+        InboundRefused,
         InboundHandshakeOk,
         // Disconnect reason buckets (ConnectionError variants).
         DisconnectTimedOut,

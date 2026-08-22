@@ -111,10 +111,13 @@ pub struct P2p {
     timeout: Option<Duration>,
     recv_count: usize,
     stats_cursor: usize,
+    /// Hard transport-level connection cap; inbound accepts refused beyond
+    /// it. Outbound dials are bounded separately by the peer manager.
+    max_connections: usize,
 }
 
 impl P2p {
-    pub fn new(keypair: Keypair, endpoint: Endpoint) -> Self {
+    pub fn new(keypair: Keypair, endpoint: Endpoint, max_connections: usize) -> Self {
         Self {
             keypair,
             endpoint,
@@ -123,6 +126,7 @@ impl P2p {
             timeout: Some(Duration::ZERO),
             recv_count: 0,
             stats_cursor: 0,
+            max_connections,
         }
     }
 
@@ -223,6 +227,15 @@ impl P2p {
                 }
             }
             DatagramEvent::NewConnection(incoming) => {
+                // Hard population cap: refuse at the QUIC layer (pre-TLS,
+                // cheap) — the peer manager's score-based trim only polices
+                // quality inside the band below this.
+                if self.peers.len() >= self.max_connections {
+                    crate::NetworkCounters::InboundRefused.inc();
+                    let rsp = self.endpoint.refuse(incoming, scratch);
+                    let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
+                    return true;
+                }
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
                         crate::NetworkCounters::InboundAccepted.inc();

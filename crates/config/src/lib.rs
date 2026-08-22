@@ -325,6 +325,14 @@ impl Config {
         self.discovery_config.clone()
     }
 
+    /// Hard cap on transport connections — inbound accepts are refused at
+    /// the QUIC layer beyond it. Sits above the peer manager's trim band
+    /// (`max_priority_peers` + 10%) so score-based trimming has room to
+    /// work inside it.
+    pub fn max_connections(&self) -> usize {
+        self.peer_score_params.max_priority_peers * 12 / 10
+    }
+
     pub fn peer_score_params(&self) -> ScoreParams {
         self.peer_score_params.clone()
     }
