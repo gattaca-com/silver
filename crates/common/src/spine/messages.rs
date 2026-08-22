@@ -662,6 +662,10 @@ pub enum PeerControl {
         p2p: PeerId,
         p2p_connection: usize,
     },
+    P2pPeerGoodbye {
+        p2p_connection: usize,
+        code: u32,
+    },
     /// Peer-level ban has timed out — counterpart to `Ban`. Network tile
     /// removes the peer from any deny-list / discv5 routing-table eviction
     /// state. Emitted from `tick` when the per-peer ban TTL expires.

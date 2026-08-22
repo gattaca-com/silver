@@ -13,7 +13,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet,
+    rpc_rate_limit::RpcRateLimitSet, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead
 };
 
 use crate::{
@@ -441,7 +441,11 @@ impl Peer {
         let result =
             stream.spin(&mut self.connection, context, now, &mut self.inbound_rpc_limits, on_event);
         if let SpinResult::End = result {
+            if stream.p2p_id.protocol() == StreamProtocol::Goodbye {
+                self.shutdown(now);
+            }
             self.remove_stream(id);
+
             return;
         }
 

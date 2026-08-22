@@ -649,6 +649,9 @@ impl PeerManager {
             }
         });
 
+        // 10) manage over population
+        self.manage_peers(emit);
+
         crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
     }
 
@@ -966,6 +969,29 @@ impl PeerManager {
             }
         }
     }
+
+    fn manage_peers(&mut self, emit: &mut impl FnMut(PeerControl)) {
+        // + 10% for inbound calls.
+        if self.peers.len() > self.params.max_priority_peers  + self.params.max_priority_peers / 10 {
+            // Remove upto 256 negative or zero scored peers. 
+            let to_remove = (self.params.max_priority_peers - self.peers.len()).min(256);
+            let mut candidates = [(0usize, f64::MAX); 256];
+            let mut offset = 0;
+            for (id, peer) in &self.peers {
+                if peer.cached_score <= 0.0 {
+                    candidates[offset] = (*id, peer.cached_score);
+                    offset += 1;
+                    if offset == candidates.len() {
+                        break;
+                    }
+                }
+            }
+            candidates[..to_remove].sort_by(|(_, a), (_, b)| a.total_cmp(b));
+            for (id, _) in &candidates[..to_remove] {
+                emit(PeerControl::P2pPeerGoodbye { p2p_connection: *id, code: 129 })
+            }
+        }
+    } 
 
     fn maybe_request_discovery(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         if self.peers.len() >= self.params.target_peers {

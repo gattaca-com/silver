@@ -44,7 +44,7 @@ pub struct SilverSpine {
     /// RPC recv messages.
     #[queue(size(2usize.pow(14)))]
     pub rpc_inbound: SpineQueue<RpcInbound>,
-    #[queue(size(2usize.pow(14)))]
+    #[queue(size(2usize.pow(16)))]
     pub peer_events: SpineQueue<PeerEvent>,
     #[queue(size(2usize.pow(14)))]
     pub peer_control: SpineQueue<PeerControl>,

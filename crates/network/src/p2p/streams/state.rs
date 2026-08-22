@@ -382,8 +382,13 @@ impl StreamState {
                         RpcWriteRequest::Complete(app_id) => {
                             // close write side
                             io.close_write(id.stream_id())?;
-                            let read = RpcReadResponse::new(app_id, 0, now, &mut codec.dec);
-                            Ok(Self::OutgoingRpc { rpc: RpcOut::ReadResponse(read), codec })
+
+                            if id.protocol() == StreamProtocol::Goodbye {
+                                Ok(Self::Finished)
+                            } else {
+                                let read = RpcReadResponse::new(app_id, 0, now, &mut codec.dec);
+                                Ok(Self::OutgoingRpc { rpc: RpcOut::ReadResponse(read), codec })
+                            }
                         }
                         other => Ok(Self::OutgoingRpc { rpc: RpcOut::WriteRequest(other), codec }),
                     }
