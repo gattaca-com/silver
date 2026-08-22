@@ -8,7 +8,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub use consumer::{AcquiredRead, Consumer, RandomAccessConsumer, TCacheRead};
+pub use consumer::{AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead};
 use flux::{Timer, timing::Nanos, tracing};
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
 use thiserror::Error;
@@ -204,6 +204,26 @@ impl TCache {
         name: &'static str,
         auto_free: bool,
     ) -> Result<RandomAccessConsumer, Error> {
+        self.ra_consumer(name, auto_free, false)
+    }
+
+    /// Strict random access consumer cannot be force reset
+    /// on idle and therefore can block producer - only use
+    /// for high throughput consumers.
+    pub fn strict_random_access(
+        &self,
+        name: &'static str,
+        auto_free: bool,
+    ) -> Result<RandomAccessConsumer, Error> {
+        self.ra_consumer(name, auto_free, true)
+    }
+
+    fn ra_consumer(
+        &self,
+        name: &'static str,
+        auto_free: bool,
+        strict: bool,
+    ) -> Result<RandomAccessConsumer, Error> {
         let seq = self.head().seq.load(Ordering::Acquire);
 
         let index = self
@@ -225,16 +245,23 @@ impl TCache {
         self.record_tail(index, seq);
         self.record_consumer_name(index, name);
 
+        let active = if strict {
+            Buckets::strict(32 * 1024, self.len as u64, seq)
+        } else {
+            Buckets::new(32 * 1024, self.len as u64, seq)
+        };
+
         Ok(RandomAccessConsumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
             name,
-            active: Buckets::new(32 * 1024, self.len as u64, seq),
+            active,
             auto_free,
             timer: self.create_consumer_timer(name),
             last_read: Nanos::now(),
             last_head: seq,
             lag_threshold: lag_threshold(self.len),
+            strict,
         })
     }
 
@@ -322,6 +349,17 @@ impl TCache {
             return Err(Error::WrongSeq { expected: seq, slot: slot_seq });
         }
         Ok(slot.reserve_ns)
+    }
+
+    fn check_seq(&self, seq: u64) -> bool {
+        let idx = self.index(seq);
+        let slot: &Slot = self.slot_at(idx);
+        if slot.magic != MAGIC {
+            return false;
+        }
+
+        let slot_seq = slot.seq.load(Ordering::Acquire);
+        slot_seq == seq
     }
 
     fn reserve_len(&self, seq: u64, requested_len: usize) -> usize {

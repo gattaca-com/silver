@@ -332,6 +332,11 @@ impl App {
         self.gossip_selected = Some(self.gossip_display_order[new]);
     }
 
+    /// Peers pane: jump selection to the first row of the current sort.
+    pub fn select_top_peer(&mut self) {
+        self.peers_selected = self.peers_display_order.first().copied();
+    }
+
     /// Peers pane: move the sort column left/right, wrapping.
     pub fn adjust_peers_sort(&mut self, dir: i32) {
         let n = crate::render::peers_pane::COLUMNS.len() as i32;

@@ -221,6 +221,13 @@ impl NetworkTile {
                             .into()),
                         );
                     }
+                    p2p::SendResult::ConnectionClosing => {
+                        tracing::debug!(
+                            peer = msg.peer_id(),
+                            protocol = ?msg.protocol(),
+                            "send refused: connection closing"
+                        );
+                    }
                     p2p::SendResult::UnknownPeer => {
                         // Can happen if peer has disconnected.
                         tracing::debug!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");

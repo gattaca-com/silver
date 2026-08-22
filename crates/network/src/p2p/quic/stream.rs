@@ -1,5 +1,6 @@
 use std::io::{Error, Write};
 
+use bytes::Bytes;
 use quinn_proto::{Connection, StreamId, WriteError};
 
 use crate::p2p::{
@@ -17,6 +18,15 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         let mut stream = self.connection.send_stream(id);
         match stream.write(data) {
             Ok(wrote) => Ok(wrote),
+            Err(WriteError::Blocked) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn write_bytes_to_stream(&mut self, id: StreamId, data: Bytes) -> Result<usize, StreamError> {
+        let mut stream = self.connection.send_stream(id);
+        match stream.write_chunks(&mut [data]) {
+            Ok(wrote) => Ok(wrote.bytes),
             Err(WriteError::Blocked) => Ok(0),
             Err(e) => Err(e.into()),
         }

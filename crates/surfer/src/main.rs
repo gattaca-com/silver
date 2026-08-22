@@ -214,6 +214,7 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
         KeyCode::Char('r') if app.pane == app::Pane::Peers => {
             app.peers_sort_desc = !app.peers_sort_desc
         }
+        KeyCode::Char('t') if app.pane == app::Pane::Peers => app.select_top_peer(),
         KeyCode::Char('[') => app.adjust_split(-1),
         KeyCode::Char(']') => app.adjust_split(1),
         KeyCode::Char('p') => app.flamegraph.toggle_pause(),

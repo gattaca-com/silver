@@ -18,8 +18,8 @@ pub use stream_protocol::{
     ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, RPC_PROTOCOLS, StreamProtocol,
 };
 pub use tcache::{
-    AcquiredRead, Consumer, Error, MultiProducer, Producer, RandomAccessConsumer, Reservation,
-    TCache, TCacheProducer, TCacheRead, TCacheRef,
+    AcquiredRead, AcquiredWithOffset, Consumer, Error, MultiProducer, Producer,
+    RandomAccessConsumer, Reservation, TCache, TCacheProducer, TCacheRead, TCacheRef,
 };
 
 mod messages;
