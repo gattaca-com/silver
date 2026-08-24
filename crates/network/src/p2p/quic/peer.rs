@@ -37,7 +37,10 @@ const STREAM_ERR_CODE_PROTOCOL: u32 = 1;
 const STREAM_ERR_CODE_RESPONSE_TIMEOUT: u32 = 2;
 /// Whole-life budget for an inbound RPC stream (negotiate + request +
 /// serve). Generous so a large by-range serve to a slow peer survives.
-const INBOUND_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+/// Inactivity budget for inbound RPC streams: reset by inbound bytes,
+/// write-credit progress, and response chunks we enqueue — a stream making
+/// progress lives; a wedged one is reaped.
+const INBOUND_RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct Peer {
     id: RemotePeer,
@@ -159,7 +162,10 @@ impl Peer {
             }
             AcquiredRpcOutbound::Response(rsp) => {
                 match self.streams.get_mut(&rsp.stream_id.stream_id()) {
-                    Some(stream) => stream,
+                    Some(stream) => {
+                        stream.last_activity = Instant::now();
+                        stream
+                    }
                     None => {
                         tracing::debug!(stream_id = ?rsp.stream_id, "rpc response: stream gone");
                         return SendResult::StreamGone;
@@ -276,6 +282,7 @@ impl Peer {
             needs_spin: true,
             setup_deadline: None,
             created_at: Instant::now(),
+            last_activity: Instant::now(),
         });
         Some(id)
     }
@@ -488,6 +495,7 @@ impl Peer {
                         needs_spin: true,
                         setup_deadline: None,
                         created_at: Instant::now(),
+                        last_activity: Instant::now(),
                     });
                     on_event(NetEvent::StreamReady { stream: p2p_id });
                     tracing::debug!(?p2p_id, "stream open");
@@ -495,6 +503,9 @@ impl Peer {
             }
             quinn_proto::StreamEvent::Readable { id } |
             quinn_proto::StreamEvent::Writable { id } => {
+                if let Some(stream) = self.streams.get_mut(&id) {
+                    stream.last_activity = now;
+                }
                 self.spin_stream(id, now, context, on_event);
             }
             quinn_proto::StreamEvent::Finished { id } => {
@@ -674,6 +685,9 @@ struct Stream {
     needs_spin: bool,
     setup_deadline: Option<Instant>,
     created_at: Instant,
+    /// Last observed progress (event-driven only — the periodic sweep must
+    /// not touch it, or the idle timeout never fires).
+    last_activity: Instant,
 }
 
 enum SpinResult {
@@ -704,9 +718,10 @@ impl Stream {
         // Inbound RPC streams have no state-machine deadline of their own:
         // a starved request read, a response lost before enqueue, or an
         // unacked FIN would otherwise park the stream forever (observed as
-        // aged `IncomingRpc` census entries from teku).
+        // aged `IncomingRpc` census entries from teku). Idle-based, so a
+        // long multi-chunk serve to a slow-but-progressing peer survives.
         if matches!(self.state.get_mut(), StreamState::IncomingRpc { .. }) &&
-            now >= self.created_at + INBOUND_RPC_TIMEOUT
+            now >= self.last_activity + INBOUND_RPC_IDLE_TIMEOUT
         {
             return self.timed_out("inbound rpc timeout", connection, on_event);
         }
@@ -811,8 +826,8 @@ impl Stream {
         // reset, not finish: FIN queues behind buffered data the stalled
         // peer isn't draining, so the stream — and its MAX_STREAMS credit —
         // would leak at the QUIC layer.
-        let _ = connection.send_stream(id).reset(VarInt::from_u32(1));
-        let _ = connection.recv_stream(id).stop(VarInt::from_u32(1));
+        let _ = connection.send_stream(id).reset(VarInt::from_u32(STREAM_ERR_CODE_PROTOCOL));
+        let _ = connection.recv_stream(id).stop(VarInt::from_u32(STREAM_ERR_CODE_PROTOCOL));
         on_event(NetEvent::StreamClosed { stream: self.p2p_id });
         SpinResult::End
     }
@@ -824,7 +839,7 @@ impl Stream {
         if state.in_setup() {
             self.setup_deadline
         } else if matches!(state, StreamState::IncomingRpc { .. }) {
-            Some(self.created_at + INBOUND_RPC_TIMEOUT)
+            Some(self.last_activity + INBOUND_RPC_IDLE_TIMEOUT)
         } else {
             state.deadline()
         }
@@ -1309,7 +1324,7 @@ mod tests {
     }
 
     /// A negotiated inbound RPC stream whose request never arrives must be
-    /// reaped by `INBOUND_RPC_TIMEOUT` — only the server is spun past the
+    /// reaped by `INBOUND_RPC_IDLE_TIMEOUT` — only the server is spun past the
     /// deadline, so the reap can't be masked by the client's own teardown.
     #[test]
     fn inbound_rpc_timeout_reaps_unanswered_stream() {
@@ -1353,7 +1368,7 @@ mod tests {
         let mut cb = |h, e| server_ep.handle_event(h, e);
         let mut on_event = |_: NetEvent| {};
         server_peer.spin(
-            t0 + INBOUND_RPC_TIMEOUT + Duration::from_secs(1),
+            t0 + INBOUND_RPC_IDLE_TIMEOUT + Duration::from_secs(1),
             &mut cb,
             &mut server_h.context,
             &mut on_event,

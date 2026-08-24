@@ -425,7 +425,7 @@ mod tests {
         let key = cfg.keypair().unwrap();
         enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
         // Unpadded base64: 4 chars per 3 bytes.
-        let bytes = enr.to_base64().trim_start_matches("enr:").len() * 3 / 4;
+        let bytes = enr.size();
         assert!(bytes <= 300, "ENR is {bytes} bytes, discv5 caps records at 300");
     }
 
