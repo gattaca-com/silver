@@ -22,6 +22,7 @@ steps:
     from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
   - kind: step
   - kind: check
+    outbound_has: [block_received]
     outbound_lacks: [persist_block]
 
   # Storage tile reports the columns validated → the buffered block is released

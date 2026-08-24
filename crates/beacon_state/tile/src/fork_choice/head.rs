@@ -44,6 +44,7 @@ impl ForkChoice {
                 self.maybe_update_best_branch(parent, i);
             }
         }
+        self.head_moved = true;
     }
 
     fn add_proposer_boost(&mut self, root: B256, score: i64) {

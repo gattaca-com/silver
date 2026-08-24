@@ -2,11 +2,14 @@ use flux::spine::SpineProducers;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
-    BeaconStateEvent, BlockSource, NewGossipMsg, P2pStreamId, PeerEvent, RpcSeverity, TCacheRead,
-    TRandomAccess, hex32, metrics::timed, ssz_view::SignedBeaconBlockView,
+    BeaconStateEvent, BlockSource, DataKind, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
+    RpcSeverity, SyncNeed, TCacheRead, TRandomAccess, hex32, metrics::timed,
+    ssz_view::SignedBeaconBlockView,
 };
 
-use super::{BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers};
+use super::{BeaconStateTile, Feedback, Producers};
+
+const MAX_PENDING_PER_PARENT: usize = 4;
 
 impl BeaconStateTile {
     #[timed]
@@ -20,14 +23,27 @@ impl BeaconStateTile {
         let mut outlives = |msg: &PendingBlock| {
             pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
         };
-        self.pending_blocks.retain(|_, msgs| msgs.iter().all(|(_, msg)| outlives(msg)));
+        self.pending_blocks.retain(|_, msgs| {
+            msgs.retain(|(_, msg)| outlives(msg));
+            !msgs.is_empty()
+        });
         self.dc_pending_blocks.retain(|_, msg| outlives(msg));
-        self.payload_pending_blocks.retain(|_, msgs| msgs.iter().all(&mut outlives));
+        self.payload_pending_blocks.retain(|_, msgs| {
+            msgs.retain(&mut outlives);
+            !msgs.is_empty()
+        });
         self.dc_available.retain(|_, slot| *slot > finalized_slot);
-        self.pending_envelopes.retain(|_, handle| handle.buffer().is_ok());
 
-        let fc = &self.fork_choice;
-        self.envelope_requested.retain(|root, _| fc.find_node_idx(root).is_some());
+        self.pending_envelopes.retain(|root, handle| {
+            let held = handle.buffer().is_ok();
+            if !held {
+                tracing::error!(
+                    block = hex32(root),
+                    "parked envelope lapped in the tcache before its block arrived"
+                );
+            }
+            held
+        });
     }
 
     pub(super) fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
@@ -48,33 +64,34 @@ impl BeaconStateTile {
         block_root: B256,
         pending: PendingBlock,
         block_slot: Slot,
-        peer: usize,
         producers: &mut Producers,
-    ) {
+    ) -> bool {
         if !self.within_pending_window(block_slot) {
-            return;
+            tracing::debug!(
+                block_slot,
+                wall_slot = self.ticker.current_slot(),
+                "orphan outside the pending window; dropped"
+            );
+            return false;
         }
 
         let head_slot = self.head_state_slot();
-        if self.mode.is_following() &&
-            block_slot.saturating_sub(head_slot) > self.pending_bounds.max_chain_len as u64
-        {
+        if block_slot.saturating_sub(head_slot) > self.pending_bounds.max_chain_len as u64 {
             tracing::warn!(
                 block_slot,
                 head_slot,
                 limit = self.pending_bounds.max_chain_len,
-                "orphan too far ahead; falling back to range sync"
+                "orphan too far ahead"
             );
-            producers.produce(BeaconStateEvent::BacktrackStall);
-            return;
+            return false;
         }
 
         let existing = self.pending_blocks.get(&parent_root);
         if existing.is_some_and(|v| v.iter().any(|(r, _)| *r == block_root)) {
-            return;
+            return true;
         }
 
-        let at_parent_cap = existing.is_some_and(|v| v.len() >= self.max_pending_per_parent);
+        let at_parent_cap = existing.is_some_and(|v| v.len() >= MAX_PENDING_PER_PARENT);
         let new_parent = existing.is_none();
         if at_parent_cap ||
             (new_parent && self.pending_blocks.len() >= self.pending_bounds.max_parents)
@@ -85,19 +102,18 @@ impl BeaconStateTile {
                 pending_parents = self.pending_blocks.len(),
                 "pending-orphan buffer full; dropping orphan"
             );
-            return;
+            return false;
         }
 
-        let request =
-            self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
         self.pending_blocks.entry(parent_root).or_default().push((block_root, pending));
-        if request {
-            producers.produce(PeerEvent::SendBlocksByRootRequest {
-                request_id: BY_ROOT_REQUEST_ID,
-                p2p_peer: Some(peer),
-                block_root: parent_root,
-            });
-        }
+        producers.produce(SyncNeed::Missing {
+            root: parent_root,
+            slot: block_slot,
+            kind: DataKind::Block,
+            columns: 0,
+            origin: Origin::Live,
+        });
+        true
     }
 
     /// True iff `block_slot` is inside the pending admission window:
@@ -109,32 +125,52 @@ impl BeaconStateTile {
             block_slot <= self.ticker.current_slot() + self.pending_bounds.future_tolerance
     }
 
-    pub(super) fn buffer_awaiting_columns(&mut self, block_root: B256, pending: PendingBlock) {
+    pub(super) fn buffer_awaiting_columns(
+        &mut self,
+        block_root: B256,
+        pending: PendingBlock,
+    ) -> bool {
         if !has_room(&self.dc_pending_blocks, self.pending_bounds.max_dc, &block_root) {
-            return;
+            tracing::warn!(
+                block = hex32(&block_root),
+                cap = self.pending_bounds.max_dc,
+                "dc-pending buffer full; block awaiting columns dropped"
+            );
+            return false;
         }
+
         self.dc_pending_blocks.entry(block_root).or_insert(pending);
+        true
     }
 
     pub(super) fn buffer_awaiting_payload(
         &mut self,
         parent_root: B256,
+        block_slot: Slot,
         pending: PendingBlock,
-        peer: usize,
         producers: &mut Producers,
-    ) {
-        let known = self.payload_pending_blocks.contains_key(&parent_root);
-        if !known && self.payload_pending_blocks.len() >= self.pending_bounds.max_dc {
-            return;
+    ) -> bool {
+        if !self.payload_pending_blocks.contains_key(&parent_root) &&
+            self.payload_pending_blocks.len() >= self.pending_bounds.max_dc
+        {
+            tracing::warn!(
+                parent = hex32(&parent_root),
+                block_slot,
+                cap = self.pending_bounds.max_dc,
+                "payload-pending buffer full; block awaiting parent envelope dropped"
+            );
+            return false;
         }
+
         self.payload_pending_blocks.entry(parent_root).or_default().push(pending);
-        if !known {
-            producers.produce(PeerEvent::SendEnvelopesByRootRequest {
-                request_id: BY_ROOT_REQUEST_ID,
-                p2p_peer: Some(peer),
-                block_root: parent_root,
-            });
-        }
+        producers.produce(SyncNeed::Missing {
+            root: parent_root,
+            slot: block_slot,
+            kind: DataKind::Envelope,
+            columns: 0,
+            origin: Origin::Live,
+        });
+        true
     }
 
     pub(super) fn drain_awaiting_payload(
@@ -172,9 +208,7 @@ impl BeaconStateTile {
         slot: u64,
         producers: &mut Producers,
     ) {
-        if slot > self.da_boundary() {
-            self.dc_available.insert(block_root, slot);
-        }
+        self.dc_available.insert(block_root, slot);
         tracing::debug!(
             block = hex32(&block_root),
             slot = slot,
@@ -204,19 +238,51 @@ impl BeaconStateTile {
         data: &[u8],
         producers: &mut Producers,
     ) {
-        match feedback {
+        let admitted = match feedback {
             Feedback::RequestParent { parent_root, block_root } => {
-                let peer = source.peer();
                 let block_slot = SignedBeaconBlockView::slot(data);
-                self.buffer_orphan(parent_root, block_root, source, block_slot, peer, producers);
+                self.buffer_orphan(parent_root, block_root, source, block_slot, producers)
+                    .then_some(block_root)
             }
-            Feedback::AwaitData(block_root) => self.buffer_awaiting_columns(block_root, source),
-            Feedback::AwaitParentPayload { parent_root, .. } => {
-                let peer = source.peer();
-                self.buffer_awaiting_payload(parent_root, source, peer, producers);
+            Feedback::AwaitData(block_root) => {
+                self.buffer_awaiting_columns(block_root, source).then_some(block_root)
             }
-            _ => debug_assert!(false, "park_block: unexpected feedback {feedback:?}"),
+            Feedback::AwaitParentPayload { parent_root, block_root } => self
+                .buffer_awaiting_payload(
+                    parent_root,
+                    SignedBeaconBlockView::slot(data),
+                    source,
+                    producers,
+                )
+                .then_some(block_root),
+            _ => {
+                debug_assert!(false, "park_block: unexpected feedback {feedback:?}");
+                None
+            }
+        };
+
+        if let Some(block_root) = admitted {
+            self.emit_block_received(data, block_root, false, producers);
         }
+    }
+
+    pub(super) fn emit_block_received(
+        &self,
+        data: &[u8],
+        block_root: B256,
+        applied: bool,
+        producers: &mut Producers,
+    ) {
+        let parent_root = *SignedBeaconBlockView::parent_root(data);
+        producers.produce(BeaconStateEvent::BlockReceived {
+            slot: SignedBeaconBlockView::slot(data),
+            block_root,
+            applied,
+            parent_slot: self
+                .fork_choice
+                .find_node_idx(&parent_root)
+                .map(|idx| self.fork_choice.node(idx).slot),
+        });
     }
 
     pub(super) fn handle_rpc_block(
@@ -247,30 +313,15 @@ impl BeaconStateTile {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::Fatal,
             }),
-            Feedback::Ignore => {}
+            Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
             _ => self.park_block(feedback, PendingBlock::Rpc(sender, read), data, producers),
         }
-    }
-
-    /// Below this slot data availability is not required (already finalized,
-    /// or PM is range-syncing past it).
-    pub(super) fn da_boundary(&self) -> Slot {
-        self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
     }
 }
 
 pub(super) enum PendingBlock {
     Gossip(NewGossipMsg),
     Rpc(P2pStreamId, TCacheRead),
-}
-
-impl PendingBlock {
-    fn peer(&self) -> usize {
-        match self {
-            Self::Gossip(m) => m.stream_id.peer(),
-            Self::Rpc(sender, _) => sender.peer(),
-        }
-    }
 }
 
 /// Resolve a pending block's slot via its source consumer. `None` if the
@@ -298,5 +349,14 @@ fn pending_block_outlives(
     msg: &PendingBlock,
     finalized_slot: u64,
 ) -> bool {
-    pending_block_slot(gossip_consumer, rpc_consumer, msg).is_some_and(|s| s > finalized_slot)
+    match pending_block_slot(gossip_consumer, rpc_consumer, msg) {
+        Some(slot) => slot > finalized_slot,
+        None => {
+            tracing::error!(
+                "parked block lapped in the tcache before its dependency arrived; \
+                 its coverage is now false"
+            );
+            false
+        }
+    }
 }

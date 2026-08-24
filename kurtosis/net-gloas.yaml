@@ -1,62 +1,88 @@
-# Kurtosis ethereum-package args for a local Gloas devnet
+# Kurtosis ethereum-package args for a local Gloas devnet, mirroring ethpandaops
+# glamsterdam-devnet-7.
 #
-#   PACKAGE=github.com/ethpandaops/ethereum-package \
-#     kurtosis/setup.sh --recreate --gloas silver-gloas
+#   kurtosis/setup.sh --recreate --gloas silver-gloas
 #
 # Differences from net.yaml (Fulu):
 #   - gloas_fork_epoch set (Gloas activates shortly after genesis) so the chain
-#     produces Gloas blocks/envelopes/PTC without a multi-hour wait. Gloas ships
-#     in Glamsterdam; ethpandaops devnet-6 uses epoch 30 with a long Fulu tail,
-#     but a low epoch is fine for a follower test.
-#   - REQUIRES ethereum-package @ main (the `gloas_fork_epoch` param postdates
-#     the 6.1.0 tag) — pass PACKAGE=github.com/ethpandaops/ethereum-package.
+#     produces Gloas blocks/envelopes/PTC without a multi-hour wait. devnet-7
+#     itself uses epoch 38 with a long Fulu tail; a low epoch is fine for a
+#     follower test.
+#   - no staged blob schedule: BPO1/BPO2 are unusable this close to the Gloas
+#     epoch (see below), so the follower sees one blob-parameter regime.
+#
+# Every EL is reth, deliberately. A mixed EL set does not survive the Amsterdam
+# boundary on devnet-7: geth rejected its peers' payloads with `invalid gas used
+# (remote: 84000 local: 60000)` and `access list hash mismatch` (EIP-7928), so
+# envelopes became unimportable, the chain never finalized, and the CLs banned
+# each other into a full partition. devnet-8 images fix that but carry features
+# silver does not implement yet, and no devnet-7 build is newer than these — so
+# one EL client it is. The CL mix stays (2 lighthouse + 2 prysm), which is what
+# silver actually peers against; silver runs unsafe_no_el and drives no EL.
+#
+# The pinned ethereum-package (6.1.0) emits neither PAYLOAD_DUE_BPS nor
+# CONFIRMATION_BYZANTINE_THRESHOLD, leaving the clients' own defaults to decide
+# them, so cross-check /eth/v1/config/spec if the chain misbehaves at the fork.
 
 participants:
-  - el_type: geth
-    el_image: ethpandaops/geth:glamsterdam-devnet-6
+  - el_type: reth
+    el_image: ethpandaops/reth:glamsterdam-devnet-7
     cl_type: lighthouse
-    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-6
+    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-7
     cl_extra_params:
       - --target-peers=64
     count: 1
   - el_type: reth
-    el_image: ethpandaops/reth:glamsterdam-devnet-6
+    el_image: ethpandaops/reth:glamsterdam-devnet-7
     cl_type: lighthouse
-    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-6
+    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-7
     cl_extra_params:
       - --target-peers=64
     count: 1
-  - el_type: nethermind
-    el_image: ethpandaops/nethermind:glamsterdam-devnet-6
+  - el_type: reth
+    el_image: ethpandaops/reth:glamsterdam-devnet-7
     cl_type: prysm
-    cl_image: ethpandaops/prysm-beacon-chain:glamsterdam-devnet-6
-    vc_image: ethpandaops/prysm-validator:glamsterdam-devnet-6
+    cl_image: ethpandaops/prysm-beacon-chain:glamsterdam-devnet-7
+    vc_image: ethpandaops/prysm-validator:glamsterdam-devnet-7
     count: 1
-  - el_type: geth
-    el_image: ethpandaops/geth:glamsterdam-devnet-6
+  - el_type: reth
+    el_image: ethpandaops/reth:glamsterdam-devnet-7
     cl_type: prysm
-    cl_image: ethpandaops/prysm-beacon-chain:glamsterdam-devnet-6
-    vc_image: ethpandaops/prysm-validator:glamsterdam-devnet-6
+    cl_image: ethpandaops/prysm-beacon-chain:glamsterdam-devnet-7
+    vc_image: ethpandaops/prysm-validator:glamsterdam-devnet-7
     count: 1
 
 network_params:
   preset: mainnet
   seconds_per_slot: 12
   num_validator_keys_per_node: 128
-  genesis_delay: 20
+  # G1 (Gloas from genesis) wants silver joining at slot ~0, so genesis must
+  # land after setup.sh's harvest rather than during `kurtosis run`.
+  genesis_delay: 180
   deneb_fork_epoch: 0
   electra_fork_epoch: 0
   fulu_fork_epoch: 0
-  # Gloas a few epochs out so a from-genesis (Fulu) follower can catch up and be
-  # Following *before* the fork, then exercise the live Fulu→Gloas transition
-  # (digest flip, subscription re-fanout, ENR update) across the boundary.
-  # epoch 3 = slot 96 = ~19 min after genesis at 12s slots.
-  gloas_fork_epoch: 3
+  # Two scenarios share this file:
+  #   G1 — Gloas as early as the tooling allows (epoch 1, slot 32). Epoch 0 is
+  #        not producible: the package's genesis generator emits a state
+  #        lighthouse rejects as Gloas ("genesis state SSZ bytes are invalid:
+  #        OffsetsAreDecreasing"), so genesis is always Fulu.
+  #   G2/G3 — the live and mid-sync Fulu->Gloas transition: set this to 12
+  #        (slot 384, ~77 min after genesis) so a Fulu follower reaches
+  #        Following well before the boundary.
+  gloas_fork_epoch: 1
+  # devnet-7 BLOB_SCHEDULE: 9 -> 15 at epoch 1 -> 21 at epoch 2. Targets and
+  # base-fee fractions already match devnet-7 by default. Only valid with a
+  # non-zero gloas_fork_epoch: geth rejects a BPO scheduled after Amsterdam,
+  # and Gloas at epoch 0 puts Amsterdam at genesis.
+  # bpo_1_epoch: 1
+  # bpo_2_epoch: 2
 
 global_log_level: debug
 
+# dora is dropped: no glamsterdam-devnet-7 image is published, and a stale
+# explorer that cannot parse Gloas fails the whole `kurtosis run`.
 additional_services:
-  - dora
   - spamoor
 
 spamoor_params:

@@ -349,6 +349,7 @@ fn maybe_upgrade_to_gloas(
     if cfg.is_gloas_activation_epoch(current_epoch) &&
         !epoch.reader().is_gloas(view.imm.gloas_fork_version)
     {
+        tracing::info!(epoch = current_epoch, "state upgraded to gloas");
         upgrade_to_gloas(view, epoch);
     }
 }

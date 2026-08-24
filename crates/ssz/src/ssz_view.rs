@@ -584,25 +584,28 @@ impl SignedBeaconBlockView {
     }
 
     #[inline]
-    pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
+    pub fn gloas_bid(buf: &[u8]) -> Option<&[u8]> {
         let body = Self::body(buf);
         if body.len() < BEACON_BLOCK_BODY_FIXED {
-            return &[];
+            return None;
         }
         let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
         let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
-        if bid_off < BEACON_BLOCK_BODY_FIXED || bid_off > pa_off || pa_off > body.len() {
-            return &[];
+        if bid_off < BEACON_BLOCK_BODY_FIXED {
+            return None;
         }
-        let signed_bid = &body[bid_off..pa_off];
+        // `get` covers an inverted range and one past the body.
+        let signed_bid = body.get(bid_off..pa_off)?;
         if !SignedExecutionPayloadBidView::check_size(signed_bid) {
-            return &[];
+            return None;
         }
         let bid = SignedExecutionPayloadBidView::message(signed_bid);
-        if !ExecutionPayloadBidView::check_size(bid) {
-            return &[];
-        }
-        ExecutionPayloadBidView::blob_kzg_commitments(bid)
+        ExecutionPayloadBidView::check_size(bid).then_some(bid)
+    }
+
+    #[inline]
+    pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
+        Self::gloas_bid(buf).map_or(&[], ExecutionPayloadBidView::blob_kzg_commitments)
     }
 
     #[inline]
@@ -1043,7 +1046,7 @@ impl DataColumnSidecarFuluView {
         let col_off = u32_le(buf, 8) as usize;
         let com_off = u32_le(buf, 12) as usize;
         let proof_off = u32_le(buf, 16) as usize;
-        col_off >= DATA_COLUMN_SIDECAR_MIN &&
+        col_off == DATA_COLUMN_SIDECAR_MIN &&
             col_off <= com_off &&
             com_off <= proof_off &&
             proof_off <= buf.len()
@@ -1933,6 +1936,31 @@ pub const DATA_COLUMN_SIDECAR_GLOAS_MAX: usize = DATA_COLUMN_SIDECAR_GLOAS_MIN +
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_CELL +
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_KZG_PROOF;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidecarLayout {
+    Fulu,
+    Gloas,
+}
+
+impl SidecarLayout {
+    #[inline]
+    pub fn of(buf: &[u8]) -> Option<Self> {
+        if buf.len() < DATA_COLUMN_SIDECAR_GLOAS_MIN {
+            return None;
+        }
+        match u32_le(buf, 8) as usize {
+            DATA_COLUMN_SIDECAR_MIN if buf.len() >= DATA_COLUMN_SIDECAR_MIN => Some(Self::Fulu),
+            DATA_COLUMN_SIDECAR_GLOAS_MIN => Some(Self::Gloas),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn is_gloas(self) -> bool {
+        matches!(self, Self::Gloas)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct DataColumnSidecarGloasView;
@@ -1965,7 +1993,7 @@ impl DataColumnSidecarGloasView {
         }
         let col_off = u32_le(buf, 8) as usize;
         let proof_off = u32_le(buf, 12) as usize;
-        col_off >= DATA_COLUMN_SIDECAR_GLOAS_MIN && col_off <= proof_off && proof_off <= buf.len()
+        col_off == DATA_COLUMN_SIDECAR_GLOAS_MIN && col_off <= proof_off && proof_off <= buf.len()
     }
 }
 

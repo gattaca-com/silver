@@ -115,9 +115,21 @@ pub struct Config {
     incoming_gossip_tcache_size: usize,
     #[serde(default = "default_usize::<268435456>")] // 2 << 27
     outgoing_gossip_tcache_size: usize,
+    /// Decompressed gossip SSZ. Parks handles too — see below, at tip volumes.
     #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_ssz_tcache_size: usize,
-    #[serde(default = "default_usize::<67108864>")] // 2 << 25
+    /// Inbound RPC ring: block, column-sidecar and envelope chunks; the
+    /// producer wraps when full. Beacon state parks its handles, so
+    /// lapping a block awaiting its columns voids coverage already emitted
+    /// for its slot — symptom is `parked block lapped in the tcache` at
+    /// finalization.
+    ///
+    /// Floor is the fetch window, `2 * BATCH` = 128 blocks (mainnet ~225 KB
+    /// mean, ~476 KB max — see `crates/e2e/data/perf`). The rest is
+    /// headroom for column traffic passing a parked block, which dominates
+    /// and is why nothing asserts a static bound. Default is ~4× that
+    /// floor.
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     outgoing_rpc_tcache_size: usize,

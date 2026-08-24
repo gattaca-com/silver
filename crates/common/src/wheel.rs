@@ -26,16 +26,12 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         }
     }
 
-    /// If the provided `on_expired` returns `true` the entry is removed from
-    /// the map, otherwise it is reinserted.
-    pub fn maybe_rotate<F>(&mut self, now: Instant, on_expired: &mut F)
-    where
-        F: FnMut(&K, &mut V) -> bool,
-    {
+    /// Advances the head onto the oldest bucket and drops its entries.
+    pub fn maybe_rotate(&mut self, now: Instant) {
         if self.last_rotation + self.interval < now {
             self.last_rotation = now;
             self.head = (self.head + 1) & (N - 1);
-            self.buckets[self.head].extract_if(on_expired).for_each(drop);
+            self.buckets[self.head].clear();
         }
     }
 
@@ -45,15 +41,6 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
 
     pub fn contains(&self, key: &K) -> bool {
         self.buckets.iter().any(|b| b.contains_key(key))
-    }
-
-    /// Total entries across all buckets.
-    pub fn len(&self) -> usize {
-        self.buckets.iter().map(|b| b.len()).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buckets.iter().all(|b| b.is_empty())
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
@@ -67,18 +54,6 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
             i = (i + 1) & (N - 1);
         }
         self.buckets[self.head].get(key)
-    }
-
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        // tail first iteration
-        let mut i = (self.head + 1) & (N - 1);
-        while i != self.head {
-            if self.buckets[i].contains_key(key) {
-                return self.buckets[i].get_mut(key);
-            }
-            i = (i + 1) & (N - 1);
-        }
-        self.buckets[self.head].get_mut(key)
     }
 
     pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {

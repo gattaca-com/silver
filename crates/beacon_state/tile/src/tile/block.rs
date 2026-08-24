@@ -4,11 +4,12 @@ use silver_beacon_state_data::{
     B256, BeaconBlockHeader, Checkpoint, Epoch, SLOTS_PER_EPOCH, StateId,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TCacheRead, hex32,
+    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, SyncUpdate,
+    TCacheRead, hex32,
     ssz_view::{self, SignedBeaconBlockView},
 };
 
-use super::{BeaconStateTile, Feedback, ParsedBlock, Producers};
+use super::{BeaconStateTile, Feedback, ParsedBlock, Producers, gossip::EnvelopeCheck};
 use crate::{
     bls,
     error::PrecheckError,
@@ -51,10 +52,17 @@ impl BeaconStateTile {
                 send_gossip(producers);
                 parsed
             }
-            Err(e) => return e.feedback(),
+            Err(e) => {
+                let f = e.feedback();
+                if let Feedback::AlreadyKnown(block_root) = f {
+                    self.emit_block_received(data, block_root, true, producers);
+                }
+                return f;
+            }
         };
 
-        let f = self.apply_and_publish(parsed, data, true, |root| {
+        let gate_da = self.da_required();
+        let f = self.apply_and_publish(parsed, data, gate_da, |root| {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
                 data: read,
                 block_root: root,
@@ -75,11 +83,25 @@ impl BeaconStateTile {
             "applied block: {:?}",
             f
         );
-        if !matches!(f, Feedback::Accept(_)) {
-            return f;
-        }
 
-        producers.produce(BeaconStateEvent::PersistBlock { ssz: read, source });
+        let applied_root = match f {
+            Feedback::Accept(Some(block_root)) => {
+                self.emit_block_received(data, block_root, true, producers);
+                block_root
+            }
+            Feedback::AlreadyKnown(block_root) => {
+                self.emit_block_received(data, block_root, true, producers);
+                Self::emit_persist_block(read, source, block_slot, block_root, producers);
+                return f;
+            }
+            Feedback::Accept(None) => {
+                debug_assert!(false, "block accepted without a root");
+                return f;
+            }
+            _ => return f,
+        };
+
+        Self::emit_persist_block(read, source, block_slot, applied_root, producers);
 
         let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
         producers.produce(EngineReq::Fcu(EngineFcuReq {
@@ -103,6 +125,20 @@ impl BeaconStateTile {
         let view = self.state.read_view(self.last_applied);
         self.shuffling_cache.ensure_window(&view, block_epoch + 1);
         self.shuffling_cache.try_cache_committee_aggs(&view, block_epoch + 1);
+    }
+
+    fn emit_persist_block(
+        read: TCacheRead,
+        source: BlockSource,
+        slot: u64,
+        block_root: B256,
+        producers: &mut Producers,
+    ) {
+        producers.produce(BeaconStateEvent::PersistBlock { ssz: read, source, slot, block_root });
+    }
+
+    fn da_required(&self) -> bool {
+        !matches!(self.sync_target, SyncUpdate::SyncingFinalized { .. })
     }
 
     pub(super) fn replay_block(&mut self, read: TCacheRead) {
@@ -138,6 +174,27 @@ impl BeaconStateTile {
 
         if matches!(feedback, Feedback::Accept(_)) {
             self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
+        }
+    }
+
+    pub(super) fn replay_envelope(&mut self, read: TCacheRead) {
+        let acquired = self.replay_consumer.acquire(read);
+        let Some((data, _)) = acquired.buffer().ok() else {
+            return;
+        };
+
+        match self.validate_execution_payload_envelope(data) {
+            EnvelopeCheck::Ready { block_root, .. } => {
+                self.fork_choice.mark_payload_verified(&block_root);
+                self.recompute_head();
+            }
+            EnvelopeCheck::AwaitBlock(block_root) => tracing::error!(
+                block = hex32(&block_root),
+                "replayed envelope precedes its block; replay is misordered"
+            ),
+            EnvelopeCheck::Ignore => {
+                tracing::warn!("replayed on-disk envelope rejected")
+            }
         }
     }
 
@@ -177,11 +234,7 @@ impl BeaconStateTile {
         gate_da: bool,
         mut notify_el: F,
     ) -> Feedback {
-        // Data availability is only required above the finalized boundary.
-        if gate_da &&
-            parsed.header.slot > self.da_boundary() &&
-            parsed.has_data_columns &&
-            !self.dc_available.contains_key(&parsed.block_root)
+        if gate_da && parsed.has_data_columns && !self.dc_available.contains_key(&parsed.block_root)
         {
             return Feedback::AwaitData(parsed.block_root);
         }

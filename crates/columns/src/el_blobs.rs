@@ -1,7 +1,7 @@
 //! EL-mempool blob path: fetch a block's blobs via `engine_getBlobsV2` and
 //! rebuild our custody `DataColumnSidecar`s locally, racing the p2p ByRoot
 //! request. Whichever fills the custody set first wins; the loser dedups via
-//! `validated_columns`.
+//! the tile's `validated` wheel.
 
 use std::{
     io::Write,
@@ -9,9 +9,8 @@ use std::{
 };
 
 use silver_common::{
-    BASE_REQUEST_ID, ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp,
-    EngineReq, MAX_BLOBS_PER_BLOCK, TCacheProducer, TProducer, TRandomAccess, Wheel,
-    column_util as util,
+    ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
+    MAX_BLOBS_PER_BLOCK, TCacheProducer, TProducer, TRandomAccess, Wheel, column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -19,7 +18,11 @@ use silver_common::{
     },
 };
 
-use crate::{DataColumnCounters, sync::SyncStatus, tile::StorageEmit};
+use crate::{
+    DataColumnCounters,
+    sync::SyncStatus,
+    tile::{BlockValidation, StorageEmit},
+};
 
 type BlockRoot = [u8; 32];
 
@@ -33,8 +36,8 @@ const MAX_COMMITMENTS_LEN: usize = MAX_BLOBS_PER_BLOCK * BYTES_PER_KZG_COMMITMEN
 struct PendingBlobFetch {
     block_root: BlockRoot,
     slot: u64,
-    /// Custody columns still wanted at request time. Recomputed against
-    /// `validated_columns` on response (the p2p race may have filled some).
+    /// Custody columns still wanted at request time. Recomputed on response
+    /// (the p2p race may have filled some).
     needed: u128,
     num_blobs: usize,
     header: [u8; 208],
@@ -44,6 +47,7 @@ struct PendingBlobFetch {
 
 pub(crate) struct ElBlobFetcher {
     engine_resp_consumer: TRandomAccess,
+    /// Engine-local correlation; never an RPC `application_id`.
     next_req_id: u64,
     /// In-flight fetches, keyed by request id. 4 buckets × 500ms ⇒ entries age
     /// out after ~1.5–2s if the EL never responds.
@@ -55,7 +59,7 @@ impl ElBlobFetcher {
     pub(crate) fn new(engine_resp_consumer: TRandomAccess) -> Self {
         Self {
             engine_resp_consumer,
-            next_req_id: BASE_REQUEST_ID,
+            next_req_id: 0,
             pending: Wheel::new(Duration::from_millis(500)),
             sidecar_buffer: Vec::with_capacity(8 * 1024),
         }
@@ -66,7 +70,7 @@ impl ElBlobFetcher {
     }
 
     pub(crate) fn rotate(&mut self, now: Instant) {
-        self.pending.maybe_rotate(now, &mut |_, _| true);
+        self.pending.maybe_rotate(now);
     }
 
     /// Fire an `engine_getBlobsV2` request for `block`'s blobs and stash the
@@ -145,8 +149,7 @@ impl ElBlobFetcher {
     pub(crate) fn handle_response<F>(
         &mut self,
         resp: EngineGetBlobsResp,
-        validated_columns: &mut Wheel<BlockRoot, u128, 4>,
-        outstanding_requests: &mut Wheel<BlockRoot, (u128, u128, u8), 16>,
+        validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
         sync_state: &SyncStatus,
         custody_group_columns: u128,
         column_producer: &mut TProducer,
@@ -165,7 +168,7 @@ impl ElBlobFetcher {
         }
 
         // Columns still missing (some may have arrived via the p2p race).
-        let already = validated_columns.get(&pending.block_root).copied().unwrap_or(0);
+        let already = validated.get(&pending.block_root).map_or(0, |v| v.columns);
         let to_build = pending.needed & !already;
         if to_build == 0 {
             return;
@@ -276,21 +279,10 @@ impl ElBlobFetcher {
         }
         DataColumnCounters::ElColumnsBuilt.inc();
 
-        let validated = validated_columns.entry(pending.block_root).or_default();
-        *validated |= built;
-        let validated = *validated;
+        let entry = validated.entry(pending.block_root).or_default();
+        entry.columns |= built;
 
-        // Drop satisfied bits from the p2p request wheel so it stops re-asking.
-        if let Some((mut requested, full, retries)) =
-            outstanding_requests.remove(&pending.block_root)
-        {
-            requested &= !built;
-            if requested != 0 {
-                outstanding_requests.insert(pending.block_root, (requested, full, retries));
-            }
-        }
-
-        if validated & custody_group_columns == custody_group_columns {
+        if entry.columns & custody_group_columns == custody_group_columns {
             DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
                 block = hex::encode(pending.block_root),
