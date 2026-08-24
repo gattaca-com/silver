@@ -166,10 +166,12 @@ Rules:
 - Default to sentences under 25 words.
   - Write a longer sentence when splitting it would hide how the parts relate.
   - Use a list if the content does not fit in one sentence.
+  - Use a table if the content warrants it.
 - Do not split a sentence into fragments to meet the limit.
 - One main clause per sentence. Subordinate clauses are fine.
 - Use no more than three nouns in a noun cluster.
 - Use one term per concept, and one concept per term.
+- Use markdown where it can be rendered e.g. documentation, GitHub. Otherwise use ASCII.
 - State uncertainty and untested assumptions in reviews, issues, and pull request descriptions.
   - Do not drop them for brevity.
 - Reproduce commands, code, identifiers, paths, and quotations verbatim.
