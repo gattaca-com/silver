@@ -10,9 +10,15 @@ use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    merkle::B256, ssz_view::{
-        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView, DataColumnsByRootRequestView, ExecutionPayloadEnvelopesByRangeRequestView, ExecutionPayloadEnvelopesByRootRequestView, MAX_REQUEST_BLOCKS_DENEB
-    }, DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, TRead
+    DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead,
+    TRandomAccess, TRead,
+    merkle::B256,
+    ssz_view::{
+        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
+        DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
+        DataColumnsByRootRequestView, ExecutionPayloadEnvelopesByRangeRequestView,
+        ExecutionPayloadEnvelopesByRootRequestView, MAX_REQUEST_BLOCKS_DENEB,
+    },
 };
 
 use crate::StorageCounters;

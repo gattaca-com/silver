@@ -11,7 +11,11 @@ use std::{
 use flux_profiler::timed;
 use fxhash::FxHashSet;
 use silver_common::{
-    rpc_rate_limit::RpcRateLimit, ssz_view::{StatusView, METADATA_SIZE, STATUS_V2_SIZE}, AgentString, BlockSource, Enr, GossipTopic, IpBytes, P2pSend, PeerControl, PeerEvent, PeerId, PeerScores, PeerStatus, PeerTopicScores, RpcOutbound, RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncRequest, SyncUpdate
+    AgentString, BlockSource, Enr, GossipTopic, IpBytes, P2pSend, PeerControl, PeerEvent, PeerId,
+    PeerScores, PeerStatus, PeerTopicScores, RpcOutbound, RpcRequestOutbound, RpcSeverity,
+    StreamProtocol, SyncRequest, SyncUpdate,
+    rpc_rate_limit::RpcRateLimit,
+    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_config::{ScoreParams, SyncingConfig};
 
@@ -1551,7 +1555,7 @@ pub(crate) mod tests {
 
     use silver_common::{
         DataKind, Enr, Identify, Keypair, Origin, P2pStreamId, RequestId, RpcInbound, RpcResponse,
-        RpcResponseInbound, Scope, SyncRequest, 
+        RpcResponseInbound, Scope, SyncRequest,
     };
 
     use super::*;
@@ -1562,7 +1566,10 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Captured(pub(crate) Vec<PeerControl>);
 
-    pub(crate) fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
+    pub(crate) fn fixture(
+        our_topics: Vec<GossipTopic>,
+        params: ScoreParams,
+    ) -> (PeerManager, Captured) {
         (
             PeerManager::new(
                 peer_id(99),
