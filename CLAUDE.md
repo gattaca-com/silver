@@ -159,25 +159,24 @@ Applies to prose you write into:
 - GitHub issues, and comments on issues
 - pull request descriptions, and review comments
 - code comments
+- log, panic, and assertion messages
 - documentation committed to the repository
 
-Rules:
+Hard rules:
 
-- Default to sentences under 25 words.
-  - Write a longer sentence when splitting it would hide how the parts relate.
-  - Use a list if the content does not fit in one sentence.
-  - Use a table if the content warrants it.
-- Do not split a sentence into fragments to meet the limit.
-- One main clause per sentence. Subordinate clauses are fine.
-- Use no more than three nouns in a noun cluster.
-- Use one term per concept, and one concept per term.
-- Use markdown where it can be rendered e.g. documentation, GitHub. Otherwise use ASCII.
-- State uncertainty and untested assumptions in reviews, issues, and pull request descriptions.
-  - Do not drop them for brevity.
+- Keep sentences under 25 words, carrying one idea each.
 - Reproduce commands, code, identifiers, paths, and quotations verbatim.
-  - These rules do not apply to them.
-- Do not try to fix the language produced by others to follow these rules.
-  - For example, this document.
+- Unless asked, do not fix the language produced by others to follow these rules.
+- Never contort a sentence you produced to satisfy any of the rules or defaults.
+
+Defaults (not a checklist, drift is allowed):
+
+- Choose content by what the reader needs, not by how you got there.
+- Break out content that does not fit in a sentence, as a list or as a table.
+- Keep noun clusters to about three nouns.
+- Use one term per concept, and one concept per term, preferring the established local term.
+- Use markdown where it can be rendered e.g. documentation, GitHub.
+- State uncertainty and untested assumptions, and do not drop them for brevity.
 
 ## Issue tracking
 
