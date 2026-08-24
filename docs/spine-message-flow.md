@@ -122,3 +122,8 @@ Bulk-byte rings that the queue messages reference, so payloads cross tiles witho
 Source of truth: `crates/common/src/spine.rs` (queue declarations), `crates/bin/src/main.rs`
 (tcache producer/consumer wiring), and each tile's `loop_body`. Regenerate when the spine
 changes.
+
+The producer and consumer columns above are also the only statement of who may produce
+what: every tile holds a producer for every queue, so producing a message another tile owns
+compiles and runs. A topology change therefore updates this table in the same commit — see
+rule 6 of [decoupling-rules.md](decoupling-rules.md).

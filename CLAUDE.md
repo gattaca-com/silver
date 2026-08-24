@@ -23,9 +23,12 @@ reason about and faster to run.
 - Crates are organised as **tiles** — independent components that communicate over channels.
 - The beacon state is **not** a monolith: it's a bag of per-tier *groups* (validators,
   balances, participation, …), each a finalized base + a ring of per-fork deltas.
+- Read `docs/decoupling-rules.md` and `docs/cohesion-rules.md` before adding a crate, a
+  spine queue, a tile, or a dependency between `silver_*` crates. Almost nothing there is
+  compiler-enforced, so the compiler will not stop you.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
-  touching state storage. Other refs: `docs/perf-regression-test.md`,
-  `docs/p2p-ladder-diagrams.md`.
+  touching state storage. Other refs: `docs/spine-message-flow.md`,
+  `docs/perf-regression-test.md`, `docs/p2p-ladder-diagrams.md`.
 
 ## Build / test / lint
 
