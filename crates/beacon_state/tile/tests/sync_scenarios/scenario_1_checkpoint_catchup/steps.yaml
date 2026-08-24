@@ -31,13 +31,16 @@ steps:
   # Re-issued and overlapping ranges deliver the same block twice, so a block
   # already in fork choice is routine traffic, not misbehaviour: report its
   # coverage again (the engine may have dropped the range that carried it) and
-  # otherwise do nothing — no second persist, no reject, no parking.
+  # offer it to storage again. Holding it in fork choice says nothing about
+  # whether the write landed, and a second offer is the only thing that fills a
+  # hole left by a persist that lapsed; storage dedupes on the root, so a copy
+  # it already holds costs no write. What must not happen is a reject or a park.
   - kind: blocks_range_resp
     from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation/blocks_0.ssz_snappy
   - kind: step
   - kind: check
-    outbound_has: [block_received]
-    outbound_lacks: [persist_block, block_rejected, request_block]
+    outbound_has: [block_received, persist_block]
+    outbound_lacks: [block_rejected, request_block]
 
   # PM signals syncing complete. Mode flips Syncing→Following.
   - kind: sync_target
