@@ -346,7 +346,6 @@ impl BeaconStateTile {
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_applied_block_root = block_root;
-        self.state.set_head_block_root(block_root);
 
         let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
         self.fork_choice = ForkChoice::init(

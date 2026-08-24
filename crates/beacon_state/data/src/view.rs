@@ -9,7 +9,7 @@ use flux::communication::Seqlock;
 use flux_profiler::timed;
 
 use crate::{
-    B256, BeaconState, EpochGroup, LongtailGroup, StateId, StateReadView, StateWriterView,
+    BeaconState, EpochGroup, LongtailGroup, StateId, StateReadView, StateWriterView,
     encode::GLOAS_VAR_LEN_SECTIONS,
 };
 
@@ -42,7 +42,6 @@ impl StateCell {
 pub struct BeaconStateOwner {
     state: Arc<StateCell>,
     inner: Arc<Seqlock<ControlInner>>,
-    head_block_root: B256,
 }
 
 impl BeaconStateOwner {
@@ -53,7 +52,6 @@ impl BeaconStateOwner {
         Self {
             state: Arc::new(StateCell(UnsafeCell::new(state))),
             inner: Arc::new(Seqlock::default()),
-            head_block_root: [0u8; 32],
         }
     }
 
@@ -119,14 +117,6 @@ impl BeaconStateOwner {
         self.inner.read_copy().map_or_else(|_| ControlInner::default(), |(value, _)| value)
     }
 
-    /// Name the block whose post-state the publishes from here on carry. Set
-    /// per applied block rather than per publish: the empty-slot advances and
-    /// the finalize window between two blocks publish states of that same
-    /// block, and each carries the root forward untouched.
-    pub fn set_head_block_root(&mut self, root: B256) {
-        self.head_block_root = root;
-    }
-
     /// Publish the head's index bundle for cross-thread readers — call only
     /// once the per-tier slots it names will no longer be mutated. The first
     /// publish is what makes the state observable at all. Carries the
@@ -136,7 +126,6 @@ impl BeaconStateOwner {
         let mut value = self.current_control();
         debug_assert!(value.finalize_version & 1 == 0, "publish inside a write window");
         value.state_id = Some(state_id);
-        value.head_block_root = self.head_block_root;
         // Single producer; `write` also handles the never-written 0→2 case.
         self.inner.write(&value);
     }
@@ -195,24 +184,10 @@ impl BeaconStateReader {
     /// inactivity boxes) are safe to read optimistically. The pending /
     /// longtail bases are realloc-prone `Vec`s — reading their CONTENT here
     /// can race a finalize realloc; those reads need the lock-guarded path.
+    #[timed]
     pub fn read<F, R>(&self, reader: &F) -> Option<R>
     where
         F: Fn(StateReadView<'_>) -> R,
-    {
-        self.read_head(&|view, _| reader(view))
-    }
-
-    /// [`Self::read`], also naming the block whose post-state the snapshot is.
-    /// Both come off one control word, so no request can pair a root with a
-    /// state that was applied from another block. The state cannot supply the
-    /// root itself: between a block's arrival and the next slot its
-    /// `latest_block_header` still carries the zero `state_root` the STF left,
-    /// and the `block_roots` entry naming the block is written by the
-    /// `process_slot` that fills it.
-    #[timed]
-    pub fn read_head<F, R>(&self, reader: &F) -> Option<R>
-    where
-        F: Fn(StateReadView<'_>, B256) -> R,
     {
         loop {
             // `Err(Empty)` = never written; `state_id: None` = a pre-publish
@@ -225,7 +200,7 @@ impl BeaconStateReader {
             }
             let state_id = control.state_id?;
             sync::atomic::fence(Ordering::Acquire);
-            let result = reader(self.state.get().read_view(state_id), control.head_block_root);
+            let result = reader(self.state.get().read_view(state_id));
 
             // Validate: no finalize ran while we were reading the state.
             sync::atomic::fence(Ordering::Acquire);
@@ -425,18 +400,16 @@ impl<'a> Drop for WriteGuard<'a> {
     }
 }
 
-/// The control word: the published head's per-tier index bundle, the root of
-/// the block it was applied from, plus the finalize counter (odd = finalize
-/// window open). Publishes rewrite `state_id` but keep the counter — tiers are
-/// append-only between finalizations, so a publish never invalidates an
-/// in-flight read; only the finalize window (which rebases and frees tier
-/// slots) does. `Default` exists only because `Seqlock::default()` requires
-/// it; readers treat `state_id: None` (only reachable when a finalize window
-/// closes before the first publish) as "no state yet" — every publish writes
-/// `Some`.
+/// The control word: the published head's per-tier index bundle plus the
+/// finalize counter (odd = finalize window open). Publishes rewrite
+/// `state_id` but keep the counter — tiers are append-only between
+/// finalizations, so a publish never invalidates an in-flight read; only the
+/// finalize window (which rebases and frees tier slots) does. `Default`
+/// exists only because `Seqlock::default()` requires it; readers treat
+/// `state_id: None` (only reachable when a finalize window closes before the
+/// first publish) as "no state yet" — every publish writes `Some`.
 #[derive(Clone, Copy, Default)]
 struct ControlInner {
     state_id: Option<StateId>,
-    head_block_root: B256,
     finalize_version: u64,
 }

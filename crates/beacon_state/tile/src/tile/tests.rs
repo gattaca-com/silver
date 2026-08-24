@@ -15,7 +15,7 @@ use silver_common::{
     },
 };
 
-use super::{block::AppliedBlock, *};
+use super::*;
 use crate::{
     fork_choice::{BlockImport, PayloadStatus},
     stf::AttestationVote,
@@ -191,7 +191,6 @@ fn arm_tile_state(
     // epoch/longtail stay lazy. Rolled before the owner wraps the state.
     let anchor = bs.roll_fresh();
     let mut owner = BeaconStateOwner::new(bs);
-    owner.set_head_block_root(ANCHOR_ROOT);
     owner.publish_state_id(anchor);
 
     tile.state = owner;
@@ -355,91 +354,6 @@ fn status_event_carries_the_head_s_execution_status() {
 
     tile.fork_choice.on_payload_valid(&CHILD_ROOT);
     assert!(!head_optimistic(&mut tile));
-}
-
-fn published_head_block_root(tile: &BeaconStateTile) -> B256 {
-    tile.reader().read_head(&|_, root| root).expect("a state is published")
-}
-
-/// The published state names the block it was applied from, from the publish
-/// that first makes that state visible — which is the only way a reader can
-/// name it mid-slot: the header `process_block_header` left still carries the
-/// zero `state_root`, and the `block_roots` entry naming the block is written
-/// by the `process_slot` that fills it, a slot later. The empty slots between
-/// two blocks republish the state, and keep naming the same block.
-#[test]
-fn the_published_state_names_the_block_it_was_applied_from() {
-    const CHILD_SLOT: Slot = 11;
-    const CHILD_ROOT: B256 = [0x0C; 32];
-
-    let mut tile = make_tile();
-    seed_tile(&mut tile, 4, 10);
-    assert_eq!(published_head_block_root(&tile), ANCHOR_ROOT);
-
-    let header = BeaconBlockHeader {
-        slot: CHILD_SLOT,
-        proposer_index: 0,
-        parent_root: ANCHOR_ROOT,
-        state_root: [0u8; 32],
-        body_root: [0u8; 32],
-    };
-    // The state as the STF leaves it: the `process_slot` out of the anchor's
-    // slot recorded the anchor block's root, then `process_block_header`
-    // installed the child's header with the zero `state_root` the block
-    // arrived with.
-    let child_slot_idx = {
-        let mut g = tile.state.write();
-        let mut sw = g.slot_states.roll_from(tile.last_applied.slot_idx);
-        sw.advance_slot();
-        sw.state_mut().latest_block_header = header;
-        sw.commit()
-    };
-    let child_block_roots_idx = {
-        let mut g = tile.state.write();
-        let mut w = g.block_roots.roll_from(tile.last_applied.block_roots_idx);
-        w.set(((CHILD_SLOT - 1) % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, ANCHOR_ROOT);
-        w.commit()
-    };
-    let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-    tile.publish_applied_block(
-        &ParsedBlock {
-            header,
-            block_root: CHILD_ROOT,
-            has_data_columns: false,
-            parent_state_id: tile.last_applied,
-            is_gloas: false,
-            parent_payload_status: PayloadStatus::Full,
-        },
-        &[],
-        AppliedBlock {
-            id: StateId {
-                slot_idx: child_slot_idx,
-                block_roots_idx: child_block_roots_idx,
-                ..tile.last_applied
-            },
-            justified: anchor_cp,
-            finalized: anchor_cp,
-            unrealized: (anchor_cp, anchor_cp),
-            execution_block_hash: [0u8; 32],
-            bid_block_hash: [0u8; 32],
-        },
-    );
-
-    assert_eq!(published_head_block_root(&tile), CHILD_ROOT);
-    let (state_root, recorded) = tile
-        .reader()
-        .read(&|v| {
-            (
-                v.slot.state().latest_block_header.state_root,
-                v.block_roots.proposed_at(CHILD_SLOT, v.slot.slot_number()),
-            )
-        })
-        .unwrap();
-    assert_eq!(state_root, [0u8; 32], "the published state does not name its own block");
-    assert_eq!(recorded, None, "nor does the ring, until the next slot");
-
-    tile.on_slot_start(CHILD_SLOT + 1);
-    assert_eq!(published_head_block_root(&tile), CHILD_ROOT, "an empty slot changes no head");
 }
 
 #[test]
@@ -1803,7 +1717,6 @@ fn multi_fork_finalize_promotes_and_rebases() {
     tile.last_applied_block_root = D_ROOT;
     tile.fork_choice.finalized_checkpoint = f_cp;
     // Republish so the seqlock control matches the new head.
-    tile.state.set_head_block_root(D_ROOT);
     tile.state.publish_state_id(d_id);
 
     // Sanity: pre-finalize state.

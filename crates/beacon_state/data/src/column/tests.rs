@@ -1,6 +1,5 @@
 use super::{
-    BalancesGroup, BalancesWriteView, BlockRootsGroup, BlockRootsId, ColumnGroup, ColumnSpec,
-    RandaoMixesGroup,
+    BalancesGroup, BalancesWriteView, BlockRootsGroup, ColumnGroup, ColumnSpec, RandaoMixesGroup,
 };
 use crate::{
     merkle::{MerkleStack, hash_b256_vector, hash_uint64_list, hash_uint64_vector},
@@ -450,73 +449,6 @@ fn block_roots_contains_scans_back_from_the_given_slot() {
     assert!(reader.contains(&[0xAA; 32], 101));
     assert!(reader.contains(&[0xBB; 32], 101));
     assert!(!reader.contains(&[0xCC; 32], 101));
-}
-
-/// Slot the ring fixtures leave their state at: high enough that
-/// `slot % SLOTS_PER_HISTORICAL_ROOT` is a wrapped index rather than the slot.
-const RECORDED_STATE_SLOT: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 + 500;
-
-fn root_of(slot: u64) -> B256 {
-    let mut root = [0xA0; 32];
-    root[24..].copy_from_slice(&slot.to_be_bytes());
-    root
-}
-
-/// A ring filled the way `process_slot` fills it: every slot below
-/// `RECORDED_STATE_SLOT` records the newest block's root, and `empty` repeats
-/// its predecessor's the way a slot that carried no block does.
-fn recorded_ring(empty: Option<u64>) -> (BlockRootsGroup, BlockRootsId) {
-    let mut g = BlockRootsGroup::zeroed_vector();
-    let mut wv = g.roll_fresh();
-    for slot in RECORDED_STATE_SLOT - SLOTS_PER_HISTORICAL_ROOT as u64..RECORDED_STATE_SLOT {
-        let named = if empty == Some(slot) { slot - 1 } else { slot };
-        wv.set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, root_of(named));
-    }
-    let id = wv.commit();
-    (g, id)
-}
-
-/// An entry differing from its predecessor is a block of the slot's own; a
-/// repeated one is a slot that carried none. Reading the entry itself asks
-/// only that the ring still cover the slot, so an empty slot answers with the
-/// root it repeats.
-#[test]
-fn block_roots_name_the_slots_that_carried_a_block() {
-    let empty = RECORDED_STATE_SLOT - 2;
-    let (g, id) = recorded_ring(Some(empty));
-    let reader = g.view(id);
-    let state_slot = RECORDED_STATE_SLOT;
-
-    assert_eq!(reader.at_slot(empty), root_of(empty - 1), "the ring answers at the wrapped index");
-
-    assert_eq!(reader.proposed_at(empty - 1, state_slot), Some(root_of(empty - 1)));
-    assert_eq!(reader.proposed_at(empty, state_slot), None);
-    assert_eq!(reader.proposed_at(empty + 1, state_slot), Some(root_of(empty + 1)));
-
-    assert_eq!(reader.recorded_at(empty, state_slot), Some(root_of(empty - 1)));
-    assert_eq!(reader.recorded_at(empty + 1, state_slot), Some(root_of(empty + 1)));
-}
-
-/// The ring covers the `SLOTS_PER_HISTORICAL_ROOT` slots below the state's own,
-/// and naming a block needs its predecessor's entry too — so the floor itself
-/// cannot be named however distinct its entry is, and the state's own slot has
-/// no entry until the `process_slot` that leaves it.
-#[test]
-fn block_roots_bound_which_slots_can_be_named() {
-    let (g, id) = recorded_ring(None);
-    let reader = g.view(id);
-    let state_slot = RECORDED_STATE_SLOT;
-    let floor = state_slot - SLOTS_PER_HISTORICAL_ROOT as u64;
-
-    assert_eq!(reader.proposed_at(floor + 1, state_slot), Some(root_of(floor + 1)));
-    assert_eq!(reader.proposed_at(floor, state_slot), None, "the floor has no predecessor");
-    assert_eq!(reader.proposed_at(floor - 1, state_slot), None, "below the floor");
-    assert_eq!(reader.proposed_at(state_slot, state_slot), None, "the state's own slot");
-    assert_eq!(reader.proposed_at(state_slot + 1, state_slot), None, "past it");
-
-    assert_eq!(reader.recorded_at(floor, state_slot), Some(root_of(floor)));
-    assert_eq!(reader.recorded_at(floor - 1, state_slot), None, "below the floor");
-    assert_eq!(reader.recorded_at(state_slot, state_slot), None, "the state's own slot");
 }
 
 /// A block's reveal accumulates into the current epoch's bucket; the boundary
