@@ -849,7 +849,8 @@ impl Stream {
         // reset, not finish: FIN queues behind buffered data the stalled
         // peer isn't draining, so the stream — and its MAX_STREAMS credit —
         // would leak at the QUIC layer.
-        let _ = connection.send_stream(id).reset(VarInt::from_u32(STREAM_ERR_CODE_RESPONSE_TIMEOUT));
+        let _ =
+            connection.send_stream(id).reset(VarInt::from_u32(STREAM_ERR_CODE_RESPONSE_TIMEOUT));
         let _ = connection.recv_stream(id).stop(VarInt::from_u32(STREAM_ERR_CODE_RESPONSE_TIMEOUT));
         on_event(NetEvent::StreamClosed { stream: self.p2p_id });
         SpinResult::End

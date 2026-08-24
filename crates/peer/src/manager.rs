@@ -11,7 +11,7 @@ use std::{
 use flux_profiler::timed;
 use fxhash::FxHashSet;
 use silver_common::{
-    rpc_rate_limit::RpcRateLimit, ssz_view::{StatusView, METADATA_SIZE, STATUS_V2_SIZE}, AgentString, BlockSource, Enr, GossipTopic, IpBytes, P2pSend, PeerControl, PeerEvent, PeerId, PeerScores, PeerStatus, PeerTopicScores, RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncRequest, SyncUpdate
+    rpc_rate_limit::RpcRateLimit, ssz_view::{StatusView, METADATA_SIZE, STATUS_V2_SIZE}, AgentString, BlockSource, Enr, GossipTopic, IpBytes, P2pSend, PeerControl, PeerEvent, PeerId, PeerScores, PeerStatus, PeerTopicScores, RpcOutbound, RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncRequest, SyncUpdate
 };
 use silver_config::{ScoreParams, SyncingConfig};
 
@@ -1005,7 +1005,14 @@ impl PeerManager {
         for (id, _) in &candidates[..to_remove] {
             let Some(peer) = self.peers.get_mut(id) else { continue };
             peer.goodbye_sent = true;
-            emit(PeerControl::P2pPeerGoodbye { p2p_connection: *id, code: 129 });
+
+            let goodbye = RpcOutbound::Request(RpcRequestOutbound {
+                application_id: 0,
+                peer: *id,
+                request: silver_common::RpcRequest::Goodbye(129u64.to_le_bytes()),
+            });
+
+            emit(PeerControl::P2pSend(P2pSend::Rpc(goodbye)));
         }
     }
 
@@ -1951,7 +1958,7 @@ pub(crate) mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.max_priority_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         for conn in 1..=6usize {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
         }
@@ -1962,14 +1969,16 @@ pub(crate) mod tests {
         // 6 peers > cap(4): excess 2 — exactly the two negatives go, the
         // four neutral (fresh) peers are never trimmed.
         mgr.manage_peers(&mut |event| cap.0.push(event));
-        let goodbyes: Vec<usize> = cap
-            .0
-            .iter()
-            .filter_map(|event| match event {
-                PeerControl::P2pPeerGoodbye { p2p_connection, code: 129 } => Some(*p2p_connection),
-                _ => None,
-            })
-            .collect();
+        let goodbyes: Vec<usize> =
+            cap.0
+                .iter()
+                .filter_map(|event| match event {
+                    PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                        RpcRequestOutbound { application_id: _, peer, request: _ },
+                    ))) => Some(*peer),
+                    _ => None,
+                })
+                .collect();
         assert_eq!(goodbyes, vec![1, 2]);
 
         // Already-goodbyed peers are not re-selected while they drain.
