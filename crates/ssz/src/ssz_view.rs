@@ -1495,6 +1495,66 @@ pub const DC_BY_ROOT_ID_MIN: usize = 36;
 // columns: List[ColumnIndex, NUMBER_OF_COLUMNS], ColumnIndex = u64.
 pub const DC_BY_ROOT_ID_MAX: usize = DC_BY_ROOT_ID_MIN + NUMBER_OF_COLUMNS * 8;
 
+// -- DataColumnSidecarsByRootRequest (req/data_column_sidecars_by_root/1)
+//
+// SSZ List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS]: variable-size
+// elements, so a leading offset table (u32 LE per element) precedes the
+// element payloads. `offsets[0] / 4` is the element count.
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct DataColumnsByRootRequestView;
+
+impl DataColumnsByRootRequestView {
+    #[inline]
+    fn offset(buf: &[u8], i: usize) -> usize {
+        u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap()) as usize
+    }
+
+    #[inline]
+    pub fn count(buf: &[u8]) -> usize {
+        Self::offset(buf, 0) / 4
+    }
+
+    /// Element `i`'s bytes — a bare `DataColumnsByRootIdentifier`. Safe for
+    /// all `i < count(buf)` after `check_size`.
+    #[inline]
+    pub fn identifier(buf: &[u8], i: usize) -> &[u8] {
+        let start = Self::offset(buf, i);
+        let end = if i + 1 < Self::count(buf) { Self::offset(buf, i + 1) } else { buf.len() };
+        &buf[start..end]
+    }
+
+    /// Offset table well-formed (first offset = 4·count, monotonic, in
+    /// bounds) and every element a valid identifier.
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < 4 {
+            return false;
+        }
+        let table_end = Self::offset(buf, 0);
+        if table_end < 4 || !table_end.is_multiple_of(4) || table_end > buf.len() {
+            return false;
+        }
+        let count = table_end / 4;
+        if count > MAX_REQUEST_BLOCKS_DENEB {
+            return false;
+        }
+        let mut prev = table_end;
+        for i in 0..count {
+            let start = if i == 0 { table_end } else { Self::offset(buf, i) };
+            let end = if i + 1 < count { Self::offset(buf, i + 1) } else { buf.len() };
+            if start != prev || end < start || end > buf.len() {
+                return false;
+            }
+            if !DataColumnsByRootIdentifierView::check_size(&buf[start..end]) {
+                return false;
+            }
+            prev = end;
+        }
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DataColumnsByRootIdentifierView;

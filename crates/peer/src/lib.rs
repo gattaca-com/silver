@@ -26,5 +26,13 @@ silver_common::declare_counters! {
         GossipInvalidFrame,
         GossipInvalidControl,
         GossipInvalidMsg,
+        // Mesh churn direction.
+        MeshPrunedByRemote,
+        MeshPrunedByUs,
+        MeshGraftAcceptedByUs,
+        MeshGraftRefusedByUs,
+        // "cannot create stream" split by cause.
+        StreamCreditExhausted,
+        ResponseStreamGone,
     }
 }

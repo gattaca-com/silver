@@ -71,7 +71,10 @@ impl BeaconStateTile {
         data: &[u8],
         subnet: u64,
     ) -> Result<PreparedAttestation, Feedback> {
-        if data.len() < SINGLE_ATT_SIZE {
+        // Exact size: trailing bytes parse fine here (fixed-size prefix) but
+        // strict-SSZ peers reject the relayed message — their P4 lands on us,
+        // not the originator.
+        if data.len() != SINGLE_ATT_SIZE {
             return Err(Feedback::Reject(None));
         }
         let buf: &[u8; SINGLE_ATT_SIZE] = data[..SINGLE_ATT_SIZE].try_into().unwrap();
@@ -571,6 +574,7 @@ impl BeaconStateTile {
             return Err(Feedback::Reject(None));
         }
         let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
+            BeaconStateCounters::AttestationUnknownRoot.inc();
             return Err(Feedback::Ignore);
         };
         match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {

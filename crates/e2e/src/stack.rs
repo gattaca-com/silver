@@ -249,7 +249,7 @@ impl PublisherStack {
         );
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
-        let p2p = P2p::new(keypair, endpoint);
+        let p2p = P2p::new(keypair, endpoint, 1024);
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
@@ -362,7 +362,7 @@ impl EchoStack {
         );
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
-        let p2p = P2p::new(keypair, endpoint);
+        let p2p = P2p::new(keypair, endpoint, 1024);
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 

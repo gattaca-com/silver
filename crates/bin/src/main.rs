@@ -134,6 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             false,
             None,
         ),
+        config.max_connections(),
     );
     let p2p_context = Context {
         gossip_producer: incoming_gossip_producer,

@@ -84,7 +84,7 @@ impl NetworkTile {
                 let addr = enr.quic4_socket().or(enr.quic6_socket());
                 if let Some(addr) = addr {
                     crate::NetworkCounters::DialAttempts.inc();
-                    tracing::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
+                    tracing::debug!(peer_id=?p2p, ?addr, "dialling p2p peer");
                     if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
                         tracing::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
                     }
@@ -200,12 +200,13 @@ impl NetworkTile {
                 };
                 match result {
                     p2p::SendResult::Ok => {}
-                    p2p::SendResult::StreamCreationError => {
+                    p2p::SendResult::StreamCreationError | p2p::SendResult::StreamGone => {
                         producers.peer_events.produce(
                             &(PeerEvent::P2pCannotCreateStream {
                                 p2p_peer: msg.peer_id(),
                                 protocol: msg.protocol(),
                                 rpc_request,
+                                stream_gone: matches!(result, p2p::SendResult::StreamGone),
                             }
                             .into()),
                         );
@@ -222,7 +223,7 @@ impl NetworkTile {
                     }
                     p2p::SendResult::UnknownPeer => {
                         // Can happen if peer has disconnected.
-                        tracing::warn!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");
+                        tracing::debug!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");
                     },
                 }
             }) {

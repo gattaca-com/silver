@@ -161,8 +161,12 @@ impl Default for ScoreParams {
             // once per slot to accumulate toward the −80 graylist floor.
             application_score_decay: 0.95,
 
-            // P7 — behaviour penalty
-            behaviour_penalty_threshold: 0.0,
+            // P7 — behaviour penalty. Squared excess over the threshold:
+            // with the free budget below, isolated events (a stream race, a
+            // one-off bad frame) cost nothing; only sustained misbehaviour
+            // gates. Threshold 0 made a single benign event = -10 = the
+            // gossip gate, which starved the peer's P3 view of us.
+            behaviour_penalty_threshold: 5.0,
             behaviour_penalty_weight: -10.0,
             behaviour_penalty_decay: 0.999,
 

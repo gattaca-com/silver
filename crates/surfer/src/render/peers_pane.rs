@@ -9,10 +9,10 @@ use ratatui::{
 
 use crate::{app::App, sources::peers::PeerRow};
 
-const NET_COLS: usize = 10;
-pub const COLUMNS: [&str; 20] = [
-    "conn", "peer", "addr", "age", "rtt", "lost", "rxb", "txb", "rxdg", "txdg", "mesh", "p1", "p2",
-    "p3", "p3b", "p4", "p5", "p6", "p7", "total",
+const NET_COLS: usize = 11;
+pub const COLUMNS: [&str; 21] = [
+    "conn", "peer", "addr", "age", "rtt", "lost", "rxb", "txb", "rxdg", "txdg", "strm", "mesh",
+    "p1", "p2", "p3", "p3b", "p4", "p5", "p6", "p7", "total",
 ];
 
 const SCORE_COLOR: Color = Color::Magenta;
@@ -43,6 +43,7 @@ fn sort_key(row: &PeerRow, col: usize) -> Key {
             7 => s.tx_blocking as u128,
             8 => s.rx_datagrams as u128,
             9 => s.tx_datagrams as u128,
+            10 => s.streams as u128,
             _ => 0,
         })
     } else {
@@ -50,15 +51,15 @@ fn sort_key(row: &PeerRow, col: usize) -> Key {
             return if col == NET_COLS { Key::Int(0) } else { Key::Float(0.0) };
         };
         match col {
-            10 => Key::Int(s.mesh_count as u128),
-            11 => Key::Float(s.p1_time_in_mesh),
-            12 => Key::Float(s.p2_first_deliveries),
-            13 => Key::Float(s.p3_mesh_deficit),
-            14 => Key::Float(s.p3b_mesh_failure),
-            15 => Key::Float(s.p4_invalid),
-            16 => Key::Float(s.p5_application),
-            17 => Key::Float(s.p6_ip_colocation),
-            18 => Key::Float(s.p7_behaviour),
+            11 => Key::Int(s.mesh_count as u128),
+            12 => Key::Float(s.p1_time_in_mesh),
+            13 => Key::Float(s.p2_first_deliveries),
+            14 => Key::Float(s.p3_mesh_deficit),
+            15 => Key::Float(s.p3b_mesh_failure),
+            16 => Key::Float(s.p4_invalid),
+            17 => Key::Float(s.p5_application),
+            18 => Key::Float(s.p6_ip_colocation),
+            19 => Key::Float(s.p7_behaviour),
             _ => Key::Float(s.total),
         }
     }
@@ -138,6 +139,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             };
 
             let conn = match &r.p2p {
+                Some(s) if s.inbound => format!("{} ✓", s.connection),
                 Some(s) => format!("{}", s.connection),
                 None => "·".to_string(),
             };
@@ -152,6 +154,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     Cell::from(format!("{}", s.tx_blocking)),
                     Cell::from(format!("{}", s.rx_datagrams)),
                     Cell::from(format!("{}", s.tx_datagrams)),
+                    Cell::from(format!("{}", s.streams)),
                 ]),
                 None => cells.extend((2..NET_COLS).map(|_| Cell::from("·"))),
             }
@@ -195,6 +198,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(5),
         Constraint::Length(8),
         Constraint::Length(8),
+        Constraint::Length(5),
         Constraint::Length(5),
     ];
     widths.extend(std::iter::repeat_n(Constraint::Length(7), COLUMNS.len() - widths.len()));
