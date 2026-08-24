@@ -29,17 +29,16 @@ use crate::{
 
 const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Upper bound on waiting for a sent Goodbye to be acked before closing the
+/// connection anyway (peer dead or not acking).
+const GOODBYE_LINGER: Duration = Duration::from_secs(1);
+
 /// Application error codes on abnormal stream teardown, so the remote can
 /// tell a protocol violation from our read-timeout giving up on its slow
 /// response (the latter is a they-are-slow signal at the receiver, counted
 /// as `RemoteResponseTimeout`).
 const STREAM_ERR_CODE_PROTOCOL: u32 = 1;
 const STREAM_ERR_CODE_RESPONSE_TIMEOUT: u32 = 2;
-/// Whole-life budget for an inbound RPC stream (negotiate + request +
-/// serve). Generous so a large by-range serve to a slow peer survives.
-/// Inactivity budget for inbound RPC streams: reset by inbound bytes,
-/// write-credit progress, and response chunks we enqueue — a stream making
-/// progress lives; a wedged one is reaped.
 const INBOUND_RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct Peer {
@@ -66,6 +65,13 @@ pub(crate) struct Peer {
     /// Earliest instant the connection needs a poll absent any other
     /// wakeup: min(quinn timer, `next_deadline`). Re-armed by `settle`.
     wake_at: Option<Instant>,
+    /// A sent Goodbye awaiting delivery before the connection closes:
+    /// (stream, linger deadline). Closing inline would race quinn's
+    /// transmit and drop the goodbye bytes. The ack (`StreamEvent::
+    /// Finished`) closes promptly; the deadline bounds a non-acking peer.
+    /// A repeated goodbye re-arms the stream id but keeps the earliest
+    /// deadline, so retries can't defer the close.
+    pending_shutdown: Option<(StreamId, Instant)>,
 }
 
 impl Peer {
@@ -88,6 +94,7 @@ impl Peer {
             // response — neither has a quinn event to trigger the first poll.
             dirty: true,
             wake_at: None,
+            pending_shutdown: None,
         }
     }
 
@@ -122,10 +129,14 @@ impl Peer {
     /// final transmit drain — transmits re-arm pacing/loss timers.
     pub(crate) fn settle(&mut self, socket_blocked: bool) {
         self.dirty = socket_blocked || self.streams.values().any(|s| s.needs_spin);
-        self.wake_at = match (self.connection.poll_timeout(), self.next_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        self.wake_at = [
+            self.connection.poll_timeout(),
+            self.next_deadline,
+            self.pending_shutdown.map(|(_, at)| at),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
     }
 
     pub(crate) fn send_gossip(&mut self, msg: TRead) -> SendResult {
@@ -199,6 +210,7 @@ impl Peer {
 
     pub(crate) fn shutdown(&mut self, now: Instant) {
         self.dirty = true;
+        self.pending_shutdown = None;
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
     }
 
@@ -309,6 +321,10 @@ impl Peer {
     {
         while self.connection.poll_timeout().is_some_and(|t| t <= now) {
             self.connection.handle_timeout(now);
+        }
+
+        if self.pending_shutdown.is_some_and(|(_, at)| now >= at) {
+            self.shutdown(now);
         }
 
         while let Some(ep_event) = self.connection.poll_endpoint_events() {
@@ -512,6 +528,11 @@ impl Peer {
                 // This event is emitted after we call 'finish()' on the send side of
                 // the stream. Indicates that data was sent and acked.
                 tracing::debug!(?id, "send half finished");
+                // Goodbye acked: safe to hang up without dropping it.
+                if self.pending_shutdown.is_some_and(|(gid, _)| gid == id) {
+                    self.shutdown(now);
+                    return;
+                }
                 // Fully-served inbound stream: response acked, nothing left
                 // to write. Reclaim here — quinn requesters reclaim it for
                 // us via a spurious STOP_SENDING (`stop_send`), but netty
@@ -558,7 +579,10 @@ impl Peer {
             stream.p2p_id.protocol() == StreamProtocol::Goodbye &&
             !stream.p2p_id.is_incoming()
         {
-            self.shutdown(now);
+            let deadline = self
+                .pending_shutdown
+                .map_or(now + GOODBYE_LINGER, |(_, at)| at.min(now + GOODBYE_LINGER));
+            self.pending_shutdown = Some((id, deadline));
         }
         self.remove_stream(id);
     }
@@ -805,7 +829,6 @@ impl Stream {
         }
     }
 
-    /// Remote peer has called 'stop' on their recv stream (our send side).
     fn timed_out<E>(
         &mut self,
         reason: &'static str,
@@ -1574,6 +1597,48 @@ mod tests {
     /// spurious STOP_SENDING. The responder must treat it as clean
     /// completion — no `StreamClosed` (which costs the requester a PM
     /// misbehaviour penalty) — and reclaim the stream.
+    /// Regression: the goodbye-then-shutdown path closed the connection in
+    /// the same spin that buffered the goodbye bytes, so quinn dropped them
+    /// and the peer saw a bare CONNECTION_CLOSE. The close must wait for the
+    /// goodbye's ack (linger-bounded).
+    #[test]
+    fn goodbye_delivered_before_shutdown() {
+        use silver_common::{RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound};
+
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let now = Instant::now();
+
+        let goodbye = RpcOutbound::Request(RpcRequestOutbound {
+            application_id: 0,
+            peer: pair.client_peer.id.connection,
+            request: RpcRequest::Goodbye(129u64.to_le_bytes()),
+        });
+        let msg = AcquiredRpcOutbound::from((goodbye, &mut client_h.context.rpc_consumer));
+        assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
+
+        // Fixed `now`: the linger deadline never lapses, so the close can
+        // only come from the goodbye's ack — the property under test.
+        let mut server_got_goodbye = false;
+        for _ in 0..300 {
+            let mut ccb = |_: NetEvent| {};
+            let mut scb = |e: NetEvent| {
+                if let NetEvent::RpcInbound(RpcInbound::Request(req)) = e &&
+                    matches!(req.request, RpcRequest::Goodbye(code) if u64::from_le_bytes(code) == 129)
+                {
+                    server_got_goodbye = true;
+                }
+            };
+            pair.step(now, &mut client_h, &mut server_h, &mut ccb, &mut scb);
+            if server_got_goodbye && pair.client_peer.connection.is_closed() {
+                break;
+            }
+        }
+        assert!(server_got_goodbye, "goodbye must reach the peer, not be dropped by the close");
+        assert!(pair.client_peer.connection.is_closed(), "acked goodbye must close the connection");
+    }
+
     #[test]
     fn requester_teardown_after_response_is_clean() {
         use silver_common::{
