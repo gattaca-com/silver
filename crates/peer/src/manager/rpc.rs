@@ -35,15 +35,21 @@ const RPC_ERR_RESOURCE_UNAVAILABLE: u8 = 0x03;
 /// expected). All RpcResponse::Error events at this layer are responses to
 /// requests **we** initiated (the inbound branch handles request parsing
 /// errors separately via the network tile), so direction is always
-/// "outgoing-from-us" — the conditional ban on outbound BlocksByRange /
-/// BlocksByRoot ResourceUnavailable is unconditional here.
-fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<RpcSeverity> {
+/// "outgoing-from-us"; what stays conditional is `owed`, because backfill asks
+/// for history a peer may lawfully have dropped.
+fn severity_for_error_response(
+    code: u8,
+    protocol: StreamProtocol,
+    owed: bool,
+) -> Option<RpcSeverity> {
     match code {
         // Peer says our request was malformed. Either we're buggy or peer is
         // — LowTolerance gives a few strikes before disconnect.
         RPC_ERR_INVALID_REQUEST => Some(RpcSeverity::LowTolerance),
         // Peer's internal trouble. Not malicious — tolerate, but track.
         RPC_ERR_SERVER_ERROR => Some(RpcSeverity::MidTolerance),
+        // Nothing was owed, so nothing was withheld: see `owed_the_request`.
+        RPC_ERR_RESOURCE_UNAVAILABLE if !owed => None,
         RPC_ERR_RESOURCE_UNAVAILABLE => match protocol {
             // Peer can't serve blocks they should have. Useless to keep
             // around — ban (mirrors lighthouse for outbound block sync).
@@ -139,6 +145,39 @@ impl PeerManager {
         }
     }
 
+    fn holds_slots_from(&self, peer: usize, asking_for: u64) -> bool {
+        match self.database.earliest_available_slot(peer) {
+            Some(earliest) if asking_for < earliest => {
+                tracing::trace!(peer, asking_for, earliest, "peer pruned the slots asked");
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether `peer` was obliged to hold what request `request_id` asked it
+    /// for.
+    fn owed_the_request(&self, peer: usize, request_id: u64) -> bool {
+        let Some(attempt) =
+            self.outbound_attempts.iter().find(|a| a.request_id == request_id && a.peer_id == peer)
+        else {
+            return true;
+        };
+        if attempt.request.origin == Origin::Live {
+            return true;
+        }
+        self.database
+            .earliest_available_slot(peer)
+            .is_some_and(|earliest| self.first_slot_asked(&attempt.request) >= earliest)
+    }
+
+    fn first_slot_asked(&self, request: &SyncRequest) -> u64 {
+        match request.scope {
+            Scope::Range { start, .. } => start,
+            Scope::Root(_) => self.local_head_imported_slot,
+        }
+    }
+
     /// The peer covering the most of `remaining` for `request`, and the subset
     /// it can serve. Eligible peers advertise the protocol, custody some of
     /// `remaining`, hold the slots asked for, and have outbound capacity left.
@@ -161,6 +200,8 @@ impl PeerManager {
             Scope::Root(_) => 0,
         };
 
+        let asking_for = self.first_slot_asked(request);
+
         self.database
             .live_peers_supporting(protocol)
             .filter_map(|p| {
@@ -174,14 +215,7 @@ impl PeerManager {
                     return None;
                 }
 
-                let asking_for = match request.scope {
-                    Scope::Range { start, .. } => start,
-                    Scope::Root(_) => self.local_head_imported_slot,
-                };
-                if let Some(earliest) = self.database.earliest_available_slot(p) &&
-                    asking_for < earliest
-                {
-                    tracing::trace!(peer = p, asking_for, earliest, "peer pruned the slots asked");
+                if !self.holds_slots_from(p, asking_for) {
                     return None;
                 }
 
@@ -417,9 +451,11 @@ impl PeerManager {
                             "rpc error response"
                         );
 
-                        if let Some(severity) =
-                            severity_for_error_response(error, stream_id.protocol())
-                        {
+                        if let Some(severity) = severity_for_error_response(
+                            error,
+                            stream_id.protocol(),
+                            self.owed_the_request(stream_id.peer(), application_id),
+                        ) {
                             self.handle_event(
                                 PeerEvent::RpcMisbehaviour { p2p_peer: stream_id.peer(), severity },
                                 now,
@@ -564,14 +600,22 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) -> bool {
         let (protocol, tokens) = (request.protocol(), request.tokens());
+        let asking_for = self.first_slot_asked(&request);
         // A forward range has to come from a peer claiming the chain we are
         // chasing; backfill and by-root only need a peer that can serve it.
         let peer = match request.scope {
-            Scope::Range { count, .. } if request.origin == Origin::Live => {
-                self.pick_sync_peer(count, now)
+            Scope::Range { start, count } if request.origin == Origin::Live => {
+                self.pick_sync_peer(start, count, now)
             }
             _ => self.best_peer_for(protocol, |i| {
-                self.outbound_has_capacity(i, protocol, tokens, now, MAX_RPC_PROTOCOL_IN_FLIGHT)
+                self.holds_slots_from(i, asking_for) &&
+                    self.outbound_has_capacity(
+                        i,
+                        protocol,
+                        tokens,
+                        now,
+                        MAX_RPC_PROTOCOL_IN_FLIGHT,
+                    )
             }),
         };
         let Some(peer) = peer else {
@@ -733,7 +777,7 @@ impl PeerManager {
     /// Highest-scoring connected peer that (a) backs the current sync
     /// target and (b) has BlocksByRange outbound capacity. `None` if no
     /// target is pinned or no eligible peer is connected.
-    pub(crate) fn pick_sync_peer(&self, count: u64, now: Instant) -> Option<usize> {
+    pub(crate) fn pick_sync_peer(&self, start: u64, count: u64, now: Instant) -> Option<usize> {
         let target = self.current_sync_target();
         if target.is_following() {
             return None;
@@ -741,6 +785,9 @@ impl PeerManager {
 
         let mut best: Option<(usize, f64)> = None;
         for (peer, ssz) in self.database.iter_live_status_bytes() {
+            if !self.holds_slots_from(peer, start) {
+                continue;
+            }
             if !target.is_served_by(ssz) {
                 tracing::debug!(
                     peer,
@@ -829,13 +876,14 @@ mod tests {
     fn invalid_request_is_low_tolerance() {
         // Same severity for any protocol — peer claims our request was bad.
         assert!(matches!(
-            severity_for_error_response(RPC_ERR_INVALID_REQUEST, StreamProtocol::Ping),
+            severity_for_error_response(RPC_ERR_INVALID_REQUEST, StreamProtocol::Ping, true),
             Some(RpcSeverity::LowTolerance)
         ));
         assert!(matches!(
             severity_for_error_response(
                 RPC_ERR_INVALID_REQUEST,
-                StreamProtocol::BeaconBlocksByRange
+                StreamProtocol::BeaconBlocksByRange,
+                true
             ),
             Some(RpcSeverity::LowTolerance)
         ));
@@ -844,7 +892,7 @@ mod tests {
     #[test]
     fn server_error_is_mid_tolerance() {
         assert!(matches!(
-            severity_for_error_response(RPC_ERR_SERVER_ERROR, StreamProtocol::StatusV2),
+            severity_for_error_response(RPC_ERR_SERVER_ERROR, StreamProtocol::StatusV2, true),
             Some(RpcSeverity::MidTolerance)
         ));
     }
@@ -855,16 +903,62 @@ mod tests {
         assert!(matches!(
             severity_for_error_response(
                 RPC_ERR_RESOURCE_UNAVAILABLE,
-                StreamProtocol::BeaconBlocksByRange
+                StreamProtocol::BeaconBlocksByRange,
+                true
             ),
             Some(RpcSeverity::Fatal)
         ));
         assert!(matches!(
             severity_for_error_response(
                 RPC_ERR_RESOURCE_UNAVAILABLE,
-                StreamProtocol::BeaconBlocksByRoot
+                StreamProtocol::BeaconBlocksByRoot,
+                true
             ),
             Some(RpcSeverity::Fatal)
+        ));
+    }
+
+    /// History nobody undertook to keep. Scoring the miss as `Fatal` bans a
+    /// peer for pruning, and it lands on exactly the peers we backfill from.
+    #[test]
+    fn resource_unavailable_for_data_not_owed_is_never_a_penalty() {
+        for protocol in [
+            StreamProtocol::BeaconBlocksByRange,
+            StreamProtocol::BeaconBlocksByRoot,
+            StreamProtocol::DataColumnSidecarsByRange,
+            StreamProtocol::ExecutionPayloadEnvelopesByRange,
+        ] {
+            assert!(
+                severity_for_error_response(RPC_ERR_RESOURCE_UNAVAILABLE, protocol, false)
+                    .is_none(),
+                "{protocol:?}: unkept history is not misbehaviour"
+            );
+            assert!(
+                severity_for_error_response(RPC_ERR_RESOURCE_UNAVAILABLE, protocol, true).is_some(),
+                "{protocol:?}: what the peer undertook to serve still scores"
+            );
+        }
+    }
+
+    /// Only `ResourceUnavailable` reads as pruning. A request a peer calls
+    /// malformed is our bug or theirs whatever span it named.
+    #[test]
+    fn data_not_owed_does_not_excuse_other_error_codes() {
+        assert!(matches!(
+            severity_for_error_response(
+                RPC_ERR_INVALID_REQUEST,
+                StreamProtocol::BeaconBlocksByRange,
+                false
+            ),
+            Some(RpcSeverity::LowTolerance)
+        ));
+        assert!(matches!(
+            severity_for_error_response(
+                RPC_ERR_SERVER_ERROR,
+                StreamProtocol::BeaconBlocksByRange,
+                false
+            ),
+            Some(RpcSeverity::MidTolerance)
         ));
     }
 
@@ -874,7 +968,8 @@ mod tests {
         assert!(
             severity_for_error_response(
                 RPC_ERR_RESOURCE_UNAVAILABLE,
-                StreamProtocol::DataColumnSidecarsByRoot
+                StreamProtocol::DataColumnSidecarsByRoot,
+                true
             )
             .is_none()
         );
@@ -885,7 +980,8 @@ mod tests {
         assert!(matches!(
             severity_for_error_response(
                 RPC_ERR_RESOURCE_UNAVAILABLE,
-                StreamProtocol::DataColumnSidecarsByRange
+                StreamProtocol::DataColumnSidecarsByRange,
+                true
             ),
             Some(RpcSeverity::MidTolerance)
         ));
@@ -895,7 +991,7 @@ mod tests {
     fn resource_unavailable_other_is_high_tolerance() {
         // Status/Ping/Goodbye/MetaData/Identity/GossipSub all share this.
         assert!(matches!(
-            severity_for_error_response(RPC_ERR_RESOURCE_UNAVAILABLE, StreamProtocol::Ping),
+            severity_for_error_response(RPC_ERR_RESOURCE_UNAVAILABLE, StreamProtocol::Ping, true),
             Some(RpcSeverity::HighTolerance)
         ));
     }
@@ -906,13 +1002,13 @@ mod tests {
         // `RateLimited` = 139) so a regressed constant is caught here.
         assert_eq!(RPC_ERR_RATE_LIMITED, 139);
         assert!(matches!(
-            severity_for_error_response(139, StreamProtocol::BeaconBlocksByRange),
+            severity_for_error_response(139, StreamProtocol::BeaconBlocksByRange, true),
             Some(RpcSeverity::MidTolerance)
         ));
         // Prysm overloads InvalidRequest (1) for rate limiting; by code alone
         // that is indistinguishable from a malformed request.
         assert!(matches!(
-            severity_for_error_response(1, StreamProtocol::BeaconBlocksByRange),
+            severity_for_error_response(1, StreamProtocol::BeaconBlocksByRange, true),
             Some(RpcSeverity::LowTolerance)
         ));
     }
@@ -921,11 +1017,11 @@ mod tests {
     fn unknown_code_is_high_tolerance() {
         // Forward-compat: spec might add new codes — don't crash, don't ban.
         assert!(matches!(
-            severity_for_error_response(0xff, StreamProtocol::Ping),
+            severity_for_error_response(0xff, StreamProtocol::Ping, true),
             Some(RpcSeverity::HighTolerance)
         ));
         assert!(matches!(
-            severity_for_error_response(0x42, StreamProtocol::BeaconBlocksByRange),
+            severity_for_error_response(0x42, StreamProtocol::BeaconBlocksByRange, true),
             Some(RpcSeverity::HighTolerance)
         ));
     }

@@ -155,7 +155,9 @@ impl ForkChoice {
     }
 
     pub fn take_head_moved(&mut self) -> bool {
-        std::mem::take(&mut self.head_moved)
+        let head_moved = self.head_moved;
+        self.head_moved = false;
+        head_moved
     }
 
     #[timed]

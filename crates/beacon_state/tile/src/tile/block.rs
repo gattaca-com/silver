@@ -56,6 +56,7 @@ impl BeaconStateTile {
                 let f = e.feedback();
                 if let Feedback::AlreadyKnown(block_root) = f {
                     self.emit_block_received(data, block_root, true, producers);
+                    Self::emit_persist_block(read, source, block_slot, block_root, producers);
                 }
                 return f;
             }

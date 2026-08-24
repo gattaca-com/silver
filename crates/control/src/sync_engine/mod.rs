@@ -176,10 +176,8 @@ impl Phase {
         delivered: bool,
         now: Instant,
     ) {
-        match self {
-            Self::Syncing(s) => s.on_terminator(ctx, window, request_id, peer, delivered, now),
-            Self::Following => ctx.backfill.on_terminator(request_id, delivered, now),
-            Self::Idle => {}
+        if let Self::Syncing(s) = self {
+            s.on_terminator(ctx, window, request_id, peer, delivered, now);
         }
     }
 
@@ -231,6 +229,8 @@ pub struct SyncEngine {
     phase: Phase,
     published: Option<SyncUpdate>,
     dirty: bool,
+    /// `has_block_gap()` is the only `select_target` input no event owns.
+    prev_has_block_gap: bool,
     just_synced: bool,
     replay: ReplayGate,
 }
@@ -266,6 +266,7 @@ impl SyncEngine {
             phase: Phase::Idle,
             published: None,
             dirty: false,
+            prev_has_block_gap: false,
             just_synced: false,
             replay: ReplayGate::new(awaiting_local_replay),
         }
@@ -276,12 +277,12 @@ impl SyncEngine {
             return None;
         }
         let deciding_for = self.replay.deciding_for(now)?;
-        let strategy = match select::select_target(&self.ctx, self.block_gap(), self.phase.target())
-        {
-            SyncUpdate::SyncingFinalized { .. } => SyncingStrategy::SyncFromPeers,
-            _ if deciding_for >= SYNCING_STRATEGY_TIMEOUT_WINDOW => SyncingStrategy::ReplayDisk,
-            _ => return None,
-        };
+        let strategy =
+            match select::select_target(&self.ctx, self.has_block_gap(), self.phase.target()) {
+                SyncUpdate::SyncingFinalized { .. } => SyncingStrategy::SyncFromPeers,
+                _ if deciding_for >= SYNCING_STRATEGY_TIMEOUT_WINDOW => SyncingStrategy::ReplayDisk,
+                _ => return None,
+            };
         self.replay.decided();
         Some(strategy)
     }
@@ -290,13 +291,13 @@ impl SyncEngine {
         self.phase.target()
     }
 
-    fn block_gap(&self) -> bool {
+    fn has_block_gap(&self) -> bool {
         self.window.unknown_blocks_up_to_slot(self.ctx.local.wall_slot) >=
             self.ctx.cfg.head_lag_threshold_slots
     }
 
     pub fn fell_behind(&self) -> bool {
-        self.phase.is_following() && self.ctx.local.have_status && self.block_gap()
+        self.phase.is_following() && self.ctx.local.have_status && self.has_block_gap()
     }
 
     pub fn take_just_synced(&mut self) -> bool {
@@ -362,7 +363,6 @@ impl SyncEngine {
                 self.ctx.backfill.set_owed(kind, floor, next)
             }
         }
-        self.mark_dirty();
     }
 
     /// Status is handled separately - to only consume the latest one and in
@@ -425,10 +425,10 @@ impl SyncEngine {
     fn on_replay_complete(&mut self) {
         self.replay.open();
         self.window.restart_at_next_status();
-        self.mark_dirty();
     }
 
     pub fn on_terminator(&mut self, request_id: u64, peer: usize, delivered: bool, now: Instant) {
+        self.ctx.backfill.on_terminator(request_id, delivered, now);
         self.phase.on_terminator(&mut self.ctx, &mut self.window, request_id, peer, delivered, now);
     }
 
@@ -448,7 +448,6 @@ impl SyncEngine {
         self.window.block_received(slot, block_root, parent_slot, applied);
         self.phase.note_report(DataKind::Block, slot);
         self.ctx.root_requests.retire(&block_root);
-        self.mark_dirty();
     }
 
     fn on_envelope_covered(&mut self, slot: u64, block_root: [u8; 32]) {
@@ -467,7 +466,6 @@ impl SyncEngine {
         tracing::info!(lca_slot, "sync: reorg, dropping coverage above the ancestor");
         self.window.on_reorg(lca_slot);
         self.phase.on_reorg();
-        self.mark_dirty();
     }
 
     fn mark_dirty(&mut self) {
@@ -475,15 +473,14 @@ impl SyncEngine {
     }
 
     pub fn advance(&mut self) -> Option<SyncUpdate> {
-        if !self.dirty {
+        let has_block_gap = self.has_block_gap();
+        let dirty = std::mem::take(&mut self.dirty);
+        if !dirty && has_block_gap == self.prev_has_block_gap {
             return None;
         }
-        self.dirty = false;
-        self.enter_phase_for(select::select_target(
-            &self.ctx,
-            self.block_gap(),
-            self.phase.target(),
-        ));
+
+        self.prev_has_block_gap = has_block_gap;
+        self.enter_phase_for(select::select_target(&self.ctx, has_block_gap, self.phase.target()));
 
         let target = self.phase.target()?;
         if self.published.is_some_and(|p| p.same_target_as(target)) {
