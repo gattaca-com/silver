@@ -1,0 +1,33 @@
+# Scenario 4: the inverse of scenario 2. Chasing a *finalized* checkpoint, a
+# blob-carrying block below it applies without waiting for its data columns —
+# the network finalized that history, so availability is not re-proven and
+# storage's retention-window backfill owns the columns for the span. Contrast
+# scenario 2, where the same block under a *head* target parks: that target is
+# unfinalized, so the DA gate applies.
+#
+# Source: EF's sanity/blocks/one_blob case — pre.ssz + a single block whose
+# body carries one blob_kzg_commitment.
+
+startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/pre.ssz_snappy
+# checkpoint is at slot 32; the single block is slot 33. wall_slot = 65 keeps
+# us in Syncing and well ahead of the block slot.
+slots_missing: 33
+
+steps:
+  # target_slot 65 → target epoch 2, so the finalized checkpoint being chased
+  # is slot 64 — above the block's slot 33.
+  - kind: sync_target
+    target: syncing_finalized
+    target_slot: 65
+  - kind: step
+
+  # No `data_columns_available` anywhere in this scenario: the block enters
+  # fork choice and is persisted on arrival.
+  - kind: blocks_range_resp
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [block_received, persist_block, status]
+
+  - kind: state_root_matches
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/post.ssz_snappy

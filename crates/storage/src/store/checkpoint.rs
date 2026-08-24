@@ -429,7 +429,7 @@ mod tests {
         // Removed at the end.
         let base = std::env::var("SILVER_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
         let dir = format!("{base}/silver_bench_persist_{}", rand::random::<u32>());
-        let mut store = Store::load(dir.clone()).unwrap();
+        let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX)).unwrap();
 
         const ITERS: u64 = 23;
         const WARMUP: u64 = 3;
@@ -526,7 +526,7 @@ mod tests {
         let dir = format!("/tmp/silver_storage_cp_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut store = Store::load(dir.clone()).unwrap();
+        let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX)).unwrap();
         assert_eq!(store.last_persisted_finalized_slot(), 0);
 
         // Commit four slots; only the newest three survive.
@@ -552,7 +552,7 @@ mod tests {
         std::fs::create_dir_all(&incomplete).unwrap();
         std::fs::write(incomplete.join("99.ssz.tmp"), b"partial").unwrap();
 
-        let reloaded = Store::load(dir.clone()).unwrap();
+        let reloaded = Store::load(dir.clone(), crate::store::test_spec(u64::MAX)).unwrap();
         assert_eq!(reloaded.last_persisted_finalized_slot(), 13);
         assert!(!cp.join("99").exists(), "incomplete checkpoint dropped on load");
         assert!(cp.join("13").exists());
@@ -575,7 +575,7 @@ mod tests {
 
         let dir = format!("/tmp/silver_storage_streamcp_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&dir);
-        let mut store = Store::load(dir.clone()).unwrap();
+        let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX)).unwrap();
 
         assert!(!store.checkpoint_in_flight());
         store.begin_checkpoint(reader);

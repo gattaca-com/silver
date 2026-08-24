@@ -7,7 +7,7 @@ mod columns;
 mod envelopes;
 
 pub(super) use blocks::UnfinalizedBlocks;
-pub(super) use columns::{UnfinalizedColumns, columns_of};
+pub(super) use columns::UnfinalizedColumns;
 pub(super) use envelopes::UnfinalizedEnvelopes;
 
 #[derive(Debug)]

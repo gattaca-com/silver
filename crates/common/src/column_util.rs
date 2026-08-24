@@ -380,6 +380,19 @@ pub fn kzg_commitment_to_versioned_hash(commitment: &[u8]) -> [u8; 32] {
     h
 }
 
+/// Set bit positions of a column bitmask, ascending.
+pub fn columns_of(bitmask: u128) -> impl Iterator<Item = u64> {
+    let mut rest = bitmask;
+    std::iter::from_fn(move || {
+        if rest == 0 {
+            return None;
+        }
+        let index = rest.trailing_zeros() as u64;
+        rest &= rest - 1;
+        Some(index)
+    })
+}
+
 /// SSZ-serialized size of a `DataColumnSidecar` whose three parallel lists
 /// each hold `num_blobs` elements.
 pub fn data_column_sidecar_len(num_blobs: usize) -> usize {

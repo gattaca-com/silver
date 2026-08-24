@@ -21,6 +21,7 @@ pub use vote::{VoteTracker, WeightDelta};
 pub const FORK_CHOICE_NODES_HINT: usize = 256;
 
 pub(super) const NULL: usize = usize::MAX;
+
 pub(super) const GENESIS_EPOCH: Epoch = 0;
 
 pub const PROPOSER_SCORE_BOOST_PERCENT: u64 = 40;
@@ -66,6 +67,8 @@ pub struct ForkChoice {
     /// `recompute_head` scratch, reused so the per-attestation path stays
     /// allocation-free once warm.
     weight_deltas: Vec<WeightDelta>,
+
+    head_moved: bool,
 }
 
 pub struct BlockImport {
@@ -147,7 +150,14 @@ impl ForkChoice {
             justified_total_active_balance: 0,
             current_slot: 0,
             weight_deltas: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
+            head_moved: false,
         }
+    }
+
+    pub fn take_head_moved(&mut self) -> bool {
+        let head_moved = self.head_moved;
+        self.head_moved = false;
+        head_moved
     }
 
     #[timed]
@@ -196,6 +206,7 @@ impl ForkChoice {
             child = ancestor;
             ancestor = self.nodes[ancestor].parent_ix;
         }
+        self.head_moved = true;
     }
 
     /// Keep only the finalized block and its descendants. Callers re-anchor
@@ -241,6 +252,7 @@ impl ForkChoice {
         for i in 0..self.nodes.len() {
             self.lookup.insert(self.nodes[i].block_root, i);
         }
+        self.head_moved = true;
     }
 
     /// Fold accumulated vote/balance changes into weights and refresh
@@ -260,6 +272,32 @@ impl ForkChoice {
         self.lookup.get(root)
     }
 
+    /// Falls back to the finalized slot when the two cannot be related — `old`
+    /// pruned as non-canonical, or a node reached without a parent.
+    #[timed]
+    pub fn lca_slot(&self, old: B256, new: B256) -> Option<Slot> {
+        let finalized_slot = self.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        let mut b = self.find_node_idx(&new)?;
+        let Some(old_idx) = self.find_node_idx(&old) else {
+            return Some(finalized_slot);
+        };
+        let mut a = old_idx;
+
+        while a != b {
+            if self.nodes[a].slot >= self.nodes[b].slot {
+                a = self.nodes[a].parent_ix;
+            } else {
+                b = self.nodes[b].parent_ix;
+            }
+            if a == NULL || b == NULL {
+                return Some(finalized_slot);
+            }
+        }
+
+        // Met at `old` itself: `new` extends it.
+        (a != old_idx).then(|| self.nodes[a].slot)
+    }
+
     #[inline]
     pub fn node(&self, idx: usize) -> &ForkChoiceNode {
         &self.nodes[idx]
@@ -268,26 +306,31 @@ impl ForkChoice {
     pub fn set_proposer_boost(&mut self, root: B256) {
         self.proposer_boost_root = root;
         self.proposer_boost_score = proposer_boost_score(self.justified_total_active_balance);
+        self.head_moved = true;
     }
 
     pub fn expire_proposer_boost(&mut self) {
         self.proposer_boost_root = [0u8; 32];
+        self.head_moved = true;
     }
 
     pub fn lift_justified(&mut self, cp: Checkpoint) {
         if cp.epoch > self.justified_checkpoint.epoch && self.find_node_idx(&cp.root).is_some() {
             self.justified_checkpoint = cp;
+            self.head_moved = true;
         }
     }
 
     pub fn lift_finalized(&mut self, cp: Checkpoint) {
         if cp.epoch > self.finalized_checkpoint.epoch && self.find_node_idx(&cp.root).is_some() {
             self.finalized_checkpoint = cp;
+            self.head_moved = true;
         }
     }
 
     pub fn set_current_slot(&mut self, slot: Slot) {
         self.current_slot = slot;
+        self.head_moved = true;
     }
 
     #[inline]

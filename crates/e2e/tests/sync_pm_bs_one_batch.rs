@@ -1,24 +1,22 @@
-//! End-to-end: same wiring as `sync_pm_bs`, but a single big batch.
-//! PM issues one `BlocksByRange { count = N }` request covering every
-//! `next_block_*.ssz` fixture and BS applies them all in a single
-//! `loop_body` pass. Stresses sustained STF + parser flow against a
-//! ~100-block stretch of canonical mainnet, the regime where slot-N
-//! body-offset corruption / proposer-cache bugs surface.
+//! End-to-end: same wiring as `sync_pm_bs`, but a single full batch.
+//! PM issues one `BlocksByRange { count = BATCH }` request and BS applies
+//! every block in a single `loop_body` pass. Stresses sustained STF +
+//! parser flow against a 64-slot stretch of canonical mainnet, the regime
+//! where slot-N body-offset corruption / proposer-cache bugs surface.
 //!
 //! Skipped unless at least `MIN_BLOCKS` (= 64) post-anchor blocks are
 //! on disk — run `make -C crates/e2e checkpoint-fixtures-large` first.
 
 use silver_common::ssz_view::StatusView;
+use silver_control::sync_engine::BATCH;
 use silver_e2e::{
     mainnet_api::fetch_canonical_state_root,
     utils::{PmBsHarness, block_slot, scan_checkpoint_fixtures},
 };
 
 const FIXTURES: &str = "tests/example_checkpoints";
-/// Below this fixture count the test is uninteresting (covered by
-/// `sync_pm_bs`'s 4-block setup). 64 blocks already spans 2 epochs and
-/// catches body-parse / proposer-cache edge cases.
-const MIN_BLOCKS: usize = 64;
+
+const MIN_BLOCKS: usize = BATCH as usize;
 
 #[test]
 #[ignore = "ignored by default — run explicitly with `cargo test ... -- --ignored`"]
@@ -38,21 +36,20 @@ fn pm_drives_single_big_batch_against_real_checkpoint() {
         );
         return;
     };
-    let n_blocks: u64 = blocks.len() as u64;
+    let blocks = &blocks[..MIN_BLOCKS];
     let final_slot = block_slot(blocks.last().unwrap());
     let Some(expected_root) = fetch_canonical_state_root(final_slot) else {
         eprintln!("skipping: canonical state_root for slot {final_slot} unavailable");
         return;
     };
 
-    // One batch covers everything.
-    let mut h = PmBsHarness::new(&checkpoint, n_blocks, blocks.len());
+    let mut h = PmBsHarness::new(&checkpoint, blocks.len());
     let first_block_slot = block_slot(&blocks[0]);
     assert_eq!(StatusView::head_slot(h.local_status()) + 1, first_block_slot);
 
     h.connect_peer(final_slot);
 
-    h.drive_batch((first_block_slot, n_blocks), &blocks);
+    h.drive_batch((first_block_slot, BATCH), blocks);
 
     assert!(
         h.head_state_slot() >= final_slot,

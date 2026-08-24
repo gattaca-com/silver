@@ -731,3 +731,50 @@ fn gloas_boost_is_pending_not_empty() {
     fc.apply_score_changes();
     assert!(fc.head_payload_present());
 }
+
+/// Two branches meeting at 2@slot 2, with heads level at slot 10 but at
+/// *different depths* — the left one skips slots 3..9 outright:
+///
+/// ```text
+///   1@0 ─ 2@2 ─┬───────── 4@10
+///              └─ 5@9 ─── 6@10
+/// ```
+fn skipped_slot_forks() -> ForkChoice {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    fc.on_block(block(2, root(2), root(1), g, g));
+    fc.on_block(block(10, root(4), root(2), g, g));
+    fc.on_block(block(9, root(5), root(2), g, g));
+    fc.on_block(block(10, root(6), root(5), g, g));
+    fc
+}
+
+/// Walking both sides up in lockstep assumes slot == depth. Here the two
+/// heads sit at the same slot but different depths, so lockstep steps them
+/// past each other and never meets — reporting no common ancestor at all.
+#[test]
+fn lca_of_branches_with_skipped_slots() {
+    let fc = skipped_slot_forks();
+    assert_eq!(fc.lca_slot(root(4), root(6)), Some(2), "shared prefix ends at 2@slot 2");
+    assert_eq!(fc.lca_slot(root(6), root(4)), Some(2), "symmetric");
+}
+
+/// A head that merely extends the previous one abandoned nothing.
+#[test]
+fn lca_of_a_descendant_is_none() {
+    let fc = skipped_slot_forks();
+    assert_eq!(fc.lca_slot(root(2), root(4)), None, "4 descends from 2");
+    assert_eq!(fc.lca_slot(root(1), root(6)), None, "everything descends from the anchor");
+    assert_eq!(fc.lca_slot(root(4), root(4)), None, "same head");
+}
+
+/// Finalization prunes a head that lost: it is gone from the node list, so no
+/// ancestor can be computed. Answering "no reorg" would silently drop a real
+/// one, so fall back to the deepest slot that cannot have been reorged.
+#[test]
+fn lca_of_a_pruned_head_falls_back_to_finalized() {
+    let mut fc = skipped_slot_forks();
+    fc.finalized_checkpoint = cp(1, 2);
+    assert_eq!(fc.lca_slot(root(99), root(6)), Some(SLOTS_PER_EPOCH), "unknown old head");
+    assert_eq!(fc.lca_slot(root(4), root(99)), None, "unknown new head says nothing");
+}

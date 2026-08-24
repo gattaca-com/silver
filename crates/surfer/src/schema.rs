@@ -9,6 +9,7 @@
 pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
     match file_name {
         "beacon_state" => Some(silver_beacon_state::BeaconStateCounters::NAMES),
+        "control" => Some(silver_control::ControlCounters::NAMES),
         "storage" => Some(silver_storage::StorageCounters::NAMES),
         "columns" => Some(silver_columns::DataColumnCounters::NAMES),
         "network" => Some(silver_network::NetworkCounters::NAMES),

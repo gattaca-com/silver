@@ -13,8 +13,8 @@ use fxhash::FxHashSet;
 use rand::seq::SliceRandom;
 use silver_common::{
     AgentString, BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, Nanos, P2pSend,
-    PeerControl, PeerEvent, PeerId, PeerScores, PeerStatus, PeerTopicScores, RpcRequest,
-    RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncUpdate, TCacheRead,
+    PeerControl, PeerEvent, PeerId, PeerScores, PeerStatus, PeerTopicScores, RpcRequestOutbound,
+    RpcSeverity, StreamProtocol, SyncRequest, SyncUpdate, TCacheRead,
     rpc_rate_limit::RpcRateLimit,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
@@ -124,6 +124,9 @@ pub struct PeerManager {
     /// it). Compared against the leading 4 bytes of an ENR's `eth2` field.
     our_fork_digest: Option<[u8; 4]>,
 
+    /// The digest we advertised before the last fork.
+    previous_fork_digest: Option<[u8; 4]>,
+
     /// Session-level blacklist of rejected block + finalized roots. Inserted
     /// from beacon-state's `BlockRejected`; queried by Status validation
     /// and target selection.
@@ -195,7 +198,7 @@ pub struct PeerManager {
 
     /// Our data-column custody set (bitmask of column indices), derived from
     /// node_id + CGC at startup. Used to fetch columns by range alongside
-    /// catch-up `BlocksByRange`.
+    /// syncing `BlocksByRange`.
     pub(crate) custody_columns: u128,
 
     /// Slot of the highest block BS has imported (`last_applied`), from the
@@ -203,47 +206,25 @@ pub struct PeerManager {
     /// picker (`best_peer_for_data_columns`) for earliest-available gating.
     pub(crate) local_head_imported_slot: u64,
 
-    /// Seeds the `SyncEngine`'s replay gate at construction; cleared on
-    /// `on_local_replay_complete`.
-    awaiting_local_replay: bool,
-
-    pub(crate) pending_range_requests: VecDeque<PendingRangeRequest>,
-    pub(crate) outbound_range_attempts: Vec<OutboundRangeAttempt>,
-    pub(crate) pending_by_root: VecDeque<(RootReqKind, u64, Option<usize>, [u8; 32])>,
-    pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
+    pub(crate) outbound_attempts: Vec<OutboundAttempt>,
+    /// `(request_id, peer, delivered)` per *logical* request that has ended —
+    /// drained by the control tile into the sync engine.
+    pub(crate) finished_requests: Vec<(u64, usize, bool)>,
+    /// Peers already served from during one column fan-out.
+    column_fanout_tried: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum RangeReqKind {
-    Blocks { step: u64 },
-    DataColumns { columns: u128 },
-    Envelopes,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum RootReqKind {
-    Block,
-    Envelope,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingRangeRequest {
-    pub request_id: u64,
-    pub start_slot: u64,
-    pub count: u64,
-    pub kind: RangeReqKind,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct OutboundRangeAttempt {
+pub(crate) struct OutboundAttempt {
     pub request_id: u64,
     pub peer_id: usize,
-    pub start_slot: u64,
-    pub count: u64,
-    pub kind: RangeReqKind,
+    /// What was asked for. `protocol` is derived, and the scope is what lets
+    /// the by-root column cap tell one root from another.
+    pub request: SyncRequest,
     pub last_progress_at: Instant,
-    pub responded: bool,
-    pub delivered: bool,
+    /// Cleared when any attempt under this `request_id` ends badly, so
+    /// whichever attempt finishes last reports the outcome for all of them.
+    pub siblings_clean: bool,
 }
 
 impl PeerManager {
@@ -256,7 +237,6 @@ impl PeerManager {
         fork_digest: [u8; 4],
         metadata: [u8; METADATA_SIZE],
         custody_columns: u128,
-        awaiting_local_replay: bool,
     ) -> Self {
         let now = Instant::now();
         let mesh =
@@ -279,6 +259,7 @@ impl PeerManager {
             banned_peers: HashMap::with_capacity(128),
             remote_banned_peers: HashMap::with_capacity(128),
             our_fork_digest: Some(fork_digest),
+            previous_fork_digest: None,
             rejected,
             syncing,
             current_target: SyncUpdate::Following,
@@ -295,11 +276,9 @@ impl PeerManager {
             earliest_available_slot: u64::MAX,
             custody_columns,
             local_head_imported_slot: 0,
-            awaiting_local_replay,
-            pending_range_requests: VecDeque::with_capacity(PEERS_CAP),
-            outbound_range_attempts: Vec::with_capacity(PEERS_CAP),
-            pending_by_root: VecDeque::with_capacity(PEERS_CAP),
-            pending_rpc_request: VecDeque::with_capacity(PEERS_CAP),
+            outbound_attempts: Vec::with_capacity(PEERS_CAP),
+            finished_requests: Vec::with_capacity(PEERS_CAP),
+            column_fanout_tried: Vec::with_capacity(PEERS_CAP),
         }
     }
 
@@ -319,19 +298,31 @@ impl PeerManager {
     /// transition. Once set, discovery hits whose ENR doesn't carry the
     /// matching `eth2` field are dropped before dial.
     pub fn set_fork_digest(&mut self, digest: [u8; 4]) {
-        self.our_fork_digest = Some(digest);
+        self.adopt_fork_digest(digest);
+    }
+
+    fn adopt_fork_digest(&mut self, digest: [u8; 4]) -> bool {
+        match self.our_fork_digest.replace(digest) {
+            Some(held) if held == digest => false,
+            Some(held) => {
+                self.previous_fork_digest = Some(held);
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn is_our_fork_digest(&self, digest: &[u8]) -> bool {
+        self.our_fork_digest.is_some_and(|ours| digest == ours) ||
+            self.previous_fork_digest.is_some_and(|previous| digest == previous)
     }
 
     pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) -> bool {
-        let new_digest = *StatusView::fork_digest(&ssz);
-        let digest_changed = self.our_fork_digest != Some(new_digest);
-        self.our_fork_digest = Some(new_digest);
+        let digest_changed = self.adopt_fork_digest(*StatusView::fork_digest(&ssz));
 
-        if self.earliest_available_slot != u64::MAX {
-            let head_slot = StatusView::head_slot(&ssz);
-            let clamped_earliest = self.earliest_available_slot.min(head_slot);
-            ssz[84..].copy_from_slice(&clamped_earliest.to_le_bytes());
-        }
+        let head_slot = StatusView::head_slot(&ssz);
+        let clamped_earliest = self.earliest_available_slot.min(head_slot);
+        ssz[84..].copy_from_slice(&clamped_earliest.to_le_bytes());
 
         tracing::debug!("set status");
         self.status = Some(ssz);
@@ -340,13 +331,6 @@ impl PeerManager {
 
     pub fn set_local_head_imported(&mut self, slot: u64) {
         self.local_head_imported_slot = slot;
-    }
-
-    pub fn on_local_replay_complete(&mut self) {
-        if self.awaiting_local_replay {
-            tracing::info!("local replay complete; unblocking network sync");
-            self.awaiting_local_replay = false;
-        }
     }
 
     /// Consume `BeaconStateEvent::BlockRejected`: blacklist `block_root` so a
@@ -368,26 +352,12 @@ impl PeerManager {
         self.current_target
     }
 
-    /// Tunables, for the control-tile `SyncEngine` shadow (step 2 migration).
-    pub fn syncing_config(&self) -> SyncingConfig {
-        self.syncing.clone()
+    pub fn drain_finished_requests(&mut self) -> std::vec::Drain<'_, (u64, usize, bool)> {
+        self.finished_requests.drain(..)
     }
 
-    /// Our fork digest, once a Status has been set. The `SyncEngine` shadow
-    /// uses it to drop wrong-network peer Status before aggregation (PM
-    /// evicts those peers; the shadow must not count them).
     pub fn our_fork_digest(&self) -> Option<[u8; 4]> {
         self.our_fork_digest
-    }
-
-    /// Still replaying disk into fork choice — forward issuance is gated until
-    /// this clears. Seeds the `SyncEngine`'s matching gate at construction.
-    pub fn awaiting_local_replay(&self) -> bool {
-        self.awaiting_local_replay
-    }
-
-    pub fn custody_columns(&self) -> u128 {
-        self.custody_columns
     }
 
     /// Track the engine-selected sync target (the engine is authoritative) so
@@ -395,71 +365,6 @@ impl PeerManager {
     /// it. Watermark + column resets are the engine's.
     pub fn set_sync_target(&mut self, new_target: SyncUpdate) {
         self.current_target = new_target;
-    }
-
-    /// Pick a target-matching peer with capacity (PM keeps ranking + caps) and
-    /// issue the engine's forward `BlocksByRange`. Returns the chosen peer, or
-    /// `None` if none was eligible / admitted — the engine re-emits next loop.
-    pub fn issue_sync_blocks_by_range(
-        &mut self,
-        request_id: u64,
-        start_slot: u64,
-        count: u64,
-        now: Instant,
-        emit: &mut impl FnMut(PeerControl),
-    ) -> Option<usize> {
-        let peer = self.pick_sync_peer(count, now)?;
-        self.issue_range_request(
-            peer,
-            request_id,
-            start_slot,
-            count,
-            RangeReqKind::Blocks { step: 1 },
-            now,
-            emit,
-        )
-        .then_some(peer)
-    }
-
-    /// Pick a custody-overlapping peer with capacity (PM keeps the picker +
-    /// caps) and issue the engine's forward `DataColumnsByRange`, requesting
-    /// only the claimed-custody overlap of `columns`. `tried` peers (failed the
-    /// active range) are skipped. Returns `(peer, overlap)` if sent.
-    #[allow(clippy::too_many_arguments)]
-    pub fn issue_sync_columns_by_range(
-        &mut self,
-        request_id: u64,
-        start_slot: u64,
-        count: u64,
-        columns: u128,
-        tried: &[usize],
-        now: Instant,
-        emit: &mut impl FnMut(PeerControl),
-    ) -> Option<(usize, u128)> {
-        let (peer, overlap, _tokens) = self.best_peer_for_data_columns(
-            StreamProtocol::DataColumnSidecarsByRange,
-            columns,
-            request_id,
-            tried,
-            start_slot,
-            count,
-            now,
-        )?;
-        self.issue_range_request(
-            peer,
-            request_id,
-            start_slot,
-            count,
-            RangeReqKind::DataColumns { columns: overlap },
-            now,
-            emit,
-        )
-        .then_some((peer, overlap))
-    }
-
-    /// Score a forward-sync peer that stalled an engine-issued range.
-    pub fn score_sync_peer(&mut self, peer: usize, severity: RpcSeverity) {
-        self.on_rpc_misbehaviour(peer, severity, "blocks-by-range progress stall");
     }
 
     pub fn peer_metadata_seq(&self, p2p_peer: usize) -> Option<u64> {
@@ -524,11 +429,10 @@ impl PeerManager {
         self.metadata = metadata;
     }
 
-    /// Pick the connected, protocol-supporting peer with the highest
-    /// cached score that also satisfies the caller-supplied `eligible`
-    /// predicate (e.g., "not at outstanding-request cap"). Returns `None`
-    /// when no peer matches. Unscored peers (first-heartbeat window) are
-    /// treated as -∞ so they lose to any scored peer.
+    /// Pick the connected, protocol-supporting peer with the highest cached
+    /// score that also satisfies the caller-supplied `eligible` predicate
+    /// (e.g., "not at outstanding-request cap"). Returns `None` when no peer
+    /// matches.
     pub fn best_peer_for(
         &self,
         protocol: StreamProtocol,
@@ -553,7 +457,6 @@ impl PeerManager {
         self.archived.len()
     }
 
-    // ── Hot path: counter updates only ──────────────────────────────────
     pub fn handle_event(
         &mut self,
         event: PeerEvent,
@@ -617,7 +520,7 @@ impl PeerManager {
                             peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
                     }
                     if !stream_id.is_incoming() {
-                        self.on_range_stream_closed(stream_id.peer(), protocol, emit);
+                        self.fail_attempt_on_stream_close(stream_id.peer(), protocol);
                     }
                 }
             }
@@ -707,43 +610,14 @@ impl PeerManager {
                 }
                 self.database.add_p2p_identify(p2p_peer, identify)
             }
-            PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
-                self.on_request_data_columns_by_root(request_id, columns, block_root, now, emit);
-            }
-            PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
-                self.on_request_by_root(
-                    RootReqKind::Block,
-                    request_id,
-                    p2p_peer,
-                    block_root,
-                    now,
-                    emit,
-                );
-            }
-            PeerEvent::SendEnvelopesByRootRequest { request_id, p2p_peer, block_root } => {
-                self.on_request_by_root(
-                    RootReqKind::Envelope,
-                    request_id,
-                    p2p_peer,
-                    block_root,
-                    now,
-                    emit,
-                );
-            }
-            PeerEvent::SendRpcRequest { request_id, rpc } => {
-                self.on_rpc_request(request_id, rpc, now, emit);
-            }
             PeerEvent::EarliestSlot(slot) => {
                 self.earliest_available_slot = slot;
             }
-            // Storage backfill reports — consumed by the control tile's
-            // `SyncEngine`, not PM.
-            PeerEvent::BackfillState { .. } | PeerEvent::ColumnNeed { .. } => {}
         }
     }
 
-    // ── Cold path: tick ─────────────────────────────────────────────────
-
+    /// The periodic sweep: gauges, scoring decay, redials, stalled attempts.
+    /// Off the per-event path, so walking every peer is affordable here.
     pub fn tick(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         // Mesh-size gauges refreshed here rather than at each mutation site —
         // mesh entries persist (empty vecs stay), so this is exact.
@@ -802,7 +676,7 @@ impl PeerManager {
         // 8) Trigger discovery if we're under target.
         self.maybe_request_discovery(now, emit);
 
-        self.sweep_backfill_range_attempts(now, emit);
+        self.sweep_stalled_attempts(now);
 
         // 9) Prune stale dials (older than 15 seconds); an entry expiring here means
         //    the dial failed or timed out (successful connects leave `dialing` in
@@ -985,7 +859,7 @@ impl PeerManager {
             archived_at: now,
         });
 
-        self.on_range_peer_disconnected(conn, emit);
+        self.fail_attempts_on_disconnect(conn);
         self.database.peer_disconnected(conn)
     }
 
@@ -1370,7 +1244,7 @@ impl PeerManager {
         if let Some(my_digest) = self.our_fork_digest {
             match enr.eth2() {
                 Some(eth2) => {
-                    if eth2[..4] != my_digest {
+                    if !self.is_our_fork_digest(&eth2[..4]) {
                         crate::PeerCounters::DiscDroppedForkDigest.inc();
                         tracing::warn!(
                             theirs = hex::encode(&eth2[..4]),
@@ -1471,8 +1345,9 @@ impl PeerManager {
             if ip.is_some_and(|ip| self.banned_ips.contains_key(&ip)) {
                 continue;
             }
-            if let Some(digest) = self.our_fork_digest &&
-                enr.eth2().is_none_or(|e| e[..4] != digest)
+
+            if self.our_fork_digest.is_some() &&
+                enr.eth2().is_none_or(|e| !self.is_our_fork_digest(&e[..4]))
             {
                 continue;
             }
@@ -1518,7 +1393,7 @@ impl PeerManager {
         }
     }
 
-    /// A request admitted by `admit_outbound_request` never reached the wire:
+    /// An admitted request never reached the wire:
     /// no response terminator or stream close will ever fire for it, so the
     /// in-flight slot must be released here or it leaks until disconnect
     /// (2 leaks brick the peer for that protocol —
@@ -1599,7 +1474,7 @@ impl PeerManager {
             return;
         }
 
-        if self.rejected.is_rejected(&finalized_root) {
+        if self.rejected.contains(&finalized_root) {
             self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal, "status backs rejected chain");
             return;
         }
@@ -2296,12 +2171,18 @@ impl RejectedRoots {
         }
     }
 
-    pub fn is_rejected(&self, root: &[u8; 32]) -> bool {
+    pub fn contains(&self, root: &[u8; 32]) -> bool {
         self.set.contains(root)
     }
 
     pub fn count(&self) -> usize {
         self.set.len()
+    }
+
+    pub fn unmark(&mut self, root: &[u8; 32]) {
+        if self.set.remove(root) {
+            self.order.retain(|held| held != root);
+        }
     }
 }
 
@@ -2384,9 +2265,8 @@ mod tests {
     use std::time::Duration;
 
     use silver_common::{
-        BACKFILL_REQUEST_ID, BASE_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, Enr, Identify, Keypair,
-        P2pStreamId, RpcInbound, RpcResponse, RpcResponseInbound, TCacheProducer,
-        ssz_view::BLOCKS_BY_RANGE_REQ_SIZE,
+        DataKind, Enr, Identify, Keypair, Origin, P2pStreamId, RequestId, RpcInbound, RpcResponse,
+        RpcResponseInbound, Scope, SyncRequest, TCacheProducer,
     };
 
     use super::*;
@@ -2397,11 +2277,7 @@ mod tests {
     #[derive(Default)]
     struct Captured(Vec<PeerControl>);
 
-    fn fixture(
-        our_topics: Vec<GossipTopic>,
-        params: ScoreParams,
-        awaiting_replay: bool,
-    ) -> (PeerManager, Captured) {
+    fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
         (
             PeerManager::new(
                 peer_id(99),
@@ -2411,7 +2287,6 @@ mod tests {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
                 0,
-                awaiting_replay,
             ),
             Captured::default(),
         )
@@ -2447,7 +2322,7 @@ mod tests {
     #[test]
     fn connect_with_no_topics_emits_nothing() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         assert!(subscribe_events(&cap).is_empty());
     }
@@ -2456,7 +2331,7 @@ mod tests {
     fn connect_emits_subscribe_per_our_topic() {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock, GossipTopic::VoluntaryExit];
-        let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         let subs = subscribe_events(&cap);
         assert_eq!(subs.len(), 2);
@@ -2469,7 +2344,7 @@ mod tests {
     fn peer_subscribes_and_we_graft_when_mesh_under_d_low() {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock];
-        let (mut mgr, mut cap) = fixture(topics, ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(topics, ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
 
@@ -2494,7 +2369,7 @@ mod tests {
     fn negative_score_subscriber_is_not_grafted() {
         let now = Instant::now();
         let topic = GossipTopic::BeaconBlock;
-        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.peers.get_mut(&1).unwrap().cached_score = -0.1;
         cap.0.clear();
@@ -2526,7 +2401,7 @@ mod tests {
     fn negative_mesh_peer_is_pruned_before_refill() {
         let now = Instant::now();
         let topic = GossipTopic::BeaconBlock;
-        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
@@ -2554,7 +2429,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.d = 4;
         params.d_low = 0;
-        let (mut mgr, mut cap) = fixture(vec![topic], params, false);
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=6 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.handle_event(
@@ -2584,7 +2459,7 @@ mod tests {
         params.d = 8;
         params.d_low = 0;
         params.d_high = 12;
-        let (mut mgr, mut cap) = fixture(vec![topic], params, false);
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=12 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.do_graft(conn, peer_id(conn as u8), topic, now, &mut |event| cap.0.push(event));
@@ -2630,7 +2505,7 @@ mod tests {
         params.d = 2;
         params.d_low = 0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![topic], params, false);
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=5 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.handle_event(
@@ -2673,7 +2548,7 @@ mod tests {
         let topic = GossipTopic::BeaconBlock;
         let params = ScoreParams::default();
         let heartbeat = params.heartbeat_interval;
-        let (mut mgr, mut cap) = fixture(vec![topic], params, false);
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(7200) },
@@ -2706,7 +2581,7 @@ mod tests {
     fn unsubscribe_preserves_reputation_and_squares_mesh_failure() {
         let now = Instant::now();
         let topic = GossipTopic::BeaconBlock;
-        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
@@ -2739,7 +2614,7 @@ mod tests {
     fn remote_prune_squares_mesh_failure() {
         let now = Instant::now();
         let topic = GossipTopic::BeaconBlock;
-        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
@@ -2768,7 +2643,7 @@ mod tests {
         let now = Instant::now();
         let topic = GossipTopic::BeaconBlock;
         let id = peer_id(1);
-        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
@@ -2801,7 +2676,7 @@ mod tests {
         params.behaviour_penalty_weight = -10.0; // excess^2 * -10
         params.graylist_threshold = -80.0; // behaviour_penalty=3 → score=-90
         params.ip_ban_threshold = 1; // single eviction → BanIp for this test
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         for _ in 0..5 {
@@ -2849,7 +2724,7 @@ mod tests {
     #[test]
     fn duplicate_crossing_connections_keep_deterministic_survivor() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect_dialler(&mut mgr, &mut cap, 1, 1, true, now);
         connect_dialler(&mut mgr, &mut cap, 2, 1, false, now);
 
@@ -2868,7 +2743,7 @@ mod tests {
     #[test]
     fn duplicate_same_direction_keeps_newest() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect_dialler(&mut mgr, &mut cap, 1, 1, false, now);
         connect_dialler(&mut mgr, &mut cap, 2, 1, false, now);
 
@@ -2884,7 +2759,7 @@ mod tests {
     fn ihave_below_gossip_threshold_records_no_promise() {
         let now = Instant::now();
         let params = ScoreParams::default();
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.peers.get_mut(&1).unwrap().cached_score = mgr.params.gossip_threshold - 1.0;
 
@@ -2906,7 +2781,7 @@ mod tests {
     fn duplicate_delivery_clears_promise() {
         let now = Instant::now();
         let params = ScoreParams::default();
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
@@ -2941,7 +2816,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
@@ -2969,7 +2844,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.max_ihave_length = 3;
         params.graylist_threshold = -100_000.0;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [9u8; 20] };
@@ -2996,7 +2871,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [77u8; 20] };
@@ -3023,7 +2898,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.ip_colocation_threshold = 2;
         params.ip_colocation_weight = -5.0;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         for i in 1..=5u8 {
             mgr.handle_event(
@@ -3048,7 +2923,7 @@ mod tests {
     fn disconnect_archives_and_reconnect_restores() {
         let now = Instant::now();
         let params = ScoreParams::default();
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
@@ -3076,7 +2951,7 @@ mod tests {
         let mut now = Instant::now();
         let mut params = ScoreParams::default();
         params.archived_ttl = Duration::from_secs(10);
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(1) },
@@ -3105,7 +2980,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.d_low = 0;
         params.d = 0;
-        let (mut mgr, mut cap) = fixture(vec![topic], params, false);
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=3 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.do_graft(conn, peer_id(conn as u8), topic, now, &mut |event| cap.0.push(event));
@@ -3166,7 +3041,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
@@ -3227,7 +3102,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
 
@@ -3300,7 +3175,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.d_lazy = 3;
         params.d_low = 1; // so the first subscriber grafts into mesh, rest stay non-mesh
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -3355,7 +3230,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.gossip_threshold = -1.0;
         params.graylist_threshold = -1_000_000.0;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic: GossipTopic::BeaconBlock },
@@ -3393,7 +3268,7 @@ mod tests {
     fn iwant_request_above_threshold_emits_forward() {
         use silver_common::{TCache, TCacheRead};
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let mut producer = TCache::producer("test_peer", 1 << 14);
@@ -3425,7 +3300,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.gossip_threshold = -1.0;
         params.graylist_threshold = -1_000_000.0;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         for _ in 0..5 {
@@ -3466,7 +3341,7 @@ mod tests {
         params.d_low = 0;
         params.d = 0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -3533,7 +3408,7 @@ mod tests {
         params.gossip_threshold = -1.0;
         params.graylist_threshold = -1_000_000.0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
 
         for i in 1..=2u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -3589,7 +3464,7 @@ mod tests {
         params.d_low = 0;
         params.d = 0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
 
         for i in 1..=3u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -3655,7 +3530,7 @@ mod tests {
     #[test]
     fn redial_known_peer_after_disconnect_with_failure_backoff() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         let enr =
             test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
         mgr.database.add_enr(enr);
@@ -3699,7 +3574,7 @@ mod tests {
     #[test]
     fn failed_dial_zombie_disconnect_backs_off() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         let enr =
             test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
         mgr.database.add_enr(enr);
@@ -3728,7 +3603,7 @@ mod tests {
     #[test]
     fn short_lived_transport_disconnect_backs_off_redial() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         let enr =
             test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
         mgr.database.add_enr(enr);
@@ -3802,7 +3677,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         // ENR must carry an `eth2` field matching the fixture's [0u8;4]
         // fork digest now that `our_fork_digest` is always set.
         let enr =
@@ -3827,7 +3702,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         connect(&mut mgr, &mut cap, 1, 7, now);
         // Age the connection past the short-lived window first: an instant
@@ -3860,7 +3735,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 2;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
@@ -3888,7 +3763,7 @@ mod tests {
         params.graylist_threshold = -80.0;
         params.target_peers = 8;
         params.ip_ban_threshold = 1; // single eviction → BanIp for this test
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         // Connect a peer on 10.0.0.42, drive their score below graylist, tick
         // to evict — that should record 10.0.0.42 in `banned_ips`.
@@ -3933,7 +3808,7 @@ mod tests {
         // Decay must be slow enough that "5 invalid frames -> tick -> ban"
         // still trips the gate after the test's first tick.
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         connect(&mut mgr, &mut cap, 42, 42, now);
         for _ in 0..5 {
@@ -3983,7 +3858,7 @@ mod tests {
         params.ip_ban_threshold = 3;
         // Slow decay so we don't flap above threshold between iterations.
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         let ip = std::net::Ipv4Addr::new(10, 0, 0, 99);
 
@@ -4033,7 +3908,7 @@ mod tests {
         params.ip_ban_threshold = 2;
         params.banned_ip_ttl = Duration::from_secs(10);
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         let ip = std::net::Ipv4Addr::new(10, 0, 0, 88);
         // First eviction: bumps count to 1. No BanIp yet (threshold=2).
@@ -4099,7 +3974,7 @@ mod tests {
         params.ip_ban_threshold = 1;
         params.banned_ip_ttl = Duration::from_secs(10);
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         connect(&mut mgr, &mut cap, 42, 42, now);
         for _ in 0..5 {
@@ -4144,7 +4019,7 @@ mod tests {
         params.banned_ip_ttl = Duration::from_secs(60);
         params.ip_ban_threshold = 2;
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         connect(&mut mgr, &mut cap, 1, 1, now);
         for _ in 0..5 {
@@ -4179,7 +4054,7 @@ mod tests {
         params.banned_peer_ttl = Duration::from_secs(3600);
         params.ip_ban_threshold = 100;
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         // Connect peer with seed=7 on 10.0.0.7 → drive below graylist → tick.
         connect(&mut mgr, &mut cap, 1, 7, now);
@@ -4213,7 +4088,7 @@ mod tests {
         params.target_peers = 4;
         params.discovery_query_interval = Duration::from_secs(5);
         params.heartbeat_interval = Duration::from_millis(10);
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
 
         // First tick after construction: under target, throttle has elapsed
         // (last_discovery was set to construction time, query_interval=5s).
@@ -4238,7 +4113,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         mgr.set_fork_digest([0xAA, 0xBB, 0xCC, 0xDD]);
 
         let mut wrong_eth2 = [0u8; 16];
@@ -4257,12 +4132,42 @@ mod tests {
         );
     }
 
+    /// A record is a snapshot of what the peer had when it last re-signed, so
+    /// just after a fork our copy of a good peer still names the digest we
+    /// left. Dropping those is how a restart into a new fork finds nobody
+    /// to dial.
+    #[test]
+    fn disc_node_found_keeps_the_digest_we_left_behind() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.target_peers = 4;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (before, after) = ([0xAA, 0xBB, 0xCC, 0xDDu8], [0x0A, 0x0B, 0x0C, 0x0Du8]);
+        mgr.set_fork_digest(before);
+        mgr.set_fork_digest(after);
+
+        let mut stale_eth2 = [0u8; 16];
+        stale_eth2[..4].copy_from_slice(&before);
+        let enr =
+            test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some(stale_eth2), None, None);
+
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
+            "the digest we advertised before the fork is one of ours, got {:?}",
+            cap.0
+        );
+    }
+
     #[test]
     fn disc_node_found_drops_missing_eth2_when_filter_set() {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         mgr.set_fork_digest([0xAA, 0xBB, 0xCC, 0xDD]);
 
         // ENR with no eth2 field — same drop policy as lighthouse.
@@ -4285,7 +4190,7 @@ mod tests {
         params.target_peers = 2;
         params.max_priority_peers = 4;
         // Subscribe to attnet 5 — our required mask flips bit 5.
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
         cap.0.clear();
@@ -4320,7 +4225,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.target_peers = 2;
         params.max_priority_peers = 2; // already at the priority cap
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params, false);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
         cap.0.clear();
@@ -4350,7 +4255,7 @@ mod tests {
     fn rpc_fatal_misbehaviour_evicts_on_tick() {
         let now = Instant::now();
         // Defaults: graylist_threshold = -80, Fatal delta = -200.
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
 
@@ -4374,7 +4279,7 @@ mod tests {
     fn rpc_low_tolerance_penalises_but_keeps_peer() {
         let now = Instant::now();
         // Defaults: graylist_threshold = -80, Low delta = -10.
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         mgr.handle_event(
@@ -4401,7 +4306,7 @@ mod tests {
         let now = Instant::now();
         // Eight Low reports at -10 each = -80, exactly at graylist (strict <
         // check, so push to nine to trip).
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         for _ in 0..9 {
@@ -4429,7 +4334,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.behaviour_penalty_decay = 0.5;
         params.decay_to_zero = 0.01;
-        let (mut mgr, mut cap) = fixture(vec![], params, false);
+        let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
@@ -4495,7 +4400,7 @@ mod tests {
     #[test]
     fn p2p_status_fork_digest_mismatch_evicts() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.set_fork_digest(fork_a());
         cap.0.clear();
@@ -4514,7 +4419,7 @@ mod tests {
     #[test]
     fn p2p_status_matching_fork_digest_keeps_peer_and_parses_db() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.set_fork_digest(fork_a());
 
@@ -4531,7 +4436,7 @@ mod tests {
     #[test]
     fn p2p_status_divergent_finalized_root_evicts() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
         cap.0.clear();
@@ -4556,7 +4461,7 @@ mod tests {
     #[test]
     fn p2p_status_same_finalized_root_accepted() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
 
@@ -4573,7 +4478,7 @@ mod tests {
     #[test]
     fn p2p_status_rejected_finalized_root_evicts() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
         // Mark a competing finalized root as rejected. Any peer reporting
@@ -4605,7 +4510,7 @@ mod tests {
         // lockstep so ENR-discovery filter and inbound Status check never
         // diverge.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         set_local(&mut mgr, status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0));
@@ -4616,7 +4521,7 @@ mod tests {
 
     #[test]
     fn set_status_reports_fork_digest_change() {
-        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default());
         // First set (None -> Some) is a change.
         assert!(mgr.set_status(status_v2_ssz(fork_a(), [0; 32], 0, [0; 32], 0)));
         // Same digest, other fields differ -> not a change (only the digest matters).
@@ -4635,7 +4540,7 @@ mod tests {
     #[test]
     fn peer_data_columns_prioritization_and_slot_reservation() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
 
         // Connect and identify Peer 1
         let kp1 = Keypair::from_secret(&[1u8; 32]).unwrap();
@@ -4688,8 +4593,6 @@ mod tests {
         assert!(custody_mask1 != 0);
         assert!(custody_mask2 != 0);
 
-        let block_root = [0xAA; 32];
-
         // Peer-exclusive custody columns so a request can split cleanly: peer 1
         // covers `m1`, peer 2 covers `m2`, no overlap. A request for `m1 | m2`
         // sent while one peer is at capacity yields partial coverage: the
@@ -4701,94 +4604,303 @@ mod tests {
         let both = m1 | m2;
         let dcbr = StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize;
 
+        // A distinct root per ask: PM refuses a second request for a root already
+        // out there, and what this probes is the *per-peer* capacity — which
+        // custody overlap makes root-independent, so the roots are free to vary.
+        let mut seq = 0;
+        let mut ask = |mgr: &mut PeerManager, cap: &mut Captured, origin, columns| {
+            let request = SyncRequest {
+                kind: DataKind::Columns,
+                origin,
+                scope: Scope::Root([seq as u8 + 1; 32]),
+                columns,
+            };
+            let id = RequestId::next(DataKind::Columns, origin, &mut seq);
+            mgr.place(request, id, now, &mut |c| cap.0.push(c));
+        };
+        let in_flight =
+            |mgr: &PeerManager, peer| mgr.peers.get(&peer).unwrap().outbound_in_flight[dcbr];
+
         // Per-peer caps: backfill = MAX_RPC_PROTOCOL_IN_FLIGHT / 2 = 1, live = 2.
 
         // 1) Backfill `m1` → peer 1 (sole custodian), filling its one backfill slot.
-        mgr.handle_event(
-            PeerEvent::SendDataColumnsByRootRequest {
-                request_id: COLUMN_BACKFILL_REQUEST_ID | 1,
-                columns: m1,
-                block_root,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 1);
-        assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 0);
+        ask(&mut mgr, &mut cap, Origin::Backfill, m1);
+        assert_eq!((in_flight(&mgr, 1), in_flight(&mgr, 2)), (1, 0));
 
         // 2) Backfill `both`: peer 1 is at its backfill cap, so only peer 2's `m2` is
         //    placed; peer 1's `m1` can't be sent and — being backfill — is dropped, not
-        //    queued (the storage ColumnBackfill wheel re-emits it).
-        mgr.handle_event(
-            PeerEvent::SendDataColumnsByRootRequest {
-                request_id: COLUMN_BACKFILL_REQUEST_ID | 2,
-                columns: both,
-                block_root,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 1);
-        assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 1);
+        //    queued (storage's column backfill re-reports it).
+        ask(&mut mgr, &mut cap, Origin::Backfill, both);
+        assert_eq!((in_flight(&mgr, 1), in_flight(&mgr, 2)), (1, 1));
 
         // 3) Live `m1` → peer 1: backfill used 1 of its 2 live slots, so this fits.
-        mgr.handle_event(
-            PeerEvent::SendDataColumnsByRootRequest {
-                request_id: BASE_REQUEST_ID | 3,
-                columns: m1,
-                block_root,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 2);
+        ask(&mut mgr, &mut cap, Origin::Live, m1);
+        assert_eq!(in_flight(&mgr, 1), 2);
 
         // 4) Live `both`: peer 1 is at its live cap (2), so peer 2 takes `m2` and `m1`
-        //    is left for storage's live wheel to retry.
+        //    is left for the engine to re-offer.
+        ask(&mut mgr, &mut cap, Origin::Live, both);
+        assert_eq!((in_flight(&mgr, 1), in_flight(&mgr, 2)), (2, 2));
+    }
+
+    /// A by-root column request for `root`.
+    fn column_root(root: [u8; 32]) -> SyncRequest {
+        SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Live,
+            scope: Scope::Root(root),
+            columns: 0b1,
+        }
+    }
+
+    /// Each by-root column request fans out across every peer custodying its
+    /// mask, so a burst of needs would become a burst times the custody set. PM
+    /// refuses past the cap; the engine re-offers after its own backoff.
+    #[test]
+    fn concurrent_by_root_column_requests_are_capped() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        for seq in 0..crate::manager::rpc::MAX_COLUMN_ROOT_REQUESTS as u64 {
+            let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq });
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id: id,
+                peer_id: 1,
+                request: column_root([seq as u8; 32]),
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 99 });
+        assert!(
+            !mgr.place(column_root([0xEE; 32]), id, now, &mut |c| cap.0.push(c)),
+            "refused at the cap, not queued"
+        );
+    }
+
+    /// One root can be reported missing again before the first response lands —
+    /// beacon state and the columns tile both re-declare per block. Asking
+    /// twice at once would double the work for nothing.
+    #[test]
+    fn the_same_root_is_not_asked_for_twice_at_once() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        const ROOT: [u8; 32] = [0xAB; 32];
+        let first = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 1 });
+        mgr.track_outbound_attempt(OutboundAttempt {
+            request_id: first,
+            peer_id: 1,
+            request: column_root(ROOT),
+            last_progress_at: now,
+            siblings_clean: true,
+        });
+
+        let second = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 2 });
+        assert!(
+            !mgr.place(column_root(ROOT), second, now, &mut |c| cap.0.push(c)),
+            "already out there"
+        );
+        assert!(
+            mgr.place(column_root([0xCD; 32]), second, now, &mut |c| cap.0.push(c)) ||
+                mgr.outbound_attempts.len() == 1,
+            "another root is not blocked by it"
+        );
+    }
+
+    /// One peer that serves column ranges, custodies every group, and has
+    /// pruned its history below `earliest`. `head_slot` is far ahead, as a
+    /// pruned-but-synced peer's is.
+    fn connect_column_peer_pruned_below(
+        mgr: &mut PeerManager,
+        cap: &mut Captured,
+        earliest: u64,
+        now: Instant,
+    ) {
+        let kp = Keypair::from_secret(&[9u8; 32]).unwrap();
+        mgr.database.add_enr(Enr::builder().cgc(128).build(kp.secret_key()).unwrap());
         mgr.handle_event(
-            PeerEvent::SendDataColumnsByRootRequest {
-                request_id: BASE_REQUEST_ID | 4,
-                columns: both,
-                block_root,
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: 1,
+                peer_id_full: kp.peer_id(),
+                ip: IpBytes::V4([10, 0, 0, 9]),
+                port: 4009,
+                local_dial: false,
             },
             now,
             &mut |c| cap.0.push(c),
         );
-        assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 2);
-        assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 2);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+
+        let mut ssz = status_v2_ssz([0u8; 4], [0u8; 32], 0, [7u8; 32], 10_000);
+        ssz[84..92].copy_from_slice(&earliest.to_le_bytes());
+        send_status(mgr, cap, 1, PeerStatus::V2(ssz));
+        assert_eq!(mgr.database.earliest_available_slot(1), Some(earliest));
     }
 
+    fn backfill_column_range(start: u64) -> SyncRequest {
+        SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Backfill,
+            scope: Scope::Range { start, count: 64 },
+            columns: 0b11,
+        }
+    }
+
+    /// Backfill walks *down*, so a range's slots sit far below our head. Gating
+    /// on our head instead of the range asks peers for history they have said
+    /// they pruned — and their spec-compliant `ResourceUnavailable` is then
+    /// scored as misbehaviour, driving our only backers negative for answering
+    /// correctly.
     #[test]
-    fn block_backfill_range_attempt_is_tracked_until_complete() {
+    fn column_range_below_a_peers_earliest_slot_is_not_placed() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        connect(&mut mgr, &mut cap, 1, 1, now);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_column_peer_pruned_below(&mut mgr, &mut cap, 100, now);
+        // Following at the tip while backfill walks the bottom of the chain.
+        mgr.set_local_head_imported(9_000);
+        cap.0.clear();
+
+        assert!(
+            !mgr.place(backfill_column_range(10), 1, now, &mut |c| cap.0.push(c)),
+            "a peer that pruned slot 10 cannot serve it"
+        );
+        assert!(mgr.outbound_attempts.is_empty(), "and nothing goes out to be penalised for");
+    }
+
+    /// The other half: the gate must not swallow ranges the peer *can* serve,
+    /// or column backfill never places at all.
+    #[test]
+    fn column_range_above_a_peers_earliest_slot_is_placed() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_column_peer_pruned_below(&mut mgr, &mut cap, 100, now);
+        mgr.set_local_head_imported(9_000);
+        cap.0.clear();
+
+        assert!(
+            mgr.place(backfill_column_range(200), 2, now, &mut |c| cap.0.push(c)),
+            "slot 200 is above the peer's floor"
+        );
+        assert_eq!(mgr.outbound_attempts.len(), 1);
+    }
+
+    /// A column range, for tests that build attempts directly.
+    fn column_range() -> SyncRequest {
+        SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Live,
+            scope: Scope::Range { start: 0, count: 1 },
+            columns: 0b11,
+        }
+    }
+
+    /// One identified peer and one placed by-root block chase.
+    fn issue_by_root(mgr: &mut PeerManager, cap: &mut Captured, request_id: u64, now: Instant) {
+        connect(mgr, cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRoot.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        let request = SyncRequest {
+            kind: DataKind::Block,
+            origin: Origin::Live,
+            scope: Scope::Root([3; 32]),
+            columns: 0,
+        };
+        assert!(mgr.place(request, request_id, now, &mut |c| cap.0.push(c)), "chase placed");
+        assert_eq!(mgr.outbound_attempts.len(), 1, "tracked like a range");
+    }
+
+    /// The engine holds an in-flight slot per by-root chase and releases it on
+    /// the terminator. A peer that abandons the stream sends none — the
+    /// network tile has no recv-EOF hook to synthesise one — so PM reporting
+    /// the failure is the only thing that frees it.
+    #[test]
+    fn by_root_chase_is_reported_when_its_stream_dies() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 5 });
+        issue_by_root(&mut mgr, &mut cap, id, now);
+
+        mgr.handle_event(
+            PeerEvent::P2pStreamClosed {
+                stream_id: P2pStreamId::new(1, 13, StreamProtocol::BeaconBlocksByRoot, false),
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(
+            mgr.drain_finished_requests().next(),
+            Some((id, 1, false)),
+            "reported to the engine, and not as a delivery"
+        );
+    }
+
+    /// Same for a peer that takes the request and simply never answers.
+    #[test]
+    fn stalled_by_root_chase_is_swept_and_reported() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 6 });
+        issue_by_root(&mut mgr, &mut cap, id, now);
+
+        let later = now +
+            Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
+            Duration::from_millis(1);
+        mgr.tick(later, &mut |c| cap.0.push(c));
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(mgr.drain_finished_requests().next(), Some((id, 1, false)));
+    }
+
+    /// Setup shared by the backfill-range tests: one identified peer and one
+    /// issued range.
+    fn issue_backfill_range(
+        mgr: &mut PeerManager,
+        cap: &mut Captured,
+        request_id: u64,
+        start: u64,
+        count: u64,
+        now: Instant,
+    ) {
+        connect(mgr, cap, 1, 1, now);
         let mut identify = Identify::default();
         identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
         mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
             cap.0.push(c)
         });
+        let request = SyncRequest {
+            kind: DataKind::Block,
+            origin: Origin::Backfill,
+            scope: Scope::Range { start, count },
+            columns: 0,
+        };
+        assert!(mgr.place(request, request_id, now, &mut |c| cap.0.push(c)), "range placed");
+        assert_eq!(mgr.outbound_attempts.len(), 1);
+        assert_eq!(mgr.outbound_attempts[0].request_id, request_id);
+    }
 
-        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
-        ssz[0..8].copy_from_slice(&20u64.to_le_bytes());
-        ssz[8..16].copy_from_slice(&3u64.to_le_bytes());
-        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
-        mgr.handle_event(
-            PeerEvent::SendRpcRequest {
-                request_id: BACKFILL_REQUEST_ID | 7,
-                rpc: RpcRequest::BlocksByRange(ssz),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        assert!(mgr.pending_range_requests.is_empty());
-        assert_eq!(mgr.outbound_range_attempts.len(), 1);
-        assert_eq!(mgr.outbound_range_attempts[0].request_id, BACKFILL_REQUEST_ID | 7);
+    #[test]
+    fn block_backfill_range_attempt_is_tracked_until_complete() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Backfill, seq: 7 });
+        issue_backfill_range(&mut mgr, &mut cap, id, 20, 3, now);
 
         mgr.on_rpc_inbound(
             RpcInbound::Response(RpcResponseInbound {
-                application_id: BACKFILL_REQUEST_ID | 7,
+                application_id: id,
                 stream_id: P2pStreamId::new(1, 11, StreamProtocol::BeaconBlocksByRange, false),
                 response: RpcResponse::Complete,
             }),
@@ -4796,37 +4908,26 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
 
-        assert!(mgr.outbound_range_attempts.is_empty());
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(
+            mgr.drain_finished_requests().next(),
+            Some((id, 1, true)),
+            "reported as delivered — the engine reads that as emptiness evidence"
+        );
     }
 
+    /// The engine owns retry, so an error terminator releases the attempt and
+    /// reports it as undelivered; PM no longer re-queues anything.
     #[test]
-    fn block_backfill_range_error_is_retried_by_peer_manager() {
+    fn block_backfill_range_error_is_reported_not_retried() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        let mut identify = Identify::default();
-        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
-        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
-            cap.0.push(c)
-        });
-
-        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
-        ssz[0..8].copy_from_slice(&20u64.to_le_bytes());
-        ssz[8..16].copy_from_slice(&3u64.to_le_bytes());
-        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
-        mgr.handle_event(
-            PeerEvent::SendRpcRequest {
-                request_id: BACKFILL_REQUEST_ID | 8,
-                rpc: RpcRequest::BlocksByRange(ssz),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert_eq!(mgr.outbound_range_attempts.len(), 1);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Backfill, seq: 8 });
+        issue_backfill_range(&mut mgr, &mut cap, id, 20, 3, now);
 
         mgr.on_rpc_inbound(
             RpcInbound::Response(RpcResponseInbound {
-                application_id: BACKFILL_REQUEST_ID | 8,
+                application_id: id,
                 stream_id: P2pStreamId::new(1, 12, StreamProtocol::BeaconBlocksByRange, false),
                 response: RpcResponse::Error { error: 2, msg: [0; 256], len: 0 },
             }),
@@ -4834,58 +4935,140 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
 
-        assert!(mgr.outbound_range_attempts.is_empty());
-        assert_eq!(mgr.pending_range_requests.len(), 1);
-        let req = mgr.pending_range_requests.front().copied().unwrap();
-        let RangeReqKind::Blocks { step } = req.kind else {
-            panic!("expected pending BlocksByRange retry");
-        };
-        assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 8);
-        assert_eq!((req.start_slot, req.count, step), (20, 3, 1));
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(mgr.drain_finished_requests().next(), Some((id, 1, false)));
     }
 
+    /// A stall has no terminator, so this is the one PM has to report itself.
+    /// Every kind is swept now, not just backfill.
     #[test]
-    fn block_backfill_range_timeout_is_retried_by_peer_manager() {
+    fn stalled_range_is_swept_and_reported() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        let mut identify = Identify::default();
-        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
-        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
-            cap.0.push(c)
-        });
-
-        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
-        ssz[0..8].copy_from_slice(&30u64.to_le_bytes());
-        ssz[8..16].copy_from_slice(&2u64.to_le_bytes());
-        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
-        mgr.handle_event(
-            PeerEvent::SendRpcRequest {
-                request_id: BACKFILL_REQUEST_ID | 9,
-                rpc: RpcRequest::BlocksByRange(ssz),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert_eq!(mgr.outbound_range_attempts.len(), 1);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Backfill, seq: 9 });
+        issue_backfill_range(&mut mgr, &mut cap, id, 30, 2, now);
 
         let later = now +
             Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
             Duration::from_millis(1);
         mgr.tick(later, &mut |c| cap.0.push(c));
 
-        assert!(mgr.outbound_range_attempts.is_empty());
+        assert!(mgr.outbound_attempts.is_empty());
         assert_eq!(
             mgr.peers.get(&1).unwrap().outbound_in_flight
                 [StreamProtocol::BeaconBlocksByRange.ordinal() as usize],
-            0
+            0,
+            "slot released"
         );
-        assert_eq!(mgr.pending_range_requests.len(), 1);
-        let req = mgr.pending_range_requests.front().copied().unwrap();
-        let RangeReqKind::Blocks { step } = req.kind else {
-            panic!("expected pending BlocksByRange retry");
-        };
-        assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 9);
-        assert_eq!((req.start_slot, req.count, step), (30, 2, 1));
+        assert_eq!(mgr.drain_finished_requests().collect::<Vec<_>>(), vec![(id, 1, false)]);
+    }
+
+    /// PM is the engine's only liveness signal, so a request fanned across
+    /// peers must reach it exactly once — on the last attempt to end, not on
+    /// each. Reporting early would free a range still streaming elsewhere.
+    #[test]
+    fn fanned_out_request_is_reported_once_on_its_last_attempt() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 11 });
+        let request = column_range();
+        let protocol = request.protocol();
+
+        for peer in 1..=3usize {
+            connect(&mut mgr, &mut cap, peer, peer as u8, now);
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id: id,
+                peer_id: peer,
+                request,
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        for peer in 1..=2usize {
+            mgr.finish_attempt(id, peer, protocol, true);
+            assert!(
+                mgr.drain_finished_requests().next().is_none(),
+                "attempt on peer {peer} ended, the rest still stream"
+            );
+        }
+        mgr.finish_attempt(id, 3, protocol, true);
+        assert_eq!(
+            mgr.drain_finished_requests().collect::<Vec<_>>(),
+            vec![(id, 3, true)],
+            "the last attempt reports the whole request"
+        );
+    }
+
+    /// One bad sub-request makes the logical request incomplete, so the report
+    /// must not claim delivery however the remaining attempts end. The engine
+    /// reads `delivered` as proof the unfilled slots were empty.
+    #[test]
+    fn one_failed_attempt_makes_the_whole_request_undelivered() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 12 });
+        let request = column_range();
+        let protocol = request.protocol();
+
+        for peer in 1..=2usize {
+            connect(&mut mgr, &mut cap, peer, peer as u8, now);
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id: id,
+                peer_id: peer,
+                request,
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        mgr.finish_attempt(id, 1, protocol, false);
+        mgr.finish_attempt(id, 2, protocol, true);
+        assert_eq!(
+            mgr.drain_finished_requests().collect::<Vec<_>>(),
+            vec![(id, 2, false)],
+            "the failure carried through to the last attempt's report"
+        );
+    }
+
+    /// A peer holding several requests must have every one of them reported on
+    /// disconnect. The scan restarts after each removal: indexing a subslice
+    /// and removing at that index from the whole vec used to report a foreign
+    /// request and leak the real one.
+    #[test]
+    fn disconnect_reports_every_request_the_peer_held() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let mine = [
+            u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 21 }),
+            u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 22 }),
+        ];
+        let theirs = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 23 });
+
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        // Interleaved so a wrong index lands on the other peer's attempt.
+        for (request_id, peer_id) in [(mine[0], 1), (theirs, 2), (mine[1], 1)] {
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id,
+                peer_id,
+                request: SyncRequest {
+                    kind: DataKind::Block,
+                    origin: Origin::Live,
+                    scope: Scope::Range { start: 0, count: 1 },
+                    columns: 0,
+                },
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        mgr.fail_attempts_on_disconnect(1);
+
+        let mut reported: Vec<u64> = mgr.drain_finished_requests().map(|(id, ..)| id).collect();
+        reported.sort_unstable();
+        assert_eq!(reported, vec![mine[0], mine[1]], "both of the peer's requests, and only those");
+        assert_eq!(mgr.outbound_attempts.len(), 1, "the other peer's attempt is untouched");
+        assert_eq!(mgr.outbound_attempts[0].request_id, theirs);
     }
 }

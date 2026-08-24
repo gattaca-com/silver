@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, io::Error, path::Path};
 
 use fxhash::FxHashMap;
+use silver_common::column_util::columns_of;
 
 use super::{PayloadKey, read_unfinalized_dir};
 use crate::store::{PendingWrite, io};
@@ -28,8 +29,13 @@ impl UnfinalizedColumns {
     }
 
     /// Mark `column` present for `root`, seeding the slot on first sight.
-    pub(crate) fn record(&mut self, root: [u8; 32], slot: u64, column: u64) {
-        self.0.entry(root).or_insert((slot, 0)).1 |= 1u128 << column;
+    /// Returns false when it was already recorded.
+    pub(crate) fn record(&mut self, root: [u8; 32], slot: u64, column: u64) -> bool {
+        let present = &mut self.0.entry(root).or_insert((slot, 0)).1;
+        let bit = 1u128 << column;
+        let new = *present & bit == 0;
+        *present |= bit;
+        new
     }
 
     pub(crate) fn slot_of(&self, root: &[u8; 32]) -> Option<u64> {
@@ -85,9 +91,4 @@ impl UnfinalizedColumns {
             }
         });
     }
-}
-
-/// Set bit positions of a column bitmask, ascending.
-pub(crate) fn columns_of(bitmask: u128) -> impl Iterator<Item = u64> {
-    (0..128u64).filter(move |c| bitmask & (1u128 << c) != 0)
 }

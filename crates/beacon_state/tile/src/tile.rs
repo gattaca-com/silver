@@ -10,9 +10,9 @@ use silver_beacon_state_data::{
     Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsEvent, EngineResp, GossipTopic, NewGossipMsg,
-    ReplayBlock, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
-    TRandomAccess, TRead, hex32,
+    BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic,
+    NewGossipMsg, Origin, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
+    SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -43,21 +43,8 @@ mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
-    Syncing,
-    Following,
-}
-
-impl Mode {
-    fn is_following(self) -> bool {
-        matches!(self, Self::Following)
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
-    /// Contains the accepted block root.
     Accept(Option<B256>),
     Ignore,
     /// Carries the failed `block_root` (only) when the reject came from a
@@ -65,20 +52,20 @@ pub enum Feedback {
     /// the chain. All other reject paths (attestation, exit, slashing,
     /// pre-hash block fails) use `Reject(None)`.
     Reject(Option<B256>),
-    /// The parent block is missing and must be requested.
     RequestParent {
         parent_root: B256,
         block_root: B256,
     },
-    /// The block is valid but carries blob commitments whose data columns are
-    /// not yet available.
     AwaitData(B256),
-    /// Gloas block that builds on a parent whose execution-payload envelope
-    /// hasn't been verified yet.
     AwaitParentPayload {
         parent_root: B256,
         block_root: B256,
     },
+    RequestEnvelope {
+        block_root: B256,
+        att_slot: Slot,
+    },
+    AlreadyKnown(B256),
 }
 
 // Manual Debug to hex-encode the `B256` roots (`B256 = [u8; 32]`, whose
@@ -104,6 +91,10 @@ impl Debug for Feedback {
                 hex32(parent_root),
                 hex32(block_root)
             ),
+            Self::RequestEnvelope { block_root, att_slot } => {
+                write!(f, "RequestEnvelope(0x{}, att_slot={att_slot})", hex32(block_root))
+            }
+            Self::AlreadyKnown(r) => write!(f, "AlreadyKnown(0x{})", hex32(r)),
         }
     }
 }
@@ -118,7 +109,7 @@ struct ParsedBlock {
 }
 
 pub struct BeaconStateTile {
-    mode: Mode,
+    sync_target: SyncUpdate,
     ticker: SlotTicker,
 
     spec: Arc<SpecConfig>,
@@ -135,10 +126,6 @@ pub struct BeaconStateTile {
     att_sig_batch: bls::SigBatch,
     fork_data_roots: ForkDataRoots,
 
-    /// Highest finalized slot PM has announced as a sync target — bounds the
-    /// data-availability requirement while range sync back-fills.
-    sync_finalized_slot: Slot,
-
     /// Canonical in-process state: finalized base + per-fork per-tier rings.
     /// Other tiles read via `state.reader()` (raw-ptr + seqlock).
     state: BeaconStateOwner,
@@ -146,6 +133,8 @@ pub struct BeaconStateTile {
     /// Index bundle of the canonical head's post-state.
     last_applied: StateId,
     last_applied_block_root: B256,
+
+    last_seen_head_root: B256,
 
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
@@ -177,15 +166,8 @@ pub struct BeaconStateTile {
     dc_available: FxHashMap<B256, Slot>,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: FxHashMap<B256, TRead>,
-    /// Gloas: block roots a payload-present attestation referenced while their
-    /// payload was still unverified (envelope missed on gossip).
-    envelope_request_queue: Vec<B256>,
-    /// Last by-root envelope request per block root:
-    /// dedups repeated payload-present attestations and gates re-requests.
-    envelope_requested: FxHashMap<B256, u64>,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
-    max_pending_per_parent: usize,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -204,7 +186,7 @@ fn root_map<V>() -> FxHashMap<B256, V> {
 impl BeaconStateTile {
     /// Builds the tile owning the checkpoint `state` (from
     /// [`BeaconState::from_checkpoint`]), seeds the anchor + fork choice, and
-    /// publishes. Boots in `Mode::Syncing`; PM flips it to `Following` once
+    /// publishes. Boots Syncing; PM flips it to `Following` once
     /// caught up to head. Wire other tiles' read handles afterwards with
     /// [`reader`](Self::reader) (valid across the publish — same allocation).
     #[allow(clippy::too_many_arguments)]
@@ -223,11 +205,8 @@ impl BeaconStateTile {
         let val_cap = owner.state().validators.finalized().capacity();
         let anchor = owner.roll_fresh();
         let mut tile = Self {
-            // Boot in Syncing. PM's first `SyncUpdate::Following` flips us
-            // once peer Status data confirms we're caught up.
-            mode: Mode::Syncing,
+            sync_target: SyncUpdate::default(),
             ticker,
-            sync_finalized_slot: 0,
             spec,
             state: owner,
             fork_choice: ForkChoice::default(),
@@ -243,6 +222,7 @@ impl BeaconStateTile {
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
+            last_seen_head_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
             stf_scratch: stf::StfScratch::new(val_cap),
@@ -256,10 +236,7 @@ impl BeaconStateTile {
             payload_pending_blocks: root_map(),
             dc_available: root_map(),
             pending_envelopes: root_map(),
-            envelope_request_queue: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
-            envelope_requested: root_map(),
             pending_bounds: syncing.pending,
-            max_pending_per_parent: (syncing.head_lag_threshold_slots * 2) as usize,
             gossip_consumer,
             rpc_consumer,
             ea_consumer: incoming_engine_resp_consumer,
@@ -358,6 +335,7 @@ impl BeaconStateTile {
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_applied_block_root = block_root;
+        self.last_seen_head_root = block_root;
 
         let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
         self.fork_choice = ForkChoice::init(
@@ -585,17 +563,10 @@ impl BeaconStateTile {
         }
     }
 
-    /// Validated-gossip entry: in Following mode acquire the buffer and
-    /// dispatch; in Syncing mode drop it (PM drives sync).
-    fn on_gossip(&mut self, m: NewGossipMsg, following: bool, producers: &mut Producers) {
-        if following {
-            if matches!(m.topic, GossipTopic::BeaconAttestation(_)) {
-                self.defer_attestation(m, producers);
-                return;
-            }
-            self.flush_attestations(producers);
-            self.handle_gossip(m.ssz, m, true, false, producers);
-        } else {
+    fn syncing_loop(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.consume_shared(adapter);
+
+        adapter.consume(|m: NewGossipMsg, _producers| {
             tracing::trace!(
                 topic = ?m.topic,
                 p2p_peer = m.stream_id.peer(),
@@ -603,47 +574,106 @@ impl BeaconStateTile {
                 head_slot = self.head_state_slot(),
                 "gossip dropped: BeaconState in Syncing mode"
             );
-        }
+        });
+        self.gossip_consumer.free();
     }
 
-    /// Mirror PM's latest sync target into `mode` (stale events collapse — only
-    /// the latest wins). `mode` gates gossip / slot-tick processing.
-    fn on_sync_update(&mut self, target: SyncUpdate) {
-        let new_sync = match target {
-            SyncUpdate::SyncingFinalized { target_epoch, .. } => {
-                self.sync_finalized_slot =
-                    self.sync_finalized_slot.max(target_epoch * SLOTS_PER_EPOCH);
-                Mode::Syncing
+    fn following_loop(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.consume_shared(adapter);
+
+        match self.ticker.tick() {
+            TickEvent::SlotStart(slot) => {
+                let prev_head = self.fork_choice.find_head();
+                let advanced = self.slot_tick(slot);
+                if advanced || self.fork_choice.find_head() != prev_head {
+                    adapter.produce(self.status_event());
+                }
             }
-            SyncUpdate::SyncingHead { .. } => Mode::Syncing,
-            SyncUpdate::Following => Mode::Following,
-        };
-        if new_sync != self.mode {
-            tracing::info!(from = ?self.mode, to = ?new_sync, ?target, "BeaconState mode transition");
-            self.mode = new_sync;
+            TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
+            TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
+            // TODO(EL): send engine_forkchoiceUpdatedV3 with payload
+            // attributes to start EL block building for this slot.
+            TickEvent::PreparePayload(_) => {}
+            TickEvent::None => {}
         }
+
+        adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
+        self.flush_attestations(&mut adapter.producers);
+        self.gossip_consumer.free();
+    }
+
+    /// Attestations are deferred into the batch; anything else flushes it
+    /// first, so the queue order the batch reorders is restored here.
+    fn on_gossip(&mut self, m: NewGossipMsg, producers: &mut Producers) {
+        if matches!(m.topic, GossipTopic::BeaconAttestation(_)) {
+            self.defer_attestation(m, producers);
+            return;
+        }
+        self.flush_attestations(producers);
+        self.handle_gossip(m.ssz, m, true, false, producers);
+    }
+
+    fn consume_shared(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
+
+        adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
+        self.rpc_consumer.free();
+
+        adapter.consume(|m: DataColumnsEvent, producers| {
+            if let DataColumnsEvent::Available { block_root, slot } = m {
+                self.handle_data_columns_available(block_root, slot, producers);
+            }
+        });
+
+        adapter.consume(|eng_resp: EngineResp, producers| {
+            self.handle_engine_response(eng_resp, producers);
+        });
+        self.ea_consumer.free();
+
+        adapter.consume(|m: ReplayBlock, producers| self.on_replay(m, producers));
+        self.replay_consumer.free();
+    }
+
+    fn on_sync_update(&mut self, target: SyncUpdate) {
+        if target.is_following() != self.sync_target.is_following() {
+            tracing::info!(from = ?self.sync_target, to = ?target, "BeaconState mode transition");
+        }
+        self.sync_target = target;
     }
 
     fn on_rpc_inbound(&mut self, m: RpcInbound, producers: &mut Producers) {
-        let RpcInbound::Response(RpcResponseInbound { application_id: _, stream_id, response }) = m
+        let RpcInbound::Response(RpcResponseInbound { application_id, stream_id, response }) = m
         else {
             return;
         };
 
+        let id = RequestId::from(application_id);
+
         match response {
-            RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
+            RpcResponse::BeaconBlock { fork_digest: _, ssz }
+                if id.is(DataKind::Block, Origin::Live) =>
+            {
                 tracing::debug!(?stream_id, "received beacon block over rpc");
                 self.handle_rpc_block(stream_id, ssz, false, producers);
             }
-            RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => {
+            RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz }
+                if id.is(DataKind::Envelope, Origin::Live) =>
+            {
                 let acquired = self.rpc_consumer.acquire(ssz);
-                if let Ok((data, _)) = acquired.buffer() {
-                    self.handle_execution_payload_envelope(
-                        acquired.clone(),
-                        data,
-                        BlockSource::Rpc,
-                        producers,
-                    );
+                match acquired.buffer() {
+                    Ok((data, _)) => {
+                        self.handle_execution_payload_envelope(
+                            acquired.clone(),
+                            data,
+                            BlockSource::Rpc,
+                            producers,
+                        );
+                    }
+                    Err(e) => tracing::error!(
+                        ?e,
+                        seq = acquired.read.seq(),
+                        "rpc envelope buffer acquire failed"
+                    ),
                 }
             }
             _ => {}
@@ -656,6 +686,9 @@ impl BeaconStateTile {
         match m {
             ReplayBlock::Block { ssz } => {
                 self.replay_block(ssz);
+            }
+            ReplayBlock::Envelope { ssz } => {
+                self.replay_envelope(ssz);
             }
             ReplayBlock::Done => {
                 producers.produce(BeaconStateEvent::ReplayComplete);
@@ -735,49 +768,15 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.initial_status_emitted = true;
         }
 
-        let following = self.mode.is_following();
-        if following {
-            match self.ticker.tick() {
-                TickEvent::SlotStart(slot) => {
-                    // The head can move without a state advance (votes folded,
-                    // boost expired), so emit status on either.
-                    let prev_head = self.fork_choice.find_head();
-                    let advanced = self.slot_tick(slot);
-                    if advanced || self.fork_choice.find_head() != prev_head {
-                        adapter.produce(self.status_event());
-                    }
-                }
-                TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
-                TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
-                // TODO(EL): send engine_forkchoiceUpdatedV3 with payload
-                // attributes to start EL block building for this slot.
-                TickEvent::PreparePayload(_) => {}
-                TickEvent::None => {}
-            }
+        if self.sync_target.is_following() {
+            self.following_loop(adapter)
+        } else {
+            self.syncing_loop(adapter)
         }
 
-        adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
-        self.flush_attestations(&mut adapter.producers);
-        self.gossip_consumer.free();
-
-        adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
-
-        adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
-        self.rpc_consumer.free();
-
-        adapter.consume(|m: DataColumnsEvent, producers| {
-            if let DataColumnsEvent::Available { block_root, slot } = m {
-                self.handle_data_columns_available(block_root, slot, producers);
-            }
-        });
-
-        adapter.consume(|eng_resp: EngineResp, producers| {
-            self.handle_engine_response(eng_resp, producers);
-        });
-        self.ea_consumer.free();
-
-        adapter.consume(|m: ReplayBlock, producers| self.on_replay(m, producers));
-        self.replay_consumer.free();
+        if self.fork_choice.take_head_moved() {
+            self.try_detect_reorg(&mut adapter.producers);
+        }
     }
 }
 
@@ -785,10 +784,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// Spec gossip rule: `aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >=
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
-
-/// By-root RPC requests carry no application correlation id — the peer manager
-/// picks the peer/stream. `0` marks such unsolicited by-root requests.
-const BY_ROOT_REQUEST_ID: u64 = 0;
 
 /// Spec `compute_fork_digest` (Fulu EIP-7892). `blob_parameters` is `None`
 /// pre-Fulu, `Some` from Fulu onward — the active BLOB_SCHEDULE entry.

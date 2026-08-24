@@ -1,7 +1,8 @@
+use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
-    PayloadValidationStatus,
+    BeaconStateEvent, PayloadValidationStatus, hex32,
     ssz_view::{
         BeaconBlockBodyGloasView as BlockBodyGloas, PAYLOAD_ATTESTATION_SIZE,
         PayloadAttestationDataView as PayloadAttestationData,
@@ -11,7 +12,7 @@ use silver_common::{
 };
 use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
-use super::BeaconStateTile;
+use super::{BeaconStateTile, Producers};
 use crate::{stf, tile::Feedback};
 
 impl BeaconStateTile {
@@ -45,6 +46,25 @@ impl BeaconStateTile {
         self.lift_checkpoints();
         self.refresh_justified_balances();
         self.fork_choice.recompute_head();
+    }
+
+    pub(super) fn try_detect_reorg(&mut self, producers: &mut Producers) {
+        let head = self.fork_choice.find_head();
+        if head == self.last_seen_head_root {
+            return;
+        }
+
+        if let Some(lca_slot) = self.fork_choice.lca_slot(self.last_seen_head_root, head) {
+            tracing::info!(
+                from = hex32(&self.last_seen_head_root),
+                to = hex32(&head),
+                lca_slot,
+                "fork-choice reorg"
+            );
+            producers.produce(BeaconStateEvent::Reorg { lca_slot });
+        }
+
+        self.last_seen_head_root = head;
     }
 
     /// Monotonically lift fork-choice justified/finalized from the head post-

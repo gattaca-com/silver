@@ -13,25 +13,23 @@ pub use crate::{
         AGENT_VERSION, Eth2Addr, Identify, PROTOCOL_VERSION, encode_observed_addr,
         parse_eth2_multiaddr,
     },
+    request::{DataKind, Origin, RequestId, Scope, SyncRequest},
     spine::{
-        ALL_PROTOCOLS, AcquiredRead as TRead, AgentString, BACKFILL_REQUEST_ID, BASE_REQUEST_ID,
-        BeaconStateEvent, BlockSource, COLUMN_BACKFILL_REQUEST_ID, ColumnSource,
-        Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, ENVELOPE_REQUEST_ID, EngineFcuReq,
+        ALL_PROTOCOLS, AcquiredRead as TRead, AgentString, BeaconStateEvent, BlockSource,
+        ColumnSource, Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, EngineFcuReq,
         EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
         EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
         EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
-        GLOAS_ERA_FLAG, GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
-        MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg,
-        P2pConnectionStats, P2pSend, P2pStreamId, PayloadValidationStatus, PeerControl, PeerEvent,
-        PeerScores, PeerStats, PeerStatus, PeerTopicScores, Producer as TProducer, REJECT_RESPONSE,
-        RPC_PROTOCOLS, RandomAccessConsumer as TRandomAccess, ReplayBlock, RequestCategory,
-        Reservation as TReservation, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
-        RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-        SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TCache,
-        TCacheProducer, TCacheRead, TCacheRef, WithdrawalInline, msg_is_backfill,
-        msg_is_column_backfill, msg_is_envelope_request, msg_is_live_column_request,
-        msg_is_post_gloas,
+        GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ,
+        MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg, P2pConnectionStats, P2pSend,
+        P2pStreamId, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats,
+        PeerStatus, PeerTopicScores, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
+        RandomAccessConsumer as TRandomAccess, ReplayBlock, Reservation as TReservation,
+        RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
+        RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers,
+        StreamProtocol, SyncNeed, SyncUpdate, SyncingStrategy, TCache, TCacheProducer, TCacheRead,
+        TCacheRef, WithdrawalInline,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
     wheel::Wheel,
@@ -41,6 +39,7 @@ pub use crate::{
 pub mod column_util;
 mod enr;
 mod error;
+mod request;
 pub mod rpc_rate_limit;
 pub use silver_metrics::{self as metrics, declare_counters, profiler};
 #[path = "generated/protobuf.identify.rs"]
@@ -51,6 +50,7 @@ mod gossip;
 mod id;
 mod identity;
 mod spine;
+pub use silver_beacon_state_data::SLOTS_PER_EPOCH;
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
 pub mod ticker;
 pub mod tracing;

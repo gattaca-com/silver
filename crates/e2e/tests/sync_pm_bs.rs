@@ -1,9 +1,12 @@
-//! End-to-end: peer-manager + beacon-state on one spine. PM issues two
-//! `BlocksByRange` batches of 2 against a synthetic peer; BS applies the
-//! 4 mainnet blocks pulled by `make checkpoint-fixtures`. Final head
-//! state_root is cross-checked against the canonical mainnet value.
+//! End-to-end: peer-manager + beacon-state on one spine. The synthetic peer
+//! truncates each `BlocksByRange` request to 2 blocks and completes cleanly,
+//! so PM needs two rounds to apply the 4 mainnet blocks pulled by
+//! `make checkpoint-fixtures` — the path where a clean terminator must not be
+//! read as proof that the unserved remainder is empty. Final head state_root
+//! is cross-checked against the canonical mainnet value.
 
 use silver_common::ssz_view::StatusView;
+use silver_control::sync_engine::BATCH;
 use silver_e2e::{
     mainnet_api::fetch_canonical_state_root,
     utils::{PmBsHarness, block_slot, scan_checkpoint_fixtures},
@@ -11,11 +14,10 @@ use silver_e2e::{
 
 const FIXTURES: &str = "tests/example_checkpoints";
 const EXPECTED_BLOCKS: usize = 4;
-const BATCH: u64 = 2;
 
 #[test]
 #[ignore]
-fn pm_drives_two_batches_against_real_checkpoint() {
+fn truncated_responses_drive_two_batches_against_real_checkpoint() {
     // Skip cleanly when fixtures are missing or the API is unreachable —
     // either makes the test meaningless rather than failing.
     let Some((checkpoint, blocks)) = scan_checkpoint_fixtures(FIXTURES, EXPECTED_BLOCKS) else {
@@ -28,9 +30,9 @@ fn pm_drives_two_batches_against_real_checkpoint() {
         return;
     };
 
-    // PM forces 2 blocks per request; threshold=1 so a 4-slot-ahead peer
-    // qualifies for SyncingHead (default head_lag_threshold is 32).
-    let mut h = PmBsHarness::new(&checkpoint, BATCH, blocks.len());
+    // threshold=1 so a 4-slot-ahead peer qualifies for SyncingHead (the
+    // default head_lag_threshold is 32).
+    let mut h = PmBsHarness::new(&checkpoint, blocks.len());
     let first_batch_start = StatusView::head_slot(h.local_status()) + 1;
     assert_eq!(first_batch_start, block_slot(&blocks[0]));
 

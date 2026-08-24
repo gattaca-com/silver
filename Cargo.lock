@@ -4566,6 +4566,7 @@ name = "silver_control"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "fxhash",
  "silver_chain_spec",
  "silver_common",
  "silver_gossip",
@@ -4772,6 +4773,7 @@ dependencies = [
  "silver_beacon_state_data",
  "silver_columns",
  "silver_common",
+ "silver_control",
  "silver_metrics",
  "silver_network",
  "silver_peer",

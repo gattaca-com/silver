@@ -17,7 +17,7 @@ use silver_common::{
     TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
 };
 use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
-use silver_control::Controller;
+use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::DiscV5;
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p, create_endpoint, create_server_config};
@@ -265,7 +265,6 @@ impl PublisherStack {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
                 0,
-                false,
             ),
             GossipHandler::new(
                 gossip_in_consumer_2,
@@ -275,8 +274,8 @@ impl PublisherStack {
             )
             .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
-            Arc::new(SpecConfig::mainnet()),
             rpc_in_ctl,
+            SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
         );
 
         // Spine + per-tile adapters.
@@ -384,15 +383,14 @@ impl EchoStack {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
                 0,
-                false,
             ),
             compression,
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
-            Arc::new(SpecConfig::mainnet()),
             TCache::producer("ctl_rpc_in_dummy", 32)
                 .cache_ref()
                 .random_access("ctl_e2e", true)
                 .expect("ctl rpc ra"),
+            SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
