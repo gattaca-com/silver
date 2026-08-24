@@ -3,12 +3,7 @@
 //! SSZ-backed containers have no Rust struct to hang `Serialize` on.
 //! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
 
-use silver_beacon_state_data::{B256, BLSSignature, BeaconBlockHeader, Checkpoint, Fork, Version};
-
-use crate::{
-    duties::{ProposerDuty, SyncDuty},
-    validators::entry::{Validator, ValidatorEntry},
-};
+use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -145,11 +140,6 @@ pub(crate) struct SyncingData {
     pub(crate) el_offline: bool,
 }
 
-pub(crate) struct PeerCountData {
-    pub(crate) connected: u64,
-    pub(crate) connecting: u64,
-}
-
 /// What a read reports about the data it answers with; both flags are
 /// required beside `data` by the `states/{state_id}` schemas and by the block
 /// reads.
@@ -174,39 +164,6 @@ impl Json<'_> {
         self.bool(flags.execution_optimistic);
         self.key("finalized");
         self.bool(flags.finalized);
-        self.key("data");
-        data(self);
-        self.end_object();
-    }
-
-    /// `GetProposerDutiesResponse`: the epoch's dependent root beside `data`,
-    /// and no `finalized` flag.
-    pub(crate) fn dependent_envelope(
-        &mut self,
-        dependent_root: &B256,
-        execution_optimistic: bool,
-        data: impl FnOnce(&mut Self),
-    ) {
-        self.begin_object();
-        self.key("dependent_root");
-        self.hex(dependent_root);
-        self.key("execution_optimistic");
-        self.bool(execution_optimistic);
-        self.key("data");
-        data(self);
-        self.end_object();
-    }
-
-    /// `GetSyncCommitteeDutiesResponse`, whose schema requires that one flag
-    /// beside `data` and neither of the other two.
-    pub(crate) fn optimistic_envelope(
-        &mut self,
-        execution_optimistic: bool,
-        data: impl FnOnce(&mut Self),
-    ) {
-        self.begin_object();
-        self.key("execution_optimistic");
-        self.bool(execution_optimistic);
         self.key("data");
         data(self);
         self.end_object();
@@ -258,20 +215,6 @@ impl Json<'_> {
         self.end_object();
     }
 
-    /// All four buckets are required.
-    pub(crate) fn peer_count(&mut self, peers: &PeerCountData) {
-        self.begin_object();
-        self.key("disconnected");
-        self.quoted_u64(0);
-        self.key("connecting");
-        self.quoted_u64(peers.connecting);
-        self.key("connected");
-        self.quoted_u64(peers.connected);
-        self.key("disconnecting");
-        self.quoted_u64(0);
-        self.end_object();
-    }
-
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -280,156 +223,6 @@ impl Json<'_> {
         self.checkpoint(&checkpoints.current_justified);
         self.key("finalized");
         self.checkpoint(&checkpoints.finalized);
-        self.end_object();
-    }
-
-    pub(crate) fn block_root(&mut self, root: &B256) {
-        self.begin_object();
-        self.key("root");
-        self.hex(root);
-        self.end_object();
-    }
-
-    pub(crate) fn block_header(&mut self, header: &BeaconBlockHeader) {
-        self.begin_object();
-        self.key("slot");
-        self.quoted_u64(header.slot);
-        self.key("proposer_index");
-        self.quoted_u64(header.proposer_index);
-        self.key("parent_root");
-        self.hex(&header.parent_root);
-        self.key("state_root");
-        self.hex(&header.state_root);
-        self.key("body_root");
-        self.hex(&header.body_root);
-        self.end_object();
-    }
-
-    pub(crate) fn signed_block_header(
-        &mut self,
-        header: &BeaconBlockHeader,
-        signature: &BLSSignature,
-    ) {
-        self.begin_object();
-        self.key("message");
-        self.block_header(header);
-        self.key("signature");
-        self.hex(signature);
-        self.end_object();
-    }
-
-    pub(crate) fn block_header_data(
-        &mut self,
-        root: &B256,
-        canonical: bool,
-        header: &BeaconBlockHeader,
-        signature: &BLSSignature,
-    ) {
-        self.begin_object();
-        self.key("root");
-        self.hex(root);
-        self.key("canonical");
-        self.bool(canonical);
-        self.key("header");
-        self.signed_block_header(header, signature);
-        self.end_object();
-    }
-
-    pub(crate) fn validator(&mut self, validator: &Validator) {
-        self.begin_object();
-        self.key("pubkey");
-        self.hex(&validator.pubkey);
-        self.key("withdrawal_credentials");
-        self.hex(&validator.withdrawal_credentials.0);
-        self.key("effective_balance");
-        self.quoted_u64(validator.effective_balance);
-        let lifecycle = &validator.lifecycle;
-        self.key("slashed");
-        self.bool(lifecycle.slashed);
-        self.key("activation_eligibility_epoch");
-        self.quoted_u64(lifecycle.activation_eligibility_epoch);
-        self.key("activation_epoch");
-        self.quoted_u64(lifecycle.activation_epoch);
-        self.key("exit_epoch");
-        self.quoted_u64(lifecycle.exit_epoch);
-        self.key("withdrawable_epoch");
-        self.quoted_u64(lifecycle.withdrawable_epoch);
-        self.end_object();
-    }
-
-    pub(crate) fn validator_entry(&mut self, entry: &ValidatorEntry) {
-        self.begin_object();
-        self.key("index");
-        self.quoted_u64(entry.index);
-        self.key("balance");
-        self.quoted_u64(entry.balance);
-        self.key("status");
-        self.string(entry.status.name());
-        self.key("validator");
-        self.validator(&entry.validator);
-        self.end_object();
-    }
-
-    pub(crate) fn validators(&mut self, entries: &[ValidatorEntry]) {
-        self.begin_array();
-        for entry in entries {
-            self.validator_entry(entry);
-        }
-        self.end_array();
-    }
-
-    pub(crate) fn proposer_duty(&mut self, duty: &ProposerDuty) {
-        self.begin_object();
-        self.key("pubkey");
-        self.hex(&duty.pubkey);
-        self.key("validator_index");
-        self.quoted_u64(duty.validator_index);
-        self.key("slot");
-        self.quoted_u64(duty.slot);
-        self.end_object();
-    }
-
-    pub(crate) fn proposer_duties(&mut self, duties: &[ProposerDuty]) {
-        self.begin_array();
-        for duty in duties {
-            self.proposer_duty(duty);
-        }
-        self.end_array();
-    }
-
-    pub(crate) fn sync_duty(&mut self, duty: &SyncDuty) {
-        debug_assert!(
-            !duty.committee_positions.is_empty(),
-            "the schema puts minItems: 1 on validator_sync_committee_indices",
-        );
-        self.begin_object();
-        self.key("pubkey");
-        self.hex(&duty.pubkey);
-        self.key("validator_index");
-        self.quoted_u64(duty.validator_index);
-        self.key("validator_sync_committee_indices");
-        self.begin_array();
-        for &position in &duty.committee_positions {
-            self.quoted_u64(position);
-        }
-        self.end_array();
-        self.end_object();
-    }
-
-    pub(crate) fn sync_duties(&mut self, duties: &[SyncDuty]) {
-        self.begin_array();
-        for duty in duties {
-            self.sync_duty(duty);
-        }
-        self.end_array();
-    }
-
-    pub(crate) fn liveness(&mut self, index: u64, is_live: bool) {
-        self.begin_object();
-        self.key("index");
-        self.quoted_u64(index);
-        self.key("is_live");
-        self.bool(is_live);
         self.end_object();
     }
 }
@@ -443,10 +236,9 @@ pub(crate) fn json_safe(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use silver_beacon_state_data::{BLSPubkey, FAR_FUTURE_EPOCH, Withdrawals};
+    use silver_beacon_state_data::FAR_FUTURE_EPOCH;
 
     use super::*;
-    use crate::validators::status::{Lifecycle, Status};
 
     fn write(render: impl FnOnce(&mut Json<'_>)) -> String {
         let mut out = Vec::new();
@@ -664,146 +456,6 @@ mod tests {
         assert_eq!(parsed["execution_optimistic"], true);
         assert_eq!(parsed["finalized"], false);
         assert_eq!(parsed["data"]["finalized"]["epoch"], "12343");
-    }
-
-    /// Field names/order: SSZ `BeaconBlockHeader` / `SignedBeaconBlockHeader`,
-    /// as used by `apis/beacon/blocks/header.yaml`.
-    #[test]
-    fn signed_block_header_golden() {
-        let header = BeaconBlockHeader {
-            slot: 7_654_321,
-            proposer_index: 4_242,
-            parent_root: [0x11; 32],
-            state_root: [0x22; 32],
-            body_root: [0x33; 32],
-        };
-        assert_body(
-            |j| j.signed_block_header(&header, &[0x44; 96]),
-            "{\"message\":{\"slot\":\"7654321\",\"proposer_index\":\"4242\",\
-             \"parent_root\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\
-             \"state_root\":\"0x2222222222222222222222222222222222222222222222222222222222222222\",\
-             \"body_root\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"},\
-             \"signature\":\"0x444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444\"}",
-        );
-    }
-
-    /// One validator with every field distinct, so a golden catches a
-    /// swapped pair as well as a renamed key.
-    fn one_validator() -> ValidatorEntry {
-        let mut pubkey = [0u8; 48];
-        pubkey[0] = 0x93;
-        pubkey[47] = 0x07;
-        ValidatorEntry {
-            index: 0,
-            balance: 32_500_000_000,
-            status: Status::ActiveSlashed,
-            validator: Validator {
-                pubkey,
-                withdrawal_credentials: Withdrawals::eth1(&[0xab; 20]),
-                effective_balance: 32_000_000_000,
-                lifecycle: Lifecycle {
-                    slashed: true,
-                    activation_eligibility_epoch: 9,
-                    activation_epoch: 10,
-                    exit_epoch: FAR_FUTURE_EPOCH,
-                    withdrawable_epoch: 8_192,
-                },
-            },
-        }
-    }
-
-    /// Field names/order: SSZ `Validator` container, as inlined by
-    /// `apis/beacon/states/validators.yaml`.
-    #[test]
-    fn validator_golden() {
-        assert_body(
-            |j| j.validator(&one_validator().validator),
-            "{\"pubkey\":\"0x930000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007\",\
-             \"withdrawal_credentials\":\"0x010000000000000000000000abababababababababababababababababababab\",\
-             \"effective_balance\":\"32000000000\",\"slashed\":true,\
-             \"activation_eligibility_epoch\":\"9\",\"activation_epoch\":\"10\",\
-             \"exit_epoch\":\"18446744073709551615\",\"withdrawable_epoch\":\"8192\"}",
-        );
-    }
-
-    /// Field names/order: `ValidatorResponse` of
-    /// `apis/beacon/states/validators.yaml`.
-    #[test]
-    fn validator_entry_golden() {
-        let body = write(|j| j.validator_entry(&one_validator()));
-        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["index"], "0");
-        assert_eq!(parsed["balance"], "32500000000");
-        assert_eq!(parsed["status"], "active_slashed");
-        assert_eq!(parsed["validator"]["effective_balance"], "32000000000");
-        assert!(body.starts_with(
-            "{\"index\":\"0\",\"balance\":\"32500000000\",\"status\":\"active_slashed\",\"validator\":{"
-        ));
-    }
-
-    /// The `data` array of `GetStateValidatorsResponse`: siblings separated,
-    /// and an empty result set still an array.
-    #[test]
-    fn validators_array_golden() {
-        assert_body(|j| j.validators(&[]), "[]");
-        let entry = one_validator();
-        let second = ValidatorEntry { index: 1, ..entry.clone() };
-        let body = write(|j| j.validators(&[entry, second]));
-        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        let entries = parsed.as_array().expect("an array");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["index"], "0");
-        assert_eq!(entries[1]["index"], "1");
-    }
-
-    fn duty_pubkey() -> BLSPubkey {
-        let mut pubkey = [0u8; 48];
-        pubkey[0] = 0xb0;
-        pubkey
-    }
-
-    /// Field names/order: `ProposerDuty` of
-    /// `apis/validator/duties/proposer.yaml`.
-    #[test]
-    fn proposer_duty_golden() {
-        let duty = ProposerDuty { pubkey: duty_pubkey(), validator_index: 17, slot: 4_096 };
-        assert_body(
-            |j| j.proposer_duty(&duty),
-            "{\"pubkey\":\"0xb00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\
-             \"validator_index\":\"17\",\"slot\":\"4096\"}",
-        );
-    }
-
-    /// Field names/order: `Altair.SyncDuty` of
-    /// `apis/validator/duties/sync.yaml` — the committee positions are a
-    /// list of quoted integers.
-    #[test]
-    fn sync_duty_golden() {
-        let duty = SyncDuty {
-            pubkey: duty_pubkey(),
-            validator_index: 17,
-            committee_positions: vec![3, 511],
-        };
-        assert_body(
-            |j| j.sync_duty(&duty),
-            "{\"pubkey\":\"0xb00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\
-             \"validator_index\":\"17\",\"validator_sync_committee_indices\":[\"3\",\"511\"]}",
-        );
-    }
-
-    /// The `data` arrays of both duties responses: an epoch nobody in the
-    /// request proposes or sits in is an empty array, not an absent one.
-    #[test]
-    fn duty_arrays_survive_being_empty() {
-        assert_body(|j| j.proposer_duties(&[]), "[]");
-        assert_body(|j| j.sync_duties(&[]), "[]");
-    }
-
-    /// Field names: `apis/validator/liveness.yaml`.
-    #[test]
-    fn liveness_golden() {
-        assert_body(|j| j.liveness(17, false), "{\"index\":\"17\",\"is_live\":false}");
-        assert_body(|j| j.liveness(0, true), "{\"index\":\"0\",\"is_live\":true}");
     }
 
     #[test]

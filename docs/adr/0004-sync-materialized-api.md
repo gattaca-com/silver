@@ -52,3 +52,11 @@ serves the beacon-api server and the engine-api client from a single `Poll`, eac
 registering through its own share of the token space, so the interleaving above
 follows from that loop rather than from the timeout being zero. The waker and the
 timeout are what remain.
+
+Amended 2026-08-24: the endpoints the 2026-08-20 amendment measured are not
+served for now. The validator registry, duties, liveness, per-block reads and
+peer counts answer 501: each needs data the node does not yet keep, or a
+render that outruns the synchronous model above, and each is deferred to its
+own PR rather than served from the wrong data. The ~1GiB/~0.9s registry
+figures stand as the recorded cost a bounded-render design has to answer
+before that endpoint returns.

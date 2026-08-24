@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_api::{BeaconApi, PeerCounts, SlotStatus};
+use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconStateEvent, Enr, Identify, Keypair, SilverSpine, SyncUpdate, TProducer, TRandomAccess,
@@ -9,7 +9,6 @@ use silver_common::{
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
-use silver_peer::PeerCounters;
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
@@ -101,9 +100,5 @@ impl ApplicationBoundaryTile {
         });
 
         status.el = self.engine.sync_status();
-        status.peers = PeerCounts {
-            connected: PeerCounters::PeersConnected.get(),
-            connecting: PeerCounters::PeersConnecting.get(),
-        };
     }
 }

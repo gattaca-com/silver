@@ -1,7 +1,6 @@
-use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH};
 use silver_common::ELSyncStatus;
 
-use crate::json::{PeerCountData, SyncingData};
+use crate::json::SyncingData;
 
 /// `SyncingConfig::head_lag_threshold_slots`'s default: the lag past which
 /// the node's own sync engine stops treating itself as at the head.
@@ -17,7 +16,6 @@ pub struct NodeStatus {
     pub slots: Option<SlotStatus>,
     pub syncing: bool,
     pub el: ELSyncStatus,
-    pub peers: PeerCounts,
 }
 
 /// What `getHealth` answers with: 200, the syncing code (206 unless the
@@ -63,18 +61,6 @@ impl NodeStatus {
         }
     }
 
-    pub(crate) fn peer_count_data(&self) -> PeerCountData {
-        PeerCountData { connected: self.peers.connected, connecting: self.peers.connecting }
-    }
-
-    /// The epoch the chain is in, whatever epoch this node's head has reached:
-    /// what a duties endpoint tells a request that arrives before the head
-    /// does from one no chain schedules duties for. `None` until the first
-    /// status, which leaves nothing to judge either by.
-    pub(crate) fn wall_epoch(&self) -> Option<Epoch> {
-        self.slots.map(|slots| slots.wall_slot / SLOTS_PER_EPOCH)
-    }
-
     /// `syncing` alone would answer for the head this node is chasing, not the
     /// one the chain is at: the control tile publishes a `SyncUpdate` only when
     /// its target changes, so a node that has yet to find a peer to sync from
@@ -97,12 +83,6 @@ impl NodeStatus {
     fn el_offline(&self) -> bool {
         matches!(self.el, ELSyncStatus::Unknown | ELSyncStatus::Offline)
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PeerCounts {
-    pub connected: u64,
-    pub connecting: u64,
 }
 
 /// `head_slot` is the highest imported block's slot, so a `sync_distance` of

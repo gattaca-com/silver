@@ -3,17 +3,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig, StateReadView};
+use silver_beacon_state_data::{BeaconStateReader, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
-    blocks::{get_block_header, get_block_root},
-    duties::{get_proposer_duties, get_proposer_duties_v2, post_sync_duties},
     ids::{parse_root, parse_uint64},
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
-    liveness::post_liveness,
     node_status::Health,
     receipts::{
         post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
@@ -22,7 +19,6 @@ use crate::{
     response::Response,
     router::{Handler, Method, Request},
     statics::StaticBodies,
-    validators::{get_state_validator, get_state_validators, post_state_validators},
 };
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -31,28 +27,24 @@ const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const DEFAULT_SYNCING_STATUS: u16 = 206;
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
-    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", get_block_root),
+    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", not_implemented),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
-    (Method::Get, "/eth/v1/beacon/headers/{block_id}", get_block_header),
+    (Method::Get, "/eth/v1/beacon/headers/{block_id}", not_implemented),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
         state_finality_checkpoints,
     ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
-    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", get_state_validators),
-    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", post_state_validators),
-    (
-        Method::Get,
-        "/eth/v1/beacon/states/{state_id}/validators/{validator_id}",
-        get_state_validator,
-    ),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
+    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", not_implemented),
     (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
     (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
     (Method::Get, "/eth/v1/config/spec", spec),
     (Method::Get, "/eth/v1/node/health", health),
     (Method::Get, "/eth/v1/node/identity", identity),
-    (Method::Get, "/eth/v1/node/peer_count", peer_count),
+    (Method::Get, "/eth/v1/node/peer_count", not_implemented),
     (Method::Get, "/eth/v1/node/syncing", syncing),
     (Method::Get, "/eth/v1/node/version", version),
     (
@@ -60,9 +52,9 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/beacon_committee_subscriptions",
         post_beacon_committee_subscriptions,
     ),
-    (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", get_proposer_duties),
-    (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", post_sync_duties),
-    (Method::Post, "/eth/v1/validator/liveness/{epoch}", post_liveness),
+    (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
     (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),
     (Method::Post, "/eth/v1/validator/register_validator", post_register_validator),
     (
@@ -70,7 +62,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/sync_committee_subscriptions",
         post_sync_committee_subscriptions,
     ),
-    (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", get_proposer_duties_v2),
+    (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", not_implemented),
     (Method::Get, "/metrics", metrics),
 ];
 
@@ -95,18 +87,16 @@ impl ApiCtx {
         }
     }
 
-    /// The published state and the root of the block it was applied from, or
-    /// `code`/`message` while the node has published none. Which code that is
-    /// belongs to the endpoint: the state reads' schemas declare no 503, the
-    /// duties' no 404.
+    /// Reads the published state, or answers `code`/`message` while the node
+    /// has published none. Which code that is belongs to the endpoint.
     pub(crate) fn read_state_or<R>(
         &self,
         resp: &mut Response<'_>,
         code: u16,
         message: &str,
-        read: impl Fn(StateReadView<'_>, B256) -> R,
+        read: impl Fn(StateReadView<'_>) -> R,
     ) -> Option<R> {
-        let result = self.state.read_head(&read);
+        let result = self.state.read(&read);
         if result.is_none() {
             resp.error(code, message);
         }
@@ -134,7 +124,7 @@ impl ApiCtx {
         }
 
         let execution_optimistic = self.node_status.execution_optimistic();
-        let read = |view: StateReadView<'_>, _| StateRead {
+        let read = |view: StateReadView<'_>| StateRead {
             flags: ReadFlags {
                 execution_optimistic,
                 // Genesis is the only state that is its own finalized history:
@@ -179,14 +169,21 @@ fn is_recognized_state_id(state_id: &str) -> bool {
         parse_root(state_id).is_some()
 }
 
+/// The surface a request can name ahead of what silver serves: each of these
+/// routes needs data the node does not yet keep (a block store, the validator
+/// registry, duty shuffling, liveness tracking, in-process peer counts), so
+/// the honest answer is the 501 that tells the client to look elsewhere,
+/// rather than a partial answer assembled from the wrong data.
+fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.error(501, "endpoint not implemented by this beacon node");
+}
+
 fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let Some(genesis) =
-        ctx.read_state_or(resp, 404, "Chain genesis info is not yet known", |view, _| {
-            GenesisData {
-                genesis_time: view.imm.genesis_time,
-                genesis_validators_root: view.imm.genesis_validators_root,
-                genesis_fork_version: view.imm.genesis_fork_version,
-            }
+        ctx.read_state_or(resp, 404, "Chain genesis info is not yet known", |view| GenesisData {
+            genesis_time: view.imm.genesis_time,
+            genesis_validators_root: view.imm.genesis_validators_root,
+            genesis_fork_version: view.imm.genesis_fork_version,
         })
     else {
         return;
@@ -199,11 +196,6 @@ fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
 fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let syncing = ctx.node_status.syncing_data();
     resp.json_body(|json| json.data_envelope(|json| json.syncing(&syncing)));
-}
-
-fn peer_count(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let peers = ctx.node_status.peer_count_data();
-    resp.json_body(|json| json.data_envelope(|json| json.peer_count(&peers)));
 }
 
 fn state_fork(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -302,7 +294,7 @@ mod tests {
     use silver_httpcore::ParsedRequest;
 
     use super::*;
-    use crate::{PeerCounts, SlotStatus, router::Router};
+    use crate::{SlotStatus, router::Router};
 
     /// Wire bytes the pre-table implementation produced for these exact
     /// inputs (captured before the table dispatch landed).
@@ -398,7 +390,6 @@ mod tests {
             slots: Some(SlotStatus { head_slot: 100, wall_slot: 100, head_optimistic: false }),
             syncing: false,
             el: ELSyncStatus::Synced,
-            peers: PeerCounts::default(),
         }
     }
 
@@ -585,21 +576,45 @@ mod tests {
         assert_eq!(syncing_data(head_at(0, u64::MAX))["sync_distance"], "18446744073709551615");
     }
 
-    /// Body shape: `apis/node/peer_count.yaml` — all four buckets required,
-    /// so the two silver does not track are zero rather than absent.
+    /// Every stubbed route answers 501 whatever the node's state: routed, so
+    /// a client can tell "this node does not serve it" (501) from "no such
+    /// endpoint exists" (404).
     #[test]
-    fn peer_count_body_carries_all_four_buckets() {
-        let peers = PeerCounts { connected: 56, connecting: 34 };
-        assert_eq!(
-            status_body(NodeStatus { peers, ..ready() }, "/eth/v1/node/peer_count"),
-            "{\"data\":{\"disconnected\":\"0\",\"connecting\":\"34\",\"connected\":\"56\",\
-             \"disconnecting\":\"0\"}}"
-        );
-        assert_eq!(
-            status_body(NodeStatus::default(), "/eth/v1/node/peer_count"),
-            "{\"data\":{\"disconnected\":\"0\",\"connecting\":\"0\",\"connected\":\"0\",\
-             \"disconnecting\":\"0\"}}"
-        );
+    fn stubbed_routes_answer_501_not_404() {
+        let router = Router::new(ROUTES);
+        let ctx = preboot_ctx();
+        for (method, path) in [
+            ("GET", "/eth/v1/beacon/blocks/head/root"),
+            ("GET", "/eth/v1/beacon/headers/head"),
+            ("GET", "/eth/v1/beacon/states/head/validators"),
+            ("POST", "/eth/v1/beacon/states/head/validators"),
+            ("GET", "/eth/v1/beacon/states/head/validators/0"),
+            ("GET", "/eth/v1/node/peer_count"),
+            ("GET", "/eth/v1/validator/duties/proposer/0"),
+            ("POST", "/eth/v1/validator/duties/sync/0"),
+            ("POST", "/eth/v1/validator/liveness/0"),
+            ("GET", "/eth/v2/validator/duties/proposer/0"),
+        ] {
+            let mut out = Vec::new();
+            let req = ParsedRequest {
+                method,
+                path,
+                query: "",
+                body: b"[]",
+                accept: None,
+                content_type: Some("application/json"),
+                eth_consensus_version: None,
+                version: 1,
+                keep_alive: true,
+            };
+            router.dispatch(&req, &ctx, &mut out);
+            assert!(out.starts_with(b"HTTP/1.1 501 Not Implemented\r\n"), "{method} {path}");
+            assert_eq!(
+                body(&out),
+                br#"{"code":501,"message":"endpoint not implemented by this beacon node"}"#,
+                "{method} {path}"
+            );
+        }
     }
 
     #[test]

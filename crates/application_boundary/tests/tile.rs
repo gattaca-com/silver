@@ -8,7 +8,7 @@ use std::{
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_application_boundary::ApplicationBoundaryTile;
-use silver_beacon_api::{PeerCounts, SlotStatus};
+use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr, Identify, Keypair,
@@ -18,7 +18,6 @@ use silver_common::{
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
 use silver_httpcore::Bind;
-use silver_peer::PeerCounters;
 use tempfile::TempDir;
 
 struct Injector;
@@ -31,15 +30,6 @@ fn boundary_tile(
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
 ) -> ApplicationBoundaryTile {
-    // Every `loop_body` below samples the peer gauges; left at the default
-    // base that is the counter file a node running on this machine serves.
-    PeerCounters::init_with_base(
-        std::env::temp_dir()
-            .join(format!("silver_application_boundary_test_{}", std::process::id())),
-        "silver",
-    )
-    .unwrap();
-
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     let gossip_p = TCache::producer(tcache_names[0], 1 << 12);
@@ -558,29 +548,6 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
     );
     assert!(!status.syncing);
     assert_eq!(status.el, ELSyncStatus::Synced);
-}
-
-/// Peer counts reach the api through shared memory, not the spine: the peer
-/// manager sets its gauges on its own tick, in another tile.
-#[test]
-fn node_status_tracks_the_peer_gauges() {
-    let base = TempDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_peers_gossip",
-        "cs_peers_rpc",
-        "cs_peers_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-
-    PeerCounters::PeersConnected.set(56);
-    PeerCounters::PeersConnecting.set(3);
-    tile.loop_body(&mut adapter);
-    assert_eq!(tile.beacon.node_status_mut().peers, PeerCounts { connected: 56, connecting: 3 });
-
-    PeerCounters::PeersConnected.set(55);
-    tile.loop_body(&mut adapter);
-    assert_eq!(tile.beacon.node_status_mut().peers.connected, 55, "refreshed every iteration");
 }
 
 /// Both tenants register into one readiness loop, where a token either could
