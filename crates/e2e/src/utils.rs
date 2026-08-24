@@ -7,7 +7,7 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
@@ -360,5 +360,13 @@ impl PmBsHarness {
 
     pub fn fork_choice_finalized_epoch(&self) -> u64 {
         self.bs.fork_choice_finalized_epoch()
+    }
+
+    pub fn fork_choice_finalized_root(&self) -> [u8; 32] {
+        self.bs.fork_choice_finalized_root()
+    }
+
+    pub fn state_reader(&self) -> BeaconStateReader {
+        self.bs.reader()
     }
 }

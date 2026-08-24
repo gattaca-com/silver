@@ -21,7 +21,24 @@ use super::{
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
 };
-use crate::{bls, counters::BeaconStateCounters, merkle, ssz_hash, stf, validate};
+use crate::{
+    bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
+    counters::BeaconStateCounters,
+    merkle, ssz_hash, stf, validate,
+};
+
+pub(super) const ATT_BATCH_CAP: usize = 1024;
+
+pub(super) struct PreparedAttestation {
+    buf: [u8; SINGLE_ATT_SIZE],
+    committee_position: usize,
+    committee_len: usize,
+    pubkey: PublicKey,
+    signing_root: B256,
+    data_root: B256,
+    signature: CheckedSignature,
+    vote: stf::AttestationVote,
+}
 
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
@@ -32,8 +49,29 @@ pub(super) enum EnvelopeCheck {
 impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
-        if data.len() < SINGLE_ATT_SIZE {
+        let prepared = match self.prepare_attestation(data, subnet) {
+            Ok(prepared) => prepared,
+            Err(feedback) => return feedback,
+        };
+        if !bls::verify_one_checked(&prepared.pubkey, &prepared.signature, &prepared.signing_root) {
             return Feedback::Reject(None);
+        }
+        self.commit_attestation(&prepared);
+        Feedback::Accept(None)
+    }
+
+    /// Everything up to (but excluding) the pairing: structural checks,
+    /// dedup, committee membership, roots, signature parse + subgroup
+    /// check. The pairing runs
+    /// either singly (`handle_attestation`) or batched
+    /// (`flush_attestations`).
+    fn prepare_attestation(
+        &mut self,
+        data: &[u8],
+        subnet: u64,
+    ) -> Result<PreparedAttestation, Feedback> {
+        if data.len() < SINGLE_ATT_SIZE {
+            return Err(Feedback::Reject(None));
         }
         let buf: &[u8; SINGLE_ATT_SIZE] = data[..SINGLE_ATT_SIZE].try_into().unwrap();
         let attester_index = SingleAttestationView::attester_index(buf) as usize;
@@ -44,12 +82,12 @@ impl BeaconStateTile {
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
-            return Feedback::Ignore;
+            return Err(Feedback::Ignore);
         }
 
         self.seen_attesters.rotate_to(wall / SLOTS_PER_EPOCH);
         if self.seen_attesters.contains(target_epoch, attester_index) {
-            return Feedback::Ignore;
+            return Err(Feedback::Ignore);
         }
 
         // Pre-Gloas single attestations encode the committee in
@@ -58,30 +96,25 @@ impl BeaconStateTile {
         let data_index = SingleAttestationView::data_index(buf);
         let is_gloas = self.spec.is_gloas_at(target_epoch);
         if !validate::attestation_index_ok(is_gloas, data_index) {
-            return Feedback::Reject(None);
+            return Err(Feedback::Reject(None));
         }
-        if let Err(f) = self.validate_attestation_target(SingleAttestationView::data(buf)) {
-            return f;
-        }
+        self.validate_attestation_target(SingleAttestationView::data(buf))?;
         let payload_present = if is_gloas {
-            match self.gloas_payload_present(&block_root, att_slot, data_index) {
-                Ok(present) => present,
-                Err(f) => return f,
-            }
+            self.gloas_payload_present(&block_root, att_slot, data_index)?
         } else {
             false
         };
 
         let canon_id = self.canonical_state_id();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
-        // Validate committee membership + signature against the canonical head.
+        // Validate committee membership against the canonical head.
         let view = self.state.read_view(canon_id);
         self.shuffling_cache.ensure_window(&view, att_epoch);
         let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
-            return Feedback::Ignore;
+            return Err(Feedback::Ignore);
         };
         if committee_index >= shuffling.committees_per_slot {
-            return Feedback::Reject(None);
+            return Err(Feedback::Reject(None));
         }
         if subnet !=
             compute_subnet_for_attestation(
@@ -90,16 +123,16 @@ impl BeaconStateTile {
                 committee_index,
             )
         {
-            return Feedback::Reject(None);
+            return Err(Feedback::Reject(None));
         }
         let committee = shuffling.committee(att_slot, committee_index);
         let Some(committee_position) = committee.iter().position(|&v| v == attester_index as u32)
         else {
-            return Feedback::Reject(None);
+            return Err(Feedback::Reject(None));
         };
         let committee_len = committee.len();
         if attester_index >= view.validators.count() {
-            return Feedback::Reject(None);
+            return Err(Feedback::Reject(None));
         }
         let fork_version = view.epoch.fork_version_at(target_epoch);
         let domain = bls::domain_from_fork_data(
@@ -108,40 +141,128 @@ impl BeaconStateTile {
         );
         let (data_root, signing_root) =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
-        let Some(verified) = bls::verify_single_attestation(
-            buf,
-            view.validators.pubkey_decompressed(attester_index),
-            data_root,
-            &signing_root,
-        ) else {
-            return Feedback::Reject(None);
+        let Some(signature) = CheckedSignature::parse(SingleAttestationView::signature(buf)) else {
+            return Err(Feedback::Reject(None));
         };
 
-        let outcome = self.attestation_pool.insert_verified(
-            buf,
+        Ok(PreparedAttestation {
+            buf: *buf,
             committee_position,
             committee_len,
+            pubkey: *view.validators.pubkey_decompressed(attester_index),
+            signing_root,
+            data_root,
+            signature,
+            vote: stf::AttestationVote {
+                validator: attester_index as u32,
+                block_root,
+                target_epoch,
+                attestation_slot: att_slot,
+                payload_present,
+            },
+        })
+    }
+
+    fn commit_attestation(&mut self, p: &PreparedAttestation) {
+        let verified =
+            VerifiedSingleAttestation { data_root: p.data_root, signature: *p.signature.as_sig() };
+        let outcome = self.attestation_pool.insert_verified(
+            &p.buf,
+            p.committee_position,
+            p.committee_len,
             &verified,
         );
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
-            tracing::debug!(slot = att_slot, committee = committee_index, "attestation pool full");
+            tracing::debug!(
+                slot = p.vote.attestation_slot,
+                committee = SingleAttestationView::committee_index(&p.buf),
+                "attestation pool full"
+            );
         }
 
-        let vote = stf::AttestationVote {
-            validator: attester_index as u32,
-            block_root,
-            target_epoch,
-            attestation_slot: att_slot,
-            payload_present,
-        };
         let n = self.head_validator_count();
-        self.record_or_defer_vote(vote, n);
+        self.record_or_defer_vote(p.vote, n);
 
-        self.seen_attesters.mark(target_epoch, attester_index);
+        self.seen_attesters.mark(p.vote.target_epoch, p.vote.validator as usize);
+    }
 
-        Feedback::Accept(None)
+    pub(super) fn defer_attestation(&mut self, m: NewGossipMsg, producers: &mut Producers) {
+        self.att_batch.push(m);
+        if self.att_batch.len() >= ATT_BATCH_CAP {
+            self.flush_attestations(producers);
+        }
+    }
+
+    /// Apply the deferred attestations: sequential cheap validation (in
+    /// arrival order, so intra-batch duplicate attesters dedup naturally),
+    /// then one multi-pairing verify for the survivors. A failed batch falls
+    /// back to per-attestation verification so only the culprits are
+    /// rejected.
+    #[timed]
+    pub(super) fn flush_attestations(&mut self, producers: &mut Producers) {
+        if self.att_batch.is_empty() {
+            return;
+        }
+        BeaconStateCounters::AttestationBatchSize.set(self.att_batch.len() as u64);
+
+        self.att_sig_batch.clear();
+        debug_assert!(self.att_pending.is_empty());
+
+        while !self.att_batch.is_empty() {
+            let m = self.att_batch.swap_remove(0);
+            let GossipTopic::BeaconAttestation(subnet) = m.topic else { continue };
+            let acquired = self.gossip_consumer.acquire(m.ssz);
+            let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { continue };
+            match self.prepare_attestation(data, subnet) {
+                Ok(p) => {
+                    let duplicate = self.att_pending.iter().any(|(_, q)| {
+                        q.vote.validator == p.vote.validator &&
+                            q.vote.target_epoch == p.vote.target_epoch
+                    });
+                    if duplicate {
+                        continue;
+                    }
+                    self.att_sig_batch.push_parsed(&p.pubkey, p.signature, p.signing_root);
+                    self.att_pending.push((m, p));
+                }
+                Err(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                    p2p_peer: m.stream_id.peer(),
+                    topic: m.topic,
+                    hash: m.msg_hash,
+                }),
+                Err(_) => {}
+            }
+        }
+
+        let batch_ok = self.att_sig_batch.verify_all();
+        if !batch_ok && !self.att_pending.is_empty() {
+            BeaconStateCounters::AttestationBatchFallback.inc();
+        }
+
+        let mut accepted = false;
+        while !self.att_pending.is_empty() {
+            let (m, p) = self.att_pending.swap_remove(0);
+            let valid =
+                batch_ok || bls::verify_one_checked(&p.pubkey, &p.signature, &p.signing_root);
+            if valid {
+                self.commit_attestation(&p);
+                Self::relay_gossip(&m, producers);
+                accepted = true;
+            } else {
+                producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                    p2p_peer: m.stream_id.peer(),
+                    topic: m.topic,
+                    hash: m.msg_hash,
+                });
+            }
+        }
+
+        if accepted {
+            self.on_accept(None, producers);
+        }
+        self.drain_envelope_requests(producers);
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same

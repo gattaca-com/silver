@@ -15,7 +15,7 @@ pub use builder::Error;
 use bytes::{Buf, BytesMut};
 pub use node_id::{
     EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
-    SUBNETS_PER_NODE,
+    SUBNETS_PER_NODE, attnet_subnets,
 };
 use secp256k1::{PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};

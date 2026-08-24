@@ -100,7 +100,7 @@ impl NodeId {
     /// subscription period, with period boundaries offset by
     /// `node_id % EPOCHS_PER_SUBNET_SUBSCRIPTION` so the network's
     /// rotations are staggered.
-    pub fn attestation_subnets(&self, epoch: u64) -> [u8; SUBNETS_PER_NODE] {
+    pub fn attestation_subnets(&self, epoch: u64, count: u8) -> [u8; 8] {
         // node_id >> (256 - prefix_bits), prefix_bits = ceillog2(64) = 6.
         let prefix = (self.raw[0] >> 2) as u64;
         // node_id % EPOCHS_PER_SUBNET_SUBSCRIPTION (raw is big-endian).
@@ -109,8 +109,19 @@ impl NodeId {
         let seed = sha256::Hash::hash(&period.to_le_bytes());
         let shuffled =
             compute_shuffled_index(prefix, ATTESTATION_SUBNET_COUNT, seed.as_byte_array());
-        core::array::from_fn(|i| ((shuffled + i as u64) % ATTESTATION_SUBNET_COUNT) as u8)
+
+        let mut attnets = [0u8; 8];
+        for i in 0..count as u64 {
+            let subnet = ((shuffled + i) % ATTESTATION_SUBNET_COUNT) as u8;
+            attnets[(subnet / 8) as usize] |= 1 << (subnet % 8);
+        }
+        attnets
     }
+}
+
+/// Subnet indices set in an attnets bitfield, ascending.
+pub fn attnet_subnets(attnets: [u8; 8]) -> impl Iterator<Item = u64> {
+    (0..ATTESTATION_SUBNET_COUNT).filter(move |s| attnets[(s / 8) as usize] & (1 << (s % 8)) != 0)
 }
 
 /// Spec phase0 `compute_shuffled_index` — single-index swap-or-not.
@@ -367,13 +378,21 @@ mod tests {
         assert_ne!(a.custody_groups(16), b.custody_groups(16));
     }
 
+    fn set_subnets(attnets: [u8; 8]) -> Vec<u8> {
+        attnet_subnets(attnets).map(|s| s as u8).collect()
+    }
+
     #[test]
     fn attestation_subnets_in_range_and_consecutive() {
         for _ in 0..64 {
             let id = NodeId::random();
-            let [a, b] = id.attestation_subnets(12345);
-            assert!((a as u64) < ATTESTATION_SUBNET_COUNT);
-            assert_eq!(b as u64, (a as u64 + 1) % ATTESTATION_SUBNET_COUNT);
+            let subnets = set_subnets(id.attestation_subnets(12345, 2));
+            let [a, b] = subnets[..] else {
+                panic!("expected exactly 2 subnet bits, got {subnets:?}");
+            };
+            // Ascending bit order: consecutive is b == a+1, or the wrap
+            // pair (0, 63).
+            assert!(b == a + 1 || (a == 0 && b as u64 == ATTESTATION_SUBNET_COUNT - 1));
         }
     }
 
@@ -385,16 +404,16 @@ mod tests {
         let period_start = (10_000 + node_offset) / EPOCHS_PER_SUBNET_SUBSCRIPTION *
             EPOCHS_PER_SUBNET_SUBSCRIPTION -
             node_offset;
-        let subnets = id.attestation_subnets(period_start);
+        let subnets = id.attestation_subnets(period_start, 2);
         assert_eq!(
             subnets,
-            id.attestation_subnets(period_start + EPOCHS_PER_SUBNET_SUBSCRIPTION - 1)
+            id.attestation_subnets(period_start + EPOCHS_PER_SUBNET_SUBSCRIPTION - 1, 2)
         );
 
         // Rotation at the period boundary changes the pair for almost every
         // period; check across several periods to dodge the 1-in-64 repeat.
         let rotated = (1..4).any(|k| {
-            id.attestation_subnets(period_start + k * EPOCHS_PER_SUBNET_SUBSCRIPTION) != subnets
+            id.attestation_subnets(period_start + k * EPOCHS_PER_SUBNET_SUBSCRIPTION, 2) != subnets
         });
         assert!(rotated, "subnets never rotated across periods");
     }
@@ -410,7 +429,7 @@ mod tests {
         // At a's boundary, b is mid-period: b's pair at boundary-1 and
         // boundary must match (its own boundary is elsewhere).
         let boundary = 4 * EPOCHS_PER_SUBNET_SUBSCRIPTION;
-        assert_eq!(b.attestation_subnets(boundary - 1), b.attestation_subnets(boundary));
-        assert_eq!(a.attestation_subnets(boundary - 1), a.attestation_subnets(boundary - 2));
+        assert_eq!(b.attestation_subnets(boundary - 1, 2), b.attestation_subnets(boundary, 2));
+        assert_eq!(a.attestation_subnets(boundary - 1, 2), a.attestation_subnets(boundary - 2, 2));
     }
 }

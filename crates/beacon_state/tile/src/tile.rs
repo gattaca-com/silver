@@ -10,9 +10,9 @@ use silver_beacon_state_data::{
     Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsEvent, EngineResp, NewGossipMsg, ReplayBlock,
-    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead,
-    hex32,
+    BeaconStateEvent, BlockSource, DataColumnsEvent, EngineResp, GossipTopic, NewGossipMsg,
+    ReplayBlock, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
+    TRandomAccess, TRead, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -130,6 +130,9 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
+    att_batch: Vec<NewGossipMsg>,
+    att_pending: Vec<(NewGossipMsg, gossip::PreparedAttestation)>,
+    att_sig_batch: bls::SigBatch,
     fork_data_roots: ForkDataRoots,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
@@ -233,6 +236,9 @@ impl BeaconStateTile {
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
+            att_batch: Vec::with_capacity(gossip::ATT_BATCH_CAP),
+            att_pending: Vec::with_capacity(gossip::ATT_BATCH_CAP),
+            att_sig_batch: bls::SigBatch::new(),
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
@@ -301,6 +307,12 @@ impl BeaconStateTile {
         self.fork_choice.finalized_checkpoint.epoch
     }
 
+    /// Fork-choice finalized block root — what a restart's `seed_anchor`
+    /// re-derives from the persisted checkpoint. Test/harness surface.
+    pub fn fork_choice_finalized_root(&self) -> B256 {
+        self.fork_choice.finalized_checkpoint.root
+    }
+
     /// `(current_justified, finalized)` as seen by the canonical head's
     /// post-state. Reads the epoch delta if the head fork owns one; otherwise
     /// falls back to the finalized base epoch state.
@@ -363,9 +375,13 @@ impl BeaconStateTile {
 
         self.assert_within_weak_subjectivity();
 
+        // Warm {E-1, E, E+1} shufflings and aggregates before the first
+        // message, so no block or attestation pays a shuffle inline.
         let anchor_epoch = slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(anchor);
+        self.shuffling_cache.ensure_window(&view, anchor_epoch + 1);
         self.shuffling_cache.ensure_window(&view, anchor_epoch);
+        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch + 1);
         self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch);
     }
 
@@ -538,6 +554,13 @@ impl BeaconStateTile {
     /// a state advance occurred.
     fn slot_tick(&mut self, slot: Slot) -> bool {
         let advanced = self.on_slot_start(slot);
+        if advanced {
+            // Head-derived epoch, never the wall clock (wall-clock epochs
+            // diverge from the head during sync and poison the cache).
+            // Covers epochs with no blocks, where no post-apply hook fired.
+            let state_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
+            self.precompute_next_epoch_shuffling(state_epoch);
+        }
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
         self.attestation_pool.prune_before(floor);
@@ -572,6 +595,11 @@ impl BeaconStateTile {
     /// dispatch; in Syncing mode drop it (PM drives sync).
     fn on_gossip(&mut self, m: NewGossipMsg, following: bool, producers: &mut Producers) {
         if following {
+            if matches!(m.topic, GossipTopic::BeaconAttestation(_)) {
+                self.defer_attestation(m, producers);
+                return;
+            }
+            self.flush_attestations(producers);
             self.handle_gossip(m.ssz, m, true, false, producers);
         } else {
             tracing::trace!(
@@ -735,6 +763,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
+        self.flush_attestations(&mut adapter.producers);
         self.gossip_consumer.free();
 
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));

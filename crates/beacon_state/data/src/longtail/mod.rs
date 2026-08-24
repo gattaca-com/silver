@@ -19,7 +19,7 @@ use crate::{
 pub type LongtailId = Id<LongtailGroup>;
 
 pub struct LongtailGroup {
-    finalized: LongtailState,
+    finalized: Box<LongtailState>,
     deltas: Ring<Self>,
     /// Promote barrier: the finalized state's `historical_summaries` log grows
     /// on promote, so the checkpoint persist (storage thread) must not read it
@@ -34,7 +34,11 @@ impl RingGroup for LongtailGroup {
 
 impl LongtailGroup {
     pub fn new(finalized: LongtailState) -> Self {
-        Self { finalized, deltas: Ring::new(LONGTAILS_RING_N), persist_lock: Mutex::new(()) }
+        Self {
+            finalized: Box::new(finalized),
+            deltas: Ring::new(LONGTAILS_RING_N),
+            persist_lock: Mutex::new(()),
+        }
     }
 
     /// Run `f` over the finalized state under the promote barrier — the
