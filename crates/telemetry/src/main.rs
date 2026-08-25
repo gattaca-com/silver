@@ -1,8 +1,10 @@
 //! Telemetry daemon: one background tile on the node's spine that drains its
 //! `#[timed]` rings and rotates the retained marks into compressed fxt segment
 //! files, so any spike on a long run leaves a trace on disk. With a ClickHouse
-//! endpoint configured, the same loop also streams per-stage block events. It
-//! runs for as long as the node it attached to.
+//! endpoint configured, the same loop also streams per-stage block events.
+//!
+//! It outlives the node it attached to: on a restart the tile rebinds to the
+//! new rings rather than exiting.
 
 use std::{error::Error, time::Duration};
 
