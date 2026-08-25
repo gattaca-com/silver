@@ -26,6 +26,7 @@ use syncing::Syncing;
 use crate::ControlCounters;
 
 pub const BATCH: u64 = 64;
+pub(super) const BACKFILL_BATCH: u64 = 32;
 
 const SYNCING_STRATEGY_TIMEOUT_WINDOW: Duration = Duration::from_secs(15);
 
@@ -34,6 +35,8 @@ const ISSUE_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 /// How long to wait for a report of data being settled on the interested tile
 /// before refetching it.
 pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub(super) const BACKFILL_SETTLE_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub enum SyncAction {
     /// Ask the peer manager to place this. It answers whether any peer took it.
@@ -215,7 +218,13 @@ impl Phase {
         match self {
             Self::Syncing(s) => s.drive(ctx, window, now, emit),
             Self::Following => {
-                ctx.backfill.drive(ctx.custody_columns, BATCH, &mut ctx.next_request_id, now, emit);
+                ctx.backfill.drive(
+                    ctx.custody_columns,
+                    BACKFILL_BATCH,
+                    &mut ctx.next_request_id,
+                    now,
+                    emit,
+                );
                 false
             }
             Self::Idle => false,

@@ -10,8 +10,8 @@ use silver_common::{
 use silver_peer::SyncingConfig;
 
 use super::{
-    BATCH, Phase, SETTLE_TIMEOUT, SLOTS_PER_EPOCH, SYNCING_STRATEGY_TIMEOUT_WINDOW, SyncAction,
-    SyncEngine,
+    BACKFILL_BATCH, BATCH, Phase, SETTLE_TIMEOUT, SLOTS_PER_EPOCH, SYNCING_STRATEGY_TIMEOUT_WINDOW,
+    SyncAction, SyncEngine,
     sync_window::{BlockState, Coverage},
     syncing::{CHAIN_UNAVAILABLE_TIMEOUT, TAIL_UNAVAILABLE_TIMEOUT},
 };
@@ -1014,7 +1014,11 @@ fn owed_envelopes_are_swept_by_range() {
 
     assert_eq!(issued.len(), 1, "one range in flight at a time");
     let (request_id, start, count) = issued[0];
-    assert_eq!((start, count), (100 - BATCH, BATCH), "one batch below the top of the span");
+    assert_eq!(
+        (start, count),
+        (100 - BACKFILL_BATCH, BACKFILL_BATCH),
+        "one batch below the top of the span"
+    );
     assert_eq!(
         RequestId::from(request_id).origin,
         Origin::Backfill,

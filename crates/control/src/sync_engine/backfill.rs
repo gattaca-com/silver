@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use silver_common::{DataKind, Origin, RequestId, Scope, SyncRequest};
 
-use super::{Placement, SETTLE_TIMEOUT, SyncAction};
+use super::{BACKFILL_SETTLE_TIMEOUT, Placement, SyncAction};
 
 #[derive(Default)]
 pub(super) struct BackfillPlan {
@@ -110,7 +110,7 @@ impl RangeWalk {
                 settling.landed = self.landed;
                 settling.since = now;
             }
-            if now.saturating_duration_since(settling.since) < SETTLE_TIMEOUT {
+            if now.saturating_duration_since(settling.since) < BACKFILL_SETTLE_TIMEOUT {
                 return;
             }
             tracing::warn!(
@@ -177,7 +177,10 @@ impl BackfillPlan {
 mod tests {
     use std::time::Duration;
 
-    use super::{super::ISSUE_RETRY_BACKOFF, *};
+    use super::{
+        super::{BACKFILL_BATCH, ISSUE_RETRY_BACKOFF},
+        *,
+    };
 
     fn plan(floor: u64, earliest: u64) -> BackfillPlan {
         let mut plan = BackfillPlan::default();
@@ -202,7 +205,7 @@ mod tests {
             placed: bool,
         ) -> Vec<SyncAction> {
             let mut out = Vec::new();
-            plan.drive(0, 64, &mut self.next_id, now, &mut |a| {
+            plan.drive(0, BACKFILL_BATCH, &mut self.next_id, now, &mut |a| {
                 out.push(a);
                 placed
             });
@@ -244,14 +247,14 @@ mod tests {
 
         let (rid, start, _) = range_of(&d.drive(&mut plan, t0, true), DataKind::Columns)
             .expect("column range issued");
-        assert_eq!(start, 4992);
+        assert_eq!(start, 5056 - BACKFILL_BATCH);
         plan.on_terminator(rid, true, t0);
 
         // Slots clear from the middle of the span, so neither bound moves. None
         // of it may trigger a second request.
         let mut at = t0;
         for landed in 1..=8u64 {
-            at += SETTLE_TIMEOUT / 2;
+            at += BACKFILL_SETTLE_TIMEOUT / 2;
             plan.on_arrived(DataKind::Columns);
             assert!(
                 range_of(&d.drive(&mut plan, at, true), DataKind::Columns).is_none(),
@@ -260,11 +263,11 @@ mod tests {
         }
 
         // Once it does go quiet for a whole timeout, the remainder is asked again.
-        plan.set_owed(DataKind::Columns, 5000, 5056);
-        at += SETTLE_TIMEOUT + Duration::from_millis(1);
+        plan.set_owed(DataKind::Columns, 5040, 5056);
+        at += BACKFILL_SETTLE_TIMEOUT + Duration::from_millis(1);
         let (_, start, _) = range_of(&d.drive(&mut plan, at, true), DataKind::Columns)
             .expect("asked again after real silence");
-        assert_eq!(start, 5000, "and only for what is left, not the whole window");
+        assert_eq!(start, 5040, "and only for what is left, not the whole window");
     }
 
     /// An object landing for one kind says nothing about another: the three
@@ -283,7 +286,7 @@ mod tests {
 
         let mut at = t0;
         for _ in 0..8 {
-            at += SETTLE_TIMEOUT / 4;
+            at += BACKFILL_SETTLE_TIMEOUT / 4;
             plan.on_arrived(DataKind::Block);
         }
         assert!(
@@ -309,13 +312,13 @@ mod tests {
         // The scan seeds lower slots: the floor falls, nothing was delivered.
         let mut at = t0;
         for seeded in 1..=8u64 {
-            at += SETTLE_TIMEOUT / 4;
+            at += BACKFILL_SETTLE_TIMEOUT / 4;
             plan.set_owed(DataKind::Columns, 4992 - seeded, 5056);
         }
 
         let (_, start, _) = range_of(&d.drive(&mut plan, at, true), DataKind::Columns)
             .expect("asked again: nothing was ever delivered");
-        assert_eq!(start, 4992, "one batch below the span's top");
+        assert_eq!(start, 5056 - BACKFILL_BATCH, "one batch below the span's top");
     }
 
     /// Before the fork there are no envelopes to have, so storage reports an
@@ -366,13 +369,13 @@ mod tests {
     fn completed_range_moves_the_cursor_down() {
         let now = Instant::now();
         let mut d = Driver::default();
-        let mut plan = plan(0, 100);
+        let mut plan = plan(0, BACKFILL_BATCH + 4);
 
         let (rid, start, count) = block_range(&d.drive(&mut plan, now, true)).expect("issued");
-        assert_eq!((start, count), (36, 64), "one batch below the earliest we hold");
+        assert_eq!((start, count), (4, BACKFILL_BATCH), "one batch below the earliest we hold");
 
         plan.on_terminator(rid, true, now);
-        plan.set_owed(DataKind::Block, 0, 36); // storage linked the whole range
+        plan.set_owed(DataKind::Block, 0, 4); // storage linked the whole range
         let (_, start, _) = block_range(&d.drive(&mut plan, now, true)).expect("next batch");
         assert_eq!(start, 0, "resumes at the floor, not below it");
     }
@@ -397,9 +400,9 @@ mod tests {
             "no re-ask while storage may still be writing"
         );
 
-        let later = t0 + SETTLE_TIMEOUT + Duration::from_millis(1);
+        let later = t0 + BACKFILL_SETTLE_TIMEOUT + Duration::from_millis(1);
         let (_, again, count) = block_range(&d.drive(&mut plan, later, true)).expect("re-asked");
-        assert_eq!((again, count), (start, 64), "the same range, from storage's floor");
+        assert_eq!((again, count), (start, BACKFILL_BATCH), "the same range, from storage's floor");
     }
 
     /// A short response that linked *some* of the range resumes from what
@@ -412,11 +415,15 @@ mod tests {
 
         let (rid, ..) = block_range(&d.drive(&mut plan, t0, true)).expect("issued");
         plan.on_terminator(rid, true, t0);
-        plan.set_owed(DataKind::Block, 0, 60); // linked 60..100, the rest never arrived
+        plan.set_owed(DataKind::Block, 0, 80); // linked 80..100, the rest never arrived
 
-        let later = t0 + SETTLE_TIMEOUT + Duration::from_millis(1);
+        let later = t0 + BACKFILL_SETTLE_TIMEOUT + Duration::from_millis(1);
         let (_, start, _) = block_range(&d.drive(&mut plan, later, true)).expect("re-asked");
-        assert_eq!(start, 0, "next batch covers everything below 60");
+        assert_eq!(
+            start,
+            80 - BACKFILL_BATCH,
+            "the next batch hangs off 80, not off what was asked for"
+        );
     }
 
     /// The range is held while it is outstanding, so the driver does not
