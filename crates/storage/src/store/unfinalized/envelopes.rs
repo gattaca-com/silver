@@ -1,9 +1,9 @@
-use std::{collections::VecDeque, io::Error, path::Path};
+use std::{io::Error, path::Path};
 
 use fxhash::FxHashMap;
 
 use super::{PayloadKey, read_unfinalized_dir};
-use crate::store::{PendingWrite, io};
+use crate::store::{PendingWrite, WriteQueue, io};
 
 /// Unfinalized envelopes: block_root → slot. One per block; canonicity follows
 /// the owning block.
@@ -40,22 +40,15 @@ impl UnfinalizedEnvelopes {
         self.0.get(root).copied()
     }
 
-    pub(crate) fn promote(&mut self, root: [u8; 32], write_queue: &mut VecDeque<PendingWrite>) {
+    pub(crate) fn promote(&mut self, root: [u8; 32], write_queue: &mut WriteQueue) {
         if let Some(slot) = self.0.remove(&root) {
-            write_queue.push_back(PendingWrite::Promote {
-                slot,
-                key: PayloadKey::Envelope { block_root: root },
-            });
+            write_queue.push_back(PendingWrite::PromoteEnvelope { slot, block_root: root });
         }
     }
 
     /// Drop entries at or below `finalized_slot` (orphaned forks), queuing a
     /// prune write for each.
-    pub(crate) fn prune_below(
-        &mut self,
-        finalized_slot: u64,
-        write_queue: &mut VecDeque<PendingWrite>,
-    ) {
+    pub(crate) fn prune_below(&mut self, finalized_slot: u64, write_queue: &mut WriteQueue) {
         self.0.retain(|root, &mut slot| {
             if slot <= finalized_slot {
                 write_queue.push_back(PendingWrite::Prune {

@@ -1,6 +1,7 @@
 mod backfill;
 mod by_root;
 mod peers;
+mod ranges;
 mod select;
 mod sync_window;
 mod syncing;
@@ -10,12 +11,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use backfill::BackfillPlan;
+use backfill::Backfill;
 use by_root::ByRootRequests;
 use peers::PeerView;
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, DataKind, Origin, PeerEvent, PeerStatus, RpcInbound,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, PeerEvent, PeerStatus, RpcInbound,
     RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SyncNeed,
     SyncRequest, SyncUpdate, SyncingStrategy, ssz_view::StatusView,
 };
@@ -139,7 +140,7 @@ struct Ctx {
     next_request_id: u64,
     local: LocalView,
     peers: PeerView,
-    backfill: BackfillPlan,
+    backfill: Backfill,
     root_requests: ByRootRequests,
 }
 
@@ -218,13 +219,7 @@ impl Phase {
         match self {
             Self::Syncing(s) => s.drive(ctx, window, now, emit),
             Self::Following => {
-                ctx.backfill.drive(
-                    ctx.custody_columns,
-                    BACKFILL_BATCH,
-                    &mut ctx.next_request_id,
-                    now,
-                    emit,
-                );
+                ctx.backfill.drive(ctx.custody_columns, &mut ctx.next_request_id, now, emit);
                 false
             }
             Self::Idle => false,
@@ -235,6 +230,9 @@ impl Phase {
 pub struct SyncEngine {
     ctx: Ctx,
     window: SyncWindow,
+    /// The next status restarts the window at the imported head: at boot, and
+    /// again once the on-disk replay has run.
+    awaiting_start: bool,
     phase: Phase,
     published: Option<SyncUpdate>,
     dirty: bool,
@@ -269,10 +267,11 @@ impl SyncEngine {
                 local: LocalView::default(),
                 peers: PeerView::new(cfg.rejected_cap),
                 cfg,
-                backfill: BackfillPlan::default(),
+                backfill: Backfill::new(),
                 root_requests: ByRootRequests::new(by_root_cap),
             },
             window: SyncWindow::new(),
+            awaiting_start: true,
             phase: Phase::Idle,
             published: None,
             dirty: false,
@@ -365,19 +364,20 @@ impl SyncEngine {
             SyncNeed::Missing { root, slot, kind, columns, origin } => {
                 self.ctx.root_requests.want(root, kind, columns, origin, slot, now);
             }
-            SyncNeed::Arrived { root, slot, kind, origin } => match origin {
-                Origin::Live => {
-                    debug_assert_eq!(kind, DataKind::Columns);
-                    self.on_columns_covered(slot, root);
-                }
-                Origin::Backfill => {
-                    self.ctx.root_requests.retire(&root, kind);
-                    self.ctx.backfill.on_arrived(kind);
-                }
-            },
-            SyncNeed::BackfillGap { kind, floor, next } => {
-                self.ctx.backfill.set_owed(kind, floor, next)
+            SyncNeed::Arrived { root, slot, kind } => {
+                debug_assert_eq!(kind, DataKind::Columns);
+                self.on_columns_covered(slot, root);
             }
+            SyncNeed::Persisted { kind, slot, columns, parent_slot } => {
+                self.ctx.backfill.on_persisted(
+                    kind,
+                    slot,
+                    columns,
+                    parent_slot,
+                    self.ctx.custody_columns,
+                );
+            }
+            SyncNeed::BackfillPrefill(prefill) => self.ctx.backfill.on_prefill(prefill),
         }
     }
 
@@ -427,11 +427,11 @@ impl SyncEngine {
     ) {
         tracing::debug!(head_slot, finalized_epoch, wall_slot, "sync: local status updated");
         self.ctx.local.update(head_slot, finalized_epoch, finalized_root, wall_slot);
-        self.window.record_status(
-            head_slot,
-            self.ctx.local.finalized_slot(),
-            matches!(self.phase, Phase::Following),
-        );
+        self.window.set_floor(self.ctx.local.finalized_slot());
+        if self.awaiting_start || matches!(self.phase, Phase::Following) {
+            self.window.set_tail(head_slot);
+        }
+        self.awaiting_start = false;
         self.ctx.root_requests.prune_finalized(self.ctx.local.finalized_slot());
         self.mark_dirty();
     }
@@ -445,15 +445,16 @@ impl SyncEngine {
 
     fn on_replay_complete(&mut self) {
         self.replay.open();
-        self.window.restart_at_next_status();
+        self.awaiting_start = true;
     }
 
     pub fn on_terminator(&mut self, request_id: u64, peer: usize, delivered: bool, now: Instant) {
-        self.ctx.backfill.on_terminator(request_id, delivered, now);
+        self.ctx.backfill.on_terminator(&self.ctx.peers, request_id, peer, delivered, now);
         self.phase.on_terminator(&mut self.ctx, &mut self.window, request_id, peer, delivered, now);
     }
 
     pub fn on_msg_served(&mut self, request_id: u64) {
+        self.ctx.backfill.on_msg_served(request_id);
         if let Phase::Syncing(s) = &mut self.phase {
             s.on_msg_served(request_id);
         }
@@ -486,7 +487,9 @@ impl SyncEngine {
 
     fn on_reorg(&mut self, lca_slot: u64) {
         tracing::info!(lca_slot, "sync: reorg, dropping coverage above the ancestor");
-        self.window.on_reorg(lca_slot);
+        self.ctx.local.head_imported_slot = self.ctx.local.head_imported_slot.min(lca_slot);
+        self.window.set_tail(self.window.tail().min(lca_slot));
+        self.window.drop_above(lca_slot);
         self.phase.on_reorg();
     }
 
@@ -530,8 +533,12 @@ impl SyncEngine {
             None => Phase::Idle,
             Some(SyncUpdate::Following) => Phase::Following,
             Some(target) => {
-                self.window.reseed_for_new_target();
-                Phase::Syncing(Syncing::new(target))
+                // Coverage above the imported head came from gossip on the
+                // chain we are leaving; the new target is chased from the head.
+                let head = self.ctx.local.head_imported_slot;
+                self.window.set_tail(self.window.tail().min(head));
+                self.window.drop_above(self.window.tail());
+                Phase::Syncing(Syncing::new(target, self.ctx.custody_columns))
             }
         };
     }

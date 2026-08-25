@@ -14,7 +14,6 @@ fxhash.workspace = true
 hex.workspace = true
 silver_beacon_state_data.workspace = true
 silver_common.workspace = true
-rand.workspace = true
 tracing.workspace = true
 
 [lints]

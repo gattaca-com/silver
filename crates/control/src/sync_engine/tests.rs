@@ -5,14 +5,14 @@ use std::{
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, DataKind, Origin, RequestId, Scope, SyncNeed,
-    SyncUpdate, SyncingStrategy,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, Origin, Prefill, RequestId, Scope,
+    SyncNeed, SyncUpdate, SyncingStrategy,
 };
 use silver_peer::SyncingConfig;
 
 use super::{
-    BACKFILL_BATCH, BATCH, Phase, SETTLE_TIMEOUT, SLOTS_PER_EPOCH, SYNCING_STRATEGY_TIMEOUT_WINDOW,
-    SyncAction, SyncEngine,
+    BACKFILL_BATCH, BACKFILL_SETTLE_TIMEOUT, BATCH, Phase, SETTLE_TIMEOUT, SLOTS_PER_EPOCH,
+    SYNCING_STRATEGY_TIMEOUT_WINDOW, SyncAction, SyncEngine,
     sync_window::{BlockState, Coverage},
     syncing::{CHAIN_UNAVAILABLE_TIMEOUT, TAIL_UNAVAILABLE_TIMEOUT},
 };
@@ -93,10 +93,7 @@ fn parked_at(e: &mut SyncEngine, slot: u64, parent_slot: Option<u64>) {
 
 /// The columns tile holds the whole custody set for the block at `slot`.
 fn columns_covered(e: &mut SyncEngine, slot: u64, root: [u8; 32]) {
-    e.on_sync_need(
-        SyncNeed::Arrived { root, slot, kind: DataKind::Columns, origin: Origin::Live },
-        Instant::now(),
-    );
+    e.on_sync_need(SyncNeed::Arrived { root, slot, kind: DataKind::Columns }, Instant::now());
 }
 
 /// A fully-satisfied slot: block present and its data covered. Says
@@ -1041,48 +1038,143 @@ fn an_unverified_payload_is_chased_by_root() {
     );
 }
 
-/// Envelopes are one per block and dense along the chain, so backfill
-/// sweeps storage's owed span by range — under the backfill origin,
-/// since beacon state would only park a response for a block finality
-/// dropped long ago.
+const RANGE: u64 = 64;
+const ALL: u32 = u32::MAX;
+
+fn prefill(have_block: u32, columns_covered: u32, envelopes: u32) -> SyncNeed {
+    SyncNeed::BackfillPrefill(Prefill {
+        start: RANGE,
+        have_block,
+        known_empty: 0,
+        columns_covered,
+        envelopes,
+        columns_missing: 0,
+    })
+}
+
+fn persisted(kind: DataKind, slot: u64, parent_slot: Option<u64>) -> SyncNeed {
+    SyncNeed::Persisted { kind, slot, columns: CUSTODY, parent_slot }
+}
+
+fn column_mask(actions: &[SyncAction]) -> Option<u128> {
+    actions.iter().find_map(|a| match a {
+        SyncAction::Request { request, .. } if request.kind == DataKind::Columns => {
+            Some(request.columns)
+        }
+        _ => None,
+    })
+}
+
+/// Storage describes a range and what it already holds in it. The engine asks
+/// only for what is missing, at the backfill origin, and stops once storage
+/// reports the rest on disk.
 #[test]
-fn owed_envelopes_are_swept_by_range() {
+fn prefill_seeds_the_backfill_window() {
     let now = Instant::now();
     let mut e = following_at(100, 120);
 
-    e.on_sync_need(SyncNeed::BackfillGap { kind: DataKind::Envelope, floor: 0, next: 100 }, now);
-    let issued = ranges(&actions(&mut e, now, true), DataKind::Envelope);
+    // Every block and column held; not one envelope.
+    e.on_sync_need(prefill(ALL, ALL, 0), now);
+    let issued = actions(&mut e, now, true);
+    assert!(ranges(&issued, DataKind::Block).is_empty(), "blocks are held");
+    assert!(ranges(&issued, DataKind::Columns).is_empty(), "columns are held");
+    let envelopes = ranges(&issued, DataKind::Envelope);
+    assert_eq!(envelopes.len(), 1, "one range in flight at a time");
+    let (rid, start, count) = envelopes[0];
+    assert_eq!((start, count), (RANGE, BACKFILL_BATCH), "the whole range owes an envelope");
+    assert_eq!(RequestId::from(rid).origin, Origin::Backfill, "not the live origin");
 
-    assert_eq!(issued.len(), 1, "one range in flight at a time");
-    let (request_id, start, count) = issued[0];
-    assert_eq!(
-        (start, count),
-        (100 - BACKFILL_BATCH, BACKFILL_BATCH),
-        "one batch below the top of the span"
-    );
-    assert_eq!(
-        RequestId::from(request_id).origin,
-        Origin::Backfill,
-        "not the live envelope origin"
-    );
-
-    // A span narrower than a batch stops at the floor rather than below it.
-    e.ctx.backfill.on_terminator(request_id, true, now);
-    e.on_sync_need(SyncNeed::BackfillGap { kind: DataKind::Envelope, floor: 90, next: 100 }, now);
-    let later = now + Duration::from_secs(30);
-    let spans: Vec<(u64, u64)> = ranges(&actions(&mut e, later, true), DataKind::Envelope)
-        .into_iter()
-        .map(|(_, start, count)| (start, count))
-        .collect();
-    assert_eq!(spans, vec![(90, 10)], "clamped at the floor");
-
-    // An empty span retires the sweep.
-    e.on_sync_need(SyncNeed::BackfillGap { kind: DataKind::Envelope, floor: 0, next: 0 }, now);
+    // Storage reports each envelope landing; the range is then complete.
+    e.on_msg_served(rid);
+    for slot in RANGE..RANGE + BACKFILL_BATCH {
+        e.on_sync_need(persisted(DataKind::Envelope, slot, None), now);
+    }
+    e.on_terminator(rid, PEER, true, now);
+    let later = now + BACKFILL_SETTLE_TIMEOUT + Duration::from_secs(1);
     assert!(
-        ranges(&actions(&mut e, later + Duration::from_secs(30), true), DataKind::Envelope)
-            .is_empty(),
-        "nothing owed, nothing asked"
+        ranges(&actions(&mut e, later, true), DataKind::Envelope).is_empty(),
+        "nothing left owed, nothing asked"
     );
+}
+
+#[test]
+fn fully_covered_prefill_asks_for_nothing() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(prefill(ALL, ALL, ALL), now);
+    assert!(actions(&mut e, now, true).is_empty(), "every slot is complete");
+}
+
+/// Emptiness comes from a persisted block's parent link, as on the live path.
+#[test]
+fn persisted_blocks_parent_link_proves_the_slots_between_empty() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    let last = RANGE + BACKFILL_BATCH - 1;
+
+    e.on_sync_need(prefill(0, ALL, ALL), now);
+    let (rid, start, count) = drive(&mut e, now).expect("unknown slots owe blocks");
+    assert_eq!((start, count), (RANGE, BACKFILL_BATCH));
+
+    // The peer served one block, at the top of the range, whose parent sits at
+    // the bottom: everything between them was empty.
+    e.on_msg_served(rid);
+    e.on_sync_need(persisted(DataKind::Block, last, Some(RANGE)), now);
+    e.on_terminator(rid, PEER, true, now);
+
+    let later = now + BACKFILL_SETTLE_TIMEOUT + Duration::from_secs(1);
+    let (_, start, count) =
+        drive(&mut e, later).expect("the one slot below the link is still owed");
+    assert_eq!((start, count), (RANGE, 1), "only the parent's own slot is unproven");
+}
+
+#[test]
+fn the_column_request_carries_the_prefills_wanted_mask() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(
+        SyncNeed::BackfillPrefill(Prefill {
+            start: RANGE,
+            have_block: ALL,
+            known_empty: 0,
+            columns_covered: 0,
+            envelopes: ALL,
+            columns_missing: 0b101,
+        }),
+        now,
+    );
+    assert_eq!(column_mask(&actions(&mut e, now, true)), Some(0b101));
+}
+
+/// A slot storage first described as covered can owe again once its block
+/// lands and turns out to carry blobs. The republish must be able to uncover
+/// it, so a description replaces the last one rather than adding to it.
+#[test]
+fn republished_prefill_can_uncover_a_slot() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(prefill(ALL, ALL, ALL), now);
+    assert!(actions(&mut e, now, true).is_empty(), "nothing owed at first");
+
+    let third = 1u32 << 3;
+    e.on_sync_need(prefill(ALL, ALL & !third, ALL), now);
+    let issued = ranges(&actions(&mut e, now, true), DataKind::Columns);
+    assert_eq!(issued.len(), 1, "the uncovered slot is asked for");
+    assert_eq!((issued[0].1, issued[0].2), (RANGE + 3, 1));
+}
+
+/// Silence from a peer that holds the span is the one emptiness storage cannot
+/// prove: no block above the run means no link over it.
+#[test]
+fn silence_from_a_peer_holding_the_span_proves_it_empty() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(prefill(0, ALL, ALL), now);
+    let (rid, ..) = drive(&mut e, now).expect("blocks owed");
+
+    // Delivered, but nothing served: `PEER` claims from slot 0 to its head.
+    e.on_terminator(rid, PEER, true, now);
+    assert!(drive(&mut e, now).is_none(), "the span is empty, not missing");
 }
 
 /// A backfill range only exists while `Following`, so its terminator has to
@@ -1093,15 +1185,39 @@ fn owed_envelopes_are_swept_by_range() {
 fn failed_backfill_range_is_released_and_reasked() {
     let now = Instant::now();
     let mut e = following_at(100, 120);
-    e.on_sync_need(SyncNeed::BackfillGap { kind: DataKind::Block, floor: 0, next: 100 }, now);
+    e.on_sync_need(prefill(0, ALL, ALL), now);
 
-    let first = block_range(actions(&mut e, now, true)).expect("range issued");
+    let first = drive(&mut e, now).expect("range issued");
     assert!(drive(&mut e, now).is_none(), "held while it is out there");
 
     e.on_terminator(first.0, PEER, false, now);
     let (rid, start, count) = drive(&mut e, now).expect("re-asked after the failure");
     assert_ne!(rid, first.0, "a fresh request");
     assert_eq!((start, count), (first.1, first.2), "covering the same gap");
+}
+
+#[test]
+fn new_prefill_range_replaces_the_old_one() {
+    let now = Instant::now();
+    let mut e = following_at(100, 120);
+    e.on_sync_need(prefill(0, ALL, ALL), now);
+    let (old, ..) = drive(&mut e, now).expect("range issued at RANGE");
+
+    let below = RANGE - BACKFILL_BATCH;
+    e.on_sync_need(
+        SyncNeed::BackfillPrefill(Prefill {
+            start: below,
+            have_block: 0,
+            known_empty: 0,
+            columns_covered: ALL,
+            envelopes: ALL,
+            columns_missing: 0,
+        }),
+        now,
+    );
+    let (rid, start, count) = drive(&mut e, now).expect("the new range is asked for at once");
+    assert_ne!(rid, old, "the old request no longer holds anything");
+    assert_eq!((start, count), (below, BACKFILL_BATCH), "and the tail moved down with it");
 }
 
 #[test]

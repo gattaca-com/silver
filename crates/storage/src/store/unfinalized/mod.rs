@@ -1,6 +1,10 @@
-use std::{fs::create_dir_all, io::Error, path::Path};
+use std::{
+    fs::create_dir_all,
+    io::Error,
+    path::{Path, PathBuf},
+};
 
-use super::{Payload, io};
+use super::{Payload, block_path, column_path, envelope_path, io};
 
 mod blocks;
 mod columns;
@@ -10,7 +14,7 @@ pub(super) use blocks::UnfinalizedBlocks;
 pub(super) use columns::UnfinalizedColumns;
 pub(super) use envelopes::UnfinalizedEnvelopes;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum PayloadKey {
     Block { parent_root: [u8; 32], block_root: [u8; 32] },
     Column { block_root: [u8; 32], column: u64 },
@@ -38,11 +42,11 @@ impl PayloadKey {
         }
     }
 
-    pub(super) fn finalized_name(&self, slot: u64) -> String {
+    pub(super) fn finalized_path(&self, store_dir: &str, slot: u64) -> PathBuf {
         match self {
-            PayloadKey::Block { .. } => format!("{slot}_block.ssz"),
-            PayloadKey::Column { column, .. } => format!("{slot}_{column}.ssz"),
-            PayloadKey::Envelope { .. } => format!("{slot}_envelope.ssz"),
+            PayloadKey::Block { .. } => block_path(store_dir, slot),
+            PayloadKey::Column { column, .. } => column_path(store_dir, slot, *column),
+            PayloadKey::Envelope { .. } => envelope_path(store_dir, slot),
         }
     }
 }

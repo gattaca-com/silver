@@ -500,12 +500,53 @@ pub enum PeerEvent {
     EarliestSlot(u64),
 }
 
+pub const PREFILL_SLOTS: u64 = 32;
+
+/// What storage already holds across one 32-slot range of finalized history,
+/// so the sync engine seeds its window with it rather than re-fetching what is
+/// already on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Prefill {
+    pub start: u64,
+    pub have_block: u32,
+    /// Proven empty by a parent-root skip.
+    pub known_empty: u32,
+    /// The whole custody set is on disk, or the slot is below the column
+    /// retention floor where none was kept.
+    pub columns_covered: u32,
+    /// Set below the gloas fork, where no envelope was ever produced.
+    pub envelopes: u32,
+    /// Custody columns missing anywhere in the range, for the request mask.
+    pub columns_missing: u128,
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum SyncNeed {
-    Missing { root: [u8; 32], slot: u64, kind: DataKind, columns: u128, origin: Origin },
-    Arrived { root: [u8; 32], slot: u64, kind: DataKind, origin: Origin },
-    BackfillGap { kind: DataKind, floor: u64, next: u64 },
+    Persisted {
+        kind: DataKind,
+        slot: u64,
+        /// Columns now on disk for `slot`.
+        columns: u128,
+        /// A block's parent, proving the slots between the two empty. Missing
+        /// when we do not hold the parent.
+        parent_slot: Option<u64>,
+    },
+    /// The range backfill is working on.
+    BackfillPrefill(Prefill),
+    Missing {
+        root: [u8; 32],
+        slot: u64,
+        kind: DataKind,
+        columns: u128,
+        origin: Origin,
+    },
+    Arrived {
+        root: [u8; 32],
+        slot: u64,
+        kind: DataKind,
+    },
 }
 
 impl SyncNeed {

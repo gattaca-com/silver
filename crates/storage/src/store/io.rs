@@ -5,7 +5,6 @@
 //! parent module, since `load` needs the layout constants too.
 
 use std::{
-    collections::hash_map::Entry,
     fs::File,
     io::{Error, ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -15,30 +14,20 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
-    DataKind, Enr, Origin, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound,
-    SyncNeed, TCacheProducer, TCacheRead, TMultiProducer,
-    column_util::{self, columns_of},
-    hex32,
-    merkle::B256,
-    ssz_view::SignedBeaconBlockView,
+    DataKind, Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound,
+    TCacheProducer, TCacheRead, TMultiProducer, hex32,
 };
 
-use super::{Payload, PendingWrite, QueryUnit, Store, unfinalized::PayloadKey};
+use super::{
+    Payload, PendingWrite, QueryUnit, Store, backfill::BlockFacts, block_path, column_path,
+    envelope_path, slot_dir, unfinalized::PayloadKey,
+};
 use crate::{StorageCounters, store::SLOTS_PER_DIR, tile::IoEvent};
-
-/// Slots scanned per `file_io` turn during the column-backfill disk scan.
-/// Each scanned slot may read a block file; bounded so the scan can't extend
-/// tile time on a large retention window.
-const COLUMN_SCAN_SLOTS_PER_LOOP: u64 = 64;
-
-/// How many blocks may be waiting on columns before the disk scan pauses, so
-/// the scan reads ahead of arriving sidecars only so far.
-pub(super) const MAX_OPEN_COLUMN_NEEDS: usize = 128;
 
 /// Per-loop op budgets. Disk I/O on regular files is synchronous —
 /// O_NONBLOCK has no effect there — so each op blocks the tile until done;
 /// these bound the op count (not the wall-clock) per loop iteration.
-const MAX_WRITES_PER_LOOP: usize = 10;
+pub(super) const MAX_WRITES_PER_LOOP: usize = 10;
 const MAX_READS_PER_LOOP: usize = 10;
 /// Hard ceiling on read-loop turns per call, independent of
 /// `MAX_READS_PER_LOOP`, so a burst of drained (Complete-only) requests
@@ -53,11 +42,7 @@ enum ServeResult {
 
 impl Store {
     #[timed]
-    fn drain_pending_writes<F>(
-        &mut self,
-        custody_group_columns: u128,
-        emit: &mut F,
-    ) -> Result<(), Error>
+    fn drain_pending_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
     where
         F: FnMut(IoEvent),
     {
@@ -70,36 +55,20 @@ impl Store {
             writes += 1;
             tracing::debug!(?pending, "process pending write");
             match pending {
-                PendingWrite::Index { block_root, slot } => {
-                    let dir = self.finalized_slot_dir(Payload::Block, slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join("block_index.bin");
-                    let mut file = open_file_write(path, true)?;
-                    // Pack the 40-byte record and write atomically — a
-                    // partial append would misalign every subsequent
-                    // fixed-width record on retry.
-                    let mut record = [0u8; 40];
-                    record[..32].copy_from_slice(&block_root);
-                    record[32..].copy_from_slice(&slot.to_le_bytes());
-                    file.write_all(&record)?;
-                }
-                PendingWrite::Column { slot, column, block_root, ssz } => {
-                    let dir = self.finalized_slot_dir(Payload::Column, slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(format!("{slot}_{column}.ssz"));
+                PendingWrite::Column { slot, column, custody_set_complete, ssz } => {
+                    let path = column_path(&self.store_dir, slot, column);
+                    std::fs::create_dir_all(path.parent().expect("a slot directory"))?;
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     tracing::info!(?path, len = buffer.len(), "writing data column");
                     open_file_write(path, false)?.write_all(buffer)?;
-
+                    self.finalized.column_landed(slot, column);
                     StorageCounters::BackfillColumnsWritten.inc();
-
-                    if let Some(root) = block_root {
-                        emit(IoEvent::Need(SyncNeed::Arrived {
-                            root,
+                    if custody_set_complete {
+                        emit(IoEvent::Need(self.finalized.persisted(
+                            DataKind::Columns,
                             slot,
-                            kind: DataKind::Columns,
-                            origin: Origin::Backfill,
-                        }))
+                            None,
+                        )));
                     }
                 }
                 PendingWrite::WriteUnfinalized { slot, key, ssz } => {
@@ -108,21 +77,25 @@ impl Store {
                     open_file_write(&path, false)?.write_all(buffer)?;
                     key.payload().record_written();
                 }
-                PendingWrite::Promote { slot, key } => {
-                    let payload = key.payload();
-                    let dir = self.finalized_slot_dir(payload, slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let from = self.unfinalized_dir(payload).join(key.unfinalized_name(slot));
-                    rename_tolerant(&from, &dir.join(key.finalized_name(slot)))?;
-                    // Data before index: a block's index record is appended only
-                    // after the rename, so a crash never indexes an unmoved block.
-                    if let PayloadKey::Block { block_root, .. } = key {
-                        let mut record = [0u8; 40];
-                        record[..32].copy_from_slice(&block_root);
-                        record[32..].copy_from_slice(&slot.to_le_bytes());
-                        open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
+                PendingWrite::PromoteColumn { slot, block_root, column } => {
+                    if self.promote(slot, PayloadKey::Column { block_root, column })? {
+                        self.finalized.column_landed(slot, column);
                     }
-                    payload.record_promoted();
+                }
+                PendingWrite::PromoteEnvelope { slot, block_root } => {
+                    if self.promote(slot, PayloadKey::Envelope { block_root })? {
+                        self.finalized.envelope_landed(slot);
+                    }
+                }
+                PendingWrite::PromoteBlock { block } => {
+                    let BlockFacts { slot, block_root, parent_root, .. } = block.facts;
+                    if !self.promote(slot, PayloadKey::Block { parent_root, block_root })? {
+                        continue;
+                    }
+                    // Data before index: the record is appended only after the
+                    // rename, so a crash never indexes an unmoved block.
+                    let dir = slot_dir(&self.store_dir, Payload::Block, slot);
+                    self.finalized.landed(&dir, block)?;
                 }
                 PendingWrite::Prune { slot, key } => {
                     let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
@@ -136,87 +109,38 @@ impl Store {
                     let dir =
                         PathBuf::new().join(&self.store_dir).join(payload.finalized_dir_name());
                     remove_subdirs(dir, earliest_slot)?;
-                    self.history.note_truncation(earliest_slot);
+                    self.finalized.truncated(payload, earliest_slot);
                 }
-                PendingWrite::StartBlockBackfill { finalized_slot, finalized_root } => {
-                    let epoch = finalized_slot / SLOTS_PER_EPOCH;
-                    let to_retain = Payload::Block.slots_retained(&self.spec, epoch);
-                    let start_slot = finalized_slot.saturating_sub(to_retain).max(1);
-                    tracing::info!(finalized_slot, to_retain, start_slot, "block backfill armed");
-                    let dir = PathBuf::new()
-                        .join(&self.store_dir)
-                        .join(Payload::Block.finalized_dir_name());
-                    let range = match earliest_block(dir)? {
-                        Some((slot, parent_root)) if slot > start_slot => {
-                            Some((start_slot..slot.min(finalized_slot), parent_root))
-                        }
-                        // No blocks on disk: backfill `[start_slot, finalized_slot]`
-                        // anchored at the finalized block. Skip when nothing is
-                        // finalized yet — the zero `finalized_root` is not a real
-                        // block root, so the chain can never link and backfill
-                        // would respin on slot 0 (genesis is already the anchor).
-                        None if finalized_root != [0u8; 32] => {
-                            Some((start_slot..finalized_slot + 1, finalized_root))
-                        }
-                        _ => None,
-                    };
-                    match range {
-                        Some((backfill_range, parent_root)) => self.history.start_blocks(
-                            backfill_range,
-                            parent_root,
-                            self.spec.clone(),
-                        ),
-
-                        None => self.history.no_block_gap(),
-                    }
-                }
-                PendingWrite::StartBackfill { finalized_slot, finalized_root } => {
-                    self.history.start(finalized_slot, finalized_root, &self.spec);
-                }
-                PendingWrite::BackfillBlock { block_root, slot, ssz } => {
-                    let dir = self.finalized_slot_dir(Payload::Block, slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(format!("{slot}_block.ssz"));
-
+                PendingWrite::BackfillBlock { block, ssz } => {
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
-                    if let Entry::Vacant(e) = self.root_index.entry(block_root) {
-                        let mut record = [0u8; 40];
-                        record[..32].copy_from_slice(&block_root);
-                        record[32..].copy_from_slice(&slot.to_le_bytes());
-                        open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
-                        e.insert(slot);
+                    let BlockFacts { slot, block_root, parent_root, .. } = block.facts;
+                    // A block whose file is indexed is re-served only to link
+                    // it; a root indexed in memory but never written is not.
+                    if self.finalized.written(&block_root, slot) {
+                        self.finalized.relinked(block);
+                    } else {
+                        let path = block_path(&self.store_dir, slot);
+                        let dir = path.parent().expect("a slot directory");
+                        std::fs::create_dir_all(dir)?;
+                        open_file_write(&path, false)?.write_all(buffer)?;
+                        self.finalized.landed(dir, block)?;
                     }
-                    // Set 2: a block fetched by block backfill that falls in the
-                    // column window needs its columns too (the pre-block disk
-                    // scan couldn't see it — it wasn't on disk yet). Feed the
-                    // still-live column backfill. Only what is absent: block
-                    // backfill re-fetches a block whose columns an earlier run
-                    // already wrote, and asking for the full set again rewrote
-                    // every column below finalized on each restart.
-                    let is_gloas = self.spec.is_gloas_at_slot(slot);
-                    let missing = match SignedBeaconBlockView::has_data_columns(buffer, is_gloas) {
-                        true => {
-                            custody_group_columns &
-                                !self.present_columns(slot, custody_group_columns)
-                        }
-                        false => 0,
-                    };
-                    self.history.seed(block_root, slot, buffer, missing, is_gloas, &self.spec);
-                    StorageCounters::BackfillBlocksWritten.inc();
-                    emit(IoEvent::Need(SyncNeed::Arrived {
-                        root: block_root,
+                    self.history.seed_pending(slot, buffer, &self.finalized);
+                    let parent_slot = self.finalized.slot_of(&parent_root);
+                    emit(IoEvent::Need(self.finalized.persisted(
+                        DataKind::Block,
                         slot,
-                        kind: DataKind::Block,
-                        origin: Origin::Backfill,
-                    }));
+                        parent_slot,
+                    )));
+                    StorageCounters::BackfillBlocksWritten.inc();
                 }
                 PendingWrite::BackfillEnvelope { slot, ssz } => {
-                    let dir = self.finalized_slot_dir(Payload::Envelope, slot);
-                    std::fs::create_dir_all(&dir)?;
+                    let path = envelope_path(&self.store_dir, slot);
+                    std::fs::create_dir_all(path.parent().expect("a slot directory"))?;
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(dir.join(format!("{slot}_envelope.ssz")), false)?
-                        .write_all(buffer)?;
+                    open_file_write(path, false)?.write_all(buffer)?;
+                    self.finalized.envelope_landed(slot);
+                    emit(IoEvent::Need(self.finalized.persisted(DataKind::Envelope, slot, None)));
                 }
                 PendingWrite::PersistPeer { enr } => {
                     let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
@@ -328,7 +252,6 @@ impl Store {
     pub(crate) fn file_io<F>(
         &mut self,
         fork_digest_at: impl Fn(u64) -> [u8; 4],
-        custody_group_columns: u128,
         producer: &mut TMultiProducer,
         emit: &mut F,
     ) -> Result<(), Error>
@@ -336,18 +259,32 @@ impl Store {
         F: FnMut(IoEvent),
     {
         if !self.write_queue.is_empty() {
-            self.drain_pending_writes(custody_group_columns, emit)?;
+            self.drain_pending_writes(emit)?;
         }
         if !self.query_queue.is_empty() {
             self.serve_pending_reads(&fork_digest_at, producer, emit)?;
         }
 
-        self.scan_columns_step(custody_group_columns);
-        self.expire_incomplete_backfill_columns(Instant::now());
-        self.history.step(&mut self.write_queue);
-        self.history.publish_owed_spans(&mut |need| emit(IoEvent::Need(need)));
-        if let Some(earliest) = self.take_earliest_slot_claim(custody_group_columns) {
-            emit(IoEvent::PeerEvent(PeerEvent::EarliestSlot(earliest)));
+        self.history.link_buffered_blocks(
+            self.head,
+            &self.finalized,
+            &self.unfinalized,
+            &mut self.write_queue,
+        );
+        self.history.expire(Instant::now());
+        if self.head.root != [0u8; 32] && self.write_queue.landing() == 0 {
+            self.history.step(
+                self.head,
+                self.sync_target.is_following(),
+                &self.store_dir,
+                &mut self.finalized,
+                &self.unfinalized,
+                emit,
+            );
+        }
+
+        if self.write_queue.is_empty() {
+            self.finalized.persist(&self.store_dir)?;
         }
 
         self.step_checkpoint();
@@ -355,92 +292,17 @@ impl Store {
         Ok(())
     }
 
-    /// Advance the column-backfill disk scan by up to
-    /// `COLUMN_SCAN_SLOTS_PER_LOOP` slots, descending from the finalized slot.
-    /// For each persisted block carrying blob commitments whose custody columns
-    /// aren't all on disk, seed `column_backfill` with the missing set. Marks
-    /// the scan complete on reaching the retention floor.
-    #[timed]
-    fn scan_columns_step(&mut self, custody: u128) {
-        let Some(mut scan) = self.history.take_scan_if_ready(MAX_OPEN_COLUMN_NEEDS) else {
-            return;
-        };
-        let spec = self.spec.clone();
-        let mut budget = COLUMN_SCAN_SLOTS_PER_LOOP;
-        // floor is inclusive; `saturating_sub` keeps the cursor from underflowing
-        // below it (floor ≥ 1), so the loop exits cleanly at `cursor < floor`.
-        while budget > 0 && scan.cursor >= scan.floor {
-            let slot = scan.cursor;
-            scan.cursor = scan.cursor.saturating_sub(1);
-            budget -= 1;
-
-            let path =
-                self.finalized_slot_dir(Payload::Block, slot).join(format!("{slot}_block.ssz"));
-            let Ok(ssz) = std::fs::read(&path) else {
-                continue; // no block persisted at this slot
-            };
-            if !SignedBeaconBlockView::check_size(&ssz) {
-                tracing::error!(?path, "persisted block ssz has invalid size");
-                continue;
-            }
-            let is_gloas = spec.is_gloas_at_slot(slot);
-            // A post-fork block whose envelope never arrived live. Bounded by
-            // this scan's column window: an older block missing its envelope is
-            // not swept, since set 1 covers everything block backfill pulls.
-            let needs_envelope =
-                self.history.wants_envelopes() && is_gloas && !self.envelope_on_disk(slot);
-            let missing = match SignedBeaconBlockView::has_data_columns(&ssz, is_gloas) {
-                true => custody & !self.present_columns(slot, custody),
-                false => 0,
-            };
-            if !needs_envelope && missing == 0 {
-                continue;
-            }
-            let block_root = column_util::block_root(&ssz, is_gloas);
-            self.history.seed(block_root, slot, &ssz, missing, needs_envelope, &spec);
-        }
-
-        match scan.cursor >= scan.floor {
-            true => self.history.resume_scan(scan), // budget exhausted; resume next loop
-            false => self.history.finish_scan(),
-        }
-    }
-
-    pub(super) fn envelope_on_disk(&self, slot: u64) -> bool {
-        self.finalized_slot_dir(Payload::Envelope, slot)
-            .join(format!("{slot}_envelope.ssz"))
-            .exists()
-    }
-
-    /// Bitmask of custody columns already on disk for `slot` (flat store).
-    fn present_columns(&self, slot: u64, custody: u128) -> u128 {
-        let dir = self.finalized_slot_dir(Payload::Column, slot);
-        let mut present = 0u128;
-        for c in columns_of(custody) {
-            if dir.join(format!("{slot}_{c}.ssz")).exists() {
-                present |= 1u128 << c;
-            }
-        }
-        present
-    }
-
     fn unit_path(&self, unit: &QueryUnit) -> PathBuf {
         match unit {
-            QueryUnit::Block { slot } => {
-                self.finalized_slot_dir(Payload::Block, *slot).join(format!("{slot}_block.ssz"))
-            }
+            QueryUnit::Block { slot } => block_path(&self.store_dir, *slot),
             QueryUnit::UnfinalizedBlock { slot, parent_root, block_root } => self
                 .unfinalized_dir(Payload::Block)
                 .join(unfinalized_name(*slot, parent_root, block_root)),
-            QueryUnit::Column { slot, column } => {
-                self.finalized_slot_dir(Payload::Column, *slot).join(format!("{slot}_{column}.ssz"))
-            }
+            QueryUnit::Column { slot, column } => column_path(&self.store_dir, *slot, *column),
             QueryUnit::UnfinalizedColumn { slot, block_root, column } => self
                 .unfinalized_dir(Payload::Column)
                 .join(unfinalized_column_name(*slot, block_root, *column)),
-            QueryUnit::Envelope { slot } => self
-                .finalized_slot_dir(Payload::Envelope, *slot)
-                .join(format!("{slot}_envelope.ssz")),
+            QueryUnit::Envelope { slot } => envelope_path(&self.store_dir, *slot),
             QueryUnit::UnfinalizedEnvelope { slot, block_root } => self
                 .unfinalized_dir(Payload::Envelope)
                 .join(unfinalized_envelope_name(*slot, block_root)),
@@ -464,20 +326,32 @@ impl Store {
         reservation.increment_offset(ssz_len);
         Ok(ServeResult::Sent(reservation.read()))
     }
+
+    fn promote(&mut self, slot: u64, key: PayloadKey) -> Result<bool, Error> {
+        let payload = key.payload();
+        let to = key.finalized_path(&self.store_dir, slot);
+        std::fs::create_dir_all(to.parent().expect("a slot directory"))?;
+        let from = self.unfinalized_dir(payload).join(key.unfinalized_name(slot));
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                payload.record_promoted();
+                Ok(true)
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                tracing::warn!(
+                    slot,
+                    ?payload,
+                    "unfinalized file missing at promotion; left missing"
+                );
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 pub(super) fn open_file_read<P: AsRef<Path>>(path: P) -> Result<File, Error> {
     File::open(path)
-}
-
-/// Rename tolerating an already-moved/pruned source: a `NotFound` means the
-/// promote raced a prior move/prune and is treated as done. Rename is atomic.
-fn rename_tolerant(from: &Path, to: &Path) -> Result<(), Error> {
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
 }
 
 /// Unlink tolerating an already-removed target (idempotent prune).
@@ -552,13 +426,6 @@ pub(super) fn parse_unfinalized_envelope_name(name: &str) -> Option<([u8; 32], u
     Some((block_root, slot))
 }
 
-fn parse_finalized_block_name(name: &str) -> Option<u64> {
-    let stem = name.strip_suffix(".ssz")?;
-    let mut parts = stem.split('_');
-    let slot: u64 = parts.next()?.parse().ok()?;
-    Some(slot)
-}
-
 fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 {
         return None;
@@ -588,38 +455,4 @@ fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Erro
         }
     }
     Ok(())
-}
-
-/// Returns the slot number and parent_root of the earliest block in on-disk
-/// history.
-fn earliest_block<P: AsRef<Path>>(dir: P) -> Result<Option<(u64, B256)>, Error> {
-    let contents = std::fs::read_dir(&dir)?;
-    let Some(min_dir) = contents
-        .filter_map(|entry| {
-            entry
-                .ok()
-                .and_then(|e| e.file_name().into_string().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-        })
-        .min()
-    else {
-        return Ok(None);
-    };
-
-    let sub_dir = PathBuf::new().join(&dir).join(min_dir.to_string());
-    let sub_dir_contents = std::fs::read_dir(&sub_dir)?;
-    let Some(min_file) = sub_dir_contents
-        .filter_map(|entry| {
-            entry.ok().and_then(|e| e.file_name().to_str().and_then(parse_finalized_block_name))
-        })
-        .min()
-    else {
-        return Ok(None);
-    };
-
-    let block_file = sub_dir.join(format!("{min_file}_block.ssz"));
-    let ssz = std::fs::read(&block_file)?; // one time allocation
-    let parent_root = SignedBeaconBlockView::parent_root(&ssz);
-
-    Ok(Some((min_file, *parent_root)))
 }
