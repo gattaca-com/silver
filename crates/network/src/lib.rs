@@ -22,6 +22,7 @@ silver_common::declare_counters! {
         // (the "zombie": peer never responded).
         DialTimeoutZombie,
         InboundAccepted,
+        InboundRefused,
         InboundHandshakeOk,
         // Disconnect reason buckets (ConnectionError variants).
         DisconnectTimedOut,
@@ -29,6 +30,9 @@ silver_common::declare_counters! {
         DisconnectAppClosed,
         DisconnectLocal,
         DisconnectOther,
+        // A peer's read-timeout gave up on our response (their reset carried
+        // the response-timeout code): direct we-are-slow signal.
+        RemoteResponseTimeout,
     }
 }
 

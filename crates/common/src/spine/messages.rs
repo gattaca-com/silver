@@ -1,17 +1,19 @@
 use std::{
+    io::Write,
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
 
 use flux::timing::Nanos;
+use silver_beacon_state_data::SLOTS_PER_EPOCH;
 
 use crate::{
-    Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheError,
-    TCacheRead,
+    DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId, StreamProtocol,
+    TCacheProducer, TCacheRead, TMultiProducer,
+    column_util::columns_of,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
-        DataColumnSidecarsByRangeRequestView, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
-        ExecutionPayloadEnvelopesByRangeRequestView, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
         STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
         SszView, StatusView,
     },
@@ -89,49 +91,71 @@ impl RpcRequest {
         }
     }
 
-    pub fn rate_limit_tokens(&self) -> Result<u64, TCacheError> {
-        let tokens = match self {
-            RpcRequest::StatusV1(_) |
-            RpcRequest::StatusV2(_) |
-            RpcRequest::Ping(_) |
-            RpcRequest::Goodbye(_) |
-            RpcRequest::MetaData => 1,
-            RpcRequest::BlocksByRange(ssz) => BeaconBlocksByRangeRequestView::count(ssz),
-            RpcRequest::BlockByRoot(read) => fixed_width_list_tokens(read.len()?, 32),
-            RpcRequest::DataColumnsByRange { ssz, len } => {
-                let Some(buf) = ssz.get(..*len) else { return Ok(1) };
-                if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
-                    1
-                } else {
-                    let count = DataColumnSidecarsByRangeRequestView::count(buf);
-                    let columns = DataColumnSidecarsByRangeRequestView::columns(buf).len() / 8;
-                    count.saturating_mul(columns as u64)
-                }
-            }
-            RpcRequest::DataColumnsByRoot(read) => {
-                data_columns_by_root_tokens_from_len(read.len()?)
-            }
-            RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
-                ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
-            }
-            RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
-                fixed_width_list_tokens(read.len()?, 32)
-            }
-        };
-        Ok(tokens.max(1))
+    pub fn blocks_by_range(start_slot: u64, count: u64) -> Self {
+        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+        ssz[0..8].copy_from_slice(&start_slot.to_le_bytes());
+        ssz[8..16].copy_from_slice(&count.to_le_bytes());
+        // `step` is deprecated in the spec and every range we ask for is dense.
+        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
+        Self::BlocksByRange(ssz)
     }
-}
 
-fn fixed_width_list_tokens(len: usize, width: usize) -> u64 {
-    len.div_ceil(width) as u64
-}
+    pub fn envelopes_by_range(start_slot: u64, count: u64) -> Self {
+        let mut ssz = [0u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE];
+        ssz[..8].copy_from_slice(&start_slot.to_le_bytes());
+        ssz[8..16].copy_from_slice(&count.to_le_bytes());
+        Self::ExecutionPayloadEnvelopesByRange(ssz)
+    }
 
-fn data_columns_by_root_tokens_from_len(len: usize) -> u64 {
-    // Silver currently emits one DataColumnsByRootIdentifier per request:
-    // 4B outer-list offset + 32B block root + 4B inner-list offset + N*8B columns.
-    // Length-derived accounting avoids acquiring the TCache payload in the hot
-    // path.
-    len.saturating_sub(4 + 32 + 4).div_ceil(8) as u64
+    /// `start_slot | count | offset(=20) | column indices (u64 LE each)`,
+    /// expanding the custody bitmask to the indices it names.
+    pub fn data_columns_by_range(start_slot: u64, count: u64, columns: u128) -> Self {
+        let mut ssz = [0u8; DC_BY_RANGE_REQ_MAX];
+        ssz[0..8].copy_from_slice(&start_slot.to_le_bytes());
+        ssz[8..16].copy_from_slice(&count.to_le_bytes());
+        ssz[16..20].copy_from_slice(&20u32.to_le_bytes());
+        let mut len = 20;
+        for column in columns_of(columns) {
+            ssz[len..len + 8].copy_from_slice(&column.to_le_bytes());
+            len += 8;
+        }
+        Self::DataColumnsByRange { ssz, len }
+    }
+
+    /// A `List[Root, N]` of one root — the only shape we ask for.
+    pub fn by_root(
+        producer: &mut TMultiProducer,
+        root: &[u8; 32],
+    ) -> Result<TCacheRead, std::io::Error> {
+        let Some(mut reservation) = producer.reserve(32, true) else {
+            return Err(std::io::ErrorKind::StorageFull.into());
+        };
+        reservation.write_all(root)?;
+        reservation.flush()?;
+        Ok(reservation.read())
+    }
+
+    /// A `List[DataColumnsByRootIdentifier, N]` of one entry: `N x 4B` list
+    /// offsets (so `offset[0] / 4` is the length), then the 32B block root, the
+    /// 4B inner-list offset (always 36), and one 8B index per column.
+    pub fn data_columns_by_root(
+        producer: &mut TMultiProducer,
+        root: &[u8; 32],
+        columns: u128,
+    ) -> Result<TCacheRead, std::io::Error> {
+        let length = 4 + 32 + 4 + 8 * columns.count_ones() as usize;
+        let Some(mut reservation) = producer.reserve(length, true) else {
+            return Err(std::io::ErrorKind::StorageFull.into());
+        };
+        reservation.write_all(&4u32.to_le_bytes())?;
+        reservation.write_all(root)?;
+        reservation.write_all(&36u32.to_le_bytes())?;
+        for column in columns_of(columns) {
+            reservation.write_all(&column.to_le_bytes())?;
+        }
+        reservation.flush()?;
+        Ok(reservation.read())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -177,54 +201,6 @@ pub enum RpcResponse {
     /// Produced following `BeaconBlock`s or `DataColumnSidecar`s unless an
     /// `Error` is produced first.
     Complete,
-}
-
-/// High word of `application_id` tagging an RPC request issued by the storage
-/// tile's historical backfill. Block responses are broadcast to every tile, not
-/// routed by issuer, so non-storage tiles use this to recognise and skip
-/// backfill traffic.
-pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000 & !GLOAS_ERA_FLAG;
-pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
-pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
-pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
-pub const ENVELOPE_REQUEST_ID: u64 = 0x0e0e_10be << 32; // envelope prefix.
-/// OR'd into a live data-column range request id when the range is Gloas-era,
-/// so storage picks the Gloas sidecar layout on the response — the sidecar's
-/// own `slot` sits at a layout-dependent offset and can't be read before the
-/// layout is chosen. Only the column-response path consumes it. Carved out of
-/// `REQUEST_ID_PREFIX_MASK` so request-category matching ignores it.
-pub const GLOAS_ERA_FLAG: u64 = 1 << 56;
-
-const _: () = assert!(
-    (BACKFILL_REQUEST_ID | COLUMN_BACKFILL_REQUEST_ID | BASE_REQUEST_ID | ENVELOPE_REQUEST_ID) &
-        GLOAS_ERA_FLAG ==
-        0,
-    "GLOAS_ERA_FLAG must not collide with any request-id prefix",
-);
-
-#[inline]
-pub fn msg_is_backfill(id: u64) -> bool {
-    id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID
-}
-
-#[inline]
-pub fn msg_is_column_backfill(id: u64) -> bool {
-    id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
-}
-
-#[inline]
-pub fn msg_is_live_column_request(id: u64) -> bool {
-    id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
-}
-
-#[inline]
-pub fn msg_is_envelope_request(id: u64) -> bool {
-    id & REQUEST_ID_PREFIX_MASK == ENVELOPE_REQUEST_ID
-}
-
-#[inline]
-pub fn msg_is_post_gloas(id: u64) -> bool {
-    id & GLOAS_ERA_FLAG != 0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -314,9 +290,25 @@ pub enum PeerEvent {
         /// Failed send was an outbound RPC request: the PM must release the
         /// `outbound_in_flight` slot admitted for it, else it leaks.
         rpc_request: bool,
+        /// Response targeted a stream already closed/reset, as opposed to
+        /// stream-credit exhaustion opening a new request stream.
+        stream_gone: bool,
     },
     P2pStreamClosed {
         stream_id: P2pStreamId,
+    },
+    /// Storage tile finished (or aborted) serving an inbound RPC request;
+    /// the PM logs it with peer identity.
+    RpcServeOutcome {
+        p2p_peer: usize,
+        protocol: StreamProtocol,
+        units_total: u32,
+        units_sent: u32,
+        /// Terminated with ResourceUnavailable on a missing unit rather than
+        /// draining to `Complete`.
+        missing: bool,
+        first_chunk_ms: u64,
+        elapsed_ms: u64,
     },
     P2pOutboundMessageDropped {
         p2p_peer: usize,
@@ -453,47 +445,16 @@ pub enum PeerEvent {
         /// Identify information.
         identify: Identify,
     },
-    /// Request to send data column RPC request
-    /// Sent by the storage tile.
-    SendDataColumnsByRootRequest {
-        request_id: u64,
-        columns: u128,
-        block_root: [u8; 32],
-    },
-    /// Request to send block RPC request
-    /// Sent by the beacon state tile.
-    SendBlocksByRootRequest {
-        request_id: u64,
-        /// Set if there is a peer that is more likely to have the block - i.e.
-        /// they attested to the child block.
-        p2p_peer: Option<usize>,
-        block_root: [u8; 32],
-    },
-    SendEnvelopesByRootRequest {
-        request_id: u64,
-        p2p_peer: Option<usize>,
-        block_root: [u8; 32],
-    },
-    SendRpcRequest {
-        request_id: u64,
-        rpc: RpcRequest,
-    },
+    /// The earliest slot we can serve history from, for our own `Status`.
     EarliestSlot(u64),
-    /// Storage's startup-scan backfill report: the block gap to fill backward
-    /// (`[block_floor, earliest_present)`) + the column-retention floor.
-    BackfillState {
-        block_floor: u64,
-        earliest_present: u64,
-        column_floor: u64,
-    },
-    /// A persisted block whose custody columns aren't all on disk (`missing`),
-    /// found by the scan or pulled in by block backfill. `missing == 0` clears
-    /// a previously-reported need (the block's columns are now complete).
-    ColumnNeed {
-        block_root: [u8; 32],
-        slot: u64,
-        missing: u128,
-    },
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+pub enum SyncNeed {
+    Missing { root: [u8; 32], slot: u64, kind: DataKind, columns: u128, origin: Origin },
+    Arrived { root: [u8; 32], slot: u64, kind: DataKind },
+    BackfillGap { kind: DataKind, floor: u64, next: u64 },
 }
 
 /// Sync target chosen by the peer manager.
@@ -506,12 +467,67 @@ pub enum SyncUpdate {
         target_epoch: u64,
         target_root: [u8; 32],
     },
-    /// Catch up on head slot.
+    /// Sync to a peer's head slot.
     SyncingHead {
         head_root: [u8; 32],
         head_slot: u64,
     },
     Following,
+}
+
+impl Default for SyncUpdate {
+    fn default() -> Self {
+        Self::SyncingHead { head_root: [0; 32], head_slot: 0 }
+    }
+}
+
+impl SyncUpdate {
+    pub fn is_following(self) -> bool {
+        matches!(self, SyncUpdate::Following)
+    }
+
+    pub fn data_availability_floor(self, local_finalized_slot: u64) -> u64 {
+        let settled_by_target = match self {
+            Self::SyncingFinalized { target_epoch, .. } => target_epoch * SLOTS_PER_EPOCH,
+            Self::SyncingHead { .. } | Self::Following => 0,
+        };
+        local_finalized_slot.max(settled_by_target)
+    }
+
+    pub fn end_slot(self) -> u64 {
+        const EPOCHS_TO_FINALIZE: u64 = 2;
+        match self {
+            Self::SyncingFinalized { target_epoch, .. } => {
+                target_epoch.saturating_add(EPOCHS_TO_FINALIZE).saturating_mul(SLOTS_PER_EPOCH)
+            }
+            Self::SyncingHead { head_slot, .. } => head_slot,
+            Self::Following => 0,
+        }
+    }
+
+    pub fn same_target_as(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Following, Self::Following) => true,
+            (
+                Self::SyncingFinalized { target_epoch: e1, target_root: r1 },
+                Self::SyncingFinalized { target_epoch: e2, target_root: r2 },
+            ) => e1 == e2 && r1 == r2,
+            (Self::SyncingHead { head_root: r1, .. }, Self::SyncingHead { head_root: r2, .. }) => {
+                r1 == r2
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_served_by(&self, peer_status: &[u8]) -> bool {
+        match self {
+            Self::Following => true,
+            Self::SyncingFinalized { target_epoch, .. } => {
+                *target_epoch <= StatusView::finalized_epoch(peer_status)
+            }
+            Self::SyncingHead { head_slot, .. } => *head_slot <= StatusView::head_slot(peer_status),
+        }
+    }
 }
 
 impl core::fmt::Debug for SyncUpdate {
@@ -680,7 +696,7 @@ impl From<IpAddr> for IpBytes {
 }
 
 /// Origin of a rejected block. PM treats RPC rejects as evidence that the
-/// active catchup target is bad (chain poisoning); gossip rejects are not
+/// active syncing target is bad (chain poisoning); gossip rejects are not
 /// chain-attributable and only blacklist the individual block_root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -701,36 +717,52 @@ pub enum ColumnSource {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
+    ReplayComplete,
     Status {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
         wall_slot: u64,
         enr_fork_id: [u8; 16],
     },
-    PersistBlock {
+    EnvelopeAvailable {
         ssz: TCacheRead,
         source: BlockSource,
+        slot: u64,
+        block_root: [u8; 32],
     },
-    PersistEnvelope {
-        ssz: TCacheRead,
-        source: BlockSource,
+    BlockReceived {
+        slot: u64,
+        block_root: [u8; 32],
+        /// Applied to fork choice, rather than parked on a dependency.
+        applied: bool,
+        // missing if we haven't seen the parent, which is then reported
+        // separately as `RequestBlock`
+        parent_slot: Option<u64>,
     },
     BlockRejected {
         block_root: [u8; 32],
         source: BlockSource,
     },
-    ReplayComplete,
-    BacktrackStall,
+    Reorg {
+        lca_slot: u64,
+    },
+    PersistBlock {
+        ssz: TCacheRead,
+        source: BlockSource,
+        slot: u64,
+        block_root: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum ReplayBlock {
     Block { ssz: TCacheRead },
+    Envelope { ssz: TCacheRead },
     Done,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SyncingStrategy {
     SyncFromPeers,
@@ -985,12 +1017,13 @@ impl BeaconStateEvent {
         match self {
             Self::Status { .. } => SszView::Status(StatusView {}),
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
-            Self::PersistEnvelope { .. } => {
+            Self::EnvelopeAvailable { .. } => {
                 SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
             }
-            Self::BlockRejected { .. } | Self::ReplayComplete | Self::BacktrackStall => {
-                SszView::None
-            }
+            Self::BlockRejected { .. } |
+            Self::ReplayComplete |
+            Self::BlockReceived { .. } |
+            Self::Reorg { .. } => SszView::None,
         }
     }
 }
@@ -1009,27 +1042,6 @@ pub enum DataColumnsEvent {
         column_index: u64,
         slot: u64,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestCategory {
-    LiveSync,
-    BlockBackfill,
-    ColumnBackfill,
-}
-
-impl RequestCategory {
-    pub fn from_request_id(request_id: u64) -> Self {
-        match request_id & REQUEST_ID_PREFIX_MASK {
-            COLUMN_BACKFILL_REQUEST_ID => RequestCategory::ColumnBackfill,
-            BACKFILL_REQUEST_ID => RequestCategory::BlockBackfill,
-            _ => RequestCategory::LiveSync,
-        }
-    }
-
-    pub fn is_backfill(self) -> bool {
-        matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1104,6 +1116,11 @@ pub struct P2pConnectionStats {
     pub tx_blocking: u64,
     pub rx_datagrams: u64,
     pub tx_datagrams: u64,
+    /// Live stream states on the connection. Climbing toward the remote's
+    /// MAX_STREAMS limit precedes "cannot create stream" bursts.
+    pub streams: u64,
+    /// Peer dialed us (QUIC server side), as opposed to us dialing them.
+    pub inbound: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

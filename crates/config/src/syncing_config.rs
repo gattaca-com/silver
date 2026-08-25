@@ -6,16 +6,10 @@ use super::{default_u64, default_usize};
 pub struct SyncingConfig {
     /// Max remembered rejected roots (one set; failed block roots + the
     /// poisoned target_root from `SyncingFinalized`-time rejects). Sized
-    /// for "many bad blocks during one bad-chain catchup attempt" — 256
+    /// for "many bad blocks while syncing one bad chain" — 256
     /// covers ~8 epochs.
     #[serde(default = "default_usize::<256>")]
     pub rejected_cap: usize,
-    /// SyncingHead trigger: enter SyncingHead only when a peer's head_slot
-    /// exceeds ours by at least this much. Avoids thrash on 1-slot
-    /// wall-clock jitter but stays small enough to catch the post-
-    /// finalized-sync tail quickly. Also gates the "refuse Following"
-    /// guard in `select_target` — beyond this lag vs wall_slot we won't
-    /// declare Following even with no viable peer target.
     #[serde(default = "default_u64::<8>")]
     pub head_lag_threshold_slots: u64,
     /// SyncingFinalized trigger: enter SyncingFinalized only when a peer's
@@ -29,25 +23,8 @@ pub struct SyncingConfig {
     /// wall slot. Beyond this, the claim is rejected as bogus.
     #[serde(default = "default_u64::<32>")]
     pub wall_clock_tolerance_slots: u64,
-    /// Max slots per `BlocksByRange` request issued by the peer-manager
-    /// catch-up driver. Bounds in-flight memory + response time on the
-    /// peer.
-    #[serde(default = "default_u64::<64>")]
-    pub max_blocks_by_range_batch: u64,
-    /// Inflight `BlocksByRange` request progress timeout, in milliseconds.
-    /// If no head_slot advance into the requested range is observed for
-    /// this long, the request is declared stuck: peer is scored
-    /// (high-tolerance, the lightest penalty) and the request is re-issued.
-    /// A healthy peer's
-    /// terminator clears the request well before this; the bound exists to
-    /// rotate off a silent/slow peer fast during catch-up.
     #[serde(default = "default_u64::<2000>")]
     pub inflight_progress_timeout_ms: u64,
-    /// Consecutive failed `DataColumnsByRange` attempts (error terminator
-    /// or progress timeout) on one catch-up range before its remainder is
-    /// conceded to the by-root straggler fallback.
-    #[serde(default = "default_u64::<3>")]
-    pub max_colreq_attempts: u64,
     /// Beacon-state pending-block buffer bounds.
     #[serde(default)]
     pub pending: PendingBounds,
@@ -60,9 +37,7 @@ impl Default for SyncingConfig {
             head_lag_threshold_slots: 8,
             finalized_lag_threshold_epochs: 2,
             wall_clock_tolerance_slots: 32,
-            max_blocks_by_range_batch: 64,
             inflight_progress_timeout_ms: 2_000,
-            max_colreq_attempts: 3,
             pending: PendingBounds::default(),
         }
     }
@@ -78,26 +53,16 @@ pub struct PendingBounds {
     #[serde(default = "default_usize::<64>")]
     pub max_parents: usize,
     /// Max blocks buffered awaiting data columns.
-    #[serde(default = "default_usize::<128>")]
+    #[serde(default = "default_usize::<512>")]
     pub max_dc: usize,
     /// Max forward slot gap (orphan slot − head) tolerated for by-root
-    /// backtracking; beyond it the peer-manager range-syncs the gap instead.
-    #[serde(default = "default_usize::<32>")]
+    /// backtracking; beyond it syncing covers the gap instead.
+    #[serde(default = "default_usize::<64>")]
     pub max_chain_len: usize,
-    /// Wall-clock gap before a by-root execution-payload-envelope request
-    /// is re-issued for a still-unverified payload.
-    #[serde(default = "default_u64::<1000>")]
-    pub envelope_rerequest_ms: u64,
 }
 
 impl Default for PendingBounds {
     fn default() -> Self {
-        Self {
-            future_tolerance: 2,
-            max_parents: 64,
-            max_dc: 512,
-            max_chain_len: 32,
-            envelope_rerequest_ms: 1000,
-        }
+        Self { future_tolerance: 2, max_parents: 64, max_dc: 512, max_chain_len: 64 }
     }
 }

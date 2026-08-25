@@ -68,9 +68,11 @@ network_params:
   # perfect_peerdas_enabled (needs 16 participants). 128 keys/node gives every
   # node full custody -> columns always available for a light node like silver.
   num_validator_keys_per_node: 128
-  # Small genesis delay so the chain starts promptly; read the resulting
-  # genesis time from the CL genesis API for silver's genesis_unix_secs.
-  genesis_delay: 20
+  # Long enough that setup.sh's harvest finishes before genesis, so silver can
+  # join at slot 0. A later join needs columns below the peers'
+  # earliest_available_slot (~32) while the chain is still unfinalized, which
+  # keeps DA gating on and wedges the sync.
+  genesis_delay: 180
   # Fork schedule: everything live at genesis through Fulu. Pre-Deneb forks
   # default to epoch 0 in kurtosis devnets. NOTE: exact key names track spec
   # churn -- verify against the package version you pull (network_params

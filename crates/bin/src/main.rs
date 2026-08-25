@@ -17,7 +17,7 @@ use silver_common::{
     tracing::initialise_tracing_log,
 };
 use silver_config::Config;
-use silver_control::Controller;
+use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_engine::EngineTile;
 use silver_gossip::GossipHandler;
@@ -53,8 +53,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCache::producer("ssz_gossip", config.incoming_gossip_ssz_tcache_size());
     let ssz_gossip_consumer =
         ssz_gossip_producer.cache_ref().random_access("bs_ssz_gossip", true)?;
-    let ssz_gossip_consumer_ds =
-        ssz_gossip_producer.cache_ref().random_access("ds_ssz_gossip", true)?;
+    let ssz_gossip_consumer_dc =
+        ssz_gossip_producer.cache_ref().random_access("dc_ssz_gossip", true)?;
     let ssz_persist_gossip_consumer_ds =
         ssz_gossip_producer.cache_ref().random_access("ds_persist_ssz_gossip", true)?;
     let ssz_persist_gossip_consumer_dc =
@@ -134,6 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             false,
             None,
         ),
+        config.max_connections(),
     );
     let p2p_context = Context {
         gossip_producer: incoming_gossip_producer,
@@ -203,12 +204,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             config.fork_digest(),
             local_enr.into(),
             das_custody_groups,
-            booting_from_local_checkpoint,
         ),
         gossip_handler,
         outgoing_rpc_producer.clone(),
-        spec.clone(),
         incoming_rpc_consumer_ctl,
+        SyncEngine::new(
+            config.syncing_config(),
+            booting_from_local_checkpoint,
+            das_custody_groups,
+            spec.clone(),
+        ),
     );
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
@@ -250,7 +255,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let state_reader = beacon_state_tile.reader();
     let data_columns_tile = DataColumnsTile::new(
-        ssz_gossip_consumer_ds,
+        ssz_gossip_consumer_dc,
         ssz_persist_gossip_consumer_dc,
         incoming_rpc_consumer_dc,
         persist_rpc_consumer_dc,

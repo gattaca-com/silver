@@ -11,6 +11,7 @@ silver_chain_spec.workspace = true
 silver_common.workspace = true
 silver_gossip.workspace = true
 silver_peer.workspace = true
+fxhash.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

@@ -60,8 +60,8 @@ pub(crate) struct PeerState {
     pub behaviour_penalty: f64, // P7, quadratic over threshold
 
     // Per-heartbeat rate-limit counters; reset every `heartbeat_interval`.
-    pub ihaves_received: u16, // gates P7 via max_ihave_messages
-    pub iwant_ids_sent: u16,  // gates P7 via max_ihave_length
+    pub ihaves_received: u16, // caps IWANT issuance via max_ihave_length
+    pub iwant_ids_sent: u16,  // caps the per-heartbeat IWANT budget
 
     // Outbound protocol rate-limit state.
     pub outbound_rpc_limits: RpcRateLimitSet,
@@ -78,6 +78,10 @@ pub(crate) struct PeerState {
     pub cached_score: f64,
     pub score_valid_at: Instant,
     pub last_breakdown: ScoreBreakdown,
+    /// TooManyPeers goodbye emitted; the connection is on its way down —
+    /// keeps `manage_peers` from re-selecting it while the flush + shutdown
+    /// completes.
+    pub goodbye_sent: bool,
 
     // Graylisted but kept for data-column coverage; dedups the spare log.
     pub evict_spared: bool,
@@ -105,6 +109,7 @@ impl PeerState {
             cached_score: 0.0,
             score_valid_at: now,
             last_breakdown: ScoreBreakdown::default(),
+            goodbye_sent: false,
             evict_spared: false,
         }
     }
@@ -122,6 +127,15 @@ impl PeerState {
     }
 
     /// Inserts or updates msg cache entry, returning previous count
+    /// Score for gossip-domain gates (`gossip_threshold` comparisons):
+    /// excludes P5 — an RPC-domain penalty must not silence our gossip
+    /// toward the peer, which starves their P3 view of us and gets us
+    /// pruned/disconnected in return. Gossip-domain offences (P4, P7)
+    /// still count.
+    pub fn gossip_gate_score(&self) -> f64 {
+        self.cached_score - self.last_breakdown.p5_application
+    }
+
     pub fn msg_cache_insert(&mut self, msg_id: MessageId) -> u32 {
         self.msg_cache.upsert(msg_id)
     }
@@ -144,6 +158,15 @@ pub(crate) struct TopicScore {
     /// True once `mesh_message_deliveries_activation_s` has elapsed since
     /// graft — deficit scoring only applies after this.
     pub mesh_active: bool,
+    /// Grafted by `opportunistic_graft` into a sub-median mesh. Exempt from
+    /// mesh-capped eviction until the activation window elapses, so the
+    /// trim falls on the poor performers the graft targets.
+    pub opportunistic: bool,
+    /// Consecutive remote prunes arriving within `QUICK_PRUNE_WINDOW` of
+    /// graft — the signature of a saturated remote mesh trimming us at its
+    /// heartbeat. Scales our re-graft backoff; reset by any prune after a
+    /// longer residency.
+    pub quick_prunes: u8,
     // P3b
     pub mesh_failure_penalty: f64,
     // P4

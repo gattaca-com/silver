@@ -37,5 +37,6 @@ silver_common::declare_counters! {
         // EL-mempool blob fetch (engine_getBlobsV2)
         ElBlobsFetched,
         ElColumnsBuilt,
+        PersistAcquireFailed,
     }
 }

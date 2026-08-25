@@ -58,10 +58,10 @@ impl PrecheckError {
             Self::ParentMissing { parent_root, block_root, .. } => {
                 Feedback::RequestParent { parent_root, block_root }
             }
-            Self::PreFinalized { .. } |
-            Self::PastSlot { .. } |
-            Self::FutureSlot { .. } |
-            Self::AlreadyKnown { .. } => Feedback::Ignore,
+            Self::PreFinalized { .. } | Self::PastSlot { .. } | Self::FutureSlot { .. } => {
+                Feedback::Ignore
+            }
+            Self::AlreadyKnown { block_root } => Feedback::AlreadyKnown(block_root),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }

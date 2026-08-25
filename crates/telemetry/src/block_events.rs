@@ -13,6 +13,12 @@
 //! - `el_sent` — the same message's publish: CL validated, dispatched to EL.
 //! - `applied` — `EngineReq::Fcu` publish: state transition + commit.
 //! - `el_verdict` — `EngineResp::NewPayload` publish, carries the verdict.
+//! - `column_recv` — a data-column sidecar's arrival, and `column_validated`
+//!   the moment it passed validation: the same pair of observations on one
+//!   message as `received`/`el_sent`, so the gap between them is the columns
+//!   tile's queue delay.
+//! - `da_available` — `DataColumnsEvent::Available`, i.e. the custody set is
+//!   complete and the block's DA gate opens.
 //!
 //! The `block_events_xatu` view renames the one comparable stage onto
 //! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
@@ -26,7 +32,7 @@ use std::{
 
 use flux::{spine::SpineAdapter, timing::InternalMessage};
 use rustc_hash::FxHashMap;
-use silver_common::{EngineReq, EngineResp, Nanos, SilverSpine};
+use silver_common::{DataColumnsEvent, EngineReq, EngineResp, Nanos, SilverSpine};
 use silver_config::ChainConfig;
 use tracing::{info, warn};
 
@@ -45,6 +51,7 @@ const DDL: &[&str] = &[
     "ALTER TABLE block_events RENAME COLUMN IF EXISTS propagation_slot_start_diff TO time_into_slot_ms",
     "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS slot_start_date_time Nullable(DateTime) AFTER slot",
     "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS meta_network_name LowCardinality(String)",
+    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS column_index Nullable(UInt64)",
     XATU_VIEW_DDL,
 ];
 
@@ -57,6 +64,7 @@ const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
     block_root           String                           COMMENT '0x-prefixed beacon block root; rows written before 2026-08-18 lack the prefix',
     source               LowCardinality(String)           COMMENT 'How the node obtained the block',
     verdict              LowCardinality(Nullable(String)) COMMENT 'Execution payload status; set on el_verdict rows only',
+    column_index         Nullable(UInt64)                 COMMENT 'Data-column index; set on column_* rows only',
     meta_client_name     LowCardinality(String)           COMMENT 'Hostname of the node that produced the row',
     meta_network_name    LowCardinality(String)           COMMENT 'Ethereum network the node is running'
 ) ENGINE = MergeTree
@@ -126,6 +134,9 @@ impl BlockEvents {
         adapter.consume_internal_message(|m: &mut InternalMessage<EngineResp>, _| {
             self.on_engine_resp(m);
         });
+        adapter.consume_internal_message(|m: &mut InternalMessage<DataColumnsEvent>, _| {
+            self.on_data_columns(m);
+        });
     }
 
     fn slot_start(&self, slot: u64) -> Nanos {
@@ -149,6 +160,7 @@ impl BlockEvents {
                 "block_root": format!("0x{}", hex::encode(root)),
                 "source": attrs.source,
                 "verdict": attrs.verdict,
+                "column_index": attrs.column_index,
                 "meta_client_name": self.node,
                 "meta_network_name": self.network,
             })
@@ -166,7 +178,7 @@ impl BlockEvents {
                 self.slots.retain(|_, slot| req.slot.saturating_sub(*slot) < TRACKED_SLOTS);
                 self.slots.insert(req.block_root, req.slot);
                 let source = format!("{:?}", req.block_source);
-                let attrs = Attrs { source: Some(&source), verdict: None };
+                let attrs = Attrs { source: Some(&source), ..Attrs::default() };
                 let received = m.ingestion_time().real();
                 self.push("received", Some(req.slot), req.block_root, received, attrs);
                 let el_sent = m.tracking_timestamp().publish_t();
@@ -181,12 +193,36 @@ impl BlockEvents {
         }
     }
 
+    /// Both observations come off the envelope: ingestion is the sidecar's
+    /// arrival on the wire, publish the moment it passed validation.
+    fn on_data_columns(&mut self, m: &InternalMessage<DataColumnsEvent>) {
+        match *m.data() {
+            DataColumnsEvent::Persist { block_root, column_index, slot, source, .. } => {
+                let source = format!("{source:?}");
+                let attrs = Attrs {
+                    source: Some(&source),
+                    column_index: Some(column_index),
+                    ..Attrs::default()
+                };
+                let slot = Some(slot);
+                let arrival = m.ingestion_time().real();
+                self.push("column_recv", slot, block_root, arrival, attrs);
+                let validated = m.tracking_timestamp().publish_t();
+                self.push("column_validated", slot, block_root, validated, attrs);
+            }
+            DataColumnsEvent::Available { block_root, slot } => {
+                let ts = m.tracking_timestamp().publish_t();
+                self.push("da_available", Some(slot), block_root, ts, Attrs::default());
+            }
+        }
+    }
+
     fn on_engine_resp(&mut self, m: &InternalMessage<EngineResp>) {
         let EngineResp::NewPayload(resp) = *m.data() else {
             return;
         };
         let verdict = format!("{:?}", resp.status);
-        let attrs = Attrs { source: None, verdict: Some(&verdict) };
+        let attrs = Attrs { verdict: Some(&verdict), ..Attrs::default() };
         let slot = self.slots.get(&resp.block_root).copied();
         let ts = m.tracking_timestamp().publish_t();
         self.push("el_verdict", slot, resp.block_root, ts, attrs);
@@ -197,6 +233,7 @@ impl BlockEvents {
 struct Attrs<'a> {
     source: Option<&'a str>,
     verdict: Option<&'a str>,
+    column_index: Option<u64>,
 }
 
 /// Turns the spine's stage envelopes into ClickHouse inserts. The HTTP leg
@@ -249,7 +286,7 @@ impl BlockEventsInserter {
 mod tests {
     use flux::timing::{IngestionTime, Instant, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp,
+        BlockSource, ColumnSource, EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp,
         PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
     };
 
@@ -289,6 +326,16 @@ mod tests {
             slot,
             block_source,
         })
+    }
+
+    fn persist(root: [u8; 32], slot: u64, column_index: u64) -> DataColumnsEvent {
+        DataColumnsEvent::Persist {
+            ssz: unread_payload(),
+            source: ColumnSource::Gossip,
+            block_root: root,
+            column_index,
+            slot,
+        }
     }
 
     fn fcu(root: [u8; 32]) -> EngineReq {
@@ -366,6 +413,39 @@ mod tests {
         assert_eq!(row(&rows, "el_verdict")["slot"], 2);
         assert!(row(&rows, "applied")["time_into_slot_ms"].as_f64().unwrap() > 300.0);
         assert_eq!(row(&rows, "el_verdict")["verdict"], "Valid");
+    }
+
+    /// A sidecar is two observations of one message, like a block's
+    /// `received`/`el_sent`, so the columns tile's queue delay is a stage
+    /// delta.
+    #[test]
+    fn sidecars_record_arrival_then_validation() {
+        let mut ev = events();
+        let root = [7u8; 32];
+
+        ev.on_data_columns(&msg(persist(root, 3, 48), at(3, 1_400)));
+        ev.on_data_columns(&msg(
+            DataColumnsEvent::Available { block_root: root, slot: 3 },
+            at(3, 1_500),
+        ));
+
+        let rows = json_rows(&mut ev);
+        assert_eq!(stages(&rows), ["column_recv", "column_validated", "da_available"]);
+        assert!(rows.iter().all(|r| r["block_root"] == root_hex(root)));
+
+        let recv = row(&rows, "column_recv");
+        assert_eq!(recv["slot"], 3);
+        assert_eq!(recv["column_index"], 48);
+        assert_eq!(recv["source"], "Gossip");
+        assert_eq!(recv["event_date_time"], at(3, 1_400).0, "arrival is the ingestion clock");
+
+        let validated = row(&rows, "column_validated");
+        assert_eq!(validated["column_index"], 48);
+        assert!(
+            validated["event_date_time"].as_u64().unwrap() > at(3, 1_400).0,
+            "validation follows arrival"
+        );
+        assert!(row(&rows, "da_available")["column_index"].is_null(), "no column of its own");
     }
 
     /// Replay/backfill arrivals record every stage but no slot offset — the

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
@@ -60,6 +60,13 @@ fn rate(set: &CounterSet, slot: usize) -> String {
 }
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(40), Constraint::Length(AGENTS_PANEL_WIDTH)])
+        .split(area);
+    draw_agent_counts(f, cols[1], app);
+    let area = cols[0];
+
     let mut meshed: HashMap<GossipTopic, Vec<Member>> = HashMap::new();
     for (id, row) in app.peers.rows() {
         let conn = row.p2p.as_ref().map(|s| s.connection);
@@ -184,6 +191,93 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(table_rows, widths).header(header).block(block);
     app.gossip_table_state.select(Some(sel_pos));
     f.render_stateful_widget(table, area, &mut app.gossip_table_state);
+}
+
+/// type (10 chars) + dir + two count columns + borders.
+const AGENTS_PANEL_WIDTH: u16 = 29;
+
+const COMBINED_COLOR: Color = Color::Cyan;
+
+#[derive(Default)]
+struct AgentCounts {
+    conns_in: usize,
+    conns_out: usize,
+    meshes_in: usize,
+    meshes_out: usize,
+}
+
+impl AgentCounts {
+    fn add(&mut self, other: &AgentCounts) {
+        self.conns_in += other.conns_in;
+        self.conns_out += other.conns_out;
+        self.meshes_in += other.meshes_in;
+        self.meshes_out += other.meshes_out;
+    }
+}
+
+/// Per-client-type counts (the user-agent segment before the first '/',
+/// truncated to 10 chars), split by connection direction into in/out pairs:
+/// connections and mesh memberships — a peer in 10 meshes contributes 10 to
+/// its direction's mesh count.
+fn draw_agent_counts(f: &mut Frame, area: Rect, app: &App) {
+    let mut counts: HashMap<String, AgentCounts> = HashMap::new();
+    for (_, row) in app.peers.rows() {
+        let Some(p2p) = &row.p2p else { continue };
+        let agent = row.scores.as_ref().map(|s| s.user_agent.as_str()).unwrap_or("");
+        let kind = agent.split('/').next().unwrap_or("");
+        let kind = if kind.is_empty() { "unknown" } else { kind };
+        let entry = counts.entry(kind.chars().take(10).collect()).or_default();
+        if p2p.inbound {
+            entry.conns_in += 1;
+            entry.meshes_in += row.topics.len();
+        } else {
+            entry.conns_out += 1;
+            entry.meshes_out += row.topics.len();
+        }
+    }
+    let mut ranked: Vec<(String, AgentCounts)> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        (b.1.conns_in + b.1.conns_out)
+            .cmp(&(a.1.conns_in + a.1.conns_out))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let mut total = AgentCounts::default();
+    for (_, c) in &ranked {
+        total.add(c);
+    }
+
+    let header = Row::new(["agent", "dir", "conn", "mesh"].map(Cell::from))
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    let mut rows = Vec::with_capacity((ranked.len() + 1) * 3);
+    let push_triple = |rows: &mut Vec<Row>, kind: &str, c: &AgentCounts| {
+        let dir_row = |name, dir, conn: usize, mesh: usize| {
+            Row::new([
+                Cell::from(String::from(name)),
+                Cell::from(dir),
+                Cell::from(format!("{conn}")),
+                Cell::from(format!("{mesh}")),
+            ])
+        };
+        rows.push(dir_row(kind, "in", c.conns_in, c.meshes_in));
+        rows.push(dir_row("", "out", c.conns_out, c.meshes_out));
+        rows.push(
+            dir_row("", "all", c.conns_in + c.conns_out, c.meshes_in + c.meshes_out)
+                .style(Style::default().fg(COMBINED_COLOR)),
+        );
+    };
+    for (kind, c) in &ranked {
+        push_triple(&mut rows, kind, c);
+    }
+    push_triple(&mut rows, "total", &total);
+    let table = Table::new(rows, [
+        Constraint::Length(10),
+        Constraint::Length(3),
+        Constraint::Length(5),
+        Constraint::Length(5),
+    ])
+    .header(header)
+    .block(Block::default().borders(Borders::ALL).title(" peers "));
+    f.render_widget(table, area);
 }
 
 /// One meshed peer of the selected topic: the peers-tab expansion fields

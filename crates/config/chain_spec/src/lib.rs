@@ -202,6 +202,16 @@ impl SpecConfig {
     }
 
     #[inline]
+    pub fn min_epochs_for_block_requests(&self, epoch: u64) -> u64 {
+        let churn_limit_quotient = if self.is_gloas_at(epoch) {
+            self.churn_limit_quotient_gloas
+        } else {
+            self.churn_limit_quotient
+        };
+        self.min_validator_withdrawability_delay + churn_limit_quotient / 2
+    }
+
+    #[inline]
     pub fn fork_version_at(&self, epoch: u64) -> [u8; 4] {
         if self.is_gloas_at(epoch) { self.gloas_fork_version } else { self.fulu_fork_version }
     }
