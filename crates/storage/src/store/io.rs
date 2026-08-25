@@ -5,6 +5,7 @@
 //! parent module, since `load` needs the layout constants too.
 
 use std::{
+    collections::hash_map::Entry,
     fs::File,
     io::{Error, ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -59,13 +60,13 @@ impl Store {
     {
         let mut writes = 0;
         while writes < MAX_WRITES_PER_LOOP &&
-            let Some(pending) = self.write_queue.front()
+            let Some(pending) = self.write_queue.pop_front()
         {
             writes += 1;
             tracing::debug!(?pending, "process pending write");
             match pending {
                 PendingWrite::Index { block_root, slot } => {
-                    let dir = self.finalized_slot_dir(Payload::Block, *slot);
+                    let dir = self.finalized_slot_dir(Payload::Block, slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join("block_index.bin");
                     let mut file = open_file_write(path, true)?;
@@ -73,51 +74,44 @@ impl Store {
                     // partial append would misalign every subsequent
                     // fixed-width record on retry.
                     let mut record = [0u8; 40];
-                    record[..32].copy_from_slice(block_root);
+                    record[..32].copy_from_slice(&block_root);
                     record[32..].copy_from_slice(&slot.to_le_bytes());
                     file.write_all(&record)?;
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::Column { slot, column, ssz } => {
-                    let dir = self.finalized_slot_dir(Payload::Column, *slot);
+                    let dir = self.finalized_slot_dir(Payload::Column, slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
                     StorageCounters::BackfillColumnsWritten.inc();
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::WriteUnfinalized { slot, key, ssz } => {
-                    let path =
-                        self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
+                    let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(&path, false)?.write_all(buffer)?;
                     key.payload().record_written();
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::Promote { slot, key } => {
                     let payload = key.payload();
-                    let dir = self.finalized_slot_dir(payload, *slot);
+                    let dir = self.finalized_slot_dir(payload, slot);
                     std::fs::create_dir_all(&dir)?;
-                    let from = self.unfinalized_dir(payload).join(key.unfinalized_name(*slot));
-                    rename_tolerant(&from, &dir.join(key.finalized_name(*slot)))?;
+                    let from = self.unfinalized_dir(payload).join(key.unfinalized_name(slot));
+                    rename_tolerant(&from, &dir.join(key.finalized_name(slot)))?;
                     // Data before index: a block's index record is appended only
                     // after the rename, so a crash never indexes an unmoved block.
                     if let PayloadKey::Block { block_root, .. } = key {
                         let mut record = [0u8; 40];
-                        record[..32].copy_from_slice(block_root);
+                        record[..32].copy_from_slice(&block_root);
                         record[32..].copy_from_slice(&slot.to_le_bytes());
                         open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
                     }
                     payload.record_promoted();
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::Prune { slot, key } => {
-                    let path =
-                        self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
+                    let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
                     remove_tolerant(&path)?;
                     key.payload().record_pruned();
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::TruncateHistory { payload, finalized_slot } => {
                     let epoch = finalized_slot / SLOTS_PER_EPOCH;
@@ -127,32 +121,26 @@ impl Store {
                         PathBuf::new().join(&self.store_dir).join(payload.finalized_dir_name());
                     remove_subdirs(dir, earliest_slot)?;
                     self.history.note_truncation(earliest_slot);
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::StartBlockBackfill { finalized_slot, finalized_root } => {
                     let epoch = finalized_slot / SLOTS_PER_EPOCH;
                     let to_retain = Payload::Block.slots_retained(&self.spec, epoch);
                     let start_slot = finalized_slot.saturating_sub(to_retain).max(1);
-                    tracing::info!(
-                        finalized_slot = *finalized_slot,
-                        to_retain,
-                        start_slot,
-                        "block backfill armed"
-                    );
+                    tracing::info!(finalized_slot, to_retain, start_slot, "block backfill armed");
                     let dir = PathBuf::new()
                         .join(&self.store_dir)
                         .join(Payload::Block.finalized_dir_name());
                     let range = match earliest_block(dir)? {
                         Some((slot, parent_root)) if slot > start_slot => {
-                            Some((start_slot..slot.min(*finalized_slot), parent_root))
+                            Some((start_slot..slot.min(finalized_slot), parent_root))
                         }
                         // No blocks on disk: backfill `[start_slot, finalized_slot]`
                         // anchored at the finalized block. Skip when nothing is
                         // finalized yet — the zero `finalized_root` is not a real
                         // block root, so the chain can never link and backfill
                         // would respin on slot 0 (genesis is already the anchor).
-                        None if *finalized_root != [0u8; 32] => {
-                            Some((start_slot..*finalized_slot + 1, *finalized_root))
+                        None if finalized_root != [0u8; 32] => {
+                            Some((start_slot..finalized_slot + 1, finalized_root))
                         }
                         _ => None,
                     };
@@ -165,57 +153,51 @@ impl Store {
 
                         None => self.history.no_block_gap(),
                     }
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::StartBackfill { finalized_slot, finalized_root } => {
-                    self.history.start(*finalized_slot, *finalized_root, &self.spec);
-                    self.write_queue.pop_front();
+                    self.history.start(finalized_slot, finalized_root, &self.spec);
                 }
                 PendingWrite::BackfillBlock { block_root, slot, ssz } => {
-                    let dir = self.finalized_slot_dir(Payload::Block, *slot);
+                    let dir = self.finalized_slot_dir(Payload::Block, slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_block.ssz"));
 
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
-                    if !self.root_index.contains_key(block_root) {
+                    if let Entry::Vacant(e) = self.root_index.entry(block_root) {
                         let mut record = [0u8; 40];
-                        record[..32].copy_from_slice(block_root);
+                        record[..32].copy_from_slice(&block_root);
                         record[32..].copy_from_slice(&slot.to_le_bytes());
                         open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
-                        self.root_index.insert(*block_root, *slot);
+                        e.insert(slot);
                     }
                     // Set 2: a block fetched by block backfill that falls in the
                     // column window needs its columns too (the pre-block disk
                     // scan couldn't see it — it wasn't on disk yet). Feed the
                     // still-live column backfill. Just-written ⇒ no columns on
                     // disk yet, so the full custody set is missing.
-                    let is_gloas = self.spec.is_gloas_at_slot(*slot);
+                    let is_gloas = self.spec.is_gloas_at_slot(slot);
                     // Just written ⇒ no columns on disk yet, so the whole
                     // custody set is missing.
                     let missing = match SignedBeaconBlockView::has_data_columns(buffer, is_gloas) {
                         true => custody_group_columns,
                         false => 0,
                     };
-                    self.history.seed(*block_root, *slot, buffer, missing, is_gloas, &self.spec);
+                    self.history.seed(block_root, slot, buffer, missing, is_gloas, &self.spec);
                     StorageCounters::BackfillBlocksWritten.inc();
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::BackfillEnvelope { slot, ssz } => {
-                    let dir = self.finalized_slot_dir(Payload::Envelope, *slot);
+                    let dir = self.finalized_slot_dir(Payload::Envelope, slot);
                     std::fs::create_dir_all(&dir)?;
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(dir.join(format!("{slot}_envelope.ssz")), false)?
                         .write_all(buffer)?;
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::PersistPeer { enr } => {
                     let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
                     open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())?;
-                    self.write_queue.pop_front();
                 }
                 PendingWrite::LoadPeers => {
-                    self.write_queue.pop_front();
                     let peer_files = std::fs::read_dir(self.peers_dir())?;
                     for entry in peer_files {
                         if let Ok(entry) = entry &&
