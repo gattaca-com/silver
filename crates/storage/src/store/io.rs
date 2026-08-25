@@ -5,10 +5,7 @@
 //! parent module, since `load` needs the layout constants too.
 
 use std::{
-    fs::File,
-    io::{Error, ErrorKind, Read, Write},
-    path::{Path, PathBuf},
-    time::Instant,
+    collections::hash_map::Entry, fs::File, io::{Error, ErrorKind, Read, Write}, path::{Path, PathBuf}, time::Instant
 };
 
 use flux_profiler::timed;
@@ -86,8 +83,7 @@ impl Store {
                     StorageCounters::BackfillColumnsWritten.inc();
                 }
                 PendingWrite::WriteUnfinalized { slot, key, ssz } => {
-                    let path =
-                        self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
+                    let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(&path, false)?.write_all(buffer)?;
                     key.payload().record_written();
@@ -109,8 +105,7 @@ impl Store {
                     payload.record_promoted();
                 }
                 PendingWrite::Prune { slot, key } => {
-                    let path =
-                        self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
+                    let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
                     remove_tolerant(&path)?;
                     key.payload().record_pruned();
                 }
@@ -127,12 +122,7 @@ impl Store {
                     let epoch = finalized_slot / SLOTS_PER_EPOCH;
                     let to_retain = Payload::Block.slots_retained(&self.spec, epoch);
                     let start_slot = finalized_slot.saturating_sub(to_retain).max(1);
-                    tracing::info!(
-                        finalized_slot,
-                        to_retain,
-                        start_slot,
-                        "block backfill armed"
-                    );
+                    tracing::info!(finalized_slot, to_retain, start_slot, "block backfill armed");
                     let dir = PathBuf::new()
                         .join(&self.store_dir)
                         .join(Payload::Block.finalized_dir_name());
@@ -170,12 +160,12 @@ impl Store {
 
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
-                    if !self.root_index.contains_key(&block_root) {
+                    if let Entry::Vacant(e) = self.root_index.entry(block_root) {
                         let mut record = [0u8; 40];
                         record[..32].copy_from_slice(&block_root);
                         record[32..].copy_from_slice(&slot.to_le_bytes());
                         open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
-                        self.root_index.insert(block_root, slot);
+                        e.insert(slot);
                     }
                     // Set 2: a block fetched by block backfill that falls in the
                     // column window needs its columns too (the pre-block disk
