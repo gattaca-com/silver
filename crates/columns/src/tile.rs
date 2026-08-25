@@ -3,7 +3,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
+use flux::{
+    spine::{SpineAdapter, SpineProducers},
+    tile::Tile,
+};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
@@ -433,7 +436,33 @@ impl DataColumnsTile {
         }
     }
 
+    /// A sidecar off its subnet: the relay metadata a republish needs is only
+    /// available here, before the buffer is handed to validation.
     #[timed]
+    fn gossip_sidecar(
+        &mut self,
+        custody_group: u64,
+        gossip: NewGossipMsg,
+        producers: &mut SilverSpineProducers,
+    ) {
+        tracing::debug!(custody_group, "data column sidecar over gossip");
+        let t_read = self.gossip_consumer.acquire(gossip.ssz);
+        let relay = RelayMeta::Gossip {
+            topic: gossip.topic,
+            msg_hash: gossip.msg_hash,
+            recv_ts: gossip.recv_ts,
+            protobuf: gossip.protobuf,
+        };
+        self.handle_data_column_sidecar(
+            t_read,
+            gossip.stream_id,
+            Some(custody_group),
+            Some(gossip.recv_ts),
+            relay,
+            producers,
+        );
+    }
+
     fn handle_data_column_sidecar(
         &mut self,
         t_read: TRead,
@@ -526,8 +555,10 @@ impl DataColumnsTile {
         let PendingKzg {
             sidecar, stream_id, block_root, column_index, bitmask, slot, relay, ..
         } = p;
+        let mut arrival = None;
         match relay {
             RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
+                arrival = Some(recv_ts);
                 adapter.produce(PeerEvent::SendGossip {
                     originator_stream_id: stream_id,
                     topic,
@@ -553,7 +584,10 @@ impl DataColumnsTile {
             slot,
             sidecar,
             is_gossip,
-            &mut |msg| adapter.produce(msg),
+            &mut |msg| match arrival {
+                Some(recv_ts) => adapter.producers.produce_with_ingestion(msg, recv_ts.into()),
+                None => adapter.produce(msg),
+            },
         );
     }
 
@@ -640,23 +674,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
             silver_common::GossipTopic::DataColumnSidecar(custody_group)
                 if self.sync_state.is_synced() =>
             {
-                tracing::debug!(custody_group, "data column sidecar over gossip");
-
-                let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                let relay = RelayMeta::Gossip {
-                    topic: gossip.topic,
-                    msg_hash: gossip.msg_hash,
-                    recv_ts: gossip.recv_ts,
-                    protobuf: gossip.protobuf,
-                };
-                self.handle_data_column_sidecar(
-                    t_read,
-                    gossip.stream_id,
-                    Some(custody_group),
-                    Some(gossip.recv_ts),
-                    relay,
-                    producers,
-                );
+                self.gossip_sidecar(custody_group, gossip, producers);
             }
             _ => {}
         });
