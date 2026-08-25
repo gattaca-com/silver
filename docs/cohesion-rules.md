@@ -120,7 +120,8 @@ silver_common::declare_counters! {
 
 One `declare_counters!` per crate, the string naming the crate, because it names
 the shmem file surfer reads. In `counters.rs` where the set is long (storage,
-columns, beacon_state); at the crate root where it is short (network, peer).
+columns, beacon_state, control); at the crate root where it is short (network,
+peer).
 
 Gossip has no namespace of its own: `GossipInvalidFrame`,
 `GossipInvalidControl` and `GossipInvalidMsg` are `PeerCounters`, because peer
@@ -152,7 +153,7 @@ place where an in-tile hand-off could be mistaken for a spine round trip.
 
 | pattern | variation |
 |---------|-----------|
-| counter declaration site | `counters.rs` in storage, columns, beacon_state; crate root in network, peer |
+| counter declaration site | `counters.rs` in storage, columns, beacon_state, control; crate root in network, peer |
 | counter namespace | gossip's counters live under `"peer"` |
 | hosted crate and the spine | `silver_gossip` consumes `GossipMsgIn` directly; `silver_peer` and `silver_discovery` never mention the spine |
 | config reach | `beacon_state`, `engine`, `peer`, `discovery`, `telemetry` depend on `silver_config`; `control`, `network`, `storage`, `columns` take plain values instead |

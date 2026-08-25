@@ -112,8 +112,9 @@ in-tile and a cross-tile consumer, the producing tile applies it in-tile first
 and then produces it — `handle_peer_control` in `crates/control/src/tile.rs`
 hands each `PeerControl` to the gossip handler and then puts it on the spine.
 
-The invariant holds across every tile today. Storage produces and consumes
-`ReplayBlock`, but the consume side is a test using an `Injector` adapter.
+The invariant holds across every tile today. Two apparent breaches are test
+harnesses consuming through an `Injector` adapter: storage's `ReplayBlock` and
+the beacon-state tile's `SyncNeed`.
 
 **Enforced by:** nothing.
 
@@ -221,7 +222,7 @@ with `--all-features` (`just clippy`, `just test`).
 
 | where | what | why it stands |
 |-------|------|---------------|
-| `silver_common` → `silver_beacon_state_data` | `crates/common/src/column_util.rs` imports `SLOTS_PER_EPOCH`, defined in `crates/beacon_state/data/src/types.rs`. It also takes `SpecConfig` through that crate's re-export rather than from `silver_chain_spec`. | One constant, one import site. Moving the preset to `silver_chain_spec` would drop the edge. |
+| `silver_common` → `silver_beacon_state_data` | `crates/common/src/column_util.rs` imports `SLOTS_PER_EPOCH`, defined in `crates/beacon_state/data/src/types.rs`, and `crates/common/src/lib.rs` re-exports it. It also takes `SpecConfig` through that crate's re-export rather than from `silver_chain_spec`. | One constant, but the re-export puts it on `silver_common`'s public surface, so callers of `silver_common::SLOTS_PER_EPOCH` inherit the edge. Moving the preset to `silver_chain_spec` would drop it. |
 | `silver_gossip` | Consumes `GossipMsgIn` off the spine (rule 12). | The handler runs inside the controller tile (#140) and reads the `incoming_gossip` tcache by random access. |
 | `silver_peer` | `pub use silver_config::SyncingConfig` at its crate root. | Gives `silver_control` a config type without a `silver_config` dependency of its own. |
 | `silver_beacon_state` dev-deps `silver_storage` | Rule 2. | EF PeerDAS DA vectors need the real column-sidecar verification. |

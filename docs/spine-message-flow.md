@@ -43,9 +43,11 @@ flowchart LR
 
   %% ---- chain state & DA ----
   BS -->|beacon_events : BeaconStateEvent| CTL
+  BS -->|"beacon_events : BeaconStateEvent (Status)"| NET
   BS -->|beacon_events : BeaconStateEvent| ST
   BS -->|beacon_events : BeaconStateEvent| DC
   DC -->|"data_columns : DataColumnsEvent (Available)"| BS
+  DC -->|"data_columns : DataColumnsEvent (Available)"| CTL
   DC -->|"data_columns : DataColumnsEvent (Persist)"| ST
   ST -->|replay_blocks : ReplayBlock| BS
 
@@ -54,7 +56,9 @@ flowchart LR
   CTL -->|sync_target : SyncUpdate| ST
   CTL -->|sync_target : SyncUpdate| DC
   CTL -->|syncing_strategy : SyncingStrategy| ST
-  CTL -->|syncing_strategy : SyncingStrategy| DC
+  BS -->|sync_needs : SyncNeed| CTL
+  ST -->|sync_needs : SyncNeed| CTL
+  DC -->|sync_needs : SyncNeed| CTL
 
   %% ---- engine / EL ----
   BS -->|engine_reqs : EngineReq| EN
@@ -92,11 +96,12 @@ queues are broadcast, so DataColumns sees every `EngineResp` and ignores the res
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage, DataColumns | ref → `incoming_rpc` |
 | `peer_events` | `PeerEvent` | Network, BeaconState, Storage, DataColumns | Control | mostly inline; `SendGossip` ref → `outgoing_gossip`, `PublishDataColumn` ref → `incoming_rpc` |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
-| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
-| `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
+| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Network _(Status)_, Storage, DataColumns | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
+| `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Control _(Available)_, Storage _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
 | `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns | inline |
+| `sync_needs` | `SyncNeed` | BeaconState, Storage, DataColumns | Control | inline (`root`, `slot`, `DataKind`, column bitmask, `Origin`) |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
-| `syncing_strategy` | `SyncingStrategy` | Control | Storage, DataColumns | inline |
+| `syncing_strategy` | `SyncingStrategy` | Control | Storage | inline |
 | `engine_reqs` | `EngineReq` | BeaconState, DataColumns _(GetBlobs)_ | Engine | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
 | `engine_resps` | `EngineResp` | Engine | BeaconState, DataColumns _(GetBlobs)_ | ref → `incoming_engine_resp` |
 | `engine_health` | `EngineHealthEvent` | Engine | _none (currently unconsumed)_ | inline |
@@ -113,7 +118,7 @@ Bulk-byte rings that the queue messages reference, so payloads cross tiles witho
 | `outgoing_gossip` | Control _(gossip)_ | Network | gossip protobuf: mcache copies of incoming messages, local publishes, IDONTWANT/IWANT control frames |
 | `incoming_rpc` | Network | BeaconState, DataColumns (live + persist), Storage (live + persist), Engine, Control (column republish) | RPC response bodies (BeaconBlock / DataColumnSidecar) |
 | `outgoing_rpc` _(multi-producer)_ | Control, Storage | Network | RPC request bodies (we ask) + served response bodies (we answer) |
-| `replay_blocks` | Storage | BeaconState | persisted block SSZ replayed at startup |
+| `replay_blocks` | Storage | BeaconState | persisted block / envelope SSZ replayed at startup |
 | `incoming_engine_resp` | Engine | BeaconState, DataColumns (GetBlobs) | EL responses (payloads, blobs, bodies) |
 | `el_data_columns` | DataColumns | Storage | column sidecars reconstructed from EL-mempool blobs |
 
