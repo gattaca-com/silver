@@ -5,7 +5,11 @@
 //! parent module, since `load` needs the layout constants too.
 
 use std::{
-    collections::hash_map::Entry, fs::File, io::{Error, ErrorKind, Read, Write}, path::{Path, PathBuf}, time::Instant
+    collections::hash_map::Entry,
+    fs::File,
+    io::{Error, ErrorKind, Read, Write},
+    path::{Path, PathBuf},
+    time::Instant,
 };
 
 use flux_profiler::timed;
