@@ -9,10 +9,10 @@ use std::{
 
 use flux_profiler::timed;
 use silver_common::{
-    Enr, P2pSend, PeerControl, PeerId, RpcOutbound, RpcRequestOutbound, RpcSeverity,
+    Enr, P2pSend, PeerControl, PeerId, RpcOutbound, RpcRequestOutbound, RpcSeverity, StreamProtocol,
 };
 
-use super::PeerManager;
+use super::{GOODBYE_TOO_MANY_PEERS, IDLE_PEER_MAX_SCORE, IDLE_PEER_MIN_AGE, PeerManager};
 
 const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
@@ -130,7 +130,8 @@ impl PeerManager {
     /// database; this loop dials on the next tick.
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let mut connected = self.peers.len() + self.dialing.len();
-        if connected >= self.params.max_priority_peers {
+        let deficit_cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
+        if connected >= deficit_cap {
             return;
         }
         for record in self.database.redial_candidates(now) {
@@ -153,7 +154,20 @@ impl PeerManager {
             {
                 continue;
             }
+            // Three tiers: a peer covering a subnet the sweep could not fill
+            // dials into the headroom above `max_priority_peers` — a fresh
+            // peer scores 0, and `manage_peers` only trims negatives, so it
+            // survives there. A peer merely covering something we subscribe
+            // to gets the ordinary priority cap; everyone else stops at
+            // `target_peers`.
             let cap = if enr_matches_subnets(
+                enr,
+                self.deficit_attnets,
+                self.deficit_syncnets,
+                self.deficit_columns,
+            ) {
+                deficit_cap
+            } else if enr_matches_subnets(
                 enr,
                 self.required_attnets,
                 self.required_syncnets,
@@ -170,56 +184,104 @@ impl PeerManager {
             self.dialing.insert(peer_id, now);
             emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
             connected += 1;
-            if connected >= self.params.max_priority_peers {
+            if connected >= deficit_cap {
                 break;
             }
         }
     }
 
-    /// Trim over-population: past `max_priority_peers` + 10% inbound
-    /// headroom, goodbye (TooManyPeers) the worst strictly-negative scorers
-    /// back toward `max_priority_peers`. Neutral peers — including fresh
-    /// connections, which start at 0 — are never trimmed: with no negatives
-    /// we stay over cap until scores differentiate. Per-beat cap keeps
-    /// removal a trickle rather than a burst.
-    pub(super) fn manage_peers(&mut self, emit: &mut impl FnMut(PeerControl)) {
+    /// Trim over-population.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn manage_peers(
+        &mut self,
+        now: Instant,
+        mut negative: [(usize, f64); 256],
+        negative_len: usize,
+        idle: [usize; 32],
+        idle_len: usize,
+        pending_goodbyes: usize,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
         const MAX_GOODBYES_PER_BEAT: usize = 16;
-        let cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
-        if self.peers.len() <= cap {
+        // Count peers already draining as gone. Otherwise consecutive ticks
+        // can schedule more departures than the actual excess while waiting
+        // for the network disconnect events to arrive.
+        let remaining = self.peers.len().saturating_sub(pending_goodbyes);
+        if remaining <= self.params.max_priority_peers {
             return;
         }
-        let excess = self.peers.len() - self.params.max_priority_peers;
+        let excess = remaining - self.params.max_priority_peers;
 
-        // Bounded scan, no alloc: gather up to array-size negative
-        // candidates (first found, not globally worst), goodbye the worst
-        // of those.
-        let mut candidates = [(0usize, 0.0f64); 256];
-        let mut found = 0;
-        for (id, peer) in &self.peers {
-            if peer.cached_score < 0.0 && !peer.goodbye_sent {
-                candidates[found] = (*id, peer.cached_score);
-                found += 1;
-                if found == candidates.len() {
-                    break;
-                }
-            }
-        }
-        let candidates = &mut candidates[..found];
+        let candidates = &mut negative[..negative_len];
         candidates.sort_unstable_by(|(_, a), (_, b)| a.total_cmp(b));
 
-        let to_remove = excess.min(MAX_GOODBYES_PER_BEAT).min(found);
-        for (id, _) in &candidates[..to_remove] {
+        let budget = excess.min(MAX_GOODBYES_PER_BEAT);
+        let mut sent = 0;
+        for (id, _) in candidates.iter() {
+            if sent == budget {
+                break;
+            }
             let Some(peer) = self.peers.get_mut(id) else { continue };
+            if peer.goodbye_sent || peer.cached_score >= 0.0 {
+                continue;
+            }
             peer.goodbye_sent = true;
 
             let goodbye = RpcOutbound::Request(RpcRequestOutbound {
                 application_id: 0,
                 peer: *id,
-                request: silver_common::RpcRequest::Goodbye(129u64.to_le_bytes()),
+                request: silver_common::RpcRequest::Goodbye(GOODBYE_TOO_MANY_PEERS.to_le_bytes()),
             });
 
             emit(PeerControl::P2pSend(P2pSend::Rpc(goodbye)));
+            sent += 1;
         }
+
+        if sent < budget {
+            for id in &idle[..idle_len] {
+                if sent == budget {
+                    break;
+                }
+                let Some(peer) = self.peers.get_mut(id) else { continue };
+                // `manage_mesh` runs after candidate collection and may have
+                // grafted this peer to repair a deficit. Revalidate the full
+                // idle predicate at the point of action.
+                if peer.goodbye_sent ||
+                    peer.cached_score > IDLE_PEER_MAX_SCORE ||
+                    now.saturating_duration_since(peer.connected_at) <= IDLE_PEER_MIN_AGE ||
+                    peer.topic_stats.values().any(|stats| stats.meshed_since.is_some())
+                {
+                    continue;
+                }
+                peer.goodbye_sent = true;
+                let goodbye = RpcOutbound::Request(RpcRequestOutbound {
+                    application_id: 0,
+                    peer: *id,
+                    request: silver_common::RpcRequest::Goodbye(
+                        GOODBYE_TOO_MANY_PEERS.to_le_bytes(),
+                    ),
+                });
+
+                emit(PeerControl::P2pSend(P2pSend::Rpc(goodbye)));
+                crate::PeerCounters::IdlePeerGoodbye.inc();
+                sent += 1;
+            }
+        }
+    }
+
+    pub(super) fn disconnect_after_failed_goodbye(
+        &self,
+        conn: usize,
+        protocol: StreamProtocol,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        if protocol != StreamProtocol::Goodbye {
+            return;
+        }
+        let Some(peer_id) = self.peers.get(&conn).map(|peer| peer.peer_id) else {
+            return;
+        };
+        emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: conn });
     }
 
     pub(super) fn maybe_request_discovery(
@@ -473,14 +535,14 @@ fn enr_matches_subnets(
         return true;
     }
     if let Some(cgc) = enr.cgc() {
-        return enr.node_id().custody_groups(cgc as u8) & custody_columns != 0
+        return enr.node_id().custody_groups(cgc as u8) & custody_columns != 0;
     }
     false
 }
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{GossipTopic, IpBytes, Keypair, PeerEvent};
+    use silver_common::{GossipTopic, IpBytes, Keypair, PeerEvent, RpcRequest};
     use silver_config::ScoreParams;
 
     use super::*;
@@ -1216,38 +1278,246 @@ mod tests {
         );
     }
 
+    /// Long-connected peers holding no mesh slot and no score are shed —
+    /// but only while over `max_priority_peers`, and never one that is
+    /// actually meshed.
     #[test]
-    fn manage_peers_trims_worst_negatives_only_once() {
+    fn idle_peers_shed_only_when_over_priority_cap() {
         let now = Instant::now();
+        let topic = GossipTopic::BeaconBlock;
         let mut params = ScoreParams::default();
-        params.max_priority_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params);
-        for conn in 1..=6usize {
+        params.max_priority_peers = 2;
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
+        for conn in 1..=3usize {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
         }
-        mgr.peers.get_mut(&1).unwrap().cached_score = -5.0;
-        mgr.peers.get_mut(&2).unwrap().cached_score = -2.0;
+        let aged = now + IDLE_PEER_MIN_AGE + Duration::from_secs(1);
+        // Peer 3 is meshed as of the tick, so it scores 0 like the others
+        // but must be spared.
+        mgr.peers.get_mut(&3).unwrap().topic_stats.entry(topic).or_default().meshed_since =
+            Some(aged);
         cap.0.clear();
 
-        // 6 peers > cap(4): excess 2 — exactly the two negatives go, the
-        // four neutral (fresh) peers are never trimmed.
-        mgr.manage_peers(&mut |event| cap.0.push(event));
-        let goodbyes: Vec<usize> =
+        mgr.tick(aged, &mut |c| cap.0.push(c));
+        let goodbyes = |cap: &Captured| -> Vec<usize> {
+            cap.0
+                .iter()
+                .filter_map(|e| match e {
+                    PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                        RpcRequestOutbound {
+                            application_id: _,
+                            peer,
+                            request: RpcRequest::Goodbye(bye),
+                        },
+                    ))) if u64::from_le_bytes(*bye) == GOODBYE_TOO_MANY_PEERS => Some(*peer),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut shed = goodbyes(&cap);
+        shed.sort_unstable();
+        assert_eq!(shed.len(), 1, "shed only the one peer above the cap");
+        assert!(shed[0] == 1 || shed[0] == 2, "meshed peer must be spared");
+
+        // The pending departure counts against the excess, so another peer
+        // is not selected while the first Goodbye drains.
+        cap.0.clear();
+        mgr.tick(aged + Duration::from_secs(1), &mut |c| cap.0.push(c));
+        assert!(goodbyes(&cap).is_empty(), "goodbye must not repeat");
+
+        // Under the cap the same peers are left alone.
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        for conn in 1..=3usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+        cap.0.clear();
+        mgr.tick(aged, &mut |c| cap.0.push(c));
+        assert!(goodbyes(&cap).is_empty(), "under cap, idle peers are kept");
+    }
+
+    #[test]
+    fn idle_peer_is_shed_immediately_above_priority_cap() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_priority_peers = 10;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        for conn in 1..=11usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+        cap.0.clear();
+
+        mgr.tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| cap.0.push(event));
+
+        let goodbyes =
+            cap.0
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                            RpcRequestOutbound { request: RpcRequest::Goodbye(_), .. }
+                        )))
+                    )
+                })
+                .count();
+        assert_eq!(goodbyes, 1, "the 10% headroom must not delay idle shedding");
+    }
+
+    #[test]
+    fn peer_grafted_during_tick_is_not_shed_as_idle() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconBlock;
+        let mut params = ScoreParams::default();
+        params.d = 1;
+        params.max_priority_peers = 2;
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
+        for conn in 1..=3usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+            mgr.peers.get_mut(&conn).unwrap().topics.insert(topic);
+        }
+        cap.0.clear();
+
+        mgr.tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| cap.0.push(event));
+
+        let meshed = mgr.mesh[&topic][0];
+        let goodbyes: Vec<_> =
             cap.0
                 .iter()
                 .filter_map(|event| match event {
                     PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
-                        RpcRequestOutbound { application_id: _, peer, request: _ },
+                        RpcRequestOutbound { peer, request: RpcRequest::Goodbye(_), .. },
                     ))) => Some(*peer),
                     _ => None,
                 })
                 .collect();
-        assert_eq!(goodbyes, vec![1, 2]);
+        assert_eq!(goodbyes.len(), 1);
+        assert_ne!(goodbyes[0], meshed, "new mesh member must be revalidated before shedding");
+    }
 
-        // Already-goodbyed peers are not re-selected while they drain.
+    #[test]
+    fn failed_outbound_goodbye_disconnects_peer() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.peers.get_mut(&1).unwrap().goodbye_sent = true;
+
+        for event in [
+            PeerEvent::P2pCannotCreateStream {
+                p2p_peer: 1,
+                protocol: StreamProtocol::Goodbye,
+                rpc_request: true,
+                stream_gone: false,
+            },
+            PeerEvent::P2pOutboundMessageDropped {
+                p2p_peer: 1,
+                protocol: StreamProtocol::Goodbye,
+                rpc_request: true,
+            },
+        ] {
+            cap.0.clear();
+            mgr.handle_event(event, now, &mut |control| cap.0.push(control));
+            assert!(cap.0.iter().any(|control| matches!(control, PeerControl::P2pDisconnect {
+                p2p_connection: 1,
+                ..
+            })));
+        }
+    }
+
+    #[test]
+    fn idle_peer_score_tolerance_includes_small_positive_residual() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_priority_peers = 2;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        for conn in 1..=3usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+
+        let aged = now + IDLE_PEER_MIN_AGE + Duration::from_secs(1);
+        mgr.last_decay = aged;
+        mgr.peers.get_mut(&1).unwrap().application_score = IDLE_PEER_MAX_SCORE;
+        mgr.peers.get_mut(&2).unwrap().application_score = IDLE_PEER_MAX_SCORE + 0.001;
+        mgr.peers.get_mut(&3).unwrap().application_score = IDLE_PEER_MAX_SCORE + 0.001;
         cap.0.clear();
-        mgr.manage_peers(&mut |event| cap.0.push(event));
-        assert!(cap.0.is_empty());
+
+        mgr.tick(aged, &mut |c| cap.0.push(c));
+
+        let goodbyes: Vec<usize> = cap
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                    application_id: _,
+                    peer,
+                    request: RpcRequest::Goodbye(bye),
+                }))) if u64::from_le_bytes(*bye) == GOODBYE_TOO_MANY_PEERS => Some(*peer),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(goodbyes, vec![1]);
+    }
+
+    fn subnet_mask(subnet: usize) -> [u8; 8] {
+        let mut attnets = [0u8; 8];
+        attnets[subnet / 8] |= 1 << (subnet % 8);
+        attnets
+    }
+
+    /// A subnet the sweep could not fill raises the dial cap above the
+    /// ordinary priority tier: at `max_priority_peers` we still dial a peer
+    /// serving the starved subnet, but not one serving only a subnet we
+    /// subscribe to and already have covered.
+    #[test]
+    fn deficit_subnet_peers_dial_past_priority_cap() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.d = 2;
+        params.target_peers = 1;
+        params.max_priority_peers = 10;
+        let starved = GossipTopic::BeaconAttestation(5);
+        let covered = GossipTopic::BeaconAttestation(6);
+        let (mut mgr, mut cap) = fixture(vec![starved, covered], params);
+        // Sit exactly at the ordinary priority cap, so only the deficit tier
+        // can admit another dial.
+        for conn in 1..=10usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+        mgr.mesh.entry(covered).or_default().extend([1, 2]);
+
+        mgr.manage_mesh(now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.deficit_attnets[0], 1 << 5, "only the unfilled subnet is a deficit");
+        cap.0.clear();
+
+        let serves_starved = test_enr_with(
+            77,
+            std::net::Ipv4Addr::new(10, 0, 0, 77),
+            Some([0u8; 16]),
+            Some(subnet_mask(5)),
+            None,
+        );
+        let serves_covered = test_enr_with(
+            88,
+            std::net::Ipv4Addr::new(10, 0, 0, 88),
+            Some([0u8; 16]),
+            Some(subnet_mask(6)),
+            None,
+        );
+        for enr in [serves_starved, serves_covered] {
+            mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+                cap.0.push(c)
+            });
+        }
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+
+        let dialled: Vec<PeerId> = cap
+            .0
+            .iter()
+            .filter_map(|e| match e {
+                PeerControl::P2pDial { p2p, .. } => Some(*p2p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dialled, vec![peer_id(77)], "only the deficit-covering peer clears the cap");
     }
 
     #[test]

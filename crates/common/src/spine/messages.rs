@@ -633,6 +633,10 @@ pub enum PeerControl {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        /// How long we will refuse a re-GRAFT on this topic, advertised so
+        /// the remote's own default doesn't diverge from what we enforce.
+        /// `None` on unsubscribe, where we record no backoff.
+        backoff_seconds: Option<u64>,
     },
     /// Open a libp2p connection to the peer described by `enr`. Emitted by
     /// the peer manager on `DiscNodeFound` when capacity allows. The network

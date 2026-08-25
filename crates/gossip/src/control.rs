@@ -378,37 +378,44 @@ pub fn copy_grafts_to_protobuf_output(
     producer: &mut TProducer,
     topics: &[&str],
 ) -> Result<TCacheRead, Error> {
-    encode_control_topics(producer, topics, /* ControlMessage.graft */ 3)
+    encode_control_topics(producer, topics, /* ControlMessage.graft */ 3, None)
 }
 
-/// Encode `RPC { control: ControlMessage { prune: [ControlPrune { topic_id }*]
-/// } }`. PX peer hints (`ControlPrune.peers`, field 2) and `backoff` (field 3)
-/// are omitted — peer-exchange isn't wired up and most clients
-/// (e.g. Lighthouse) don't send peer records anyway.
+/// Encode `RPC { control: ControlMessage { prune: [ControlPrune { topic_id,
+/// backoff }*] } }`. `backoff` (field 3) tells the remote how long we will
+/// refuse their re-GRAFT; omitting it leaves them on their own default,
+/// which no longer matches ours once futility escalation kicks in. PX peer
+/// hints (`ControlPrune.peers`, field 2) stay omitted — peer-exchange isn't
+/// wired up and most clients (e.g. Lighthouse) don't send peer records.
 pub fn copy_prunes_to_protobuf_output(
     producer: &mut TProducer,
     topics: &[&str],
+    backoff_seconds: Option<u64>,
 ) -> Result<TCacheRead, Error> {
-    encode_control_topics(producer, topics, /* ControlMessage.prune */ 4)
+    encode_control_topics(producer, topics, /* ControlMessage.prune */ 4, backoff_seconds)
 }
 
 /// Graft and prune share wire shape: a `ControlGraft`/`ControlPrune` per
-/// topic, each carrying just `topic_id` (field 1, string), wrapped in a
-/// single `ControlMessage` whose field number distinguishes them.
+/// topic carrying `topic_id` (field 1, string), wrapped in a single
+/// `ControlMessage` whose field number distinguishes them. `backoff` is
+/// prune-only (field 3, varint seconds).
 fn encode_control_topics(
     producer: &mut TProducer,
     topics: &[&str],
     cm_field: u32,
+    backoff_seconds: Option<u64>,
 ) -> Result<TCacheRead, Error> {
     // RPC.control = field 3 (LD), ControlMessage.{graft|prune} = field 3|4
     // (LD, repeated), {ControlGraft|ControlPrune}.topic_id = field 1
-    // (string). All field numbers ≤ 15 → 1-byte tags.
+    // (string), ControlPrune.backoff = field 3 (varint). All field numbers
+    // ≤ 15 → 1-byte tags.
     const TAG_LEN: usize = 1;
 
+    let backoff_len = backoff_seconds.map_or(0, |b| TAG_LEN + varint_len(b));
     let cm_inner: usize = topics
         .iter()
         .map(|t| {
-            let entry = TAG_LEN + string_encoded_len(t);
+            let entry = TAG_LEN + string_encoded_len(t) + backoff_len;
             TAG_LEN + varint_len(entry as u64) + entry
         })
         .sum();
@@ -423,13 +430,18 @@ fn encode_control_topics(
     encode_varint(cm_inner as u64, &mut cursor);
 
     for topic in topics {
-        let entry = TAG_LEN + string_encoded_len(topic);
+        let entry = TAG_LEN + string_encoded_len(topic) + backoff_len;
         // ControlMessage.{graft|prune} (LD, repeated).
         Tag::new(cm_field, WireType::LengthDelimited).encode(&mut cursor);
         encode_varint(entry as u64, &mut cursor);
         // ControlGraft|ControlPrune.topic_id (field 1, string).
         Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
         encode_string(topic, &mut cursor);
+        if let Some(backoff) = backoff_seconds {
+            // ControlPrune.backoff (field 3, varint seconds).
+            Tag::new(3, WireType::Varint).encode(&mut cursor);
+            encode_varint(backoff, &mut cursor);
+        }
     }
 
     reservation.increment_offset(total);
@@ -526,7 +538,7 @@ mod tests {
     fn prunes_round_trip() {
         let mut producer = TCache::producer("control_test", 1 << 14);
         let topic_refs: Vec<&str> = vec!["data_column_sidecar_42"];
-        let tc = copy_prunes_to_protobuf_output(&mut producer, &topic_refs).unwrap();
+        let tc = copy_prunes_to_protobuf_output(&mut producer, &topic_refs, None).unwrap();
 
         let bytes = read_bytes(tc, &producer);
         let rpc = RPCView::decode_view(&bytes).unwrap();
@@ -534,6 +546,24 @@ mod tests {
         let prunes: Vec<_> = (&ctrl.prune).into_iter().collect();
         assert_eq!(prunes.len(), 1);
         assert_eq!(prunes[0].topic_id, Some("data_column_sidecar_42"));
+        assert_eq!(prunes[0].backoff, None);
         assert_eq!((&ctrl.graft).into_iter().count(), 0);
+    }
+
+    /// The backoff we advertise must survive the round trip: a remote that
+    /// re-GRAFTs early is penalised against this value.
+    #[test]
+    fn prunes_carry_backoff() {
+        let mut producer = TCache::producer("control_test", 1 << 14);
+        let topic_refs: Vec<&str> = vec!["beacon_attestation_7"];
+        let tc = copy_prunes_to_protobuf_output(&mut producer, &topic_refs, Some(960)).unwrap();
+
+        let bytes = read_bytes(tc, &producer);
+        let rpc = RPCView::decode_view(&bytes).unwrap();
+        let ctrl = rpc.control.as_option().expect("control present");
+        let prunes: Vec<_> = (&ctrl.prune).into_iter().collect();
+        assert_eq!(prunes.len(), 1);
+        assert_eq!(prunes[0].topic_id, Some("beacon_attestation_7"));
+        assert_eq!(prunes[0].backoff, Some(960));
     }
 }

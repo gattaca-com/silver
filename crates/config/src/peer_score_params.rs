@@ -17,8 +17,10 @@ pub struct ScoreParams {
     pub gossip_threshold: f64,
     /// Below this score we don't accept PX peer-exchange lists in PRUNE.
     pub accept_px_threshold: f64,
-    /// Above this score a peer is eligible for opportunistic mesh graft.
-    pub opportunistic_graft_threshold: f64,
+    /// A mesh is underperforming — and so eligible for opportunistic graft
+    /// — when its median topic-local score falls below this fraction of the
+    /// topic class's saturation (`scoring::topic_local_saturation`).
+    pub opportunistic_graft_fraction: f64,
 
     // ── P1: time in mesh ────────────────────────────────────────────────
     pub time_in_mesh_cap_s: f64,
@@ -128,7 +130,7 @@ impl Default for ScoreParams {
             publish_threshold: -50.0,
             gossip_threshold: -10.0,
             accept_px_threshold: 10.0,
-            opportunistic_graft_threshold: 5.0,
+            opportunistic_graft_fraction: 0.25,
 
             // P1 — small positive reward, capped
             time_in_mesh_cap_s: 3600.0,
