@@ -388,7 +388,7 @@ impl SyncEngine {
         let finalized_root = *StatusView::finalized_root(status);
         let (head_slot, finalized_epoch) =
             (StatusView::head_slot(status), StatusView::finalized_epoch(status));
-        tracing::info!(peer, head_slot, finalized_epoch, "sync: peer status");
+        tracing::debug!(peer, head_slot, finalized_epoch, "sync: peer status");
         if self.ctx.peers.is_rejected(&finalized_root) {
             return;
         }
@@ -409,7 +409,7 @@ impl SyncEngine {
         finalized_root: [u8; 32],
         wall_slot: u64,
     ) {
-        tracing::info!(head_slot, finalized_epoch, wall_slot, "sync: local status updated");
+        tracing::debug!(head_slot, finalized_epoch, wall_slot, "sync: local status updated");
         self.ctx.local.update(head_slot, finalized_epoch, finalized_root, wall_slot);
         self.window.record_status(head_slot, self.ctx.local.finalized_slot());
         self.ctx.root_requests.prune_finalized(self.ctx.local.finalized_slot());
