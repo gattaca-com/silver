@@ -140,7 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_producer: incoming_gossip_producer,
         gossip_consumer: outgoing_gossip_producer
             .cache_ref()
-            .strict_random_access("p2p_outgoing_gossip", true)?,
+            .random_access("p2p_outgoing_gossip", true)?,
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
         identify: Some(ProtoIdentify::from((&config.identify()?, &keypair))),
