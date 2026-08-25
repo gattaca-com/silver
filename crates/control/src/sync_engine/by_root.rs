@@ -132,7 +132,7 @@ impl ByRootRequests {
 
     pub(super) fn retire(&mut self, root: &[u8; 32]) {
         if let Some(need) = self.needs.remove(root) {
-            tracing::info!(
+            tracing::debug!(
                 root = hex32(root),
                 kind = ?need.kind,
                 wanted_at = need.wanted_at,
@@ -217,7 +217,7 @@ fn count_chase(kind: DataKind) {
 /// repeat it every backoff for as long as no peer can serve the root.
 fn report_unplaced(placed: bool, need: &Need, root: &[u8; 32]) {
     if !placed && need.attempts == 1 {
-        tracing::info!(
+        tracing::debug!(
             root = hex32(root),
             kind = ?need.kind,
             wanted_at = need.wanted_at,
@@ -231,7 +231,7 @@ fn offer(need: &mut Need, root: [u8; 32], next_id: &mut u64, now: Instant) -> Sy
     need.due = now + need.backoff();
     need.attempts += 1;
     if need.attempts == 1 {
-        tracing::info!(
+        tracing::debug!(
             root = hex32(&root),
             kind = ?need.kind,
             origin = ?need.origin,

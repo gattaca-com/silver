@@ -297,7 +297,6 @@ impl ColumnBackfill {
                 }
             };
             if expected.requested & column_bitmask == 0 {
-                tracing::warn!(column_index, "backfill sidecar column was not requested");
                 return None;
             }
             if expected.received & column_bitmask != 0 {

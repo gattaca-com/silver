@@ -1,63 +1,313 @@
-//! Gossipsub domain: topic subscriptions, mesh membership
-//! (graft/prune/backoff, fill/cap/opportunistic maintenance), IHAVE/IWANT
-//! promise tracking, delivery crediting, and the heartbeat sweeps.
+//! The live peer set and the gossip mesh grafted onto it: connections in
+//! and out, subscriptions, GRAFT/PRUNE both ways, and the scoring that
+//! decides which peers the mesh keeps.
 
 use std::{
     collections::HashMap,
+    net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 
 use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
-    GossipMsgOut, GossipTopic, MessageId, Nanos, P2pSend, PeerControl, PeerId, TCacheRead,
+    GossipTopic, IpBytes, P2pSend, PeerControl, PeerId, PeerScores, PeerTopicScores,
+    RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
 };
 
-use super::{PeerManager, build_subnet_masks};
-use crate::scoring;
+use super::{
+    PeerManager, SHORT_LIVED_CONNECTION, SHORT_LIVED_DIAL_BACKOFF, TRANSPORT_DISCONNECT,
+    build_subnet_masks,
+};
+use crate::{
+    database::PeerRecord,
+    scoring,
+    state::{ArchivedState, IpPrefix, PeerState},
+};
 
-const MESH_MESSAGE_DELIVERIES_WINDOW_NS: u64 = 2_000_000_000;
 /// Remote prune this soon after graft = their heartbeat trimming an
 /// oversubscribed mesh; re-grafting on the base backoff is futile.
 const QUICK_PRUNE_WINDOW: Duration = Duration::from_secs(5);
+
 /// Caps futility escalation at `prune_backoff << 4` (60s → 960s).
 const QUICK_PRUNE_MAX_SHIFT: u8 = 4;
+
 const OPPORTUNISTIC_GRAFT_INTERVAL: Duration = Duration::from_secs(60);
+
 const OPPORTUNISTIC_GRAFT_PEERS: usize = 2;
 
-pub(super) struct RecentDelivery {
-    pub(super) topic: GossipTopic,
-    pub(super) received_at: Nanos,
-    pub(super) first_credited_peer: Option<PeerId>,
-    pub(super) additional_credited_peers: Vec<PeerId>,
-}
-
-impl RecentDelivery {
-    fn new(topic: GossipTopic, received_at: Nanos, credited_peer: Option<PeerId>) -> Self {
-        Self {
-            topic,
-            received_at,
-            first_credited_peer: credited_peer,
-            additional_credited_peers: Vec::new(),
-        }
-    }
-
-    fn credit(&mut self, peer_id: PeerId) -> bool {
-        if self.first_credited_peer == Some(peer_id) ||
-            self.additional_credited_peers.contains(&peer_id)
-        {
-            return false;
-        }
-        if self.first_credited_peer.is_none() {
-            self.first_credited_peer = Some(peer_id);
-        } else {
-            self.additional_credited_peers.push(peer_id);
-        }
-        true
-    }
-}
-
 impl PeerManager {
+    /// Current cached score. Recomputed on `tick`.
+    pub fn score(&self, conn: usize) -> Option<f64> {
+        self.peers.get(&conn).map(|p| p.cached_score)
+    }
+
+    /// Application-specific score nudge (P5). Negative values penalise.
+    pub fn set_application_score(&mut self, conn: usize, delta: f64) {
+        if let Some(p) = self.peers.get_mut(&conn) {
+            p.application_score += delta;
+        }
+    }
+
+    /// Size of the archive set.
+    #[allow(dead_code)]
+    pub(crate) fn archived_count(&self) -> usize {
+        self.archived.len()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[timed]
+    pub(super) fn on_connected(
+        &mut self,
+        conn: usize,
+        peer_id: PeerId,
+        ip: IpBytes,
+        port: u16,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+        local_dialler: bool,
+    ) {
+        let addr = SocketAddr::new(ip_bytes_to_addr(ip), port);
+        let mut state = PeerState::new(peer_id, addr, now);
+        state.local_dialler = local_dialler;
+
+        self.dialing.remove(&peer_id);
+
+        let duplicate = self
+            .peers_by_id
+            .get(&peer_id)
+            .and_then(|c| self.peers.get(c).map(|p| (*c, p.local_dialler)));
+        if let Some((existing_conn, existing_dialler)) = duplicate {
+            let keep_new = existing_dialler == local_dialler ||
+                (self.local_peer_id.as_bytes() < peer_id.as_bytes()) == local_dialler;
+            if keep_new {
+                tracing::info!(
+                    ?peer_id,
+                    old = existing_conn,
+                    new = conn,
+                    "duplicate connection: replacing existing"
+                );
+                self.on_disconnected(existing_conn, now, "duplicate connection", emit);
+                emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: existing_conn });
+            } else {
+                tracing::info!(
+                    ?peer_id,
+                    existing = existing_conn,
+                    refused = conn,
+                    "duplicate connection: refusing new"
+                );
+                emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: conn });
+                return;
+            }
+        }
+
+        // Inherit counters if we remember this PeerId.
+        if let Some(archive) = self.archived.remove(&peer_id) {
+            state.restore_from_archive(archive);
+        }
+
+        // Index by /24 or /64 prefix for P6.
+        self.ip_colocations
+            .entry(state.ip_prefix)
+            .or_insert_with(|| Vec::with_capacity(4))
+            .push(conn);
+
+        let initial_status = if local_dialler &&
+            let Some(status) = self.status &&
+            matches!(
+                state.outbound_rpc_limits.admit_outbound(StreamProtocol::StatusV2, 1, now),
+                RpcRateLimit::Allowed
+            ) {
+            Some(status)
+        } else {
+            None
+        };
+
+        self.peers.insert(conn, state);
+        self.peers_by_id.insert(peer_id, conn);
+        self.database.add_peer_id(peer_id, conn);
+
+        emit(PeerControl::P2pSend(P2pSend::Identify(conn)));
+        if let Some(status) = initial_status {
+            // Send rpc Status
+            emit(PeerControl::P2pSend(P2pSend::Rpc(silver_common::RpcOutbound::Request(
+                RpcRequestOutbound {
+                    application_id: 0,
+                    peer: conn,
+                    request: silver_common::RpcRequest::StatusV2(status),
+                },
+            ))));
+        }
+
+        // Announce our own topic subscriptions to this peer.
+        for &topic in &self.our_topics {
+            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
+        }
+    }
+
+    #[timed]
+    pub(super) fn on_disconnected(
+        &mut self,
+        conn: usize,
+        now: Instant,
+        reason: &'static str,
+        emit: &mut impl FnMut(PeerControl),
+    ) -> Option<&PeerRecord> {
+        let peer_id = self.peers.get(&conn)?.peer_id;
+        let mesh_topics: Vec<_> = self
+            .mesh
+            .iter()
+            .filter_map(|(topic, peers)| peers.contains(&conn).then_some(*topic))
+            .collect();
+        for topic in mesh_topics {
+            self.leave_mesh(conn, topic);
+            emit(PeerControl::P2pGossipPrune { p2p: peer_id, p2p_connection: conn, topic });
+        }
+
+        let mut state = self.peers.remove(&conn).unwrap();
+        if self.peers_by_id.get(&state.peer_id) == Some(&conn) {
+            self.peers_by_id.remove(&state.peer_id);
+        }
+
+        let age = now.saturating_duration_since(state.connected_at);
+        let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
+        let user_agent =
+            self.database.by_p2p_id(conn).and_then(|r| r.identify.as_ref()).map(|i| i.user_agent());
+        tracing::info!(
+            p2p_peer = conn,
+            peer_id = ?state.peer_id,
+            addr = ?state.addr,
+            reason,
+            ?user_agent,
+            age_ms = age.as_millis(),
+            score = state.cached_score,
+            dc_subscribed,
+            dc_advertised,
+            "peer disconnected"
+        );
+
+        // A connection dying young without a Goodbye is a failed dial in
+        // all but name (remote gater denial, instant crash). The completed
+        // handshake cleared any dial backoff, so re-arm a short one or the
+        // redial loop re-knocks every tick.
+        if reason == TRANSPORT_DISCONNECT && age < SHORT_LIVED_CONNECTION {
+            self.database.dial_failed(&state.peer_id, now + SHORT_LIVED_DIAL_BACKOFF);
+        }
+
+        // De-index IP colocation.
+        if let Some(v) = self.ip_colocations.get_mut(&state.ip_prefix) {
+            v.retain(|c| *c != conn);
+            if v.is_empty() {
+                self.ip_colocations.remove(&state.ip_prefix);
+            }
+        }
+
+        // Clear this peer from the global IHAVE-promise index. They can't
+        // fulfil anything anymore and shouldn't be re-penalised on sweep.
+        self.promises.retain(|_hash, waiters| {
+            waiters.retain(|(c, _)| *c != conn);
+            !waiters.is_empty()
+        });
+
+        // Archive counters for reputation persistence.
+        self.archived.insert(peer_id, ArchivedState {
+            application_score: state.application_score,
+            behaviour_penalty: state.behaviour_penalty,
+            topic_stats: std::mem::take(&mut state.topic_stats),
+            archived_at: now,
+        });
+
+        self.fail_attempts_on_disconnect(conn);
+        self.database.peer_disconnected(conn)
+    }
+
+    pub(super) fn add_behaviour_penalty(&mut self, conn: usize, delta: f64, offence: &'static str) {
+        if let Some(peer) = self.peers.get_mut(&conn) {
+            peer.behaviour_penalty += delta;
+            tracing::info!(
+                p2p_peer = conn,
+                offence,
+                delta,
+                total = peer.behaviour_penalty,
+                user_agent = peer.user_agent.as_str(),
+                "P7 behaviour penalty"
+            );
+        }
+    }
+
+    pub(super) fn rescore_all(&mut self, now: Instant) {
+        // Snapshot colocation counts so we don't hold borrows across the
+        // mutation loop.
+        let peers_by_prefix: HashMap<IpPrefix, usize> =
+            self.ip_colocations.iter().map(|(k, v)| (*k, v.len())).collect();
+
+        for peer in self.peers.values_mut() {
+            let coloc = *peers_by_prefix.get(&peer.ip_prefix).unwrap_or(&1);
+            peer.last_breakdown = scoring::score_breakdown(peer, &self.params, coloc, now);
+            peer.cached_score = peer.last_breakdown.total;
+            peer.score_valid_at = now;
+        }
+    }
+
+    /// Raw per-topic gossipsub counters for every meshed (peer, topic) pair.
+    pub fn peer_topic_scores(&self, now: Instant, emit: &mut impl FnMut(PeerTopicScores)) {
+        for (topic, mesh_peers) in &self.mesh {
+            for conn in mesh_peers {
+                let Some(peer) = self.peers.get(conn) else { continue };
+                let Some(t) = peer.topic_stats.get(topic) else { continue };
+                emit(PeerTopicScores {
+                    id: peer.peer_id,
+                    topic: *topic,
+                    meshed_secs: t
+                        .meshed_since
+                        .map(|s| now.saturating_duration_since(s).as_secs())
+                        .unwrap_or(0),
+                    first_deliveries: t.first_deliveries,
+                    mesh_deliveries: t.mesh_deliveries,
+                    p3_scored: scoring::p3_scored(topic),
+                    mesh_active: t.mesh_active,
+                    fanout_total: t.fanout_total,
+                    fanout_sent: t.fanout_sent,
+                    mesh_failure_penalty: t.mesh_failure_penalty,
+                    invalid_deliveries: t.invalid_deliveries,
+                });
+            }
+        }
+    }
+
+    /// Score breakdown for every live peer, as of the last `rescore_all`.
+    pub fn peer_scores(&self, emit: &mut impl FnMut(PeerScores)) {
+        let mut mesh_counts: HashMap<usize, u32> = HashMap::with_capacity(self.peers.len());
+        for mesh_peers in self.mesh.values() {
+            for conn in mesh_peers {
+                *mesh_counts.entry(*conn).or_insert(0) += 1;
+            }
+        }
+
+        for (conn, peer) in &self.peers {
+            let b = peer.last_breakdown;
+            emit(PeerScores {
+                id: peer.peer_id,
+                user_agent: peer.user_agent,
+                mesh_count: mesh_counts.get(conn).copied().unwrap_or(0),
+                p1_time_in_mesh: b.p1_time_in_mesh,
+                p2_first_deliveries: b.p2_first_deliveries,
+                p3_mesh_deficit: b.p3_mesh_deficit,
+                p3b_mesh_failure: b.p3b_mesh_failure,
+                p4_invalid: b.p4_invalid,
+                p5_application: b.p5_application,
+                p6_ip_colocation: b.p6_ip_colocation,
+                p7_behaviour: b.p7_behaviour,
+                total: b.total,
+            });
+        }
+    }
+
+    pub(super) fn gc_archived(&mut self, now: Instant) {
+        let ttl = self.params.archived_ttl;
+        self.archived.retain(|_, a| now.saturating_duration_since(a.archived_at) < ttl);
+    }
+
     /// Announce our topic subscriptions to every currently-connected peer.
     /// Add topics at runtime (deferred long-lived subnets): extends
     /// `our_topics` + mesh bookkeeping + subnet masks, and announces
@@ -253,262 +503,6 @@ impl PeerManager {
         );
     }
 
-    pub(super) fn on_ihave(
-        &mut self,
-        conn: usize,
-        hash: MessageId,
-        already_seen: bool,
-        now: Instant,
-    ) {
-        // Always count, regardless of dedup state — the rate cap treats
-        // a peer IHAVEing thousands of ids we already have just as badly as
-        // ids we don't.
-        let should_iwant = {
-            let Some(peer) = self.peers.get_mut(&conn) else {
-                return;
-            };
-            peer.ihaves_received = peer.ihaves_received.saturating_add(1);
-            // Only send an IWANT (and thus track a promise) if:
-            //  - we don't already have the message,
-            //  - we haven't exceeded the per-heartbeat IWANT budget,
-            //  - the peer hasn't saturated the IHAVE rate cap — excess ids are ignored
-            //    without penalty (matching reference gossipsub; P7 for gossip abuse comes
-            //    from broken promises),
-            //  - the peer clears the gossip threshold (`on_outbound_iwant` drops the frame
-            //    below it — a promise without a sent IWANT can only ever expire).
-            let should_iwant = !already_seen &&
-                peer.ihaves_received <= self.params.max_ihave_length &&
-                peer.gossip_gate_score() >= self.params.gossip_threshold &&
-                peer.iwant_ids_sent < self.params.max_ihave_length;
-            if should_iwant {
-                peer.iwant_ids_sent = peer.iwant_ids_sent.saturating_add(1);
-            }
-            should_iwant
-        };
-        if !should_iwant {
-            return;
-        }
-        // Record the promise globally. Dedupe: same peer IHAVEing the same
-        // id twice is one outstanding promise, not two.
-        let deadline = now + self.params.iwant_followup;
-        let entry = self.promises.entry(hash).or_default();
-        if !entry.iter().any(|(c, _)| *c == conn) {
-            entry.push((conn, deadline));
-        }
-    }
-
-    /// Peer sent us an IWANT that hit our mcache. Check retransmission
-    /// threshold and apply the score gate.
-    #[timed]
-    pub(super) fn on_iwant_received(
-        &mut self,
-        conn: usize,
-        hash: MessageId,
-        tcache: TCacheRead,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
-        let Some(peer) = self.peers.get_mut(&conn) else {
-            return;
-        };
-        if peer.msg_cache_insert(hash) > 2 {
-            // exceeds retransmission threshold
-            return;
-        }
-        if peer.gossip_gate_score() < self.params.gossip_threshold {
-            return;
-        }
-        emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
-    }
-
-    /// Peer sent us an IDONTWANT - store the message id in the peer message
-    /// cache.
-    pub(super) fn on_idontwant_received(&mut self, conn: usize, hash: MessageId) {
-        let Some(peer) = self.peers.get_mut(&conn) else {
-            return;
-        };
-        peer.msg_cache_insert(hash);
-    }
-
-    fn credit_mesh_delivery(&mut self, conn: usize, topic: GossipTopic) -> Option<PeerId> {
-        if !self.mesh.get(&topic).is_some_and(|mesh| mesh.contains(&conn)) {
-            return None;
-        }
-        let peer = self.peers.get_mut(&conn)?;
-        peer.topic_stats.entry(topic).or_default().mesh_deliveries += 1.0;
-        Some(peer.peer_id)
-    }
-
-    pub(super) fn on_gossip_duplicate(
-        &mut self,
-        conn: usize,
-        topic: GossipTopic,
-        hash: MessageId,
-        recv_ts: Nanos,
-    ) {
-        self.promises.remove(&hash);
-        if !self.mesh.get(&topic).is_some_and(|mesh| mesh.contains(&conn)) {
-            return;
-        }
-        let Some(peer_id) = self.peers.get(&conn).map(|peer| peer.peer_id) else {
-            return;
-        };
-        let Some(delivery) = self.recent_deliveries.get_mut(&hash) else {
-            return;
-        };
-        if delivery.topic != topic ||
-            recv_ts.0.saturating_sub(delivery.received_at.0) > MESH_MESSAGE_DELIVERIES_WINDOW_NS ||
-            !delivery.credit(peer_id)
-        {
-            return;
-        }
-        if let Some(peer) = self.peers.get_mut(&conn) {
-            peer.topic_stats.entry(topic).or_default().mesh_deliveries += 1.0;
-        }
-    }
-
-    /// A fully-validated inbound gossip message arrived — this is the first
-    /// (dedup-clean) delivery from any peer. Clear all promises for this id
-    /// (every peer who IHAVE'd it kept their word, regardless of who
-    /// actually reached us first), credit P2/P3 on the delivering peer, and
-    /// fan out the pre-encoded IDONTWANT frame to every mesh peer except
-    /// the sender so they stop racing this id toward us.
-    #[timed]
-    pub(super) fn on_new_gossip(
-        &mut self,
-        sender_conn: usize,
-        topic: GossipTopic,
-        msg_hash: MessageId,
-        recv_ts: Nanos,
-        idontwant: TCacheRead,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
-        crate::counters::GossipTopicCounters::recv(topic);
-
-        // Any peer who promised this id is released — they did their job;
-        // we just got another copy from someone else first.
-        self.promises.remove(&msg_hash);
-
-        if let Some(peer) = self.peers.get_mut(&sender_conn) {
-            let t = peer.topic_stats.entry(topic).or_default();
-            // P2 — first-delivery credit (capped + weighted in `compute_score`).
-            t.first_deliveries += 1.0;
-        }
-
-        let credited_peer = self.credit_mesh_delivery(sender_conn, topic);
-        if scoring::p3_scored(&topic) {
-            self.recent_deliveries
-                .insert(msg_hash, RecentDelivery::new(topic, recv_ts, credited_peer));
-        }
-
-        // Fan IDONTWANT out to mesh members (except sender) above threshold.
-        let Some(mesh_peers) = self.mesh.get(&topic) else {
-            return;
-        };
-        for conn in mesh_peers {
-            if *conn == sender_conn {
-                continue;
-            }
-            let Some(peer) = self.peers.get(conn) else {
-                continue;
-            };
-            if peer.gossip_gate_score() < self.params.gossip_threshold {
-                continue;
-            }
-            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
-                peer_id: *conn,
-                tcache: idontwant,
-            })));
-        }
-    }
-
-    /// Compression tile has prepared a batched IHAVE frame for `topic`.
-    /// Fan it out: one `P2pGossipSend` per non-mesh subscriber whose score
-    /// clears `gossip_threshold`, capped at `d_lazy`.
-    #[timed]
-    pub(super) fn on_outbound_ihave(
-        &mut self,
-        topic: GossipTopic,
-        protobuf: TCacheRead,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
-        let mesh_for_topic = self.mesh.get(&topic);
-        let cap = self.params.d_lazy as usize;
-        let mut emitted = 0usize;
-        for (conn, peer) in &self.peers {
-            if emitted >= cap {
-                break;
-            }
-            if !peer.topics.contains(&topic) {
-                continue;
-            }
-            if mesh_for_topic.is_some_and(|m| m.contains(conn)) {
-                continue; // mesh peers get full-body forwards, not IHAVE
-            }
-            if peer.gossip_gate_score() < self.params.gossip_threshold {
-                continue;
-            }
-            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
-                peer_id: *conn,
-                tcache: protobuf,
-            })));
-            emitted += 1;
-        }
-    }
-
-    /// Compression tile has prepared an IWANT frame for a peer that just
-    /// sent us IHAVE. Forward it to the network tile provided the peer is
-    /// still live and scoring above `gossip_threshold` (mirrors rust-libp2p,
-    /// which ignores IHAVE — and therefore doesn't send the IWANT reply —
-    /// for peers below that threshold).
-    #[timed]
-    pub(super) fn on_outbound_iwant(
-        &mut self,
-        conn: usize,
-        tcache: TCacheRead,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
-        let Some(peer) = self.peers.get(&conn) else {
-            return;
-        };
-        if peer.gossip_gate_score() < self.params.gossip_threshold {
-            return;
-        }
-        emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
-    }
-
-    #[timed]
-    pub(super) fn on_send_gossip(
-        &mut self,
-        sender: usize,
-        msg_hash: MessageId,
-        topic: GossipTopic,
-        tcache: TCacheRead,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
-        let Some(meshed_peers) = self.mesh.get(&topic) else {
-            return;
-        };
-        for peer in meshed_peers {
-            let Some(peer_state) = self.peers.get_mut(peer) else {
-                continue;
-            };
-            peer_state.topic_stats.entry(topic).or_default().fanout_total += 1;
-            if *peer == sender {
-                continue;
-            }
-            if peer_state.gossip_gate_score() < self.params.gossip_threshold {
-                continue;
-            }
-            if peer_state.msg_cache_contains(&msg_hash) {
-                // dontwant
-                continue;
-            }
-            peer_state.topic_stats.entry(topic).or_default().fanout_sent += 1;
-            crate::counters::GossipTopicCounters::sent(topic);
-            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: *peer, tcache })));
-        }
-    }
-
     pub(super) fn add_invalid_delivery(&mut self, conn: usize, topic: GossipTopic) {
         if let Some(peer) = self.peers.get_mut(&conn) {
             let t = peer.topic_stats.entry(topic).or_default();
@@ -548,7 +542,7 @@ impl PeerManager {
             .or_insert(deadline);
     }
 
-    fn do_graft(
+    pub(super) fn do_graft(
         &mut self,
         conn: usize,
         peer_id: PeerId,
@@ -632,39 +626,6 @@ impl PeerManager {
         }
 
         removed
-    }
-
-    pub(super) fn heartbeat(&mut self, now: Instant) {
-        // Reset per-heartbeat rate-limit counters on every live peer.
-        for peer in self.peers.values_mut() {
-            peer.ihaves_received = 0;
-            peer.iwant_ids_sent = 0;
-        }
-
-        let recv_now = Nanos::now();
-        self.recent_deliveries.retain(|_, delivery| {
-            recv_now.0.saturating_sub(delivery.received_at.0) <= MESH_MESSAGE_DELIVERIES_WINDOW_NS
-        });
-
-        // Sweep expired promises from the global map. Expired entries
-        // credit `behaviour_penalty` to the peer who promised but didn't
-        // come through (nor did anyone else for that id).
-        let mut penalties: HashMap<usize, u32> = HashMap::new();
-        self.promises.retain(|_hash, waiters| {
-            waiters.retain(|(conn, deadline)| {
-                if now >= *deadline {
-                    *penalties.entry(*conn).or_insert(0) += 1;
-                    false
-                } else {
-                    true
-                }
-            });
-            !waiters.is_empty()
-        });
-        for (conn, _count) in penalties {
-            // TODO seem to be over eagerly banning people here
-            self.add_behaviour_penalty(conn, 1.0, "broken gossip promises");
-        }
     }
 
     pub(super) fn activate_p3_where_due(&mut self, now: Instant) {
@@ -903,15 +864,20 @@ impl PeerManager {
     }
 }
 
+fn ip_bytes_to_addr(ip: IpBytes) -> IpAddr {
+    match ip {
+        IpBytes::V4(o) => IpAddr::V4(std::net::Ipv4Addr::from(o)),
+        IpBytes::V6(o) => IpAddr::V6(std::net::Ipv6Addr::from(o)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use silver_common::{PeerEvent, TCacheProducer};
+    use silver_common::PeerEvent;
     use silver_config::ScoreParams;
 
-    use super::{
-        super::tests::{Captured, connect, fixture, peer_id},
-        *,
-    };
+    use super::*;
+    use crate::manager::fixture::*;
 
     /// `on_connected` always emits a `P2pSend::Identify` event; filter
     /// it out so subscribe-focused tests can assert on subscribe counts.
@@ -1384,703 +1350,185 @@ mod tests {
     }
 
     #[test]
-    fn ihave_below_gossip_threshold_records_no_promise() {
-        let now = Instant::now();
-        let params = ScoreParams::default();
-        let (mut mgr, mut cap) = fixture(vec![], params);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        mgr.peers.get_mut(&1).unwrap().cached_score = mgr.params.gossip_threshold - 1.0;
-
-        let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert!(mgr.promises.is_empty());
-    }
-
-    #[test]
-    fn duplicate_delivery_clears_promise() {
-        let now = Instant::now();
-        let params = ScoreParams::default();
-        let (mut mgr, mut cap) = fixture(vec![], params);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-
-        let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert_eq!(mgr.promises.len(), 1);
-
-        mgr.handle_event(
-            PeerEvent::GossipDuplicate {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                recv_ts: Nanos::now(),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        assert!(mgr.promises.is_empty());
-    }
-
-    #[test]
-    fn broken_promise_sweep_adds_penalty() {
-        let mut now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.iwant_followup = Duration::from_secs(3);
-        params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-
-        let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        now += Duration::from_secs(4);
-        mgr.tick(now, &mut |c| cap.0.push(c));
-
-        let s = mgr.score(1).unwrap();
-        assert!(s <= 0.0, "expected non-positive score after broken promise, got {s}");
-    }
-
-    /// Over-cap IHAVEs are ignored without penalty — no P7, and no promise
-    /// (an unfulfillable promise would surface later as a broken-promise
-    /// penalty instead).
-    #[test]
-    fn ihave_flood_over_heartbeat_cap_ignored() {
+    fn invalid_frames_increment_behaviour_penalty_and_tick_bans() {
         let now = Instant::now();
         let mut params = ScoreParams::default();
-        params.max_ihave_length = 3;
-        params.graylist_threshold = -100_000.0;
+        params.behaviour_penalty_threshold = 0.0;
+        params.behaviour_penalty_weight = -10.0; // excess^2 * -10
+        params.graylist_threshold = -80.0; // behaviour_penalty=3 → score=-90
+        params.ip_ban_threshold = 1; // single eviction → BanIp for this test
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
-        for i in 0..8u8 {
+        for _ in 0..5 {
+            mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
+                cap.0.push(c)
+            });
+        }
+        assert!(mgr.score(1).is_some());
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
+            "expected Ban, got {:?}",
+            cap.0
+        );
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. })),
+            "expected BanIp, got {:?}",
+            cap.0
+        );
+        assert!(mgr.score(1).is_none(), "banned peer should be gone");
+    }
+
+    fn connect_dialler(
+        mgr: &mut PeerManager,
+        cap: &mut Captured,
+        conn: usize,
+        seed: u8,
+        local_dial: bool,
+        now: Instant,
+    ) {
+        mgr.handle_event(
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: conn,
+                peer_id_full: peer_id(seed),
+                ip: IpBytes::V4([10, 0, 0, seed]),
+                port: 4000 + seed as u16,
+                local_dial,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+    }
+
+    #[test]
+    fn duplicate_crossing_connections_keep_deterministic_survivor() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_dialler(&mut mgr, &mut cap, 1, 1, true, now);
+        connect_dialler(&mut mgr, &mut cap, 2, 1, false, now);
+
+        let local_lower = peer_id(99).as_bytes() < peer_id(1).as_bytes();
+        let survivor = if local_lower { 1 } else { 2 };
+        let loser = if local_lower { 2 } else { 1 };
+
+        assert_eq!(mgr.peers.len(), 1);
+        assert!(mgr.peers.contains_key(&survivor));
+        assert!(cap.0.iter().any(|c| matches!(
+            c,
+            PeerControl::P2pDisconnect { p2p_connection, .. } if *p2p_connection == loser
+        )));
+    }
+
+    #[test]
+    fn duplicate_same_direction_keeps_newest() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_dialler(&mut mgr, &mut cap, 1, 1, false, now);
+        connect_dialler(&mut mgr, &mut cap, 2, 1, false, now);
+
+        assert_eq!(mgr.peers.len(), 1);
+        assert!(mgr.peers.contains_key(&2));
+        assert!(cap.0.iter().any(|c| matches!(
+            c,
+            PeerControl::P2pDisconnect { p2p_connection, .. } if *p2p_connection == 1
+        )));
+    }
+
+    #[test]
+    fn ip_colocation_penalty_applies() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.ip_colocation_threshold = 2;
+        params.ip_colocation_weight = -5.0;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+
+        for i in 1..=5u8 {
             mgr.handle_event(
-                PeerEvent::P2pGossipHave {
-                    p2p_peer: 1,
-                    topic: GossipTopic::BeaconBlock,
-                    hash: silver_common::MessageId { id: [i; 20] },
-                    already_seen: true,
+                PeerEvent::P2pNewConnection {
+                    p2p_peer_id: i as usize,
+                    peer_id_full: peer_id(i),
+                    ip: IpBytes::V4([10, 0, 0, i]),
+                    port: 4000 + i as u16,
+                    local_dial: false,
                 },
                 now,
                 &mut |c| cap.0.push(c),
             );
         }
         mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
         let s = mgr.score(1).unwrap();
-        assert!(s >= 0.0, "expected no penalty for over-cap IHAVEs, got {s}");
+        assert!((s - -45.0).abs() < 1e-9, "expected -45, got {s}");
     }
 
     #[test]
-    fn already_seen_ihave_tracks_no_promise() {
-        let mut now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.iwant_followup = Duration::from_secs(3);
-        params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-
-        let hash = silver_common::MessageId { id: [77u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: true,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
-        let s = mgr.score(1).unwrap();
-        assert_eq!(s, 0.0, "no IWANT was issued → no promise → no broken-promise penalty, got {s}");
-    }
-
-    fn mk_tcache_read() -> silver_common::TCacheRead {
-        let mut producer = silver_common::TCache::producer("test_peer", 1 << 14);
-        let mut reservation = producer.reserve(64, true).unwrap();
-        use std::io::Write as _;
-        reservation.write_all(&[0u8; 64]).unwrap();
-        reservation.read()
-    }
-
-    #[test]
-    fn near_first_mesh_deliveries_credit_each_peer_once() {
+    fn disconnect_archives_and_reconnect_restores() {
         let now = Instant::now();
-        let topic = GossipTopic::BeaconBlock;
         let mut params = ScoreParams::default();
-        params.d_low = 0;
-        params.d = 0;
-        let (mut mgr, mut cap) = fixture(vec![topic], params);
-        for conn in 1..=3 {
-            connect(&mut mgr, &mut cap, conn, conn as u8, now);
-            mgr.do_graft(conn, peer_id(conn as u8), topic, now, false, &mut |event| {
-                cap.0.push(event)
-            });
-        }
-        let hash = MessageId { id: [11u8; 20] };
-        let first_seen = Nanos::from_secs(10);
-
-        mgr.handle_event(
-            PeerEvent::NewGossip {
-                p2p_peer: 1,
-                topic,
-                msg_hash: hash,
-                recv_ts: first_seen,
-                idontwant: mk_tcache_read(),
-            },
-            now,
-            &mut |event| cap.0.push(event),
-        );
-        mgr.handle_event(
-            PeerEvent::GossipDuplicate {
-                p2p_peer: 2,
-                topic,
-                hash,
-                recv_ts: Nanos(first_seen.0 + 1_000_000_000),
-            },
-            now,
-            &mut |event| cap.0.push(event),
-        );
-        mgr.handle_event(
-            PeerEvent::GossipDuplicate {
-                p2p_peer: 2,
-                topic,
-                hash,
-                recv_ts: Nanos(first_seen.0 + 1_500_000_000),
-            },
-            now,
-            &mut |event| cap.0.push(event),
-        );
-        mgr.handle_event(
-            PeerEvent::GossipDuplicate {
-                p2p_peer: 3,
-                topic,
-                hash,
-                recv_ts: Nanos(first_seen.0 + 2_000_000_001),
-            },
-            now,
-            &mut |event| cap.0.push(event),
-        );
-
-        assert_eq!(mgr.peers[&1].topic_stats[&topic].mesh_deliveries, 1.0);
-        assert_eq!(mgr.peers[&2].topic_stats[&topic].mesh_deliveries, 1.0);
-        assert_eq!(mgr.peers[&3].topic_stats[&topic].mesh_deliveries, 0.0);
-    }
-
-    #[test]
-    fn new_inbound_fulfils_promise_and_credits_p2() {
-        let mut now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.iwant_followup = Duration::from_secs(3);
-        params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-
-        let hash = silver_common::MessageId { id: [7u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        now += Duration::from_secs(1);
-        mgr.handle_event(
-            PeerEvent::NewGossip {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                msg_hash: hash,
-                recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
-        let score_delivered = mgr.score(1).unwrap();
-
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        let other = silver_common::MessageId { id: [8u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 2,
-                topic: GossipTopic::BeaconBlock,
-                hash: other,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
-        let score_broken = mgr.score(2).unwrap();
-
-        assert!(
-            score_delivered > score_broken,
-            "delivered peer must score above broken-promise peer: \
-             delivered={score_delivered}, broken={score_broken}"
-        );
-    }
-
-    #[test]
-    fn delivery_from_one_peer_fulfils_all_peers_promises_for_that_id() {
-        let mut now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.iwant_followup = Duration::from_secs(3);
-        params.heartbeat_interval = Duration::from_millis(100);
-        // Zero free budget so a single broken promise shows in the score.
+        // Zero free budget so the archived penalty shows in the score.
         params.behaviour_penalty_threshold = 0.0;
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
-        connect(&mut mgr, &mut cap, 2, 2, now);
 
-        let hash = silver_common::MessageId { id: [42u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 2,
-                topic: GossipTopic::BeaconBlock,
-                hash,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        now += Duration::from_secs(1);
-        mgr.handle_event(
-            PeerEvent::NewGossip {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                msg_hash: hash,
-                recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
-
-        connect(&mut mgr, &mut cap, 3, 3, now);
-        let other = silver_common::MessageId { id: [99u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipHave {
-                p2p_peer: 3,
-                topic: GossipTopic::BeaconBlock,
-                hash: other,
-                already_seen: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
-
-        let s1 = mgr.score(1).unwrap();
-        let s2 = mgr.score(2).unwrap();
-        let s3 = mgr.score(3).unwrap();
-        assert!(s1 > s3, "delivering peer must out-score broken-promise peer: {s1} vs {s3}");
-        assert!(
-            s2 > s3,
-            "promise-fulfilled-by-other-peer must out-score broken-promise peer: {s2} vs {s3}"
-        );
-    }
-
-    #[test]
-    fn new_outbound_ihave_fans_out_to_non_mesh_subscribers() {
-        let now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.d_lazy = 3;
-        params.d_low = 1; // so the first subscriber grafts into mesh, rest stay non-mesh
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
-
-        for i in 1..=4u8 {
-            connect(&mut mgr, &mut cap, i as usize, i, now);
-            mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe {
-                    p2p_peer: i as usize,
-                    topic: GossipTopic::BeaconBlock,
-                },
-                now,
-                &mut |c| cap.0.push(c),
-            );
-        }
-        assert_eq!(mgr.mesh_size(GossipTopic::BeaconBlock), 1);
-        cap.0.clear();
-
-        mgr.handle_event(
-            PeerEvent::OutboundIHave {
-                topic: GossipTopic::BeaconBlock,
-                msg_count: 2,
-                protobuf: mk_tcache_read(),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        let send_ihaves: Vec<_> = cap
-            .0
-            .iter()
-            .filter_map(|e| {
-                if let PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) = e {
-                    Some(*peer_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(
-            send_ihaves.len(),
-            3,
-            "expected 3 IHAVE emissions (d_lazy=3, 3 non-mesh subscribers), got {:?}",
-            cap.0
-        );
-        assert!(
-            send_ihaves.iter().all(|c| !matches!(c, &1)),
-            "mesh peer (conn=1) must not receive IHAVE, got {send_ihaves:?}"
-        );
-    }
-
-    #[test]
-    fn new_outbound_ihave_skips_below_threshold_peers() {
-        let now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.gossip_threshold = -1.0;
-        params.graylist_threshold = -1_000_000.0;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic: GossipTopic::BeaconBlock },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        for _ in 0..7 {
-            mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
-                cap.0.push(c)
-            });
-        }
-        mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
-        assert!(mgr.score(1).unwrap() < -1.0);
-
-        cap.0.clear();
-        mgr.handle_event(
-            PeerEvent::OutboundIHave {
-                topic: GossipTopic::BeaconBlock,
-                msg_count: 1,
-                protobuf: mk_tcache_read(),
-            },
-            now + Duration::from_millis(20),
-            &mut |c| cap.0.push(c),
-        );
-        assert!(
-            !cap.0
-                .iter()
-                .any(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. })))),
-            "below-threshold peer should not receive IHAVE, got {:?}",
-            cap.0
-        );
-    }
-
-    #[test]
-    fn iwant_request_above_threshold_emits_forward() {
-        use silver_common::{TCache, TCacheRead};
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
-        connect(&mut mgr, &mut cap, 1, 1, now);
-
-        let mut producer = TCache::producer("test_peer", 1 << 14);
-        let mut reservation = producer.reserve(64, true).unwrap();
-        use std::io::Write as _;
-        reservation.write_all(&[0u8; 64]).unwrap();
-        let tcache: TCacheRead = reservation.read();
-
-        cap.0.clear();
-        let hash = silver_common::MessageId { id: [3u8; 20] };
-        mgr.handle_event(PeerEvent::P2pGossipWant { p2p_peer: 1, hash, tcache }, now, &mut |c| {
+        mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
             cap.0.push(c)
         });
-
-        assert!(
-            cap.0.iter().any(|e| matches!(
-                e,
-                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: 1, .. }))
-            )),
-            "expected ForwardMsg emission, got {:?}",
-            cap.0
+        mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(1) },
+            now,
+            &mut |c| cap.0.push(c),
         );
+        assert_eq!(mgr.archived_count(), 1);
+
+        connect(&mut mgr, &mut cap, 99, 1, now);
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        let s = mgr.score(99).unwrap();
+        assert!(s < 0.0, "expected restored penalty score, got {s}");
+        assert_eq!(mgr.archived_count(), 0);
     }
 
     #[test]
-    fn iwant_request_below_threshold_drops() {
-        use silver_common::{TCache, TCacheRead};
-        let now = Instant::now();
+    fn archived_state_dropped_past_ttl() {
+        let mut now = Instant::now();
         let mut params = ScoreParams::default();
-        params.gossip_threshold = -1.0;
-        params.graylist_threshold = -1_000_000.0;
+        params.archived_ttl = Duration::from_secs(10);
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(1) },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(mgr.archived_count(), 1);
+
+        now += Duration::from_secs(11);
+        mgr.tick(now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.archived_count(), 0);
+    }
+
+    #[test]
+    fn decay_drives_honest_peer_to_zero() {
+        let mut now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.behaviour_penalty_decay = 0.5;
+        params.decay_to_zero = 0.01;
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
-        for _ in 0..7 {
-            mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
-                cap.0.push(c)
-            });
-        }
-        mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
-        assert!(mgr.score(1).unwrap() < -1.0);
-
-        let mut producer = TCache::producer("test_peer", 1 << 14);
-        let mut reservation = producer.reserve(64, true).unwrap();
-        use std::io::Write as _;
-        reservation.write_all(&[0u8; 64]).unwrap();
-        let tcache: TCacheRead = reservation.read();
-
-        cap.0.clear();
-        let hash = silver_common::MessageId { id: [4u8; 20] };
-        mgr.handle_event(
-            PeerEvent::P2pGossipWant { p2p_peer: 1, hash, tcache },
-            now + Duration::from_millis(20),
-            &mut |c| cap.0.push(c),
-        );
-
-        assert!(
-            !cap.0
-                .iter()
-                .any(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. })))),
-            "expected no ForwardMsg for below-threshold peer, got {:?}",
-            cap.0
-        );
-    }
-
-    #[test]
-    fn new_inbound_fans_out_dontwant_to_mesh_excluding_sender() {
-        let now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.d_low = 0;
-        params.d = 0;
-        params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
-
-        for i in 1..=4u8 {
-            connect(&mut mgr, &mut cap, i as usize, i, now);
-            mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe {
-                    p2p_peer: i as usize,
-                    topic: GossipTopic::BeaconBlock,
-                },
-                now,
-                &mut |c| cap.0.push(c),
-            );
-        }
-        for i in 1..=4usize {
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
-        }
-        cap.0.clear();
-
-        let hash = silver_common::MessageId { id: [55u8; 20] };
-        mgr.handle_event(
-            PeerEvent::NewGossip {
-                p2p_peer: 2,
-                topic: GossipTopic::BeaconBlock,
-                msg_hash: hash,
-                recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        let dontwants: Vec<usize> = cap
-            .0
-            .iter()
-            .filter_map(|e| match e {
-                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
-                    Some(*peer_id)
-                }
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(
-            dontwants.len(),
-            3,
-            "expected IDONTWANT to 3 non-sender mesh peers, got {:?}",
-            cap.0
-        );
-        assert!(
-            !dontwants.contains(&2),
-            "sender (conn=2) must not receive IDONTWANT for its own delivery: {dontwants:?}"
-        );
-        for conn in [1usize, 3, 4] {
-            assert!(
-                dontwants.contains(&conn),
-                "expected IDONTWANT to mesh peer {conn}, got {dontwants:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn new_inbound_skips_dontwant_for_below_threshold_peer() {
-        let now = Instant::now();
-        let mut params = ScoreParams::default();
-        params.gossip_threshold = -1.0;
-        params.graylist_threshold = -1_000_000.0;
-        params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
-
-        for i in 1..=2u8 {
-            connect(&mut mgr, &mut cap, i as usize, i, now);
-            mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe {
-                    p2p_peer: i as usize,
-                    topic: GossipTopic::BeaconBlock,
-                },
-                now,
-                &mut |c| cap.0.push(c),
-            );
-        }
-        for i in 1..=2usize {
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
-        }
-        for _ in 0..7 {
-            mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 2 }, now, &mut |c| {
-                cap.0.push(c)
-            });
-        }
-        mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
-        assert!(mgr.score(2).unwrap() < -1.0);
-        cap.0.clear();
-
-        let hash = silver_common::MessageId { id: [66u8; 20] };
-        mgr.handle_event(
-            PeerEvent::NewGossip {
-                p2p_peer: 1,
-                topic: GossipTopic::BeaconBlock,
-                msg_hash: hash,
-                recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
-            },
-            now + Duration::from_millis(20),
-            &mut |c| cap.0.push(c),
-        );
-
-        assert!(
-            !cap.0
-                .iter()
-                .any(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. })))),
-            "below-threshold mesh peer should not receive IDONTWANT, got {:?}",
-            cap.0
-        );
-    }
-
-    #[test]
-    fn send_gossip_skips_mesh_peer_with_idontwant() {
-        let now = Instant::now();
-        let mut params = ScoreParams::default();
-        // d_low=0 disables the auto-graft on subscribe so manual mesh seeding
-        // is the only thing populating the mesh map.
-        params.d_low = 0;
-        params.d = 0;
-        params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
-
-        for i in 1..=3u8 {
-            connect(&mut mgr, &mut cap, i as usize, i, now);
-            mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe {
-                    p2p_peer: i as usize,
-                    topic: GossipTopic::BeaconBlock,
-                },
-                now,
-                &mut |c| cap.0.push(c),
-            );
-        }
-        for i in 1..=3usize {
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
-        }
-
-        let hash = silver_common::MessageId { id: [0xAB; 20] };
-
-        // Peer 2 says "don't send me this id".
-        mgr.handle_event(PeerEvent::P2pGossipDontWant { p2p_peer: 2, hash }, now, &mut |c| {
+        mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
             cap.0.push(c)
         });
 
-        cap.0.clear();
-
-        // Internal SendGossip with originator stream from peer 1.
-        let stream_id =
-            silver_common::P2pStreamId::new(1, 0, silver_common::StreamProtocol::GossipSub, false);
-        mgr.handle_event(
-            PeerEvent::SendGossip {
-                originator_stream_id: stream_id,
-                topic: GossipTopic::BeaconBlock,
-                msg_hash: hash,
-                recv_ts: silver_common::Nanos::now(),
-                protobuf: mk_tcache_read(),
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        let recipients: Vec<usize> = cap
-            .0
-            .iter()
-            .filter_map(|e| match e {
-                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
-                    Some(*peer_id)
-                }
-                _ => None,
-            })
-            .collect();
-        // Peer 1 = sender (skipped), peer 2 = IDONTWANT (skipped), peer 3 = served.
-        assert_eq!(
-            recipients,
-            vec![3],
-            "expected only peer 3 to receive the broadcast, got {recipients:?}"
-        );
+        for _ in 0..30 {
+            now += Duration::from_secs(12);
+            mgr.tick(now, &mut |c| cap.0.push(c));
+        }
+        let s = mgr.score(1).unwrap();
+        assert!(s.abs() < 1e-6, "expected score ≈ 0 after decay, got {s}");
     }
 }

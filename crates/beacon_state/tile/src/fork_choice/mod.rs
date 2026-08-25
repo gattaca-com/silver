@@ -272,8 +272,8 @@ impl ForkChoice {
         self.lookup.get(root)
     }
 
-    /// Falls back to the finalized slot when the two cannot be related — `old`
-    /// pruned as non-canonical, or a node reached without a parent.
+    /// Falls back to the finalized slot when we can't find a common ancestor
+    /// between the two blocks.
     #[timed]
     pub fn lca_slot(&self, old: B256, new: B256) -> Option<Slot> {
         let finalized_slot = self.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
