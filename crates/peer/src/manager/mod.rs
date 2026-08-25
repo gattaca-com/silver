@@ -47,6 +47,18 @@ const SHORT_LIVED_CONNECTION: Duration = Duration::from_secs(30);
 
 const SHORT_LIVED_DIAL_BACKOFF: Duration = Duration::from_secs(15 * 60);
 
+/// Goodbye reason shared with lighthouse/prysm: routine excess-peer shed,
+/// and the remote is expected back.
+const GOODBYE_TOO_MANY_PEERS: u64 = 129;
+/// Deadweight shed: at most this many idle peers per tick, collected during
+/// the rescore pass so no extra walk of the population is needed.
+const MAX_IDLE_GOODBYES: usize = 32;
+/// A connection has to be around this long before "no mesh, no score" reads
+/// as deadweight rather than a peer we simply haven't grafted yet.
+const IDLE_PEER_MIN_AGE: Duration = Duration::from_secs(30 * 60);
+/// Scores at or below this value are indistinguishable from idle noise.
+const IDLE_PEER_MAX_SCORE: f64 = 0.1;
+
 pub struct PeerManager {
     local_peer_id: PeerId,
 
@@ -115,6 +127,13 @@ pub struct PeerManager {
     /// scheme as `required_attnets`). N is small — the eth2 spec uses 4 —
     /// and the wire encoding is one byte; we keep that one byte here too.
     required_syncnets: u8,
+    /// Subnets whose mesh was still short of `d` after the last sweep —
+    /// i.e. we ran out of connected subscribers, not out of graft slots.
+    /// Same bit layout as `required_*`; peers covering one of these dial
+    /// past the ordinary caps.
+    deficit_attnets: [u8; 8],
+    deficit_syncnets: u8,
+    deficit_columns: u128,
 
     /// IPs of peers we've graylisted out, keyed by ban time. Discovery hits
     /// matching one of these IPs are dropped before we issue a dial. Entries
@@ -218,6 +237,9 @@ impl PeerManager {
             current_target: SyncUpdate::Following,
             required_attnets,
             required_syncnets,
+            deficit_attnets: [0u8; 8],
+            deficit_syncnets: 0,
+            deficit_columns: 0,
             params,
             last_heartbeat: now,
             last_opportunistic_graft: now,
@@ -280,6 +302,7 @@ impl PeerManager {
                     crate::PeerCounters::StreamCreditExhausted.inc();
                     self.add_behaviour_penalty(p2p_peer, 1.0, "stream credit exhausted");
                 }
+                self.disconnect_after_failed_goodbye(p2p_peer, protocol, emit);
             }
             PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, rpc_request } => {
                 // Local outbound-ring overflow — a backpressure signal, often
@@ -290,6 +313,7 @@ impl PeerManager {
                     self.release_outbound_in_flight(p2p_peer, protocol);
                 }
                 tracing::debug!(p2p_peer, ?protocol, rpc_request, "outbound message dropped");
+                self.disconnect_after_failed_goodbye(p2p_peer, protocol, emit);
             }
             PeerEvent::P2pStreamClosed { stream_id } => {
                 // Premature close on an outgoing request-response stream —
@@ -454,33 +478,13 @@ impl PeerManager {
         for (topic, mesh_peers) in &self.mesh {
             crate::counters::GossipTopicCounters::mesh(*topic, mesh_peers.len());
         }
-        // Peers announce SUBSCRIBE for all their subnets; only count
-        // subscribers on topics we participate in ourselves.
-        let mut ours = [false; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
-        for topic in &self.our_topics {
-            ours[topic.counter_slot()] = true;
-        }
-        let mut subs = [0u16; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
-        for peer in self.peers.values() {
-            for topic in &peer.topics {
-                let slot = topic.counter_slot();
-                if ours[slot] {
-                    subs[slot] = subs[slot].saturating_add(1);
-                }
-            }
-        }
-        crate::counters::GossipTopicCounters::subscribed(&subs);
-
         // 1) Heartbeat rollover: reset per-heartbeat counters, sweep broken promises.
         if now.saturating_duration_since(self.last_heartbeat) >= self.params.heartbeat_interval {
             self.heartbeat(now);
             self.last_heartbeat = now;
         }
 
-        // 2) Activate P3 tracking for peers whose grace window has elapsed.
-        self.activate_p3_where_due(now);
-
-        // 3) Decay all counters — gated to `score_decay_interval` (one slot), the
+        // 2) Decay all counters — gated to `score_decay_interval` (one slot), the
         //    cadence the `*_decay` constants are calibrated for.
         if now.saturating_duration_since(self.last_decay) >= self.params.score_decay_interval {
             for p in self.peers.values_mut() {
@@ -489,8 +493,58 @@ impl PeerManager {
             self.last_decay = now;
         }
 
-        // 4) Recompute scores for every peer.
-        self.rescore_all(now);
+        // 3) One walk of the population doing everything that needs a per-peer (and
+        //    per-topic) visit: the subscriber census, the score recompute — which also
+        //    flips P3 activation, see `scoring::score_breakdown` — and collection of
+        //    deadweight to shed. Peers announce SUBSCRIBE for all their subnets; only
+        //    count subscribers on topics we participate in ourselves.
+        let mut ours = [false; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
+        for topic in &self.our_topics {
+            ours[topic.counter_slot()] = true;
+        }
+        let mut subs = [0u16; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
+        let peers_by_prefix: HashMap<IpPrefix, usize> =
+            self.ip_colocations.iter().map(|(k, v)| (*k, v.len())).collect();
+
+        let mut idle = [0usize; MAX_IDLE_GOODBYES];
+        let mut idle_len = 0;
+        let mut negative = [(0usize, 0.0f64); 256];
+        let mut negative_len = 0;
+        let mut pending_goodbyes = 0;
+
+        for (&conn, peer) in self.peers.iter_mut() {
+            for topic in &peer.topics {
+                let slot = topic.counter_slot();
+                if ours[slot] {
+                    subs[slot] = subs[slot].saturating_add(1);
+                }
+            }
+
+            let coloc = *peers_by_prefix.get(&peer.ip_prefix).unwrap_or(&1);
+            peer.last_breakdown = scoring::score_breakdown(peer, &self.params, coloc, now);
+            peer.cached_score = peer.last_breakdown.total;
+            peer.score_valid_at = now;
+
+            // Deadweight: long-connected, in no mesh, nothing scored either
+            // way — it has had every chance to be grafted. Negative scorers
+            // are `manage_peers`' business.
+            if peer.goodbye_sent {
+                pending_goodbyes += 1;
+                continue;
+            }
+            if peer.cached_score < 0.0 && negative_len < negative.len() {
+                negative[negative_len] = (conn, peer.cached_score);
+                negative_len += 1;
+            } else if peer.cached_score <= IDLE_PEER_MAX_SCORE &&
+                idle_len < idle.len() &&
+                now.saturating_duration_since(peer.connected_at) > IDLE_PEER_MIN_AGE &&
+                peer.topic_stats.values().all(|s| s.meshed_since.is_none())
+            {
+                idle[idle_len] = conn;
+                idle_len += 1;
+            }
+        }
+        crate::counters::GossipTopicCounters::subscribed(&subs);
 
         // 5) Evict peers below the graylist threshold.
         self.evict_graylisted(now, emit);
@@ -522,7 +576,7 @@ impl PeerManager {
         });
 
         // 10) manage over population
-        self.manage_peers(emit);
+        self.manage_peers(now, negative, negative_len, idle, idle_len, pending_goodbyes, emit);
 
         crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
     }

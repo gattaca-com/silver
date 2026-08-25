@@ -31,6 +31,14 @@ silver_common::declare_counters! {
         MeshPrunedByUs,
         MeshGraftAcceptedByUs,
         MeshGraftRefusedByUs,
+        // Re-GRAFT inside the backoff we advertised in our PRUNE.
+        MeshGraftBackoffViolation,
+        // Subnets still below `d` after a mesh sweep — peers covering these
+        // dial past the ordinary caps.
+        MeshSubnetDeficits,
+        // Long-connected peer holding no mesh slot and no score, shed while
+        // over the priority cap.
+        IdlePeerGoodbye,
         // "cannot create stream" split by cause.
         StreamCreditExhausted,
         ResponseStreamGone,

@@ -75,7 +75,7 @@ pub(crate) struct ScoreBreakdown {
 /// manager supplies this value at call time; the scoring fn has no state.
 #[cfg(test)]
 pub(crate) fn compute_score(
-    state: &PeerState,
+    state: &mut PeerState,
     params: &ScoreParams,
     ip_colocation_peers: usize,
     now: Instant,
@@ -84,10 +84,10 @@ pub(crate) fn compute_score(
 }
 
 /// Score for per-topic mesh decisions (opportunistic grafting, capped-prune
-/// retention): the global score with P1 re-attributed to this topic only —
-/// tenure in other meshes is not evidence about this one, and a flat
+/// retention): the global score with P1 and P2 re-attributed to this topic only
+/// — tenure in other meshes is not evidence about this one, and a flat
 /// +1/hour per meshed topic lets wide subnet membership impersonate merit.
-/// P2..P7 stay global: deliveries elsewhere are real work and correlate,
+/// P3..P7 stay global: deliveries elsewhere are real work and correlate,
 /// and the misbehaviour components should follow the peer everywhere.
 pub(crate) fn selection_score(
     state: &PeerState,
@@ -95,33 +95,73 @@ pub(crate) fn selection_score(
     params: &ScoreParams,
     now: Instant,
 ) -> f64 {
-    let p1_topic = state
+    let tp = topic_params(topic);
+    let (p1_topic, p2_topic) = state
         .topic_stats
         .get(topic)
-        .and_then(|t| t.meshed_since)
-        .map(|since| {
-            let age = now.saturating_duration_since(since).as_secs_f64();
-            age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight
+        .map(|t| {
+            let age = t
+                .meshed_since
+                .map(|since| now.saturating_duration_since(since).as_secs_f64())
+                .unwrap_or(0.0);
+            (
+                age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight,
+                t.first_deliveries.min(tp.p2_cap) * tp.p2_weight,
+            )
         })
-        .unwrap_or(0.0);
-    state.cached_score - state.last_breakdown.p1_time_in_mesh + p1_topic
+        .unwrap_or((0.0, 0.0));
+    state.cached_score -
+        state.last_breakdown.p1_time_in_mesh -
+        state.last_breakdown.p2_first_deliveries +
+        p1_topic +
+        p2_topic
+}
+
+/// Score for ranking graft candidates: the global score less P1 and P2 + P2 /
+/// mesh topics.
+pub(crate) fn candidate_score(state: &PeerState) -> f64 {
+    // `max(1)`, not `min(1)`: a peer in no mesh at all is exactly the
+    // common case here, and dividing by zero yields -inf (P2 > 0) or NaN
+    // (P2 == 0) — the latter slips past `<= bar` rejections.
+    let mesh_count = state.topic_stats.values().filter(|t| t.meshed_since.is_some()).count().max(1);
+    state.cached_score -
+        state.last_breakdown.p1_time_in_mesh -
+        state.last_breakdown.p2_first_deliveries +
+        (state.last_breakdown.p2_first_deliveries / mesh_count as f64)
+}
+
+/// Ceiling of `selection_score`'s topic-local terms: a saturated member's
+/// P1 + P2 for this topic's class. Class P2 weights span 400x, so mesh
+/// health is judged as a fraction of this rather than against an absolute.
+pub(crate) fn topic_local_saturation(topic: &GossipTopic, params: &ScoreParams) -> f64 {
+    let tp = topic_params(topic);
+    params.time_in_mesh_cap_s * params.time_in_mesh_weight + tp.p2_cap * tp.p2_weight
 }
 
 /// Per-component score breakdown. `compute_score` delegates to this.
+///
+/// Takes `&mut` to flip `mesh_active` on topics whose grace window has
+/// elapsed: activation gates P3, so it has to happen on the same per-topic
+/// visit that reads it — a separate sweep walked every peer's `topic_stats`
+/// a second time to set one flag.
 pub(crate) fn score_breakdown(
-    state: &PeerState,
+    state: &mut PeerState,
     params: &ScoreParams,
     ip_colocation_peers: usize,
     now: Instant,
 ) -> ScoreBreakdown {
     let mut b = ScoreBreakdown::default();
+    let activation = params.mesh_message_deliveries_activation_s;
 
-    for (topic, t) in &state.topic_stats {
+    for (topic, t) in state.topic_stats.iter_mut() {
         let tp = topic_params(topic);
         // P1 — time in mesh (linear, capped).
         if let Some(since) = t.meshed_since {
             let age = now.saturating_duration_since(since).as_secs_f64();
             b.p1_time_in_mesh += age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight;
+            if !t.mesh_active && tp.p3_threshold > 0.0 && age >= activation {
+                t.mesh_active = true;
+            }
         }
         // P2 — first-message deliveries (linear, class-capped and -weighted).
         b.p2_first_deliveries += t.first_deliveries.min(tp.p2_cap) * tp.p2_weight;
@@ -235,8 +275,8 @@ mod tests {
     fn empty_state_scores_zero() {
         let params = ScoreParams::default();
         let now = Instant::now();
-        let state = mk_state(now);
-        assert_eq!(compute_score(&state, &params, 1, now), 0.0);
+        let mut state = mk_state(now);
+        assert_eq!(compute_score(&mut state, &params, 1, now), 0.0);
     }
 
     #[test]
@@ -248,7 +288,7 @@ mod tests {
         t.invalid_deliveries = 3.0;
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
         // 3^2 * -100 = -900
-        let s = compute_score(&state, &params, 1, now);
+        let s = compute_score(&mut state, &params, 1, now);
         assert!((s - -900.0).abs() < 1e-9, "got {s}");
     }
 
@@ -261,7 +301,7 @@ mod tests {
         let mut state = mk_state(now);
         state.behaviour_penalty = 5.0; // excess = 3
         // 3^2 * -5 = -45
-        let s = compute_score(&state, &params, 1, now);
+        let s = compute_score(&mut state, &params, 1, now);
         assert!((s - -45.0).abs() < 1e-9, "got {s}");
     }
 
@@ -272,7 +312,7 @@ mod tests {
         let now = Instant::now();
         let mut state = mk_state(now);
         state.behaviour_penalty = 4.0; // below threshold
-        assert_eq!(compute_score(&state, &params, 1, now), 0.0);
+        assert_eq!(compute_score(&mut state, &params, 1, now), 0.0);
     }
 
     #[test]
@@ -281,9 +321,9 @@ mod tests {
         params.ip_colocation_threshold = 2;
         params.ip_colocation_weight = -1.0;
         let now = Instant::now();
-        let state = mk_state(now);
+        let mut state = mk_state(now);
         // 5 peers on same prefix, threshold 2 → excess 3 → 9 * -1 = -9
-        let s = compute_score(&state, &params, 5, now);
+        let s = compute_score(&mut state, &params, 5, now);
         assert!((s - -9.0).abs() < 1e-9, "got {s}");
     }
 
@@ -297,7 +337,7 @@ mod tests {
         let mut t = TopicScore::default();
         t.meshed_since = Some(now - Duration::from_secs(100)); // way past cap
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
-        let s = compute_score(&state, &params, 1, now);
+        let s = compute_score(&mut state, &params, 1, now);
         assert!((s - 10.0).abs() < 1e-9, "got {s}");
     }
 
@@ -313,7 +353,7 @@ mod tests {
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
         let threshold = topic_params(&GossipTopic::BeaconBlock).p3_threshold;
         let expected = threshold * threshold * -2.0;
-        let s = compute_score(&state, &params, 1, now);
+        let s = compute_score(&mut state, &params, 1, now);
         assert!((s - expected).abs() < 1e-9, "got {s}, expected {expected}");
     }
 
@@ -333,7 +373,7 @@ mod tests {
             t.first_deliveries = saturated;
             state.topic_stats.insert(topic, t);
             let tp = topic_params(&topic);
-            let s = compute_score(&state, &params, 1, now);
+            let s = compute_score(&mut state, &params, 1, now);
             assert!(
                 (s - tp.p2_cap * tp.p2_weight).abs() < 1e-9,
                 "{topic:?}: got {s}, expected {}",
@@ -351,7 +391,7 @@ mod tests {
         t.mesh_active = false;
         t.mesh_deliveries = 0.0;
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
-        assert_eq!(compute_score(&state, &params, 1, now), 0.0);
+        assert_eq!(compute_score(&mut state, &params, 1, now), 0.0);
     }
 
     #[test]
@@ -373,8 +413,8 @@ mod tests {
         t.mesh_deliveries = 1.0;
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
 
-        let b = score_breakdown(&state, &params, 5, now);
-        let s = compute_score(&state, &params, 5, now);
+        let b = score_breakdown(&mut state, &params, 5, now);
+        let s = compute_score(&mut state, &params, 5, now);
         assert!((b.total - s).abs() < 1e-9, "breakdown {} vs compute {}", b.total, s);
     }
 

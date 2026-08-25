@@ -548,11 +548,21 @@ impl Peer {
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
                 if let Some(stream) = self.streams.get_mut(&id) {
                     let p2p_id = stream.p2p_id;
-                    if let SpinResult::End =
-                        stream.stop_send(error_code, &mut self.connection, on_event)
+                    let ended = matches!(
+                        stream.stop_send(error_code, &mut self.connection, on_event),
+                        SpinResult::End
+                    );
+
+                    if ended &&
+                        p2p_id.protocol() == StreamProtocol::Goodbye &&
+                        !p2p_id.is_incoming()
                     {
-                        // Remove the stream
+                        // There are no Goodbye bytes left to flush once the
+                        // remote has stopped the send side. Tear down now
+                        // instead of arming the delivery linger.
                         self.remove_stream(id);
+                        self.shutdown(now);
+                        return;
                     }
 
                     if let Some(out_id) = self.outbound_gossip &&
@@ -562,6 +572,8 @@ impl Peer {
                         self.remove_stream(id);
                         self.outbound_gossip.take();
                         on_event(NetEvent::StreamClosed { stream: p2p_id })
+                    } else if ended {
+                        self.end_stream(id, now);
                     }
                 }
             }
@@ -853,6 +865,7 @@ impl Stream {
             connection.send_stream(id).reset(VarInt::from_u32(STREAM_ERR_CODE_RESPONSE_TIMEOUT));
         let _ = connection.recv_stream(id).stop(VarInt::from_u32(STREAM_ERR_CODE_RESPONSE_TIMEOUT));
         on_event(NetEvent::StreamClosed { stream: self.p2p_id });
+
         SpinResult::End
     }
 
@@ -1345,6 +1358,44 @@ mod tests {
         );
         assert!(client_peer.streams.is_empty());
         assert_eq!(closed.get(), 1);
+    }
+
+    #[test]
+    fn stopped_outbound_goodbye_closes_connection() {
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+        let now = Instant::now();
+        let stream = pair.client_peer.open_stream(StreamProtocol::Goodbye).unwrap();
+
+        let mut on_event = |_: NetEvent| {};
+        pair.client_peer.handle_stream_event(
+            quinn_proto::StreamEvent::Stopped { id: stream, error_code: VarInt::from_u32(0) },
+            now,
+            &mut client_h.context,
+            &mut on_event,
+        );
+
+        assert!(pair.client_peer.connection.is_closed());
+        assert!(!pair.client_peer.streams.contains_key(&stream));
+    }
+
+    #[test]
+    fn stopped_outbound_gossip_keeps_connection_open() {
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+        let now = Instant::now();
+        let stream = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+
+        let mut on_event = |_: NetEvent| {};
+        pair.client_peer.handle_stream_event(
+            quinn_proto::StreamEvent::Stopped { id: stream, error_code: VarInt::from_u32(0) },
+            now,
+            &mut client_h.context,
+            &mut on_event,
+        );
+
+        assert!(!pair.client_peer.connection.is_closed());
+        assert!(!pair.client_peer.streams.contains_key(&stream));
     }
 
     /// A negotiated inbound RPC stream whose request never arrives must be
