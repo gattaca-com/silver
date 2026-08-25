@@ -1,7 +1,4 @@
-use std::{
-    ops::Deref,
-    time::{Duration, Instant},
-};
+use std::{ops::Deref, time::Instant};
 
 use flux_profiler::timed;
 use silver_common::{
@@ -12,7 +9,7 @@ use silver_common::{
     ssz_view::{MetadataView, StatusView},
 };
 
-use crate::{PeerManager, manager::OutboundAttempt};
+use crate::{PeerManager, manager::attempts::OutboundAttempt};
 
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
 /// single peer and keeps fan-out useful when many ranges are pending.
@@ -659,122 +656,6 @@ impl PeerManager {
         placed
     }
 
-    pub(crate) fn track_outbound_attempt(&mut self, attempt: OutboundAttempt) {
-        self.outbound_attempts.retain(|existing| {
-            existing.request_id != attempt.request_id ||
-                existing.peer_id != attempt.peer_id ||
-                existing.request.protocol() != attempt.request.protocol()
-        });
-        self.outbound_attempts.push(attempt);
-    }
-
-    fn progress_outbound_attempt(
-        &mut self,
-        request_id: u64,
-        peer_id: usize,
-        protocol: StreamProtocol,
-        now: Instant,
-    ) {
-        if let Some(attempt) = self.outbound_attempts.iter_mut().find(|attempt| {
-            attempt.request_id == request_id &&
-                attempt.peer_id == peer_id &&
-                attempt.request.protocol() == protocol
-        }) {
-            attempt.last_progress_at = now;
-        }
-    }
-
-    fn finish_attempt_at(&mut self, pos: usize, delivered: bool) {
-        let attempt = self.outbound_attempts.swap_remove(pos);
-        let clean = delivered && attempt.siblings_clean;
-
-        let mut last = true;
-        for sibling in &mut self.outbound_attempts {
-            if sibling.request_id == attempt.request_id {
-                sibling.siblings_clean &= clean;
-                last = false;
-            }
-        }
-        tracing::debug!(
-            request_id = attempt.request_id,
-            peer_id = attempt.peer_id,
-            protocol = ?attempt.request.protocol(),
-            delivered,
-            last,
-            "outbound attempt finished"
-        );
-        if last {
-            self.finished_requests.push((attempt.request_id, attempt.peer_id, clean));
-        }
-    }
-
-    fn finish_attempts_where(
-        &mut self,
-        delivered: bool,
-        mut pred: impl FnMut(&OutboundAttempt) -> bool,
-    ) {
-        while let Some(pos) = self.outbound_attempts.iter().position(&mut pred) {
-            self.finish_attempt_at(pos, delivered);
-        }
-    }
-
-    pub(crate) fn finish_attempt(
-        &mut self,
-        request_id: u64,
-        peer_id: usize,
-        protocol: StreamProtocol,
-        delivered: bool,
-    ) {
-        if let Some(pos) = self.outbound_attempts.iter().position(|attempt| {
-            attempt.request_id == request_id &&
-                attempt.peer_id == peer_id &&
-                attempt.request.protocol() == protocol
-        }) {
-            self.finish_attempt_at(pos, delivered);
-        }
-    }
-
-    pub(crate) fn fail_attempt_on_stream_close(
-        &mut self,
-        peer_id: usize,
-        protocol: StreamProtocol,
-    ) {
-        if let Some(pos) = self.outbound_attempts.iter().position(|attempt| {
-            attempt.peer_id == peer_id && attempt.request.protocol() == protocol
-        }) {
-            self.finish_attempt_at(pos, false);
-        }
-    }
-
-    pub(crate) fn fail_attempts_on_disconnect(&mut self, peer_id: usize) {
-        self.finish_attempts_where(false, |attempt| attempt.peer_id == peer_id);
-    }
-
-    pub(crate) fn sweep_stalled_attempts(&mut self, now: Instant) {
-        let timeout = Duration::from_millis(self.syncing.inflight_progress_timeout_ms);
-        while let Some(pos) = self
-            .outbound_attempts
-            .iter()
-            .position(|attempt| now.saturating_duration_since(attempt.last_progress_at) >= timeout)
-        {
-            let (peer_id, protocol) = (
-                self.outbound_attempts[pos].peer_id,
-                self.outbound_attempts[pos].request.protocol(),
-            );
-            self.finish_attempt_at(pos, false);
-
-            if let Some(peer) = self.peers.get_mut(&peer_id) {
-                let ord = protocol.ordinal() as usize;
-                peer.outbound_in_flight[ord] = peer.outbound_in_flight[ord].saturating_sub(1);
-            }
-            self.on_rpc_misbehaviour(
-                peer_id,
-                RpcSeverity::HighTolerance,
-                "outbound request progress stall",
-            );
-        }
-    }
-
     /// Highest-scoring connected peer that (a) backs the current sync
     /// target and (b) has BlocksByRange outbound capacity. `None` if no
     /// target is pinned or no eligible peer is connected.
@@ -871,7 +752,13 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use silver_common::{Enr, Identify, IpBytes, Keypair, P2pStreamId, RequestId};
+    use silver_config::ScoreParams;
+
     use super::*;
+    use crate::manager::{attempts::OutboundAttempt, fixture::*};
 
     #[test]
     fn invalid_request_is_low_tolerance() {
@@ -1025,5 +912,540 @@ mod tests {
             severity_for_error_response(0x42, StreamProtocol::BeaconBlocksByRange, true),
             Some(RpcSeverity::HighTolerance)
         ));
+    }
+
+    #[test]
+    fn peer_data_columns_prioritization_and_slot_reservation() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+
+        // Connect and identify Peer 1
+        let kp1 = Keypair::from_secret(&[1u8; 32]).unwrap();
+        let enr1 = Enr::builder().cgc(4).build(kp1.secret_key()).unwrap();
+        mgr.database.add_enr(enr1);
+        mgr.handle_event(
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: 1,
+                peer_id_full: kp1.peer_id(),
+                ip: IpBytes::V4([10, 0, 0, 1]),
+                port: 4001,
+                local_dial: false,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        let mut identify1 = Identify::default();
+        identify1.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRoot.ordinal();
+        mgr.handle_event(
+            PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify: identify1 },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        // Connect and identify Peer 2
+        let kp2 = Keypair::from_secret(&[2u8; 32]).unwrap();
+        let enr2 = Enr::builder().cgc(4).build(kp2.secret_key()).unwrap();
+        mgr.database.add_enr(enr2);
+        mgr.handle_event(
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: 2,
+                peer_id_full: kp2.peer_id(),
+                ip: IpBytes::V4([10, 0, 0, 2]),
+                port: 4002,
+                local_dial: false,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        let mut identify2 = Identify::default();
+        identify2.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRoot.ordinal();
+        mgr.handle_event(
+            PeerEvent::P2pPeerIdentity { p2p_peer: 2, identify: identify2 },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        let custody_mask1 = mgr.database.data_column_custody_groups_intersection(1, u128::MAX);
+        let custody_mask2 = mgr.database.data_column_custody_groups_intersection(2, u128::MAX);
+        assert!(custody_mask1 != 0);
+        assert!(custody_mask2 != 0);
+
+        // Peer-exclusive custody columns so a request can split cleanly: peer 1
+        // covers `m1`, peer 2 covers `m2`, no overlap. A request for `m1 | m2`
+        // sent while one peer is at capacity yields partial coverage: the
+        // covered part is placed, while the unsent remainder is left for the
+        // storage live/backfill wheels to retry.
+        let m1 = custody_mask1 & !custody_mask2;
+        let m2 = custody_mask2 & !custody_mask1;
+        assert!(m1 != 0 && m2 != 0, "test needs peer-exclusive custody columns");
+        let both = m1 | m2;
+        let dcbr = StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize;
+
+        // A distinct root per ask: PM refuses a second request for a root already
+        // out there, and what this probes is the *per-peer* capacity — which
+        // custody overlap makes root-independent, so the roots are free to vary.
+        let mut seq = 0;
+        let mut ask = |mgr: &mut PeerManager, cap: &mut Captured, origin, columns| {
+            let request = SyncRequest {
+                kind: DataKind::Columns,
+                origin,
+                scope: Scope::Root([seq as u8 + 1; 32]),
+                columns,
+            };
+            let id = RequestId::next(DataKind::Columns, origin, &mut seq);
+            mgr.place(request, id, now, &mut |c| cap.0.push(c));
+        };
+        let in_flight =
+            |mgr: &PeerManager, peer| mgr.peers.get(&peer).unwrap().outbound_in_flight[dcbr];
+
+        // Per-peer caps: backfill = MAX_RPC_PROTOCOL_IN_FLIGHT / 2 = 1, live = 2.
+
+        // 1) Backfill `m1` → peer 1 (sole custodian), filling its one backfill slot.
+        ask(&mut mgr, &mut cap, Origin::Backfill, m1);
+        assert_eq!((in_flight(&mgr, 1), in_flight(&mgr, 2)), (1, 0));
+
+        // 2) Backfill `both`: peer 1 is at its backfill cap, so only peer 2's `m2` is
+        //    placed; peer 1's `m1` can't be sent and — being backfill — is dropped, not
+        //    queued (storage's column backfill re-reports it).
+        ask(&mut mgr, &mut cap, Origin::Backfill, both);
+        assert_eq!((in_flight(&mgr, 1), in_flight(&mgr, 2)), (1, 1));
+
+        // 3) Live `m1` → peer 1: backfill used 1 of its 2 live slots, so this fits.
+        ask(&mut mgr, &mut cap, Origin::Live, m1);
+        assert_eq!(in_flight(&mgr, 1), 2);
+
+        // 4) Live `both`: peer 1 is at its live cap (2), so peer 2 takes `m2` and `m1`
+        //    is left for the engine to re-offer.
+        ask(&mut mgr, &mut cap, Origin::Live, both);
+        assert_eq!((in_flight(&mgr, 1), in_flight(&mgr, 2)), (2, 2));
+    }
+
+    /// A by-root column request for `root`.
+    fn column_root(root: [u8; 32]) -> SyncRequest {
+        SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Live,
+            scope: Scope::Root(root),
+            columns: 0b1,
+        }
+    }
+
+    /// Each by-root column request fans out across every peer custodying its
+    /// mask, so a burst of needs would become a burst times the custody set. PM
+    /// refuses past the cap; the engine re-offers after its own backoff.
+    #[test]
+    fn concurrent_by_root_column_requests_are_capped() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        for seq in 0..crate::manager::rpc::MAX_COLUMN_ROOT_REQUESTS as u64 {
+            let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq });
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id: id,
+                peer_id: 1,
+                request: column_root([seq as u8; 32]),
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 99 });
+        assert!(
+            !mgr.place(column_root([0xEE; 32]), id, now, &mut |c| cap.0.push(c)),
+            "refused at the cap, not queued"
+        );
+    }
+
+    /// One root can be reported missing again before the first response lands —
+    /// beacon state and the columns tile both re-declare per block. Asking
+    /// twice at once would double the work for nothing.
+    #[test]
+    fn the_same_root_is_not_asked_for_twice_at_once() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        const ROOT: [u8; 32] = [0xAB; 32];
+        let first = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 1 });
+        mgr.track_outbound_attempt(OutboundAttempt {
+            request_id: first,
+            peer_id: 1,
+            request: column_root(ROOT),
+            last_progress_at: now,
+            siblings_clean: true,
+        });
+
+        let second = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 2 });
+        assert!(
+            !mgr.place(column_root(ROOT), second, now, &mut |c| cap.0.push(c)),
+            "already out there"
+        );
+        assert!(
+            mgr.place(column_root([0xCD; 32]), second, now, &mut |c| cap.0.push(c)) ||
+                mgr.outbound_attempts.len() == 1,
+            "another root is not blocked by it"
+        );
+    }
+
+    /// One peer that serves column ranges, custodies every group, and has
+    /// pruned its history below `earliest`. `head_slot` is far ahead, as a
+    /// pruned-but-synced peer's is.
+    fn connect_column_peer_pruned_below(
+        mgr: &mut PeerManager,
+        cap: &mut Captured,
+        earliest: u64,
+        now: Instant,
+    ) {
+        let kp = Keypair::from_secret(&[9u8; 32]).unwrap();
+        mgr.database.add_enr(Enr::builder().cgc(128).build(kp.secret_key()).unwrap());
+        mgr.handle_event(
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: 1,
+                peer_id_full: kp.peer_id(),
+                ip: IpBytes::V4([10, 0, 0, 9]),
+                port: 4009,
+                local_dial: false,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+
+        let mut ssz = status_v2_ssz([0u8; 4], [0u8; 32], 0, [7u8; 32], 10_000);
+        ssz[84..92].copy_from_slice(&earliest.to_le_bytes());
+        send_status(mgr, cap, 1, PeerStatus::V2(ssz));
+        assert_eq!(mgr.database.earliest_available_slot(1), Some(earliest));
+    }
+
+    fn backfill_column_range(start: u64) -> SyncRequest {
+        SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Backfill,
+            scope: Scope::Range { start, count: 64 },
+            columns: 0b11,
+        }
+    }
+
+    /// Backfill walks *down*, so a range's slots sit far below our head. Gating
+    /// on our head instead of the range asks peers for history they have said
+    /// they pruned — and their spec-compliant `ResourceUnavailable` is then
+    /// scored as misbehaviour, driving our only backers negative for answering
+    /// correctly.
+    #[test]
+    fn column_range_below_a_peers_earliest_slot_is_not_placed() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_column_peer_pruned_below(&mut mgr, &mut cap, 100, now);
+        // Following at the tip while backfill walks the bottom of the chain.
+        mgr.set_local_head_imported(9_000);
+        cap.0.clear();
+
+        assert!(
+            !mgr.place(backfill_column_range(10), 1, now, &mut |c| cap.0.push(c)),
+            "a peer that pruned slot 10 cannot serve it"
+        );
+        assert!(mgr.outbound_attempts.is_empty(), "and nothing goes out to be penalised for");
+    }
+
+    /// The other half: the gate must not swallow ranges the peer *can* serve,
+    /// or column backfill never places at all.
+    #[test]
+    fn column_range_above_a_peers_earliest_slot_is_placed() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_column_peer_pruned_below(&mut mgr, &mut cap, 100, now);
+        mgr.set_local_head_imported(9_000);
+        cap.0.clear();
+
+        assert!(
+            mgr.place(backfill_column_range(200), 2, now, &mut |c| cap.0.push(c)),
+            "slot 200 is above the peer's floor"
+        );
+        assert_eq!(mgr.outbound_attempts.len(), 1);
+    }
+
+    /// A column range, for tests that build attempts directly.
+    fn column_range() -> SyncRequest {
+        SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Live,
+            scope: Scope::Range { start: 0, count: 1 },
+            columns: 0b11,
+        }
+    }
+
+    /// One identified peer and one placed by-root block chase.
+    fn issue_by_root(mgr: &mut PeerManager, cap: &mut Captured, request_id: u64, now: Instant) {
+        connect(mgr, cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRoot.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        let request = SyncRequest {
+            kind: DataKind::Block,
+            origin: Origin::Live,
+            scope: Scope::Root([3; 32]),
+            columns: 0,
+        };
+        assert!(mgr.place(request, request_id, now, &mut |c| cap.0.push(c)), "chase placed");
+        assert_eq!(mgr.outbound_attempts.len(), 1, "tracked like a range");
+    }
+
+    /// The engine holds an in-flight slot per by-root chase and releases it on
+    /// the terminator. A peer that abandons the stream sends none — the
+    /// network tile has no recv-EOF hook to synthesise one — so PM reporting
+    /// the failure is the only thing that frees it.
+    #[test]
+    fn by_root_chase_is_reported_when_its_stream_dies() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 5 });
+        issue_by_root(&mut mgr, &mut cap, id, now);
+
+        mgr.handle_event(
+            PeerEvent::P2pStreamClosed {
+                stream_id: P2pStreamId::new(1, 13, StreamProtocol::BeaconBlocksByRoot, false),
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(
+            mgr.drain_finished_requests().next(),
+            Some((id, 1, false)),
+            "reported to the engine, and not as a delivery"
+        );
+    }
+
+    /// Same for a peer that takes the request and simply never answers.
+    #[test]
+    fn stalled_by_root_chase_is_swept_and_reported() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 6 });
+        issue_by_root(&mut mgr, &mut cap, id, now);
+
+        let later = now +
+            Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
+            Duration::from_millis(1);
+        mgr.tick(later, &mut |c| cap.0.push(c));
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(mgr.drain_finished_requests().next(), Some((id, 1, false)));
+    }
+
+    /// Setup shared by the backfill-range tests: one identified peer and one
+    /// issued range.
+    fn issue_backfill_range(
+        mgr: &mut PeerManager,
+        cap: &mut Captured,
+        request_id: u64,
+        start: u64,
+        count: u64,
+        now: Instant,
+    ) {
+        connect(mgr, cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        let request = SyncRequest {
+            kind: DataKind::Block,
+            origin: Origin::Backfill,
+            scope: Scope::Range { start, count },
+            columns: 0,
+        };
+        assert!(mgr.place(request, request_id, now, &mut |c| cap.0.push(c)), "range placed");
+        assert_eq!(mgr.outbound_attempts.len(), 1);
+        assert_eq!(mgr.outbound_attempts[0].request_id, request_id);
+    }
+
+    #[test]
+    fn block_backfill_range_attempt_is_tracked_until_complete() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Backfill, seq: 7 });
+        issue_backfill_range(&mut mgr, &mut cap, id, 20, 3, now);
+
+        mgr.on_rpc_inbound(
+            RpcInbound::Response(RpcResponseInbound {
+                application_id: id,
+                stream_id: P2pStreamId::new(1, 11, StreamProtocol::BeaconBlocksByRange, false),
+                response: RpcResponse::Complete,
+            }),
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(
+            mgr.drain_finished_requests().next(),
+            Some((id, 1, true)),
+            "reported as delivered — the engine reads that as emptiness evidence"
+        );
+    }
+
+    /// The engine owns retry, so an error terminator releases the attempt and
+    /// reports it as undelivered; PM no longer re-queues anything.
+    #[test]
+    fn block_backfill_range_error_is_reported_not_retried() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Backfill, seq: 8 });
+        issue_backfill_range(&mut mgr, &mut cap, id, 20, 3, now);
+
+        mgr.on_rpc_inbound(
+            RpcInbound::Response(RpcResponseInbound {
+                application_id: id,
+                stream_id: P2pStreamId::new(1, 12, StreamProtocol::BeaconBlocksByRange, false),
+                response: RpcResponse::Error { error: 2, msg: [0; 256], len: 0 },
+            }),
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(mgr.drain_finished_requests().next(), Some((id, 1, false)));
+    }
+
+    /// A stall has no terminator, so this is the one PM has to report itself.
+    /// Every kind is swept now, not just backfill.
+    #[test]
+    fn stalled_range_is_swept_and_reported() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Backfill, seq: 9 });
+        issue_backfill_range(&mut mgr, &mut cap, id, 30, 2, now);
+
+        let later = now +
+            Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
+            Duration::from_millis(1);
+        mgr.tick(later, &mut |c| cap.0.push(c));
+
+        assert!(mgr.outbound_attempts.is_empty());
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::BeaconBlocksByRange.ordinal() as usize],
+            0,
+            "slot released"
+        );
+        assert_eq!(mgr.drain_finished_requests().collect::<Vec<_>>(), vec![(id, 1, false)]);
+    }
+
+    /// PM is the engine's only liveness signal, so a request fanned across
+    /// peers must reach it exactly once — on the last attempt to end, not on
+    /// each. Reporting early would free a range still streaming elsewhere.
+    #[test]
+    fn fanned_out_request_is_reported_once_on_its_last_attempt() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 11 });
+        let request = column_range();
+        let protocol = request.protocol();
+
+        for peer in 1..=3usize {
+            connect(&mut mgr, &mut cap, peer, peer as u8, now);
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id: id,
+                peer_id: peer,
+                request,
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        for peer in 1..=2usize {
+            mgr.finish_attempt(id, peer, protocol, true);
+            assert!(
+                mgr.drain_finished_requests().next().is_none(),
+                "attempt on peer {peer} ended, the rest still stream"
+            );
+        }
+        mgr.finish_attempt(id, 3, protocol, true);
+        assert_eq!(
+            mgr.drain_finished_requests().collect::<Vec<_>>(),
+            vec![(id, 3, true)],
+            "the last attempt reports the whole request"
+        );
+    }
+
+    /// One bad sub-request makes the logical request incomplete, so the report
+    /// must not claim delivery however the remaining attempts end. The engine
+    /// reads `delivered` as proof the unfilled slots were empty.
+    #[test]
+    fn one_failed_attempt_makes_the_whole_request_undelivered() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let id = u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 12 });
+        let request = column_range();
+        let protocol = request.protocol();
+
+        for peer in 1..=2usize {
+            connect(&mut mgr, &mut cap, peer, peer as u8, now);
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id: id,
+                peer_id: peer,
+                request,
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        mgr.finish_attempt(id, 1, protocol, false);
+        mgr.finish_attempt(id, 2, protocol, true);
+        assert_eq!(
+            mgr.drain_finished_requests().collect::<Vec<_>>(),
+            vec![(id, 2, false)],
+            "the failure carried through to the last attempt's report"
+        );
+    }
+
+    /// A peer holding several requests must have every one of them reported on
+    /// disconnect. The scan restarts after each removal: indexing a subslice
+    /// and removing at that index from the whole vec used to report a foreign
+    /// request and leak the real one.
+    #[test]
+    fn disconnect_reports_every_request_the_peer_held() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let mine = [
+            u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 21 }),
+            u64::from(RequestId { kind: DataKind::Columns, origin: Origin::Live, seq: 22 }),
+        ];
+        let theirs = u64::from(RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 23 });
+
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        // Interleaved so a wrong index lands on the other peer's attempt.
+        for (request_id, peer_id) in [(mine[0], 1), (theirs, 2), (mine[1], 1)] {
+            mgr.track_outbound_attempt(OutboundAttempt {
+                request_id,
+                peer_id,
+                request: SyncRequest {
+                    kind: DataKind::Block,
+                    origin: Origin::Live,
+                    scope: Scope::Range { start: 0, count: 1 },
+                    columns: 0,
+                },
+                last_progress_at: now,
+                siblings_clean: true,
+            });
+        }
+
+        mgr.fail_attempts_on_disconnect(1);
+
+        let mut reported: Vec<u64> = mgr.drain_finished_requests().map(|(id, ..)| id).collect();
+        reported.sort_unstable();
+        assert_eq!(reported, vec![mine[0], mine[1]], "both of the peer's requests, and only those");
+        assert_eq!(mgr.outbound_attempts.len(), 1, "the other peer's attempt is untouched");
+        assert_eq!(mgr.outbound_attempts[0].request_id, theirs);
     }
 }
