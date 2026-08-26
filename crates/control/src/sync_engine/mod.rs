@@ -36,7 +36,7 @@ const ISSUE_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 /// before refetching it.
 pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(super) const BACKFILL_SETTLE_TIMEOUT: Duration = Duration::from_secs(4);
+pub(super) const BACKFILL_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub enum SyncAction {
     /// Ask the peer manager to place this. It answers whether any peer took it.
