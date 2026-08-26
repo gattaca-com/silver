@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use silver_common::{
-    GossipTopic, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
+    GossipTopic, IngestionTime, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
     column_util::KzgBatchEntry,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
@@ -22,6 +22,7 @@ pub(crate) enum RelayMeta {
 pub(crate) struct PendingKzg {
     pub sidecar: TRead,
     pub stream_id: P2pStreamId,
+    pub recv_ts: IngestionTime,
     pub block_root: BlockRoot,
     pub column_index: u64,
     pub bitmask: u128,

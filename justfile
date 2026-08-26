@@ -74,6 +74,19 @@ nextest:
 perf-local file="" events="instructions,cycles,l1d-misses,l2-misses,l3-misses":
   PERF_FXT="{{file}}" PERF_EVENTS="{{events}}" cargo test --locked --release -p silver_e2e --features perf-counters,alloc-profile --test sync_pm_bs_perf -- --ignored --nocapture
 
+# Refresh data/da from a running beacon node: state, blocks, sidecars and the
+# arrival order (the latter from its telemetry, so its daemon must be up and
+# CH_URL must point at it). Always the window after the node's newest checkpoint.
+da-fixtures host:
+  cargo run --release -p silver_e2e --bin da_fixtures -- {{host}}
+
+# Replay prod-captured column gossip through the real DataColumnsTile, reporting
+# each slot's custody-complete time and the `#[timed]` call tree. `--slots N`
+# caps the slots replayed (default 9); `--columns N` is the custody set (default
+# 128)
+da-local *args='':
+  cargo run --release -p silver_e2e --features alloc-profile --bin da_replay -- {{args}}
+
 # Run surfer (the metrics TUI). It folds the watched silver's `#[timed]` perf
 # counters into the flamegraph whenever that silver published them (the producer
 # opts into counters via its own `perf` feature); otherwise it shows timing

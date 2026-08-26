@@ -120,7 +120,7 @@ impl Node {
                 name: format!("{blank:indent$}{label}", blank = "", label = r.label),
                 avg: r.sum_ns / r.count.max(1),
                 max: r.max_ns,
-                calls: Some(CallCount { total: r.count, per_parent: self.count }),
+                calls: CallCount { total: r.count, per_parent: self.count },
                 counters: r.counters,
             });
             if let Some(child) = r.child {
@@ -128,13 +128,15 @@ impl Node {
             }
         }
         if cut < rows.len() {
-            let rem_sum: Nanos = rows[cut..].iter().map(|r| r.sum_ns).sum();
-            let label = format!("... ({} more)", rows.len() - cut);
+            let folded = &rows[cut..];
+            let rem_sum: Nanos = folded.iter().map(|r| r.sum_ns).sum();
+            let rem_calls: u64 = folded.iter().map(|r| r.count).sum();
+            let label = format!("... ({} more)", folded.len());
             out.push(RenderRow {
                 name: format!("{blank:indent$}{label}", blank = ""),
-                avg: rem_sum / self.count.max(1),
-                max: Nanos::ZERO,
-                calls: None,
+                avg: rem_sum / rem_calls.max(1),
+                max: folded.iter().map(|r| r.max_ns).max().unwrap_or(Nanos::ZERO),
+                calls: CallCount { total: rem_calls, per_parent: self.count },
                 counters: Counters::default(),
             });
         }
@@ -156,11 +158,26 @@ struct CallCount {
     per_parent: u64,
 }
 
+impl CallCount {
+    fn cell(&self) -> String {
+        // Root, or a parent that ran once → avg == total; show a plain count.
+        if self.per_parent <= 1 {
+            return format!("×{}", self.total);
+        }
+        let per = if self.total.is_multiple_of(self.per_parent) {
+            (self.total / self.per_parent).to_string()
+        } else {
+            format!("{:.1}", self.total as f64 / self.per_parent as f64)
+        };
+        format!("×{per}  ({} total)", self.total)
+    }
+}
+
 struct RenderRow {
     name: String,
     avg: Nanos,
     max: Nanos,
-    calls: Option<CallCount>,
+    calls: CallCount,
     counters: Counters,
 }
 
@@ -171,7 +188,7 @@ fn is_ipc_input(label: &str) -> bool {
 }
 
 fn render_table(rows: &[RenderRow], meta: &FlamegraphMeta) -> String {
-    let calls = |r: &RenderRow| r.calls.as_ref().map_or(0, |c| c.total);
+    let calls = |r: &RenderRow| r.calls.total;
     let any =
         |present: &dyn Fn(&RenderRow) -> bool| rows.iter().any(|r| calls(r) > 0 && present(r));
 
@@ -207,7 +224,7 @@ fn render_table(rows: &[RenderRow], meta: &FlamegraphMeta) -> String {
     for r in rows {
         let n = calls(r);
         let max = if r.max == Nanos::ZERO { String::new() } else { r.max.to_string() };
-        let mut cells = vec![r.name.clone(), r.avg.to_string(), max, calls_cell(&r.calls)];
+        let mut cells = vec![r.name.clone(), r.avg.to_string(), max, r.calls.cell()];
         if show_alloc {
             cells.push(per_call(r.counters.alloc.allocated, n, fmt_bytes));
             cells.push(per_call(r.counters.alloc.freed, n, fmt_bytes));
@@ -230,20 +247,4 @@ fn render_table(rows: &[RenderRow], meta: &FlamegraphMeta) -> String {
 /// `...`/`untracked` rows, or perf/alloc off) so empty cells stay quiet.
 fn per_call(total: u64, calls: u64, fmt: impl Fn(u64) -> String) -> String {
     if calls == 0 || total == 0 { String::new() } else { fmt(total / calls) }
-}
-
-fn calls_cell(calls: &Option<CallCount>) -> String {
-    match calls {
-        None => String::new(),
-        // Root, or a parent that ran once → avg == total; show a plain count.
-        Some(c) if c.per_parent <= 1 => format!("×{}", c.total),
-        Some(c) => {
-            let per = if c.total % c.per_parent == 0 {
-                (c.total / c.per_parent).to_string()
-            } else {
-                format!("{:.1}", c.total as f64 / c.per_parent as f64)
-            };
-            format!("×{per}  ({} total)", c.total)
-        }
-    }
 }

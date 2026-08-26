@@ -3,14 +3,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
+use flux::{
+    spine::{SpineAdapter, SpineProducers},
+    tile::Tile,
+};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, ColumnSource, DataColumnsEvent, DataKind, EngineReq, EngineResp, GossipTopic,
-    Nanos, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId, RpcInbound, RpcSeverity,
-    SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed, SyncUpdate, TProducer,
-    TRandomAccess, TRead, Wheel,
+    IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId, RpcInbound,
+    RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed, SyncUpdate,
+    TProducer, TRandomAccess, TRead, Wheel,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
 };
@@ -23,7 +26,15 @@ use crate::{
     validate::{ColumnOutcome, ColumnValidator},
 };
 
-type PendingColumn = (P2pStreamId, TRead, Option<u64>);
+/// A sidecar with the provenance its validation needs. Carrying `recv_ts` is
+/// what lets a column buffered before its block still report its own receive
+/// time rather than the drain's.
+struct PendingColumn {
+    stream_id: P2pStreamId,
+    sidecar: TRead,
+    gossip_subnet: Option<u64>,
+    recv_ts: IngestionTime,
+}
 
 #[derive(Default)]
 pub(crate) struct BlockValidation {
@@ -207,43 +218,41 @@ impl DataColumnsTile {
     #[timed]
     fn data_columns<F>(
         &mut self,
-        stream_id: P2pStreamId,
-        sidecar: TRead,
-        gossip_subnet: Option<u64>,
-        recv_ts: Option<Nanos>,
+        column: PendingColumn,
         relay: RelayMeta,
         emit: &mut F,
     ) -> ColumnDisposition
     where
         F: FnMut(DataColumnsEvent),
     {
-        let validated = match sidecar.buffer() {
+        let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => self.validator.validate(
-                stream_id,
+                column.stream_id,
                 buf,
-                gossip_subnet,
-                recv_ts,
+                column.gossip_subnet,
+                column.recv_ts,
                 &self.sync_state,
                 &mut self.validated,
             ),
             Err(e) => {
-                tracing::error!(?e, ?stream_id, "failed to read data column sidecar buffer");
+                tracing::error!(
+                    ?e,
+                    stream_id = ?column.stream_id,
+                    "failed to read data column sidecar buffer"
+                );
                 return ColumnDisposition::Ignored;
             }
         };
         let Some((outcome, is_gloas)) = validated else {
             return ColumnDisposition::Ignored;
         };
-        self.handle_column(outcome, stream_id, sidecar, gossip_subnet, is_gloas, relay, emit)
+        self.handle_column(outcome, column, is_gloas, relay, emit)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn handle_column<F>(
         &mut self,
         outcome: ColumnOutcome,
-        stream_id: P2pStreamId,
-        sidecar: TRead,
-        gossip_subnet: Option<u64>,
+        column: PendingColumn,
         is_gloas: bool,
         relay: RelayMeta,
         emit: &mut F,
@@ -254,9 +263,9 @@ impl DataColumnsTile {
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::AlreadyHeld { block_root, column_index, slot } => {
-                let is_gossip = stream_id.protocol() == StreamProtocol::GossipSub;
+                let is_gossip = column.stream_id.protocol() == StreamProtocol::GossipSub;
                 emit(DataColumnsEvent::Persist {
-                    ssz: sidecar.read,
+                    ssz: column.sidecar.read,
                     source: if is_gossip { ColumnSource::Gossip } else { ColumnSource::Rpc },
                     block_root,
                     column_index,
@@ -280,23 +289,24 @@ impl DataColumnsTile {
             ColumnOutcome::Buffer { block_root } => {
                 let pending = self.gloas_pending_columns.entry(block_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
-                    tracing::debug!(?stream_id, "gloas column before block — buffering");
-                    pending.push((stream_id, sidecar, gossip_subnet));
+                    tracing::debug!(stream_id = ?column.stream_id, "gloas column before block — buffering");
+                    pending.push(column);
                 }
                 ColumnDisposition::Ignored
             }
             ColumnOutcome::AwaitParent { parent_root } => {
                 let pending = self.parent_pending_columns.entry(parent_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
-                    tracing::info!(?stream_id, "column parent pending — buffering");
-                    pending.push((stream_id, sidecar, gossip_subnet));
+                    tracing::info!(stream_id = ?column.stream_id, "column parent pending — buffering");
+                    pending.push(column);
                 }
                 ColumnDisposition::Ignored
             }
             ColumnOutcome::Record { block_root, column_index, bitmask, slot } => {
                 let queued = self.kzg_batch.push(PendingKzg {
-                    sidecar,
-                    stream_id,
+                    sidecar: column.sidecar,
+                    stream_id: column.stream_id,
+                    recv_ts: column.recv_ts,
                     block_root,
                     column_index,
                     bitmask,
@@ -341,8 +351,8 @@ impl DataColumnsTile {
         let Some(pending) = pending else {
             return;
         };
-        for (stream_id, sidecar, gossip_subnet) in pending {
-            self.data_columns(stream_id, sidecar, gossip_subnet, None, RelayMeta::None, emit);
+        for column in pending {
+            self.data_columns(column, RelayMeta::None, emit);
         }
     }
 
@@ -434,25 +444,43 @@ impl DataColumnsTile {
     }
 
     #[timed]
+    fn gossip_sidecar(
+        &mut self,
+        custody_group: u64,
+        gossip: NewGossipMsg,
+        producers: &mut SilverSpineProducers,
+    ) {
+        tracing::debug!(custody_group, "data column sidecar over gossip");
+        let relay = RelayMeta::Gossip {
+            topic: gossip.topic,
+            msg_hash: gossip.msg_hash,
+            recv_ts: gossip.recv_ts,
+            protobuf: gossip.protobuf,
+        };
+        let sidecar = self.gossip_consumer.acquire(gossip.ssz);
+        self.handle_data_column_sidecar(
+            PendingColumn {
+                stream_id: gossip.stream_id,
+                sidecar,
+                gossip_subnet: Some(custody_group),
+                recv_ts: gossip.recv_ts.into(),
+            },
+            relay,
+            producers,
+        );
+    }
+
+    #[timed]
     fn handle_data_column_sidecar(
         &mut self,
-        t_read: TRead,
-        stream_id: P2pStreamId,
-        gossip_subnet: Option<u64>,
-        recv_ts: Option<Nanos>,
+        column: PendingColumn,
         relay: RelayMeta,
         producers: &mut SilverSpineProducers,
     ) {
-        let disposition = self.data_columns(
-            stream_id,
-            t_read,
-            gossip_subnet,
-            recv_ts,
-            relay,
-            &mut |msg: DataColumnsEvent| {
-                producers.data_columns.produce(&msg.into());
-            },
-        );
+        let stream_id = column.stream_id;
+        let disposition = self.data_columns(column, relay, &mut |msg: DataColumnsEvent| {
+            producers.data_columns.produce(&msg.into());
+        });
 
         if let ColumnDisposition::Rejected { block_root, slot, bitmask } = disposition {
             producers.peer_events.produce(
@@ -481,9 +509,7 @@ impl DataColumnsTile {
     /// honest traffic never pays the fallback.
     #[timed]
     fn flush_kzg_batch(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        if self.kzg_batch.is_empty() {
-            return;
-        }
+        debug_assert!(!self.kzg_batch.is_empty());
 
         let pending_len = self.kzg_batch.pending.len();
         DataColumnCounters::KzgBatchesVerified.inc();
@@ -524,7 +550,15 @@ impl DataColumnsTile {
 
     fn resolve_validated(&mut self, p: PendingKzg, adapter: &mut SpineAdapter<SilverSpine>) {
         let PendingKzg {
-            sidecar, stream_id, block_root, column_index, bitmask, slot, relay, ..
+            sidecar,
+            stream_id,
+            recv_ts,
+            block_root,
+            column_index,
+            bitmask,
+            slot,
+            relay,
+            ..
         } = p;
         match relay {
             RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
@@ -553,7 +587,7 @@ impl DataColumnsTile {
             slot,
             sidecar,
             is_gossip,
-            &mut |msg| adapter.produce(msg),
+            &mut |msg| adapter.producers.produce_with_ingestion(msg, recv_ts),
         );
     }
 
@@ -640,23 +674,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
             silver_common::GossipTopic::DataColumnSidecar(custody_group)
                 if self.sync_state.is_synced() =>
             {
-                tracing::debug!(custody_group, "data column sidecar over gossip");
-
-                let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                let relay = RelayMeta::Gossip {
-                    topic: gossip.topic,
-                    msg_hash: gossip.msg_hash,
-                    recv_ts: gossip.recv_ts,
-                    protobuf: gossip.protobuf,
-                };
-                self.handle_data_column_sidecar(
-                    t_read,
-                    gossip.stream_id,
-                    Some(custody_group),
-                    Some(gossip.recv_ts),
-                    relay,
-                    producers,
-                );
+                self.gossip_sidecar(custody_group, gossip, producers);
             }
             _ => {}
         });
@@ -675,12 +693,14 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if id.is(DataKind::Columns, Origin::Live) => {
                     // TODO validate that originating peer has data column index in custody groups
                     tracing::debug!("data column sidecar over rpc");
-                    let t_read = self.rpc_consumer.acquire(ssz);
+                    let sidecar = self.rpc_consumer.acquire(ssz);
                     self.handle_data_column_sidecar(
-                        t_read,
-                        rsp.stream_id,
-                        None,
-                        None,
+                        PendingColumn {
+                            stream_id: rsp.stream_id,
+                            sidecar,
+                            gossip_subnet: None,
+                            recv_ts: IngestionTime::now(),
+                        },
                         RelayMeta::Rpc { ssz },
                         producers,
                     );
@@ -723,8 +743,9 @@ impl Tile<SilverSpine> for DataColumnsTile {
         });
         self.el_fetcher.free();
 
-        // Everything this pass delivered is collected; verify in one call.
-        self.flush_kzg_batch(adapter);
+        if !self.kzg_batch.is_empty() {
+            self.flush_kzg_batch(adapter);
+        }
 
         let now = Instant::now();
 
@@ -894,9 +915,12 @@ mod tests {
             let mut events = Vec::new();
             let disposition = tile.handle_column(
                 ColumnOutcome::AlreadyHeld { block_root, column_index: 3, slot: 7 },
-                P2pStreamId::new(2, 2, protocol, true),
-                read,
-                None,
+                PendingColumn {
+                    stream_id: P2pStreamId::new(2, 2, protocol, true),
+                    sidecar: read,
+                    gossip_subnet: None,
+                    recv_ts: IngestionTime::now(),
+                },
                 false,
                 RelayMeta::None,
                 &mut |e| events.push(e),

@@ -1,13 +1,10 @@
 //! On-disk fixture layout for the perf harness.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use silver_common::Nanos;
 
-const STATE_SLOT_OFFSET: usize = 8 + 32; // genesis_time(u64) + genesis_validators_root(B256)
+use crate::fixtures::FixtureRoot;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ExpectedJson {
@@ -72,15 +69,23 @@ fn parse_duration_ns(s: &str) -> Result<u64, String> {
     Ok((n * mult).round() as u64)
 }
 
-pub struct FixturesDir<'a>(pub &'a Path);
+pub struct BlockFixtures(FixtureRoot);
 
-impl<'a> FixturesDir<'a> {
-    pub fn finalized_state_path(&self) -> PathBuf {
-        self.0.join("finalized_state.ssz")
+impl BlockFixtures {
+    pub fn perf() -> Self {
+        Self(FixtureRoot::new("PERF_FIXTURES", "data/perf"))
+    }
+
+    pub fn checkpoints() -> Self {
+        Self(FixtureRoot::new("CHECKPOINT_FIXTURES", "tests/example_checkpoints"))
+    }
+
+    pub fn root(&self) -> &FixtureRoot {
+        &self.0
     }
 
     pub fn block_path(&self, slot: u64) -> PathBuf {
-        self.0.join(format!("next_block_{slot}.ssz"))
+        self.0.join(&format!("next_block_{slot}.ssz"))
     }
 
     pub fn expected_path(&self) -> PathBuf {
@@ -104,7 +109,7 @@ impl<'a> FixturesDir<'a> {
 
     /// Slot-sorted `next_block_<slot>.ssz` contents.
     pub fn read_sorted_next_blocks(&self) -> Vec<(u64, Vec<u8>)> {
-        let mut found: Vec<(u64, Vec<u8>)> = fs::read_dir(self.0)
+        let mut found: Vec<(u64, Vec<u8>)> = fs::read_dir(self.0.path())
             .into_iter()
             .flatten()
             .flatten()
@@ -119,28 +124,8 @@ impl<'a> FixturesDir<'a> {
         found
     }
 
-    pub fn read_finalized_state(&self) -> Result<(Vec<u8>, u64), String> {
-        let path = self.finalized_state_path();
-        let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let slot = read_state_slot(&bytes)?;
-        Ok((bytes, slot))
-    }
-
-    /// Avoids the ~300 MB read of `read_finalized_state` — used by
-    /// `--continue`.
-    pub fn read_finalized_slot(&self) -> Result<u64, String> {
-        use std::io::{Read, Seek, SeekFrom};
-        let path = self.finalized_state_path();
-        let mut f = fs::File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
-        f.seek(SeekFrom::Start(STATE_SLOT_OFFSET as u64))
-            .map_err(|e| format!("seek {}: {e}", path.display()))?;
-        let mut buf = [0u8; 8];
-        f.read_exact(&mut buf).map_err(|e| format!("read slot {}: {e}", path.display()))?;
-        Ok(u64::from_le_bytes(buf))
-    }
-
     pub fn clear_next_blocks(&self) {
-        if let Ok(rd) = fs::read_dir(self.0) {
+        if let Ok(rd) = fs::read_dir(self.0.path()) {
             for e in rd.flatten() {
                 if e.file_name().to_string_lossy().starts_with("next_block_") {
                     let _ = fs::remove_file(e.path());
@@ -173,10 +158,4 @@ impl<'a> FixturesDir<'a> {
         let path = self.expected_path();
         fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))
     }
-}
-
-fn read_state_slot(ssz: &[u8]) -> Result<u64, String> {
-    ssz.get(STATE_SLOT_OFFSET..STATE_SLOT_OFFSET + 8)
-        .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
-        .ok_or_else(|| "state SSZ shorter than slot offset".to_string())
 }

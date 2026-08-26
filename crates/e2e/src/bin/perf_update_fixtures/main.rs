@@ -1,15 +1,9 @@
 //! Refresh `crates/e2e/data/perf/` from public mainnet archives. Network
 //! code lives only here; `just perf-local` stays hermetic.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::ExitCode,
-    thread,
-    time::Duration,
-};
+use std::{env, fs, path::Path, process::ExitCode, thread, time::Duration};
 
-use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::fixtures_dir::FixturesDir};
+use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::fixtures_dir::BlockFixtures};
 
 use self::http::BlockFetch;
 
@@ -17,8 +11,7 @@ mod http;
 
 fn main() -> ExitCode {
     let args = parse_args();
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/perf");
-    if let Err(e) = run(&dir, args) {
+    if let Err(e) = run(&BlockFixtures::perf(), args) {
         eprintln!("perf-update-fixtures: {e}");
         return ExitCode::FAILURE;
     }
@@ -64,21 +57,21 @@ const BLOCK_MAX_RETRIES: u32 = 4;
 /// retention the state fetch 500s, so we stay ~1 epoch inside it.
 const MAX_FINALIZED_LAG_SLOTS: u64 = 64;
 
-fn run(dir: &Path, args: Args) -> Result<(), String> {
+fn run(fixtures: &BlockFixtures, args: Args) -> Result<(), String> {
+    let dir = fixtures.root().path();
     fs::create_dir_all(dir).map_err(|e| format!("create_dir_all({}): {e}", dir.display()))?;
-    let fixtures = FixturesDir(dir);
     let Args { blocks: n_blocks, resume } = args;
 
     let finalized_slot = if resume {
-        fixtures.read_finalized_slot().map_err(|e| {
+        fixtures.root().read_finalized_slot().map_err(|e| {
             format!("--continue: no usable finalized_state.ssz ({e}); drop the flag to refetch")
         })?
     } else {
         fixtures.clear_next_blocks();
-        fetch_finalized_state(&fixtures)?
+        fetch_finalized_state(fixtures)?
     };
 
-    let saved = fetch_following_blocks(&fixtures, finalized_slot, n_blocks)?;
+    let saved = fetch_following_blocks(fixtures, finalized_slot, n_blocks)?;
     if saved < n_blocks {
         let lookahead = (n_blocks as u64 * 3 / 2).max(8);
         return Err(format!(
@@ -105,14 +98,14 @@ fn run(dir: &Path, args: Args) -> Result<(), String> {
     Ok(())
 }
 
-fn fetch_finalized_state(fixtures: &FixturesDir) -> Result<u64, String> {
+fn fetch_finalized_state(fixtures: &BlockFixtures) -> Result<u64, String> {
     let head_finalized = http::resolve_finalized_slot()?;
     // Resolve a concrete epoch-aligned slot — alias 'finalized' races at the
     // boundary (cross-provider 404).
     let finalized_slot = (head_finalized.saturating_sub(MAX_FINALIZED_LAG_SLOTS / 2) /
         SLOTS_PER_EPOCH) *
         SLOTS_PER_EPOCH;
-    let path = fixtures.finalized_state_path();
+    let path = fixtures.root().finalized_state();
     eprintln!(
         "fixtures: head_finalized={head_finalized}, fetching epoch-aligned finalized state \
          at slot {finalized_slot} -> {}",
@@ -123,7 +116,7 @@ fn fetch_finalized_state(fixtures: &FixturesDir) -> Result<u64, String> {
 }
 
 fn fetch_following_blocks(
-    fixtures: &FixturesDir,
+    fixtures: &BlockFixtures,
     finalized_slot: u64,
     n_blocks: usize,
 ) -> Result<usize, String> {

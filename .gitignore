@@ -25,10 +25,10 @@ target/
 
 *.ssz
 *.fxt*
-# Perf-regression fixtures are committed via git-lfs (see .gitattributes
-# and crates/e2e/data/perf/README.md) — they need to escape the blanket
+# e2e fixtures are committed via git-lfs (see .gitattributes and
+# crates/e2e/data/perf/README.md) — they need to escape the blanket
 # *.ssz ignore.
-!crates/e2e/data/perf/*.ssz
+!crates/e2e/data/**/*.ssz
 !crates/engine/testdata/*.ssz
 # kurtosis generated files
 kurtosis/silver-devnet.toml
