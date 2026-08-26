@@ -67,4 +67,7 @@ pub enum SendResult {
     StreamGone,
     MessageDropped,
     UnknownPeer,
+    /// Connection is closing/draining: nothing sent on it can be delivered,
+    /// and opening a stream would misreport as credit exhaustion.
+    ConnectionClosing,
 }

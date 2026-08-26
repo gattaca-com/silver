@@ -132,6 +132,7 @@ pub struct RandomAccessConsumer {
     pub(super) last_read: Nanos,
     pub(super) last_head: u64,
     pub(super) lag_threshold: u64,
+    pub(super) strict: bool,
 }
 
 impl RandomAccessConsumer {
@@ -148,13 +149,33 @@ impl RandomAccessConsumer {
         AcquiredRead { consumer: self as *const Self, read }
     }
 
+    pub fn acquire_strict(&mut self, read: TCacheRead) -> Option<AcquiredRead> {
+        let now = Nanos::now();
+        self.last_read = now;
+
+        self.active
+            .acquire(read.seq)
+            .then(|| {
+                if let Some(timer) = &mut self.timer {
+                    if let Ok(reserve_ns) = read.cache_ts() {
+                        timer.emit_latency_from_nanos(reserve_ns, now);
+                    }
+                }
+                AcquiredRead { consumer: self as *const Self, read }
+            })
+            .and_then(|ar| {
+                // check slot seq.
+                self.cache.check_seq(read.seq).then_some(ar)
+            })
+    }
+
     /// Should be called periodically to publish the tail offset so it is
     /// visible to the Producer.
     pub fn free(&mut self) {
         let mut tail = self.active.tail_seq;
         if tail != u64::MAX {
             let cache_head = self.cache.head();
-            if self.last_read.elapsed() > IDLE_INTERVAL_NS {
+            if !self.strict && self.last_read.elapsed() > IDLE_INTERVAL_NS {
                 // check lagging
                 let head = cache_head.seq.load(Ordering::Relaxed);
                 if head.saturating_sub(tail) > self.lag_threshold {
@@ -206,7 +227,7 @@ impl Drop for RandomAccessConsumer {
 /// for the lifetime of every `AcquiredRead` it hands out — guaranteed by
 /// drop-order discipline (see NetworkTile field ordering) - order containers
 /// of reads before consumer.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AcquiredRead {
     consumer: *const RandomAccessConsumer,
     pub read: TCacheRead,
@@ -224,6 +245,11 @@ impl AcquiredRead {
             tracing::warn!("reading below current tail: {:?}", e);
         }
         consumer.cache.read(self.read.seq).map(|(data, _, ts)| (data, ts))
+    }
+
+    pub fn with_offset(&self, offset: usize) -> Option<AcquiredWithOffset> {
+        let consumer = unsafe { &mut *(self.consumer as *mut RandomAccessConsumer) };
+        consumer.acquire_strict(self.read).map(|read| AcquiredWithOffset { read, offset })
     }
 }
 
@@ -252,6 +278,30 @@ impl Drop for AcquiredRead {
     }
 }
 
+impl Clone for AcquiredRead {
+    fn clone(&self) -> Self {
+        unsafe {
+            let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
+            consumer.active.acquire(self.read.seq);
+        }
+        Self { consumer: self.consumer, read: self.read }
+    }
+}
+
+pub struct AcquiredWithOffset {
+    read: AcquiredRead,
+    offset: usize,
+}
+
+impl AsRef<[u8]> for AcquiredWithOffset {
+    fn as_ref(&self) -> &[u8] {
+        match self.read.buffer() {
+            Ok((buffer, _)) => &buffer[self.offset..],
+            Err(_) => &[],
+        }
+    }
+}
+
 pub(super) struct Buckets {
     buckets: Box<[u16]>,
     tail_seq: u64,
@@ -260,16 +310,26 @@ pub(super) struct Buckets {
     bucket_shift: u64,
     bucket_mask: u64,
     // max difference between head and tail, before 'forced' eviction
+    // for 'strict' consumers this is set to cache length so that it never
+    // triggers
     lag_threshold: u64,
     // Out-of-order acquire lookback: the tail never advances within this
     // many seqs of the newest acquire's bucket, so late acquires up to
-    // this far behind still land at or above the tail. 10% of capacity,
+    // this far behind still land at or above the tail. 20% of capacity,
     // rounded up to a bucket.
     guard: u64,
 }
 
 impl Buckets {
     pub(super) fn new(bucket_size: u64, cache_capacity: u64, seq: u64) -> Self {
+        Self::create(bucket_size, cache_capacity, seq, false)
+    }
+
+    pub(super) fn strict(bucket_size: u64, cache_capacity: u64, seq: u64) -> Self {
+        Self::create(bucket_size, cache_capacity, seq, true)
+    }
+
+    pub(super) fn create(bucket_size: u64, cache_capacity: u64, seq: u64, strict: bool) -> Self {
         assert!(bucket_size.is_power_of_two());
         let mut number_of_buckets = cache_capacity / bucket_size;
         if !cache_capacity.is_multiple_of(bucket_size) || !number_of_buckets.is_power_of_two() {
@@ -282,12 +342,16 @@ impl Buckets {
             bucket_size,
             bucket_shift: bucket_size.trailing_zeros() as u64,
             bucket_mask: !(bucket_size - 1),
-            lag_threshold: lag_threshold(cache_capacity as u32),
-            guard: (cache_capacity / 10).next_multiple_of(bucket_size).max(bucket_size),
+            lag_threshold: if strict {
+                cache_capacity
+            } else {
+                lag_threshold(cache_capacity as u32)
+            },
+            guard: (cache_capacity / 5).next_multiple_of(bucket_size).max(bucket_size),
         }
     }
 
-    fn acquire(&mut self, seq: u64) {
+    fn acquire(&mut self, seq: u64) -> bool {
         // Out-of-order acquire beyond the guard window: the producer may
         // already be reclaiming this slot, and bucket_index aliases behind
         // the tail onto in-window buckets — counting it would corrupt a
@@ -295,7 +359,7 @@ impl Buckets {
         // the read surfaces as StaleSeq at buffer() time.
         if self.tail_seq != u64::MAX && seq < self.tail_seq {
             tracing::warn!(seq, tail = self.tail_seq, head = self.head_seq, "acquire below tail");
-            return;
+            return false;
         }
 
         let bucket_idx = self.bucket_index(seq);
@@ -325,6 +389,7 @@ impl Buckets {
             }
             self.tail_seq += self.bucket_size;
         }
+        true
     }
 
     fn release(&mut self, seq: u64, name: &str) {
@@ -383,19 +448,19 @@ mod tests {
     /// newest acquire) must land at or above the tail and be tracked.
     #[test]
     fn buckets_out_of_order_acquire_within_guard() {
-        // guard = (1024/10).next_multiple_of(64) = 128.
+        // guard = (1024/5).next_multiple_of(64) = 256.
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
         b.release(0, "");
-        b.acquire(300);
+        b.acquire(500);
         // Tail rolled over the released bucket but held 128 back from
-        // bucket_start(300) = 256.
-        assert_eq!(b.tail_seq, 128);
+        // bucket_start(500) = 448.
+        assert_eq!(b.tail_seq, 192);
         // Late low acquire inside the window: tracked, not dropped.
         b.acquire(200);
         assert!(b.tail_seq <= 200);
         b.release(200, "");
-        b.release(300, "");
+        b.release(500, "");
     }
 
     /// An acquire below the tail (out-of-order beyond the guard window)
@@ -407,7 +472,7 @@ mod tests {
         let mut b = Buckets::new(64, 1024, 0); // guard 128, lag threshold 921
         b.acquire(0);
         b.release(0, "");
-        b.acquire(1000); // forces tail well past bucket 0 (tail = 832)
+        b.acquire(1000); // forces tail well past bucket 0 (tail = 704)
         let tail = b.tail_seq;
         assert!(tail >= 128);
 
@@ -432,7 +497,7 @@ mod tests {
         b.acquire(200); // bucket 3, head = 200
         assert_eq!(b.tail_seq, 0);
         b.release(0, ""); // bucket 0 empties; head far enough ahead to advance
-        b.acquire(300);
+        b.acquire(500);
         assert!(b.tail_seq > 0, "tail did not advance: {}", b.tail_seq);
         assert!(b.tail_seq <= 200);
     }
@@ -442,13 +507,14 @@ mod tests {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0
         b.acquire(100); // bucket 1
-        b.acquire(300); // bucket 4
+        b.acquire(500); // bucket 8
         // Release the middle first — bucket 1 empties but tail is still at 0
         b.release(100, "");
         assert_eq!(b.tail_seq, 0, "tail moved while bucket 0 still held");
-        // Release the head; tail jumps past bucket 0 and bucket 1 (both empty)
+        // Release the head; tail jumps past bucket 0 and bucket 1 and bucket 2 (all
+        // empty)
         b.release(0, "");
-        b.acquire(350);
+        b.acquire(450);
         assert!(b.tail_seq >= 128, "tail did not jump: {}", b.tail_seq);
     }
 

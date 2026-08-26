@@ -299,6 +299,14 @@ mod tests {
         fn remote_addr(&self) -> std::net::SocketAddr {
             "127.0.0.1:12345".parse().unwrap()
         }
+
+        fn write_bytes_to_stream(
+            &mut self,
+            _id: StreamId,
+            _data: bytes::Bytes,
+        ) -> Result<usize, StreamError> {
+            Ok(0)
+        }
     }
 
     fn sid() -> StreamId {

@@ -289,7 +289,7 @@ impl ColumnBackfill {
             let expected = match self.pending.get_mut(&block_root) {
                 Some(expected) => expected,
                 None => {
-                    tracing::warn!(
+                    tracing::debug!(
                         block_root = hex::encode(block_root),
                         "unrequested backfill data column sidecar"
                     );

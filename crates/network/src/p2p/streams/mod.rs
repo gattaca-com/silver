@@ -1,14 +1,15 @@
 use std::{array::TryFromSliceError, fmt, net::SocketAddr};
 
 use buffa::DecodeError;
+use bytes::Bytes;
 use quinn_proto::{FinishError, ReadError, ReadableError, StreamId, WriteError};
 use silver_common::{TCacheError, TRead};
 use thiserror::Error;
 
 use crate::p2p::streams::snappy::SnappyError;
 
-mod gossip_in;
-mod gossip_out;
+pub(crate) mod gossip_in;
+pub(crate) mod gossip_out;
 mod identify_in;
 mod identify_out;
 mod negotiate;
@@ -42,6 +43,7 @@ pub enum StreamError {
     IdentifyTooBig,
     ReadResponseTimeout,
     GossipReadStall,
+    GossipWriteStall,
 }
 
 impl fmt::Display for StreamError {
@@ -52,6 +54,7 @@ impl fmt::Display for StreamError {
 
 pub trait StreamIo {
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError>;
+    fn write_bytes_to_stream(&mut self, id: StreamId, data: Bytes) -> Result<usize, StreamError>;
     fn read_from_stream(&mut self, id: StreamId, data: &mut [u8]) -> Result<usize, StreamError>;
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError>;
     fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound>;

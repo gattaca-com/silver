@@ -235,6 +235,14 @@ mod tests {
         fn remote_addr(&self) -> SocketAddr {
             "127.0.0.1:0".parse().unwrap()
         }
+
+        fn write_bytes_to_stream(
+            &mut self,
+            _id: StreamId,
+            _data: bytes::Bytes,
+        ) -> Result<usize, StreamError> {
+            unreachable!("read-only test io")
+        }
     }
 
     /// A frame shorter than the 10-byte length read, pipelined hard against

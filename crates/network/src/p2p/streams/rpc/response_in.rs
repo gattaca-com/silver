@@ -369,6 +369,14 @@ mod tests {
         fn remote_addr(&self) -> SocketAddr {
             "127.0.0.1:0".parse().unwrap()
         }
+
+        fn write_bytes_to_stream(
+            &mut self,
+            _id: StreamId,
+            data: bytes::Bytes,
+        ) -> Result<usize, StreamError> {
+            Ok(data.len())
+        }
     }
 
     #[test]
