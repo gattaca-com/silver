@@ -165,7 +165,7 @@ impl RandomAccessConsumer {
             })
             .and_then(|ar| {
                 // check slot seq.
-                self.cache.check_seq(read.seq).then(|| ar)
+                self.cache.check_seq(read.seq).then_some(ar)
             })
     }
 
@@ -251,7 +251,7 @@ impl AcquiredRead {
         let consumer = unsafe { &mut *(self.consumer as *mut RandomAccessConsumer) };
         consumer
             .acquire_strict(self.read)
-            .and_then(|read| Some(AcquiredWithOffset { read, offset }))
+            .map(|read| AcquiredWithOffset { read, offset })
     }
 }
 
@@ -450,19 +450,19 @@ mod tests {
     /// newest acquire) must land at or above the tail and be tracked.
     #[test]
     fn buckets_out_of_order_acquire_within_guard() {
-        // guard = (1024/10).next_multiple_of(64) = 128.
+        // guard = (1024/5).next_multiple_of(64) = 256.
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
         b.release(0, "");
-        b.acquire(300);
+        b.acquire(500);
         // Tail rolled over the released bucket but held 128 back from
-        // bucket_start(300) = 256.
-        assert_eq!(b.tail_seq, 128);
+        // bucket_start(500) = 448.
+        assert_eq!(b.tail_seq, 192);
         // Late low acquire inside the window: tracked, not dropped.
         b.acquire(200);
         assert!(b.tail_seq <= 200);
         b.release(200, "");
-        b.release(300, "");
+        b.release(500, "");
     }
 
     /// An acquire below the tail (out-of-order beyond the guard window)
@@ -474,7 +474,7 @@ mod tests {
         let mut b = Buckets::new(64, 1024, 0); // guard 128, lag threshold 921
         b.acquire(0);
         b.release(0, "");
-        b.acquire(1000); // forces tail well past bucket 0 (tail = 832)
+        b.acquire(1000); // forces tail well past bucket 0 (tail = 704)
         let tail = b.tail_seq;
         assert!(tail >= 128);
 
@@ -499,7 +499,7 @@ mod tests {
         b.acquire(200); // bucket 3, head = 200
         assert_eq!(b.tail_seq, 0);
         b.release(0, ""); // bucket 0 empties; head far enough ahead to advance
-        b.acquire(300);
+        b.acquire(500);
         assert!(b.tail_seq > 0, "tail did not advance: {}", b.tail_seq);
         assert!(b.tail_seq <= 200);
     }
@@ -509,13 +509,14 @@ mod tests {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0
         b.acquire(100); // bucket 1
-        b.acquire(300); // bucket 4
+        b.acquire(500); // bucket 8
         // Release the middle first — bucket 1 empties but tail is still at 0
         b.release(100, "");
         assert_eq!(b.tail_seq, 0, "tail moved while bucket 0 still held");
-        // Release the head; tail jumps past bucket 0 and bucket 1 (both empty)
+        // Release the head; tail jumps past bucket 0 and bucket 1 and bucket 2 (all
+        // empty)
         b.release(0, "");
-        b.acquire(350);
+        b.acquire(450);
         assert!(b.tail_seq >= 128, "tail did not jump: {}", b.tail_seq);
     }
 

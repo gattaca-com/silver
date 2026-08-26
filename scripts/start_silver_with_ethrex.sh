@@ -10,7 +10,7 @@ fi
 
 [ -f "$JWT" ] || openssl rand -hex 32 > "$JWT"
 
-pgrep -f 'ethrex --network mainnet' > /dev/null || systemd-run --scope -p MemoryMax=48G -p AllowedCpus=7-15 --user nohup ethrex \
+pgrep -f 'ethrex --network mainnet' > /dev/null || taskset -c 7-15 systemd-run --scope -p MemoryMax=48G --user nohup ethrex \
   --network mainnet --datadir /home/ubuntu/.ethrex \
   --authrpc.jwtsecret "$JWT" > logs/ethrex.log 2>&1 &
 

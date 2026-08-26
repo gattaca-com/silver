@@ -1688,9 +1688,9 @@ mod tests {
 
     #[test]
     fn inbound_stream_negotiation() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let sid = pair.server_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let server_stream_id = P2pStreamId::new(
@@ -1702,7 +1702,6 @@ mod tests {
         server_h.send_gossip(server_stream_id, b"pong", &mut pair.server_peer);
 
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |c, _| !c.received.is_empty());
-
         assert!(!client_h.received.is_empty(), "client never received server-initiated data");
     }
 
