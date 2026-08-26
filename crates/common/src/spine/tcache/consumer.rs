@@ -249,9 +249,7 @@ impl AcquiredRead {
 
     pub fn with_offset(&self, offset: usize) -> Option<AcquiredWithOffset> {
         let consumer = unsafe { &mut *(self.consumer as *mut RandomAccessConsumer) };
-        consumer
-            .acquire_strict(self.read)
-            .map(|read| AcquiredWithOffset { read, offset })
+        consumer.acquire_strict(self.read).map(|read| AcquiredWithOffset { read, offset })
     }
 }
 
