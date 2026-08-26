@@ -1376,8 +1376,8 @@ mod tests {
 
     #[test]
     fn stream_setup_timeout_reaps_unnegotiated_stream() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let t0 = Instant::now();
         pair.client_peer.open_stream(StreamProtocol::Ping).unwrap();
@@ -1417,8 +1417,8 @@ mod tests {
 
     #[test]
     fn stopped_outbound_goodbye_closes_connection() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
         let now = Instant::now();
         let stream = pair.client_peer.open_stream(StreamProtocol::Goodbye).unwrap();
 
@@ -1436,8 +1436,8 @@ mod tests {
 
     #[test]
     fn stopped_outbound_gossip_keeps_connection_open() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
         let now = Instant::now();
         let stream = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
 
@@ -1460,10 +1460,10 @@ mod tests {
     /// as stream-credit exhaustion.
     #[test]
     fn closing_connection_refuses_sends_and_drops_streams() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
         let now = Instant::now();
+        let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let stream_id = P2pStreamId::new(
@@ -1506,9 +1506,9 @@ mod tests {
             gossip_out::GossipWriteState,
         };
 
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let stream_id = P2pStreamId::new(
@@ -1555,9 +1555,9 @@ mod tests {
     fn inbound_rpc_timeout_reaps_unanswered_stream() {
         use silver_common::{RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound};
 
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let t0 = Instant::now();
         let request = RpcOutbound::Request(RpcRequestOutbound {
@@ -1610,9 +1610,9 @@ mod tests {
     /// gossip-write state machine has crossed out of `NegotiateState`.
     #[test]
     fn outbound_stream_negotiation() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let stream_id = P2pStreamId::new(
@@ -1630,9 +1630,9 @@ mod tests {
 
     #[test]
     fn outbound_stream_data_transfer() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let stream_id = P2pStreamId::new(
@@ -1653,9 +1653,9 @@ mod tests {
 
     #[test]
     fn bidirectional_data_transfer() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let client_stream_id = P2pStreamId::new(
@@ -1711,9 +1711,9 @@ mod tests {
     /// enqueues.
     #[test]
     fn multiple_streams() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
         let stream_id = P2pStreamId::new(
@@ -1741,9 +1741,9 @@ mod tests {
     /// the second frame parks, then free and verify delivery resumes.
     #[test]
     fn tcache_full_park_and_retry() {
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
 
         // Shrink the server's inbound gossip tcache: one 6 KB frame fits,
         // two don't.
@@ -1806,10 +1806,10 @@ mod tests {
     fn goodbye_delivered_before_shutdown() {
         use silver_common::{RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound};
 
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
         let now = Instant::now();
+        let mut pair = PeerPair::new();
 
         let goodbye = RpcOutbound::Request(RpcRequestOutbound {
             application_id: 0,
@@ -1847,10 +1847,10 @@ mod tests {
             RpcResponseOutbound, ssz_view::STATUS_V2_SIZE,
         };
 
-        let mut pair = PeerPair::new();
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
         let now = Instant::now();
+        let mut pair = PeerPair::new();
 
         let request = RpcOutbound::Request(RpcRequestOutbound {
             application_id: 7,
