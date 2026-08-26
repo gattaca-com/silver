@@ -2,38 +2,42 @@ use std::{
     collections::{VecDeque, hash_map::Entry},
     io::{Error, Read},
     path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
 };
 
 use flux_profiler::timed;
 use fxhash::FxHashMap;
+use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead,
+    TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
-        ExecutionPayloadEnvelopesByRangeRequestView, ExecutionPayloadEnvelopesByRootRequestView,
+        DataColumnsByRootRequestView, ExecutionPayloadEnvelopesByRangeRequestView,
+        ExecutionPayloadEnvelopesByRootRequestView, MAX_REQUEST_BLOCKS_DENEB,
     },
 };
 
-use crate::{
-    StorageCounters,
-    store::backfill::{Backfill, ColumnBackfill},
-};
+use crate::StorageCounters;
 
 mod backfill;
 mod checkpoint;
+mod history;
 mod io;
 mod unfinalized;
 
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
+use history::HistoryBackfill;
 use unfinalized::{PayloadKey, UnfinalizedBlocks, UnfinalizedColumns, UnfinalizedEnvelopes};
 
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
 /// (16384), i.e. `count <= MAX_REQUEST_BLOCKS_DENEB`.
-const MAX_REQUEST_BLOCKS: u64 = 32;
+const MAX_REQUEST_BLOCKS: u64 = MAX_REQUEST_BLOCKS_DENEB as u64;
 
 /// Cap on concurrent in-flight read requests. Past this, a new request is
 /// answered with an empty (Complete-only) response — sheds load under a peer
@@ -48,7 +52,6 @@ const SLOTS_PER_DIR: u64 = 128;
 
 const PEERS_DIR: &str = "peers";
 
-const BLOCK_SLOTS_RETAINED: u64 = 33024 * 32;
 const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
 
 const ALL_PAYLOADS: [Payload; 3] = [Payload::Block, Payload::Column, Payload::Envelope];
@@ -77,9 +80,11 @@ impl Payload {
         }
     }
 
-    fn slots_retained(self) -> u64 {
+    fn slots_retained(self, spec: &SpecConfig, epoch: u64) -> u64 {
         match self {
-            Payload::Block | Payload::Envelope => BLOCK_SLOTS_RETAINED,
+            Payload::Block | Payload::Envelope => {
+                spec.min_epochs_for_block_requests(epoch) * SLOTS_PER_EPOCH
+            }
             Payload::Column => COLUMN_SLOTS_RETAINED,
         }
     }
@@ -109,6 +114,13 @@ impl Payload {
     }
 }
 
+pub(super) struct ReplayEntry {
+    pub(super) slot: u64,
+    pub(super) block: PathBuf,
+    pub(super) columns_on_disk: bool,
+    pub(super) envelope: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 enum PendingWrite {
     Index {
@@ -126,6 +138,11 @@ enum PendingWrite {
         key: PayloadKey,
         ssz: TRead,
     },
+    /// Backfilled payload envelope → the flat slot store.
+    BackfillEnvelope {
+        slot: u64,
+        ssz: TRead,
+    },
     /// Finalized: rename the unfinalized file into the flat slot store (a block
     /// additionally appends its index record).
     Promote {
@@ -141,7 +158,8 @@ enum PendingWrite {
         payload: Payload,
         finalized_slot: u64,
     },
-    Backfill {
+    /// Size the block-backfill gap from what is on disk and start the walk.
+    StartBlockBackfill {
         finalized_slot: u64,
         finalized_root: B256,
     },
@@ -150,9 +168,10 @@ enum PendingWrite {
         slot: u64,
         ssz: TRead,
     },
-    /// Kick off the data-column backfill disk scan. Runs to completion before
-    /// block backfill (`Backfill`) is queued — see `io::file_io`.
-    ColumnBackfillScan {
+    /// Bootstrap historical backfill: size the column and envelope windows,
+    /// start the disk scan, and stage block backfill behind it. One-shot, at
+    /// the first `Following` transition.
+    StartBackfill {
         finalized_slot: u64,
         finalized_root: B256,
     },
@@ -160,28 +179,6 @@ enum PendingWrite {
         enr: Enr,
     },
     LoadPeers,
-}
-
-/// Descending cursor for the data-column backfill disk scan. Walks persisted
-/// blocks from `finalized_slot` down to `floor` (= finalized − retention),
-/// seeding `ColumnBackfill` with blocks whose custody columns are incomplete.
-pub(super) struct ColumnScan {
-    pub(super) cursor: u64,
-    pub(super) floor: u64,
-}
-
-/// Sequences the two backfill phases. Column backfill runs first (disk scan of
-/// present blocks = set 1, plus the columns of blocks fetched by block backfill
-/// = set 2); block backfill is queued only once the scan + its set-1 requests
-/// drain. `EarliestSlot` drops to the column floor only at `Done` + columns
-/// complete, so we never over-advertise servable column history.
-#[derive(Clone, Copy)]
-pub(super) enum BlockBackfillStage {
-    Idle,
-    AwaitingColumns { finalized_slot: u64, finalized_root: B256 },
-    Queued,
-    Running,
-    Done,
 }
 
 /// One served file = one response chunk. The unit's resolution (canonical
@@ -217,10 +214,44 @@ impl QueryUnit {
 struct PendingQuery {
     stream_id: P2pStreamId,
     units: VecDeque<QueryUnit>,
+    received_at: Instant,
+    first_chunk_at: Option<Instant>,
+    units_total: u32,
+    units_sent: u32,
+}
+
+impl PendingQuery {
+    fn new(stream_id: P2pStreamId, units: VecDeque<QueryUnit>) -> Self {
+        Self {
+            stream_id,
+            received_at: Instant::now(),
+            first_chunk_at: None,
+            units_total: units.len() as u32,
+            units_sent: 0,
+            units,
+        }
+    }
+
+    /// The `RpcServeOutcome` for this query terminating now.
+    fn outcome(&self, missing: bool) -> PeerEvent {
+        PeerEvent::RpcServeOutcome {
+            p2p_peer: self.stream_id.peer(),
+            protocol: self.stream_id.protocol(),
+            units_total: self.units_total,
+            units_sent: self.units_sent,
+            missing,
+            first_chunk_ms: self
+                .first_chunk_at
+                .map(|t| t.duration_since(self.received_at).as_millis() as u64)
+                .unwrap_or(0),
+            elapsed_ms: self.received_at.elapsed().as_millis() as u64,
+        }
+    }
 }
 
 /// Unified blocks and data columns disk store.
 pub(super) struct Store {
+    spec: Arc<SpecConfig>,
     store_dir: String,
     // Finalized block index: block_root → slot, persisted in block_index.bin.
     root_index: FxHashMap<[u8; 32], u64>,
@@ -234,18 +265,8 @@ pub(super) struct Store {
     finalized_slot: u64,
     finalized_root: [u8; 32],
     // Historical backfill.
-    is_synced: bool,
-    backfill_checked: bool,
-    backfill: Option<Backfill>,
-    // Data-column backfill, driven independently of block backfill and run
-    // first. `column_scan` is the in-progress disk scan that seeds
-    // `column_backfill`; `column_floor` is the window's lowest slot, advertised
-    // as earliest-available once both backfills finish. `block_backfill_stage`
-    // sequences column-then-block (see `BlockBackfillStage`).
-    column_backfill: Option<ColumnBackfill>,
-    column_scan: Option<ColumnScan>,
-    column_floor: u64,
-    block_backfill_stage: BlockBackfillStage,
+    sync_target: SyncUpdate,
+    history: HistoryBackfill,
     // Slot of the newest finalized-state checkpoint committed to disk.
     last_persisted_finalized_slot: u64,
     // In-flight streamed checkpoint, advanced one section per `file_io` turn.
@@ -256,7 +277,7 @@ pub(super) struct Store {
 }
 
 impl Store {
-    pub(super) fn load(store_dir: String) -> Result<Self, Error> {
+    pub(super) fn load(store_dir: String, spec: Arc<SpecConfig>) -> Result<Self, Error> {
         let mut root_index = FxHashMap::default();
 
         // Try to create dirs if they do not exist.
@@ -292,6 +313,7 @@ impl Store {
         let last_persisted_finalized_slot = checkpoint::init_checkpoints_dir(&store_dir)?;
 
         Ok(Self {
+            spec,
             store_dir,
             root_index,
             unfinalized,
@@ -301,13 +323,8 @@ impl Store {
             head_slot: 0,
             finalized_slot: 0,
             finalized_root: [0u8; 32],
-            backfill: None,
-            column_backfill: None,
-            column_scan: None,
-            column_floor: 0,
-            block_backfill_stage: BlockBackfillStage::Idle,
-            backfill_checked: false,
-            is_synced: false,
+            history: HistoryBackfill::default(),
+            sync_target: SyncUpdate::default(),
             last_persisted_finalized_slot,
             checkpoint: None,
             write_queue: Default::default(),
@@ -336,13 +353,31 @@ impl Store {
         } else {
             // Unfinalized: keyed by owning block_root, promoted/pruned with
             // the block. The caller (tile) has already validated the sidecar.
-            self.unfinalized_columns.record(block_root, slot, column_index);
-            self.write_queue.push_back(PendingWrite::WriteUnfinalized {
-                slot,
-                key: PayloadKey::Column { block_root, column: column_index },
-                ssz: sidecar_ssz,
-            });
+            if self.unfinalized_columns.record(block_root, slot, column_index) {
+                self.write_queue.push_back(PendingWrite::WriteUnfinalized {
+                    slot,
+                    key: PayloadKey::Column { block_root, column: column_index },
+                    ssz: sidecar_ssz,
+                });
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn earliest_servable(&self, custody_columns: u128) -> u64 {
+        self.history.earliest_servable(custody_columns, &self.spec, self.finalized_slot)
+    }
+
+    /// The claim this tile makes about the history it can serve, when it moved.
+    pub(super) fn take_earliest_slot_claim(&mut self, custody_columns: u128) -> Option<u64> {
+        if self.head_root == [0u8; 32] {
+            return None;
+        }
+        self.history.take_claim(custody_columns, &self.spec, self.finalized_slot)
+    }
+
+    pub(super) fn is_envelope_owed(&self, block_root: &[u8; 32], slot: u64) -> bool {
+        slot > self.finalized_slot && self.unfinalized_envelopes.slot_of(block_root).is_none()
     }
 
     pub(super) fn add_envelope(&mut self, block_root: [u8; 32], envelope_ssz: TRead) {
@@ -362,12 +397,14 @@ impl Store {
         if slot <= self.finalized_slot {
             return;
         }
-        self.unfinalized_envelopes.insert(block_root, slot);
-        self.write_queue.push_back(PendingWrite::WriteUnfinalized {
-            slot,
-            key: PayloadKey::Envelope { block_root },
-            ssz: envelope_ssz,
-        });
+
+        if self.unfinalized_envelopes.insert(block_root, slot) {
+            self.write_queue.push_back(PendingWrite::WriteUnfinalized {
+                slot,
+                key: PayloadKey::Envelope { block_root },
+                ssz: envelope_ssz,
+            });
+        }
     }
 
     #[timed]
@@ -393,28 +430,28 @@ impl Store {
         });
     }
 
-    pub(super) fn backfill_block(&mut self, ssz: TRead) {
-        match self.backfill.as_mut() {
-            Some(backfill) => backfill.add_block(ssz, &mut self.write_queue),
-            None => {
-                tracing::error!("recevied backfill lbock, but no active backfill!");
-            }
+    pub(super) fn backfill_block<F>(&mut self, ssz: TRead, emit: &mut F)
+    where
+        F: FnMut(SyncNeed),
+    {
+        self.history.add_block(ssz, &mut self.write_queue, emit);
+    }
+
+    pub(super) fn backfill_envelope<F>(&mut self, signed: TRead, emit: &mut F)
+    where
+        F: FnMut(SyncNeed),
+    {
+        if let Some((block_root, slot)) = self.history.add_envelope(&signed, &self.root_index) {
+            self.write_queue.push_back(PendingWrite::BackfillEnvelope { slot, ssz: signed });
+            emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Envelope });
         }
     }
 
     pub(super) fn backfill_data_column<F>(&mut self, sidecar: TRead, emit: &mut F)
     where
-        F: FnMut(PeerEvent),
+        F: FnMut(SyncNeed),
     {
-        let accepted = match self.column_backfill.as_mut() {
-            Some(column_backfill) => column_backfill.add_sidecar(&sidecar, emit),
-            None => {
-                tracing::error!("received backfill data column, but no active column backfill!");
-                None
-            }
-        };
-
-        if let Some(accepted) = accepted {
+        if let Some(accepted) = self.history.add_sidecar(&sidecar, emit) {
             self.add_data_column(
                 accepted.block_root,
                 accepted.column_index,
@@ -422,32 +459,15 @@ impl Store {
                 accepted.slot,
             );
         }
-        // Completion + earliest-available emission is polled in `file_io`'s
-        // tick once both column and block backfill have drained.
     }
 
     pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {
-        match sync_update {
-            SyncUpdate::Following if !self.is_synced => {
-                // First update - check whether we need to backfill history.
-                tracing::info!("storage synced");
-                self.is_synced = true;
-
-                if !self.backfill_checked {
-                    self.backfill_checked = true;
-                    // Column backfill first: scan persisted blocks for missing
-                    // columns and fetch them. Block backfill is queued by
-                    // `file_io` only once this completes.
-                    self.write_queue.push_back(PendingWrite::ColumnBackfillScan {
-                        finalized_slot: self.finalized_slot,
-                        finalized_root: self.finalized_root,
-                    });
-                }
-            }
-            _ => {
-                tracing::info!("storage not synced");
-                self.is_synced = false;
-            }
+        self.sync_target = sync_update;
+        if sync_update.is_following() && self.history.check_disk_once() {
+            self.write_queue.push_back(PendingWrite::StartBackfill {
+                finalized_slot: self.finalized_slot,
+                finalized_root: self.finalized_root,
+            });
         }
     }
 
@@ -518,32 +538,47 @@ impl Store {
         &self.store_dir
     }
 
-    pub(super) fn replay_block_paths(&self, custody: u128) -> Vec<(u64, PathBuf, bool)> {
+    pub(super) fn replay_entries(&self, custody: u128) -> Vec<ReplayEntry> {
         let checkpoint_slot = self.last_persisted_finalized_slot;
-        let mut paths = Vec::with_capacity(self.unfinalized.len());
+        let mut entries = Vec::with_capacity(self.unfinalized.len());
         for (block_root, slot, parent_root) in self.unfinalized.iter() {
             if slot > checkpoint_slot {
-                paths.push((
+                let block = self.unfinalized_dir(Payload::Block).join(io::unfinalized_name(
                     slot,
-                    self.unfinalized_dir(Payload::Block).join(io::unfinalized_name(
-                        slot,
-                        &parent_root,
-                        block_root,
-                    )),
-                    self.unfinalized_columns.has_full_custody(block_root, custody),
+                    &parent_root,
+                    block_root,
                 ));
+                let envelope = self.unfinalized_envelopes.slot_of(block_root).map(|slot| {
+                    self.unfinalized_dir(Payload::Envelope)
+                        .join(io::unfinalized_envelope_name(slot, block_root))
+                });
+
+                entries.push(ReplayEntry {
+                    slot,
+                    block,
+                    columns_on_disk: self.unfinalized_columns.has_full_custody(block_root, custody),
+                    envelope,
+                });
             }
         }
         for &slot in self.root_index.values() {
             if slot > checkpoint_slot {
-                paths.push((
-                    slot,
-                    self.finalized_slot_dir(Payload::Block, slot).join(format!("{slot}_block.ssz")),
-                    true,
-                ));
+                let block =
+                    self.finalized_slot_dir(Payload::Block, slot).join(format!("{slot}_block.ssz"));
+
+                // Promoted envelopes are keyed by slot, so presence on disk is
+                // the whole test
+                let envelope = (slot >= self.spec.gloas_fork_slot())
+                    .then(|| {
+                        self.finalized_slot_dir(Payload::Envelope, slot)
+                            .join(format!("{slot}_envelope.ssz"))
+                    })
+                    .filter(|path| path.exists());
+
+                entries.push(ReplayEntry { slot, block, columns_on_disk: true, envelope });
             }
         }
-        paths
+        entries
     }
 
     #[timed]
@@ -560,7 +595,7 @@ impl Store {
         // TODO should not return 'Complete' should return rate limit error
         if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
             tracing::warn!(?stream_id, "queries at capacity");
-            self.query_queue.push_back(PendingQuery { stream_id, units: VecDeque::new() });
+            self.query_queue.push_back(PendingQuery::new(stream_id, VecDeque::new()));
             return;
         }
 
@@ -607,29 +642,33 @@ impl Store {
                 with_root_request(
                     rpc_consumer,
                     read,
-                    DataColumnsByRootIdentifierView::check_size,
+                    DataColumnsByRootRequestView::check_size,
                     |buf| {
-                        let root = DataColumnsByRootIdentifierView::block_root(buf);
-                        let request_columns = DataColumnsByRootIdentifierView::columns(buf)
-                            .chunks_exact(8)
-                            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+                        let ids = DataColumnsByRootRequestView::count(buf);
+                        tracing::info!(?stream_id, ids, len = buf.len(), "storage query");
 
-                        tracing::info!(?stream_id, ?root, "storage query");
+                        for i in 0..ids {
+                            let id = DataColumnsByRootRequestView::identifier(buf, i);
+                            let root = DataColumnsByRootIdentifierView::block_root(id);
+                            let request_columns = DataColumnsByRootIdentifierView::columns(id)
+                                .chunks_exact(8)
+                                .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
 
-                        // Serve a specific block's columns regardless of
-                        // canonicity: unfinalized (by block_root) first, else
-                        // the finalized flat store.
-                        if let Some(slot) = self.unfinalized_columns.slot_of(root) {
-                            for column in request_columns {
-                                units.push_back(QueryUnit::UnfinalizedColumn {
-                                    slot,
-                                    block_root: *root,
-                                    column,
-                                });
-                            }
-                        } else if let Some(&slot) = self.root_index.get(root) {
-                            for column in request_columns {
-                                units.push_back(QueryUnit::Column { slot, column });
+                            // Serve a specific block's columns regardless of
+                            // canonicity: unfinalized (by block_root) first,
+                            // else the finalized flat store.
+                            if let Some(slot) = self.unfinalized_columns.slot_of(root) {
+                                for column in request_columns {
+                                    units.push_back(QueryUnit::UnfinalizedColumn {
+                                        slot,
+                                        block_root: *root,
+                                        column,
+                                    });
+                                }
+                            } else if let Some(&slot) = self.root_index.get(root) {
+                                for column in request_columns {
+                                    units.push_back(QueryUnit::Column { slot, column });
+                                }
                             }
                         }
                     },
@@ -660,7 +699,7 @@ impl Store {
                     |buf| {
                         let count = BeaconBlocksByRootRequestView::count(buf);
 
-                        tracing::info!(?stream_id, count, "storage query");
+                        tracing::info!(?stream_id, count, len = buf.len(), "storage query");
 
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
@@ -675,6 +714,11 @@ impl Store {
                                 });
                             } else if let Some(&slot) = self.root_index.get(root) {
                                 units.push_back(QueryUnit::Block { slot });
+                            } else {
+                                tracing::warn!(
+                                    block_root = hex::encode(root),
+                                    "BlockByRoot - root not found"
+                                );
                             }
                         }
                     },
@@ -723,7 +767,7 @@ impl Store {
             // Unhandled request kind: no response (matches prior behaviour).
             _ => return,
         }
-        self.query_queue.push_back(PendingQuery { stream_id, units });
+        self.query_queue.push_back(PendingQuery::new(stream_id, units));
     }
 
     fn resolve_canonical_range(
@@ -782,7 +826,16 @@ fn with_root_request(
         check_size(buf)
     {
         resolve(buf);
+    } else {
+        // Fall through with no units: the caller still enqueues the query,
+        // so the peer gets an immediate bare `Complete`, not a hung stream.
+        tracing::warn!("root request buffer not resolved!");
     }
+}
+
+#[cfg(test)]
+fn test_spec(gloas_fork_epoch: u64) -> Arc<SpecConfig> {
+    Arc::new(SpecConfig { gloas_fork_epoch, ..SpecConfig::mainnet() })
 }
 
 #[cfg(test)]
@@ -796,6 +849,20 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    use silver_common::{DataKind, SyncNeed};
+
+    /// These fixtures are all fulu-era, so the fork never activates.
+    fn load_fulu(store_dir: String) -> super::Store {
+        super::Store::load(store_dir, super::test_spec(u64::MAX)).unwrap()
+    }
+
+    /// Gloas active from genesis. A store holding payload envelopes is
+    /// post-fork by definition, so a fulu-era spec would contradict the
+    /// fixture.
+    fn load_gloas(store_dir: String) -> super::Store {
+        super::Store::load(store_dir, super::test_spec(0)).unwrap()
+    }
 
     use silver_common::column_util;
 
@@ -862,7 +929,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_fork_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
         // Two competing blocks at slot 42 sharing parent CC: A canonical, B fork.
         let parent_root = [0xCC; 32];
@@ -1006,7 +1073,7 @@ mod tests {
         assert_block(&after[0], &bytes_a);
 
         // Reload: finalized index persisted, unfinalized tree empty.
-        let reloaded = super::Store::load(store_path.clone()).unwrap();
+        let reloaded = load_fulu(store_path.clone());
         assert_eq!(reloaded.root_index.get(&root_a), Some(&slot));
         assert!(reloaded.unfinalized.is_empty());
 
@@ -1021,7 +1088,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_env_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_gloas(store_path.clone());
 
         // Canonical block A + fork block B at slot 42, shared parent CC; each
         // gets an envelope.
@@ -1072,6 +1139,21 @@ mod tests {
         assert!(unf_a.exists());
         assert!(unf_b.exists());
 
+        // Replay pairs each block with its envelope: a gloas child's precheck
+        // only passes once the parent's payload is verified.
+        let entries = store.replay_entries(0);
+        assert_eq!(entries.len(), 2, "both forks replayable");
+        assert_eq!(
+            entries.iter().filter(|e| e.envelope.as_ref() == Some(&unf_a)).count(),
+            1,
+            "A paired with its unfinalized envelope"
+        );
+        assert_eq!(
+            entries.iter().filter(|e| e.envelope.as_ref() == Some(&unf_b)).count(),
+            1,
+            "B paired with its own, not A's"
+        );
+
         // Finalize at slot 42 on A: promote A's envelope, prune orphan B's.
         store.update_head(slot, root_a, slot, root_a);
         assert!(store.unfinalized_envelopes.is_empty());
@@ -1085,8 +1167,16 @@ mod tests {
         assert!(!unf_a.exists(), "promoted out of unfinalized");
         assert!(!unf_b.exists(), "orphan envelope pruned");
 
+        let entries = store.replay_entries(0);
+        assert_eq!(entries.len(), 1, "only the promoted block replays");
+        assert_eq!(
+            entries[0].envelope.as_ref(),
+            Some(&flat_a),
+            "paired with the promoted envelope, found by slot"
+        );
+
         // Reload rebuilds the (now empty) unfinalized envelope index.
-        let reloaded = super::Store::load(store_path.clone()).unwrap();
+        let reloaded = load_gloas(store_path.clone());
         assert!(reloaded.unfinalized_envelopes.is_empty());
 
         let _ = std::fs::remove_dir_all(&store_path);
@@ -1101,7 +1191,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_cycle_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
         // parent_root == block_root: a self-loop in the fork tree.
         let root_x = [0xEE; 32];
@@ -1150,7 +1240,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_env_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
         // We don't persist envelopes, but an inbound range request must still get
         // a clean empty response (`Complete` only), never a hung stream.
@@ -1198,7 +1288,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_colfork_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
         let ucol_dir = store.unfinalized_dir(super::Payload::Column);
         let flat_dir = store.finalized_slot_dir(super::Payload::Column, 42);
 
@@ -1286,13 +1376,19 @@ mod tests {
         assert_col(&responses[0], &a3);
         assert_col(&responses[1], &a7);
 
-        // DataColumnsByRoot for the fork B's column 3: served despite B being
-        // non-canonical. SSZ: block_root | offset(=36) | column list.
-        let mut byroot = [0u8; 44];
-        byroot[0..32].copy_from_slice(&root_b);
-        byroot[32..36].copy_from_slice(&36u32.to_le_bytes());
-        byroot[36..44].copy_from_slice(&3u64.to_le_bytes());
-        let mut br_res = req_producer.reserve(44, true).unwrap();
+        // DataColumnsByRoot spanning both roots in one request: A's column 7
+        // and non-canonical B's column 3. Wire format is
+        // List[DataColumnsByRootIdentifier]: outer offset table (u32 LE per
+        // element), then per element root | inner offset(=36) | column list.
+        let mut byroot = Vec::new();
+        byroot.extend_from_slice(&8u32.to_le_bytes()); // element 0 at 8
+        byroot.extend_from_slice(&52u32.to_le_bytes()); // element 1 at 8 + 44
+        for (root, column) in [(&root_a, 7u64), (&root_b, 3u64)] {
+            byroot.extend_from_slice(root);
+            byroot.extend_from_slice(&36u32.to_le_bytes());
+            byroot.extend_from_slice(&column.to_le_bytes());
+        }
+        let mut br_res = req_producer.reserve(byroot.len(), true).unwrap();
         br_res.write_all(&byroot).unwrap();
         br_res.flush().unwrap();
         let byroot_ssz = br_res.read();
@@ -1307,8 +1403,40 @@ mod tests {
                 _ => {}
             })
             .unwrap();
-        assert_eq!(br.len(), 2); // B column 3 + Complete
-        assert_col(&br[0], &b3);
+        assert_eq!(br.len(), 3); // A column 7, B column 3, Complete
+        assert_col(&br[0], &a7);
+        assert_col(&br[1], &b3);
+
+        // A bare identifier (no outer offset table — the pre-fix encoding) is
+        // rejected: no units resolve, the peer still gets an immediate bare
+        // Complete rather than a hung stream.
+        let mut bare = [0u8; 44];
+        bare[0..32].copy_from_slice(&root_b);
+        bare[32..36].copy_from_slice(&36u32.to_le_bytes());
+        bare[36..44].copy_from_slice(&3u64.to_le_bytes());
+        let mut bare_res = req_producer.reserve(44, true).unwrap();
+        bare_res.write_all(&bare).unwrap();
+        bare_res.flush().unwrap();
+        let bare_ssz = bare_res.read();
+        store.rpc_request(&mut req_consumer, RpcRequestInbound {
+            stream_id: sid,
+            request: RpcRequest::DataColumnsByRoot(bare_ssz),
+        });
+        let mut rejected = vec![];
+        store
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => rejected.push(s),
+                _ => {}
+            })
+            .unwrap();
+        assert_eq!(rejected.len(), 1, "malformed by-root request answers a bare Complete");
+        assert!(matches!(
+            &rejected[0],
+            P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                response: RpcResponse::Complete,
+                ..
+            }))
+        ));
 
         // Finalize on A at slot 42: promote A's columns, prune B's.
         store.update_head(slot, root_a, slot, root_a);
@@ -1337,7 +1465,7 @@ mod tests {
         assert_col(&after[1], &a7);
 
         // Reload: finalized index persisted, unfinalized column index empty.
-        let reloaded = super::Store::load(store_path.clone()).unwrap();
+        let reloaded = load_fulu(store_path.clone());
         assert!(reloaded.unfinalized_columns.is_empty());
         assert_eq!(reloaded.root_index.get(&root_a), Some(&slot));
 
@@ -1350,7 +1478,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_backfill_index_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
         let slot = 64u64;
         let parent_root = [0x42; 32];
@@ -1369,8 +1497,12 @@ mod tests {
         let ssz = res.read();
         let mut consumer = blocks.cache_ref().random_access("backfill_index_cons", true).unwrap();
 
-        store.backfill = Some(super::Backfill::new(slot..slot + 1, block_root));
-        store.backfill_block(consumer.acquire(ssz));
+        store.history.blocks = Some(super::backfill::Backfill::new(
+            slot..slot + 1,
+            block_root,
+            super::test_spec(u64::MAX),
+        ));
+        store.backfill_block(consumer.acquire(ssz), &mut |_| {});
 
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("backfill_index_rpc", 1 << 20);
@@ -1385,25 +1517,147 @@ mod tests {
                 .exists()
         );
 
-        let reloaded = super::Store::load(store_path.clone()).unwrap();
+        let reloaded = load_fulu(store_path.clone());
         assert_eq!(reloaded.root_index.get(&block_root), Some(&slot));
 
         let _ = std::fs::remove_dir_all(&store_path);
     }
 
     #[test]
-    fn persisted_backfill_block_requests_data_columns() {
-        use silver_common::{PeerEvent, TCache, TCacheProducer};
+    fn column_already_on_disk_is_not_written_again() {
+        use silver_common::{TCache, TCacheProducer};
 
-        let store_path = format!("/tmp/test_store_column_backfill_{}", rand::random::<u32>());
+        let store_path = format!("/tmp/test_store_col_dedupe_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
-        let slot = 96u64;
-        let parent_root = [0x31; 32];
-        let state_root = [0x13; 32];
-        let body_start = 184usize;
-        let body_len = 404usize;
+        let (slot, block_root) = (9u64, [3u8; 32]);
+        let mut tc = TCache::producer("dedupe_data", 1 << 20);
+        let mut stage = |bytes: &[u8]| {
+            let mut r = tc.reserve(bytes.len(), true).unwrap();
+            r.write_all(bytes).unwrap();
+            r.flush().unwrap();
+            r.read()
+        };
+        let (first, second) = (stage(&[0xC1u8; 64]), stage(&[0xC1u8; 64]));
+        let mut consumer = tc.cache_ref().random_access("dedupe_cons", true).unwrap();
+
+        store.add_data_column(block_root, 3, consumer.acquire(first), slot);
+        assert_eq!(store.write_queue.len(), 1, "the first copy is written");
+
+        store.add_data_column(block_root, 3, consumer.acquire(second), slot);
+        assert_eq!(store.write_queue.len(), 1, "the second is already on disk");
+
+        store
+            .file_io(
+                |_| [0u8; 4],
+                0,
+                &mut TCache::multi_producer("dedupe_rpc", 1 << 16),
+                &mut |_| {},
+            )
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    /// Claiming a slot invites requests for it, and answering nothing is what
+    /// peers score as a bad response — so the claim is what is held: the anchor
+    /// until a walk descends below it, then wherever the walks have reached.
+    #[test]
+    fn the_claim_is_what_the_walks_have_reached() {
+        use silver_common::{PeerEvent, TCache};
+
+        let store_path = format!("/tmp/test_store_claim_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_fulu(store_path.clone());
+        let custody = (1u128 << 3) | (1u128 << 7);
+
+        let anchor = 256u64;
+        store.head_root = [1u8; 32];
+        store.finalized_slot = anchor;
+        assert_eq!(
+            store.earliest_servable(custody),
+            anchor,
+            "nothing below the anchor is held until a walk gets there"
+        );
+
+        // Armed as `StartBackfill` arms them: the column window is what they
+        // mean to fill, not what is held, and no block walk has descended yet.
+        store.history.columns = Some(super::backfill::ColumnBackfill::new(1..anchor + 1));
+        store.history.scan = Some(super::history::ColumnScan { cursor: anchor, floor: 1 });
+        assert_eq!(store.earliest_servable(custody), anchor);
+
+        // Block backfill walking: the blocks it has yet to link are the claim.
+        store.history.scan = None;
+        store.history.blocks =
+            Some(super::backfill::Backfill::new(1..129, [9u8; 32], super::test_spec(u64::MAX)));
+        assert_eq!(store.earliest_servable(custody), 129);
+
+        // Both walks done: the floor they reached is all that is left of them,
+        // and it is published as soon as it changes.
+        store.history.blocks = None;
+        store.history.stage = super::history::BlockBackfillStage::Done;
+        let mut columns = super::backfill::ColumnBackfill::new(1..anchor + 1);
+        columns.mark_scan_complete();
+        store.history.columns = Some(columns);
+
+        let producer_cache = TCache::multi_producer("claim_rpc", 1 << 16);
+        let mut producer = producer_cache.clone();
+        let mut claims = Vec::new();
+        store
+            .file_io(|_| [0u8; 4], custody, &mut producer, &mut |io| {
+                if let IoEvent::PeerEvent(PeerEvent::EarliestSlot(slot)) = io {
+                    claims.push(slot);
+                }
+            })
+            .unwrap();
+
+        assert!(store.history.columns.is_none(), "torn down");
+        assert_eq!(store.history.retired_floor, Some(1), "where the walk reached");
+        assert_eq!(claims, vec![1], "the new claim, published once: {claims:?}");
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    /// Retention keeps deleting the bottom of the window, so a claim that stood
+    /// still would go on advertising history that has been pruned.
+    #[test]
+    fn pruning_raises_the_claim() {
+        use silver_common::{PeerEvent, TCache};
+
+        let store_path = format!("/tmp/test_store_prune_claim_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_fulu(store_path.clone());
+
+        store.head_root = [1u8; 32];
+        store.finalized_slot = super::COLUMN_SLOTS_RETAINED + 5000;
+        store.history.retired_floor = Some(1);
+        store.history.claimed_earliest = Some(1);
+        store.write_queue.push_back(super::PendingWrite::TruncateHistory {
+            payload: super::Payload::Column,
+            finalized_slot: store.finalized_slot,
+        });
+
+        let producer_cache = TCache::multi_producer("prune_claim_rpc", 1 << 16);
+        let mut producer = producer_cache.clone();
+        let mut claims = Vec::new();
+        store
+            .file_io(|_| [0u8; 4], 1, &mut producer, &mut |io| {
+                if let IoEvent::PeerEvent(PeerEvent::EarliestSlot(slot)) = io {
+                    claims.push(slot);
+                }
+            })
+            .unwrap();
+
+        assert_eq!(claims, vec![5000], "claim follows the truncation up: {claims:?}");
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    /// Synthetic fulu `SignedBeaconBlock` carrying blob commitments, so the
+    /// column walk owes it a custody set. Message at 100, body at 184,
+    /// commitments spanning body[396..404).
+    fn blob_block(slot: u64, parent_root: [u8; 32], state_root: [u8; 32]) -> Vec<u8> {
+        let (body_start, body_len) = (184usize, 404usize);
         let mut block = vec![0u8; body_start + body_len];
         block[100..108].copy_from_slice(&slot.to_le_bytes());
         block[108..116].copy_from_slice(&11u64.to_le_bytes());
@@ -1411,6 +1665,128 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
+        block
+    }
+
+    /// Beacon state announces an envelope again every time it is handed one it
+    /// already verified — that is how window coverage comes back after it was
+    /// dropped. Only this store knows whether the bytes got down, so only this
+    /// store can drop the second copy.
+    #[test]
+    fn envelope_already_on_disk_is_not_written_again() {
+        use silver_common::{TCache, TCacheProducer};
+
+        let store_path = format!("/tmp/test_store_env_dedupe_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_gloas(store_path.clone());
+
+        let (slot, block_root, parent_root) = (9u64, [3u8; 32], [0u8; 32]);
+        let mut tc = TCache::producer("env_dedupe_data", 1 << 20);
+        let mut stage = |bytes: &[u8]| {
+            let mut r = tc.reserve(bytes.len(), true).unwrap();
+            r.write_all(bytes).unwrap();
+            r.flush().unwrap();
+            r.read()
+        };
+        let block = stage(&[0xB0u8; 100]);
+        let (first, second) = (stage(&[0xE1u8; 200]), stage(&[0xE1u8; 200]));
+        let mut consumer = tc.cache_ref().random_access("env_dedupe_cons", true).unwrap();
+
+        store.add_block(block_root, consumer.acquire(block), slot, parent_root);
+        assert_eq!(store.write_queue.len(), 1, "the block it belongs to");
+
+        assert!(store.is_envelope_owed(&block_root, slot), "nothing on disk for it yet");
+        store.add_envelope(block_root, consumer.acquire(first));
+        assert_eq!(store.write_queue.len(), 2, "the first copy is written");
+
+        assert!(!store.is_envelope_owed(&block_root, slot), "and now it is not owed");
+        store.add_envelope(block_root, consumer.acquire(second));
+        assert_eq!(store.write_queue.len(), 2, "the second is already on disk");
+
+        store
+            .file_io(
+                |_| [0u8; 4],
+                0,
+                &mut TCache::multi_producer("env_dedupe_rpc", 1 << 16),
+                &mut |_| {},
+            )
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    /// The engine sweeps whatever span it was last told about, so a walk torn
+    /// down mid-span would leave it asking for ranges this tile can no longer
+    /// accept — a request loop that only ends with the process. One publisher
+    /// per tick is what closes that: teardown drops the walk, and the span it
+    /// owed goes empty on its own. Unchanged spans are not republished, so the
+    /// channel carries only what moved.
+    #[test]
+    fn the_span_a_torn_down_walk_owed_goes_empty_on_its_own() {
+        use silver_common::TCache;
+
+        let store_path = format!("/tmp/test_store_teardown_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_gloas(store_path.clone());
+
+        let producer_cache = TCache::multi_producer("teardown_rpc", 1 << 16);
+        let mut producer = producer_cache.clone();
+        let mut gaps = Vec::new();
+        let mut tick = |store: &mut super::Store, gaps: &mut Vec<_>| {
+            store
+                .file_io(|_| [0u8; 4], 0, &mut producer, &mut |io| {
+                    if let IoEvent::Need(SyncNeed::BackfillGap { kind, floor, next }) = io {
+                        gaps.push((kind, floor, next));
+                    }
+                })
+                .unwrap();
+        };
+
+        // A walk with a slot owed. The scan is unfinished, so nothing tears down.
+        let block = blob_block(40, [0x31; 32], [0x13; 32]);
+        let spec = store.spec.clone();
+        let mut columns = super::backfill::ColumnBackfill::new(1..97);
+        columns.seed_block(column_util::block_root_fulu(&block), 40, &block, 0b1, &spec);
+        store.history.columns = Some(columns);
+        tick(&mut store, &mut gaps);
+        assert_eq!(gaps, vec![(DataKind::Columns, 40, 41)], "what it owes, once");
+
+        gaps.clear();
+        tick(&mut store, &mut gaps);
+        assert!(gaps.is_empty(), "and not again while it has not moved");
+
+        // Complete by the walks' own definition — scan done, nothing owed —
+        // which is the state teardown fires in.
+        let mut columns = super::backfill::ColumnBackfill::new(1..97);
+        columns.mark_scan_complete();
+        store.history.columns = Some(columns);
+        let mut envelopes = super::backfill::EnvelopeBackfill::new(1..97);
+        envelopes.mark_scan_complete();
+        store.history.envelopes = Some(envelopes);
+        store.history.stage = super::history::BlockBackfillStage::Done;
+
+        tick(&mut store, &mut gaps);
+
+        assert!(store.history.columns.is_none(), "torn down");
+        assert!(store.history.envelopes.is_none(), "torn down");
+        assert_eq!(
+            gaps,
+            vec![(DataKind::Columns, 0, 0)],
+            "the span it owed goes empty; the envelope walk never owed one: {gaps:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    #[test]
+    fn persisted_backfill_block_requests_data_columns() {
+        use silver_common::{TCache, TCacheProducer};
+
+        let store_path = format!("/tmp/test_store_column_backfill_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_fulu(store_path.clone());
+
+        let slot = 96u64;
+        let block = blob_block(slot, [0x31; 32], [0x13; 32]);
         let block_root = column_util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("column_backfill_blocks", 1 << 20);
@@ -1423,28 +1799,49 @@ mod tests {
         // Column backfill is live across the block-backfill phase: a block
         // fetched by block backfill in the column window (set 2) must request
         // its columns via the `BackfillBlock` feed.
-        store.column_backfill = Some(super::ColumnBackfill::new(1..slot + 1));
-        store.backfill = Some(super::Backfill::new(slot..slot + 1, block_root));
-        store.backfill_block(consumer.acquire(ssz));
+        store.history.columns = Some(super::backfill::ColumnBackfill::new(1..slot + 1));
+        store.history.blocks = Some(super::backfill::Backfill::new(
+            slot..slot + 1,
+            block_root,
+            super::test_spec(u64::MAX),
+        ));
+        store.backfill_block(consumer.acquire(ssz), &mut |_| {});
 
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("column_backfill_rpc", 1 << 20);
         let mut producer = producer_cache.clone();
         let custody_columns = (1u128 << 3) | (1u128 << 7);
-        let mut needs = Vec::new();
+        let mut gaps = Vec::new();
         store
             .file_io(|_| fork_digest, custody_columns, &mut producer, &mut |io| {
-                if let IoEvent::PeerEvent(PeerEvent::ColumnNeed { block_root, missing, .. }) = io {
-                    needs.push((missing, block_root));
+                if let IoEvent::Need(SyncNeed::BackfillGap {
+                    kind: DataKind::Columns,
+                    floor,
+                    next,
+                }) = io
+                {
+                    gaps.push((floor, next));
                 }
             })
             .unwrap();
 
-        // Storage reports the need; the SyncEngine schedules the by-root fetch.
-        assert_eq!(needs.len(), 1);
-        assert_eq!(needs[0].0, custody_columns);
-        assert_eq!(needs[0].1, block_root);
+        // Blocks arrive from block backfill densely and in order, so their
+        // columns are asked for as a span that keeps pace with the block walk —
+        // one by-root request per block could not.
+        assert_eq!(gaps.last(), Some(&(slot, slot + 1)), "the written block's slot is owed");
         assert_eq!(store.root_index.get(&block_root), Some(&slot));
+        assert_eq!(
+            store.history.columns.as_ref().map(super::backfill::ColumnBackfill::owed_span),
+            Some((slot, slot + 1)),
+            "and it is what the walk will sweep"
+        );
+        // The block linked, so blocks are held from its slot — but its columns
+        // are not, and the claim answers for every kind we serve.
+        assert_eq!(
+            store.earliest_servable(custody_columns),
+            slot + 1,
+            "a slot whose columns are owed holds the claim above it"
+        );
 
         let _ = std::fs::remove_dir_all(&store_path);
     }
@@ -1454,12 +1851,12 @@ mod tests {
     // — block backfill is never triggered for it (the block is present).
     #[test]
     fn column_scan_requests_missing_columns_for_persisted_block() {
-        use silver_common::{PeerEvent, TCache};
+        use silver_common::TCache;
 
         use crate::tile::IoEvent;
 
         let store_path = format!("/tmp/test_store_column_scan_{}", rand::random::<u32>());
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
         let slot = 96u64;
         let parent_root = [0x31; 32];
@@ -1473,7 +1870,6 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = column_util::block_root_fulu(&block);
 
         // Block on disk, no columns — exactly the post-sync state.
         let dir = store.finalized_slot_dir(super::Payload::Block, slot);
@@ -1482,7 +1878,7 @@ mod tests {
 
         // Trigger the scan (as sync_update(Following) would) and run file_io.
         store.finalized_slot = slot;
-        store.write_queue.push_back(super::PendingWrite::ColumnBackfillScan {
+        store.write_queue.push_back(super::PendingWrite::StartBackfill {
             finalized_slot: slot,
             finalized_root: [0u8; 32],
         });
@@ -1491,18 +1887,68 @@ mod tests {
         let producer_cache = TCache::multi_producer("column_scan_rpc", 1 << 20);
         let mut producer = producer_cache.clone();
         let custody_columns = (1u128 << 3) | (1u128 << 7);
-        let mut needs = Vec::new();
+        let mut gaps = Vec::new();
         store
             .file_io(|_| fork_digest, custody_columns, &mut producer, &mut |io| {
-                if let IoEvent::PeerEvent(PeerEvent::ColumnNeed { block_root, missing, .. }) = io {
-                    needs.push((missing, block_root));
+                if let IoEvent::Need(SyncNeed::BackfillGap {
+                    kind: DataKind::Columns,
+                    floor,
+                    next,
+                }) = io
+                {
+                    gaps.push((floor, next));
                 }
             })
             .unwrap();
 
-        assert_eq!(needs.len(), 1, "scan should report the persisted block's missing columns");
-        assert_eq!(needs[0].0, custody_columns);
-        assert_eq!(needs[0].1, block_root);
+        // The scan's finds are swept by range, like block backfill's — one
+        // mechanism, not a by-root chase per block.
+        assert_eq!(gaps.last(), Some(&(slot, slot + 1)), "the persisted block's slot is owed");
+        assert_eq!(
+            store.history.columns.as_ref().map(super::backfill::ColumnBackfill::pending_len),
+            Some(1),
+            "and the block is held for verifying the sidecars when they arrive"
+        );
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    /// The scan can turn up one need per blob-carrying block across the whole
+    /// retention window, and every one is a by-root need the engine holds until
+    /// its columns arrive. Left unpaced it would hand over the entire backlog
+    /// at once; the cursor stays put instead, and resumes when the backlog
+    /// drains.
+    #[test]
+    fn the_column_scan_pauses_while_the_backlog_is_full() {
+        use silver_common::TCache;
+
+        use crate::tile::IoEvent;
+
+        let store_path = format!("/tmp/test_store_scan_pause_{}", rand::random::<u32>());
+        let mut store = load_fulu(store_path.clone());
+
+        let finalized = 4096u64;
+        store.finalized_slot = finalized;
+        store.history.columns = Some(super::backfill::ColumnBackfill::new(1..finalized + 1));
+        store.history.scan = Some(super::history::ColumnScan { cursor: finalized, floor: 1 });
+
+        // Stand the backlog up at the cap without touching the cursor.
+        let cb = store.history.columns.as_mut().unwrap();
+        let block = vec![0u8; 184 + 404];
+        for i in 0..super::io::MAX_OPEN_COLUMN_NEEDS {
+            cb.seed_block([i as u8; 32], (i as u64) + 1, &block, 0b1, &super::test_spec(u64::MAX));
+        }
+        assert_eq!(cb.pending_len(), super::io::MAX_OPEN_COLUMN_NEEDS, "backlog is at the cap");
+
+        let before = store.history.scan.as_ref().map(|s| s.cursor);
+        let producer_cache = TCache::multi_producer("scan_pause_rpc", 1 << 20);
+        let mut producer = producer_cache.clone();
+        store.file_io(|_| [0u8; 4], 0b1, &mut producer, &mut |_: IoEvent| {}).unwrap();
+        assert_eq!(
+            store.history.scan.as_ref().map(|s| s.cursor),
+            before,
+            "cursor held while the engine still has a windowful to chase"
+        );
 
         let _ = std::fs::remove_dir_all(&store_path);
     }
@@ -1518,7 +1964,7 @@ mod tests {
 
         let store_path = format!("/tmp/test_store_fair_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
-        let mut store = super::Store::load(store_path.clone()).unwrap();
+        let mut store = load_fulu(store_path.clone());
 
         // Chain of two unfinalized blocks: slot 10 (parent CC) ← slot 11.
         let parent = [0xCC; 32];

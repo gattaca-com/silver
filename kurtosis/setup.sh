@@ -2,17 +2,26 @@
 # Spin up the kurtosis ethereum-package devnet, harvest the network-specific
 # values silver needs, and write the silver config TOML.
 #
-#   kurtosis/setup.sh [--recreate] [enclave-name]   (default: silver-dev)
+#   kurtosis/setup.sh [--recreate] [--finalized-anchor|--genesis-anchor] [enclave-name]
+#                                                       (default: silver-dev)
 #
 # --recreate tears down the enclave first for a fresh chain (new genesis ->
 # new digest/ENRs/genesis-time -> silver must restart). Without it, a healthy
 # enclave is reused and the config just re-synced.
 #
+# --finalized-anchor anchors silver at the chain's current finalized state
+# instead of genesis, so it joins mid-chain: it forward-syncs the finality gap
+# and backfills the history below the anchor. Nothing is finalized at genesis,
+# so run it (without --recreate) once the chain has finalized. Implied by
+# --gloas. --genesis-anchor pins the genesis anchor, which is what --gloas
+# needs on a chain whose Gloas activation is epoch 0: there is nothing
+# finalized yet, and genesis is already a Gloas state.
+#
 # Generates silver-devnet.toml from scratch each run (derived fields harvested
 # from the CL; static fields — secret_key, ports, next_fork_version — taken
-# from the env-overridable vars below). Also writes genesis.ssz (the sync
-# anchor) and el/ (genesis + bootnodes + JWT for silver's dedicated local
-# reth — start it with run-reth.sh).
+# from the env-overridable vars below). Also writes the anchor state and el/
+# (genesis + bootnodes + JWT for silver's dedicated local reth — start it with
+# run-reth.sh).
 #
 # Requires: kurtosis, docker, curl, jq. Linux only — silver runs as a host
 # process joining the Docker bridge, and external_ip_v4 detection is
@@ -21,11 +30,15 @@ set -euo pipefail
 
 RECREATE=0
 GLOAS=0
+ANCHOR=genesis
+ANCHOR_PINNED=0
 ENCLAVE=""
 for arg in "$@"; do
   case "$arg" in
     --recreate) RECREATE=1 ;;
     --gloas) GLOAS=1 ;;
+    --finalized-anchor) ANCHOR=finalized ;;
+    --genesis-anchor) ANCHOR=genesis; ANCHOR_PINNED=1 ;;
     -*) echo "unknown flag: $arg" >&2; exit 1 ;;
     *) ENCLAVE="$arg" ;;
   esac
@@ -33,23 +46,27 @@ done
 [ -n "$ENCLAVE" ] || { [ "$GLOAS" -eq 1 ] && ENCLAVE="silver-gloas" || ENCLAVE="silver-dev"; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Gloas: separate args/config/anchor so the Fulu devnet files are untouched. The
-# anchor is a recent *finalized* (post-Gloas) state, not genesis — silver then
-# anchors already in Gloas and follows live, sidestepping the from-genesis DA
-# wedge and the Fulu→Gloas digest transition.
+# Gloas: separate args/config/anchor so the Fulu devnet files are untouched.
+# Default anchor is finalized — silver then anchors already in Gloas and follows
+# live, sidestepping the from-genesis DA wedge and the Fulu→Gloas digest
+# transition; --genesis-anchor opts into both.
 if [ "$GLOAS" -eq 1 ]; then
   ARGS_FILE="$HERE/net-gloas.yaml"
   CONFIG="$HERE/silver-gloas.toml"
-  GENESIS_SSZ="$HERE/gloas-anchor.ssz"
+  [ "$ANCHOR_PINNED" -eq 1 ] || ANCHOR=finalized
+  [ "$ANCHOR" = finalized ] && ANCHOR_SSZ="$HERE/gloas-anchor.ssz" \
+    || ANCHOR_SSZ="$HERE/gloas-genesis.ssz"
 else
   ARGS_FILE="$HERE/net.yaml"
   CONFIG="$HERE/silver-devnet.toml"
-  GENESIS_SSZ="$HERE/genesis.ssz"
+  [ "$ANCHOR" = finalized ] && ANCHOR_SSZ="$HERE/fulu-anchor.ssz" \
+    || ANCHOR_SSZ="$HERE/genesis.ssz"
 fi
 
 # Static (non-harvested) config values — override via env if needed. A fixed
-# secret_key gives silver a stable peer-id/ENR across restarts. next_fork_epoch
-# is omitted from the config (defaults to FAR_FUTURE, which exceeds TOML's i64).
+# secret_key gives silver a stable peer-id/ENR across restarts; rotate it per
+# run to shed a peer's accumulated RPC penalties. NEXT_FORK_VERSION applies to
+# Fulu runs only — Gloas runs harvest the pair from the spec.
 SECRET_KEY="${SECRET_KEY:-1111111111111111111111111111111111111111111111111111111111111111}"
 DISCOVERY_PORT="${DISCOVERY_PORT:-31133}"
 QUIC_PORT="${QUIC_PORT:-31123}"
@@ -128,11 +145,11 @@ echo "genesis_unix_secs: $GENESIS"
 echo "resolving fork_digest from $PRIMARY logs ..."
 FORK_DIGEST=""
 for _ in $(seq 1 30); do
-  # -a: the topics are logged at startup, and the CLI's default 200-line tail
-  # is pure gossip spam on a debug-level client.
-  FORK_DIGEST="$(kurtosis service logs -a --regex-match '/eth2/[0-9a-f]{8}/' \
-    "$ENCLAVE" "$PRIMARY" 2>/dev/null \
-    | grep -oE '/eth2/[0-9a-f]{8}/' | grep -oE '[0-9a-f]{8}' \
+  # Bounded tail, captured whole: piping kurtosis straight into `head` kills it
+  # with SIGPIPE once the buffer is large, which `pipefail` turns into an abort
+  # — and a long-lived enclave is the normal case for --finalized-anchor.
+  LOGS="$(kurtosis service logs -n 4000 "$ENCLAVE" "$PRIMARY" 2>&1 || true)"
+  FORK_DIGEST="$(grep -oE '/eth2/[0-9a-f]{8}/' <<<"$LOGS" | grep -oE '[0-9a-f]{8}' \
     | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
   [ -n "$FORK_DIGEST" ] && break
   sleep 2
@@ -159,17 +176,25 @@ GATEWAY="$(docker network inspect "kt-$ENCLAVE" 2>/dev/null \
   | jq -r '.[0].IPAM.Config[0].Gateway // empty' || true)"
 echo "external_ip_v4: ${GATEWAY:-<unresolved>}"
 
-# 7b. Genesis state — silver's sync anchor. It bootstraps fork choice from
-#     this so block 1's parent (the genesis block) resolves; without it sync
-#     fails the parent precheck at slot 1.
-if [ "$GLOAS" -eq 1 ]; then
-  echo "fetching finalized (post-Gloas) anchor state -> $GENESIS_SSZ"
+# 7b. silver's sync anchor. It bootstraps fork choice from this state, so the
+#     first synced block's parent resolves; without it sync fails the parent
+#     precheck at the anchor slot + 1.
+if [ "$ANCHOR" = finalized ]; then
+  FIN_EPOCH="$(curl -fsS "$PRIMARY_URL/eth/v1/beacon/states/head/finality_checkpoints" \
+    | jq -r '.data.finalized.epoch')"
+  # An unfinalized chain serves genesis here, which would silently produce a
+  # genesis anchor under a flag asking for a mid-chain one.
+  [ "${FIN_EPOCH:-0}" -gt 0 ] || {
+    echo "chain has not finalized yet (finalized epoch ${FIN_EPOCH:-?}); re-run later" >&2
+    exit 1
+  }
+  echo "fetching finalized anchor state (epoch $FIN_EPOCH) -> $ANCHOR_SSZ"
   curl -fsS -H 'Accept: application/octet-stream' \
-    "$PRIMARY_URL/eth/v2/debug/beacon/states/finalized" -o "$GENESIS_SSZ"
+    "$PRIMARY_URL/eth/v2/debug/beacon/states/finalized" -o "$ANCHOR_SSZ"
 else
-  echo "fetching genesis state -> $GENESIS_SSZ"
+  echo "fetching genesis state -> $ANCHOR_SSZ"
   curl -fsS -H 'Accept: application/octet-stream' \
-    "$PRIMARY_URL/eth/v2/debug/beacon/states/genesis" -o "$GENESIS_SSZ"
+    "$PRIMARY_URL/eth/v2/debug/beacon/states/genesis" -o "$ANCHOR_SSZ"
 fi
 
 # 7c. Spec — devnet fork versions + blob schedule. silver derives the fork
@@ -185,7 +210,8 @@ gloasfe="$(jq -r '.GLOAS_FORK_EPOCH | tonumber' <<<"$SPEC")"
 efe="$(jq -r '.ELECTRA_FORK_EPOCH | tonumber' <<<"$SPEC")"
 mbe="$(jq -r '.MAX_BLOBS_PER_BLOCK_ELECTRA | tonumber' <<<"$SPEC")"
 sps="$(jq -r '.SECONDS_PER_SLOT | tonumber' <<<"$SPEC")"
-echo "spec: fulu_fork_version=$ffv"
+WALL_EPOCH=$(( ( $(date +%s) - GENESIS ) / sps / 32 ))
+echo "spec: fulu_fork_version=$ffv gloas_fork_epoch=$gloasfe wall_epoch=$WALL_EPOCH"
 
 # 7d. Local EL — silver drives its own dedicated reth over the engine API
 #     (newPayload / forkchoiceUpdated). A dedicated EL, not a shared enclave
@@ -236,7 +262,15 @@ echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
   echo "# Generated by kurtosis/setup.sh — re-run to refresh. Loaded via --config."
   echo "secret_key = \"$SECRET_KEY\""
   echo "fork_digest = \"$FORK_DIGEST\""
-  echo "next_fork_version = \"$NEXT_FORK_VERSION\""
+  # ENRForkID's next_fork pair. On a Gloas devnet it is the harvested Gloas
+  # activation while that is still ahead of the wall epoch; once it passes,
+  # next_fork_epoch is FAR_FUTURE, which exceeds TOML's i64 and is omitted.
+  if [ "$GLOAS" -eq 1 ]; then
+    echo "next_fork_version = \"${gloasfv#0x}\""
+    [ "$gloasfe" -gt "$WALL_EPOCH" ] && echo "next_fork_epoch = $gloasfe"
+  else
+    echo "next_fork_version = \"$NEXT_FORK_VERSION\""
+  fi
   [ -n "$GATEWAY" ] && echo "external_ip_v4 = \"$GATEWAY\""
   echo "discovery_port = $DISCOVERY_PORT"
   echo "quic_port = $QUIC_PORT"
@@ -251,7 +285,7 @@ echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
   echo
   echo "[chain_config]"
   echo "genesis_unix_secs = $GENESIS"
-  echo "checkpoint_file = \"$GENESIS_SSZ\""
+  echo "checkpoint_file = \"$ANCHOR_SSZ\""
   echo "bootstrap_enrs = ["
   printf '  "%s",\n' "${ENRS[@]}"
   echo "]"

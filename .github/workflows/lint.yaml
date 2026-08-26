@@ -25,7 +25,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-06-01
+          toolchain: nightly-2026-06-21
           components: clippy, rustfmt
 
       - name: Install buf
@@ -39,10 +39,19 @@ jobs:
           just-version: 1.5.0
 
       - name: Check compilation
-        run: cargo check
+        run: cargo check --locked
 
       - name: Check formatting
         run: just fmt-check
 
       - name: Check clippy
         run: just clippy
+
+      # Stable cargo ignores the publish-age policy, so the lockfile can pin
+      # too-young crates (or deliberately via `just update-allow`); surface them.
+      - name: Check lockfile against the publish-age cooldown
+        run: |
+          out=$(just cooldown-check 2>&1) || true
+          if [ -n "$out" ]; then
+            echo "::warning title=Publish-age cooldown::$(echo "$out" | head -20 | sed ':a;N;$!ba;s/\n/%0A/g')"
+          fi

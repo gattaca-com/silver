@@ -17,9 +17,9 @@ use silver_beacon_state::{
 };
 use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
-    PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
-    TCacheProducer, TProducer, TRandomAccess, hex32,
+    BeaconStateEvent, DataColumnsEvent, DataKind, GossipTopic, MessageId, NewGossipMsg,
+    P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncNeed,
+    SyncUpdate, TCache, TCacheProducer, TProducer, TRandomAccess, hex32,
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
     ticker::SlotTicker,
 };
@@ -100,11 +100,14 @@ pub struct Harness {
 pub enum OutboundKind {
     Status,
     PersistBlock,
-    PersistEnvelope,
+    EnvelopeAvailable,
     BlockRejected,
     SendGossip,
     ReplayComplete,
-    BacktrackStall,
+    BlockReceived,
+    RequestBlock,
+    RequestEnvelope,
+    Reorg,
 }
 
 impl OutboundKind {
@@ -112,11 +115,14 @@ impl OutboundKind {
         Some(match s {
             "status" => Self::Status,
             "persist_block" => Self::PersistBlock,
-            "persist_envelope" => Self::PersistEnvelope,
+            "envelope_available" => Self::EnvelopeAvailable,
             "block_rejected" => Self::BlockRejected,
             "send_gossip" => Self::SendGossip,
             "replay_complete" => Self::ReplayComplete,
-            "backtrack_stall" => Self::BacktrackStall,
+            "block_received" => Self::BlockReceived,
+            "request_block" => Self::RequestBlock,
+            "request_envelope" => Self::RequestEnvelope,
+            "reorg" => Self::Reorg,
             _ => return None,
         })
     }
@@ -125,10 +131,21 @@ impl OutboundKind {
         match ev {
             BeaconStateEvent::Status { .. } => Self::Status,
             BeaconStateEvent::PersistBlock { .. } => Self::PersistBlock,
-            BeaconStateEvent::PersistEnvelope { .. } => Self::PersistEnvelope,
+            BeaconStateEvent::EnvelopeAvailable { .. } => Self::EnvelopeAvailable,
             BeaconStateEvent::BlockRejected { .. } => Self::BlockRejected,
             BeaconStateEvent::ReplayComplete => Self::ReplayComplete,
-            BeaconStateEvent::BacktrackStall => Self::BacktrackStall,
+            BeaconStateEvent::BlockReceived { .. } => Self::BlockReceived,
+            BeaconStateEvent::Reorg { .. } => Self::Reorg,
+        }
+    }
+
+    fn classify_need(need: &SyncNeed) -> Option<Self> {
+        match need {
+            SyncNeed::Missing { kind: DataKind::Block, .. } => Some(Self::RequestBlock),
+            SyncNeed::Missing { kind: DataKind::Envelope, .. } => Some(Self::RequestEnvelope),
+            SyncNeed::Missing { .. } | SyncNeed::Arrived { .. } | SyncNeed::BackfillGap { .. } => {
+                None
+            }
         }
     }
 }
@@ -220,6 +237,7 @@ impl Harness {
         // tile between now and the first `drain_outbound` call.
         inj_adapter.consume(|_: BeaconStateEvent, _| {});
         inj_adapter.consume(|_: PeerEvent, _| {});
+        inj_adapter.consume(|_: SyncNeed, _| {});
 
         Self {
             _spine: spine,
@@ -243,6 +261,11 @@ impl Harness {
         let log = &mut self.outbound_log;
         self.inj_adapter.consume(|ev: BeaconStateEvent, _| {
             log.push(OutboundKind::classify(&ev));
+        });
+        self.inj_adapter.consume(|need: SyncNeed, _| {
+            if let Some(kind) = OutboundKind::classify_need(&need) {
+                log.push(kind);
+            }
         });
         self.inj_adapter.consume(|ev: PeerEvent, _| {
             if let PeerEvent::SendGossip { .. } = ev {

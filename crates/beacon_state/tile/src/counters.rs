@@ -9,6 +9,10 @@ silver_common::declare_counters! {
         // gossip-admission structures at capacity (attestations still
         // accepted and relayed; aggregation/shedding coverage degrades)
         AttestationPoolFull,
+        // Gossip attestation ignored (never relayed): beacon_block_root not
+        // in fork choice — the reprocess-queue gap vs lighthouse, which
+        // parks and replays these.
+        AttestationUnknownRoot,
         SeenAggregatesFull,
         AttestationRootMemoFull,
         // attestation-root memo effectiveness (hit rate is the memo's

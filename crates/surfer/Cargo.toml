@@ -16,6 +16,7 @@ silver_beacon_state_data.workspace = true
 silver_columns.workspace = true
 silver_common.workspace = true
 silver_metrics.workspace = true
+silver_control.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
 silver_storage.workspace = true

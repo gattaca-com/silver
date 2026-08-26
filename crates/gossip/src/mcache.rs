@@ -107,7 +107,7 @@ impl MessageCache {
             self.cache_consumer.free();
 
             self.last_rotation = now;
-            self.history.maybe_rotate(now, &mut |_, _| true);
+            self.history.maybe_rotate(now);
         }
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 pub use chain_config::ChainConfig;
@@ -122,9 +122,21 @@ pub struct Config {
     incoming_gossip_tcache_size: usize,
     #[serde(default = "default_usize::<268435456>")] // 2 << 27
     outgoing_gossip_tcache_size: usize,
+    /// Decompressed gossip SSZ. Parks handles too — see below, at tip volumes.
     #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_ssz_tcache_size: usize,
-    #[serde(default = "default_usize::<67108864>")] // 2 << 25
+    /// Inbound RPC ring: block, column-sidecar and envelope chunks; the
+    /// producer wraps when full. Beacon state parks its handles, so
+    /// lapping a block awaiting its columns voids coverage already emitted
+    /// for its slot — symptom is `parked block lapped in the tcache` at
+    /// finalization.
+    ///
+    /// Floor is the fetch window, `2 * BATCH` = 128 blocks (mainnet ~225 KB
+    /// mean, ~476 KB max — see `crates/e2e/data/perf`). The rest is
+    /// headroom for column traffic passing a parked block, which dominates
+    /// and is why nothing asserts a static bound. Default is ~4× that
+    /// floor.
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     outgoing_rpc_tcache_size: usize,
@@ -277,6 +289,15 @@ impl Config {
 
     pub fn enr(&self) -> Result<Enr, Error> {
         let mut builder = Enr::builder();
+        // Remotes only replace a cached record on a strictly higher seq, and
+        // the node key (= node_id) is stable across restarts — a constant
+        // seed pins the network to whatever record it saw first, so record
+        // changes (tcp, attnets) never propagate. Boot time is monotonic
+        // across restarts; in-boot `set_*` bumps of +1 stay far below the
+        // next boot's seed.
+        let boot_seq =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        builder.seq(boot_seq);
         let mut eth2 = [0u8; 16];
         eth2[..4].copy_from_slice(&self.fork_digest);
         eth2[4..8].copy_from_slice(&self.next_fork_version);
@@ -297,6 +318,11 @@ impl Config {
         }
         if let Some(qp) = self.quic_port {
             builder.quic4(qp).quic6(qp);
+            // Not served: lighthouse's discovery predicate (v8.x
+            // `start_query`) drops ENRs without a tcp port, so QUIC-only
+            // nodes are never dialed by it. Its dialer tries the quic
+            // address first, so advertising tcp gets us QUIC-dialed.
+            builder.tcp4(qp).tcp6(qp);
         }
         Ok(builder.build(self.keypair()?.secret_key())?)
     }
@@ -341,6 +367,14 @@ impl Config {
 
     pub fn discovery_config(&self) -> DiscoveryConfig {
         self.discovery_config.clone()
+    }
+
+    /// Hard cap on transport connections — inbound accepts are refused at
+    /// the QUIC layer beyond it. Sits above the peer manager's trim band
+    /// (`max_priority_peers` + 10%) so score-based trimming has room to
+    /// work inside it.
+    pub fn max_connections(&self) -> usize {
+        self.peer_score_params.max_priority_peers * 12 / 10
     }
 
     pub fn peer_score_params(&self) -> ScoreParams {
@@ -504,6 +538,22 @@ mod tests {
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         let cfg = cfg.with_beacon_api_idle_timeout_secs(5);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(5));
+    }
+
+    /// discv5 peers silently drop records over 300 bytes — an oversized ENR
+    /// makes the node invisible to discovery, not degraded.
+    #[test]
+    fn production_enr_fits_discv5_record_cap() {
+        let cfg = Config::new([1u8; 32], [1, 2, 3, 4], [5, 6, 7, 8], 123_456)
+            .with_external_ip_v4(Ipv4Addr::new(203, 0, 113, 7))
+            .with_discovery_port(9000)
+            .with_quic_port(9001);
+        let mut enr = cfg.enr().unwrap();
+        let key = cfg.keypair().unwrap();
+        enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
+        // Unpadded base64: 4 chars per 3 bytes.
+        let bytes = enr.size();
+        assert!(bytes <= 300, "ENR is {bytes} bytes, discv5 caps records at 300");
     }
 
     #[test]

@@ -19,7 +19,7 @@ use silver_common::{
     ticker::SlotTicker,
 };
 use silver_config::{ScoreParams, SyncingConfig};
-use silver_control::Controller;
+use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_gossip::GossipHandler;
 use silver_peer::PeerManager;
 use tempfile::TempDir;
@@ -118,9 +118,9 @@ pub struct PmBsHarness {
 }
 
 impl PmBsHarness {
-    /// `max_batch` caps each `BlocksByRange` request; the rpc-inbound cache
-    /// is sized to hold `n_blocks` mainnet blocks (~300 KB each).
-    pub fn new(checkpoint: &[u8], max_batch: u64, n_blocks: usize) -> Self {
+    /// The rpc-inbound cache is sized to hold `n_blocks` mainnet blocks
+    /// (~300 KB each).
+    pub fn new(checkpoint: &[u8], n_blocks: usize) -> Self {
         let base = TempDir::new().expect("tempdir");
         let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
 
@@ -157,19 +157,17 @@ impl PmBsHarness {
         );
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
+        // One config for both: the engine used to read this off the PM, so a
+        // divergence here would silently change what the harness exercises.
+        let syncing = SyncingConfig { head_lag_threshold_slots: 1, ..SyncingConfig::default() };
         let pm = PeerManager::new(
             PeerId::default(),
             Vec::new(),
             ScoreParams::default(),
-            SyncingConfig {
-                max_blocks_by_range_batch: max_batch,
-                head_lag_threshold_slots: 1,
-                ..SyncingConfig::default()
-            },
+            syncing.clone(),
             [0u8; 4], // overwritten via set_status from BS's first emission
             [0u8; METADATA_SIZE],
             0,
-            false,
         );
 
         let dummy_gossip_in = TCache::producer("dummy gossip in", 32);
@@ -187,8 +185,8 @@ impl PmBsHarness {
             pm,
             gossip_handler,
             TCache::multi_producer("rpc_out_dummy", 32),
-            Arc::new(SpecConfig::mainnet()),
             rpc_p.cache_ref().random_access("ctl_test", true).expect("ctl rpc ra"),
+            SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),
         );
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 

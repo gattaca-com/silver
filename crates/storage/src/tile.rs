@@ -1,32 +1,31 @@
-use std::{
-    collections::VecDeque,
-    fs::File,
-    io::Read,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, fs::File, io::Read, path::PathBuf, sync::Arc};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, ColumnSource, DataColumnsEvent, P2pSend, PeerControl, PeerEvent, ReplayBlock,
-    RpcInbound, SilverSpine, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer,
-    TProducer, TRandomAccess, column_util, msg_is_backfill, msg_is_column_backfill,
-    ssz_view::{
-        ExecutionPayloadEnvelopeView, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
-        StatusView,
-    },
+    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, Origin, P2pSend,
+    PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine, SyncNeed, SyncUpdate,
+    SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, column_util,
+    ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
-use crate::store::Store;
-
-/// Fallback: if control's replay-vs-sync decision is never received, default
-/// `drive_replay` to replaying the on-disk chain after this long.
-const SYNCING_STRATEGY_FALLBACK: Duration = Duration::from_secs(45);
+use crate::{StorageCounters, store::Store};
 
 const MAX_REPLAY_BLOCKS_PER_LOOP: usize = 16;
+
+enum ReplayStep {
+    Block { path: PathBuf, columns_on_disk: bool },
+    Envelope { path: PathBuf },
+}
+
+impl ReplayStep {
+    fn path(&self) -> &PathBuf {
+        match self {
+            Self::Block { path, .. } | Self::Envelope { path } => path,
+        }
+    }
+}
 
 /// Persist a finalized-state checkpoint only when within this many slots of
 /// the wall-clock head (i.e. not fast-syncing) — avoids stalling the writer
@@ -57,16 +56,15 @@ pub struct StorageTile {
     // in-flight checkpoint then lives on the `Store`, driven by `file_io`).
     persist_pending: bool,
 
-    replay_blocks: VecDeque<(PathBuf, bool)>,
+    /// Flattened replay stream: each block is immediately followed by its
+    /// envelope, so a gloas child's precheck sees the parent payload verified.
+    replay_steps: VecDeque<ReplayStep>,
     replay_producer: TProducer,
     replay_done: bool,
     /// Boot decision from control: `None` = waiting; gates `drive_replay` so we
     /// don't replay the on-disk fork tree before learning whether peers are
-    /// finalized ahead (in which case we skip it and range-sync from them).
+    /// finalized ahead (in which case we skip it and sync from them).
     syncing_strategy: Option<SyncingStrategy>,
-    /// Tile construction time; bounds how long `drive_replay` waits on the
-    /// decision before defaulting to replay (control signal lost).
-    created_at: Instant,
     peers_loaded: bool,
 }
 
@@ -85,16 +83,25 @@ impl StorageTile {
         data_store_dir: String,
         replay_from_disk: bool,
     ) -> Self {
-        let store = Store::load(data_store_dir).expect("failed to load storage store");
+        let store =
+            Store::load(data_store_dir, spec.clone()).expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
-        let replay_blocks = if replay_from_disk {
-            let mut paths = store.replay_block_paths(custody_group_columns);
-            paths.sort_unstable_by_key(|(slot, _, _)| *slot);
-            paths.into_iter().map(|(_, path, cols)| (path, cols)).collect()
+        let replay_steps = if replay_from_disk {
+            let mut entries = store.replay_entries(custody_group_columns);
+            entries.sort_unstable_by_key(|e| e.slot);
+            entries
+                .into_iter()
+                .flat_map(|e| {
+                    [Some(ReplayStep::Block { path: e.block, columns_on_disk: e.columns_on_disk })]
+                        .into_iter()
+                        .chain([e.envelope.map(|path| ReplayStep::Envelope { path })])
+                        .flatten()
+                })
+                .collect()
         } else {
             VecDeque::new()
         };
-        tracing::info!("have {} replay block paths", replay_blocks.len());
+        tracing::info!("have {} replay steps", replay_steps.len());
 
         Self {
             custody_group_columns,
@@ -110,11 +117,10 @@ impl StorageTile {
             checkpointed_epoch,
             wall_slot: u64::MAX,
             persist_pending: false,
-            replay_blocks,
+            replay_steps,
             replay_producer,
             replay_done: !replay_from_disk,
             syncing_strategy: None,
-            created_at: Instant::now(),
             peers_loaded: false,
         }
     }
@@ -124,19 +130,13 @@ impl StorageTile {
             return;
         }
 
-        let strategy = match self.syncing_strategy {
-            Some(d) => d,
-            None if self.created_at.elapsed() >= SYNCING_STRATEGY_FALLBACK => {
-                SyncingStrategy::ReplayDisk
-            }
-            None => return,
-        };
+        let Some(strategy) = self.syncing_strategy else { return };
         if matches!(strategy, SyncingStrategy::SyncFromPeers) {
             tracing::info!(
-                staged = self.replay_blocks.len(),
+                staged = self.replay_steps.len(),
                 "skipping on-disk replay; peers finalized ahead — syncing from peers"
             );
-            self.replay_blocks.clear();
+            self.replay_steps.clear();
             adapter.produce(ReplayBlock::Done);
             self.replay_done = true;
             return;
@@ -144,9 +144,10 @@ impl StorageTile {
 
         let mut sent = 0;
         while sent < MAX_REPLAY_BLOCKS_PER_LOOP {
-            let Some(&(ref path, cols_on_disk)) = self.replay_blocks.front() else {
+            let Some(step) = self.replay_steps.front() else {
                 break;
             };
+            let path = step.path();
 
             let (mut file, len) = match File::open(path).and_then(|f| {
                 let len = f.metadata()?.len() as usize;
@@ -154,8 +155,8 @@ impl StorageTile {
             }) {
                 Ok(pair) => pair,
                 Err(e) => {
-                    tracing::warn!(?e, ?path, "replay block open failed; skipping");
-                    self.replay_blocks.pop_front();
+                    tracing::warn!(?e, ?path, "replay data file open failed; skipping");
+                    self.replay_steps.pop_front();
                     continue;
                 }
             };
@@ -166,35 +167,42 @@ impl StorageTile {
             let buf = match reservation.buffer() {
                 Ok(buf) => buf,
                 Err(e) => {
-                    tracing::error!(?e, "replay reservation buffer failed; skipping");
-                    self.replay_blocks.pop_front();
+                    tracing::error!(?e, ?path, "replay reservation buffer failed; skipping");
+                    self.replay_steps.pop_front();
                     continue;
                 }
             };
             if let Err(e) = file.read_exact(&mut buf[..len]) {
-                tracing::error!(?e, ?path, "replay block read failed; skipping");
-                self.replay_blocks.pop_front();
+                tracing::error!(?e, ?path, "replay read failed; skipping");
+                self.replay_steps.pop_front();
                 continue;
             }
 
             // TODO: request the missing columns instead of dropping?
-            let block = &buf[..len];
-            if !cols_on_disk &&
-                SignedBeaconBlockView::check_size(block) &&
-                SignedBeaconBlockView::has_data_columns_fulu(block)
+            let ssz = &buf[..len];
+            if let ReplayStep::Block { columns_on_disk: false, .. } = step &&
+                SignedBeaconBlockView::check_size(ssz) &&
+                SignedBeaconBlockView::has_data_columns(
+                    ssz,
+                    self.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(ssz)),
+                )
             {
                 tracing::warn!(?path, "replay skip: custody columns missing on disk");
-                self.replay_blocks.pop_front();
+                self.replay_steps.pop_front();
                 continue;
             }
 
             reservation.increment_offset(len);
-            adapter.produce(ReplayBlock::Block { ssz: reservation.read() });
-            self.replay_blocks.pop_front();
+            let ssz = reservation.read();
+            adapter.produce(match step {
+                ReplayStep::Block { .. } => ReplayBlock::Block { ssz },
+                ReplayStep::Envelope { .. } => ReplayBlock::Envelope { ssz },
+            });
+            self.replay_steps.pop_front();
             sent += 1;
         }
 
-        if self.replay_blocks.is_empty() {
+        if self.replay_steps.is_empty() {
             adapter.produce(ReplayBlock::Done);
             self.replay_done = true;
         }
@@ -203,44 +211,78 @@ impl StorageTile {
 
 impl StorageTile {
     #[timed]
-    fn handle_beacon_state_event(&mut self, event: BeaconStateEvent) -> Option<([u8; 92], u64)> {
+    fn handle_beacon_state_event(
+        &mut self,
+        event: BeaconStateEvent,
+        needs: &mut impl FnMut(SyncNeed),
+    ) -> Option<([u8; 92], u64)> {
         let mut latest_status_event: Option<([u8; 92], u64)> = None;
         match event {
             BeaconStateEvent::Status { ssz, wall_slot, .. } => {
                 latest_status_event = Some((ssz, wall_slot));
             }
-            BeaconStateEvent::PersistBlock { ssz, source } => {
+            BeaconStateEvent::PersistBlock { ssz, source, slot, block_root } => {
                 let t_read = match source {
-                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                    BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
                 };
 
                 match t_read.buffer() {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                        let block_root = column_util::block_root_fulu(buf);
+                        let block_root =
+                            column_util::block_root(buf, self.spec.is_gloas_at_slot(slot));
                         self.store.add_block(block_root, t_read, slot, parent_root);
                     }
                     Err(e) => {
-                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
+                        tracing::error!(
+                            ?e,
+                            seq = t_read.seq(),
+                            ?source,
+                            slot,
+                            "persist block buffer acquire failed"
+                        );
+                        StorageCounters::PersistAcquireFailed.inc();
+                        needs(SyncNeed::Missing {
+                            root: block_root,
+                            slot,
+                            kind: DataKind::Block,
+                            columns: 0,
+                            origin: Origin::Live,
+                        });
                     }
                 }
             }
-            BeaconStateEvent::PersistEnvelope { ssz, source } => {
+            BeaconStateEvent::EnvelopeAvailable { ssz, source, slot, block_root } => {
+                if !self.store.is_envelope_owed(&block_root, slot) {
+                    return None;
+                }
                 let t_read = match source {
-                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                    BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
                 };
                 match t_read.buffer() {
                     Ok((buf, _)) if SignedExecutionPayloadEnvelopeView::check_size(buf) => {
-                        let msg = SignedExecutionPayloadEnvelopeView::message(buf);
-                        let block_root = *ExecutionPayloadEnvelopeView::beacon_block_root(msg);
                         self.store.add_envelope(block_root, t_read);
                     }
-                    Ok(_) => tracing::error!("persist envelope: bad ssz size"),
+                    Ok(_) => tracing::error!(slot, "envelope available: bad ssz size"),
                     Err(e) => {
-                        tracing::error!(?e, "persist envelope consumer buffer acquire failed");
+                        tracing::error!(
+                            ?e,
+                            seq = t_read.seq(),
+                            ?source,
+                            slot,
+                            "envelope buffer acquire failed"
+                        );
+                        StorageCounters::PersistAcquireFailed.inc();
+                        needs(SyncNeed::Missing {
+                            root: block_root,
+                            slot,
+                            kind: DataKind::Envelope,
+                            columns: 0,
+                            origin: Origin::Live,
+                        });
                     }
                 }
             }
@@ -265,43 +307,58 @@ impl Tile<SilverSpine> for StorageTile {
             RpcInbound::Request(req) => {
                 self.store.rpc_request(&mut self.rpc_consumer, req);
             }
-            RpcInbound::Response(rsp) => match rsp.response {
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
-                    if msg_is_backfill(rsp.application_id) =>
-                {
-                    let t_read = self.rpc_consumer.acquire(ssz);
-                    self.store.backfill_block(t_read);
+            RpcInbound::Response(rsp) => {
+                let id = RequestId::from(rsp.application_id);
+                match rsp.response {
+                    silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
+                        if id.is(DataKind::Block, Origin::Backfill) =>
+                    {
+                        let t_read = self.rpc_consumer.acquire(ssz);
+                        self.store.backfill_block(t_read, &mut |need| {
+                            producers.sync_needs.produce(&need.into());
+                        });
+                    }
+                    silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz }
+                        if id.is(DataKind::Columns, Origin::Backfill) =>
+                    {
+                        tracing::debug!("backfill data column sidecar over rpc");
+                        let t_read = self.rpc_consumer.acquire(ssz);
+                        self.store.backfill_data_column(t_read, &mut |need| {
+                            producers.sync_needs.produce(&need.into());
+                        });
+                    }
+                    silver_common::RpcResponse::ExecutionPayloadEnvelope {
+                        fork_digest: _,
+                        ssz,
+                    } if id.is(DataKind::Envelope, Origin::Backfill) => {
+                        let t_read = self.rpc_consumer.acquire(ssz);
+                        self.store.backfill_envelope(t_read, &mut |need| {
+                            producers.sync_needs.produce(&need.into());
+                        });
+                    }
+                    silver_common::RpcResponse::Error { error, msg, len }
+                        if id.origin == Origin::Backfill =>
+                    {
+                        let err_msg = String::from_utf8_lossy(&msg[..len]);
+                        tracing::error!(error, %err_msg, "backfill rpc error response");
+                    }
+                    _ => {}
                 }
-                silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if msg_is_column_backfill(rsp.application_id) => {
-                    tracing::debug!("backfill data column sidecar over rpc");
-                    let t_read = self.rpc_consumer.acquire(ssz);
-                    self.store.backfill_data_column(t_read, &mut |evt| {
-                        producers.peer_events.produce(&evt.into());
-                    });
-                }
-                silver_common::RpcResponse::Error { error, msg, len } if msg_is_column_backfill(rsp.application_id)=> {
-                    let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
-                    tracing::error!(error, err_msg, "column backfill rpc error response");
-                }
-                silver_common::RpcResponse::Error { error, msg, len } if msg_is_backfill(rsp.application_id)=> {
-                    let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
-                    tracing::error!(error, err_msg, "backfill rpc error response");
-                }
-                other => {
-                    tracing::trace!(?other, app_id=rsp.application_id, id=?rsp.stream_id, "ignoring rpc response");
-                }
-            },
+            }
         });
 
         let mut latest_status_event: Option<([u8; 92], u64)> = None;
 
-        adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
-            if let Some(latest) = self.handle_beacon_state_event(beacon_event) {
+        adapter.consume(|beacon_event: BeaconStateEvent, producers| {
+            let mut needs = |need: SyncNeed| {
+                producers.sync_needs.produce(&need.into());
+            };
+            if let Some(latest) = self.handle_beacon_state_event(beacon_event, &mut needs) {
                 latest_status_event.replace(latest);
             }
         });
 
-        adapter.consume(|dc_event: DataColumnsEvent, _producers| {
+        adapter.consume(|dc_event: DataColumnsEvent, producers| {
             if let DataColumnsEvent::Persist { ssz, source, block_root, column_index, slot } =
                 dc_event
             {
@@ -310,7 +367,32 @@ impl Tile<SilverSpine> for StorageTile {
                     ColumnSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
                     ColumnSource::El => self.el_column_consumer.acquire(ssz),
                 };
-                self.store.add_data_column(block_root, column_index, sidecar_ssz, slot);
+                match sidecar_ssz.buffer() {
+                    Ok(_) => {
+                        self.store.add_data_column(block_root, column_index, sidecar_ssz, slot)
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            ?e,
+                            seq = sidecar_ssz.seq(),
+                            ?source,
+                            slot,
+                            column_index,
+                            "persist data column buffer acquire failed"
+                        );
+                        StorageCounters::PersistAcquireFailed.inc();
+                        producers.sync_needs.produce(
+                            &SyncNeed::Missing {
+                                root: block_root,
+                                slot,
+                                kind: DataKind::Columns,
+                                columns: 1u128 << column_index,
+                                origin: Origin::Live,
+                            }
+                            .into(),
+                        );
+                    }
+                }
             }
         });
 
@@ -363,10 +445,10 @@ impl Tile<SilverSpine> for StorageTile {
         }
 
         // Run store file i/o (also advances any in-flight checkpoint persist).
-        let spec = self.spec.clone();
+        let spec = &*self.spec;
         let gvr = self.genesis_validators_root;
         let fork_digest_at = move |slot: u64| match gvr {
-            Some(gvr) => column_util::fork_digest_at(&spec, slot, &gvr),
+            Some(gvr) => column_util::fork_digest_at(spec, slot, &gvr),
             None => [0u8; 4],
         };
         if let Err(e) = self.store.file_io(
@@ -376,6 +458,7 @@ impl Tile<SilverSpine> for StorageTile {
             &mut |io| match io {
                 IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
+                IoEvent::Need(need) => adapter.produce(need),
             },
         ) {
             tracing::error!(
@@ -387,9 +470,11 @@ impl Tile<SilverSpine> for StorageTile {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
+    Need(SyncNeed),
 }
 
 #[cfg(test)]
@@ -472,7 +557,7 @@ mod tests {
             store_dir.clone(),
             true,
         );
-        assert_eq!(tile.replay_blocks.len(), 3, "skip decided at replay, not load");
+        assert_eq!(tile.replay_steps.len(), 3, "skip decided at replay, not load");
 
         // Spine + injector: the tile produces, the injector drains.
         let base = std::env::temp_dir().join(format!("silver-replay-da-{}", rand::random::<u64>()));
@@ -493,6 +578,7 @@ mod tests {
         let (mut blocks, mut done) = (0, 0);
         inj_adapter.consume(|m: ReplayBlock, _| match m {
             ReplayBlock::Block { .. } => blocks += 1,
+            ReplayBlock::Envelope { .. } => {}
             ReplayBlock::Done => done += 1,
         });
 

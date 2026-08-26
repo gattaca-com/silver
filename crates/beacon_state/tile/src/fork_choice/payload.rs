@@ -10,6 +10,7 @@ impl ForkChoice {
         let Some(mut idx) = self.find_node_idx(block_root) else {
             return;
         };
+        self.head_moved = true;
         loop {
             let n = &mut self.nodes[idx];
             if n.execution_status == ExecutionStatus::Valid {
@@ -28,6 +29,7 @@ impl ForkChoice {
         let Some(head_idx) = self.find_node_idx(block_root) else {
             return;
         };
+        self.head_moved = true;
 
         if self.nodes[head_idx].payload.is_gloas {
             self.nodes[head_idx].execution_status = ExecutionStatus::Invalid;
@@ -85,6 +87,7 @@ impl ForkChoice {
     pub fn mark_payload_verified(&mut self, block_root: &B256) {
         if let Some(idx) = self.find_node_idx(block_root) {
             self.nodes[idx].payload.verified = true;
+            self.head_moved = true;
         }
     }
 
@@ -100,6 +103,7 @@ impl ForkChoice {
             return;
         }
         self.nodes[idx].ptc.record(ptc_idx, present, da);
+        self.head_moved = true;
     }
 
     #[cfg(feature = "ef_tests")]

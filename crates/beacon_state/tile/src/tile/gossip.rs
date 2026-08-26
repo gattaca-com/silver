@@ -3,8 +3,9 @@ use silver_beacon_state_data::{
     B256, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
-    GossipTopic, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
+    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, DataKind, EngineNewPayloadEnvelopeReq,
+    EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK, NewGossipMsg, Origin, PeerEvent, SyncNeed,
+    TCacheRead, TRead, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -16,7 +17,7 @@ use silver_common::{
 };
 
 use super::{
-    ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
+    ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, Producers,
     attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
@@ -70,7 +71,10 @@ impl BeaconStateTile {
         data: &[u8],
         subnet: u64,
     ) -> Result<PreparedAttestation, Feedback> {
-        if data.len() < SINGLE_ATT_SIZE {
+        // Exact size: trailing bytes parse fine here (fixed-size prefix) but
+        // strict-SSZ peers reject the relayed message — their P4 lands on us,
+        // not the originator.
+        if data.len() != SINGLE_ATT_SIZE {
             return Err(Feedback::Reject(None));
         }
         let buf: &[u8; SINGLE_ATT_SIZE] = data[..SINGLE_ATT_SIZE].try_into().unwrap();
@@ -262,7 +266,6 @@ impl BeaconStateTile {
         if accepted {
             self.on_accept(None, producers);
         }
-        self.drain_envelope_requests(producers);
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
@@ -433,6 +436,9 @@ impl BeaconStateTile {
             return EnvelopeCheck::Ignore;
         }
         let msg = SignedPayload::message(ssz);
+        if !Envelope::check_size(msg) {
+            return EnvelopeCheck::Ignore;
+        }
         let block_root = *Envelope::beacon_block_root(msg);
         let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
             return EnvelopeCheck::AwaitBlock(block_root);
@@ -440,10 +446,25 @@ impl BeaconStateTile {
         let state_id = self.fork_choice.node(idx).state_id;
         let rv = self.state.read_view(state_id);
         if let Err(e) = stf::verify_execution_payload_envelope(&rv, &self.spec, ssz) {
-            tracing::debug!(error = %e, "execution_payload_envelope rejected");
+            tracing::info!(error = %e, "execution_payload_envelope ignored");
             return EnvelopeCheck::Ignore;
         }
         EnvelopeCheck::Ready { block_root, state_id }
+    }
+
+    fn emit_envelope_available(
+        acquired: &TRead,
+        source: BlockSource,
+        slot: u64,
+        block_root: B256,
+        producers: &mut Producers,
+    ) {
+        producers.produce(BeaconStateEvent::EnvelopeAvailable {
+            ssz: acquired.read,
+            source,
+            slot,
+            block_root,
+        });
     }
 
     #[timed]
@@ -463,25 +484,23 @@ impl BeaconStateTile {
             EnvelopeCheck::Ignore => return Feedback::Ignore,
         };
 
+        let slot_state = self.state.read_view(state_id).slot;
+        let slot = slot_state.slot_number();
+
         if self.fork_choice.is_payload_verified(&block_root) {
+            Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
             return Feedback::Ignore;
         }
 
         // Versioned hashes come from the committed bid's KZG commitments — the
         // envelope does not carry them.
         let mut versioned_hashes = [[0u8; 32]; MAX_BLOBS_PER_BLOCK];
-        let hash_count = match self
-            .state
-            .read_view(state_id)
-            .slot
-            .bid_versioned_hashes_len(&mut versioned_hashes)
-        {
+        let hash_count = match slot_state.bid_versioned_hashes_len(&mut versioned_hashes) {
             Some(n) => n as u8,
             None => return Feedback::Reject(None),
         };
 
         self.fork_choice.mark_payload_verified(&block_root);
-        self.envelope_requested.remove(&block_root);
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.read,
             block_root,
@@ -490,7 +509,7 @@ impl BeaconStateTile {
             versioned_hashes,
         }));
 
-        producers.produce(BeaconStateEvent::PersistEnvelope { ssz: acquired.read, source });
+        Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
 
         self.drain_awaiting_payload(block_root, producers);
         self.recompute_head();
@@ -500,6 +519,11 @@ impl BeaconStateTile {
 
     fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
         if !has_room(&self.pending_envelopes, self.pending_bounds.max_dc, &block_root) {
+            tracing::warn!(
+                block = hex32(&block_root),
+                cap = self.pending_bounds.max_dc,
+                "pending-envelope buffer full; envelope dropped"
+            );
             return;
         }
         self.pending_envelopes.insert(block_root, acquired);
@@ -538,35 +562,9 @@ impl BeaconStateTile {
             return Err(Feedback::Reject(None));
         }
         if !self.fork_choice.is_payload_verified(block_root) {
-            let now_ms = self.ticker.millis_since_genesis();
-            let rerequest_ms = self.pending_bounds.envelope_rerequest_ms;
-            let due = self
-                .envelope_requested
-                .get(block_root)
-                .is_none_or(|&at_ms| now_ms.saturating_sub(at_ms) >= rerequest_ms);
-            if due {
-                self.envelope_request_queue.push(*block_root);
-            }
-            return Err(Feedback::Ignore);
+            return Err(Feedback::RequestEnvelope { block_root: *block_root, att_slot });
         }
         Ok(true)
-    }
-
-    fn drain_envelope_requests(&mut self, producers: &mut Producers) {
-        if self.envelope_request_queue.is_empty() {
-            return;
-        }
-        let now_ms = self.ticker.millis_since_genesis();
-        let mut queue = std::mem::take(&mut self.envelope_request_queue);
-        for block_root in queue.drain(..) {
-            self.envelope_requested.insert(block_root, now_ms);
-            producers.produce(PeerEvent::SendEnvelopesByRootRequest {
-                request_id: BY_ROOT_REQUEST_ID,
-                p2p_peer: None,
-                block_root,
-            });
-        }
-        self.envelope_request_queue = queue;
     }
 
     fn validate_attestation_target(&self, data: AttestationDataView<'_>) -> Result<(), Feedback> {
@@ -576,6 +574,7 @@ impl BeaconStateTile {
             return Err(Feedback::Reject(None));
         }
         let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
+            BeaconStateCounters::AttestationUnknownRoot.inc();
             return Err(Feedback::Ignore);
         };
         match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {
@@ -801,6 +800,20 @@ impl BeaconStateTile {
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return };
 
         let feedback = match m.topic {
+            GossipTopic::BeaconBlock if !self.sync_target.is_following() => {
+                match self.parse_and_verify_block(data, pre_verified) {
+                    Ok(_) if do_relay => Self::relay_gossip(&m, producers),
+                    Err(err) if matches!(err.feedback(), Feedback::Reject(_)) => {
+                        producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                            p2p_peer: m.stream_id.peer(),
+                            topic: m.topic,
+                            hash: m.msg_hash,
+                        })
+                    }
+                    _ => {}
+                }
+                return;
+            }
             GossipTopic::BeaconBlock => {
                 let feedback = self.apply_block(
                     data,
@@ -830,10 +843,7 @@ impl BeaconStateTile {
                 producers,
             ),
             GossipTopic::PayloadAttestationMessage => self.handle_payload_attestation(data),
-            _ => {
-                self.drain_envelope_requests(producers);
-                return;
-            }
+            _ => return,
         };
         match feedback {
             Feedback::Reject(_) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
@@ -856,9 +866,17 @@ impl BeaconStateTile {
                 }
                 self.park_block(feedback, PendingBlock::Gossip(m), data, producers);
             }
-            Feedback::Ignore => {}
+            Feedback::RequestEnvelope { block_root, att_slot } => {
+                producers.produce(SyncNeed::Missing {
+                    root: block_root,
+                    slot: att_slot,
+                    kind: DataKind::Envelope,
+                    columns: 0,
+                    origin: Origin::Live,
+                })
+            }
+            Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
         }
-        self.drain_envelope_requests(producers);
     }
 
     fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {

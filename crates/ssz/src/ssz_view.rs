@@ -584,25 +584,28 @@ impl SignedBeaconBlockView {
     }
 
     #[inline]
-    pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
+    pub fn gloas_bid(buf: &[u8]) -> Option<&[u8]> {
         let body = Self::body(buf);
         if body.len() < BEACON_BLOCK_BODY_FIXED {
-            return &[];
+            return None;
         }
         let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
         let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
-        if bid_off < BEACON_BLOCK_BODY_FIXED || bid_off > pa_off || pa_off > body.len() {
-            return &[];
+        if bid_off < BEACON_BLOCK_BODY_FIXED {
+            return None;
         }
-        let signed_bid = &body[bid_off..pa_off];
+        // `get` covers an inverted range and one past the body.
+        let signed_bid = body.get(bid_off..pa_off)?;
         if !SignedExecutionPayloadBidView::check_size(signed_bid) {
-            return &[];
+            return None;
         }
         let bid = SignedExecutionPayloadBidView::message(signed_bid);
-        if !ExecutionPayloadBidView::check_size(bid) {
-            return &[];
-        }
-        ExecutionPayloadBidView::blob_kzg_commitments(bid)
+        ExecutionPayloadBidView::check_size(bid).then_some(bid)
+    }
+
+    #[inline]
+    pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
+        Self::gloas_bid(buf).map_or(&[], ExecutionPayloadBidView::blob_kzg_commitments)
     }
 
     #[inline]
@@ -1043,7 +1046,7 @@ impl DataColumnSidecarFuluView {
         let col_off = u32_le(buf, 8) as usize;
         let com_off = u32_le(buf, 12) as usize;
         let proof_off = u32_le(buf, 16) as usize;
-        col_off >= DATA_COLUMN_SIDECAR_MIN &&
+        col_off == DATA_COLUMN_SIDECAR_MIN &&
             col_off <= com_off &&
             com_off <= proof_off &&
             proof_off <= buf.len()
@@ -1492,6 +1495,66 @@ pub const DC_BY_ROOT_ID_MIN: usize = 36;
 // columns: List[ColumnIndex, NUMBER_OF_COLUMNS], ColumnIndex = u64.
 pub const DC_BY_ROOT_ID_MAX: usize = DC_BY_ROOT_ID_MIN + NUMBER_OF_COLUMNS * 8;
 
+// -- DataColumnSidecarsByRootRequest (req/data_column_sidecars_by_root/1)
+//
+// SSZ List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS]: variable-size
+// elements, so a leading offset table (u32 LE per element) precedes the
+// element payloads. `offsets[0] / 4` is the element count.
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct DataColumnsByRootRequestView;
+
+impl DataColumnsByRootRequestView {
+    #[inline]
+    fn offset(buf: &[u8], i: usize) -> usize {
+        u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap()) as usize
+    }
+
+    #[inline]
+    pub fn count(buf: &[u8]) -> usize {
+        Self::offset(buf, 0) / 4
+    }
+
+    /// Element `i`'s bytes — a bare `DataColumnsByRootIdentifier`. Safe for
+    /// all `i < count(buf)` after `check_size`.
+    #[inline]
+    pub fn identifier(buf: &[u8], i: usize) -> &[u8] {
+        let start = Self::offset(buf, i);
+        let end = if i + 1 < Self::count(buf) { Self::offset(buf, i + 1) } else { buf.len() };
+        &buf[start..end]
+    }
+
+    /// Offset table well-formed (first offset = 4·count, monotonic, in
+    /// bounds) and every element a valid identifier.
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < 4 {
+            return false;
+        }
+        let table_end = Self::offset(buf, 0);
+        if table_end < 4 || !table_end.is_multiple_of(4) || table_end > buf.len() {
+            return false;
+        }
+        let count = table_end / 4;
+        if count > MAX_REQUEST_BLOCKS_DENEB {
+            return false;
+        }
+        let mut prev = table_end;
+        for i in 0..count {
+            let start = if i == 0 { table_end } else { Self::offset(buf, i) };
+            let end = if i + 1 < count { Self::offset(buf, i + 1) } else { buf.len() };
+            if start != prev || end < start || end > buf.len() {
+                return false;
+            }
+            if !DataColumnsByRootIdentifierView::check_size(&buf[start..end]) {
+                return false;
+            }
+            prev = end;
+        }
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DataColumnsByRootIdentifierView;
@@ -1933,6 +1996,31 @@ pub const DATA_COLUMN_SIDECAR_GLOAS_MAX: usize = DATA_COLUMN_SIDECAR_GLOAS_MIN +
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_CELL +
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_KZG_PROOF;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidecarLayout {
+    Fulu,
+    Gloas,
+}
+
+impl SidecarLayout {
+    #[inline]
+    pub fn of(buf: &[u8]) -> Option<Self> {
+        if buf.len() < DATA_COLUMN_SIDECAR_GLOAS_MIN {
+            return None;
+        }
+        match u32_le(buf, 8) as usize {
+            DATA_COLUMN_SIDECAR_MIN if buf.len() >= DATA_COLUMN_SIDECAR_MIN => Some(Self::Fulu),
+            DATA_COLUMN_SIDECAR_GLOAS_MIN => Some(Self::Gloas),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn is_gloas(self) -> bool {
+        matches!(self, Self::Gloas)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct DataColumnSidecarGloasView;
@@ -1965,7 +2053,7 @@ impl DataColumnSidecarGloasView {
         }
         let col_off = u32_le(buf, 8) as usize;
         let proof_off = u32_le(buf, 12) as usize;
-        col_off >= DATA_COLUMN_SIDECAR_GLOAS_MIN && col_off <= proof_off && proof_off <= buf.len()
+        col_off == DATA_COLUMN_SIDECAR_GLOAS_MIN && col_off <= proof_off && proof_off <= buf.len()
     }
 }
 

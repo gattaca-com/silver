@@ -17,8 +17,10 @@ pub struct ScoreParams {
     pub gossip_threshold: f64,
     /// Below this score we don't accept PX peer-exchange lists in PRUNE.
     pub accept_px_threshold: f64,
-    /// Above this score a peer is eligible for opportunistic mesh graft.
-    pub opportunistic_graft_threshold: f64,
+    /// A mesh is underperforming — and so eligible for opportunistic graft
+    /// — when its median topic-local score falls below this fraction of the
+    /// topic class's saturation (`scoring::topic_local_saturation`).
+    pub opportunistic_graft_fraction: f64,
 
     // ── P1: time in mesh ────────────────────────────────────────────────
     pub time_in_mesh_cap_s: f64,
@@ -128,7 +130,7 @@ impl Default for ScoreParams {
             publish_threshold: -50.0,
             gossip_threshold: -10.0,
             accept_px_threshold: 10.0,
-            opportunistic_graft_threshold: 5.0,
+            opportunistic_graft_fraction: 0.25,
 
             // P1 — small positive reward, capped
             time_in_mesh_cap_s: 3600.0,
@@ -161,8 +163,12 @@ impl Default for ScoreParams {
             // once per slot to accumulate toward the −80 graylist floor.
             application_score_decay: 0.95,
 
-            // P7 — behaviour penalty
-            behaviour_penalty_threshold: 0.0,
+            // P7 — behaviour penalty. Squared excess over the threshold:
+            // with the free budget below, isolated events (a stream race, a
+            // one-off bad frame) cost nothing; only sustained misbehaviour
+            // gates. Threshold 0 made a single benign event = -10 = the
+            // gossip gate, which starved the peer's P3 view of us.
+            behaviour_penalty_threshold: 5.0,
             behaviour_penalty_weight: -10.0,
             behaviour_penalty_decay: 0.999,
 

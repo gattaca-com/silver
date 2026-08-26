@@ -20,3 +20,8 @@ fn scenario_2_blob_block_awaits_data_columns() {
 fn scenario_3_blob_gossip_relayed_before_data_columns() {
     common::run_scenario(&cases_dir().join("scenario_3_blob_gossip_relay"));
 }
+
+#[test]
+fn scenario_4_finalized_target_does_not_gate_on_data_availability() {
+    common::run_scenario(&cases_dir().join("scenario_4_blob_da_syncing_finalized"));
+}

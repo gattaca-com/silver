@@ -27,8 +27,8 @@ impl UnfinalizedEnvelopes {
         Ok(Self(map))
     }
 
-    pub(crate) fn insert(&mut self, root: [u8; 32], slot: u64) {
-        self.0.insert(root, slot);
+    pub(crate) fn insert(&mut self, root: [u8; 32], slot: u64) -> bool {
+        self.0.insert(root, slot).is_none()
     }
 
     #[cfg(test)]

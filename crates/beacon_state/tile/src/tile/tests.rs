@@ -10,10 +10,11 @@ use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SignedAggregateAndProofView, SingleAttestationView, StatusView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
+        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
     },
 };
+use silver_ssz::ssz_view::EXECUTION_PAYLOAD_ENVELOPE_MIN;
 
 use super::*;
 use crate::{
@@ -62,7 +63,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
 
 /// Like `make_tile_at_wall_slot` but returns the gossip producer so tests
 /// can write real block buffers the tile's consumer can read back.
-fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer) {
+fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
@@ -86,7 +87,7 @@ fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer) {
         true,
         BeaconState::empty_test(0),
     );
-    (tile, gossip_p)
+    (tile, gossip_p, event_p)
 }
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
@@ -197,7 +198,7 @@ fn arm_tile_state(
     tile.shuffling_cache = ShufflingCache::with_capacity(seeds.len());
     tile.last_applied = anchor;
     tile.last_applied_block_root = ANCHOR_ROOT;
-    tile.mode = Mode::Following;
+    tile.sync_target = SyncUpdate::Following;
 
     let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
     tile.fork_choice =
@@ -403,10 +404,10 @@ fn pending_admission_window_bounds() {
 /// returned to keep it alive for the adapter.
 fn tile_with_producers(
     wall_slot: u64,
-) -> (BeaconStateTile, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let (tile, gp) = make_tile_with_gossip(wall_slot);
+    let (tile, gp, rp) = make_tile_with_gossip(wall_slot);
     let base = std::env::temp_dir().join(format!(
         "silver-pending-{}-{}",
         std::process::id(),
@@ -415,7 +416,7 @@ fn tile_with_producers(
     std::fs::create_dir_all(&base).expect("temp base");
     let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
     let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
-    (tile, gp, spine, adapter)
+    (tile, gp, rp, spine, adapter)
 }
 
 fn root_with(idx: u64, tag: u8) -> B256 {
@@ -437,12 +438,111 @@ fn buffer_orphan_idx(
     let parent = root_with(idx, 0x00);
     let block_root = root_with(idx, 0xFF);
     let slot = tile.head_state_slot() + 1;
-    tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, 0, producers);
+    tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, producers);
+}
+
+/// Signed block just well-formed enough to reach the parent lookup: the
+/// message's slot sits at [100..108) and its parent root at [116..148).
+fn rpc_block(producer: &mut TProducer, slot: u64, parent_root: B256) -> silver_common::TCacheRead {
+    let mut bytes = vec![0u8; 200];
+    bytes[100..108].copy_from_slice(&slot.to_le_bytes());
+    bytes[116..148].copy_from_slice(&parent_root);
+    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
+    if let Ok(buf) = r.buffer() {
+        buf[..bytes.len()].copy_from_slice(&bytes);
+    }
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    read
+}
+
+/// Signed envelope just well-formed enough to reach the block lookup: the
+/// wrapper declares its 100B prefix at [0..4), the message declares its own
+/// (empty) payload region at [100..108), and `beacon_block_root` sits at
+/// [116..148).
+fn rpc_envelope(producer: &mut TProducer, block_root: B256) -> silver_common::TCacheRead {
+    let mut bytes = vec![0u8; SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN];
+    bytes[0..4].copy_from_slice(&100u32.to_le_bytes());
+    let envelope_fixed = EXECUTION_PAYLOAD_ENVELOPE_MIN as u32;
+    bytes[100..104].copy_from_slice(&envelope_fixed.to_le_bytes());
+    bytes[104..108].copy_from_slice(&envelope_fixed.to_le_bytes());
+    bytes[116..148].copy_from_slice(&block_root);
+    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
+    if let Ok(buf) = r.buffer() {
+        buf[..bytes.len()].copy_from_slice(&bytes);
+    }
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    read
+}
+
+/// Storage's backfill blocks ride the same response queue, and they are not
+/// ours: storage persists history. Importing one here spends a tcache
+/// acquire and a size check to reach a below-finality guard that discards
+/// it, once per historical block in the chain.
+#[test]
+fn backfill_block_response_is_not_parked() {
+    let (mut tile, _gp, mut rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+
+    let unknown_parent = [0xB5u8; 32];
+    let response = |kind, origin, ssz| {
+        RpcInbound::Response(RpcResponseInbound {
+            application_id: RequestId { kind, origin, seq: 0 }.into(),
+            stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+            response: RpcResponse::BeaconBlock { fork_digest: [0u8; 4], ssz },
+        })
+    };
+
+    for kind in [DataKind::Block, DataKind::Envelope] {
+        let ssz = rpc_block(&mut rp, 11, unknown_parent);
+        tile.on_rpc_inbound(response(kind, Origin::Backfill, ssz), &mut adapter.producers);
+        assert!(tile.pending_blocks.is_empty(), "backfill {kind:?} response not parked");
+    }
+
+    // Control: the live origin on the same bytes *does* park, so the
+    // assertions above are about the guard and not about malformed input.
+    let ssz = rpc_block(&mut rp, 11, unknown_parent);
+    tile.on_rpc_inbound(response(DataKind::Block, Origin::Live, ssz), &mut adapter.producers);
+    assert_eq!(tile.pending_blocks.len(), 1, "live block parks on its missing parent");
+}
+
+/// Storage's historical envelopes ride the same response queue. Their block
+/// is long gone from fork choice, so handling one parks it as `AwaitBlock`
+/// and spends the pending buffer on traffic that is not ours.
+#[test]
+fn backfill_envelope_response_is_not_parked() {
+    let (mut tile, _gp, mut rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+
+    let unknown_root = [0xE5u8; 32];
+    let envelope = |ssz| RpcResponse::ExecutionPayloadEnvelope { fork_digest: [0u8; 4], ssz };
+    let response = |kind, origin, ssz| {
+        RpcInbound::Response(RpcResponseInbound {
+            application_id: RequestId { kind, origin, seq: 0 }.into(),
+            stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+            response: envelope(ssz),
+        })
+    };
+
+    for kind in [DataKind::Envelope, DataKind::Block] {
+        let ssz = rpc_envelope(&mut rp, unknown_root);
+        tile.on_rpc_inbound(response(kind, Origin::Backfill, ssz), &mut adapter.producers);
+        assert!(tile.pending_envelopes.is_empty(), "backfill {kind:?} response not parked");
+    }
+
+    // Control: the live origin on the same bytes *does* park, so the
+    // assertions above are about the guard and not about malformed input.
+    let ssz = rpc_envelope(&mut rp, unknown_root);
+    tile.on_rpc_inbound(response(DataKind::Envelope, Origin::Live, ssz), &mut adapter.producers);
+    assert!(tile.pending_envelopes.contains_key(&unknown_root), "live envelope parks");
 }
 
 #[test]
 fn orphan_below_cap_is_buffered() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10); // Following, finalized epoch 0
     let cap = tile.pending_bounds.max_parents;
     for i in 0..cap as u64 - 1 {
@@ -456,7 +556,7 @@ fn orphan_below_cap_is_buffered() {
 
 #[test]
 fn orphan_at_cap_is_refused() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
     let cap = tile.pending_bounds.max_parents;
     for i in 0..cap as u64 {
@@ -469,8 +569,8 @@ fn orphan_at_cap_is_refused() {
 }
 
 #[test]
-fn orphan_too_far_ahead_falls_back_to_range_sync() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+fn orphan_too_far_ahead_falls_back_to_syncing() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10); // Following, head slot 10
     let head = tile.head_state_slot();
     let limit = tile.pending_bounds.max_chain_len as u64;
@@ -482,32 +582,51 @@ fn orphan_too_far_ahead_falls_back_to_range_sync() {
         root_with(0, 0xFF),
         gossip_pending(&mut gp, edge),
         edge,
-        0,
         &mut adapter.producers,
     );
     assert_eq!(tile.pending_blocks.len(), 1, "edge orphan buffered");
 
-    // One slot past the gap: refused before insert, range sync takes over.
+    // One slot past the gap: refused before insert, syncing takes over.
     let beyond = head + limit + 1;
     tile.buffer_orphan(
         root_with(1, 0x00),
         root_with(1, 0xFF),
         gossip_pending(&mut gp, beyond),
         beyond,
-        0,
         &mut adapter.producers,
     );
     assert_eq!(tile.pending_blocks.len(), 1, "too-far orphan not buffered");
 }
 
+/// The gap bound is not a Following-only courtesy: syncing is when the tip is
+/// furthest from the head, so it is when tip gossip would otherwise fill the
+/// pool with orphans whose parents the range walk is already fetching.
+#[test]
+fn orphan_too_far_ahead_is_refused_while_syncing_too() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    tile.sync_target = SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] };
+    let beyond = tile.head_state_slot() + tile.pending_bounds.max_chain_len as u64 + 1;
+
+    tile.buffer_orphan(
+        root_with(1, 0x00),
+        root_with(1, 0xFF),
+        gossip_pending(&mut gp, beyond),
+        beyond,
+        &mut adapter.producers,
+    );
+
+    assert!(tile.pending_blocks.is_empty(), "a far-ahead orphan is left to the range walk");
+}
+
 #[test]
 fn duplicate_orphan_not_rebuffered() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
     let (parent, block_root) = (root_with(0, 0x00), root_with(0, 0xFF));
     let slot = tile.head_state_slot() + 1;
     let buffer = |tile: &mut BeaconStateTile, gp: &mut TProducer, prods: &mut Producers| {
-        tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, 0, prods);
+        tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, prods);
     };
     buffer(&mut tile, &mut gp, &mut adapter.producers);
     buffer(&mut tile, &mut gp, &mut adapter.producers);
@@ -862,7 +981,7 @@ fn batched_att(
 
 #[test]
 fn attestation_batch_flush_applies_all() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(31);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let bbr = tile.last_applied_block_root;
 
@@ -884,7 +1003,7 @@ fn attestation_batch_flush_applies_all() {
 /// the fallback must reject only the forgery.
 #[test]
 fn attestation_batch_fallback_rejects_only_forged() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(31);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let bbr = tile.last_applied_block_root;
 
@@ -904,7 +1023,7 @@ fn attestation_batch_fallback_rejects_only_forged() {
 /// queue order is preserved.
 #[test]
 fn attestation_batch_flushed_before_other_gossip() {
-    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(31);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let bbr = tile.last_applied_block_root;
 
@@ -915,7 +1034,7 @@ fn attestation_batch_flushed_before_other_gossip() {
 
     let mut exit = gossip_att_msg(&mut gp, &[0u8; SINGLE_ATT_SIZE], 0);
     exit.topic = GossipTopic::VoluntaryExit;
-    tile.on_gossip(exit, true, &mut adapter.producers);
+    tile.on_gossip(exit, &mut adapter.producers);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
 }
 

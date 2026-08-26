@@ -4,14 +4,17 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
     Nanos, P2pStreamId, StreamProtocol, Wheel, column_util as util,
-    ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, SignedBeaconBlockView},
+    ssz_view::{
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, SidecarLayout, SignedBeaconBlockView,
+    },
 };
 
-use crate::{BlockRoot, sync::SyncStatus};
+use crate::{BlockRoot, sync::SyncStatus, tile::BlockValidation};
 
 pub(crate) enum ColumnOutcome {
     Skip,
-    Reject { block_root: BlockRoot, bitmask: u128 },
+    AlreadyHeld { block_root: BlockRoot, column_index: u64, slot: u64 },
+    Reject { block_root: BlockRoot, slot: u64, bitmask: u128 },
     Buffer { block_root: BlockRoot },
     AwaitParent { parent_root: BlockRoot },
     Record { block_root: BlockRoot, column_index: u64, bitmask: u128, slot: u64 },
@@ -22,15 +25,6 @@ pub(crate) enum ColumnOutcome {
 /// every check but KZG". Owns the caches only validation consults.
 pub(crate) struct ColumnValidator {
     beacon_state: BeaconStateReader,
-    // BLS verify memo: block_root → previously-validated 96-byte
-    // proposer signature. On a subsequent sidecar with the same
-    // block_root AND matching signature bytes we skip the ~1 ms BLS
-    // verify; with a different signature we re-verify. block_root
-    // alone is not safe to cache by — it does not cover the
-    // signature, kzg_commitments, or inclusion proof, all of which
-    // remain verified on every sidecar. Time-bounded: 4 buckets × 1
-    // epoch ⇒ entries age out after 3–4 epochs.
-    validated_blocks: Wheel<BlockRoot, [u8; 96], 4>,
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
     gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
     // Roots of persisted blocks — parent-seen checks beyond the head fork.
@@ -41,7 +35,6 @@ impl ColumnValidator {
     pub fn new(beacon_state: BeaconStateReader, epoch_duration: Duration) -> Self {
         Self {
             beacon_state,
-            validated_blocks: Wheel::new(epoch_duration),
             gloas_commitments: Wheel::new(epoch_duration),
             persisted_block_roots: Wheel::new(epoch_duration),
         }
@@ -66,9 +59,36 @@ impl ColumnValidator {
     }
 
     pub fn rotate(&mut self, now: Instant) {
-        self.validated_blocks.maybe_rotate(now, &mut |_, _| true);
-        self.gloas_commitments.maybe_rotate(now, &mut |_, _| true);
-        self.persisted_block_roots.maybe_rotate(now, &mut |_, _| true);
+        self.gloas_commitments.maybe_rotate(now);
+        self.persisted_block_roots.maybe_rotate(now);
+    }
+
+    pub fn validate(
+        &mut self,
+        stream_id: P2pStreamId,
+        buffer: &[u8],
+        gossip_subnet: Option<u64>,
+        recv_ts: Option<Nanos>,
+        sync_state: &SyncStatus,
+        validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
+    ) -> Option<(ColumnOutcome, bool)> {
+        match SidecarLayout::of(buffer)? {
+            SidecarLayout::Gloas => Some((
+                self.validate_gloas(stream_id, buffer, gossip_subnet, sync_state, validated),
+                true,
+            )),
+            SidecarLayout::Fulu => Some((
+                self.validate_fulu(
+                    stream_id,
+                    buffer,
+                    gossip_subnet,
+                    recv_ts,
+                    sync_state,
+                    validated,
+                ),
+                false,
+            )),
+        }
     }
 
     #[timed]
@@ -79,13 +99,12 @@ impl ColumnValidator {
         gossip_subnet: Option<u64>,
         recv_ts: Option<Nanos>,
         sync_state: &SyncStatus,
-        validated_columns: &Wheel<BlockRoot, u128, 4>,
+        validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
     ) -> ColumnOutcome {
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
-        if slot < sync_state.head_slot() {
-            tracing::info!(slot, "skip old data column");
+        if slot <= sync_state.data_availability_floor() {
             return ColumnOutcome::Skip;
         }
 
@@ -117,18 +136,18 @@ impl ColumnValidator {
         if let Some(subnet) = gossip_subnet &&
             subnet != column_index
         {
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
         let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
 
-        if validated_columns.get(&block_root).map(|c| c & column_bitmask != 0).unwrap_or_default() {
-            return ColumnOutcome::Skip;
+        if validated.get(&block_root).is_some_and(|v| v.has_columns(column_bitmask)) {
+            return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
         if !util::verify_data_column_sidecar_fulu(buffer) {
             tracing::warn!(?stream_id, "badly formed data column sidecar");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
         // Inclusion proof binds the sidecar's `kzg_commitments` to the
@@ -136,7 +155,7 @@ impl ColumnValidator {
         // it must run on every sidecar.
         if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
         // State-driven validations: pull every input in one seqlock pass.
@@ -184,7 +203,7 @@ impl ColumnValidator {
             checks
         else {
             tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         };
 
         if !above_finalized {
@@ -206,7 +225,7 @@ impl ColumnValidator {
         }
         if !proposer_matches {
             tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
         // BLS verify cache: skip the ~1 ms verify iff the sidecar's
@@ -214,16 +233,16 @@ impl ColumnValidator {
         // this block_root. block_root does not pin the signature, so
         // bytes-equality is required.
         let sig_bytes = *DataColumnSidecarFuluView::block_signature(buffer);
-        if self.validated_blocks.get(&block_root) != Some(&sig_bytes) {
+        if validated.get(&block_root).and_then(|v| v.signature) != Some(sig_bytes) {
             let Some(pubkey) = pubkey else {
                 tracing::warn!(?stream_id, "sidecar proposer_index out of range");
-                return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
             };
             if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
                 tracing::warn!(?stream_id, "sidecar proposer signature invalid");
-                return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
             }
-            self.validated_blocks.insert(block_root, sig_bytes);
+            validated.entry(block_root).or_default().signature = Some(sig_bytes);
         }
 
         ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }
@@ -236,7 +255,7 @@ impl ColumnValidator {
         buffer: &[u8],
         gossip_subnet: Option<u64>,
         sync_state: &SyncStatus,
-        validated_columns: &Wheel<BlockRoot, u128, 4>,
+        validated: &Wheel<BlockRoot, BlockValidation, 4>,
     ) -> ColumnOutcome {
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
@@ -249,7 +268,7 @@ impl ColumnValidator {
             );
             return ColumnOutcome::Skip;
         }
-        if slot <= sync_state.finalized_slot() {
+        if slot <= sync_state.data_availability_floor() {
             return ColumnOutcome::Skip;
         }
 
@@ -260,11 +279,11 @@ impl ColumnValidator {
         if let Some(subnet) = gossip_subnet &&
             subnet != column_index
         {
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
-        if validated_columns.get(&block_root).map(|c| c & column_bitmask != 0).unwrap_or_default() {
-            return ColumnOutcome::Skip;
+        if validated.get(&block_root).is_some_and(|v| v.has_columns(column_bitmask)) {
+            return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
         let Some(commitments) = self.gloas_commitments.get(&block_root) else {
@@ -273,7 +292,7 @@ impl ColumnValidator {
 
         if !util::verify_data_column_sidecar_gloas(buffer, commitments) {
             tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
         ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }

@@ -44,6 +44,7 @@ pub struct DiscV5 {
     local_enr: Enr,
     local_enr_raw: ArrayVec<u8, ENR_RECORD_MAX>,
     fork_digest: [u8; 4],
+    previous_fork_digest: Option<[u8; 4]>,
 
     kbuckets: KBucketsTable<NodeEntry>,
 
@@ -102,6 +103,7 @@ impl DiscV5 {
             local_enr,
             local_enr_raw,
             fork_digest,
+            previous_fork_digest: None,
             kbuckets,
             sessions: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             challenges: FxHashMap::with_capacity_and_hasher(target, Default::default()),
@@ -828,8 +830,8 @@ impl DiscV5 {
         let Some(eth2) = enr.eth2() else {
             return true;
         };
-        let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
-        digest == self.fork_digest
+        eth2[..4] == self.fork_digest ||
+            self.previous_fork_digest.is_some_and(|previous| eth2[..4] == previous)
     }
 
     fn random_distances(n: usize, include_self: bool) -> Distances {
@@ -1057,7 +1059,11 @@ impl Discovery for DiscV5 {
         if self.local_enr.eth2() == Some(eth2) {
             return;
         }
-        self.fork_digest = eth2[..4].try_into().expect("slice is 4 bytes");
+        let digest: [u8; 4] = eth2[..4].try_into().expect("slice is 4 bytes");
+        if digest != self.fork_digest {
+            self.previous_fork_digest = Some(self.fork_digest);
+            self.fork_digest = digest;
+        }
 
         if let Err(e) = self.local_enr.set_eth2(eth2, &self.local_key) {
             tracing::error!(?e, "failed to update local ENR eth2 field");
@@ -1599,6 +1605,27 @@ mod tests {
         assert!(d.local_enr.seq() > seq_before, "seq bumped so peers refresh");
         assert!(d.local_enr.verify(), "re-signed");
         assert!(!d.local_enr_raw.is_empty(), "raw re-encoded");
+
+        // A peer record left on the digest we advertised before the fork is
+        // still dialable: it is a snapshot taken before the boundary.
+        let mut stale = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(20001u16).build(&sk).unwrap();
+        let mut stale_eth2 = [0u8; 16];
+        stale_eth2[..4].copy_from_slice(&old);
+        stale_eth2[4..8].copy_from_slice(&new_eth2[4..8]);
+        stale_eth2[8..].copy_from_slice(&7u64.to_le_bytes());
+        stale.set_eth2(stale_eth2, &sk).unwrap();
+        assert!(d.emit_to_pm(&stale), "the digest we left: dial it");
+
+        // A network that shares our fork version but not our genesis — a
+        // sibling devnet — has a digest we have never advertised, and loses.
+        let mut sibling =
+            Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(20002u16).build(&sk).unwrap();
+        let mut sibling_eth2 = [0u8; 16];
+        sibling_eth2[..4].copy_from_slice(&[0xf0, 0xf1, 0xf2, 0xf3]);
+        sibling_eth2[4..8].copy_from_slice(&new_eth2[4..8]);
+        sibling_eth2[8..].copy_from_slice(&u64::MAX.to_le_bytes());
+        sibling.set_eth2(sibling_eth2, &sk).unwrap();
+        assert!(!d.emit_to_pm(&sibling), "our fork version, another genesis: not a dial target");
 
         // Same ENRForkID is a no-op (no seq churn).
         let seq_after = d.local_enr.seq();

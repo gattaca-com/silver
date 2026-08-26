@@ -1,8 +1,11 @@
 //! The daemon's single tile: drains the node's `#[timed]` rings into rotating
 //! fxt segments and, when a ClickHouse endpoint is configured, feeds the same
-//! loop's spine envelopes to the block-events inserter. The daemon follows one
-//! node for its whole life — it stops when that node exits, and the start
-//! script brings up a fresh one alongside the next.
+//! loop's spine envelopes to the block-events inserter.
+//!
+//! A restarted node publishes new rings under the same app name, so the tile
+//! flushes what the departed one left and rebinds its reader to the next. The
+//! spine outlives node restarts, so its connection and the block-events stream
+//! need nothing.
 
 use std::{
     fs, io,
@@ -42,12 +45,15 @@ const MAX_BUFFERED: u64 = ByteSize::gib(2).as_u64();
 
 pub struct TraceCollector {
     reader: CrossProcessReader,
+    filter_short_frames: Duration,
     dir: PathBuf,
     period: Nanos,
     retain_bytes: u64,
     next_dump: Nanos,
     db_inserter: Option<BlockEventsInserter>,
     polls: u32,
+    /// The node we followed is gone and its marks are already flushed.
+    detached: bool,
 }
 
 impl TraceCollector {
@@ -76,17 +82,56 @@ impl TraceCollector {
 
         // Floored at a second: `round_to_interval` divides by the period.
         let period = Nanos::from_secs(args.period.as_secs().max(1));
-        Ok(Self::new(reader, args.dir, period, args.retain.as_u64(), db_inserter))
+        Ok(Self::new(
+            reader,
+            args.filter_short_frames,
+            args.dir,
+            period,
+            args.retain.as_u64(),
+            db_inserter,
+        ))
     }
 
     fn new(
         reader: CrossProcessReader,
+        filter_short_frames: Duration,
         dir: PathBuf,
         period: Nanos,
         retain_bytes: u64,
         db_inserter: Option<BlockEventsInserter>,
     ) -> Self {
-        Self { reader, dir, period, retain_bytes, next_dump: Nanos::now(), db_inserter, polls: 0 }
+        Self {
+            reader,
+            filter_short_frames,
+            dir,
+            period,
+            retain_bytes,
+            next_dump: Nanos::now(),
+            db_inserter,
+            polls: 0,
+            detached: false,
+        }
+    }
+
+    /// Close out the departed node's segment once, then rebind to whichever
+    /// node is live — polled rather than waited on, so the loop keeps serving
+    /// the spine while no node is up.
+    fn follow_next_node(&mut self) {
+        if !self.detached {
+            info!(pid = self.reader.pid(), "producer exited");
+            self.append(Nanos::now());
+            self.detached = true;
+        }
+        let Some(mut next) = CrossProcessReader::attach(APP_NAME) else {
+            return;
+        };
+        if next.pid() == self.reader.pid() {
+            return; // the dead node's rings are still the published ones
+        }
+        next.filter_short_frames(self.filter_short_frames);
+        info!(was = self.reader.pid(), pid = next.pid(), "following the next node");
+        self.reader = next;
+        self.detached = false;
     }
 
     fn buffered_over_budget(&self) -> bool {
@@ -208,8 +253,7 @@ impl Tile<SilverSpine> for TraceCollector {
 
         self.polls += 1;
         if self.polls.is_multiple_of(PID_CHECK_EVERY) && self.producer_exited() {
-            info!(pid = self.reader.pid(), "producer exited");
-            adapter.request_stop_scope();
+            self.follow_next_node();
         }
 
         // Draining the rings is invisible to the adapter, and under `flux/park`
@@ -245,7 +289,7 @@ mod tests {
     const STARTED_AT: u64 = HOUR_START + 2_800;
 
     fn collector(reader: CrossProcessReader, dir: PathBuf) -> TraceCollector {
-        TraceCollector::new(reader, dir, Nanos::from_hours(1), u64::MAX, None)
+        TraceCollector::new(reader, Duration::ZERO, dir, Nanos::from_hours(1), u64::MAX, None)
     }
 
     /// Prune sorts by mtime, so fixtures need distinct ones — set, not slept

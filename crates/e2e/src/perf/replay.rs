@@ -8,6 +8,7 @@ use silver_beacon_state_data::{
     BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
 };
 use silver_common::{profiler::InProcessReader, ssz_view::StatusView};
+use silver_control::sync_engine::BATCH;
 use silver_metrics::{TimingStats, fold_stats};
 
 use crate::{
@@ -93,7 +94,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     // code.
     let recorder = InProcessReader::start();
 
-    let mut harness = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
+    let mut harness = PmBsHarness::new(&fixtures.state_ssz, blocks.len());
     let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
     let first_block_slot = block_slot(&blocks[0]);
     assert_eq!(StatusView::head_slot(harness.local_status()) + 1, first_block_slot);
@@ -104,23 +105,23 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
         harness.emit_data_columns_available(*event);
     }
 
-    // Max blocks by range for syncing head is 32
     let mut injected = 0;
 
     // Start before injection: `pump_bs` applies each batch inside this loop, so
     // timing only the tail catch-up would exclude most block applies.
     let wall_start = Instant::now();
     while injected < n_blocks {
+        let want = BATCH.min(n_blocks - injected);
         let (start, count, peer, request_id) = harness.next_range_request();
-        assert_eq!((start, count, peer), (first_block_slot + injected, 32, SYNTH_PEER_CONN_ID));
+        assert_eq!((start, count, peer), (first_block_slot + injected, want, SYNTH_PEER_CONN_ID));
 
         harness.pump_bs();
-        for b in &blocks[injected as usize..injected as usize + 32] {
+        for b in &blocks[injected as usize..(injected + want) as usize] {
             harness.inject_block(start, b);
         }
         harness.inject_response_complete(request_id);
         harness.pump_ctl();
-        injected += 32;
+        injected += want;
     }
 
     // Stay in Syncing (no Controller tick) — Following mode would let

@@ -203,12 +203,12 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipPrune { p2p: _, p2p_connection, topic } => {
-                if let Ok(tcache) =
-                    control::copy_prunes_to_protobuf_output(&mut self.mcache_publish, &[
-                        &topic.to_wire(&self.fork_digest_hex)
-                    ])
-                {
+            PeerControl::P2pGossipPrune { p2p: _, p2p_connection, topic, backoff_seconds } => {
+                if let Ok(tcache) = control::copy_prunes_to_protobuf_output(
+                    &mut self.mcache_publish,
+                    &[&topic.to_wire(&self.fork_digest_hex)],
+                    backoff_seconds,
+                ) {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip prune");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
