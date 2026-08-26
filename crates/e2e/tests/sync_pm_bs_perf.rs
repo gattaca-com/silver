@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use mimalloc::MiMalloc;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
-use silver_e2e::perf::{PerfConfig, run_perf_pipeline};
+use silver_e2e::perf::run_perf_pipeline;
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -29,13 +29,9 @@ fn sync_pm_bs_perf() {
         .with_test_writer()
         .try_init();
 
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let cfg = PerfConfig {
-        fixtures_dir: manifest.join("data/perf"),
-        output_dir: manifest.join("../../target"),
-    };
+    let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
 
-    let report = run_perf_pipeline(cfg).expect("perf pipeline");
+    let report = run_perf_pipeline(output_dir).expect("perf pipeline");
 
     if let Err(e) = report.check_thresholds() {
         panic!("perf regression: {e}");

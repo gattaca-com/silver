@@ -62,7 +62,7 @@ pub use enr::{
     EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
     SUBNETS_PER_NODE, attnet_subnets,
 };
-pub use flux::timing::Nanos;
+pub use flux::timing::{IngestionTime, Nanos};
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};
 
 pub const APP_NAME: &str = "silver";

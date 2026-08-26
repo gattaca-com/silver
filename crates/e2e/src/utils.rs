@@ -24,7 +24,7 @@ use silver_gossip::GossipHandler;
 use silver_peer::PeerManager;
 use tempfile::TempDir;
 
-use crate::perf::fixtures_dir::FixturesDir;
+use crate::perf::BlockFixtures;
 
 type StatusBytes = [u8; STATUS_V2_SIZE];
 type SpineConn = SpineAdapter<SilverSpine>;
@@ -49,14 +49,10 @@ pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsEvent> {
     Some(DataColumnsEvent::Available { block_root, slot: SignedBeaconBlockView::slot(block) })
 }
 
-pub fn scan_checkpoint_fixtures(
-    fixtures_subdir: &str,
-    min_blocks: usize,
-) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(fixtures_subdir);
-    let cp = std::fs::read(dir.join("finalized_state.ssz")).ok()?;
-    let blocks: Vec<Vec<u8>> =
-        FixturesDir(&dir).read_sorted_next_blocks().into_iter().map(|(_, b)| b).collect();
+pub fn scan_checkpoint_fixtures(min_blocks: usize) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
+    let dir = BlockFixtures::checkpoints();
+    let (cp, _) = dir.root().read_finalized_state().ok()?;
+    let blocks: Vec<Vec<u8>> = dir.read_sorted_next_blocks().into_iter().map(|(_, b)| b).collect();
     (blocks.len() >= min_blocks).then_some((cp, blocks))
 }
 
@@ -88,7 +84,7 @@ fn synth_peer_id() -> PeerId {
     Keypair::from_secret(&secret).expect("valid synthetic secret").peer_id()
 }
 
-fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
+pub fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     let mut r = producer.reserve(bytes.len(), true).expect("tcache reserve");
     r.buffer().expect("tcache buffer").copy_from_slice(bytes);
     r.increment_offset(bytes.len());

@@ -16,11 +16,7 @@ use silver_beacon_state_data::{
     BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
 };
 use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
-use silver_e2e::mainnet_api::fetch_canonical_state_root;
-
-const FIXTURES: &str = "tests/example_checkpoints";
-const BLOCK_PREFIX: &str = "next_block_";
-const BLOCK_SUFFIX: &str = ".ssz";
+use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::BlockFixtures};
 
 /// Pull the full checkpoint (state SSZ + pubkeys sidecar) out of `bs` through
 /// the production cursor path: publish an anchor so the reader has a
@@ -138,8 +134,8 @@ fn decompose_pubkeys_bench() {
 
 #[test]
 fn finalized_state_loads() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURES);
-    let state_path = dir.join("finalized_state.ssz");
+    let dir = BlockFixtures::checkpoints();
+    let state_path = dir.root().finalized_state();
     let Ok(ssz) = std::fs::read(&state_path) else {
         eprintln!(
             "skipping: {} not present (run `make -C crates/e2e checkpoint-fixtures`)",
@@ -222,11 +218,11 @@ fn finalized_state_loads() {
     }
 
     // Collect and sort `next_block_<slot>.ssz` fixtures.
-    let mut blocks = list_block_fixtures(&dir);
+    let mut blocks = dir.read_sorted_next_blocks();
     if blocks.is_empty() {
         eprintln!(
-            "skipping next-block apply: no {BLOCK_PREFIX}*.{BLOCK_SUFFIX} fixtures in {}",
-            dir.display()
+            "skipping next-block apply: no next_block_*.ssz fixtures in {}",
+            dir.root().path().display()
         );
         return;
     }
@@ -275,32 +271,6 @@ fn finalized_state_loads() {
              (network unavailable)"
         ),
     }
-}
-
-fn list_block_fixtures(dir: &std::path::Path) -> Vec<(u64, Vec<u8>)> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Some(rest) = name.strip_prefix(BLOCK_PREFIX) else {
-            continue;
-        };
-        let Some(slot_str) = rest.strip_suffix(BLOCK_SUFFIX) else {
-            continue;
-        };
-        let Ok(slot) = slot_str.parse::<u64>() else {
-            continue;
-        };
-        let Ok(bytes) = std::fs::read(entry.path()) else {
-            continue;
-        };
-        out.push((slot, bytes));
-    }
-    out.sort_by_key(|(s, _)| *s);
-    out
 }
 
 fn hex(b: &[u8; 32]) -> String {

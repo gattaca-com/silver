@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    Nanos, P2pStreamId, StreamProtocol, Wheel, column_util as util,
+    IngestionTime, P2pStreamId, StreamProtocol, Wheel, column_util as util,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, SidecarLayout, SignedBeaconBlockView,
     },
@@ -68,7 +68,7 @@ impl ColumnValidator {
         stream_id: P2pStreamId,
         buffer: &[u8],
         gossip_subnet: Option<u64>,
-        recv_ts: Option<Nanos>,
+        recv_ts: IngestionTime,
         sync_state: &SyncStatus,
         validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
     ) -> Option<(ColumnOutcome, bool)> {
@@ -97,7 +97,7 @@ impl ColumnValidator {
         stream_id: P2pStreamId,
         buffer: &[u8],
         gossip_subnet: Option<u64>,
-        recv_ts: Option<Nanos>,
+        recv_ts: IngestionTime,
         sync_state: &SyncStatus,
         validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
     ) -> ColumnOutcome {
@@ -109,12 +109,12 @@ impl ColumnValidator {
         }
 
         if gossip_subnet.is_some() {
-            let elapsed_ms = recv_ts.map(|r| r.elapsed().as_millis_u64());
+            let elapsed_ms = recv_ts.internal().elapsed().as_millis_u64();
             tracing::info!(
                 slot,
                 parent_root = hex::encode(parent_root),
                 ?gossip_subnet,
-                ?elapsed_ms,
+                elapsed_ms,
                 "data column recv"
             );
         }

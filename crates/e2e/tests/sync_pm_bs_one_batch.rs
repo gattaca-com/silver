@@ -14,8 +14,6 @@ use silver_e2e::{
     utils::{PmBsHarness, block_slot, scan_checkpoint_fixtures},
 };
 
-const FIXTURES: &str = "tests/example_checkpoints";
-
 const MIN_BLOCKS: usize = BATCH as usize;
 
 #[test]
@@ -29,7 +27,7 @@ fn pm_drives_single_big_batch_against_real_checkpoint() {
         .with_test_writer()
         .try_init();
 
-    let Some((checkpoint, blocks)) = scan_checkpoint_fixtures(FIXTURES, MIN_BLOCKS) else {
+    let Some((checkpoint, blocks)) = scan_checkpoint_fixtures(MIN_BLOCKS) else {
         eprintln!(
             "skipping: need >= {MIN_BLOCKS} blocks — run \
              `make -C crates/e2e checkpoint-fixtures-large` first"
