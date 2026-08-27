@@ -5,7 +5,7 @@ use quinn_proto::{Connection, StreamId, WriteError};
 use silver_common::AcquiredWithOffset;
 
 use crate::p2p::{
-    quic::{Leased, peer::OutboundBuffer},
+    quic::{leased::Leased, peer::OutboundBuffer},
     streams::{AcquiredRpcOutbound, StreamError, StreamIo},
 };
 

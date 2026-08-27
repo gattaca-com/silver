@@ -5,7 +5,6 @@ use flux::{Timer, timing::Nanos};
 use crate::{
     GossipMsgOut, TCacheError, TCacheRef,
     spine::tcache::{IDLE_INTERVAL_NS, lag_threshold},
-    util::Timestamped,
 };
 
 /// Reader for a TCache msg
@@ -252,12 +251,6 @@ impl AcquiredRead {
     pub fn with_offset(&self, offset: usize) -> Option<AcquiredWithOffset> {
         let consumer = unsafe { &mut *(self.consumer as *mut RandomAccessConsumer) };
         consumer.acquire_strict(self.read).map(|read| AcquiredWithOffset { read, offset })
-    }
-}
-
-impl Timestamped for AcquiredRead {
-    fn timestamp(&self) -> Nanos {
-        self.acquired
     }
 }
 

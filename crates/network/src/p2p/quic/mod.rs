@@ -8,12 +8,14 @@ use silver_common::{Keypair, PeerId};
 
 use super::tls;
 
+mod leased;
 mod peer;
 mod stream;
 
+pub(crate) use leased::Leased;
 #[cfg(test)]
-pub(crate) use peer::OutboundLeaseWheel;
-pub(crate) use peer::{Leased, Peer};
+pub(crate) use leased::OutboundLeaseWheel;
+pub(crate) use peer::Peer;
 pub(crate) use stream::StreamWriter;
 
 /// Create an endpoint that uses a self-signed server certificate.

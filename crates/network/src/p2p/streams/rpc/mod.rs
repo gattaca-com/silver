@@ -10,8 +10,7 @@ use reservation::{Rpc, RpcReservation, alloc_incoming_rpc};
 pub use response_in::RpcReadResponse;
 pub use response_out::RpcWriteResponse;
 use silver_common::{
-    Nanos, P2pStreamId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TRandomAccess, TRead,
-    Timestamped,
+    P2pStreamId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TRandomAccess, TRead,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -69,29 +68,6 @@ impl AcquiredRpcOutbound {
         match self {
             Self::Request(req) => req.request.protocol(),
             Self::Response(rsp) => rsp.stream_id.protocol(),
-        }
-    }
-}
-
-impl Timestamped for AcquiredRpcOutbound {
-    fn timestamp(&self) -> silver_common::Nanos {
-        match self {
-            Self::Request(req) => match &req.request {
-                AcquiredRpcRequest::BlockByRoot(acquired_read) => acquired_read.timestamp(),
-                AcquiredRpcRequest::DataColumnsByRoot(acquired_read) => acquired_read.timestamp(),
-                AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(acquired_read) => {
-                    acquired_read.timestamp()
-                }
-                _ => Nanos::now(),
-            },
-            Self::Response(rsp) => match &rsp.response {
-                AcquiredRpcResponse::BeaconBlock { fork_digest: _, ssz } => ssz.timestamp(),
-                AcquiredRpcResponse::DataColumnSidecar { fork_digest: _, ssz } => ssz.timestamp(),
-                AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => {
-                    ssz.timestamp()
-                }
-                _ => Nanos::now(),
-            },
         }
     }
 }
