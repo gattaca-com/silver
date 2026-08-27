@@ -58,6 +58,8 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
+        StorageCounters::WriteQueueLength.set(self.write_queue.len() as u64);
+
         let mut writes = 0;
         while writes < MAX_WRITES_PER_LOOP &&
             let Some(pending) = self.write_queue.pop_front()
@@ -235,6 +237,8 @@ impl Store {
         // emitted once a request's units drain. `MAX_ITERATIONS_PER_LOOP`
         // bounds drained-request churn so a burst of empty requests can't
         // extend tile time.
+        StorageCounters::ReadQueueLength.set(self.query_queue.len() as u64);
+
         let mut reads = 0;
         let mut iters = 0;
         while iters < MAX_ITERATIONS_PER_LOOP && reads < MAX_READS_PER_LOOP {

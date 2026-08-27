@@ -38,5 +38,7 @@ silver_common::declare_counters! {
         ElBlobsFetched,
         ElColumnsBuilt,
         PersistAcquireFailed,
+        WriteQueueLength,
+        ReadQueueLength,
     }
 }
