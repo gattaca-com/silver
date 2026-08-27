@@ -10,10 +10,10 @@ use flux::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, ColumnSource, DataColumnsEvent, DataKind, EngineReq, EngineResp, GossipTopic,
-    IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId, RpcInbound,
-    RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed, SyncUpdate,
-    TProducer, TRandomAccess, TRead, Wheel,
+    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, EngineReq, EngineResp,
+    GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
+    RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed,
+    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
 };
@@ -70,15 +70,33 @@ enum ColumnDisposition {
     Rejected { block_root: BlockRoot, slot: u64, bitmask: u128 },
 }
 
+pub struct ColumnConsumers {
+    pub gossip: TRandomAccess,
+    pub persist_gossip: TRandomAccess,
+    pub rpc: TRandomAccess,
+    pub persist_rpc: TRandomAccess,
+}
+
+impl ColumnConsumers {
+    fn free(&mut self) {
+        self.gossip.free();
+        self.rpc.free();
+        self.persist_gossip.free();
+        self.persist_rpc.free();
+    }
+
+    fn acquire_persisted(&mut self, source: BlockSource, ssz: TCacheRead) -> TRead {
+        match source {
+            BlockSource::Gossip => self.persist_gossip.acquire(ssz),
+            BlockSource::Rpc => self.persist_rpc.acquire(ssz),
+        }
+    }
+}
+
 pub struct DataColumnsTile {
     // bit set of our custody group columns.
     custody_group_columns: u128,
-    // Gossip and rpc are read twice: 'live' and when we receive a request from
-    // beacon state to persist - this require 2 consumers.
-    gossip_consumer: TRandomAccess,
-    persist_gossip_consumer: TRandomAccess,
-    rpc_consumer: TRandomAccess,
-    persist_rpc_consumer: TRandomAccess,
+    consumers: ColumnConsumers,
 
     spec: Arc<SpecConfig>,
 
@@ -105,12 +123,8 @@ pub struct DataColumnsTile {
 }
 
 impl DataColumnsTile {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        gossip_consumer: TRandomAccess,
-        persist_gossip_consumer: TRandomAccess,
-        rpc_consumer: TRandomAccess,
-        persist_rpc_consumer: TRandomAccess,
+        consumers: ColumnConsumers,
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
         spec: Arc<SpecConfig>,
@@ -120,10 +134,7 @@ impl DataColumnsTile {
         let epoch_duration = Duration::from_secs(spec.seconds_per_slot) * SLOTS_PER_EPOCH as u32;
         Self {
             custody_group_columns,
-            gossip_consumer,
-            persist_gossip_consumer,
-            rpc_consumer,
-            persist_rpc_consumer,
+            consumers,
             spec,
             validator: ColumnValidator::new(beacon_state, epoch_duration),
             kzg_batch: KzgBatch::new(),
@@ -457,7 +468,7 @@ impl DataColumnsTile {
             recv_ts: gossip.recv_ts,
             protobuf: gossip.protobuf,
         };
-        let sidecar = self.gossip_consumer.acquire(gossip.ssz);
+        let sidecar = self.consumers.gossip.acquire(gossip.ssz);
         self.handle_data_column_sidecar(
             PendingColumn {
                 stream_id: gossip.stream_id,
@@ -627,10 +638,7 @@ impl DataColumnsTile {
                 latest_status_event = Some((ssz, wall_slot));
             }
             BeaconStateEvent::PersistBlock { ssz, source, .. } => {
-                let t_read = match source {
-                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                };
+                let t_read = self.consumers.acquire_persisted(source, ssz);
 
                 match t_read.buffer() {
                     Ok((buf, _)) => {
@@ -644,7 +652,7 @@ impl DataColumnsTile {
                         });
                     }
                     Err(e) => {
-                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
+                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.consumers.persist_gossip, "persist consumer buffer acquire failed");
                     }
                 }
             }
@@ -661,14 +669,11 @@ impl Tile<SilverSpine> for DataColumnsTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.gossip_consumer.free();
-        self.rpc_consumer.free();
-        self.persist_gossip_consumer.free();
-        self.persist_rpc_consumer.free();
+        self.consumers.free();
 
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
             silver_common::GossipTopic::BeaconBlock if self.sync_state.is_synced() => {
-                let t_read: TRead = self.gossip_consumer.acquire(gossip.ssz);
+                let t_read: TRead = self.consumers.gossip.acquire(gossip.ssz);
                 self.handle_beacon_block(t_read, gossip.stream_id, producers);
             }
             silver_common::GossipTopic::DataColumnSidecar(custody_group)
@@ -687,13 +692,13 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
                     if id.is(DataKind::Block, Origin::Live) =>
                 {
-                    let t_read = self.rpc_consumer.acquire(ssz);
+                    let t_read = self.consumers.rpc.acquire(ssz);
                     self.handle_beacon_block(t_read, rsp.stream_id, producers);
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if id.is(DataKind::Columns, Origin::Live) => {
                     // TODO validate that originating peer has data column index in custody groups
                     tracing::debug!("data column sidecar over rpc");
-                    let sidecar = self.rpc_consumer.acquire(ssz);
+                    let sidecar = self.consumers.rpc.acquire(ssz);
                     self.handle_data_column_sidecar(
                         PendingColumn {
                             stream_id: rsp.stream_id,
@@ -762,7 +767,7 @@ mod tests {
     use std::io::Write;
 
     use silver_beacon_state_data::BeaconStateOwner;
-    use silver_common::{P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead};
+    use silver_common::{P2pStreamId, StreamProtocol, TCache, TCacheProducer};
 
     use super::*;
 
@@ -790,10 +795,12 @@ mod tests {
             engine_resp_tc.cache_ref().random_access("engine_resp_cons", true).unwrap();
 
         DataColumnsTile::new(
-            gossip_consumer,
-            persist_gossip_consumer,
-            rpc_consumer,
-            persist_rpc_consumer,
+            ColumnConsumers {
+                gossip: gossip_consumer,
+                persist_gossip: persist_gossip_consumer,
+                rpc: rpc_consumer,
+                persist_rpc: persist_rpc_consumer,
+            },
             BeaconStateOwner::empty_test(0).reader(),
             CUSTODY_COLUMNS,
             Arc::new(SpecConfig::mainnet()),

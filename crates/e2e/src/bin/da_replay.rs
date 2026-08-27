@@ -25,7 +25,7 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use mimalloc::MiMalloc;
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
-use silver_columns::tile::DataColumnsTile;
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
@@ -117,10 +117,12 @@ impl Node {
             p.cache_ref().random_access(name, true).expect("random access")
         };
         let mut tile = DataColumnsTile::new(
-            ra(&gossip_p, "dc_gossip"),
-            ra(&gossip_p, "dc_gossip_persist"),
-            ra(&rpc_p, "dc_rpc"),
-            ra(&rpc_p, "dc_rpc_persist"),
+            ColumnConsumers {
+                gossip: ra(&gossip_p, "dc_gossip"),
+                persist_gossip: ra(&gossip_p, "dc_gossip_persist"),
+                rpc: ra(&rpc_p, "dc_rpc"),
+                persist_rpc: ra(&rpc_p, "dc_rpc_persist"),
+            },
             owner.reader(),
             custody,
             spec,

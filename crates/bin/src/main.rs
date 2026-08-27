@@ -9,7 +9,7 @@ use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_columns::tile::DataColumnsTile;
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
@@ -255,10 +255,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let state_reader = beacon_state_tile.reader();
     let data_columns_tile = DataColumnsTile::new(
-        ssz_gossip_consumer_dc,
-        ssz_persist_gossip_consumer_dc,
-        incoming_rpc_consumer_dc,
-        persist_rpc_consumer_dc,
+        ColumnConsumers {
+            gossip: ssz_gossip_consumer_dc,
+            persist_gossip: ssz_persist_gossip_consumer_dc,
+            rpc: incoming_rpc_consumer_dc,
+            persist_rpc: persist_rpc_consumer_dc,
+        },
         state_reader,
         das_custody_groups,
         spec.clone(),
