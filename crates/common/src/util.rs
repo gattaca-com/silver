@@ -1,6 +1,11 @@
+use flux::timing::Nanos;
 use rcgen::{CertifiedKey, Error as RcgenError, KeyPair};
 
 use crate::Error;
+
+pub trait Timestamped {
+    fn timestamp(&self) -> Nanos;
+}
 
 pub fn create_self_signed_certificate(label: &str) -> Result<CertifiedKey<KeyPair>, RcgenError> {
     rcgen::generate_simple_self_signed(&[label.into()])

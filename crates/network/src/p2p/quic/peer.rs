@@ -13,11 +13,12 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet,
+    Nanos, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead, Timestamped,
+    rpc_rate_limit::RpcRateLimitSet,
 };
 
 use crate::{
-    RemotePeer,
+    NetworkCounters, RemotePeer,
     p2p::{
         NetEvent,
         context::Context,
@@ -28,6 +29,7 @@ use crate::{
 };
 
 const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
+const STREAM_QUEUE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Upper bound on waiting for a sent Goodbye to be acked before closing the
 /// connection anyway (peer dead or not acking).
@@ -868,6 +870,15 @@ impl Stream {
                     result = SpinResult::Protocol(self.p2p_id.protocol());
                 }
 
+                if let Some(queue_age) = self.out_buffer.max_age(Nanos::now()) &&
+                    queue_age + STREAM_QUEUE_TIMEOUT < now
+                {
+                    // queue timeout - the stream is stalled.
+                    result = SpinResult::Stalled;
+                    NetworkCounters::QueueStallDisconnect.inc();
+                    tracing::error!(id=?self.p2p_id, ?state, "stalled on queue");
+                }
+
                 self.state.replace(state);
                 result
             }
@@ -937,7 +948,9 @@ impl Stream {
         } else if matches!(state, StreamState::IncomingRpc { .. }) {
             Some(self.last_activity + INBOUND_RPC_IDLE_TIMEOUT)
         } else {
-            state.deadline()
+            let buffer_deadline =
+                self.out_buffer.max_age(Nanos::now()).map(|i| i + STREAM_QUEUE_TIMEOUT);
+            state.deadline().min(buffer_deadline)
         }
     }
 
@@ -1011,19 +1024,30 @@ impl OutboundBuffer {
             OutboundBuffer::Rpc(out_buffer) => out_buffer.is_empty(),
         }
     }
+
+    fn max_age(&self, now: Nanos) -> Option<Instant> {
+        match self {
+            OutboundBuffer::Unset => None,
+            OutboundBuffer::Gossip(out_buffer) => {
+                out_buffer.max_age().map(|ts| Instant::now() - Duration::from_nanos((now - ts).0))
+            }
+            OutboundBuffer::Rpc(_) => None,
+        }
+    }
 }
 
-pub(super) struct OutBuffer<T: Clone> {
+pub(super) struct OutBuffer<T: Clone + Timestamped> {
     msgs: Box<[Option<T>]>,
     len: usize,
     head: usize,
     tail: usize,
+    max_age: Option<Nanos>,
 }
 
-impl<T: Clone> OutBuffer<T> {
+impl<T: Clone + Timestamped> OutBuffer<T> {
     fn new(len: usize) -> Self {
         assert!(len.is_power_of_two());
-        Self { msgs: vec![None; len].into_boxed_slice(), len, head: 0, tail: 0 }
+        Self { msgs: vec![None; len].into_boxed_slice(), len, head: 0, tail: 0, max_age: None }
     }
 
     fn pos(&self, seq: usize) -> usize {
@@ -1033,6 +1057,7 @@ impl<T: Clone> OutBuffer<T> {
     /// Returns `true` if adding the new message dropped the oldest queued
     /// message.
     fn add_msg(&mut self, msg: T) -> bool {
+        let msg_ts = msg.timestamp();
         let dropped = self.head - self.tail == self.msgs.len();
         if dropped {
             // Full: pos(head) == pos(tail), so the overwrite below replaces
@@ -1043,6 +1068,10 @@ impl<T: Clone> OutBuffer<T> {
         }
         self.msgs[self.pos(self.head)].replace(msg);
         self.head += 1;
+        self.max_age = match self.max_age {
+            Some(ts) if ts < msg_ts => Some(ts),
+            _ => Some(msg_ts),
+        };
         dropped
     }
 
@@ -1051,6 +1080,12 @@ impl<T: Clone> OutBuffer<T> {
         match self.msgs[self.pos(self.tail)].take() {
             Some(msg) => {
                 self.tail += 1;
+                if self.is_empty() {
+                    self.max_age = None;
+                } else {
+                    // n.b. assumes insertion in age order..
+                    self.max_age = self.msgs[self.pos(self.tail)].as_ref().map(|t| t.timestamp());
+                }
                 Some(msg)
             }
             None => {
@@ -1067,6 +1102,10 @@ impl<T: Clone> OutBuffer<T> {
     pub(super) fn is_empty(&self) -> bool {
         self.head == self.tail
     }
+
+    pub(super) fn max_age(&self) -> Option<Nanos> {
+        self.max_age
+    }
 }
 
 #[cfg(test)]
@@ -1082,24 +1121,32 @@ mod tests {
 
     #[test]
     fn out_buffer_overflow_keeps_ring_consistent() {
+        #[derive(Clone)]
+        struct TsUsize(usize);
+        impl Timestamped for TsUsize {
+            fn timestamp(&self) -> Nanos {
+                Nanos(0)
+            }
+        }
+
         let mut buf = OutBuffer::new(4);
         for i in 0..4usize {
-            assert!(!buf.add_msg(i));
+            assert!(!buf.add_msg(TsUsize(i)));
         }
 
         // Two overwrites drop the two oldest messages.
-        assert!(buf.add_msg(4));
-        assert!(buf.add_msg(5));
+        assert!(buf.add_msg(TsUsize(4)));
+        assert!(buf.add_msg(TsUsize(5)));
         assert_eq!(buf.len(), 4);
 
-        let drained: Vec<_> = std::iter::from_fn(|| buf.pop()).collect();
+        let drained: Vec<_> = std::iter::from_fn(|| buf.pop()).map(|u| u.0).collect();
         assert_eq!(drained, vec![2, 3, 4, 5]);
         assert!(buf.is_empty());
         assert!(buf.pop().is_none());
 
         // Buffer must remain usable after an overflow episode.
-        assert!(!buf.add_msg(6));
-        assert_eq!(buf.pop(), Some(6));
+        assert!(!buf.add_msg(TsUsize(6)));
+        assert_eq!(buf.pop().map(|u| u.0), Some(6));
         assert!(buf.is_empty());
     }
 

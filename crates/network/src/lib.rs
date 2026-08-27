@@ -37,6 +37,7 @@ silver_common::declare_counters! {
         GossipMsgSkipped,
         // Gossip stream stalled (read or write) — connection closed.
         GossipStallDisconnect,
+        QueueStallDisconnect,
     }
 }
 

@@ -5,6 +5,7 @@ use flux::{Timer, timing::Nanos};
 use crate::{
     GossipMsgOut, TCacheError, TCacheRef,
     spine::tcache::{IDLE_INTERVAL_NS, lag_threshold},
+    util::Timestamped,
 };
 
 /// Reader for a TCache msg
@@ -146,7 +147,7 @@ impl RandomAccessConsumer {
                 timer.emit_latency_from_nanos(reserve_ns, now);
             }
         }
-        AcquiredRead { consumer: self as *const Self, read }
+        AcquiredRead { consumer: self as *const Self, read, acquired: now }
     }
 
     pub fn acquire_strict(&mut self, read: TCacheRead) -> Option<AcquiredRead> {
@@ -161,7 +162,7 @@ impl RandomAccessConsumer {
                         timer.emit_latency_from_nanos(reserve_ns, now);
                     }
                 }
-                AcquiredRead { consumer: self as *const Self, read }
+                AcquiredRead { consumer: self as *const Self, read, acquired: now }
             })
             .and_then(|ar| {
                 // check slot seq.
@@ -231,6 +232,7 @@ impl Drop for RandomAccessConsumer {
 pub struct AcquiredRead {
     consumer: *const RandomAccessConsumer,
     pub read: TCacheRead,
+    pub acquired: Nanos,
 }
 
 impl AcquiredRead {
@@ -250,6 +252,12 @@ impl AcquiredRead {
     pub fn with_offset(&self, offset: usize) -> Option<AcquiredWithOffset> {
         let consumer = unsafe { &mut *(self.consumer as *mut RandomAccessConsumer) };
         consumer.acquire_strict(self.read).map(|read| AcquiredWithOffset { read, offset })
+    }
+}
+
+impl Timestamped for AcquiredRead {
+    fn timestamp(&self) -> Nanos {
+        self.acquired
     }
 }
 
@@ -284,7 +292,7 @@ impl Clone for AcquiredRead {
             let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
             consumer.active.acquire(self.read.seq);
         }
-        Self { consumer: self.consumer, read: self.read }
+        Self { consumer: self.consumer, read: self.read, acquired: self.acquired }
     }
 }
 
