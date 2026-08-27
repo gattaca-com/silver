@@ -4,6 +4,15 @@ mkdir logs
 mkdir config
 mkdir data
 
+# create some swap for ethrex
+sudo fallocate -l 64G /swapfile        
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+swapon --show
+sudo sysctl vm.swappiness=10
+
 cd repo
 git clone https://github.com/gattaca-com/silver.git
 
