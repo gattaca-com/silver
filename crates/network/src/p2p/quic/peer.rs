@@ -682,6 +682,10 @@ where
             continue;
         }
 
+        if to_remove.is_full() {
+            break;
+        }
+
         let result = stream.spin(connection, context, now, inbound_rpc_limits, on_event);
         if let SpinResult::Stalled = result {
             stalled = true;
