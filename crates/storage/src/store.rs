@@ -10,7 +10,8 @@ use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, RpcSeverity, SyncNeed, SyncUpdate,
+    DataKind, Enr, Origin, P2pStreamId, PeerEvent, RpcRequestInbound, RpcSeverity, SyncNeed,
+    SyncUpdate,
     TCacheRead, TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
@@ -445,7 +446,12 @@ impl Store {
     {
         if let Some((block_root, slot)) = self.history.add_envelope(&signed, &self.root_index) {
             self.write_queue.push_back(PendingWrite::BackfillEnvelope { slot, ssz: signed });
-            emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Envelope });
+            emit(SyncNeed::Arrived {
+                root: block_root,
+                slot,
+                kind: DataKind::Envelope,
+                origin: Origin::Backfill,
+            });
         }
     }
 

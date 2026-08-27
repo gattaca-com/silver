@@ -994,7 +994,10 @@ fn an_unverified_payload_is_chased_by_root() {
     assert_eq!(roots(&emitted, DataKind::Envelope), vec![root], "chased by root, not by range");
     assert!(ranges(&emitted, DataKind::Envelope).is_empty(), "and not by range");
 
-    e.on_sync_need(SyncNeed::Arrived { root, slot: 9, kind: DataKind::Envelope }, now);
+    e.on_sync_need(
+        SyncNeed::Arrived { root, slot: 9, kind: DataKind::Envelope, origin: Origin::Live },
+        now,
+    );
     assert!(
         roots(&actions(&mut e, now, true), DataKind::Envelope).is_empty(),
         "coverage retires the need"

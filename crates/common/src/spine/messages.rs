@@ -453,7 +453,7 @@ pub enum PeerEvent {
 #[repr(C, u8)]
 pub enum SyncNeed {
     Missing { root: [u8; 32], slot: u64, kind: DataKind, columns: u128, origin: Origin },
-    Arrived { root: [u8; 32], slot: u64, kind: DataKind },
+    Arrived { root: [u8; 32], slot: u64, kind: DataKind, origin: Origin },
     BackfillGap { kind: DataKind, floor: u64, next: u64 },
 }
 
