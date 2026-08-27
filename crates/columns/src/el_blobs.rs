@@ -32,9 +32,8 @@ const MAX_COMMITMENTS_LEN: usize = MAX_BLOBS_PER_BLOCK * BYTES_PER_KZG_COMMITMEN
 
 /// State carried between firing an `engine_getBlobsV2` request and receiving
 /// its response — everything needed to rebuild custody sidecars from the
-/// returned blobs. Keyed by engine request id.
+/// returned blobs.
 struct PendingBlobFetch {
-    block_root: BlockRoot,
     slot: u64,
     /// Custody columns still wanted at request time. Recomputed on response
     /// (the p2p race may have filled some).
@@ -47,11 +46,9 @@ struct PendingBlobFetch {
 
 pub(crate) struct ElBlobFetcher {
     engine_resp_consumer: TRandomAccess,
-    /// Engine-local correlation; never an RPC `application_id`.
-    next_req_id: u64,
-    /// In-flight fetches, keyed by request id. 4 buckets × 500ms ⇒ entries age
-    /// out after ~1.5–2s if the EL never responds.
-    pending: Wheel<u64, PendingBlobFetch, 4>,
+    /// In-flight fetches. 4 buckets × 500ms ⇒ entries age out after ~1.5–2s if
+    /// the EL never responds.
+    pending: Wheel<BlockRoot, PendingBlobFetch, 4>,
     sidecar_buffer: Vec<u8>,
 }
 
@@ -59,7 +56,6 @@ impl ElBlobFetcher {
     pub(crate) fn new(engine_resp_consumer: TRandomAccess) -> Self {
         Self {
             engine_resp_consumer,
-            next_req_id: 0,
             pending: Wheel::new(Duration::from_millis(500)),
             sidecar_buffer: Vec::with_capacity(8 * 1024),
         }
@@ -104,11 +100,9 @@ impl ElBlobFetcher {
             return;
         }
 
-        let id = self.next_req_id;
-        self.next_req_id += 1;
-
         let mut req = EngineGetBlobsReq {
-            id,
+            block_root,
+            slot,
             hash_count: num_blobs as u8,
             hashes: [[0u8; 32]; MAX_BLOBS_PER_BLOCK],
         };
@@ -127,8 +121,7 @@ impl ElBlobFetcher {
         let mut commitments_buf = [0u8; MAX_COMMITMENTS_LEN];
         commitments_buf[..commitments.len()].copy_from_slice(commitments);
 
-        self.pending.insert(id, PendingBlobFetch {
-            block_root,
+        self.pending.insert(block_root, PendingBlobFetch {
             slot,
             needed,
             num_blobs,
@@ -157,7 +150,8 @@ impl ElBlobFetcher {
     ) where
         F: FnMut(DataColumnsEvent),
     {
-        let Some(pending) = self.pending.remove(&resp.id) else {
+        let block_root = resp.block_root;
+        let Some(pending) = self.pending.remove(&block_root) else {
             return; // unknown / expired request
         };
         if !resp.ok {
@@ -168,7 +162,7 @@ impl ElBlobFetcher {
         }
 
         // Columns still missing (some may have arrived via the p2p race).
-        let already = validated.get(&pending.block_root).map_or(0, |v| v.columns);
+        let already = validated.get(&block_root).map_or(0, |v| v.columns);
         let to_build = pending.needed & !already;
         if to_build == 0 {
             return;
@@ -176,14 +170,17 @@ impl ElBlobFetcher {
 
         let read = self.engine_resp_consumer.acquire(resp.data);
         let Ok((data, _)) = read.buffer() else {
-            tracing::error!(id = resp.id, "get_blobs response buffer acquire failed");
+            tracing::error!(
+                block = hex::encode(block_root),
+                "get_blobs response buffer acquire failed"
+            );
             return;
         };
         let n = pending.num_blobs;
         let mut blobs = [(EMPTY, EMPTY); MAX_BLOBS_PER_BLOCK];
         if !parse_el_blobs(data, &mut blobs[..n]) {
             tracing::debug!(
-                block = hex::encode(pending.block_root),
+                block = hex::encode(block_root),
                 "el blobs incomplete; leaving columns to the p2p race"
             );
             return;
@@ -250,7 +247,7 @@ impl ElBlobFetcher {
                 Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
                     Ok(_) => {
                         tracing::info!(
-                            block_root = hex::encode(pending.block_root),
+                            block_root = hex::encode(block_root),
                             slot = pending.slot,
                             column_index = j,
                             "EL data column recv"
@@ -259,7 +256,7 @@ impl ElBlobFetcher {
                         emit(DataColumnsEvent::Persist {
                             ssz,
                             source: ColumnSource::El,
-                            block_root: pending.block_root,
+                            block_root,
                             column_index: j,
                             slot: pending.slot,
                         });
@@ -279,20 +276,17 @@ impl ElBlobFetcher {
         }
         DataColumnCounters::ElColumnsBuilt.inc();
 
-        let entry = validated.entry(pending.block_root).or_default();
+        let entry = validated.entry(block_root).or_default();
         entry.columns |= built;
 
         if entry.columns & custody_group_columns == custody_group_columns {
             DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
-                block = hex::encode(pending.block_root),
+                block = hex::encode(block_root),
                 slot = pending.slot,
                 "DataColumnsAvailable: custody set complete (EL blobs)"
             );
-            emit(DataColumnsEvent::Available {
-                block_root: pending.block_root,
-                slot: pending.slot,
-            });
+            emit(DataColumnsEvent::Available { block_root, slot: pending.slot });
         }
     }
 }

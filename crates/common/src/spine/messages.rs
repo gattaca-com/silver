@@ -916,11 +916,13 @@ pub struct EngineGetPayloadResp {
 }
 
 /// `engine_getBlobsV2` request. `hashes[..hash_count]` are the versioned hashes
-/// derived from the block's KZG commitments.
+/// derived from the block's KZG commitments; the block root is the request's
+/// identity and is echoed back on the response.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsReq {
-    pub id: u64,
+    pub block_root: [u8; 32],
+    pub slot: u64,
     pub hash_count: u8,
     pub hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
 }
@@ -928,13 +930,23 @@ pub struct EngineGetBlobsReq {
 /// Response to `EngineGetBlobsReq`.
 /// When `ok` is true, `data` is a TCache slot with binary-encoded blobs:
 /// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len]
-/// [blob bytes])*` `present == 0` means the entry is null (blob missing).
+/// [blob bytes])*`, where `present == 0` is a null entry and is that byte
+/// alone. `ok` is true even when the EL returned nothing, so `blobs_present`
+/// is the field that says whether it delivered.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsResp {
-    pub id: u64,
+    pub block_root: [u8; 32],
+    pub slot: u64,
     pub ok: bool,
+    pub blobs_present: u8,
     pub data: TCacheRead,
+}
+
+impl EngineGetBlobsResp {
+    pub fn failed(block_root: [u8; 32], slot: u64) -> Self {
+        Self { block_root, slot, ok: false, blobs_present: 0, data: unsafe { std::mem::zeroed() } }
+    }
 }
 
 /// `engine_getPayloadBodiesByHashV1` request.

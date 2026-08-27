@@ -3,7 +3,7 @@ use serde::Deserialize;
 use silver_common::{
     ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadBodiesResp,
     EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadResp, EngineResp,
-    PayloadValidationStatus, SilverSpine, TCacheProducer, TCacheRead, TProducer,
+    PayloadValidationStatus, SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
@@ -272,7 +272,8 @@ pub(crate) fn handle_get_payload_fetch(
 
 #[inline]
 pub(crate) fn handle_get_blobs_response(
-    spine_id: u64,
+    block_root: B256,
+    slot: u64,
     response: Result<&mut [u8], EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
     resp_producer: &mut TProducer,
@@ -282,25 +283,30 @@ pub(crate) fn handle_get_blobs_response(
         Ok(raw) => {
             scratch.clear();
             match json_get_blobs_to_tcache(raw, scratch) {
-                Ok(()) => match write_tcache(resp_producer, scratch) {
+                Ok(blobs_present) => match write_tcache(resp_producer, scratch) {
                     Some(data) => {
-                        tracing::info!(id = spine_id, "getBlobsV2 ok");
-                        EngineGetBlobsResp { id: spine_id, ok: true, data }
+                        tracing::info!(
+                            block = hex::encode(block_root),
+                            slot,
+                            blobs_present,
+                            "getBlobsV2 ok"
+                        );
+                        EngineGetBlobsResp { block_root, slot, ok: true, blobs_present, data }
                     }
                     None => {
                         tracing::warn!("getBlobsV2 TCache full");
-                        get_blobs_error(spine_id)
+                        EngineGetBlobsResp::failed(block_root, slot)
                     }
                 },
                 Err(e) => {
                     tracing::warn!("getBlobsV2 parse error: {e}");
-                    get_blobs_error(spine_id)
+                    EngineGetBlobsResp::failed(block_root, slot)
                 }
             }
         }
         Err(e) => {
             tracing::warn!("getBlobsV2 error: {e}");
-            get_blobs_error(spine_id)
+            EngineGetBlobsResp::failed(block_root, slot)
         }
     };
     adapter.produce(EngineResp::GetBlobs(resp));
@@ -378,11 +384,6 @@ pub(crate) fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCac
 #[inline]
 fn get_payload_error(id: u64) -> EngineGetPayloadResp {
     EngineGetPayloadResp { id, ok: false, data: unsafe { std::mem::zeroed() } }
-}
-
-#[inline]
-fn get_blobs_error(id: u64) -> EngineGetBlobsResp {
-    EngineGetBlobsResp { id, ok: false, data: unsafe { std::mem::zeroed() } }
 }
 
 #[inline]

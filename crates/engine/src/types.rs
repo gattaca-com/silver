@@ -736,13 +736,13 @@ pub(crate) fn json_get_payload_to_tcache(
 // Same approach as json_get_payload_to_tcache: BorrowedValue borrows from the
 // input buffer; hex decoded directly into `out` with hex::decode_to_slice.
 // Wire layout: [u32 count] [u8 present] [u8 proof_count] [proof_count*48B] [u32
-// blob_len] [blob bytes]
+// blob_len] [blob bytes]. Returns how many entries are non-null.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn json_get_blobs_to_tcache(
     raw: &mut [u8],
     out: &mut Vec<u8>,
-) -> Result<(), crate::EngineError> {
+) -> Result<u8, crate::EngineError> {
     use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
     let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
@@ -750,7 +750,7 @@ pub(crate) fn json_get_blobs_to_tcache(
 
     if result.is_null() {
         out.extend_from_slice(&0u32.to_le_bytes());
-        return Ok(());
+        return Ok(0);
     }
 
     let items = result
@@ -758,12 +758,14 @@ pub(crate) fn json_get_blobs_to_tcache(
         .ok_or_else(|| crate::EngineError::Ssz("getBlobsV2 result not array".into()))?;
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
 
+    let mut blobs_present = 0u8;
     for item in items {
         if item.is_null() {
             out.push(0);
             continue;
         }
         out.push(1);
+        blobs_present = blobs_present.saturating_add(1);
 
         let proofs = item
             .get("proofs")
@@ -790,7 +792,7 @@ pub(crate) fn json_get_blobs_to_tcache(
             .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
     }
 
-    Ok(())
+    Ok(blobs_present)
 }
 
 // ---------------------------------------------------------------------------
@@ -1530,7 +1532,7 @@ mod tests {
     fn json_get_blobs_null_result() {
         let mut json = br#"{"jsonrpc":"2.0","id":1,"result":null}"#.to_vec();
         let mut out = Vec::new();
-        json_get_blobs_to_tcache(&mut json, &mut out).unwrap();
+        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 0);
         assert_eq!(out, 0u32.to_le_bytes());
     }
 
@@ -1542,7 +1544,7 @@ mod tests {
             format!(r#"{{"result":[{{"proofs":["0x{proof}"],"blob":"0x{blob_hex}"}},null]}}"#)
                 .into_bytes();
         let mut out = Vec::new();
-        json_get_blobs_to_tcache(&mut json, &mut out).unwrap();
+        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 1, "one of two present");
 
         assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 2);
         // item 0: present=1, proof_count=1, 48 proof bytes, blob_len=32, 32 blob bytes

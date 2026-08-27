@@ -128,9 +128,14 @@ impl EngineTile {
                 ReqKind::GetPayloadFetch(spine_id) => {
                     handle_get_payload_fetch(spine_id, response, adapter, resp_producer, scratch)
                 }
-                ReqKind::GetBlobs(spine_id) => {
-                    handle_get_blobs_response(spine_id, response, adapter, resp_producer, scratch)
-                }
+                ReqKind::GetBlobs { block_root, slot } => handle_get_blobs_response(
+                    block_root,
+                    slot,
+                    response,
+                    adapter,
+                    resp_producer,
+                    scratch,
+                ),
                 ReqKind::GetPayloadBodiesByHash(spine_id) |
                 ReqKind::GetPayloadBodiesByRange(spine_id) => {
                     handle_get_payload_bodies_response(
