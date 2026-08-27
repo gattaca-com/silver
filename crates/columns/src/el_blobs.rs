@@ -8,9 +8,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux::spine::SpineProducers;
 use silver_common::{
     ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
-    MAX_BLOBS_PER_BLOCK, TCacheProducer, TProducer, TRandomAccess, Wheel, column_util as util,
+    MAX_BLOBS_PER_BLOCK, SilverSpineProducers, TCacheProducer, TProducer, TRandomAccess, Wheel,
+    column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -18,11 +20,7 @@ use silver_common::{
     },
 };
 
-use crate::{
-    DataColumnCounters,
-    sync::SyncStatus,
-    tile::{BlockValidation, StorageEmit},
-};
+use crate::{DataColumnCounters, sync::SyncStatus, tile::BlockValidation};
 
 type BlockRoot = [u8; 32];
 
@@ -72,16 +70,14 @@ impl ElBlobFetcher {
     /// Fire an `engine_getBlobsV2` request for `block`'s blobs and stash the
     /// state needed to rebuild custody sidecars from the response. No-op if the
     /// block carries no commitments. Runs alongside the p2p ByRoot path.
-    pub(crate) fn try_fetch<F>(
+    pub(crate) fn try_fetch(
         &mut self,
         block: &[u8],
         block_root: BlockRoot,
         slot: u64,
         needed: u128,
-        emit: &mut F,
-    ) where
-        F: FnMut(StorageEmit),
-    {
+        producers: &mut SilverSpineProducers,
+    ) {
         let body = SignedBeaconBlockView::body(block);
         if body.len() < BEACON_BLOCK_BODY_FIXED {
             return;
@@ -130,7 +126,7 @@ impl ElBlobFetcher {
             commitments: commitments_buf,
         });
         DataColumnCounters::ElBlobsFetched.inc();
-        emit(StorageEmit::Engine(EngineReq::GetBlobs(req)));
+        producers.produce(EngineReq::GetBlobs(req));
     }
 
     /// Handle an `engine_getBlobsV2` response: rebuild our outstanding custody
@@ -138,18 +134,15 @@ impl ElBlobFetcher {
     /// same availability path as p2p sidecars. Bails (leaving the p2p race to
     /// fill them) on any incompleteness — `ok == false`, a missing blob, a
     /// decode/KZG error, or a now-finalized block.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_response<F>(
+    pub(crate) fn handle_response(
         &mut self,
         resp: EngineGetBlobsResp,
         validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
         sync_state: &SyncStatus,
         custody_group_columns: u128,
         column_producer: &mut TProducer,
-        emit: &mut F,
-    ) where
-        F: FnMut(DataColumnsEvent),
-    {
+        producers: &mut SilverSpineProducers,
+    ) {
         let block_root = resp.block_root;
         let Some(pending) = self.pending.remove(&block_root) else {
             return; // unknown / expired request
@@ -252,9 +245,8 @@ impl ElBlobFetcher {
                             column_index = j,
                             "EL data column recv"
                         );
-                        let ssz = reservation.read();
-                        emit(DataColumnsEvent::Persist {
-                            ssz,
+                        producers.produce(DataColumnsEvent::Persist {
+                            ssz: reservation.read(),
                             source: ColumnSource::El,
                             block_root,
                             column_index: j,
@@ -286,7 +278,7 @@ impl ElBlobFetcher {
                 slot = pending.slot,
                 "DataColumnsAvailable: custody set complete (EL blobs)"
             );
-            emit(DataColumnsEvent::Available { block_root, slot: pending.slot });
+            producers.produce(DataColumnsEvent::Available { block_root, slot: pending.slot });
         }
     }
 }

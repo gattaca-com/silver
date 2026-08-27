@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -10,7 +11,7 @@ use flux::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, EngineReq, EngineResp,
+    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, EngineResp,
     GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
     RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed,
     SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
@@ -49,15 +50,6 @@ impl BlockValidation {
     pub(crate) fn has_columns(&self, bitmask: u128) -> bool {
         self.columns & bitmask != 0
     }
-}
-
-/// `EngineReq` is large but short-lived here, so
-/// boxing it would only add an alloc on the block path.
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum StorageEmit {
-    Need(SyncNeed),
-    Engine(EngineReq),
-    DataAvailability(DataColumnsEvent),
 }
 
 /// Only `Batched` sidecars can end up forwarded / republished on gossip
@@ -149,15 +141,12 @@ impl DataColumnsTile {
     }
 
     #[timed]
-    fn beacon_block<F>(
+    fn beacon_block(
         &mut self,
         stream_id: P2pStreamId,
         block: TRead,
-        emit: &mut F,
-    ) -> Option<(B256, bool)>
-    where
-        F: FnMut(StorageEmit),
-    {
+        producers: &mut SilverSpineProducers,
+    ) -> Option<(B256, bool)> {
         let buffer = match block.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -180,7 +169,7 @@ impl DataColumnsTile {
 
         // Trivial coverage: no commitments, so no columns are owed.
         if !has_columns {
-            emit(StorageEmit::DataAvailability(DataColumnsEvent::Available { block_root, slot }));
+            producers.produce(DataColumnsEvent::Available { block_root, slot });
             return None;
         }
 
@@ -195,7 +184,7 @@ impl DataColumnsTile {
             // Already complete, and the block is only arriving now: the earlier
             // completion was announced before anything could attribute it to this
             // slot. Availability is pushed, never polled, so say it again.
-            emit(StorageEmit::DataAvailability(DataColumnsEvent::Available { block_root, slot }));
+            producers.produce(DataColumnsEvent::Available { block_root, slot });
             return Some((block_root, is_gloas));
         }
 
@@ -208,16 +197,16 @@ impl DataColumnsTile {
         // EL blob reconstruction parses the Fulu body layout; gloas blobs are
         // fetched from peers by root/range instead.
         if !is_gloas && self.sync_state.is_synced() {
-            self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, emit);
+            self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, producers);
         }
 
-        emit(StorageEmit::Need(SyncNeed::Missing {
+        producers.produce(SyncNeed::Missing {
             root: block_root,
             slot,
             kind: DataKind::Columns,
             columns: to_request,
             origin: Origin::Live,
-        }));
+        });
         Some((block_root, is_gloas))
     }
 
@@ -227,15 +216,12 @@ impl DataColumnsTile {
     }
 
     #[timed]
-    fn data_columns<F>(
+    fn data_columns(
         &mut self,
         column: PendingColumn,
         relay: RelayMeta,
-        emit: &mut F,
-    ) -> ColumnDisposition
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+        producers: &mut SilverSpineProducers,
+    ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => self.validator.validate(
                 column.stream_id,
@@ -257,31 +243,31 @@ impl DataColumnsTile {
         let Some((outcome, is_gloas)) = validated else {
             return ColumnDisposition::Ignored;
         };
-        self.handle_column(outcome, column, is_gloas, relay, emit)
+        self.handle_column(outcome, column, is_gloas, relay, producers)
     }
 
-    fn handle_column<F>(
+    fn handle_column(
         &mut self,
         outcome: ColumnOutcome,
         column: PendingColumn,
         is_gloas: bool,
         relay: RelayMeta,
-        emit: &mut F,
-    ) -> ColumnDisposition
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+        producers: &mut SilverSpineProducers,
+    ) -> ColumnDisposition {
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::AlreadyHeld { block_root, column_index, slot } => {
                 let is_gossip = column.stream_id.protocol() == StreamProtocol::GossipSub;
-                emit(DataColumnsEvent::Persist {
-                    ssz: column.sidecar.read,
-                    source: if is_gossip { ColumnSource::Gossip } else { ColumnSource::Rpc },
-                    block_root,
-                    column_index,
-                    slot,
-                });
+                producers.produce_with_ingestion(
+                    DataColumnsEvent::Persist {
+                        ssz: column.sidecar.read,
+                        source: if is_gossip { ColumnSource::Gossip } else { ColumnSource::Rpc },
+                        block_root,
+                        column_index,
+                        slot,
+                    },
+                    column.recv_ts,
+                );
 
                 if !is_gossip && self.custody_set_complete(&block_root) {
                     DataColumnCounters::DataColumnsAvailableEmitted.inc();
@@ -290,7 +276,7 @@ impl DataColumnsTile {
                         slot,
                         "DataColumnsAvailable: re-announced for a requested duplicate"
                     );
-                    emit(DataColumnsEvent::Available { block_root, slot });
+                    producers.produce(DataColumnsEvent::Available { block_root, slot });
                 }
                 ColumnDisposition::Ignored
             }
@@ -330,19 +316,21 @@ impl DataColumnsTile {
         }
     }
 
-    fn drain_pending_gloas_columns<F>(&mut self, block_root: BlockRoot, emit: &mut F)
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+    fn drain_pending_gloas_columns(
+        &mut self,
+        block_root: BlockRoot,
+        producers: &mut SilverSpineProducers,
+    ) {
         let pending = self.gloas_pending_columns.remove(&block_root);
-        self.drain_entries(pending, emit);
+        self.drain_entries(pending, producers);
     }
 
     #[timed]
-    fn drain_parent_pending_columns<F>(&mut self, parent_root: BlockRoot, emit: &mut F)
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+    fn drain_parent_pending_columns(
+        &mut self,
+        parent_root: BlockRoot,
+        producers: &mut SilverSpineProducers,
+    ) {
         let pending = self.parent_pending_columns.remove(&parent_root);
         if pending.is_some() {
             tracing::info!(
@@ -350,38 +338,30 @@ impl DataColumnsTile {
                 "draining data columns for parent root"
             );
         }
-        self.drain_entries(pending, emit);
+        self.drain_entries(pending, producers);
     }
 
     /// Re-validated rejects from buffered columns are not penalized — the
     /// disposition is dropped, matching the pre-batch behaviour.
-    fn drain_entries<F>(&mut self, pending: Option<Vec<PendingColumn>>, emit: &mut F)
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+    fn drain_entries(
+        &mut self,
+        pending: Option<Vec<PendingColumn>>,
+        producers: &mut SilverSpineProducers,
+    ) {
         let Some(pending) = pending else {
             return;
         };
         for column in pending {
-            self.data_columns(column, RelayMeta::None, emit);
+            self.data_columns(column, RelayMeta::None, producers);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn record_validated_column<F>(
-        &mut self,
-        block_root: BlockRoot,
-        column_index: u64,
-        column_bitmask: u128,
-        slot: u64,
-        sidecar: TRead,
-        is_gossip: bool,
-        emit: &mut F,
-    ) where
-        F: FnMut(DataColumnsEvent),
-    {
+    fn record_validated_column(&mut self, p: PendingKzg, producers: &mut SilverSpineProducers) {
+        let PendingKzg {
+            sidecar, stream_id, recv_ts, block_root, column_index, bitmask, slot, ..
+        } = p;
         let entry = self.validated.entry(block_root).or_default();
-        entry.columns |= column_bitmask;
+        entry.columns |= bitmask;
         let validated = entry.columns;
 
         if validated & self.custody_group_columns == self.custody_group_columns {
@@ -392,19 +372,26 @@ impl DataColumnsTile {
                 slot,
                 "DataColumnsAvailable: custody set complete"
             );
-            emit(DataColumnsEvent::Available { block_root, slot })
+            producers
+                .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
         }
 
-        if column_bitmask & self.custody_group_columns != 0 {
-            // emit persist msg
-            let source = if is_gossip { ColumnSource::Gossip } else { ColumnSource::Rpc };
-            emit(DataColumnsEvent::Persist {
-                ssz: sidecar.read,
-                source,
-                block_root,
-                column_index,
-                slot,
-            })
+        if bitmask & self.custody_group_columns != 0 {
+            let source = if stream_id.protocol() == StreamProtocol::GossipSub {
+                ColumnSource::Gossip
+            } else {
+                ColumnSource::Rpc
+            };
+            producers.produce_with_ingestion(
+                DataColumnsEvent::Persist {
+                    ssz: sidecar.read,
+                    source,
+                    block_root,
+                    column_index,
+                    slot,
+                },
+                recv_ts,
+            );
         }
     }
 
@@ -428,29 +415,15 @@ impl DataColumnsTile {
             .filter(|(buf, _)| SignedBeaconBlockView::check_size(buf))
             .map(|(buf, _)| *SignedBeaconBlockView::parent_root(buf));
 
-        let root = self.beacon_block(stream_id, t_read, &mut |emit| match emit {
-            StorageEmit::Need(need) => {
-                producers.sync_needs.produce(&need.into());
-            }
-            StorageEmit::Engine(req) => {
-                producers.engine_reqs.produce(&req.into());
-            }
-            StorageEmit::DataAvailability(msg) => {
-                producers.data_columns.produce(&msg.into());
-            }
-        });
+        let root = self.beacon_block(stream_id, t_read, producers);
 
         if let Some((block_root, is_gloas)) = root &&
             is_gloas
         {
-            self.drain_pending_gloas_columns(block_root, &mut |msg| {
-                producers.data_columns.produce(&msg.into());
-            });
+            self.drain_pending_gloas_columns(block_root, producers);
         }
         if let Some(parent_root) = parent_root {
-            self.drain_parent_pending_columns(parent_root, &mut |msg| {
-                producers.data_columns.produce(&msg.into());
-            });
+            self.drain_parent_pending_columns(parent_root, producers);
         }
     }
 
@@ -489,28 +462,20 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) {
         let stream_id = column.stream_id;
-        let disposition = self.data_columns(column, relay, &mut |msg: DataColumnsEvent| {
-            producers.data_columns.produce(&msg.into());
-        });
+        let disposition = self.data_columns(column, relay, producers);
 
         if let ColumnDisposition::Rejected { block_root, slot, bitmask } = disposition {
-            producers.peer_events.produce(
-                &PeerEvent::RpcMisbehaviour {
-                    p2p_peer: stream_id.peer(),
-                    severity: RpcSeverity::Fatal,
-                }
-                .into(),
-            );
-            producers.sync_needs.produce(
-                &SyncNeed::Missing {
-                    root: block_root,
-                    slot,
-                    kind: DataKind::Columns,
-                    columns: bitmask,
-                    origin: Origin::Live,
-                }
-                .into(),
-            );
+            producers.produce(PeerEvent::RpcMisbehaviour {
+                p2p_peer: stream_id.peer(),
+                severity: RpcSeverity::Fatal,
+            });
+            producers.produce(SyncNeed::Missing {
+                root: block_root,
+                slot,
+                kind: DataKind::Columns,
+                columns: bitmask,
+                origin: Origin::Live,
+            });
         }
     }
 
@@ -519,7 +484,7 @@ impl DataColumnsTile {
     /// re-verifies alone so the reject lands on the culpable peer only —
     /// honest traffic never pays the fallback.
     #[timed]
-    fn flush_kzg_batch(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    fn flush_kzg_batch(&mut self, producers: &mut SilverSpineProducers) {
         debug_assert!(!self.kzg_batch.is_empty());
 
         let pending_len = self.kzg_batch.pending.len();
@@ -541,9 +506,9 @@ impl DataColumnsTile {
                 continue;
             }
             if all_ok || self.reverify_single(&p) {
-                self.resolve_validated(p, adapter);
+                self.resolve_validated(p, producers);
             } else {
-                self.resolve_rejected(&p, adapter);
+                self.resolve_rejected(&p, producers);
             }
         }
     }
@@ -559,22 +524,11 @@ impl DataColumnsTile {
         }
     }
 
-    fn resolve_validated(&mut self, p: PendingKzg, adapter: &mut SpineAdapter<SilverSpine>) {
-        let PendingKzg {
-            sidecar,
-            stream_id,
-            recv_ts,
-            block_root,
-            column_index,
-            bitmask,
-            slot,
-            relay,
-            ..
-        } = p;
-        match relay {
+    fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
+        match mem::replace(&mut p.relay, RelayMeta::None) {
             RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
-                adapter.produce(PeerEvent::SendGossip {
-                    originator_stream_id: stream_id,
+                producers.produce(PeerEvent::SendGossip {
+                    originator_stream_id: p.stream_id,
                     topic,
                     msg_hash,
                     recv_ts,
@@ -582,34 +536,25 @@ impl DataColumnsTile {
                 });
             }
             RelayMeta::Rpc { ssz } if self.sync_state.is_synced() => {
-                adapter.produce(PeerEvent::PublishDataColumn {
-                    originator: stream_id,
-                    topic: GossipTopic::DataColumnSidecar(column_index),
+                producers.produce(PeerEvent::PublishDataColumn {
+                    originator: p.stream_id,
+                    topic: GossipTopic::DataColumnSidecar(p.column_index),
                     ssz,
                 });
             }
             _ => {}
         }
-        let is_gossip = stream_id.protocol() == StreamProtocol::GossipSub;
-        self.record_validated_column(
-            block_root,
-            column_index,
-            bitmask,
-            slot,
-            sidecar,
-            is_gossip,
-            &mut |msg| adapter.producers.produce_with_ingestion(msg, recv_ts),
-        );
+        self.record_validated_column(p, producers);
     }
 
-    fn resolve_rejected(&mut self, p: &PendingKzg, adapter: &mut SpineAdapter<SilverSpine>) {
+    fn resolve_rejected(&mut self, p: &PendingKzg, producers: &mut SilverSpineProducers) {
         tracing::warn!(stream_id = ?p.stream_id, "failed to verify sidecar kzg proof");
         DataColumnCounters::KzgBatchRejects.inc();
-        adapter.produce(PeerEvent::RpcMisbehaviour {
+        producers.produce(PeerEvent::RpcMisbehaviour {
             p2p_peer: p.stream_id.peer(),
             severity: RpcSeverity::Fatal,
         });
-        adapter.produce(SyncNeed::Missing {
+        producers.produce(SyncNeed::Missing {
             root: p.block_root,
             slot: p.slot,
             kind: DataKind::Columns,
@@ -632,9 +577,7 @@ impl DataColumnsTile {
                 // Per-event (not latest-only): BS emits one Status per accepted
                 // block, and each newly validated root may unblock buffered
                 // children.
-                self.drain_parent_pending_columns(*StatusView::head_root(&ssz), &mut |msg| {
-                    producers.data_columns.produce(&msg.into());
-                });
+                self.drain_parent_pending_columns(*StatusView::head_root(&ssz), producers);
                 latest_status_event = Some((ssz, wall_slot));
             }
             BeaconStateEvent::PersistBlock { ssz, source, .. } => {
@@ -647,9 +590,7 @@ impl DataColumnsTile {
 
                         self.validator.note_persisted(block_root);
 
-                        self.drain_parent_pending_columns(block_root, &mut |msg| {
-                            producers.data_columns.produce(&msg.into());
-                        });
+                        self.drain_parent_pending_columns(block_root, producers);
                     }
                     Err(e) => {
                         tracing::error!(?e, seq=t_read.seq(), consumer=?self.consumers.persist_gossip, "persist consumer buffer acquire failed");
@@ -740,16 +681,14 @@ impl Tile<SilverSpine> for DataColumnsTile {
                     &self.sync_state,
                     self.custody_group_columns,
                     &mut self.el_column_producer,
-                    &mut |msg| {
-                        producers.data_columns.produce(&msg.into());
-                    },
+                    producers,
                 );
             }
         });
         self.el_fetcher.free();
 
         if !self.kzg_batch.is_empty() {
-            self.flush_kzg_batch(adapter);
+            self.flush_kzg_batch(&mut adapter.producers);
         }
 
         let now = Instant::now();
@@ -767,46 +706,98 @@ mod tests {
     use std::io::Write;
 
     use silver_beacon_state_data::BeaconStateOwner;
-    use silver_common::{P2pStreamId, StreamProtocol, TCache, TCacheProducer};
+    use silver_common::{EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer};
+    use tempfile::TempDir;
 
     use super::*;
 
     const CUSTODY_COLUMNS: u128 = (1u128 << 3) | (1u128 << 7);
 
-    /// Tile with `CUSTODY_COLUMNS` custody and no EL path exercised. Tcaches
-    /// are heap-allocated and leaked, so the producers need not outlive this.
-    fn make_tile() -> DataColumnsTile {
-        let gossip_tc = TCache::producer("gossip_blocks", 1024 * 1024);
-        let gossip_consumer = gossip_tc.cache_ref().random_access("gossip_cons", true).unwrap();
+    /// A tile on its own spine, with an injector adapter to read what it
+    /// produced. Tcaches are heap-allocated and leaked, so the producers need
+    /// not outlive this. Declaration order is drop order: adapters before the
+    /// spine, spine before the directory it is mapped in.
+    struct Rig {
+        inj: SpineAdapter<SilverSpine>,
+        conn: SpineAdapter<SilverSpine>,
+        tile: DataColumnsTile,
+        _spine: Box<SilverSpine>,
+        _dir: TempDir,
+    }
 
-        let persist_gossip_tc = TCache::producer("persist_gossip_blocks", 1024 * 1024);
-        let persist_gossip_consumer =
-            persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
+    struct Injector;
 
-        let rpc_tc = TCache::producer("rpc_blocks", 1024 * 1024);
-        let rpc_consumer = rpc_tc.cache_ref().random_access("rpc_cons", true).unwrap();
+    impl Tile<SilverSpine> for Injector {
+        fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
+    }
 
-        let persist_rpc_tc = TCache::producer("persist_rpc_blocks", 1024 * 1024);
-        let persist_rpc_consumer =
-            persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
+    impl Rig {
+        fn new(custody: u128) -> Self {
+            let gossip_tc = TCache::producer("gossip_blocks", 1024 * 1024);
+            let gossip_consumer = gossip_tc.cache_ref().random_access("gossip_cons", true).unwrap();
 
-        let engine_resp_tc = TCache::producer("engine_resp", 1024 * 1024);
-        let engine_resp_consumer =
-            engine_resp_tc.cache_ref().random_access("engine_resp_cons", true).unwrap();
+            let persist_gossip_tc = TCache::producer("persist_gossip_blocks", 1024 * 1024);
+            let persist_gossip_consumer =
+                persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
 
-        DataColumnsTile::new(
-            ColumnConsumers {
-                gossip: gossip_consumer,
-                persist_gossip: persist_gossip_consumer,
-                rpc: rpc_consumer,
-                persist_rpc: persist_rpc_consumer,
-            },
-            BeaconStateOwner::empty_test(0).reader(),
-            CUSTODY_COLUMNS,
-            Arc::new(SpecConfig::mainnet()),
-            engine_resp_consumer,
-            TCache::producer("el_columns", 1024 * 1024),
-        )
+            let rpc_tc = TCache::producer("rpc_blocks", 1024 * 1024);
+            let rpc_consumer = rpc_tc.cache_ref().random_access("rpc_cons", true).unwrap();
+
+            let persist_rpc_tc = TCache::producer("persist_rpc_blocks", 1024 * 1024);
+            let persist_rpc_consumer =
+                persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
+
+            let engine_resp_tc = TCache::producer("engine_resp", 1024 * 1024);
+            let engine_resp_consumer =
+                engine_resp_tc.cache_ref().random_access("engine_resp_cons", true).unwrap();
+
+            let tile = DataColumnsTile::new(
+                ColumnConsumers {
+                    gossip: gossip_consumer,
+                    persist_gossip: persist_gossip_consumer,
+                    rpc: rpc_consumer,
+                    persist_rpc: persist_rpc_consumer,
+                },
+                BeaconStateOwner::empty_test(0).reader(),
+                custody,
+                Arc::new(SpecConfig::mainnet()),
+                engine_resp_consumer,
+                TCache::producer("el_columns", 1024 * 1024),
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
+            let conn = SpineAdapter::connect_tile(&tile, &mut spine);
+            let mut inj = SpineAdapter::connect_tile(&Injector, &mut spine);
+            // Cursors snap on their first consume, so prime them while empty.
+            inj.consume(|_: DataColumnsEvent, _| {});
+            inj.consume(|_: SyncNeed, _| {});
+            inj.consume(|_: EngineReq, _| {});
+            Self { inj, conn, tile, _spine: spine, _dir: dir }
+        }
+
+        fn drain(&mut self) -> Produced {
+            let mut out = Produced::default();
+            self.inj.consume(|ev: DataColumnsEvent, _| match ev {
+                DataColumnsEvent::Available { .. } => out.available += 1,
+                DataColumnsEvent::Persist { .. } => out.persisted += 1,
+            });
+            self.inj.consume(|need: SyncNeed, _| {
+                if let SyncNeed::Missing { .. } = need {
+                    out.missing.push(need);
+                }
+            });
+            self.inj.consume(|_: EngineReq, _| out.engine += 1);
+            out
+        }
+    }
+
+    #[derive(Default)]
+    struct Produced {
+        available: usize,
+        persisted: usize,
+        engine: usize,
+        missing: Vec<SyncNeed>,
     }
 
     /// Minimal fulu `SignedBeaconBlock` carrying blob commitments: message at
@@ -850,20 +841,20 @@ mod tests {
             (StreamProtocol::BeaconBlocksByRange, "need_block_rpc"),
             (StreamProtocol::GossipSub, "need_block_gossip"),
         ] {
-            let mut tile = make_tile();
-            tile.sync_state.set_sync_target(SyncUpdate::Following);
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
             let (mut consumer, ssz) = produce_block(&block_bytes, cache);
             let read = consumer.acquire(ssz);
 
-            let mut events = Vec::new();
-            tile.beacon_block(P2pStreamId::new(2, 2, protocol, true), read, &mut |emit| {
-                if let StorageEmit::Need(need) = emit {
-                    events.push(need);
-                }
-            });
+            rig.tile.beacon_block(
+                P2pStreamId::new(2, 2, protocol, true),
+                read,
+                &mut rig.conn.producers,
+            );
+            let out = rig.drain();
 
-            assert_eq!(events.len(), 1, "{protocol:?}");
-            let SyncNeed::Missing { root, slot, kind, columns, origin } = events[0] else {
+            assert_eq!(out.missing.len(), 1, "{protocol:?}");
+            let SyncNeed::Missing { root, slot, kind, columns, origin } = out.missing[0] else {
                 panic!("expected a missing-columns need from {protocol:?}");
             };
             assert_eq!(kind, DataKind::Columns);
@@ -879,24 +870,24 @@ mod tests {
     /// consumer can act on are pure spam on the live path.
     #[test]
     fn block_below_da_floor_says_nothing() {
-        let mut tile = make_tile();
-        tile.sync_state.set_sync_target(SyncUpdate::Following);
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
         // floor = 2 * 32 = 64, above the block's slot.
-        tile.sync_state.update(status_ssz(2), 100);
+        rig.tile.sync_state.update(status_ssz(2), 100);
 
         let block_bytes = blob_block_bytes(42);
         let (mut consumer, ssz) = produce_block(&block_bytes, "floor_block_prod");
         let read = consumer.acquire(ssz);
 
-        let mut events = 0;
-        let ret = tile.beacon_block(
+        let ret = rig.tile.beacon_block(
             P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, true),
             read,
-            &mut |_| events += 1,
+            &mut rig.conn.producers,
         );
+        let out = rig.drain();
 
         assert!(ret.is_none(), "no column tracking below the floor");
-        assert_eq!(events, 0, "no coverage, no need, nothing");
+        assert_eq!(out.available + out.persisted + out.engine + out.missing.len(), 0);
     }
 
     /// A sidecar this tile already validated is still offered to storage:
@@ -912,15 +903,15 @@ mod tests {
             (StreamProtocol::GossipSub, "held_gossip", false),
             (StreamProtocol::DataColumnSidecarsByRange, "held_rpc", true),
         ] {
-            let mut tile = make_tile();
-            tile.validated
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            rig.tile
+                .validated
                 .insert(block_root, BlockValidation { columns: CUSTODY_COLUMNS, signature: None });
 
             let (mut consumer, ssz) = produce_block(&blob_block_bytes(7), cache);
             let read = consumer.acquire(ssz);
 
-            let mut events = Vec::new();
-            let disposition = tile.handle_column(
+            let disposition = rig.tile.handle_column(
                 ColumnOutcome::AlreadyHeld { block_root, column_index: 3, slot: 7 },
                 PendingColumn {
                     stream_id: P2pStreamId::new(2, 2, protocol, true),
@@ -930,19 +921,20 @@ mod tests {
                 },
                 false,
                 RelayMeta::None,
-                &mut |e| events.push(e),
+                &mut rig.conn.producers,
             );
+            let out = rig.drain();
 
             assert!(
                 matches!(disposition, ColumnDisposition::Ignored),
                 "{protocol:?}: a duplicate is never relayed"
             );
-            assert!(
-                events.iter().any(|e| matches!(e, DataColumnsEvent::Persist { .. })),
+            assert_eq!(
+                out.persisted, 1,
                 "{protocol:?}: storage is the one that knows whether it landed"
             );
             assert_eq!(
-                events.iter().filter(|e| matches!(e, DataColumnsEvent::Available { .. })).count(),
+                out.available,
                 usize::from(announces),
                 "{protocol:?}: only a requested duplicate re-announces"
             );
