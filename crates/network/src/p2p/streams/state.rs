@@ -159,18 +159,9 @@ impl StreamState {
             StreamState::OutgoingRpc { rpc: RpcOut::ReadResponse(read_response), .. } => {
                 read_response.deadline()
             }
-            StreamState::Gossip { read, write } => {
-                let read = match read {
-                    GossipReadState::ReadingBody { last_read, .. } => {
-                        Some(*last_read + GOSSIP_BODY_STALL_TIMEOUT)
-                    }
-                    _ => None,
-                };
-                match (read, write.deadline()) {
-                    (Some(r), Some(w)) => Some(r.min(w)),
-                    (r, w) => r.or(w),
-                }
-            }
+            StreamState::Gossip {
+                read: GossipReadState::ReadingBody { last_read, .. }, ..
+            } => Some(*last_read + GOSSIP_BODY_STALL_TIMEOUT),
             _ => None,
         }
     }
@@ -339,7 +330,7 @@ impl StreamState {
             }
             StreamState::Gossip { mut read, mut write } => {
                 read = read.spin(io, &mut context.gossip_producer, id, now, emit)?;
-                write = write.spin(io, id, now)?;
+                write = write.spin(io, id)?;
 
                 if matches!(read, GossipReadState::Closed) && id.is_incoming() {
                     // read closed on incoming gossip stream - terminate.

@@ -35,9 +35,8 @@ silver_common::declare_counters! {
         RemoteResponseTimeout,
         // Stale gossip skipped
         GossipMsgSkipped,
-        // Gossip stream stalled (read or write) — connection closed.
+        // Gossip delivery or inbound read stalled — connection closed.
         GossipStallDisconnect,
-        QueueStallDisconnect,
     }
 }
 
