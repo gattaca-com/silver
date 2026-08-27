@@ -2,8 +2,8 @@ use flux::spine::SpineProducers;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataKind, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RpcSeverity, SyncNeed, TCacheRead, TRandomAccess, hex32, metrics::timed,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, NewGossipMsg, Origin, P2pStreamId,
+    PeerEvent, RpcSeverity, SyncNeed, TCacheRead, TRandomAccess, hex32, metrics::timed,
     ssz_view::SignedBeaconBlockView,
 };
 
@@ -262,7 +262,7 @@ impl BeaconStateTile {
         };
 
         if let Some(block_root) = admitted {
-            self.emit_block_received(data, block_root, false, producers);
+            self.emit_block_received(data, block_root, BlockStage::AwaitParent, producers);
         }
     }
 
@@ -270,14 +270,14 @@ impl BeaconStateTile {
         &self,
         data: &[u8],
         block_root: B256,
-        applied: bool,
+        stage: BlockStage,
         producers: &mut Producers,
     ) {
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         producers.produce(BeaconStateEvent::BlockReceived {
             slot: SignedBeaconBlockView::slot(data),
             block_root,
-            applied,
+            stage,
             parent_slot: self
                 .fork_choice
                 .find_node_idx(&parent_root)

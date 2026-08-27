@@ -16,8 +16,8 @@ pub use crate::{
     request::{DataKind, Origin, RequestId, Scope, SyncRequest},
     spine::{
         ALL_PROTOCOLS, AcquiredRead as TRead, AcquiredWithOffset, AgentString, BeaconStateEvent,
-        BlockSource, ColumnSource, Consumer as TConsumer, DataColumnsEvent, ELSyncStatus,
-        EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+        BlockSource, BlockStage, ColumnSource, Consumer as TConsumer, DataColumnsEvent,
+        ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
         EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
         EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
         EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,

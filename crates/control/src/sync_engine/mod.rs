@@ -15,9 +15,9 @@ use by_root::ByRootRequests;
 use peers::PeerView;
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataKind, PeerEvent, PeerStatus, RpcInbound, RpcRequest,
-    RpcRequestInbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SyncNeed, SyncRequest,
-    SyncUpdate, SyncingStrategy, ssz_view::StatusView,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, PeerEvent, PeerStatus, RpcInbound,
+    RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SyncNeed,
+    SyncRequest, SyncUpdate, SyncingStrategy, ssz_view::StatusView,
 };
 use silver_peer::SyncingConfig;
 use sync_window::{FETCH_CEILING, SyncWindow};
@@ -382,8 +382,8 @@ impl SyncEngine {
                 self.on_block_rejected(block_root, source)
             }
             BeaconStateEvent::ReplayComplete => self.on_replay_complete(),
-            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, applied } => {
-                self.on_block_received(slot, block_root, parent_slot, applied)
+            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, stage } => {
+                self.on_block_received(slot, block_root, parent_slot, stage)
             }
             BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
                 self.on_envelope_covered(slot, block_root)
@@ -456,9 +456,9 @@ impl SyncEngine {
         slot: u64,
         block_root: [u8; 32],
         parent_slot: Option<u64>,
-        applied: bool,
+        stage: BlockStage,
     ) {
-        self.window.block_received(slot, block_root, parent_slot, applied);
+        self.window.block_received(slot, block_root, parent_slot, stage == BlockStage::Applied);
         self.phase.note_report(DataKind::Block, slot);
         self.ctx.root_requests.retire(&block_root);
     }

@@ -4,8 +4,8 @@ use silver_beacon_state_data::{
     B256, BeaconBlockHeader, Checkpoint, Epoch, SLOTS_PER_EPOCH, StateId,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, SyncUpdate,
-    TCacheRead, hex32,
+    BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
+    SyncUpdate, TCacheRead, hex32,
     ssz_view::{self, SignedBeaconBlockView},
 };
 
@@ -55,7 +55,7 @@ impl BeaconStateTile {
             Err(e) => {
                 let f = e.feedback();
                 if let Feedback::AlreadyKnown(block_root) = f {
-                    self.emit_block_received(data, block_root, true, producers);
+                    self.emit_block_received(data, block_root, BlockStage::Applied, producers);
                     Self::emit_persist_block(read, source, block_slot, block_root, producers);
                 }
                 return f;
@@ -87,11 +87,11 @@ impl BeaconStateTile {
 
         let applied_root = match f {
             Feedback::Accept(Some(block_root)) => {
-                self.emit_block_received(data, block_root, true, producers);
+                self.emit_block_received(data, block_root, BlockStage::Applied, producers);
                 block_root
             }
             Feedback::AlreadyKnown(block_root) => {
-                self.emit_block_received(data, block_root, true, producers);
+                self.emit_block_received(data, block_root, BlockStage::Applied, producers);
                 Self::emit_persist_block(read, source, block_slot, block_root, producers);
                 return f;
             }

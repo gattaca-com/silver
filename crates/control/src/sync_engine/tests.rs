@@ -5,7 +5,8 @@ use std::{
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BlockSource, DataKind, Origin, RequestId, Scope, SyncNeed, SyncUpdate, SyncingStrategy,
+    BlockSource, BlockStage, DataKind, Origin, RequestId, Scope, SyncNeed, SyncUpdate,
+    SyncingStrategy,
 };
 use silver_peer::SyncingConfig;
 
@@ -81,13 +82,13 @@ fn local_status(e: &mut SyncEngine, head_slot: u64, wall_slot: u64) {
 /// A block whose parent sits at `parent_slot`, which also proves every slot
 /// between them empty.
 fn block_at(e: &mut SyncEngine, slot: u64, parent_slot: Option<u64>) {
-    e.on_block_received(slot, [slot as u8; 32], parent_slot, true);
+    e.on_block_received(slot, [slot as u8; 32], parent_slot, BlockStage::Applied);
 }
 
 /// A block in hand but not applied — beacon state parked it on a
 /// dependency.
 fn parked_at(e: &mut SyncEngine, slot: u64, parent_slot: Option<u64>) {
-    e.on_block_received(slot, [slot as u8; 32], parent_slot, false);
+    e.on_block_received(slot, [slot as u8; 32], parent_slot, BlockStage::AwaitParent);
 }
 
 /// A fully-satisfied slot: block present and its data covered. Says
@@ -663,7 +664,7 @@ fn unplaceable_parent_is_chased_by_root() {
     assert_eq!(by_root_chases(&mut e, now), vec![orphan_parent], "parent chased by root");
 
     // Arrival of that very block retires the chase.
-    e.on_block_received(39, orphan_parent, Some(38), true);
+    e.on_block_received(39, orphan_parent, Some(38), BlockStage::Applied);
     assert!(by_root_chases(&mut e, now).is_empty(), "arrival retires the chase");
 }
 
@@ -866,19 +867,19 @@ fn the_window_names_the_block_whose_state_it_reports() {
     const B: [u8; 32] = [0xbb; 32];
     let mut e = engine();
 
-    e.on_block_received(4, A, Some(3), false);
+    e.on_block_received(4, A, Some(3), BlockStage::AwaitParent);
     assert_eq!(e.window.seen_blocks(4).root, A, "the parked block is named");
     assert_eq!(e.window.seen_blocks(4).count, 1);
 
     // A sibling parks at the same slot. It did not change what the slot is
     // waiting on, so it must not rename it — but it is worth knowing there
     // are two.
-    e.on_block_received(4, B, Some(3), false);
+    e.on_block_received(4, B, Some(3), BlockStage::AwaitParent);
     assert_eq!(e.window.seen_blocks(4).root, A, "a second parked block does not rename it");
     assert_eq!(e.window.seen_blocks(4).count, 2, "and both are counted");
 
     // The sibling applying does change it, and the name moves with it.
-    e.on_block_received(4, B, Some(3), true);
+    e.on_block_received(4, B, Some(3), BlockStage::Applied);
     assert_eq!(e.window.seen_blocks(4).root, B, "the applied block renames the slot");
     assert_eq!(e.window.coverage(4).block, BlockState::Applied);
 }

@@ -737,8 +737,7 @@ pub enum BeaconStateEvent {
     BlockReceived {
         slot: u64,
         block_root: [u8; 32],
-        /// Applied to fork choice, rather than parked on a dependency.
-        applied: bool,
+        stage: BlockStage,
         // missing if we haven't seen the parent, which is then reported
         // separately as `RequestBlock`
         parent_slot: Option<u64>,
@@ -756,6 +755,16 @@ pub enum BeaconStateEvent {
         slot: u64,
         block_root: [u8; 32],
     },
+}
+
+/// Why a received block is not in fork choice yet, or that it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BlockStage {
+    /// Held on a missing parent or parent payload; nothing computed yet.
+    AwaitParent,
+    /// Imported into fork choice.
+    Applied,
 }
 
 #[derive(Clone, Copy, Debug)]
