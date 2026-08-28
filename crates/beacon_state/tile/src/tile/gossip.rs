@@ -199,16 +199,20 @@ impl BeaconStateTile {
         }
     }
 
+    pub(super) fn flush_attestations(&mut self, producers: &mut Producers) {
+        if !self.att_batch.is_empty() {
+            self.verify_and_commit_attestations(producers);
+        }
+    }
+
     /// Apply the deferred attestations: sequential cheap validation (in
     /// arrival order, so intra-batch duplicate attesters dedup naturally),
     /// then one multi-pairing verify for the survivors. A failed batch falls
     /// back to per-attestation verification so only the culprits are
     /// rejected.
     #[timed]
-    pub(super) fn flush_attestations(&mut self, producers: &mut Producers) {
-        if self.att_batch.is_empty() {
-            return;
-        }
+    fn verify_and_commit_attestations(&mut self, producers: &mut Producers) {
+        debug_assert!(!self.att_batch.is_empty());
         BeaconStateCounters::AttestationBatchSize.set(self.att_batch.len() as u64);
 
         self.att_sig_batch.clear();
