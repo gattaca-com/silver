@@ -88,7 +88,7 @@ impl Store {
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    tracing::info!(?path, len=buffer.len(), "writing data column");
+                    tracing::info!(?path, len = buffer.len(), "writing data column");
                     open_file_write(path, false)?.write_all(buffer)?;
 
                     StorageCounters::BackfillColumnsWritten.inc();
@@ -189,13 +189,16 @@ impl Store {
                     // Set 2: a block fetched by block backfill that falls in the
                     // column window needs its columns too (the pre-block disk
                     // scan couldn't see it — it wasn't on disk yet). Feed the
-                    // still-live column backfill. Just-written ⇒ no columns on
-                    // disk yet, so the full custody set is missing.
+                    // still-live column backfill. Only what is absent: block
+                    // backfill re-fetches a block whose columns an earlier run
+                    // already wrote, and asking for the full set again rewrote
+                    // every column below finalized on each restart.
                     let is_gloas = self.spec.is_gloas_at_slot(slot);
-                    // Just written ⇒ no columns on disk yet, so the whole
-                    // custody set is missing.
                     let missing = match SignedBeaconBlockView::has_data_columns(buffer, is_gloas) {
-                        true => custody_group_columns,
+                        true => {
+                            custody_group_columns &
+                                !self.present_columns(slot, custody_group_columns)
+                        }
                         false => 0,
                     };
                     self.history.seed(block_root, slot, buffer, missing, is_gloas, &self.spec);

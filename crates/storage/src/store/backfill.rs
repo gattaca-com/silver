@@ -458,6 +458,11 @@ impl ColumnBackfill {
         self.pending.len()
     }
 
+    #[cfg(test)]
+    pub(super) fn requested_columns(&self, block_root: &B256) -> Option<u128> {
+        self.pending.get(block_root).map(|b| b.requested)
+    }
+
     pub(super) fn is_complete(&self) -> bool {
         self.scan_complete && self.pending.is_empty()
     }
