@@ -15,7 +15,7 @@ use by_root::ByRootRequests;
 use peers::PeerView;
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, DataKind, PeerEvent, PeerStatus, RpcInbound,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, Origin, PeerEvent, PeerStatus, RpcInbound,
     RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SyncNeed,
     SyncRequest, SyncUpdate, SyncingStrategy, ssz_view::StatusView,
 };
@@ -364,10 +364,16 @@ impl SyncEngine {
             SyncNeed::Missing { root, slot, kind, columns, origin } => {
                 self.ctx.root_requests.want(root, kind, columns, origin, slot, now);
             }
-            SyncNeed::Arrived { root, kind, .. } => {
-                self.ctx.root_requests.retire(&root);
-                self.ctx.backfill.on_arrived(kind);
-            }
+            SyncNeed::Arrived { root, slot, kind, origin } => match origin {
+                Origin::Live => {
+                    debug_assert_eq!(kind, DataKind::Columns);
+                    self.on_columns_covered(slot, root);
+                }
+                Origin::Backfill => {
+                    self.ctx.root_requests.retire(&root);
+                    self.ctx.backfill.on_arrived(kind);
+                }
+            },
             SyncNeed::BackfillGap { kind, floor, next } => {
                 self.ctx.backfill.set_owed(kind, floor, next)
             }
@@ -469,7 +475,7 @@ impl SyncEngine {
         self.phase.note_report(DataKind::Envelope, slot);
     }
 
-    pub fn on_columns_covered(&mut self, slot: u64, block_root: [u8; 32]) {
+    fn on_columns_covered(&mut self, slot: u64, block_root: [u8; 32]) {
         self.ctx.root_requests.retire(&block_root);
         self.window.columns_covered(slot);
         self.phase.note_report(DataKind::Columns, slot);

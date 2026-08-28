@@ -1056,8 +1056,7 @@ impl BeaconStateEvent {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum DataColumnsEvent {
-    /// Message sent by the data column tile when all custody data columns for a
-    /// block have been received and KZG-validated.
+    /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
     /// Message sent when a data column has been validated.
     Persist {

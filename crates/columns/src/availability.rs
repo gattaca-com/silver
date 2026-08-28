@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use silver_common::Wheel;
+use silver_common::{Wheel, ssz_view::NUMBER_OF_COLUMNS};
 
 use crate::BlockRoot;
 
@@ -18,6 +18,12 @@ impl Custody {
 
     fn missed_from_custody(self, validated: u128) -> u128 {
         self.0 & !validated
+    }
+
+    /// Any half of the column set recovers the other half, so a node holding
+    /// that many can declare the data available before its own set is complete.
+    fn data_available(self, validated: u128) -> bool {
+        validated.count_ones() as usize >= NUMBER_OF_COLUMNS / 2 || self.is_covered_by(validated)
     }
 }
 
@@ -43,8 +49,17 @@ impl ColumnTracker {
         Self { custody: Custody(custody_columns), blocks: Wheel::new(retention) }
     }
 
-    pub(crate) fn record(&mut self, root: BlockRoot, columns: u128) {
-        self.blocks.entry(root).or_default().validated |= columns;
+    /// Returns `(data_available, custody_complete)` edges — each true only on
+    /// the call that crosses its threshold, so both fire once per block.
+    pub(crate) fn record(&mut self, root: BlockRoot, columns: u128) -> (bool, bool) {
+        let custody = self.custody;
+        let block = self.blocks.entry(root).or_default();
+        let before = block.validated;
+        block.validated |= columns;
+        (
+            !custody.data_available(before) && custody.data_available(block.validated),
+            !custody.is_covered_by(before) && custody.is_covered_by(block.validated),
+        )
     }
 
     /// Custody columns not yet validated for `root` — what a chase should ask
@@ -80,5 +95,39 @@ impl ColumnTracker {
 
     fn validated(&self, root: &BlockRoot) -> u128 {
         self.blocks.get(root).map_or(0, |b| b.validated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HALF: usize = NUMBER_OF_COLUMNS / 2;
+    const ROOT: BlockRoot = [1; 32];
+
+    fn column(i: usize) -> u128 {
+        1u128 << i
+    }
+
+    fn tracker(custody: u128) -> ColumnTracker {
+        ColumnTracker::new(custody, Duration::from_secs(60))
+    }
+
+    #[test]
+    fn supernode_declares_data_at_half_and_custody_at_all() {
+        let mut tracker = tracker(u128::MAX);
+        let edges: Vec<_> = (0..NUMBER_OF_COLUMNS)
+            .map(|i| (i, tracker.record(ROOT, column(i))))
+            .filter(|(_, edges)| *edges != (false, false))
+            .collect();
+        assert_eq!(edges, vec![(HALF - 1, (true, false)), (NUMBER_OF_COLUMNS - 1, (false, true))]);
+    }
+
+    #[test]
+    fn small_node_declares_both_on_its_last_custody_column() {
+        let mut tracker = tracker(column(3) | column(7));
+        assert_eq!(tracker.record(ROOT, column(3)), (false, false));
+        assert_eq!(tracker.record(ROOT, column(7)), (true, true));
+        assert_eq!(tracker.record(ROOT, column(7)), (false, false), "edges fire once");
     }
 }

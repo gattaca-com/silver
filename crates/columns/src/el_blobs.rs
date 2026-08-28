@@ -1,7 +1,7 @@
 //! EL-mempool blob path: fetch a block's blobs via `engine_getBlobsV2` and
 //! rebuild our custody `DataColumnSidecar`s locally, racing the p2p ByRoot
 //! request. Whichever fills the custody set first wins; the loser dedups via
-//! the tile's `validated` wheel.
+//! the tile's column tracker.
 
 use std::{
     io::Write,
@@ -127,34 +127,28 @@ impl ElBlobFetcher {
         producers.produce(EngineReq::GetBlobs(req));
     }
 
-    /// Handle an `engine_getBlobsV2` response: rebuild our outstanding custody
-    /// `DataColumnSidecar`s from the returned blobs and feed them through the
-    /// same availability path as p2p sidecars. Bails (leaving the p2p race to
+    /// Rebuilds the still-missing custody sidecars from an `engine_getBlobsV2`
+    /// response and returns `(slot, built)`. Bails (leaving the p2p race to
     /// fill them) on any incompleteness — `ok == false`, a missing blob, a
     /// decode/KZG error, or a now-finalized block.
     pub(crate) fn handle_response(
         &mut self,
         resp: EngineGetBlobsResp,
-        tracker: &mut ColumnTracker,
+        tracker: &ColumnTracker,
         sync_state: &SyncStatus,
         column_producer: &mut TProducer,
         producers: &mut SilverSpineProducers,
-    ) {
+    ) -> Option<(u64, u128)> {
         let block_root = resp.block_root;
-        let Some(pending) = self.pending.remove(&block_root) else {
-            return; // unknown / expired request
-        };
-        if !resp.ok {
-            return;
-        }
-        if pending.slot <= sync_state.finalized_slot() {
-            return; // block finalized while in flight — availability is moot
+        let pending = self.pending.remove(&block_root)?;
+        if !resp.ok || pending.slot <= sync_state.finalized_slot() {
+            return None;
         }
 
         // Columns still missing (some may have arrived via the p2p race).
         let to_build = tracker.to_request(&block_root) & pending.needed;
         if to_build == 0 {
-            return;
+            return None;
         }
 
         let read = self.engine_resp_consumer.acquire(resp.data);
@@ -163,7 +157,7 @@ impl ElBlobFetcher {
                 block = hex::encode(block_root),
                 "get_blobs response buffer acquire failed"
             );
-            return;
+            return None;
         };
         let n = pending.num_blobs;
         let mut blobs = [(EMPTY, EMPTY); MAX_BLOBS_PER_BLOCK];
@@ -172,7 +166,7 @@ impl ElBlobFetcher {
                 block = hex::encode(block_root),
                 "el blobs incomplete; leaving columns to the p2p race"
             );
-            return;
+            return None;
         }
 
         // Column j of the block is cell j of each blob. Only `compute_cells`
@@ -185,14 +179,14 @@ impl ElBlobFetcher {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!(?e, "el blob decode failed");
-                    return;
+                    return None;
                 }
             };
             match settings.compute_cells(&blob) {
                 Ok(cells) => all_cells[i] = Some(cells),
                 Err(e) => {
                     tracing::error!(?e, "compute_cells failed");
-                    return;
+                    return None;
                 }
             }
         }
@@ -260,21 +254,10 @@ impl ElBlobFetcher {
         }
 
         if built == 0 {
-            return;
+            return None;
         }
         DataColumnCounters::ElColumnsBuilt.inc();
-
-        tracker.record(block_root, built);
-
-        if tracker.custody_complete(&block_root) {
-            DataColumnCounters::DataColumnsAvailableEmitted.inc();
-            tracing::info!(
-                block = hex::encode(block_root),
-                slot = pending.slot,
-                "DataColumnsAvailable: custody set complete (EL blobs)"
-            );
-            producers.produce(DataColumnsEvent::Available { block_root, slot: pending.slot });
-        }
+        Some((pending.slot, built))
     }
 }
 

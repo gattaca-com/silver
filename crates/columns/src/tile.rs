@@ -62,7 +62,6 @@ impl ColumnConsumers {
 }
 
 pub struct DataColumnsTile {
-    // bit set of our custody group columns.
     consumers: ColumnConsumers,
 
     spec: Arc<SpecConfig>,
@@ -72,7 +71,6 @@ pub struct DataColumnsTile {
     // end of the pass.
     kzg_batch: KzgBatch,
 
-    // keyed by block body root
     tracker: ColumnTracker,
     // Gloas: columns whose block (hence commitments) hasn't been seen yet.
     gloas_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
@@ -155,10 +153,6 @@ impl DataColumnsTile {
         // custody set IS the sample set; no beyond-custody sampling needed.
         let to_request = self.tracker.to_request(&block_root);
         if to_request == 0 {
-            // Already complete, and the block is only arriving now: the earlier
-            // completion was announced before anything could attribute it to this
-            // slot. Availability is pushed, never polled, so say it again.
-            producers.produce(DataColumnsEvent::Available { block_root, slot });
             return Some((block_root, is_gloas));
         }
 
@@ -234,13 +228,12 @@ impl DataColumnsTile {
                 );
 
                 if !is_gossip && self.tracker.custody_complete(&block_root) {
-                    DataColumnCounters::DataColumnsAvailableEmitted.inc();
-                    tracing::info!(
-                        block = hex::encode(block_root),
+                    producers.produce(SyncNeed::Arrived {
+                        root: block_root,
                         slot,
-                        "DataColumnsAvailable: re-announced for a requested duplicate"
-                    );
-                    producers.produce(DataColumnsEvent::Available { block_root, slot });
+                        kind: DataKind::Columns,
+                        origin: Origin::Live,
+                    });
                 }
                 ColumnDisposition::Ignored
             }
@@ -324,19 +317,7 @@ impl DataColumnsTile {
         let PendingKzg {
             sidecar, stream_id, recv_ts, block_root, column_index, bitmask, slot, ..
         } = p;
-        self.tracker.record(block_root, bitmask);
-
-        if self.tracker.custody_complete(&block_root) {
-            // have all validated data columns for the block.
-            DataColumnCounters::DataColumnsAvailableEmitted.inc();
-            tracing::info!(
-                block = hex::encode(block_root),
-                slot,
-                "DataColumnsAvailable: custody set complete"
-            );
-            producers
-                .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
-        }
+        self.record_columns(block_root, slot, bitmask, recv_ts, producers);
 
         if self.tracker.wants(bitmask) {
             let source = if stream_id.protocol() == StreamProtocol::GossipSub {
@@ -351,6 +332,37 @@ impl DataColumnsTile {
                     block_root,
                     column_index,
                     slot,
+                },
+                recv_ts,
+            );
+        }
+    }
+
+    /// The only place `Available` and custody completion are announced; both
+    /// fire on their threshold edge, so each lands once per block.
+    fn record_columns(
+        &mut self,
+        block_root: BlockRoot,
+        slot: u64,
+        columns: u128,
+        recv_ts: IngestionTime,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let (available, custody_complete) = self.tracker.record(block_root, columns);
+        if available {
+            DataColumnCounters::DataColumnsAvailableEmitted.inc();
+            tracing::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
+            producers
+                .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
+        }
+        if custody_complete {
+            tracing::info!(block = hex::encode(block_root), slot, "custody set complete");
+            producers.produce_with_ingestion(
+                SyncNeed::Arrived {
+                    root: block_root,
+                    slot,
+                    kind: DataKind::Columns,
+                    origin: Origin::Live,
                 },
                 recv_ts,
             );
@@ -630,13 +642,17 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
         adapter.consume(|resp: EngineResp, producers| {
             if let EngineResp::GetBlobs(r) = resp {
-                self.el_fetcher.handle_response(
+                let block_root = r.block_root;
+                let built = self.el_fetcher.handle_response(
                     r,
-                    &mut self.tracker,
+                    &self.tracker,
                     &self.sync_state,
                     &mut self.el_column_producer,
                     producers,
                 );
+                if let Some((slot, built)) = built {
+                    self.record_columns(block_root, slot, built, IngestionTime::now(), producers);
+                }
             }
         });
         self.el_fetcher.free();
@@ -660,7 +676,9 @@ mod tests {
     use std::io::Write;
 
     use silver_beacon_state_data::BeaconStateOwner;
-    use silver_common::{EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer};
+    use silver_common::{
+        EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -736,10 +754,12 @@ mod tests {
                 DataColumnsEvent::Available { .. } => out.available += 1,
                 DataColumnsEvent::Persist { .. } => out.persisted += 1,
             });
-            self.inj.consume(|need: SyncNeed, _| {
-                if let SyncNeed::Missing { .. } = need {
-                    out.missing.push(need);
+            self.inj.consume(|need: SyncNeed, _| match need {
+                SyncNeed::Missing { .. } => out.missing.push(need),
+                SyncNeed::Arrived { kind: DataKind::Columns, origin: Origin::Live, .. } => {
+                    out.custody_complete += 1
                 }
+                SyncNeed::Arrived { .. } | SyncNeed::BackfillGap { .. } => {}
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
             out
@@ -749,6 +769,7 @@ mod tests {
     #[derive(Default)]
     struct Produced {
         available: usize,
+        custody_complete: usize,
         persisted: usize,
         engine: usize,
         missing: Vec<SyncNeed>,
@@ -816,6 +837,7 @@ mod tests {
             assert_eq!(root, block_root);
             assert_eq!(slot, 42, "the need carries the slot the engine suppresses against");
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
+            assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
         }
     }
 
@@ -845,17 +867,16 @@ mod tests {
     }
 
     /// A sidecar this tile already validated is still offered to storage:
-    /// validated here says nothing about whether the persist landed, and a
-    /// second offer is the only thing that fills a hole left by one that
-    /// lapsed. Storage dedupes against what it holds, so a copy it already has
-    /// costs no write. The *announcement* is the rationed part — a copy nobody
+    /// storage dedupes against what it holds, so a copy it already has costs no
+    /// write, and a second offer is the only thing that fills a hole left by
+    /// one that lapsed. The chase answer is the rationed part — a copy nobody
     /// asked for tells the engine nothing it does not already have.
     #[test]
-    fn held_sidecar_is_offered_again_but_announced_only_when_asked_for() {
+    fn held_sidecar_is_offered_again_but_answers_only_when_asked_for() {
         let block_root = [9u8; 32];
-        for (protocol, cache, announces) in [
-            (StreamProtocol::GossipSub, "held_gossip", false),
-            (StreamProtocol::DataColumnSidecarsByRange, "held_rpc", true),
+        for (protocol, cache, answers) in [
+            (StreamProtocol::GossipSub, "held_gossip", 0),
+            (StreamProtocol::DataColumnSidecarsByRange, "held_rpc", 1),
         ] {
             let mut rig = Rig::new(CUSTODY_COLUMNS);
             rig.tile.tracker.record(block_root, CUSTODY_COLUMNS);
@@ -886,10 +907,10 @@ mod tests {
                 "{protocol:?}: storage is the one that knows whether it landed"
             );
             assert_eq!(
-                out.available,
-                usize::from(announces),
-                "{protocol:?}: only a requested duplicate re-announces"
+                out.custody_complete, answers,
+                "{protocol:?}: only a requested duplicate answers"
             );
+            assert_eq!(out.available, 0, "{protocol:?}: availability is never re-announced");
         }
     }
 }

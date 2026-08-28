@@ -17,8 +17,8 @@
 //!   the moment it passed validation: the same pair of observations on one
 //!   message as `received`/`el_sent`, so the gap between them is the columns
 //!   tile's queue delay.
-//! - `da_available` — `DataColumnsEvent::Available`, i.e. the custody set is
-//!   complete and the block's DA gate opens.
+//! - `da_available` — `DataColumnsEvent::Available`: the block's data exists
+//!   and its DA gate opens.
 //!
 //! The `block_events_xatu` view renames the one comparable stage onto
 //! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
