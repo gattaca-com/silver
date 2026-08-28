@@ -3,13 +3,23 @@ use std::time::{Duration, Instant};
 use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    IngestionTime, P2pStreamId, StreamProtocol, Wheel, column_util as util,
+    IngestionTime, P2pStreamId, StreamProtocol, TRead, Wheel, column_util as util,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, SidecarLayout, SignedBeaconBlockView,
     },
 };
 
 use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
+
+/// A sidecar with the provenance its validation needs. Carrying `recv_ts` is
+/// what lets a column buffered before its block still report its own receive
+/// time rather than the drain's.
+pub(crate) struct PendingColumn {
+    pub(crate) stream_id: P2pStreamId,
+    pub(crate) sidecar: TRead,
+    pub(crate) gossip_subnet: Option<u64>,
+    pub(crate) recv_ts: IngestionTime,
+}
 
 pub(crate) enum ColumnOutcome {
     Skip,
@@ -65,35 +75,30 @@ impl ColumnValidator {
 
     pub fn validate(
         &mut self,
-        stream_id: P2pStreamId,
+        column: &PendingColumn,
         buffer: &[u8],
-        gossip_subnet: Option<u64>,
-        recv_ts: IngestionTime,
         sync_state: &SyncStatus,
         tracker: &mut ColumnTracker,
     ) -> Option<(ColumnOutcome, bool)> {
         match SidecarLayout::of(buffer)? {
-            SidecarLayout::Gloas => Some((
-                self.validate_gloas(stream_id, buffer, gossip_subnet, sync_state, tracker),
-                true,
-            )),
-            SidecarLayout::Fulu => Some((
-                self.validate_fulu(stream_id, buffer, gossip_subnet, recv_ts, sync_state, tracker),
-                false,
-            )),
+            SidecarLayout::Gloas => {
+                Some((self.validate_gloas(column, buffer, sync_state, tracker), true))
+            }
+            SidecarLayout::Fulu => {
+                Some((self.validate_fulu(column, buffer, sync_state, tracker), false))
+            }
         }
     }
 
     #[timed]
     pub fn validate_fulu(
         &mut self,
-        stream_id: P2pStreamId,
+        column: &PendingColumn,
         buffer: &[u8],
-        gossip_subnet: Option<u64>,
-        recv_ts: IngestionTime,
         sync_state: &SyncStatus,
         tracker: &mut ColumnTracker,
     ) -> ColumnOutcome {
+        let PendingColumn { stream_id, gossip_subnet, recv_ts, .. } = *column;
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
@@ -244,12 +249,12 @@ impl ColumnValidator {
     #[timed]
     pub fn validate_gloas(
         &self,
-        stream_id: P2pStreamId,
+        column: &PendingColumn,
         buffer: &[u8],
-        gossip_subnet: Option<u64>,
         sync_state: &SyncStatus,
         tracker: &ColumnTracker,
     ) -> ColumnOutcome {
+        let PendingColumn { stream_id, gossip_subnet, .. } = *column;
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
         if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {

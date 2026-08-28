@@ -25,18 +25,8 @@ use crate::{
     batch::{self, KzgBatch, PendingKzg, RelayMeta},
     el_blobs::ElBlobFetcher,
     sync::SyncStatus,
-    validate::{ColumnOutcome, ColumnValidator},
+    validate::{ColumnOutcome, ColumnValidator, PendingColumn},
 };
-
-/// A sidecar with the provenance its validation needs. Carrying `recv_ts` is
-/// what lets a column buffered before its block still report its own receive
-/// time rather than the drain's.
-struct PendingColumn {
-    stream_id: P2pStreamId,
-    sidecar: TRead,
-    gossip_subnet: Option<u64>,
-    recv_ts: IngestionTime,
-}
 
 /// Only `Batched` sidecars can end up forwarded / republished on gossip
 /// (their relay fires at flush if KZG passes): `Ignored` covers spec-IGNORE
@@ -202,14 +192,9 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
-            Ok((buf, _)) => self.validator.validate(
-                column.stream_id,
-                buf,
-                column.gossip_subnet,
-                column.recv_ts,
-                &self.sync_state,
-                &mut self.tracker,
-            ),
+            Ok((buf, _)) => {
+                self.validator.validate(&column, buf, &self.sync_state, &mut self.tracker)
+            }
             Err(e) => {
                 tracing::error!(
                     ?e,
