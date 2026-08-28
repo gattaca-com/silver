@@ -420,7 +420,7 @@ impl SyncEngine {
     ) {
         tracing::debug!(head_slot, finalized_epoch, wall_slot, "sync: local status updated");
         self.ctx.local.update(head_slot, finalized_epoch, finalized_root, wall_slot);
-        self.window.record_status(head_slot, self.ctx.local.finalized_slot());
+        self.window.record_status(head_slot, self.ctx.local.finalized_slot(), matches!(self.phase, Phase::Following));
         self.ctx.root_requests.prune_finalized(self.ctx.local.finalized_slot());
         self.mark_dirty();
     }
