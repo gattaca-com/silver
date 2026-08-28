@@ -336,6 +336,7 @@ impl Store {
         }
 
         self.scan_columns_step(custody_group_columns);
+        self.expire_incomplete_backfill_columns(Instant::now());
         self.history.step(&mut self.write_queue);
         self.history.publish_owed_spans(&mut |need| emit(IoEvent::Need(need)));
         if let Some(earliest) = self.take_earliest_slot_claim(custody_group_columns) {

@@ -10,8 +10,8 @@ use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead,
+    DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, RpcSeverity, SyncNeed, SyncUpdate,
+    TCacheRead, TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -29,6 +29,7 @@ mod history;
 mod io;
 mod unfinalized;
 
+use backfill::VerifiedColumns;
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
 use history::HistoryBackfill;
@@ -448,16 +449,34 @@ impl Store {
         }
     }
 
-    pub(super) fn backfill_data_column(&mut self, sidecar: TRead) {
-        if let Some(accepted) = self.history.add_sidecar(&sidecar) {
-            self.add_data_column(
-                accepted.block_root,
-                accepted.column_index,
-                sidecar,
-                accepted.slot,
-                accepted.complete,
+    pub(super) fn backfill_data_column<F>(
+        &mut self,
+        sidecar: TRead,
+        peer: usize,
+        now: Instant,
+        emit: &mut F,
+    ) where
+        F: FnMut(PeerEvent),
+    {
+        let (verified, rejected) = self.history.add_sidecar(sidecar, peer, now);
+        for bad in rejected {
+            tracing::warn!(
+                peer = bad.peer,
+                column_index = bad.column_index,
+                "backfill sidecar rejected"
             );
+            emit(PeerEvent::RpcMisbehaviour { p2p_peer: bad.peer, severity: RpcSeverity::Fatal });
         }
+        if let Some(VerifiedColumns { block_root, slot, sidecars }) = verified {
+            let last = sidecars.len().saturating_sub(1);
+            for (i, parked) in sidecars.into_iter().enumerate() {
+                self.add_data_column(block_root, parked.column_index, parked.ssz, slot, i == last);
+            }
+        }
+    }
+
+    pub(super) fn expire_incomplete_backfill_columns(&mut self, now: Instant) {
+        self.history.expire_incomplete_columns(now);
     }
 
     pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {

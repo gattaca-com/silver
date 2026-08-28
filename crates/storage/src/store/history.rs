@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ops::Range, sync::Arc};
+use std::{collections::VecDeque, ops::Range, sync::Arc, time::Instant};
 
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
@@ -6,7 +6,7 @@ use silver_common::{DataKind, SyncNeed, TRead, merkle::B256};
 
 use super::{
     COLUMN_SLOTS_RETAINED, Payload, PendingWrite,
-    backfill::{AcceptedColumn, Backfill, ColumnBackfill, EnvelopeBackfill},
+    backfill::{Backfill, ColumnBackfill, EnvelopeBackfill, RejectedSidecar, VerifiedColumns},
 };
 
 /// Sequences the two backfill phases. Column backfill runs first (disk scan of
@@ -197,13 +197,24 @@ impl HistoryBackfill {
         }
     }
 
-    pub(super) fn add_sidecar(&mut self, sidecar: &TRead) -> Option<AcceptedColumn> {
+    pub(super) fn add_sidecar(
+        &mut self,
+        sidecar: TRead,
+        peer: usize,
+        now: Instant,
+    ) -> (Option<VerifiedColumns>, Vec<RejectedSidecar>) {
         match self.columns.as_mut() {
-            Some(columns) => columns.add_sidecar(sidecar),
+            Some(columns) => columns.add_sidecar(sidecar, peer, now),
             None => {
                 tracing::error!("received backfill data column with no active column backfill!");
-                None
+                (None, Vec::new())
             }
+        }
+    }
+
+    pub(super) fn expire_incomplete_columns(&mut self, now: Instant) {
+        if let Some(columns) = self.columns.as_mut() {
+            columns.expire_incomplete(now);
         }
     }
 
