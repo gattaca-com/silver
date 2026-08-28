@@ -20,9 +20,7 @@ use silver_common::{
     },
 };
 
-use crate::{DataColumnCounters, sync::SyncStatus, tile::BlockValidation};
-
-type BlockRoot = [u8; 32];
+use crate::{BlockRoot, DataColumnCounters, availability::ColumnTracker, sync::SyncStatus};
 
 /// Inline size for [`PendingBlobFetch::commitments`] — avoids a per-fetch heap
 /// allocation.
@@ -137,9 +135,8 @@ impl ElBlobFetcher {
     pub(crate) fn handle_response(
         &mut self,
         resp: EngineGetBlobsResp,
-        validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
+        tracker: &mut ColumnTracker,
         sync_state: &SyncStatus,
-        custody_group_columns: u128,
         column_producer: &mut TProducer,
         producers: &mut SilverSpineProducers,
     ) {
@@ -155,8 +152,7 @@ impl ElBlobFetcher {
         }
 
         // Columns still missing (some may have arrived via the p2p race).
-        let already = validated.get(&block_root).map_or(0, |v| v.columns);
-        let to_build = pending.needed & !already;
+        let to_build = tracker.to_request(&block_root) & pending.needed;
         if to_build == 0 {
             return;
         }
@@ -268,10 +264,9 @@ impl ElBlobFetcher {
         }
         DataColumnCounters::ElColumnsBuilt.inc();
 
-        let entry = validated.entry(block_root).or_default();
-        entry.columns |= built;
+        tracker.record(block_root, built);
 
-        if entry.columns & custody_group_columns == custody_group_columns {
+        if tracker.custody_complete(&block_root) {
             DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
                 block = hex::encode(block_root),

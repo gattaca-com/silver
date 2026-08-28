@@ -9,7 +9,7 @@ use silver_common::{
     },
 };
 
-use crate::{BlockRoot, sync::SyncStatus, tile::BlockValidation};
+use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
 
 pub(crate) enum ColumnOutcome {
     Skip,
@@ -70,22 +70,15 @@ impl ColumnValidator {
         gossip_subnet: Option<u64>,
         recv_ts: IngestionTime,
         sync_state: &SyncStatus,
-        validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
+        tracker: &mut ColumnTracker,
     ) -> Option<(ColumnOutcome, bool)> {
         match SidecarLayout::of(buffer)? {
             SidecarLayout::Gloas => Some((
-                self.validate_gloas(stream_id, buffer, gossip_subnet, sync_state, validated),
+                self.validate_gloas(stream_id, buffer, gossip_subnet, sync_state, tracker),
                 true,
             )),
             SidecarLayout::Fulu => Some((
-                self.validate_fulu(
-                    stream_id,
-                    buffer,
-                    gossip_subnet,
-                    recv_ts,
-                    sync_state,
-                    validated,
-                ),
+                self.validate_fulu(stream_id, buffer, gossip_subnet, recv_ts, sync_state, tracker),
                 false,
             )),
         }
@@ -99,7 +92,7 @@ impl ColumnValidator {
         gossip_subnet: Option<u64>,
         recv_ts: IngestionTime,
         sync_state: &SyncStatus,
-        validated: &mut Wheel<BlockRoot, BlockValidation, 4>,
+        tracker: &mut ColumnTracker,
     ) -> ColumnOutcome {
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
@@ -141,7 +134,7 @@ impl ColumnValidator {
 
         let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
 
-        if validated.get(&block_root).is_some_and(|v| v.has_columns(column_bitmask)) {
+        if tracker.has_any(&block_root, column_bitmask) {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
@@ -233,7 +226,7 @@ impl ColumnValidator {
         // this block_root. block_root does not pin the signature, so
         // bytes-equality is required.
         let sig_bytes = *DataColumnSidecarFuluView::block_signature(buffer);
-        if validated.get(&block_root).and_then(|v| v.signature) != Some(sig_bytes) {
+        if !tracker.signature_verified(&block_root, &sig_bytes) {
             let Some(pubkey) = pubkey else {
                 tracing::warn!(?stream_id, "sidecar proposer_index out of range");
                 return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
@@ -242,7 +235,7 @@ impl ColumnValidator {
                 tracing::warn!(?stream_id, "sidecar proposer signature invalid");
                 return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
             }
-            validated.entry(block_root).or_default().signature = Some(sig_bytes);
+            tracker.set_signature(block_root, sig_bytes);
         }
 
         ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }
@@ -255,7 +248,7 @@ impl ColumnValidator {
         buffer: &[u8],
         gossip_subnet: Option<u64>,
         sync_state: &SyncStatus,
-        validated: &Wheel<BlockRoot, BlockValidation, 4>,
+        tracker: &ColumnTracker,
     ) -> ColumnOutcome {
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
@@ -282,7 +275,7 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
-        if validated.get(&block_root).is_some_and(|v| v.has_columns(column_bitmask)) {
+        if tracker.has_any(&block_root, column_bitmask) {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 

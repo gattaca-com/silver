@@ -21,6 +21,7 @@ use silver_common::{
 
 use crate::{
     BlockRoot, DataColumnCounters,
+    availability::ColumnTracker,
     batch::{self, KzgBatch, PendingKzg, RelayMeta},
     el_blobs::ElBlobFetcher,
     sync::SyncStatus,
@@ -35,21 +36,6 @@ struct PendingColumn {
     sidecar: TRead,
     gossip_subnet: Option<u64>,
     recv_ts: IngestionTime,
-}
-
-#[derive(Default)]
-pub(crate) struct BlockValidation {
-    pub(crate) columns: u128,
-    /// Proposer signature already BLS-verified for this block root.
-    /// `block_root` does not pin the signature, so the memo hits only on
-    /// bytes-equality.
-    pub(crate) signature: Option<[u8; 96]>,
-}
-
-impl BlockValidation {
-    pub(crate) fn has_columns(&self, bitmask: u128) -> bool {
-        self.columns & bitmask != 0
-    }
 }
 
 /// Only `Batched` sidecars can end up forwarded / republished on gossip
@@ -87,7 +73,6 @@ impl ColumnConsumers {
 
 pub struct DataColumnsTile {
     // bit set of our custody group columns.
-    custody_group_columns: u128,
     consumers: ColumnConsumers,
 
     spec: Arc<SpecConfig>,
@@ -98,7 +83,7 @@ pub struct DataColumnsTile {
     kzg_batch: KzgBatch,
 
     // keyed by block body root
-    validated: Wheel<BlockRoot, BlockValidation, 4>,
+    tracker: ColumnTracker,
     // Gloas: columns whose block (hence commitments) hasn't been seen yet.
     gloas_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
     // Fulu: columns held until their parent block validates. Keyed by the
@@ -125,12 +110,11 @@ impl DataColumnsTile {
     ) -> Self {
         let epoch_duration = Duration::from_secs(spec.seconds_per_slot) * SLOTS_PER_EPOCH as u32;
         Self {
-            custody_group_columns,
             consumers,
             spec,
             validator: ColumnValidator::new(beacon_state, epoch_duration),
             kzg_batch: KzgBatch::new(),
-            validated: Wheel::new(epoch_duration),
+            tracker: ColumnTracker::new(custody_group_columns, epoch_duration),
             gloas_pending_columns: Wheel::new(epoch_duration),
             parent_pending_columns: Wheel::new(Duration::from_secs(24)),
             sync_state: SyncStatus::default(),
@@ -179,7 +163,7 @@ impl DataColumnsTile {
 
         // Custody columns only — silver floors cgc at SAMPLES_PER_SLOT, so the
         // custody set IS the sample set; no beyond-custody sampling needed.
-        let to_request = self.columns_to_request(&block_root);
+        let to_request = self.tracker.to_request(&block_root);
         if to_request == 0 {
             // Already complete, and the block is only arriving now: the earlier
             // completion was announced before anything could attribute it to this
@@ -210,11 +194,6 @@ impl DataColumnsTile {
         Some((block_root, is_gloas))
     }
 
-    fn columns_to_request(&self, root: &BlockRoot) -> u128 {
-        let validated = self.validated.get(root).map_or(0, |v| v.columns);
-        self.custody_group_columns & !validated
-    }
-
     #[timed]
     fn data_columns(
         &mut self,
@@ -229,7 +208,7 @@ impl DataColumnsTile {
                 column.gossip_subnet,
                 column.recv_ts,
                 &self.sync_state,
-                &mut self.validated,
+                &mut self.tracker,
             ),
             Err(e) => {
                 tracing::error!(
@@ -269,7 +248,7 @@ impl DataColumnsTile {
                     column.recv_ts,
                 );
 
-                if !is_gossip && self.custody_set_complete(&block_root) {
+                if !is_gossip && self.tracker.custody_complete(&block_root) {
                     DataColumnCounters::DataColumnsAvailableEmitted.inc();
                     tracing::info!(
                         block = hex::encode(block_root),
@@ -360,11 +339,9 @@ impl DataColumnsTile {
         let PendingKzg {
             sidecar, stream_id, recv_ts, block_root, column_index, bitmask, slot, ..
         } = p;
-        let entry = self.validated.entry(block_root).or_default();
-        entry.columns |= bitmask;
-        let validated = entry.columns;
+        self.tracker.record(block_root, bitmask);
 
-        if validated & self.custody_group_columns == self.custody_group_columns {
+        if self.tracker.custody_complete(&block_root) {
             // have all validated data columns for the block.
             DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
@@ -376,7 +353,7 @@ impl DataColumnsTile {
                 .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
         }
 
-        if bitmask & self.custody_group_columns != 0 {
+        if self.tracker.wants(bitmask) {
             let source = if stream_id.protocol() == StreamProtocol::GossipSub {
                 ColumnSource::Gossip
             } else {
@@ -393,13 +370,6 @@ impl DataColumnsTile {
                 recv_ts,
             );
         }
-    }
-
-    /// Whether every column of our custody set has been validated for a block.
-    fn custody_set_complete(&self, block_root: &BlockRoot) -> bool {
-        self.validated
-            .get(block_root)
-            .is_some_and(|v| v.columns & self.custody_group_columns == self.custody_group_columns)
     }
 
     #[timed]
@@ -677,9 +647,8 @@ impl Tile<SilverSpine> for DataColumnsTile {
             if let EngineResp::GetBlobs(r) = resp {
                 self.el_fetcher.handle_response(
                     r,
-                    &mut self.validated,
+                    &mut self.tracker,
                     &self.sync_state,
-                    self.custody_group_columns,
                     &mut self.el_column_producer,
                     producers,
                 );
@@ -694,7 +663,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
         let now = Instant::now();
 
         self.validator.rotate(now);
-        self.validated.maybe_rotate(now);
+        self.tracker.maybe_rotate(now);
         self.parent_pending_columns.maybe_rotate(now);
         self.gloas_pending_columns.maybe_rotate(now);
         self.el_fetcher.rotate(now);
@@ -904,9 +873,7 @@ mod tests {
             (StreamProtocol::DataColumnSidecarsByRange, "held_rpc", true),
         ] {
             let mut rig = Rig::new(CUSTODY_COLUMNS);
-            rig.tile
-                .validated
-                .insert(block_root, BlockValidation { columns: CUSTODY_COLUMNS, signature: None });
+            rig.tile.tracker.record(block_root, CUSTODY_COLUMNS);
 
             let (mut consumer, ssz) = produce_block(&blob_block_bytes(7), cache);
             let read = consumer.acquire(ssz);
