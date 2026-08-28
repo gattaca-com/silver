@@ -88,7 +88,9 @@ impl Store {
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
+                    tracing::info!(?path, len=buffer.len(), "writing data column");
                     open_file_write(path, false)?.write_all(buffer)?;
+
                     StorageCounters::BackfillColumnsWritten.inc();
 
                     if let Some(root) = block_root {
