@@ -256,6 +256,8 @@ impl App {
     }
 
     pub fn sample(&mut self) {
+        // First: the mark rings lap if they wait on the other sources' latency.
+        self.flamegraph.sample();
         for c in &mut self.counters {
             c.sample();
         }
@@ -270,7 +272,6 @@ impl App {
         }
         self.peers.sample();
         self.events.sample();
-        self.flamegraph.sample();
     }
 
     pub fn roll_bucket(&mut self) {

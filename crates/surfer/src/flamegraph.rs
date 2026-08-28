@@ -1,7 +1,11 @@
+use std::time::{Duration, Instant};
+
 use silver_metrics::{
     TimingStats, fold_stats,
     profiler::{CrossProcessReader, published_pid},
 };
+
+const DRAIN_BUDGET: Duration = Duration::from_millis(20);
 
 pub struct Flamegraph {
     reader: Option<CrossProcessReader>,
@@ -28,9 +32,9 @@ impl Flamegraph {
         if self.paused {
             return;
         }
-        if let Some(reader) = &mut self.reader {
-            reader.poll();
-        }
+        let Some(reader) = &mut self.reader else { return };
+        let deadline = Instant::now() + DRAIN_BUDGET;
+        while reader.poll() && Instant::now() < deadline {}
     }
 
     pub fn roll_bucket(&mut self) {
