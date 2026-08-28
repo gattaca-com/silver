@@ -15,8 +15,11 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
-    Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer,
-    TCacheRead, TMultiProducer, column_util, column_util::columns_of, hex32, merkle::B256,
+    DataKind, Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, SyncNeed,
+    TCacheProducer, TCacheRead, TMultiProducer,
+    column_util::{self, columns_of},
+    hex32,
+    merkle::B256,
     ssz_view::SignedBeaconBlockView,
 };
 
@@ -58,6 +61,8 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
+        StorageCounters::WriteQueueLength.set(self.write_queue.len() as u64);
+
         let mut writes = 0;
         while writes < MAX_WRITES_PER_LOOP &&
             let Some(pending) = self.write_queue.pop_front()
@@ -78,13 +83,21 @@ impl Store {
                     record[32..].copy_from_slice(&slot.to_le_bytes());
                     file.write_all(&record)?;
                 }
-                PendingWrite::Column { slot, column, ssz } => {
+                PendingWrite::Column { slot, column, block_root, ssz } => {
                     let dir = self.finalized_slot_dir(Payload::Column, slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
                     StorageCounters::BackfillColumnsWritten.inc();
+
+                    if let Some(root) = block_root {
+                        emit(IoEvent::Need(SyncNeed::Arrived {
+                            root,
+                            slot,
+                            kind: DataKind::Columns,
+                        }))
+                    }
                 }
                 PendingWrite::WriteUnfinalized { slot, key, ssz } => {
                     let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
@@ -185,6 +198,11 @@ impl Store {
                     };
                     self.history.seed(block_root, slot, buffer, missing, is_gloas, &self.spec);
                     StorageCounters::BackfillBlocksWritten.inc();
+                    emit(IoEvent::Need(SyncNeed::Arrived {
+                        root: block_root,
+                        slot,
+                        kind: DataKind::Block,
+                    }));
                 }
                 PendingWrite::BackfillEnvelope { slot, ssz } => {
                     let dir = self.finalized_slot_dir(Payload::Envelope, slot);
@@ -235,6 +253,8 @@ impl Store {
         // emitted once a request's units drain. `MAX_ITERATIONS_PER_LOOP`
         // bounds drained-request churn so a burst of empty requests can't
         // extend tile time.
+        StorageCounters::ReadQueueLength.set(self.query_queue.len() as u64);
+
         let mut reads = 0;
         let mut iters = 0;
         while iters < MAX_ITERATIONS_PER_LOOP && reads < MAX_READS_PER_LOOP {

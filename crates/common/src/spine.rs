@@ -46,11 +46,11 @@ pub struct SilverSpine {
     pub rpc_inbound: SpineQueue<RpcInbound>,
     #[queue(size(2usize.pow(16)))]
     pub peer_events: SpineQueue<PeerEvent>,
-    #[queue(size(2usize.pow(14)))]
+    #[queue(size(2usize.pow(16)))]
     pub peer_control: SpineQueue<PeerControl>,
     #[queue(size(2usize.pow(14)))]
     pub beacon_events: SpineQueue<BeaconStateEvent>,
-    #[queue(size(2usize.pow(12)))]
+    #[queue(size(2usize.pow(13)))]
     pub data_columns: SpineQueue<DataColumnsEvent>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,

@@ -130,6 +130,8 @@ enum PendingWrite {
     Column {
         slot: u64,
         column: u64,
+        /// Set for backfill completions.
+        block_root: Option<[u8; 32]>,
         ssz: TRead,
     },
     /// New unfinalized payload → `<unfinalized dir>/<key>.ssz`.
@@ -338,12 +340,14 @@ impl Store {
         column_index: u64,
         sidecar_ssz: TRead,
         slot: u64,
+        complete: bool,
     ) {
         if slot <= self.finalized_slot {
             // Finalized history (backfill): flat store keyed by slot.
             self.write_queue.push_back(PendingWrite::Column {
                 slot,
                 column: column_index,
+                block_root: complete.then_some(block_root),
                 ssz: sidecar_ssz,
             });
             if let Entry::Vacant(e) = self.root_index.entry(block_root) {
@@ -430,11 +434,8 @@ impl Store {
         });
     }
 
-    pub(super) fn backfill_block<F>(&mut self, ssz: TRead, emit: &mut F)
-    where
-        F: FnMut(SyncNeed),
-    {
-        self.history.add_block(ssz, &mut self.write_queue, emit);
+    pub(super) fn backfill_block(&mut self, ssz: TRead) {
+        self.history.add_block(ssz, &mut self.write_queue);
     }
 
     pub(super) fn backfill_envelope<F>(&mut self, signed: TRead, emit: &mut F)
@@ -447,16 +448,14 @@ impl Store {
         }
     }
 
-    pub(super) fn backfill_data_column<F>(&mut self, sidecar: TRead, emit: &mut F)
-    where
-        F: FnMut(SyncNeed),
-    {
-        if let Some(accepted) = self.history.add_sidecar(&sidecar, emit) {
+    pub(super) fn backfill_data_column(&mut self, sidecar: TRead) {
+        if let Some(accepted) = self.history.add_sidecar(&sidecar) {
             self.add_data_column(
                 accepted.block_root,
                 accepted.column_index,
                 sidecar,
                 accepted.slot,
+                accepted.complete,
             );
         }
     }
@@ -1317,9 +1316,9 @@ mod tests {
         let mut consumer = tc.cache_ref().random_access("colfork_cons", true).unwrap();
         store.add_block(root_a, consumer.acquire(ssz_ba), slot, parent_root);
         store.add_block(root_b, consumer.acquire(ssz_bb), slot, parent_root);
-        store.add_data_column(root_a, 3, consumer.acquire(ssz_a3), slot);
-        store.add_data_column(root_a, 7, consumer.acquire(ssz_a7), slot);
-        store.add_data_column(root_b, 3, consumer.acquire(ssz_b3), slot);
+        store.add_data_column(root_a, 3, consumer.acquire(ssz_a3), slot, false);
+        store.add_data_column(root_a, 7, consumer.acquire(ssz_a7), slot, false);
+        store.add_data_column(root_b, 3, consumer.acquire(ssz_b3), slot, false);
         assert!(store.unfinalized_columns.contains(&root_a));
         assert!(store.unfinalized_columns.contains(&root_b));
 
@@ -1502,7 +1501,7 @@ mod tests {
             block_root,
             super::test_spec(u64::MAX),
         ));
-        store.backfill_block(consumer.acquire(ssz), &mut |_| {});
+        store.backfill_block(consumer.acquire(ssz));
 
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("backfill_index_rpc", 1 << 20);
@@ -1542,10 +1541,10 @@ mod tests {
         let (first, second) = (stage(&[0xC1u8; 64]), stage(&[0xC1u8; 64]));
         let mut consumer = tc.cache_ref().random_access("dedupe_cons", true).unwrap();
 
-        store.add_data_column(block_root, 3, consumer.acquire(first), slot);
+        store.add_data_column(block_root, 3, consumer.acquire(first), slot, false);
         assert_eq!(store.write_queue.len(), 1, "the first copy is written");
 
-        store.add_data_column(block_root, 3, consumer.acquire(second), slot);
+        store.add_data_column(block_root, 3, consumer.acquire(second), slot, false);
         assert_eq!(store.write_queue.len(), 1, "the second is already on disk");
 
         store
@@ -1805,7 +1804,7 @@ mod tests {
             block_root,
             super::test_spec(u64::MAX),
         ));
-        store.backfill_block(consumer.acquire(ssz), &mut |_| {});
+        store.backfill_block(consumer.acquire(ssz));
 
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("column_backfill_rpc", 1 << 20);

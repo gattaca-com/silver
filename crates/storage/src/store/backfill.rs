@@ -7,7 +7,7 @@ use std::{
 use fxhash::FxHashMap;
 use silver_beacon_state_data::SpecConfig;
 use silver_common::{
-    DataKind, SyncNeed, TRead, column_util,
+    TRead, column_util,
     merkle::B256,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, EXECUTION_PAYLOAD_FIXED_GLOAS,
@@ -37,6 +37,9 @@ pub(super) struct AcceptedColumn {
     pub(super) block_root: B256,
     pub(super) slot: u64,
     pub(super) column_index: u64,
+    // indicates if acceptance of this column completes the custody group
+    // for the block.
+    pub(super) complete: bool,
 }
 
 impl Backfill {
@@ -63,14 +66,7 @@ impl Backfill {
     /// Link an arriving backfill block to the chain and queue it for write.
     /// Blocks arrive child-first; each links to `next_parent` and drains the
     /// buffer downward. Complete once the chain reaches the gap floor.
-    pub(super) fn add_block<F>(
-        &mut self,
-        ssz: TRead,
-        write_queue: &mut VecDeque<PendingWrite>,
-        emit: &mut F,
-    ) where
-        F: FnMut(SyncNeed),
-    {
+    pub(super) fn add_block(&mut self, ssz: TRead, write_queue: &mut VecDeque<PendingWrite>) {
         let buffer = match ssz.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -94,7 +90,6 @@ impl Backfill {
             write_queue.push_back(PendingWrite::BackfillBlock { block_root, slot, ssz });
             self.earliest_written = self.earliest_written.min(slot);
             self.next_parent = parent_root;
-            emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Block });
         }
 
         if self.earliest_written <= self.range.start {
@@ -248,10 +243,7 @@ impl ColumnBackfill {
 
     /// Validate + record a received backfill sidecar. On the block's final
     /// column, clears the need (`ColumnNeed { missing: 0 }`).
-    pub(super) fn add_sidecar<F>(&mut self, sidecar: &TRead, emit: &mut F) -> Option<AcceptedColumn>
-    where
-        F: FnMut(SyncNeed),
-    {
+    pub(super) fn add_sidecar(&mut self, sidecar: &TRead) -> Option<AcceptedColumn> {
         let buffer = match sidecar.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -318,19 +310,15 @@ impl ColumnBackfill {
         };
 
         if complete {
-            self.retire(block_root, slot, emit);
+            self.retire(block_root, slot);
         }
 
-        Some(AcceptedColumn { block_root, slot, column_index })
+        Some(AcceptedColumn { block_root, slot, column_index, complete })
     }
 
-    fn retire<F>(&mut self, block_root: B256, slot: u64, emit: &mut F)
-    where
-        F: FnMut(SyncNeed),
-    {
+    fn retire(&mut self, block_root: B256, slot: u64) {
         self.pending.remove(&block_root);
         self.owed_slots.remove(&slot);
-        emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns });
     }
 
     pub(super) fn pending_len(&self) -> usize {
@@ -564,24 +552,11 @@ mod tests {
         cb.seed_block([2u8; 32], 50, &block_bytes(50, [0; 32]), 0b1, &spec());
         assert_eq!(cb.owed_span(), (40, 51));
 
-        let mut arrived = Vec::new();
-        let mut spans = 0;
-        let mut collect = |need| match need {
-            SyncNeed::Arrived { root, slot, kind } => arrived.push((root, slot, kind)),
-            SyncNeed::BackfillGap { .. } => spans += 1,
-            SyncNeed::Missing { .. } => {}
-        };
-        cb.retire([1u8; 32], 40, &mut collect);
+        cb.retire([1u8; 32], 40);
         assert_eq!(cb.owed_span(), (50, 51), "the slot that cleared leaves the span");
-        cb.retire([2u8; 32], 50, &mut collect);
+        cb.retire([2u8; 32], 50);
         assert_eq!(cb.owed_span(), (0, 0), "and the last one empties it");
 
-        assert_eq!(
-            arrived,
-            vec![([1u8; 32], 40, DataKind::Columns), ([2u8; 32], 50, DataKind::Columns),],
-            "one report per block whose custody set completed"
-        );
-        assert_eq!(spans, 0, "the walk does not publish spans; the store does");
         assert_eq!(cb.servable_floor(), 1, "with nothing owed, the floor is the window's");
     }
 
@@ -636,7 +611,7 @@ mod tests {
         for (anchor, links) in [(gloas_root, true), (fulu_root, false)] {
             let mut queue = VecDeque::new();
             let mut backfill = Backfill::new(GLOAS_FORK_SLOT..GLOAS_FORK_SLOT + 1, anchor, spec());
-            backfill.add_block(consumer.acquire(ssz), &mut queue, &mut |_| {});
+            backfill.add_block(consumer.acquire(ssz), &mut queue);
 
             assert_eq!(backfill.is_complete(), links, "anchored at {}", hex::encode(anchor));
             assert_eq!(queue.len(), usize::from(links), "queued for write iff linked");
