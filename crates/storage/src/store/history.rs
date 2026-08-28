@@ -176,16 +176,9 @@ impl HistoryBackfill {
         }
     }
 
-    pub(super) fn add_block<F>(
-        &mut self,
-        ssz: TRead,
-        write_queue: &mut VecDeque<PendingWrite>,
-        emit: &mut F,
-    ) where
-        F: FnMut(SyncNeed),
-    {
+    pub(super) fn add_block(&mut self, ssz: TRead, write_queue: &mut VecDeque<PendingWrite>) {
         match self.blocks.as_mut() {
-            Some(blocks) => blocks.add_block(ssz, write_queue, emit),
+            Some(blocks) => blocks.add_block(ssz, write_queue),
             None => tracing::error!("received backfill block with no active backfill!"),
         }
     }
@@ -204,12 +197,9 @@ impl HistoryBackfill {
         }
     }
 
-    pub(super) fn add_sidecar<F>(&mut self, sidecar: &TRead, emit: &mut F) -> Option<AcceptedColumn>
-    where
-        F: FnMut(SyncNeed),
-    {
+    pub(super) fn add_sidecar(&mut self, sidecar: &TRead) -> Option<AcceptedColumn> {
         match self.columns.as_mut() {
-            Some(columns) => columns.add_sidecar(sidecar, emit),
+            Some(columns) => columns.add_sidecar(sidecar),
             None => {
                 tracing::error!("received backfill data column with no active column backfill!");
                 None

@@ -314,18 +314,14 @@ impl Tile<SilverSpine> for StorageTile {
                         if id.is(DataKind::Block, Origin::Backfill) =>
                     {
                         let t_read = self.rpc_consumer.acquire(ssz);
-                        self.store.backfill_block(t_read, &mut |need| {
-                            producers.sync_needs.produce(&need.into());
-                        });
+                        self.store.backfill_block(t_read);
                     }
                     silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz }
                         if id.is(DataKind::Columns, Origin::Backfill) =>
                     {
                         tracing::debug!("backfill data column sidecar over rpc");
                         let t_read = self.rpc_consumer.acquire(ssz);
-                        self.store.backfill_data_column(t_read, &mut |need| {
-                            producers.sync_needs.produce(&need.into());
-                        });
+                        self.store.backfill_data_column(t_read);
                     }
                     silver_common::RpcResponse::ExecutionPayloadEnvelope {
                         fork_digest: _,
@@ -368,9 +364,13 @@ impl Tile<SilverSpine> for StorageTile {
                     ColumnSource::El => self.el_column_consumer.acquire(ssz),
                 };
                 match sidecar_ssz.buffer() {
-                    Ok(_) => {
-                        self.store.add_data_column(block_root, column_index, sidecar_ssz, slot)
-                    }
+                    Ok(_) => self.store.add_data_column(
+                        block_root,
+                        column_index,
+                        sidecar_ssz,
+                        slot,
+                        false,
+                    ),
                     Err(e) => {
                         tracing::error!(
                             ?e,
