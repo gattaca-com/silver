@@ -8,9 +8,13 @@ use silver_common::{Keypair, PeerId};
 
 use super::tls;
 
+mod leased;
 mod peer;
 mod stream;
 
+pub(crate) use leased::Leased;
+#[cfg(test)]
+pub(crate) use leased::OutboundLeaseWheel;
 pub(crate) use peer::Peer;
 pub(crate) use stream::StreamWriter;
 

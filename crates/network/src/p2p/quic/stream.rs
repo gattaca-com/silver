@@ -2,9 +2,10 @@ use std::io::{Error, Write};
 
 use bytes::Bytes;
 use quinn_proto::{Connection, StreamId, WriteError};
+use silver_common::AcquiredWithOffset;
 
 use crate::p2p::{
-    quic::peer::OutboundBuffer,
+    quic::{leased::Leased, peer::OutboundBuffer},
     streams::{AcquiredRpcOutbound, StreamError, StreamIo},
 };
 
@@ -23,7 +24,12 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
-    fn write_bytes_to_stream(&mut self, id: StreamId, data: Bytes) -> Result<usize, StreamError> {
+    fn write_gossip_to_stream(
+        &mut self,
+        id: StreamId,
+        data: Leased<AcquiredWithOffset>,
+    ) -> Result<usize, StreamError> {
+        let data = Bytes::from_owner(data);
         let mut stream = self.connection.send_stream(id);
         match stream.write_chunks(&mut [data]) {
             Ok(wrote) => Ok(wrote.bytes),
@@ -78,7 +84,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
-    fn gossip_next(&mut self) -> Option<silver_common::TRead> {
+    fn gossip_next(&mut self) -> Option<Leased<silver_common::TRead>> {
         match self.outbound {
             OutboundBuffer::Gossip(out_buffer) => out_buffer.pop(),
             _ => None,

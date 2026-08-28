@@ -21,7 +21,11 @@ use crate::{
     p2p::{
         NetEvent,
         context::Context,
-        quic::{SendResult, stream::StreamIoImpl},
+        quic::{
+            SendResult,
+            leased::{Leased, OutboundLeaseWheel},
+            stream::StreamIoImpl,
+        },
         streams::{AcquiredRpcOutbound, StreamError, StreamState},
         tls::peer_id_from_certificate,
     },
@@ -72,6 +76,10 @@ pub(crate) struct Peer {
     /// A repeated goodbye re-arms the stream id but keeps the earliest
     /// deadline, so retries can't defer the close.
     pending_shutdown: Option<(StreamId, Instant)>,
+    /// Must remain the final field: Quinn-owned `Bytes` in `connection` and
+    /// queued stream state must drop before leases can no longer reach this
+    /// stable allocation.
+    outbound_lease_wheel: Box<OutboundLeaseWheel>,
 }
 
 impl Peer {
@@ -79,6 +87,7 @@ impl Peer {
     /// up-front and TLS-pinned); `PeerId::default()` for inbound until the
     /// handshake reveals it.
     pub(crate) fn new(handle: ConnectionHandle, connection: Connection, peer_id: PeerId) -> Self {
+        let now = Instant::now();
         Self {
             id: RemotePeer { peer_id, connection: handle.0, addr: connection.remote_address() },
             handle,
@@ -86,7 +95,7 @@ impl Peer {
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
             inbound_gossip: None,
             outbound_gossip: None,
-            created_at: Instant::now(),
+            created_at: now,
             handshake_completed: false,
             inbound_rpc_limits: RpcRateLimitSet::default(),
             next_deadline: None,
@@ -95,6 +104,7 @@ impl Peer {
             dirty: true,
             wake_at: None,
             pending_shutdown: None,
+            outbound_lease_wheel: Box::new(OutboundLeaseWheel::new(now)),
         }
     }
 
@@ -133,6 +143,7 @@ impl Peer {
             self.connection.poll_timeout(),
             self.next_deadline,
             self.pending_shutdown.map(|(_, at)| at),
+            self.outbound_lease_wheel.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -143,14 +154,23 @@ impl Peer {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
+        let now = Instant::now();
+        if self.check_outbound_delivery_timeout(now) {
+            return SendResult::ConnectionClosing;
+        }
         self.dirty = true;
-        if let Some(stream) = match &self.outbound_gossip {
-            Some(id) => self.streams.get_mut(id),
-            None => self.open_stream(StreamProtocol::GossipSub).and_then(|id| {
-                self.outbound_gossip.replace(id);
-                self.streams.get_mut(&id)
-            }),
-        } {
+        let stream_id = match self.outbound_gossip {
+            Some(id) => id,
+            None => match self.open_stream(StreamProtocol::GossipSub) {
+                Some(id) => {
+                    self.outbound_gossip.replace(id);
+                    id
+                }
+                None => return SendResult::StreamCreationError,
+            },
+        };
+        let msg = self.outbound_lease_wheel.leased(msg, now);
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
                 stream.needs_spin = true;
@@ -158,6 +178,19 @@ impl Peer {
             }
         }
         SendResult::StreamCreationError
+    }
+
+    fn check_outbound_delivery_timeout(&mut self, now: Instant) -> bool {
+        if self.connection.is_closed() {
+            self.outbound_lease_wheel.terminate();
+            return false;
+        }
+        if let Some(retained) = self.outbound_lease_wheel.expire(now) {
+            tracing::warn!(id = ?self.id, retained, "outbound gossip delivery timeout");
+            self.disconnect_on_stall(now);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult {
@@ -220,6 +253,7 @@ impl Peer {
     pub(crate) fn shutdown(&mut self, now: Instant) {
         self.dirty = true;
         self.pending_shutdown = None;
+        self.outbound_lease_wheel.terminate();
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
         self.clear_streams();
     }
@@ -363,6 +397,13 @@ impl Peer {
             if let Some(conn_event) = (ep_callback)(self.handle, ep_event) {
                 self.connection.handle_event(conn_event);
             }
+        }
+
+        // Feeding datagrams to `Connection::handle_event` releases newly
+        // ACKed send-buffer owners synchronously. Inspect and advance the
+        // wheel now, before a queued Writable event can create another lease.
+        if self.check_outbound_delivery_timeout(now) {
+            return;
         }
 
         while let Some(event) = self.connection.poll() {
@@ -891,7 +932,7 @@ impl Stream {
 
                 // TODO error info.
                 on_event(NetEvent::StreamClosed { stream: self.p2p_id });
-                if matches!(e, StreamError::GossipReadStall | StreamError::GossipWriteStall) {
+                if matches!(e, StreamError::GossipReadStall) {
                     SpinResult::Stalled
                 } else {
                     SpinResult::End
@@ -991,7 +1032,7 @@ impl Stream {
 
 pub(super) enum OutboundBuffer {
     Unset,
-    Gossip(OutBuffer<TRead>),
+    Gossip(OutBuffer<Leased<TRead>>),
     Rpc(OutBuffer<AcquiredRpcOutbound>),
 }
 
@@ -1013,17 +1054,18 @@ impl OutboundBuffer {
     }
 }
 
-pub(super) struct OutBuffer<T: Clone> {
+pub(super) struct OutBuffer<T> {
     msgs: Box<[Option<T>]>,
     len: usize,
     head: usize,
     tail: usize,
 }
 
-impl<T: Clone> OutBuffer<T> {
+impl<T> OutBuffer<T> {
     fn new(len: usize) -> Self {
         assert!(len.is_power_of_two());
-        Self { msgs: vec![None; len].into_boxed_slice(), len, head: 0, tail: 0 }
+        let msgs = std::iter::repeat_with(|| None).take(len).collect();
+        Self { msgs, len, head: 0, tail: 0 }
     }
 
     fn pos(&self, seq: usize) -> usize {
@@ -1077,30 +1119,133 @@ mod tests {
     use silver_common::{Keypair, TCache, TCacheProducer, TConsumer, TProducer};
 
     use super::*;
+    use crate::p2p::quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK};
 
     const TCACHE_BYTES: usize = 64 * 1024;
 
     #[test]
     fn out_buffer_overflow_keeps_ring_consistent() {
+        struct Item(usize);
+
         let mut buf = OutBuffer::new(4);
         for i in 0..4usize {
-            assert!(!buf.add_msg(i));
+            assert!(!buf.add_msg(Item(i)));
         }
 
         // Two overwrites drop the two oldest messages.
-        assert!(buf.add_msg(4));
-        assert!(buf.add_msg(5));
+        assert!(buf.add_msg(Item(4)));
+        assert!(buf.add_msg(Item(5)));
         assert_eq!(buf.len(), 4);
 
-        let drained: Vec<_> = std::iter::from_fn(|| buf.pop()).collect();
+        let drained: Vec<_> = std::iter::from_fn(|| buf.pop()).map(|u| u.0).collect();
         assert_eq!(drained, vec![2, 3, 4, 5]);
         assert!(buf.is_empty());
         assert!(buf.pop().is_none());
 
         // Buffer must remain usable after an overflow episode.
-        assert!(!buf.add_msg(6));
-        assert_eq!(buf.pop(), Some(6));
+        assert!(!buf.add_msg(Item(6)));
+        assert_eq!(buf.pop().map(|u| u.0), Some(6));
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn outbound_lease_wheel_drop_cancels_lease_after_box_moves() {
+        let t0 = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(t0));
+        let lease = wheel.lease(t0);
+        assert_eq!(wheel.active_count(), 1);
+        assert_eq!(wheel.deadline(), Some(t0 + GOSSIP_DELIVERY_TIMEOUT));
+
+        // Moving the Box (as the peer map may move `Peer`) does not move the
+        // allocation addressed by the lease.
+        let moved = wheel;
+        assert_eq!(moved.expire(t0 + GOSSIP_DELIVERY_TIMEOUT - Duration::from_nanos(1)), None);
+        drop(lease);
+
+        assert_eq!(moved.active_count(), 0);
+        assert_eq!(moved.deadline(), None);
+        assert_eq!(moved.expire(t0 + GOSSIP_DELIVERY_TIMEOUT), None);
+    }
+
+    #[test]
+    fn outbound_lease_wheel_expires_retained_lease_and_accepts_late_drop() {
+        let t0 = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(t0));
+        let released = wheel.lease(t0);
+        let retained = wheel.lease(t0);
+        drop(released);
+
+        assert_eq!(wheel.active_count(), 1);
+        assert_eq!(wheel.expire(t0 + GOSSIP_DELIVERY_TIMEOUT - Duration::from_nanos(1)), None);
+        assert_eq!(wheel.expire(t0 + GOSSIP_DELIVERY_TIMEOUT), Some(1));
+        assert_eq!(wheel.deadline(), None, "a terminal wheel must not re-arm");
+
+        // Connection teardown can release Quinn's owner after we detect the
+        // timeout. Its original bucket remains live until that drop.
+        drop(retained);
+        assert_eq!(wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn outbound_lease_wheel_rounds_expiry_up_to_tick() {
+        let t0 = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(t0));
+        let acquired = t0 + Duration::from_millis(1);
+        let lease = wheel.lease(acquired);
+        let rounded_deadline = t0 + GOSSIP_DELIVERY_TIMEOUT + OUTBOUND_LEASE_TICK;
+
+        assert_eq!(wheel.deadline(), Some(rounded_deadline));
+        assert_eq!(wheel.expire(rounded_deadline - Duration::from_nanos(1)), None);
+        assert_eq!(wheel.expire(rounded_deadline), Some(1));
+        drop(lease);
+    }
+
+    #[test]
+    fn outbound_lease_wheel_rebases_before_first_lease_after_idle() {
+        let t0 = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(t0));
+        let after_idle = t0 + Duration::from_secs(60);
+
+        assert_eq!(wheel.expire(after_idle), None);
+        let lease = wheel.lease(after_idle);
+        assert_eq!(wheel.deadline(), Some(after_idle + GOSSIP_DELIVERY_TIMEOUT));
+        drop(lease);
+    }
+
+    #[test]
+    fn leased_child_keeps_the_enqueue_deadline_after_root_drops() {
+        let t0 = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(t0));
+        let root = wheel.leased(1u8, t0);
+        assert_eq!(wheel.expire(t0 + GOSSIP_DELIVERY_TIMEOUT / 2), None);
+        let child = root.child(2u8);
+
+        assert_eq!(wheel.active_count(), 2);
+        assert_eq!(wheel.deadline(), Some(t0 + GOSSIP_DELIVERY_TIMEOUT));
+        drop(root);
+        assert_eq!(wheel.active_count(), 1);
+        assert_eq!(wheel.deadline(), Some(t0 + GOSSIP_DELIVERY_TIMEOUT));
+
+        drop(child);
+        assert_eq!(wheel.active_count(), 0);
+        assert_eq!(wheel.deadline(), None);
+    }
+
+    #[test]
+    fn out_buffer_overflow_releases_evicted_delivery_lease() {
+        let t0 = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(t0));
+        let mut buffer = OutBuffer::new(2);
+
+        assert!(!buffer.add_msg(wheel.leased(1u8, t0)));
+        assert!(!buffer.add_msg(wheel.leased(2u8, t0)));
+        assert_eq!(wheel.active_count(), 2);
+
+        assert!(buffer.add_msg(wheel.leased(3u8, t0)));
+        assert_eq!(wheel.active_count(), 2, "overwrite must drop the oldest root lease");
+
+        drop(buffer);
+        assert_eq!(wheel.active_count(), 0);
     }
 
     /// Per-peer test plumbing. Owns the four tcaches plus the `Context`
@@ -1552,6 +1697,35 @@ mod tests {
         assert!(server_peer.streams.is_empty(), "closing drops every stream");
     }
 
+    #[test]
+    fn retained_outbound_gossip_lease_closes_connection() {
+        let mut client_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+
+        // Place one synthetic delivery lease exactly at its deadline. The
+        // connection itself sees current time, so this specifically exercises
+        // the outbound watchdog rather than QUIC's idle timeout.
+        let acquired = now - GOSSIP_DELIVERY_TIMEOUT;
+        pair.client_peer.outbound_lease_wheel = Box::new(OutboundLeaseWheel::new(acquired));
+        let retained = pair.client_peer.outbound_lease_wheel.lease(acquired);
+        assert_eq!(pair.client_peer.outbound_lease_wheel.deadline(), Some(now));
+
+        let PeerPair { client_ep, client_peer, .. } = &mut pair;
+        let mut cb = |h, e| client_ep.handle_event(h, e);
+        let mut on_event = |_: NetEvent| {};
+        client_peer.spin(now, &mut cb, &mut client_h.context, &mut on_event, &FxHashSet::default());
+
+        assert!(client_peer.connection.is_closed(), "delivery timeout must close the connection");
+        assert!(client_peer.streams.is_empty(), "closing drops every stream");
+        assert!(client_peer.outbound_lease_wheel.is_terminal());
+
+        // Model Quinn releasing its send buffer during the later connection
+        // drop: terminal buckets remain valid for late lease destruction.
+        drop(retained);
+        assert_eq!(client_peer.outbound_lease_wheel.active_count(), 0);
+    }
+
     /// A negotiated inbound RPC stream whose request never arrives must be
     /// reaped by `INBOUND_RPC_IDLE_TIMEOUT` — only the server is spun past the
     /// deadline, so the reap can't be masked by the client's own teardown.
@@ -1648,11 +1822,21 @@ mod tests {
 
         let payload = b"hello from the client side".to_vec();
         client_h.send_gossip(stream_id, &payload, &mut pair.client_peer);
+        assert_eq!(
+            pair.client_peer.outbound_lease_wheel.active_count(),
+            1,
+            "enqueue must create the root delivery lease"
+        );
 
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
 
         let data: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
         assert_eq!(data, payload);
+        assert_eq!(
+            pair.client_peer.outbound_lease_wheel.active_count(),
+            0,
+            "the sender's ACK must release its tracked tcache owner"
+        );
     }
 
     #[test]

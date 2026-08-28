@@ -228,7 +228,7 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<TRead> {
+        fn gossip_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
             None
         }
 
@@ -236,10 +236,10 @@ mod tests {
             "127.0.0.1:0".parse().unwrap()
         }
 
-        fn write_bytes_to_stream(
+        fn write_gossip_to_stream(
             &mut self,
             _id: StreamId,
-            _data: bytes::Bytes,
+            _data: crate::p2p::quic::Leased<silver_common::AcquiredWithOffset>,
         ) -> Result<usize, StreamError> {
             unreachable!("read-only test io")
         }

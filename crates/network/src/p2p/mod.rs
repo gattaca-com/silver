@@ -327,12 +327,12 @@ impl P2p {
     }
 
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
-        match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
-            Some(peer) => {
-                let acquired = context.gossip_consumer.acquire(msg.into());
-                peer.send_gossip(acquired)
-            }
-            None => SendResult::UnknownPeer,
+        match context.gossip_consumer.acquire_strict(msg.into()) {
+            Some(acquired) => match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
+                Some(peer) => peer.send_gossip(acquired),
+                None => SendResult::UnknownPeer,
+            },
+            None => SendResult::MessageDropped,
         }
     }
 

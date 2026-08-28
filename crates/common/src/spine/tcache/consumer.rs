@@ -146,7 +146,7 @@ impl RandomAccessConsumer {
                 timer.emit_latency_from_nanos(reserve_ns, now);
             }
         }
-        AcquiredRead { consumer: self as *const Self, read }
+        AcquiredRead { consumer: self as *const Self, read, acquired: now }
     }
 
     pub fn acquire_strict(&mut self, read: TCacheRead) -> Option<AcquiredRead> {
@@ -161,7 +161,7 @@ impl RandomAccessConsumer {
                         timer.emit_latency_from_nanos(reserve_ns, now);
                     }
                 }
-                AcquiredRead { consumer: self as *const Self, read }
+                AcquiredRead { consumer: self as *const Self, read, acquired: now }
             })
             .and_then(|ar| {
                 // check slot seq.
@@ -231,6 +231,7 @@ impl Drop for RandomAccessConsumer {
 pub struct AcquiredRead {
     consumer: *const RandomAccessConsumer,
     pub read: TCacheRead,
+    pub acquired: Nanos,
 }
 
 impl AcquiredRead {
@@ -284,7 +285,7 @@ impl Clone for AcquiredRead {
             let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
             consumer.active.acquire(self.read.seq);
         }
-        Self { consumer: self.consumer, read: self.read }
+        Self { consumer: self.consumer, read: self.read, acquired: self.acquired }
     }
 }
 
@@ -370,25 +371,7 @@ impl Buckets {
         if self.tail_seq == u64::MAX {
             self.tail_seq = self.bucket_start_seq(seq).saturating_sub(self.guard);
         }
-
-        // Rollup tail for completed buckets — keep `guard` seqs of slack
-        // below the newest acquire's bucket so bounded out-of-order
-        // acquires never land behind the tail.
-        let head_bucket_seq = self.bucket_start_seq(seq);
-        while head_bucket_seq > (self.tail_seq + self.guard) {
-            let tail_bucket = self.bucket_index(self.tail_seq);
-            if self.head_seq - self.tail_seq > self.lag_threshold {
-                tracing::warn!(
-                    lagging = self.buckets[tail_bucket],
-                    "unfreed lagging consumers dropped!"
-                );
-                self.buckets[tail_bucket] = 0;
-            }
-            if self.buckets[tail_bucket] != 0 {
-                break;
-            }
-            self.tail_seq += self.bucket_size;
-        }
+        self.rollup(seq);
         true
     }
 
@@ -400,6 +383,32 @@ impl Buckets {
 
         let bucket_idx = self.bucket_index(seq);
         self.buckets[bucket_idx] = self.buckets[bucket_idx].saturating_sub(1);
+        self.rollup(self.head_seq);
+    }
+
+    fn rollup(&mut self, seq: u64) {
+        // Rollup tail for completed buckets — keep `guard` seqs of slack
+        // below the newest acquire's bucket so bounded out-of-order
+        // acquires never land behind the tail.
+        let head_bucket_seq = self.bucket_start_seq(seq);
+        while head_bucket_seq > self.tail_seq.saturating_add(self.guard) {
+            let tail_bucket = self.bucket_index(self.tail_seq);
+            if self.head_seq - self.tail_seq > self.lag_threshold {
+                tracing::warn!(
+                    lagging = self.buckets[tail_bucket],
+                    "unfreed lagging consumers dropped!"
+                );
+                self.buckets[tail_bucket] = 0;
+            }
+            if self.buckets[tail_bucket] != 0 {
+                break;
+            }
+            self.advance_tail_to_next_bucket();
+        }
+    }
+
+    fn advance_tail_to_next_bucket(&mut self) {
+        self.tail_seq = self.bucket_start_seq(self.tail_seq).saturating_add(self.bucket_size);
     }
 
     #[inline]
@@ -414,10 +423,10 @@ impl Buckets {
 
     fn roll_to(&mut self, seq: u64) {
         let head_bucket_seq = self.bucket_start_seq(seq);
-        while head_bucket_seq > (self.tail_seq + self.bucket_size) {
+        while head_bucket_seq > self.tail_seq.saturating_add(self.bucket_size) {
             let tail_bucket = self.bucket_index(self.tail_seq);
             self.buckets[tail_bucket] = 0;
-            self.tail_seq += self.bucket_size;
+            self.advance_tail_to_next_bucket();
         }
     }
 }
@@ -494,12 +503,29 @@ mod tests {
     fn buckets_release_advances_tail_when_head_is_ahead() {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0, tail = 0
-        b.acquire(200); // bucket 3, head = 200
+        b.acquire(500); // bucket 7, head = 500; held bucket 0 blocks rollup
         assert_eq!(b.tail_seq, 0);
-        b.release(0, ""); // bucket 0 empties; head far enough ahead to advance
-        b.acquire(500);
-        assert!(b.tail_seq > 0, "tail did not advance: {}", b.tail_seq);
-        assert!(b.tail_seq <= 200);
+        b.release(0, "");
+        assert_eq!(b.tail_seq, 192, "release did not immediately advance tail");
+    }
+
+    #[test]
+    fn buckets_rollup_does_not_advance_past_live_read_from_unaligned_tail() {
+        let mut b = Buckets::new(64, 1024, 32);
+        b.acquire(32); // hold the partial initial bucket
+        b.acquire(64); // hold the next bucket
+        b.acquire(500); // move head far enough for rollup
+        assert_eq!(b.tail_seq, 32);
+
+        b.release(32, "");
+        assert_eq!(b.tail_seq, 64, "tail advanced past the live read at 64");
+    }
+
+    #[test]
+    fn buckets_roll_to_aligns_an_unaligned_tail() {
+        let mut b = Buckets::new(64, 1024, 32);
+        b.roll_to(500);
+        assert_eq!(b.tail_seq, 384);
     }
 
     #[test]
