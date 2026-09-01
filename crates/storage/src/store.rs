@@ -11,8 +11,7 @@ use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     DataKind, Enr, Origin, P2pStreamId, PeerEvent, RpcRequestInbound, RpcSeverity, SyncNeed,
-    SyncUpdate,
-    TCacheRead, TRandomAccess, TRead,
+    SyncUpdate, TCacheRead, TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
