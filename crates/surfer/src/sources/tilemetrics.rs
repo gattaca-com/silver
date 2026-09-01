@@ -11,7 +11,10 @@
 use std::collections::VecDeque;
 
 use flux::{
-    communication::queue::{ConsumerBare, Queue},
+    communication::{
+        ReadError,
+        queue::{ConsumerBare, Queue},
+    },
     tile::metrics::TileSample,
 };
 
@@ -72,7 +75,17 @@ impl TileMetricsSet {
     /// Drain everything currently available into the in-progress bucket.
     pub fn drain(&mut self) {
         let mut sample = TileSample::default();
-        while self.consumer.try_consume(&mut sample).is_ok() {
+        loop {
+            match self.consumer.try_consume(&mut sample) {
+                Ok(()) => {}
+                Err(ReadError::Empty) => break,
+                // Lapped: resnap to the head and keep draining — see
+                // `TimingChannel::drain`.
+                Err(ReadError::SpedPast) => {
+                    self.consumer.recover_after_error();
+                    continue;
+                }
+            }
             self.latest = sample;
             self.samples_seen += 1;
             self.cur.busy += sample.busy_ticks;
