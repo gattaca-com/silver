@@ -30,14 +30,26 @@ const START_W: usize = 9;
 /// Deadline margin, on block strips only.
 const MARGIN_W: usize = 9;
 
-/// Which subtree of a block a display row belongs to; `Enter` toggles the
-/// expandable ones.
+/// Which subtree of a block a display row belongs to; `Enter` on the group
+/// toggles it, `Enter` on a child collapses the group it is in.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Expand {
     Strip,
     Data,
-    Cols,
+    GossipCols,
+    RpcCols,
+    ElCols,
     Exec,
+}
+
+impl Expand {
+    fn cols(source: ColumnSource) -> Self {
+        match source {
+            ColumnSource::Gossip => Self::GossipCols,
+            ColumnSource::Rpc => Self::RpcCols,
+            ColumnSource::El => Self::ElCols,
+        }
+    }
 }
 
 /// One display row: a lane of the block's graph, or one column sidecar.
@@ -78,14 +90,20 @@ impl EventsPane {
             }
             out.push((root, Node::Lane(Lane::Data)));
             if open(Expand::Data) {
-                out.push((root, Node::Lane(Lane::Cols)));
-                if open(Expand::Cols) {
-                    let mut order: Vec<_> = (0..r.columns.len()).collect();
-                    order.sort_unstable_by_key(|&i| r.columns[i].recv);
-                    out.extend(order.into_iter().map(|i| (root, Node::Col(i))));
-                }
-                out.push((root, Node::Lane(Lane::Kzg)));
                 out.push((root, Node::Lane(Lane::Da)));
+                for source in [ColumnSource::Gossip, ColumnSource::El, ColumnSource::Rpc] {
+                    if r.columns.iter().all(|c| c.source != source) {
+                        continue;
+                    }
+                    out.push((root, Node::Lane(Lane::Cols(source))));
+                    if open(Expand::cols(source)) {
+                        let mut order: Vec<_> = (0..r.columns.len())
+                            .filter(|&i| r.columns[i].source == source)
+                            .collect();
+                        order.sort_unstable_by_key(|&i| r.columns[i].recv);
+                        out.extend(order.into_iter().map(|i| (root, Node::Col(i))));
+                    }
+                }
             }
             out.push((root, Node::Lane(Lane::Exec)));
             if open(Expand::Exec) {
@@ -111,19 +129,31 @@ impl EventsPane {
         let Some(&(root, node)) = self.list.selected().and_then(|i| display.get(i)) else {
             return;
         };
-        let expand = match node {
-            Node::Lane(Lane::Strip) => Expand::Strip,
-            Node::Lane(Lane::Data) => Expand::Data,
-            Node::Lane(Lane::Cols) => Expand::Cols,
-            Node::Lane(Lane::Exec) => Expand::Exec,
-            _ => return,
+        // A group toggles itself; a child collapses the group it is in, so a
+        // long column list folds without scrolling back to its header.
+        let (expand, follow) = match node {
+            Node::Lane(Lane::Strip) => (Expand::Strip, node),
+            Node::Lane(Lane::Data) => (Expand::Data, node),
+            Node::Lane(Lane::Cols(source)) => (Expand::cols(source), node),
+            Node::Lane(Lane::Exec) => (Expand::Exec, node),
+            Node::Lane(Lane::Da) => (Expand::Data, Node::Lane(Lane::Data)),
+            Node::Lane(Lane::Validate | Lane::Stf | Lane::El) => {
+                (Expand::Exec, Node::Lane(Lane::Exec))
+            }
+            Node::Col(i) => {
+                let source = self.row(root).map(|r| r.columns[i].source);
+                let Some(source) = source else {
+                    return;
+                };
+                (Expand::cols(source), Node::Lane(Lane::Cols(source)))
+            }
         };
         if !self.expanded.remove(&(root, expand)) {
             self.expanded.insert((root, expand));
         }
         // The toggle rewrites the display list; keep the highlight on the
-        // toggled node rather than whatever lands at the old index.
-        self.list.select(self.display().iter().position(|&e| e == (root, node)));
+        // toggled group rather than whatever lands at the old index.
+        self.list.select(self.display().iter().position(|&e| e == (root, follow)));
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
@@ -221,7 +251,7 @@ impl EventsPane {
             labels.push('\u{254c}');
         }
         let head = format!(
-            "{:<LABEL_W$} {:<TIME_W$} {:<START_W$} {}",
+            "{:<LABEL_W$} {:<TIME_W$} {:<START_W$} {} deadline",
             "slot/component", "time", "start", labels
         );
         Line::styled(head, Style::default().fg(Color::Cyan))
@@ -233,11 +263,17 @@ impl EventsPane {
             Node::Lane(lane) => (self.lane_label(r, lane), r.span(lane), lane_style(r, lane)),
             Node::Col(i) => {
                 let c = &r.columns[i];
-                let past_gate = r.da_available().is_some_and(|gate| c.recv > gate);
-                let style =
-                    Style::default().fg(if past_gate { Color::DarkGray } else { Color::White });
+                // The gate's own color on the column that opened it; custody
+                // traffic past the gate dimmed.
+                let color = if r.da_trigger() == Some(i) {
+                    Color::Magenta
+                } else if r.da_available().is_some_and(|gate| c.recv > gate) {
+                    Color::DarkGray
+                } else {
+                    Color::White
+                };
                 let span = Some((c.recv, c.validated.unwrap_or(c.recv)));
-                (format!("      col {} {}", c.index, source_label(c.source)), span, style)
+                (format!("        col {}", c.index), span, Style::default().fg(color))
             }
         };
 
@@ -269,8 +305,13 @@ impl EventsPane {
             format!("{label:<LABEL_W$} {time_text:<TIME_W$} {start_text:<START_W$} "),
             Style::default().fg(label_color),
         )];
-        spans.push(Span::styled(format!("{bar} {duration}{suffix}"), style));
+        // Pad the axis area to its full width so the deadline margin lands in
+        // its own right-hand column regardless of bar length.
+        let body = format!("{bar} {duration}{suffix}");
+        let pad = (axis.width + 1).saturating_sub(body.chars().count());
+        spans.push(Span::styled(body, style));
         if let Node::Lane(Lane::Strip) = node {
+            spans.push(Span::raw(" ".repeat(pad)));
             spans.push(margin_span(self.margin(r)));
         }
         Line::from(spans)
@@ -284,9 +325,10 @@ impl EventsPane {
                 format!("{} {} {}", arrow(Expand::Strip), r.slot, root_prefix(&r.block_root))
             }
             Lane::Data => format!("  {} data", arrow(Expand::Data)),
-            Lane::Cols => format!("    {} cols", arrow(Expand::Cols)),
-            Lane::Kzg => "      kzg".to_string(),
-            Lane::Da => "      da".to_string(),
+            Lane::Cols(source) => {
+                format!("    {} {} cols", arrow(Expand::cols(source)), source_label(source))
+            }
+            Lane::Da => "    da".to_string(),
             Lane::Exec => format!("  {} block", arrow(Expand::Exec)),
             Lane::Validate => "      validate".to_string(),
             Lane::Stf => "      stf".to_string(),
@@ -296,14 +338,17 @@ impl EventsPane {
 
     fn suffix(&self, r: &BlockRow, node: Node) -> String {
         match node {
-            Node::Lane(Lane::Cols) => match r.da_available() {
-                Some(gate) => format!(
-                    " {}/{}",
-                    r.columns.iter().filter(|c| c.recv <= gate).count(),
-                    r.columns.len()
-                ),
-                None => format!(" {}", r.columns.len()),
-            },
+            Node::Lane(Lane::Cols(source)) => {
+                let of_source = || r.columns.iter().filter(|c| c.source == source);
+                match r.da_available() {
+                    Some(gate) => format!(
+                        " {}/{}",
+                        of_source().filter(|c| c.recv <= gate).count(),
+                        of_source().count()
+                    ),
+                    None => format!(" {}", of_source().count()),
+                }
+            }
             Node::Lane(Lane::El) => {
                 r.verdict().map_or_else(String::new, |v| format!(" {}", status_label(v)))
             }
@@ -363,7 +408,7 @@ fn lane_style(r: &BlockRow, lane: Lane) -> Style {
     let color = match lane {
         Lane::Da => Color::Magenta,
         Lane::El => el_color(r.verdict()),
-        Lane::Kzg | Lane::Cols => Color::LightMagenta,
+        Lane::Cols(_) => Color::White,
         Lane::Stf | Lane::Validate => Color::LightBlue,
         _ => Color::White,
     };
@@ -382,7 +427,7 @@ fn margin_span(margin: Option<(Nanos, bool)>) -> Span<'static> {
         return Span::raw("");
     };
     let (sign, color) = if made_it { ('+', Color::Green) } else { ('-', Color::Red) };
-    Span::styled(format!("  {sign}{}", dur(delta)), Style::default().fg(color))
+    Span::styled(format!("{sign}{}", dur(delta)), Style::default().fg(color))
 }
 
 /// Spelled out next to the `el` duration: a syncing or accepted EL answers in a

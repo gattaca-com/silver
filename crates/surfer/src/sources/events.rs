@@ -37,14 +37,14 @@ pub struct BlockRow {
 }
 
 /// One lane of the block's dependency graph, as drawn by the waterfall: the
-/// whole strip, the data side (`Cols → Kzg → Da`) and the execution side
-/// (`Validate → Stf ‖ El`), joining at attestable.
+/// whole strip, the data side (per-source column processing feeding `Da`) and
+/// the execution side (`Validate → Stf ‖ El`), joining at attestable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
     Strip,
     Data,
-    Cols,
-    Kzg,
+    /// One source's columns: first arrival → last validation.
+    Cols(ColumnSource),
     Da,
     Exec,
     Validate,
@@ -108,14 +108,14 @@ impl BlockRow {
                 let start = cols_first.or(self.da_available)?;
                 let end = self
                     .da_available
-                    .or_else(|| self.span(Lane::Kzg).map(|(_, last)| last))
+                    .or_else(|| self.columns_span().map(|(_, last)| last))
                     .unwrap_or(start);
                 Some((start, end))
             }
-            Lane::Cols => Some((cols_first?, self.columns.iter().map(|c| c.recv).max()?)),
-            Lane::Kzg => {
-                let first = self.columns.iter().filter_map(|c| c.validated).min()?;
-                let last = self.columns.iter().filter_map(|c| c.validated).max()?;
+            Lane::Cols(source) => {
+                let of_source = || self.columns.iter().filter(|c| c.source == source);
+                let first = of_source().map(|c| c.recv).min()?;
+                let last = of_source().map(|c| c.validated.unwrap_or(c.recv)).max()?;
                 Some((first, last))
             }
             Lane::Da => self.da_available.map(|gate| (gate, gate)),
@@ -133,6 +133,25 @@ impl BlockRow {
             Lane::Stf => Some((self.el_sent?, self.applied?)),
             Lane::El => self.verdict.map(|(_, ts)| (self.el_sent.unwrap_or(ts), ts)),
         }
+    }
+
+    /// First arrival → last validation across all of the block's sidecars.
+    fn columns_span(&self) -> Option<(Nanos, Nanos)> {
+        let first = self.columns.iter().map(|c| c.recv).min()?;
+        let last = self.columns.iter().map(|c| c.validated.unwrap_or(c.recv)).max()?;
+        Some((first, last))
+    }
+
+    /// The column whose validation crossed the DA threshold — the event that
+    /// opened the gate, when gossip columns opened it.
+    pub fn da_trigger(&self) -> Option<usize> {
+        let gate = self.da_available?;
+        self.columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.validated.is_some_and(|v| v <= gate))
+            .max_by_key(|(_, c)| c.validated)
+            .map(|(i, _)| i)
     }
 
     /// When the block was applied, i.e. became attestable.
@@ -321,7 +340,7 @@ mod tests {
         assert_eq!(r.span(Lane::Stf), Some((at(2, 300), at(2, 460))));
         assert_eq!(r.span(Lane::El), Some((at(2, 300), at(2, 520))));
         assert_eq!(r.span(Lane::Da), Some((at(2, 350), at(2, 350))));
-        assert_eq!(r.span(Lane::Cols), None, "no sidecars observed");
+        assert_eq!(r.span(Lane::Cols(ColumnSource::Gossip)), None, "no sidecars observed");
         assert_eq!(r.applied_at(), Some(at(2, 460)));
         assert_eq!(r.verdict(), Some(PayloadValidationStatus::Valid));
     }
@@ -369,8 +388,12 @@ mod tests {
         assert_eq!(row.columns[0].recv, at(4, 200));
         assert_eq!(row.columns[0].validated, Some(at(4, 210)));
         assert_eq!(row.span(Lane::Strip).map(|(start, _)| start), Some(at(4, 300)));
-        assert_eq!(row.span(Lane::Cols), Some((at(4, 200), at(4, 200))));
-        assert_eq!(row.span(Lane::Kzg), Some((at(4, 210), at(4, 210))));
+        assert_eq!(
+            row.span(Lane::Cols(ColumnSource::Gossip)),
+            Some((at(4, 200), at(4, 210))),
+            "arrival → validation"
+        );
+        assert_eq!(row.span(Lane::Cols(ColumnSource::El)), None, "no EL-built sidecars");
     }
 
     /// A slotless event (an FCU for a root from before attach) has no
