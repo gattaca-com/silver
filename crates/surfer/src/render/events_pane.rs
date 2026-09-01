@@ -27,6 +27,9 @@ const LABEL_W: usize = 22;
 /// Wall clock of the row's start, for log correlation.
 const TIME_W: usize = 13;
 const START_W: usize = 9;
+/// Duration plus a short suffix (column counts, the EL verdict), in a fixed
+/// column so the numbers align instead of floating at each bar's end.
+const DURATION_W: usize = 16;
 /// Deadline margin, on block strips only.
 const MARGIN_W: usize = 9;
 
@@ -180,8 +183,8 @@ impl EventsPane {
             return;
         }
 
-        let axis_w =
-            (inner.width as usize).saturating_sub(LABEL_W + TIME_W + START_W + MARGIN_W + 4);
+        let axis_w = (inner.width as usize)
+            .saturating_sub(LABEL_W + TIME_W + START_W + DURATION_W + MARGIN_W + 5);
         let axis = Axis::fit(axis_w, self.data.attestation_deadline(), self.max_offset());
 
         let chunks = Layout::default()
@@ -251,8 +254,8 @@ impl EventsPane {
             labels.push('\u{254c}');
         }
         let head = format!(
-            "{:<LABEL_W$} {:<TIME_W$} {:<START_W$} {} deadline",
-            "slot/component", "time", "start", labels
+            "{:<LABEL_W$} {:<TIME_W$} {:<START_W$} {} {:<DURATION_W$} deadline",
+            "slot/component", "time", "start", labels, "duration"
         );
         Line::styled(head, Style::default().fg(Color::Cyan))
     }
@@ -305,13 +308,12 @@ impl EventsPane {
             format!("{label:<LABEL_W$} {time_text:<TIME_W$} {start_text:<START_W$} "),
             Style::default().fg(label_color),
         )];
-        // Pad the axis area to its full width so the deadline margin lands in
-        // its own right-hand column regardless of bar length.
-        let body = format!("{bar} {duration}{suffix}");
-        let pad = (axis.width + 1).saturating_sub(body.chars().count());
-        spans.push(Span::styled(body, style));
+        // The axis area holds bars only, padded to its exact width, so the
+        // duration and deadline columns align on every row.
+        let bar_pad = axis.width.saturating_sub(bar.chars().count());
+        spans.push(Span::styled(format!("{bar}{}", " ".repeat(bar_pad)), style));
+        spans.push(Span::styled(format!(" {:<DURATION_W$}", format!("{duration}{suffix}")), style));
         if let Node::Lane(Lane::Strip) = node {
-            spans.push(Span::raw(" ".repeat(pad)));
             spans.push(margin_span(self.margin(r)));
         }
         Line::from(spans)
@@ -338,6 +340,11 @@ impl EventsPane {
 
     fn suffix(&self, r: &BlockRow, node: Node) -> String {
         match node {
+            // The gate open with no sidecars ever seen: a block without
+            // blobs, whose DA is trivially satisfied — not a display hole.
+            Node::Lane(Lane::Data) if r.columns.is_empty() && r.da_available().is_some() => {
+                " 0 blobs".to_string()
+            }
             Node::Lane(Lane::Cols(source)) => {
                 let of_source = || r.columns.iter().filter(|c| c.source == source);
                 match r.da_available() {
