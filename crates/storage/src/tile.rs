@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fs::File, io::Read, path::PathBuf, sync::Arc};
+use std::{collections::VecDeque, fs::File, io::Read, path::PathBuf, sync::Arc, time::Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
@@ -321,7 +321,14 @@ impl Tile<SilverSpine> for StorageTile {
                     {
                         tracing::debug!("backfill data column sidecar over rpc");
                         let t_read = self.rpc_consumer.acquire(ssz);
-                        self.store.backfill_data_column(t_read);
+                        self.store.backfill_data_column(
+                            t_read,
+                            rsp.stream_id.peer(),
+                            Instant::now(),
+                            &mut |event| {
+                                producers.peer_events.produce(&event.into());
+                            },
+                        );
                     }
                     silver_common::RpcResponse::ExecutionPayloadEnvelope {
                         fork_digest: _,
