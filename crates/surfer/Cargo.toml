@@ -19,6 +19,7 @@ silver_metrics.workspace = true
 silver_control.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
+silver_stages.workspace = true
 silver_storage.workspace = true
 
 [lints]

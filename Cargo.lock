@@ -4747,6 +4747,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_stages"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "rustc-hash",
+ "silver_common",
+]
+
+[[package]]
 name = "silver_storage"
 version = "0.0.1"
 dependencies = [
@@ -4779,6 +4788,7 @@ dependencies = [
  "silver_metrics",
  "silver_network",
  "silver_peer",
+ "silver_stages",
  "silver_storage",
 ]
 
@@ -4794,11 +4804,11 @@ dependencies = [
  "hex",
  "humantime",
  "libc",
- "rustc-hash",
  "serde",
  "serde_json",
  "silver_common",
  "silver_config",
+ "silver_stages",
  "toml",
  "tracing",
  "ureq",

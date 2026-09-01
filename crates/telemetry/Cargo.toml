@@ -14,12 +14,12 @@ flux-profiler.workspace = true
 hex.workspace = true
 humantime.workspace = true
 libc.workspace = true
-rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
+silver_stages.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 

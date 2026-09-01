@@ -16,6 +16,7 @@ members = [
   "crates/network",
   "crates/peer",
   "crates/ssz",
+  "crates/stages",
   "crates/surfer",
   "crates/columns",
   "crates/telemetry",
@@ -74,6 +75,7 @@ silver_common = { path = "crates/common" }
 silver_config = { path = "crates/config" }
 silver_metrics = { path = "crates/metrics" }
 silver_ssz = { path = "crates/ssz" }
+silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }

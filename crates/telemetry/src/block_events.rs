@@ -1,26 +1,9 @@
-//! One ClickHouse row per stage observation: no joining at collection time,
+//! One ClickHouse row per stage event: no joining at collection time,
 //! every row carries the wall-clock event time and its offset into the slot
 //! (`time_into_slot_ms`, NULL while syncing/replaying, when the wall clock says
 //! nothing about the slot). Per-block timelines, dedup (repeat-head FCUs) and
-//! deadline checks are ClickHouse queries over the events, not collector logic.
-//!
-//! `BlockReceived` carries the slot, so the roots it names are kept for the
-//! FCU and verdict rows that follow; a block that arrived before attach
-//! records no slot and is left to the query's join.
-//!
-//! Stages, from the node's spine envelopes:
-//! - `received` — a root's first `BeaconStateEvent::BlockReceived`, at its
-//!   ingestion. The tile announces a block before parking it, so a wait on
-//!   columns or on a parent falls inside `received`→`applied`.
-//! - `el_sent` — `EngineReq::NewPayload` publish: CL validated, dispatched to
-//!   EL.
-//! - `applied` — `EngineReq::Fcu` publish: state transition + commit.
-//! - `el_verdict` — `EngineResp::NewPayload` publish, carries the verdict.
-//! - `column_recv` — a data-column sidecar's arrival, and `column_validated`
-//!   the moment it passed validation: two observations of one message, so the
-//!   gap between them is the columns tile's queue delay.
-//! - `da_available` — `DataColumnsEvent::Available`: the block's data exists
-//!   and its DA gate opens.
+//! deadline checks are ClickHouse queries over the events, not collector
+//! logic.
 //!
 //! The `block_events_xatu` view renames the one comparable stage onto
 //! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
@@ -32,12 +15,10 @@ use std::{
     thread,
 };
 
-use flux::{spine::SpineAdapter, timing::InternalMessage};
-use rustc_hash::FxHashMap;
-use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, EngineReq, EngineResp, Nanos, SilverSpine,
-};
+use flux::spine::SpineAdapter;
+use silver_common::SilverSpine;
 use silver_config::ChainConfig;
+use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
 use tracing::{info, warn};
 
 use crate::clickhouse::ChTable;
@@ -91,24 +72,36 @@ SELECT
 FROM block_events
 WHERE stage = 'received' AND time_into_slot_ms IS NOT NULL";
 
-/// Beyond this many slots past the slot start, the wall clock says nothing
-/// about the block's slot (replay/backfill); the second slot keeps genuinely
-/// late arrivals.
-const LIVE_ARRIVAL_SLOTS: u64 = 2;
-
-/// Past this many slots a root is dropped, and an FCU naming it records none.
-const TRACKED_SLOTS: u64 = 64;
-
 struct BlockEvents {
-    node: String,
-    network: String,
-    genesis: Nanos,
-    slot_dur: Nanos,
-    slots: FxHashMap<[u8; 32], u64>,
+    reader: StageReader,
+    formatter: RowFormatter,
     pending: Vec<String>,
 }
 
 impl BlockEvents {
+    fn new(formatter: RowFormatter) -> Self {
+        Self { reader: StageReader::default(), formatter, pending: Vec::new() }
+    }
+
+    fn consume(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        for event in self.reader.consume(adapter) {
+            self.pending.push(self.formatter.row(&event));
+        }
+    }
+
+    fn take_batch(&mut self) -> Option<String> {
+        (!self.pending.is_empty()).then(|| take(&mut self.pending).join("\n"))
+    }
+}
+
+/// The per-node constants joined onto every row.
+struct RowFormatter {
+    node: String,
+    network: String,
+    clock: SlotClock,
+}
+
+impl RowFormatter {
     /// Fills `node`, i.e. `meta_client_name`: rows from every machine land in
     /// one table.
     fn hostname() -> String {
@@ -120,142 +113,38 @@ impl BlockEvents {
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
-    fn new(node: String, network: String, genesis_unix_secs: u64, slot_ms: u64) -> Self {
-        Self {
-            node,
-            network,
-            genesis: Nanos::from_secs(genesis_unix_secs),
-            slot_dur: Nanos::from_millis(slot_ms.max(1)),
-            slots: FxHashMap::default(),
-            pending: Vec::new(),
-        }
-    }
-
-    fn consume(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        adapter.consume_internal_message(|m: &mut InternalMessage<BeaconStateEvent>, _| {
-            self.on_beacon_state(m);
-        });
-        adapter.consume_internal_message(|m: &mut InternalMessage<EngineReq>, _| {
-            self.on_engine_req(m);
-        });
-        adapter.consume_internal_message(|m: &mut InternalMessage<EngineResp>, _| {
-            self.on_engine_resp(m);
-        });
-        adapter.consume_internal_message(|m: &mut InternalMessage<DataColumnsEvent>, _| {
-            self.on_data_columns(m);
-        });
-    }
-
-    fn slot_start(&self, slot: u64) -> Nanos {
-        self.genesis + self.slot_dur * slot
-    }
-
-    fn offset_ms(&self, t: Nanos, slot: u64) -> Option<f64> {
-        let start = self.slot_start(slot);
-        let live = start..start + self.slot_dur * LIVE_ARRIVAL_SLOTS;
-        live.contains(&t).then(|| (t - start).0 as f64 / 1e6)
-    }
-
-    fn push(&mut self, stage: &str, slot: Option<u64>, root: [u8; 32], ts: Nanos, attrs: Attrs) {
-        self.pending.push(
-            serde_json::json!({
-                "event_date_time": ts.0,
-                "stage": stage,
-                "slot": slot,
-                "slot_start_date_time": slot.map(|s| self.slot_start(s).as_secs_u64()),
-                "time_into_slot_ms": slot.and_then(|s| self.offset_ms(ts, s)),
-                "block_root": format!("0x{}", hex::encode(root)),
-                "source": attrs.source,
-                "verdict": attrs.verdict,
-                "column_index": attrs.column_index,
-                "meta_client_name": self.node,
-                "meta_network_name": self.network,
-            })
-            .to_string(),
-        );
-    }
-
-    fn take_batch(&mut self) -> Option<String> {
-        (!self.pending.is_empty()).then(|| take(&mut self.pending).join("\n"))
-    }
-
-    /// A parked block is announced again from the replay that admits it, so
-    /// only the first announcement is its arrival.
-    fn on_beacon_state(&mut self, m: &InternalMessage<BeaconStateEvent>) {
-        let BeaconStateEvent::BlockReceived { slot, block_root, source, .. } = *m.data() else {
-            return;
+    fn row(&self, event: &StageEvent) -> String {
+        let (source, verdict, column_index) = match event.stage {
+            Stage::Received { source } | Stage::ElSent { source } => {
+                (Some(format!("{source:?}")), None, None)
+            }
+            Stage::ColumnRecv { index, source } | Stage::ColumnValidated { index, source } => {
+                (Some(format!("{source:?}")), None, Some(index))
+            }
+            Stage::ElVerdict { verdict } => (None, Some(format!("{verdict:?}")), None),
+            Stage::Applied | Stage::DaAvailable => (None, None, None),
         };
-        self.slots.retain(|_, tracked| slot.saturating_sub(*tracked) < TRACKED_SLOTS);
-        if self.slots.insert(block_root, slot).is_some() {
-            return;
-        }
-        let source = format!("{source:?}");
-        let attrs = Attrs { source: Some(&source), ..Attrs::default() };
-        let arrival = m.ingestion_time().real();
-        self.push("received", Some(slot), block_root, arrival, attrs);
-    }
-
-    fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
-        match *m.data() {
-            EngineReq::NewPayload(req) => {
-                let source = format!("{:?}", req.block_source);
-                let attrs = Attrs { source: Some(&source), ..Attrs::default() };
-                let el_sent = m.tracking_timestamp().publish_t();
-                self.push("el_sent", Some(req.slot), req.block_root, el_sent, attrs);
-            }
-            EngineReq::Fcu(req) => {
-                let slot = self.slots.get(&req.block_root).copied();
-                let ts = m.tracking_timestamp().publish_t();
-                self.push("applied", slot, req.block_root, ts, Attrs::default());
-            }
-            _ => {}
-        }
-    }
-
-    /// Both observations come off the envelope: ingestion is the sidecar's
-    /// arrival on the wire, publish the moment it passed validation.
-    fn on_data_columns(&mut self, m: &InternalMessage<DataColumnsEvent>) {
-        match *m.data() {
-            DataColumnsEvent::Persist { block_root, column_index, slot, source, .. } => {
-                let source = format!("{source:?}");
-                let attrs = Attrs {
-                    source: Some(&source),
-                    column_index: Some(column_index),
-                    ..Attrs::default()
-                };
-                let slot = Some(slot);
-                let arrival = m.ingestion_time().real();
-                self.push("column_recv", slot, block_root, arrival, attrs);
-                let validated = m.tracking_timestamp().publish_t();
-                self.push("column_validated", slot, block_root, validated, attrs);
-            }
-            DataColumnsEvent::Available { block_root, slot } => {
-                let ts = m.tracking_timestamp().publish_t();
-                self.push("da_available", Some(slot), block_root, ts, Attrs::default());
-            }
-        }
-    }
-
-    fn on_engine_resp(&mut self, m: &InternalMessage<EngineResp>) {
-        let EngineResp::NewPayload(resp) = *m.data() else {
-            return;
-        };
-        let verdict = format!("{:?}", resp.status);
-        let attrs = Attrs { verdict: Some(&verdict), ..Attrs::default() };
-        let slot = self.slots.get(&resp.block_root).copied();
-        let ts = m.tracking_timestamp().publish_t();
-        self.push("el_verdict", slot, resp.block_root, ts, attrs);
+        serde_json::json!({
+            "event_date_time": event.ts.0,
+            "stage": event.stage.name(),
+            "slot": event.slot,
+            "slot_start_date_time": event.slot.map(|s| self.clock.slot_start(s).as_secs_u64()),
+            "time_into_slot_ms": event
+                .slot
+                .and_then(|s| self.clock.offset_in_slot(event.ts, s))
+                .map(|d| d.0 as f64 / 1e6),
+            "block_root": format!("0x{}", hex::encode(event.block_root)),
+            "source": source,
+            "verdict": verdict,
+            "column_index": column_index,
+            "meta_client_name": self.node,
+            "meta_network_name": self.network,
+        })
+        .to_string()
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct Attrs<'a> {
-    source: Option<&'a str>,
-    verdict: Option<&'a str>,
-    column_index: Option<u64>,
-}
-
-/// Turns the spine's stage envelopes into ClickHouse inserts. The HTTP leg
+/// Turns the spine stage events into ClickHouse inserts. The HTTP leg
 /// runs on its own thread: the collector's thread also drains the profiler
 /// rings, and it must not stall behind an unreachable ClickHouse.
 pub struct BlockEventsInserter {
@@ -266,9 +155,11 @@ pub struct BlockEventsInserter {
 impl BlockEventsInserter {
     pub fn open(clickhouse_url: &str, chain: &ChainConfig) -> Self {
         let slot_ms = chain.slot_duration().as_millis() as u64;
-        let node = BlockEvents::hostname();
-        let network = chain.spec.network_name();
-        let events = BlockEvents::new(node, network, chain.genesis_unix_secs, slot_ms);
+        let events = BlockEvents::new(RowFormatter {
+            node: RowFormatter::hostname(),
+            network: chain.spec.network_name(),
+            clock: SlotClock::new(chain.genesis_unix_secs, slot_ms),
+        });
         let (batches, rx) = sync_channel::<String>(256);
         let mut table = ChTable::new(clickhouse_url, TABLE, DDL);
         // TODO: the only reason the daemon runs a second thread. `ureq` blocks
@@ -280,8 +171,8 @@ impl BlockEventsInserter {
             }
         });
         info!(
-            node = events.node,
-            network = events.network,
+            node = events.formatter.node,
+            network = events.formatter.network,
             url = clickhouse_url,
             "block-events inserter open"
         );
@@ -303,228 +194,71 @@ impl BlockEventsInserter {
 
 #[cfg(test)]
 mod tests {
-    use flux::timing::{IngestionTime, Instant, PublishDelta, TrackingTimestamp};
-    use silver_common::{
-        BlockSource, BlockStage, ColumnSource, EngineFcuReq, EngineNewPayloadReq,
-        EngineNewPayloadResp, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
-    };
+    use silver_common::{BlockSource, ColumnSource, Nanos, PayloadValidationStatus};
 
     use super::*;
 
     const GENESIS_SECS: u64 = 1_000;
     const SLOT_MS: u64 = 12_000;
-    /// Internal-clock ticks between ingestion and publish. Ticks are TSC, so
-    /// the nanoseconds they become are calibration-dependent — assert ordering
-    /// against the ingestion time, not an exact value.
-    const PUBLISH_TICKS: u64 = 10_000_000;
 
     fn at(slot: u64, ms_into_slot: u64) -> Nanos {
         Nanos::from_secs(GENESIS_SECS) + Nanos::from_millis(slot * SLOT_MS + ms_into_slot)
     }
 
-    fn msg<T>(data: T, ingestion: Nanos) -> InternalMessage<T> {
-        let ts = TrackingTimestamp {
-            ingestion_t: IngestionTime::new(ingestion, Instant(0)),
-            publish_delta: PublishDelta::new(0)
-                .from_ingestion_and_publish_t(Instant(0), Instant(PUBLISH_TICKS)),
+    fn event(stage: Stage, ts: Nanos, slot: Option<u64>) -> StageEvent {
+        StageEvent { stage, ts, block_root: [1u8; 32], slot }
+    }
+
+    fn json(event: &StageEvent) -> serde_json::Value {
+        let formatter = RowFormatter {
+            node: "test-node".into(),
+            network: "test-net".into(),
+            clock: SlotClock::new(GENESIS_SECS, SLOT_MS),
         };
-        InternalMessage::new(ts, data)
-    }
-
-    fn unread_payload() -> TCacheRead {
-        let mut producer = TCache::producer("telemetry_events_test", 1 << 12);
-        let mut r = producer.reserve(1, true).expect("tcache reserve");
-        r.increment_offset(1);
-        r.read()
-    }
-
-    fn new_payload(root: [u8; 32], slot: u64, block_source: BlockSource) -> EngineReq {
-        EngineReq::NewPayload(EngineNewPayloadReq {
-            data: unread_payload(),
-            block_root: root,
-            slot,
-            block_source,
-        })
-    }
-
-    fn persist(root: [u8; 32], slot: u64, column_index: u64) -> DataColumnsEvent {
-        DataColumnsEvent::Persist {
-            ssz: unread_payload(),
-            source: ColumnSource::Gossip,
-            block_root: root,
-            column_index,
-            slot,
-        }
-    }
-
-    fn fcu(root: [u8; 32]) -> EngineReq {
-        EngineReq::Fcu(EngineFcuReq {
-            block_root: root,
-            head_block_hash: [0; 32],
-            safe_block_hash: [0; 32],
-            finalized_block_hash: [0; 32],
-        })
-    }
-
-    fn verdict(root: [u8; 32], status: PayloadValidationStatus) -> EngineResp {
-        EngineResp::NewPayload(EngineNewPayloadResp {
-            block_root: root,
-            status,
-            latest_valid_hash: [0; 32],
-        })
-    }
-
-    fn block_received(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {
-        BeaconStateEvent::BlockReceived {
-            slot,
-            block_root: root,
-            stage: BlockStage::AwaitParent,
-            source,
-            parent_slot: None,
-        }
-    }
-
-    fn events() -> BlockEvents {
-        BlockEvents::new("test-node".into(), "test-net".into(), GENESIS_SECS, SLOT_MS)
-    }
-
-    fn root_hex(root: [u8; 32]) -> String {
-        format!("0x{}", hex::encode(root))
-    }
-
-    fn json_rows(events: &mut BlockEvents) -> Vec<serde_json::Value> {
-        let batch = events.take_batch().expect("rows pending");
-        batch.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
-    }
-
-    fn row<'a>(rows: &'a [serde_json::Value], stage: &str) -> &'a serde_json::Value {
-        rows.iter().find(|r| r["stage"] == stage).unwrap_or_else(|| panic!("no {stage} row"))
-    }
-
-    fn stages(rows: &[serde_json::Value]) -> Vec<&str> {
-        let mut stages: Vec<_> = rows.iter().map(|r| r["stage"].as_str().unwrap()).collect();
-        stages.sort_unstable();
-        stages
+        serde_json::from_str(&formatter.row(event)).unwrap()
     }
 
     #[test]
-    fn stages_become_rows() {
-        let mut ev = events();
-        let root = [1u8; 32];
-
-        ev.on_beacon_state(&msg(block_received(root, 2, BlockSource::Gossip), at(2, 300)));
-        ev.on_engine_req(&msg(new_payload(root, 2, BlockSource::Gossip), at(2, 300)));
-        ev.on_engine_req(&msg(fcu(root), at(2, 460)));
-        ev.on_engine_resp(&msg(verdict(root, PayloadValidationStatus::Valid), at(2, 520)));
-
-        let rows = json_rows(&mut ev);
-        assert_eq!(stages(&rows), ["applied", "el_sent", "el_verdict", "received"]);
-        assert!(rows.iter().all(|r| r["block_root"] == root_hex(root)));
-        assert!(rows.iter().all(|r| r["meta_network_name"] == "test-net"));
-
-        let received = row(&rows, "received");
-        assert_eq!(received["slot"], 2);
-        assert_eq!(received["source"], "Gossip");
-        assert_eq!(received["time_into_slot_ms"], 300.0);
-        assert_eq!(received["slot_start_date_time"], at(2, 0).as_secs_u64());
-        assert_eq!(received["event_date_time"], at(2, 300).0, "arrival is the ingestion clock");
-
-        // The remaining stages are publish observations of their message, so
-        // each lands after the ingestion time it was built from.
-        let after = |stage, ingested: Nanos| {
-            let t = row(&rows, stage)["event_date_time"].as_u64().unwrap();
-            assert!(t > ingested.0, "{stage} at {t} must follow its ingestion {}", ingested.0);
-        };
-        after("el_sent", at(2, 300));
-        after("applied", at(2, 460));
-        after("el_verdict", at(2, 520));
-
-        assert_eq!(row(&rows, "applied")["slot"], 2);
-        assert_eq!(row(&rows, "el_verdict")["slot"], 2);
-        assert!(row(&rows, "applied")["time_into_slot_ms"].as_f64().unwrap() > 300.0);
-        assert_eq!(row(&rows, "el_verdict")["verdict"], "Valid");
+    fn event_becomes_a_row() {
+        let received = Stage::Received { source: BlockSource::Gossip };
+        let r = json(&event(received, at(2, 300), Some(2)));
+        assert_eq!(r["stage"], "received");
+        assert_eq!(r["slot"], 2);
+        assert_eq!(r["source"], "Gossip");
+        assert_eq!(r["time_into_slot_ms"], 300.0);
+        assert_eq!(r["slot_start_date_time"], at(2, 0).as_secs_u64());
+        assert_eq!(r["event_date_time"], at(2, 300).0);
+        assert_eq!(r["block_root"], format!("0x{}", hex::encode([1u8; 32])));
+        assert_eq!(r["meta_client_name"], "test-node");
+        assert_eq!(r["meta_network_name"], "test-net");
     }
 
-    /// A sidecar is two observations of one message, like a block's
-    /// `received`/`el_sent`, so the columns tile's queue delay is a stage
-    /// delta.
     #[test]
-    fn sidecars_record_arrival_then_validation() {
-        let mut ev = events();
-        let root = [7u8; 32];
+    fn optional_attributes_fill_their_columns() {
+        let column = Stage::ColumnRecv { index: 48, source: ColumnSource::El };
+        let r = json(&event(column, at(3, 1_400), Some(3)));
+        assert_eq!(r["stage"], "column_recv");
+        assert_eq!(r["source"], "El");
+        assert_eq!(r["column_index"], 48);
 
-        ev.on_data_columns(&msg(persist(root, 3, 48), at(3, 1_400)));
-        ev.on_data_columns(&msg(
-            DataColumnsEvent::Available { block_root: root, slot: 3 },
-            at(3, 1_500),
-        ));
-
-        let rows = json_rows(&mut ev);
-        assert_eq!(stages(&rows), ["column_recv", "column_validated", "da_available"]);
-        assert!(rows.iter().all(|r| r["block_root"] == root_hex(root)));
-
-        let recv = row(&rows, "column_recv");
-        assert_eq!(recv["slot"], 3);
-        assert_eq!(recv["column_index"], 48);
-        assert_eq!(recv["source"], "Gossip");
-        assert_eq!(recv["event_date_time"], at(3, 1_400).0, "arrival is the ingestion clock");
-
-        let validated = row(&rows, "column_validated");
-        assert_eq!(validated["column_index"], 48);
-        assert!(
-            validated["event_date_time"].as_u64().unwrap() > at(3, 1_400).0,
-            "validation follows arrival"
-        );
-        assert!(row(&rows, "da_available")["column_index"].is_null(), "no column of its own");
+        let verdict = Stage::ElVerdict { verdict: PayloadValidationStatus::Valid };
+        let r = json(&event(verdict, at(3, 1_500), None));
+        assert_eq!(r["verdict"], "Valid");
+        assert_eq!(r["slot"], serde_json::Value::Null);
+        assert_eq!(r["slot_start_date_time"], serde_json::Value::Null);
     }
 
     /// Replay/backfill arrivals record every stage but no slot offset — the
     /// wall clock says nothing about the slot, yet stage deltas (sync stf
     /// throughput) stay derivable from `event_date_time`.
     #[test]
-    fn syncing_blocks_have_no_offset() {
-        let mut ev = events();
-        let root = [2u8; 32];
-
-        ev.on_beacon_state(&msg(block_received(root, 7, BlockSource::Rpc), at(900, 4_000)));
-        ev.on_engine_req(&msg(new_payload(root, 7, BlockSource::Rpc), at(900, 4_000)));
-
-        let rows = json_rows(&mut ev);
-        let null = serde_json::Value::Null;
-        assert!(rows.iter().all(|r| r["time_into_slot_ms"] == null), "no slot offset");
-        assert_eq!(row(&rows, "received")["event_date_time"], at(900, 4_000).0);
-        assert_eq!(row(&rows, "received")["slot"], 7);
+    fn syncing_rows_have_no_offset() {
+        let received = Stage::Received { source: BlockSource::Rpc };
+        let r = json(&event(received, at(900, 4_000), Some(7)));
+        assert_eq!(r["time_into_slot_ms"], serde_json::Value::Null);
+        assert_eq!(r["event_date_time"], at(900, 4_000).0);
         // The slot is known, so its start is too — only the offset between the
         // two is meaningless here.
-        assert_eq!(row(&rows, "received")["slot_start_date_time"], at(7, 0).as_secs_u64());
-    }
-
-    /// The replay that admits a parked block announces it again, at that
-    /// replay's clock.
-    #[test]
-    fn replayed_announcement_does_not_restamp_the_arrival() {
-        let mut ev = events();
-        let root = [3u8; 32];
-
-        ev.on_beacon_state(&msg(block_received(root, 5, BlockSource::Gossip), at(5, 400)));
-        ev.on_beacon_state(&msg(block_received(root, 5, BlockSource::Gossip), at(5, 3_100)));
-
-        let rows = json_rows(&mut ev);
-        assert_eq!(stages(&rows), ["received"], "one arrival per root");
-        assert_eq!(row(&rows, "received")["event_date_time"], at(5, 400).0);
-    }
-
-    /// FCUs for roots whose NewPayload predates attach are still recorded —
-    /// the query resolves what it can and leaves the rest unjoined.
-    #[test]
-    fn unmatched_fcu_is_recorded() {
-        let mut ev = events();
-        ev.on_engine_req(&msg(fcu([9u8; 32]), at(2, 460)));
-
-        let rows = json_rows(&mut ev);
-        assert_eq!(stages(&rows), ["applied"]);
-        assert_eq!(row(&rows, "applied")["block_root"], root_hex([9u8; 32]));
-        assert_eq!(row(&rows, "applied")["slot"], serde_json::Value::Null);
-        assert_eq!(row(&rows, "applied")["slot_start_date_time"], serde_json::Value::Null);
+        assert_eq!(r["slot_start_date_time"], at(7, 0).as_secs_u64());
     }
 }

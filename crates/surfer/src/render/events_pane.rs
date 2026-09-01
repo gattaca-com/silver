@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{iter::repeat_n, path::Path};
 
 use ratatui::{
     Frame,
@@ -10,13 +10,13 @@ use ratatui::{
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{BlockSource, Nanos, PayloadValidationStatus};
 
-use crate::sources::events::Events;
+use crate::sources::events::{BlockRow, Events};
 
 /// Descriptive title suffix. `stf` and `el` share one cell (stacked) because
 /// they run concurrently — both start at EL-sent, so `total` is not their sum.
-const HINT: &str = "recv into slot, per-step Δ (stf ‖ el)";
+const HINT: &str = "recv into slot, per-step Δ (stf ‖ el), Enter expands columns";
 
-const COLS: [&str; 9] = [
+const COLS: [&str; 10] = [
     "slot",
     "block root",
     "src",
@@ -24,15 +24,17 @@ const COLS: [&str; 9] = [
     "into slot",
     "validate",
     "stf ‖ el",
+    "da",
     "total",
     "attestation deadline",
 ];
 
 /// The Events tab: a spine data source plus its own scroll/selection state.
-/// `App` holds one of these and only calls `sample`/`move_selection`/`draw`.
 pub struct EventsPane {
     data: Events,
     table: TableState,
+    /// Block whose per-column rows are unfolded beneath it.
+    expanded: Option<[u8; 32]>,
 }
 
 impl EventsPane {
@@ -40,6 +42,7 @@ impl EventsPane {
         Self {
             data: Events::open(base_dir, genesis_unix_secs, slot_ms),
             table: TableState::default(),
+            expanded: None,
         }
     }
 
@@ -47,8 +50,21 @@ impl EventsPane {
         self.data.sample();
     }
 
+    /// The block each display row belongs to, newest block first: one row per
+    /// block, plus one per column of the expanded one.
+    fn display_roots(&self) -> Vec<[u8; 32]> {
+        let mut roots = Vec::new();
+        for r in self.data.rows().iter().rev() {
+            roots.push(r.block_root);
+            if self.expanded == Some(r.block_root) {
+                roots.extend(repeat_n(r.block_root, r.columns.len()));
+            }
+        }
+        roots
+    }
+
     pub fn move_selection(&mut self, dir: i32) {
-        let n = self.data.rows().len() as i32;
+        let n = self.display_roots().len() as i32;
         if n == 0 {
             return;
         }
@@ -56,10 +72,24 @@ impl EventsPane {
         self.table.select(Some((cur + dir).rem_euclid(n) as usize));
     }
 
+    pub fn toggle_expand(&mut self) {
+        let roots = self.display_roots();
+        let Some(&root) = self.table.selected().and_then(|i| roots.get(i)) else {
+            return;
+        };
+        self.expanded = (self.expanded != Some(root)).then_some(root);
+        // The toggle rewrites the display list; keep the highlight on the
+        // toggled block rather than whatever lands at the old index.
+        self.table.select(self.display_roots().iter().position(|&r| r == root));
+    }
+
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
         let rows = self.data.rows();
+        let display_rows = self.display_roots().len();
         let title = match self.table.selected() {
-            Some(i) if !rows.is_empty() => format!(" events {}/{} — {HINT} ", i + 1, rows.len()),
+            Some(i) if !rows.is_empty() => {
+                format!(" events {}/{} — {HINT} ", i + 1, display_rows)
+            }
             _ => format!(" events — {HINT} "),
         };
         let block =
@@ -78,53 +108,51 @@ impl EventsPane {
 
         // Build the styled cell content first so column widths can be sized to
         // the widest cell (like the builder's DataTable), newest row first.
+        // Block rows are two lines tall; expanded column subrows one.
         let deadline = self.data.attestation_deadline();
-        let grid: Vec<Vec<Text>> = rows
-            .iter()
-            .rev()
-            .map(|r| {
-                let t = r.timeline();
-                vec![
-                    slot_text(r.slot),
-                    Text::raw(root_prefix(&r.block_root)),
-                    Text::raw(match r.source {
-                        BlockSource::Gossip => "gossip",
-                        BlockSource::Rpc => "rpc",
-                    }),
-                    Text::raw(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
-                    Text::raw(t.received.map_or_else(|| "-".to_string(), dur)),
-                    Text::raw(t.validate.map_or_else(|| "-".to_string(), dur)),
-                    // stf and el stacked, coloured differently, so it reads as
-                    // "these two run in parallel".
-                    Text::from(vec![
-                        stage_line("stf", t.stf, None, Color::LightBlue),
-                        stage_line("el", t.el, t.verdict.map(status_label), el_color(t.verdict)),
-                    ]),
-                    Text::raw(dur(t.total)),
-                    // Applied into-slot = arrival + validate + stf; that's when
-                    // the head is importable, i.e. when we could attest.
-                    margin_text(
-                        t.received
-                            .zip(t.validate)
-                            .zip(t.stf)
-                            .map(|((recv, validate), stf)| recv + validate + stf),
-                        deadline,
-                    ),
-                ]
-            })
-            .collect();
+        let mut grid: Vec<(Vec<Text>, u16)> = Vec::new();
+        for r in rows.iter().rev() {
+            grid.push((self.block_cells(r, deadline), 2));
+            if self.expanded == Some(r.block_root) {
+                let mut columns: Vec<_> = r.columns.iter().collect();
+                columns.sort_unstable_by_key(|c| c.recv);
+                for c in columns {
+                    let recv_offset = self.data.clock().offset_in_slot(c.recv, r.slot);
+                    let cells = vec![
+                        Text::raw(""),
+                        Text::styled(
+                            format!("└ col {}", c.index),
+                            Style::default().fg(Color::Magenta),
+                        ),
+                        Text::raw(""),
+                        Text::raw(c.recv.with_fmt_utc("%H:%M:%S%.3f")),
+                        Text::raw(recv_offset.map_or_else(|| "-".to_string(), dur)),
+                        Text::raw(
+                            c.validated
+                                .map_or_else(|| "-".to_string(), |v| dur(v.saturating_sub(c.recv))),
+                        ),
+                        Text::raw(""),
+                        Text::raw(""),
+                        Text::raw(""),
+                        Text::raw(""),
+                    ];
+                    grid.push((cells, 1));
+                }
+            }
+        }
 
         let col_widths: Vec<u16> = (0..COLS.len())
             .map(|c| {
-                let widest = grid.iter().map(|row| row[c].width()).max().unwrap_or(0);
+                let widest = grid.iter().map(|(row, _)| row[c].width()).max().unwrap_or(0);
                 Text::raw(COLS[c]).width().max(widest) as u16
             })
             .collect();
 
         let header = Row::new(with_separators(COLS.iter().map(|s| Cell::from(*s)).collect(), 1))
             .style(Style::default().fg(Color::Cyan));
-        let body = grid.into_iter().map(|row| {
-            Row::new(with_separators(row.into_iter().map(Cell::from).collect(), 2)).height(2)
+        let body = grid.into_iter().map(|(row, height)| {
+            let cells = with_separators(row.into_iter().map(Cell::from).collect(), height as usize);
+            Row::new(cells).height(height)
         });
 
         let table = Table::new(body, interleave_widths(&col_widths))
@@ -135,10 +163,55 @@ impl EventsPane {
             .highlight_symbol("▶ ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
+
+    fn block_cells(&self, r: &BlockRow, deadline: Nanos) -> Vec<Text<'static>> {
+        let t = r.timeline();
+        vec![
+            slot_text(r.slot),
+            Text::raw(root_prefix(&r.block_root)),
+            Text::raw(match r.source {
+                Some(BlockSource::Gossip) => "gossip",
+                Some(BlockSource::Rpc) => "rpc",
+                None => "-",
+            }),
+            Text::raw(
+                t.received_at.map_or_else(|| "-".to_string(), |at| at.with_fmt_utc("%H:%M:%S%.3f")),
+            ),
+            Text::raw(t.received.map_or_else(|| "-".to_string(), dur)),
+            Text::raw(t.validate.map_or_else(|| "-".to_string(), dur)),
+            // stf and el stacked, coloured differently, so it reads as
+            // "these two run in parallel".
+            Text::from(vec![
+                stage_line("stf", t.stf, None, Color::LightBlue),
+                stage_line("el", t.el, t.verdict.map(status_label), el_color(t.verdict)),
+            ]),
+            // The DA gate: arrival → data available, with the column count.
+            Text::from(vec![
+                Line::styled(
+                    t.da.map_or_else(|| "-".to_string(), dur),
+                    Style::default().fg(if t.da.is_some() { Color::Magenta } else { Color::Gray }),
+                ),
+                Line::styled(
+                    format!("{} cols", r.columns.len()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            Text::raw(t.total.map_or_else(|| "-".to_string(), dur)),
+            // Applied into-slot = arrival + validate + stf; that's when
+            // the head is importable, i.e. when we could attest.
+            margin_text(
+                t.received
+                    .zip(t.validate)
+                    .zip(t.stf)
+                    .map(|((recv, validate), stf)| recv + validate + stf),
+                deadline,
+            ),
+        ]
+    }
 }
 
 /// Interleave a dim, `lines`-tall `│` divider between adjacent cells so the
-/// rules span the full height of two-line rows.
+/// rules span the full height of multi-line rows.
 fn with_separators(cells: Vec<Cell<'static>>, lines: usize) -> Vec<Cell<'static>> {
     let mut out = Vec::with_capacity(cells.len() * 2 - 1);
     for (i, cell) in cells.into_iter().enumerate() {

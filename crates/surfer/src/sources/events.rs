@@ -1,58 +1,48 @@
 //! Per-block pipeline timeline, read from the node's own spine queues. Surfer
 //! joins the spine as a broadcast consumer (its own cursor; the tiles are
-//! untouched) and derives each stage's wall time from the `InternalMessage`
-//! envelope: `ingestion_t` is copied verbatim as a block flows tile→tile, and
-//! `publish_delta` records how long after ingestion each stage published.
-//!
-//! Three queues carry everything, keyed by block root:
-//! - `BeaconStateEvent::BlockReceived` — opens the row at its ingestion, the
-//!   block's arrival. The tile announces a block before parking it, so a wait
-//!   on columns or on a parent falls inside `validate`. A block that arrived
-//!   before surfer attached has no row.
-//! - `EngineReq::NewPayload` — publish time = CL validated + dispatched to the
-//!   EL (el sent).
-//! - `EngineReq::Fcu` — the one right after STF commit (applied).
-//! - `EngineResp::NewPayload` — the EL verdict (el verified).
-//!
-//! `EventsTile` is pure logic (no flux) so it stays trivially testable;
-//! `Events` is the thin flux shell holding the spine adapter.
+//! untouched); stage decoding lives in [`StageReader`], and this module only
+//! folds the events into per-block rows.
 
-use std::{collections::VecDeque, path::Path};
+use std::{collections::VecDeque, ops::Deref, path::Path};
 
-use flux::{spine::SpineAdapter, tile::Tile, timing::InternalMessage};
-use silver_common::{
-    BeaconStateEvent, BlockSource, EngineReq, EngineResp, Nanos, PayloadValidationStatus,
-    SilverSpine,
-};
+use flux::{spine::SpineAdapter, tile::Tile};
+use silver_common::{BlockSource, Nanos, PayloadValidationStatus, SilverSpine};
+use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
 
 pub const MAINNET_GENESIS_UNIX_SECS: u64 = 1_606_824_023;
 pub const MAINNET_SLOT_MS: u64 = 12_000;
 
 const ROWS_CAP: usize = 64;
 
-/// Replay and backfill ingest historical blocks at the current wall clock, so
-/// beyond this much slack the arrival says nothing about the block's slot. The
-/// second slot keeps genuinely late arrivals.
-const LIVE_ARRIVAL_SLOTS: u64 = 2;
+pub struct ColumnRow {
+    pub index: u64,
+    pub recv: Nanos,
+    pub validated: Option<Nanos>,
+}
 
 pub struct BlockRow {
     pub slot: u64,
     pub block_root: [u8; 32],
-    pub source: BlockSource,
+    /// `None` until the block itself arrives — its columns may come first.
+    pub source: Option<BlockSource>,
     /// Absolute arrival, for correlating with logs and as the delta baseline.
-    received_at: Nanos,
+    received_at: Option<Nanos>,
     /// Arrival offset into the block's own slot.
     received: Option<Nanos>,
     el_sent: Option<Nanos>,
     applied: Option<Nanos>,
     verdict: Option<(PayloadValidationStatus, Nanos)>,
+    da_available: Option<Nanos>,
+    /// One entry per data-column sidecar, in arrival order.
+    pub columns: Vec<ColumnRow>,
 }
 
 /// `stf` and `el` both begin at EL-sent and run concurrently, so they overlap
 /// rather than sum into `total`.
 pub struct Timeline {
-    /// Absolute wall-clock arrival (unix epoch).
-    pub received_at: Nanos,
+    /// Absolute wall-clock arrival (unix epoch); `None` when only the block's
+    /// columns have been seen so far.
+    pub received_at: Option<Nanos>,
     /// Slot start → block arrival; `None` once the arrival clock no longer
     /// belongs to the block's slot.
     pub received: Option<Nanos>,
@@ -63,124 +53,133 @@ pub struct Timeline {
     pub stf: Option<Nanos>,
     /// EL-sent → verdict: `newPayload` round-trip (concurrent with stf).
     pub el: Option<Nanos>,
+    /// arrival → DA gate open.
+    pub da: Option<Nanos>,
     pub verdict: Option<PayloadValidationStatus>,
     /// arrival → last observed event.
-    pub total: Nanos,
+    pub total: Option<Nanos>,
 }
 
 impl BlockRow {
+    fn new(slot: u64, block_root: [u8; 32]) -> Self {
+        Self {
+            slot,
+            block_root,
+            source: None,
+            received_at: None,
+            received: None,
+            el_sent: None,
+            applied: None,
+            verdict: None,
+            da_available: None,
+            columns: Vec::new(),
+        }
+    }
+
     pub fn timeline(&self) -> Timeline {
         let last = self
             .applied
             .into_iter()
             .chain(self.verdict.map(|(_, ts)| ts))
             .chain(self.el_sent)
-            .max()
-            .unwrap_or(self.received_at);
+            .chain(self.da_available)
+            .max();
+        let since_arrival =
+            |ts: Option<Nanos>| ts.zip(self.received_at).map(|(ts, at)| ts.saturating_sub(at));
         Timeline {
             received_at: self.received_at,
             received: self.received,
-            validate: self.el_sent.map(|ts| ts.saturating_sub(self.received_at)),
+            validate: since_arrival(self.el_sent),
             stf: self.applied.zip(self.el_sent).map(|(ts, sent)| ts.saturating_sub(sent)),
             el: self.verdict.zip(self.el_sent).map(|((_, ts), sent)| ts.saturating_sub(sent)),
+            da: since_arrival(self.da_available),
             verdict: self.verdict.map(|(status, _)| status),
-            total: last.saturating_sub(self.received_at),
+            total: since_arrival(last),
         }
     }
 }
 
-pub struct EventsTile {
-    genesis: Nanos,
-    slot_dur: Nanos,
-    /// Joined per-block rows, newest at the back.
-    rows: VecDeque<BlockRow>,
+/// Joined per-block rows, newest at the back.
+pub struct BlockRows(VecDeque<BlockRow>);
+
+impl Deref for BlockRows {
+    type Target = VecDeque<BlockRow>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-impl EventsTile {
-    fn new(genesis_unix_secs: u64, slot_ms: u64) -> Self {
-        Self {
-            genesis: Nanos(genesis_unix_secs * 1_000_000_000),
-            slot_dur: Nanos(slot_ms.max(1) * 1_000_000),
-            rows: VecDeque::with_capacity(ROWS_CAP),
-        }
-    }
-
-    /// A parked block is announced again from the replay that admits it, so
-    /// only the first announcement is its arrival.
-    fn on_beacon_state(&mut self, m: &InternalMessage<BeaconStateEvent>) {
-        let BeaconStateEvent::BlockReceived { slot, block_root, source, .. } = *m.data() else {
-            return;
+impl BlockRows {
+    fn fold(&mut self, clock: &SlotClock, event: StageEvent) {
+        let row = match self.0.iter_mut().rev().find(|r| r.block_root == event.block_root) {
+            Some(row) => row,
+            // An announcement always opens the block's row; other events
+            // only while live, so early columns land but backfill's
+            // historical-slot events cannot churn the pane.
+            None => {
+                let Some(slot) = event.slot else {
+                    return;
+                };
+                let live = matches!(event.stage, Stage::Received { .. }) ||
+                    clock.offset_in_slot(event.ts, slot).is_some();
+                if !live {
+                    return;
+                }
+                if self.0.len() == ROWS_CAP {
+                    self.0.pop_front();
+                }
+                self.0.push_back(BlockRow::new(slot, event.block_root));
+                self.0.back_mut().expect("just pushed")
+            }
         };
-        if self.row_idx(&block_root).is_some() {
-            return;
-        }
-        if self.rows.len() == ROWS_CAP {
-            self.rows.pop_front();
-        }
-        let received = m.ingestion_time().real();
-        self.rows.push_back(BlockRow {
-            slot,
-            block_root,
-            source,
-            received_at: received,
-            received: self.offset_in_slot(received, slot),
-            el_sent: None,
-            applied: None,
-            verdict: None,
-        });
-    }
-
-    fn offset_in_slot(&self, t: Nanos, slot: u64) -> Option<Nanos> {
-        let start = self.genesis + self.slot_dur * slot;
-        let live = start..start + self.slot_dur * LIVE_ARRIVAL_SLOTS;
-        live.contains(&t).then(|| t - start)
-    }
-
-    fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
-        match *m.data() {
-            EngineReq::NewPayload(req) => {
-                if let Some(i) = self.row_idx(&req.block_root) {
-                    self.rows[i].el_sent = Some(m.tracking_timestamp().publish_t());
+        match event.stage {
+            // The replay admitting a parked block re-announces it; only the
+            // first announcement is the arrival.
+            Stage::Received { source } => {
+                if row.received_at.is_none() {
+                    row.source = Some(source);
+                    row.received_at = Some(event.ts);
+                    row.received = clock.offset_in_slot(event.ts, row.slot);
                 }
             }
-            // The FCU right after a successful STF names the new head; ignore
-            // tick-driven / repeat-head FCUs by filling `applied` only once.
-            EngineReq::Fcu(req) => {
-                if let Some(i) = self.row_idx(&req.block_root) &&
-                    self.rows[i].applied.is_none()
-                {
-                    self.rows[i].applied = Some(m.tracking_timestamp().publish_t());
+            Stage::ElSent { .. } => row.el_sent = Some(event.ts),
+            // Repeat-head and tick FCUs re-emit `Applied`; the first is the
+            // apply.
+            Stage::Applied => {
+                row.applied.get_or_insert(event.ts);
+            }
+            Stage::ElVerdict { verdict } => row.verdict = Some((verdict, event.ts)),
+            // Duplicate arrivals re-emit `Persist`; one subrow per index,
+            // keeping the first arrival and validation.
+            Stage::ColumnRecv { index, .. } => {
+                if row.columns.iter().all(|c| c.index != index) {
+                    row.columns.push(ColumnRow { index, recv: event.ts, validated: None });
                 }
             }
-            _ => {}
+            Stage::ColumnValidated { index, .. } => {
+                if let Some(col) = row.columns.iter_mut().find(|c| c.index == index) {
+                    col.validated.get_or_insert(event.ts);
+                }
+            }
+            Stage::DaAvailable => row.da_available = Some(event.ts),
         }
     }
+}
 
-    fn on_engine_resp(&mut self, m: &InternalMessage<EngineResp>) {
-        let EngineResp::NewPayload(resp) = *m.data() else {
-            return;
-        };
-        if let Some(i) = self.row_idx(&resp.block_root) {
-            self.rows[i].verdict = Some((resp.status, m.tracking_timestamp().publish_t()));
-        }
-    }
-
-    fn row_idx(&self, block_root: &[u8; 32]) -> Option<usize> {
-        self.rows.iter().rposition(|r| &r.block_root == block_root)
-    }
+/// Folds stage events into per-block rows; as the tile, it names the
+/// broadcast cursors.
+struct EventsTile {
+    clock: SlotClock,
+    reader: StageReader,
+    rows: BlockRows,
 }
 
 impl Tile<SilverSpine> for EventsTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        adapter.consume_internal_message(|m: &mut InternalMessage<BeaconStateEvent>, _| {
-            self.on_beacon_state(m);
-        });
-        adapter.consume_internal_message(|m: &mut InternalMessage<EngineReq>, _| {
-            self.on_engine_req(m);
-        });
-        adapter.consume_internal_message(|m: &mut InternalMessage<EngineResp>, _| {
-            self.on_engine_resp(m);
-        });
+        for event in self.reader.consume(adapter) {
+            self.rows.fold(&self.clock, event);
+        }
     }
 }
 
@@ -193,7 +192,11 @@ pub struct Events {
 
 impl Events {
     pub fn open(base_dir: &Path, genesis_unix_secs: u64, slot_ms: u64) -> Self {
-        let tile = EventsTile::new(genesis_unix_secs, slot_ms);
+        let tile = EventsTile {
+            clock: SlotClock::new(genesis_unix_secs, slot_ms),
+            reader: StageReader::default(),
+            rows: BlockRows(VecDeque::with_capacity(ROWS_CAP)),
+        };
         // Queue handles are `Copy` and live in shmem, so the spine can drop
         // once the adapter has attached.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, None);
@@ -205,24 +208,24 @@ impl Events {
         self.tile.loop_body(&mut self.adapter);
     }
 
-    pub fn rows(&self) -> &VecDeque<BlockRow> {
+    pub fn rows(&self) -> &BlockRows {
         &self.tile.rows
+    }
+
+    pub fn clock(&self) -> &SlotClock {
+        &self.tile.clock
     }
 
     /// Offset into the slot by which validators are expected to have attested.
     /// Assumes the pre-Gloas fraction.
     pub fn attestation_deadline(&self) -> Nanos {
-        self.tile.slot_dur / 3u64
+        self.tile.clock.slot_duration() / 3u64
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use flux::timing::{IngestionTime, Instant, PublishDelta, TrackingTimestamp};
-    use silver_common::{
-        BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp, TCache,
-        TCacheProducer, TCacheRead,
-    };
+    use silver_common::ColumnSource;
 
     use super::*;
 
@@ -235,160 +238,125 @@ mod tests {
         Nanos((GENESIS_SECS * 1_000 + slot * SLOT_MS + ms_into_slot) * MS)
     }
 
-    /// Envelope with a controlled ingestion wall time and zero publish delta,
-    /// so publish time == ingestion time.
-    fn msg<T>(data: T, ingestion: Nanos) -> InternalMessage<T> {
-        let ts = TrackingTimestamp {
-            ingestion_t: IngestionTime::new(ingestion, Instant(0)),
-            publish_delta: PublishDelta::new(0),
-        };
-        InternalMessage::new(ts, data)
+    fn event(stage: Stage, ts: Nanos, slot: Option<u64>) -> StageEvent {
+        StageEvent { stage, ts, block_root: [1u8; 32], slot }
     }
 
-    fn tcache_read() -> TCacheRead {
-        let mut producer = TCache::producer("surfer_events_test", 1 << 12);
-        let mut r = producer.reserve(1, true).expect("tcache reserve");
-        r.increment_offset(1);
-        r.read()
+    fn received() -> Stage {
+        Stage::Received { source: BlockSource::Gossip }
     }
 
-    fn new_payload(
-        root: [u8; 32],
-        slot: u64,
-        source: BlockSource,
-        ingestion: Nanos,
-    ) -> InternalMessage<EngineReq> {
-        msg(
-            EngineReq::NewPayload(EngineNewPayloadReq {
-                data: tcache_read(),
-                block_root: root,
-                slot,
-                block_source: source,
-            }),
-            ingestion,
-        )
+    fn fold_all(events: Vec<StageEvent>) -> BlockRows {
+        let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
+        let mut rows = BlockRows(VecDeque::new());
+        for o in events {
+            rows.fold(&clock, o);
+        }
+        rows
     }
 
-    fn fcu(root: [u8; 32], ingestion: Nanos) -> InternalMessage<EngineReq> {
-        msg(
-            EngineReq::Fcu(EngineFcuReq {
-                block_root: root,
-                head_block_hash: [0; 32],
-                safe_block_hash: [0; 32],
-                finalized_block_hash: [0; 32],
-            }),
-            ingestion,
-        )
-    }
-
-    fn verdict(
-        root: [u8; 32],
-        status: PayloadValidationStatus,
-        ingestion: Nanos,
-    ) -> InternalMessage<EngineResp> {
-        msg(
-            EngineResp::NewPayload(EngineNewPayloadResp {
-                block_root: root,
-                status,
-                latest_valid_hash: [0; 32],
-            }),
-            ingestion,
-        )
-    }
-
-    fn block_received(
-        root: [u8; 32],
-        slot: u64,
-        source: BlockSource,
-        ingestion: Nanos,
-    ) -> InternalMessage<BeaconStateEvent> {
-        msg(
-            BeaconStateEvent::BlockReceived {
-                slot,
-                block_root: root,
-                stage: BlockStage::AwaitParent,
-                source,
-                parent_slot: None,
-            },
-            ingestion,
-        )
-    }
-
-    /// A block parked on its data reaches the EL long after it landed, so the
-    /// wait belongs inside `validate`.
-    #[test]
-    fn parked_block_dates_from_its_announcement() {
-        let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
-        let root = [3u8; 32];
-
-        tile.on_beacon_state(&block_received(root, 4, BlockSource::Gossip, at(4, 300)));
-        tile.on_beacon_state(&block_received(root, 4, BlockSource::Gossip, at(4, 2_800)));
-        tile.on_engine_req(&new_payload(root, 4, BlockSource::Gossip, at(4, 2_900)));
-
-        let t = tile.rows[0].timeline();
-        assert_eq!(t.received_at, at(4, 300));
-        assert_eq!(t.validate, Some(Nanos(2_600 * MS)), "the column wait is inside validate");
-    }
-
-    /// Stage times are encoded via each message's ingestion (publish delta is
-    /// zero), so `validate` is zero here.
     #[test]
     fn block_timeline() {
-        let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
-        let root = [1u8; 32];
+        let el_sent = Stage::ElSent { source: BlockSource::Gossip };
+        let verdict = Stage::ElVerdict { verdict: PayloadValidationStatus::Valid };
+        let rows = fold_all(vec![
+            event(received(), at(2, 300), Some(2)),
+            event(el_sent, at(2, 300), Some(2)),
+            event(Stage::Applied, at(2, 460), Some(2)),
+            event(verdict, at(2, 520), Some(2)),
+            event(Stage::DaAvailable, at(2, 350), Some(2)),
+        ]);
 
-        tile.on_beacon_state(&block_received(root, 2, BlockSource::Gossip, at(2, 300)));
-        tile.on_engine_req(&new_payload(root, 2, BlockSource::Gossip, at(2, 300)));
-        tile.on_engine_req(&fcu(root, at(2, 460)));
-        tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Valid, at(2, 520)));
-
-        assert_eq!(tile.rows.len(), 1);
-        assert_eq!(tile.rows[0].slot, 2);
-        let t = tile.rows[0].timeline();
-        assert_eq!(t.received_at, at(2, 300));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slot, 2);
+        let t = rows[0].timeline();
+        assert_eq!(t.received_at, Some(at(2, 300)));
         assert_eq!(t.received, Some(Nanos(300 * MS)));
         assert_eq!(t.validate, Some(Nanos(0)));
         assert_eq!(t.stf, Some(Nanos(160 * MS)));
         assert_eq!(t.el, Some(Nanos(220 * MS)));
-        assert_eq!(t.total, Nanos(220 * MS));
+        assert_eq!(t.da, Some(Nanos(50 * MS)));
+        assert_eq!(t.total, Some(Nanos(220 * MS)));
         assert_eq!(t.verdict, Some(PayloadValidationStatus::Valid));
     }
 
-    /// A repeat-head FCU must not overwrite `applied` (stf stays 100ms, not
-    /// 1100ms); a late verdict stays relative to the block's own slot,
-    /// exceeding the slot duration.
+    /// Columns often beat the block itself; the row opens on the first of them
+    /// and the arrival fills in when the block lands.
     #[test]
-    fn fcu_dedup_and_late_verdict() {
-        let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
-        let root = [2u8; 32];
+    fn columns_ahead_of_the_block_open_its_row() {
+        let recv = Stage::ColumnRecv { index: 48, source: ColumnSource::Gossip };
+        let validated = Stage::ColumnValidated { index: 48, source: ColumnSource::Gossip };
+        let rows = fold_all(vec![
+            event(recv, at(4, 200), Some(4)),
+            event(validated, at(4, 210), Some(4)),
+            event(received(), at(4, 300), Some(4)),
+        ]);
 
-        tile.on_beacon_state(&block_received(root, 7, BlockSource::Rpc, at(7, 11_900)));
-        tile.on_engine_req(&new_payload(root, 7, BlockSource::Rpc, at(7, 11_900)));
-        tile.on_engine_req(&fcu(root, at(7, 12_000)));
-        tile.on_engine_req(&fcu(root, at(7, 13_000)));
-        tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Syncing, at(8, 500)));
-
-        assert_eq!(tile.rows[0].slot, 7);
-        let t = tile.rows[0].timeline();
-        assert_eq!(t.stf, Some(Nanos(100 * MS)));
-        assert_eq!(t.el, Some(Nanos(600 * MS)));
-        assert_eq!(t.verdict, Some(PayloadValidationStatus::Syncing));
+        assert_eq!(rows.len(), 1, "the column and the block joined one row");
+        let row = &rows[0];
+        assert_eq!(row.columns.len(), 1);
+        assert_eq!(row.columns[0].index, 48);
+        assert_eq!(row.columns[0].recv, at(4, 200));
+        assert_eq!(row.columns[0].validated, Some(at(4, 210)));
+        assert_eq!(row.timeline().received_at, Some(at(4, 300)));
     }
 
-    /// The stage deltas, being differences between the block's own stamps, hold
-    /// even once the arrival clock is unrelated to the slot.
+    /// A slotless event (an FCU for a root from before attach) has no
+    /// row to join and opens none.
     #[test]
-    fn replayed_block_has_no_slot_offset() {
-        let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
-        let root = [3u8; 32];
+    fn slotless_events_open_no_row() {
+        let rows = fold_all(vec![event(Stage::Applied, at(2, 460), None)]);
+        assert!(rows.is_empty());
+    }
 
-        tile.on_beacon_state(&block_received(root, 7, BlockSource::Rpc, at(900, 4_000)));
-        tile.on_engine_req(&new_payload(root, 7, BlockSource::Rpc, at(900, 4_000)));
-        tile.on_engine_req(&fcu(root, at(900, 4_050)));
+    /// Backfill persists columns for historical slots at the current wall
+    /// clock; they must not churn live rows out of the pane.
+    #[test]
+    fn backfill_columns_open_no_row() {
+        let recv = Stage::ColumnRecv { index: 3, source: ColumnSource::Rpc };
+        let rows = fold_all(vec![event(recv, at(900, 0), Some(7))]);
+        assert!(rows.is_empty());
+    }
 
-        assert_eq!(tile.rows[0].slot, 7);
-        let t = tile.rows[0].timeline();
-        assert_eq!(t.received, None);
-        assert_eq!(t.stf, Some(Nanos(50 * MS)));
+    /// The reader emits every FCU; the row keeps the first as the apply.
+    #[test]
+    fn repeat_fcus_keep_the_first_apply() {
+        let el_sent = Stage::ElSent { source: BlockSource::Gossip };
+        let rows = fold_all(vec![
+            event(received(), at(2, 300), Some(2)),
+            event(el_sent, at(2, 320), Some(2)),
+            event(Stage::Applied, at(2, 460), Some(2)),
+            event(Stage::Applied, at(2, 900), Some(2)),
+        ]);
+        assert_eq!(rows[0].timeline().stf, Some(Nanos(140 * MS)));
+    }
+
+    /// A re-announcement past the reader's dedup window must not restamp
+    /// the arrival.
+    #[test]
+    fn repeated_announcement_keeps_the_first_arrival() {
+        let rows = fold_all(vec![
+            event(received(), at(4, 300), Some(4)),
+            event(received(), at(4, 3_100), Some(4)),
+        ]);
+        assert_eq!(rows[0].timeline().received_at, Some(at(4, 300)));
+    }
+
+    /// Duplicate `Persist` events (an already-held column re-arriving) fold
+    /// into one subrow with the first timestamps.
+    #[test]
+    fn duplicate_column_events_fold_into_one_subrow() {
+        let recv = Stage::ColumnRecv { index: 48, source: ColumnSource::Gossip };
+        let validated = Stage::ColumnValidated { index: 48, source: ColumnSource::Gossip };
+        let rows = fold_all(vec![
+            event(recv, at(4, 200), Some(4)),
+            event(validated, at(4, 210), Some(4)),
+            event(recv, at(4, 500), Some(4)),
+            event(validated, at(4, 510), Some(4)),
+        ]);
+
+        assert_eq!(rows[0].columns.len(), 1);
+        assert_eq!(rows[0].columns[0].recv, at(4, 200));
+        assert_eq!(rows[0].columns[0].validated, Some(at(4, 210)));
     }
 }

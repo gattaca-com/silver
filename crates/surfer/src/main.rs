@@ -202,6 +202,7 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Esc | KeyCode::Backspace if app.drilled_in => app.drilled_in = false,
+        KeyCode::Enter if app.pane == app::Pane::Events => app.events.toggle_expand(),
         KeyCode::Enter => app.drilled_in = !app.drilled_in,
         KeyCode::Tab => {
             app.pane = app.pane.next();
