@@ -114,10 +114,16 @@ pub struct P2p {
     /// Hard transport-level connection cap; inbound accepts refused beyond
     /// it. Outbound dials are bounded separately by the peer manager.
     max_connections: usize,
+    trusted_ips: FxHashSet<IpAddr>,
 }
 
 impl P2p {
-    pub fn new(keypair: Keypair, endpoint: Endpoint, max_connections: usize) -> Self {
+    pub fn new(
+        keypair: Keypair,
+        endpoint: Endpoint,
+        max_connections: usize,
+        trusted_ips: FxHashSet<IpAddr>,
+    ) -> Self {
         Self {
             keypair,
             endpoint,
@@ -127,6 +133,7 @@ impl P2p {
             recv_count: 0,
             stats_cursor: 0,
             max_connections,
+            trusted_ips,
         }
     }
 
@@ -230,7 +237,13 @@ impl P2p {
                 // Hard population cap: refuse at the QUIC layer (pre-TLS,
                 // cheap) — the peer manager's score-based trim only polices
                 // quality inside the band below this.
-                if self.peers.len() >= self.max_connections {
+                // Skip the capcacity check for connections from IPs of trusted peers.
+                let is_trusted_ip = self.trusted_ips.contains(&incoming.remote_address().ip());
+                if is_trusted_ip {
+                    tracing::info!(peer_addr=?incoming.remote_address(), "inbound connection from trusted peer");
+                }
+
+                if !is_trusted_ip && self.peers.len() >= self.max_connections {
                     crate::NetworkCounters::InboundRefused.inc();
                     let rsp = self.endpoint.refuse(incoming, scratch);
                     let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);

@@ -142,6 +142,8 @@ pub struct Config {
     engine_config: EngineConfig,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
+    #[serde(default)]
+    trusted_peers: Vec<Enr>,
 }
 
 impl Config {
@@ -176,6 +178,7 @@ impl Config {
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),
             disable_weak_subjectivity_check: false,
+            trusted_peers: Default::default(),
         }
     }
 
@@ -383,6 +386,10 @@ impl Config {
 
     pub fn attestation_subnet_count(&self) -> u8 {
         self.attestation_subnet_count
+    }
+
+    pub fn trusted_peers(&self) -> &[Enr] {
+        &self.trusted_peers
     }
 }
 

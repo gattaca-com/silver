@@ -9,7 +9,7 @@ use std::{
 };
 
 use silver_common::{
-    AgentString, GossipTopic, PeerControl, PeerEvent, PeerId, RpcSeverity, StreamProtocol,
+    AgentString, Enr, GossipTopic, PeerControl, PeerEvent, PeerId, RpcSeverity, StreamProtocol,
     SyncUpdate,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
@@ -203,6 +203,7 @@ impl PeerManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         local_peer_id: PeerId,
+        mut trusted_peers: Vec<Enr>,
         our_topics: Vec<GossipTopic>,
         params: ScoreParams,
         syncing: SyncingConfig,
@@ -215,6 +216,13 @@ impl PeerManager {
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
         let (required_attnets, required_syncnets) = build_subnet_masks(&our_topics);
         let rejected = RejectedRoots::new(syncing.rejected_cap);
+
+        let mut database = PeerDatabase::default();
+        trusted_peers.drain(..).for_each(|enr| {
+            tracing::info!(quic=?enr.quic4_socket(), "adding trusted peer");
+            database.add_trusted_peer(enr);
+        });
+
         Self {
             peers: HashMap::with_capacity(PEERS_CAP),
             peers_by_id: HashMap::with_capacity(PEERS_CAP),
@@ -245,7 +253,7 @@ impl PeerManager {
             last_opportunistic_graft: now,
             last_decay: now,
             last_discovery: now,
-            database: PeerDatabase::default(),
+            database,
             status: None,
             metadata,
             earliest_available_slot: u64::MAX,
@@ -532,10 +540,11 @@ impl PeerManager {
                 pending_goodbyes += 1;
                 continue;
             }
-            if peer.cached_score < 0.0 && negative_len < negative.len() {
+            if !peer.is_trusted && peer.cached_score < 0.0 && negative_len < negative.len() {
                 negative[negative_len] = (conn, peer.cached_score);
                 negative_len += 1;
-            } else if peer.cached_score <= IDLE_PEER_MAX_SCORE &&
+            } else if !peer.is_trusted &&
+                peer.cached_score <= IDLE_PEER_MAX_SCORE &&
                 idle_len < idle.len() &&
                 now.saturating_duration_since(peer.connected_at) > IDLE_PEER_MIN_AGE &&
                 peer.topic_stats.values().all(|s| s.meshed_since.is_none())
@@ -633,6 +642,7 @@ pub(crate) mod fixture {
         (
             PeerManager::new(
                 peer_id(99),
+                vec![],
                 our_topics,
                 params,
                 SyncingConfig::default(),

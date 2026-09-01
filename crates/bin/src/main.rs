@@ -1,4 +1,4 @@
-use std::{error::Error, str::FromStr, sync::Arc, time::Instant};
+use std::{error::Error, net::IpAddr, str::FromStr, sync::Arc, time::Instant};
 
 use flux::{
     tile::{TileConfig, attach_tile},
@@ -102,6 +102,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let keypair = config.keypair()?;
     let mut local_enr = config.enr()?;
 
+    tracing::info!(enr = local_enr.to_base64(), "local ENR on startup");
+
     let chain_config = config.chain_config();
     let ticker = SlotTicker::new(
         chain_config.genesis_unix_secs,
@@ -135,6 +137,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
         ),
         config.max_connections(),
+        config
+            .trusted_peers()
+            .iter()
+            .filter_map(|enr| enr.ip4().map(IpAddr::from).or(enr.ip6().map(IpAddr::from)))
+            .collect(),
     );
     let p2p_context = Context {
         gossip_producer: incoming_gossip_producer,
@@ -198,6 +205,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut control_tile = Controller::new(
         PeerManager::new(
             keypair.peer_id(),
+            config.trusted_peers().to_vec(),
             gossip_topics,
             config.peer_score_params(),
             config.syncing_config(),

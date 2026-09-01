@@ -31,6 +31,14 @@ impl Default for PeerDatabase {
 impl PeerDatabase {
     /// Returns `true` if this was a preiously unknown peer.
     pub fn add_enr(&mut self, enr: Enr) -> bool {
+        self.upsert_enr(enr, false)
+    }
+
+    pub fn add_trusted_peer(&mut self, enr: Enr) -> bool {
+        self.upsert_enr(enr, true)
+    }
+
+    fn upsert_enr(&mut self, enr: Enr, trusted: bool) -> bool {
         let compressed = enr.public_key().serialize();
         let peer_id = PeerId::from_secp256k1_pubkey(&compressed);
 
@@ -47,6 +55,7 @@ impl PeerDatabase {
                 record.enr.replace(enr);
                 record.node_id.replace(node_id);
                 record.peer_id.replace(peer_id);
+                record.is_trusted = trusted;
 
                 let index = self.peers.insert(record);
                 self.by_node_id.insert(node_id, index);
@@ -116,7 +125,9 @@ impl PeerDatabase {
     pub fn dial_failed(&mut self, peer_id: &PeerId, until: Instant) {
         if let Some(record) = self.by_peer_id.get(peer_id).and_then(|idx| self.peers.get_mut(*idx))
         {
-            record.dial_backoff_until = Some(until);
+            if !record.is_trusted {
+                record.dial_backoff_until = Some(until);
+            }
         }
     }
 
@@ -230,6 +241,10 @@ impl PeerDatabase {
     pub fn by_p2p_id(&self, p2p: usize) -> Option<&PeerRecord> {
         self.by_p2p_id.get(&p2p).and_then(|idx| self.peers.get(*idx))
     }
+
+    pub fn by_peer_id(&self, peer_id: &PeerId) -> Option<&PeerRecord> {
+        self.by_peer_id.get(peer_id).and_then(|idx| self.peers.get(*idx))
+    }
 }
 
 fn status_bytes(s: &PeerStatus) -> &[u8] {
@@ -256,4 +271,6 @@ pub struct PeerRecord {
     pub identify: Option<Identify>,
     /// Not a redial candidate until this instant (dial failed / timed out).
     pub dial_backoff_until: Option<Instant>,
+    /// Trusted peer
+    pub is_trusted: bool,
 }

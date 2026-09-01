@@ -69,7 +69,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 identify: None,
                             };
 
-                            let p2p = P2p::new(keypair, server_endpoint, 1024);
+                            let p2p = P2p::new(keypair, server_endpoint, 1024, Default::default());
                             (
                                 NetworkTileInner::new(
                                     "0.0.0.0:20001".parse().unwrap(),
@@ -129,7 +129,8 @@ pub fn broadcast(c: &mut Criterion) {
                             };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
-                            let mut p2p = P2p::new(keypair, client_endpoint, 1024);
+                            let mut p2p =
+                                P2p::new(keypair, client_endpoint, 1024, Default::default());
                             p2p.connect(
                                 server_id.clone(),
                                 "127.0.0.1:20001".parse().unwrap(),

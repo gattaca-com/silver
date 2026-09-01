@@ -84,7 +84,7 @@ impl NetworkTile {
                 let addr = enr.quic4_socket().or(enr.quic6_socket());
                 if let Some(addr) = addr {
                     crate::NetworkCounters::DialAttempts.inc();
-                    tracing::debug!(peer_id=?p2p, ?addr, "dialling p2p peer");
+                    tracing::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
                     if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
                         tracing::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
                     }
