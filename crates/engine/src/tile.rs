@@ -21,15 +21,15 @@ pub struct EngineTile {
     pub client: Option<EngineClient>,
     pub gossip_consumer: TRandomAccess,
     pub rpc_consumer: TRandomAccess,
-    pub resp_producer: TProducer,
+    resp_producer: TProducer,
+    // Reusable scratch buffer for the JSON→SSZ response conversions: cleared on
+    // each use, capacity retained across calls.
+    scratch: Vec<u8>,
 
     first_run: bool,
     healthcheck_pending: bool,
     healthcheck_deadline: Instant,
     sync_status: ELSyncStatus,
-    // Reusable scratch buffer for the JSON→SSZ getPayload conversion.
-    // Cleared on each use; capacity is retained across calls.
-    scratch: Vec<u8>,
 }
 
 impl Tile<SilverSpine> for EngineTile {
@@ -113,33 +113,20 @@ impl EngineTile {
                 run_healthcheck(client, first_run, healthcheck_pending, healthcheck_deadline);
             }
 
+            let mut out = Responses::new(adapter, resp_producer, scratch);
             poll(client, |req_kind, response| match req_kind {
                 ReqKind::Capabilities => {
                     negotiated_get_payload_method = Some(handle_capabilities_response(response));
                 }
                 ReqKind::ClientVersion => handle_client_version_response(response),
-                ReqKind::Syncing => {
-                    handle_sync_response(response, adapter, sync_status, healthcheck_pending)
-                }
-                ReqKind::Fcu(block_root) => handle_fcu_response(block_root, response, adapter),
-                ReqKind::NewPayload(block_root) => {
-                    handle_new_payload_response(block_root, response, adapter)
-                }
-                ReqKind::GetPayloadFetch(spine_id) => {
-                    handle_get_payload_fetch(spine_id, response, adapter, resp_producer, scratch)
-                }
-                ReqKind::GetBlobs(spine_id) => {
-                    handle_get_blobs_response(spine_id, response, adapter, resp_producer, scratch)
-                }
+                ReqKind::Syncing => out.syncing(response, sync_status, healthcheck_pending),
+                ReqKind::Fcu(block_root) => out.fcu(block_root, response),
+                ReqKind::NewPayload(block_root) => out.new_payload(block_root, response),
+                ReqKind::GetPayloadFetch(spine_id) => out.get_payload(spine_id, response),
+                ReqKind::GetBlobs { block_root, slot } => out.get_blobs(block_root, slot, response),
                 ReqKind::GetPayloadBodiesByHash(spine_id) |
                 ReqKind::GetPayloadBodiesByRange(spine_id) => {
-                    handle_get_payload_bodies_response(
-                        spine_id,
-                        response,
-                        adapter,
-                        resp_producer,
-                        scratch,
-                    );
+                    out.payload_bodies(spine_id, response)
                 }
             });
         }

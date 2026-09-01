@@ -4506,6 +4506,7 @@ dependencies = [
  "rand 0.8.6",
  "silver_beacon_state_data",
  "silver_common",
+ "tempfile",
  "tracing",
 ]
 

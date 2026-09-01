@@ -40,7 +40,7 @@ pub enum ReqKind {
     Fcu(B256),        // head beacon block root, zeros for prepare-payload
     NewPayload(B256), // block root
     GetPayloadFetch(u64),
-    GetBlobs(u64),
+    GetBlobs { block_root: B256, slot: u64 },
     GetPayloadBodiesByHash(u64),
     GetPayloadBodiesByRange(u64),
 }
@@ -199,10 +199,10 @@ pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
     c.pending_requests.insert(id, ReqKind::GetPayloadFetch(req_id));
 }
 
-pub fn get_blobs(c: &mut EngineClient, params: simd_json::OwnedValue, req_id: u64) {
+pub fn get_blobs(c: &mut EngineClient, params: simd_json::OwnedValue, block_root: B256, slot: u64) {
     let (id, body) = make_rpc_body(&mut c.id, "engine_getBlobsV2", params);
     enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::GetBlobs(req_id));
+    c.pending_requests.insert(id, ReqKind::GetBlobs { block_root, slot });
 }
 
 pub fn get_payload_bodies_by_hash(

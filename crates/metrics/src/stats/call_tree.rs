@@ -66,8 +66,8 @@ struct Node {
     children: FxHashMap<u64, Node>,
 }
 
-/// Keep the rows covering this % of a node's time; fold the rest into `...`.
-const COVERAGE_PCT: u64 = 99;
+const MIN_TIME_PCT: u64 = 1;
+const MIN_PEAK: Nanos = Nanos::from_millis(1);
 
 impl Node {
     fn render_children(&self, depth: usize, meta: &FlamegraphMeta, out: &mut Vec<RenderRow>) {
@@ -96,26 +96,11 @@ impl Node {
                 child: None,
             });
         }
-        rows.sort_by(|a, b| b.sum_ns.cmp(&a.sum_ns));
-
-        let total: Nanos = rows.iter().map(|r| r.sum_ns).sum();
-        let threshold = Nanos((total.0 as u128 * COVERAGE_PCT as u128 / 100) as u64);
-        let mut covered = Nanos::ZERO;
-        let mut cut = rows.len();
-        for (i, r) in rows.iter().enumerate() {
-            if covered >= threshold {
-                cut = i;
-                break;
-            }
-            covered += r.sum_ns;
-        }
-        // Folding a single row saves no space — only fold 2+.
-        if rows.len() - cut < 2 {
-            cut = rows.len();
-        }
+        rows.sort_by(|a, b| b.max_ns.cmp(&a.max_ns));
+        let (kept, folded) = split_for_render(&rows);
 
         let indent = depth * 2;
-        for r in &rows[..cut] {
+        for r in kept {
             out.push(RenderRow {
                 name: format!("{blank:indent$}{label}", blank = "", label = r.label),
                 avg: r.sum_ns / r.count.max(1),
@@ -127,8 +112,7 @@ impl Node {
                 child.render_children(depth + 1, meta, out);
             }
         }
-        if cut < rows.len() {
-            let folded = &rows[cut..];
+        if !folded.is_empty() {
             let rem_sum: Nanos = folded.iter().map(|r| r.sum_ns).sum();
             let rem_calls: u64 = folded.iter().map(|r| r.count).sum();
             let label = format!("... ({} more)", folded.len());
@@ -141,6 +125,16 @@ impl Node {
             });
         }
     }
+}
+
+fn split_for_render<'r, 'a>(rows: &'r [Row<'a>]) -> (Vec<&'r Row<'a>>, Vec<&'r Row<'a>>) {
+    let total: Nanos = rows.iter().map(|r| r.sum_ns).sum();
+    let time_floor = total * MIN_TIME_PCT / 100u64;
+    let shown = |r: &Row| r.max_ns >= MIN_PEAK || r.sum_ns >= time_floor;
+
+    // Folding a single row saves no space — only fold 2+.
+    let fold = rows.iter().filter(|r| !shown(r)).count() >= 2;
+    rows.iter().partition(|r| !fold || shown(r))
 }
 
 struct Row<'a> {
@@ -247,4 +241,55 @@ fn render_table(rows: &[RenderRow], meta: &FlamegraphMeta) -> String {
 /// `...`/`untracked` rows, or perf/alloc off) so empty cells stay quiet.
 fn per_call(total: u64, calls: u64, fmt: impl Fn(u64) -> String) -> String {
     if calls == 0 || total == 0 { String::new() } else { fmt(total / calls) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row<'a>(label: &'a str, sum: u64, max: u64, child: Option<&'a Node>) -> Row<'a> {
+        Row {
+            label: Cow::Borrowed(label),
+            sum_ns: Nanos(sum),
+            max_ns: Nanos(max),
+            count: 1,
+            counters: Counters::default(),
+            child,
+        }
+    }
+
+    fn names(rows: Vec<&Row>) -> Vec<String> {
+        rows.iter().map(|r| r.label.to_string()).collect()
+    }
+
+    /// `insert_verified` is kept by time share, `rare_stall` by peak; the
+    /// self-time row gets no exemption and folds on the same terms.
+    #[test]
+    fn time_and_peak_each_keep_a_row_the_other_folds() {
+        let node = Node::default();
+        let rows = vec![
+            row("verify_all", 1_740_000_000, 12_167_000, Some(&node)),
+            row("untracked", 100_000, 0, None),
+            row("insert_verified", 36_700_000, 6_772, Some(&node)),
+            row("rare_stall", 2_000_000, 1_500_000, Some(&node)),
+            row("noise_a", 260_000, 8_495, Some(&node)),
+            row("noise_b", 1_000, 500, Some(&node)),
+        ];
+
+        let (kept, folded) = split_for_render(&rows);
+
+        assert_eq!(names(kept), ["verify_all", "insert_verified", "rare_stall"]);
+        assert_eq!(names(folded), ["untracked", "noise_a", "noise_b"]);
+    }
+
+    #[test]
+    fn a_lone_dull_row_shows_rather_than_folding() {
+        let node = Node::default();
+        let rows = vec![row("hot", 1_000_000_000, 0, Some(&node)), row("dull", 1, 0, Some(&node))];
+
+        let (kept, folded) = split_for_render(&rows);
+
+        assert_eq!(names(kept), ["hot", "dull"]);
+        assert!(folded.is_empty());
+    }
 }

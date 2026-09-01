@@ -25,13 +25,13 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use mimalloc::MiMalloc;
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
-use silver_columns::tile::DataColumnsTile;
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, EngineReq, GossipTopic, MessageId, Nanos, NewGossipMsg,
-    P2pStreamId, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer,
-    TProducer,
+    BeaconStateEvent, DataColumnsEvent, DataKind, EngineReq, GossipTopic, MessageId, Nanos,
+    NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, StreamProtocol, SyncNeed, SyncUpdate,
+    TCache, TCacheProducer, TProducer,
     profiler::InProcessReader,
     ssz_view::{DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, STATUS_V2_SIZE},
 };
@@ -85,6 +85,7 @@ struct ReplayCost {
     columns: usize,
     cpu: Duration,
     recv_to_proc_max: f64,
+    first_to_available: f64,
 }
 
 impl ReplayCost {
@@ -92,6 +93,7 @@ impl ReplayCost {
         self.columns += slot.columns;
         self.cpu += slot.cpu;
         self.recv_to_proc_max = self.recv_to_proc_max.max(slot.recv_to_proc_max);
+        self.first_to_available = self.first_to_available.max(slot.first_to_available);
     }
 }
 
@@ -117,10 +119,12 @@ impl Node {
             p.cache_ref().random_access(name, true).expect("random access")
         };
         let mut tile = DataColumnsTile::new(
-            ra(&gossip_p, "dc_gossip"),
-            ra(&gossip_p, "dc_gossip_persist"),
-            ra(&rpc_p, "dc_rpc"),
-            ra(&rpc_p, "dc_rpc_persist"),
+            ColumnConsumers {
+                gossip: ra(&gossip_p, "dc_gossip"),
+                persist_gossip: ra(&gossip_p, "dc_gossip_persist"),
+                rpc: ra(&rpc_p, "dc_rpc"),
+                persist_rpc: ra(&rpc_p, "dc_rpc_persist"),
+            },
             owner.reader(),
             custody,
             spec,
@@ -135,6 +139,7 @@ impl Node {
         // anything it must see is produced.
         tile.loop_body(&mut conn);
         inj.consume(|_: DataColumnsEvent, _| {});
+        inj.consume(|_: SyncNeed, _| {});
         inj.produce(SyncUpdate::Following);
 
         Self { inj, conn, tile, gossip_p, _state: owner, _spine: spine, _base: base }
@@ -177,18 +182,24 @@ impl Node {
     }
 
     /// Validated columns as a bitmask — a count would double-count a queue that
-    /// wrapped between drains — and whether the custody set completed.
-    fn drain(&mut self) -> (u128, bool) {
-        let (mut validated, mut available) = (0u128, false);
+    /// wrapped between drains — plus the availability and custody-complete
+    /// edges.
+    fn drain(&mut self) -> (u128, bool, bool) {
+        let (mut validated, mut available, mut custody_complete) = (0u128, false, false);
         self.inj.consume(|ev: DataColumnsEvent, _| match ev {
             DataColumnsEvent::Persist { column_index, .. } => validated |= 1u128 << column_index,
             DataColumnsEvent::Available { .. } => available = true,
+        });
+        self.inj.consume(|need: SyncNeed, _| {
+            if let SyncNeed::Arrived { kind: DataKind::Columns, .. } = need {
+                custody_complete = true;
+            }
         });
         // Stands in for the Controller and StorageTile: both carry tcache
         // handles, and a handle nobody consumes pins the gossip ring.
         self.inj.consume(|_: PeerEvent, _| {});
         self.inj.consume(|_: EngineReq, _| {});
-        (validated, available)
+        (validated, available, custody_complete)
     }
 
     /// Feeds one slot at its recorded offsets and returns its row once the
@@ -215,6 +226,7 @@ impl Node {
         let mut fed = 0;
         let mut seen = 0u128;
         let mut available_ms = None;
+        let mut custody_complete = false;
         let mut cpu = Duration::ZERO;
         let mut recv_to_proc_max = 0.0f64;
         let mut validated_ms = Vec::with_capacity(columns);
@@ -228,17 +240,20 @@ impl Node {
                 next += 1;
             }
 
-            // Only the turns handed a sidecar are charged: the rest are the replay
-            // spinning out the arrival curve, which is input, not tile cost.
+            // Only the turns that took a sidecar in or put a validation out are
+            // charged: the rest are the replay spinning out the arrival curve,
+            // which is input, not tile cost.
             let turn = Instant::now();
             self.turn();
-            if next > fed {
-                cpu += turn.elapsed();
-                fed = next;
-            }
-            let (validated, available) = self.drain();
+            let spent = turn.elapsed();
+            let (validated, available, complete) = self.drain();
+            custody_complete |= complete;
             let now_ms = t0.elapsed().as_secs_f64() * 1e3;
             let mut fresh = validated & !seen;
+            if next > fed || fresh != 0 {
+                cpu += spent;
+                fed = next;
+            }
             while fresh != 0 {
                 let index = fresh.trailing_zeros() as usize;
                 fresh &= fresh - 1;
@@ -249,7 +264,7 @@ impl Node {
             if available_ms.is_none() && available {
                 available_ms = Some(now_ms);
             }
-            if next == cap.arrivals.len() && available_ms.is_some() {
+            if next == cap.arrivals.len() && seen.count_ones() as usize == columns {
                 break;
             }
         }
@@ -269,7 +284,10 @@ impl Node {
             order_index(validated_ms.len(), fraction).map_or(0.0, |i| slot_offset + validated_ms[i])
         };
         let recv_last = ms(cap.arrivals.last().map_or(0, |a| a.at_us));
-        let done = slot_offset + available_ms.expect("custody set never completed");
+        // `Available` lands before custody completes; both must.
+        assert!(custody_complete, "slot {slot}: custody set never completed");
+        let first_to_available = available_ms.expect("Available never fired");
+        let available = slot_offset + first_to_available;
         table.row(vec![
             format!("{slot}{}", if cap.is_backfill() { "*" } else { "" }),
             columns.to_string(),
@@ -279,11 +297,13 @@ impl Node {
             format!("{:.0}ms", recv(0.9)),
             format!("{:.0}ms", proc(0.9)),
             format!("{recv_last:.0}ms"),
-            format!("{done:.0}ms"),
+            format!("{:.0}ms", proc(1.0)),
+            format!("{available:.0}ms"),
+            format!("{first_to_available:.0}ms"),
             format!("{recv_to_proc_max:.1}ms"),
             format!("{:.1}ms", cpu.as_secs_f64() * 1e3),
         ]);
-        ReplayCost { columns, cpu, recv_to_proc_max }
+        ReplayCost { columns, cpu, recv_to_proc_max, first_to_available }
     }
 }
 
@@ -331,9 +351,9 @@ fn main() -> ExitCode {
 
     let mut node = Node::boot(&cap.state, custody);
     let recorder = InProcessReader::start();
-    // ms into the slot, as prod telemetry reports arrivals. `recv_p50` is when
-    // half the custody set was in — what a gate that reconstructs instead of
-    // waiting for all of it would have waited for.
+    // ms into the slot, as prod telemetry reports arrivals. `available` releases
+    // the beacon tile (half the columns for a reconstructing node, the whole
+    // custody set otherwise); `proc_last` is where custody completes.
     let mut table = Table::new(vec![
         Column::right("slot"),
         Column::right("columns"),
@@ -344,6 +364,8 @@ fn main() -> ExitCode {
         Column::right("proc_p90"),
         Column::right("recv_last"),
         Column::right("proc_last"),
+        Column::right("available"),
+        Column::right("first -> available"),
         Column::right("recv -> proc max"),
         Column::right("cpu"),
     ]);
@@ -351,8 +373,8 @@ fn main() -> ExitCode {
     for slot in &window {
         total.merge(&node.replay_slot(*slot, &cap.slots[slot], &mut table));
     }
-    // The one number the tile owns: the worst gap it added between a column
-    // arriving and that column being validated.
+    // The one number the tile owns is the worst recv→proc gap; `first -> available`
+    // is how long the head waited on data after the first column landed.
     table.row(vec![
         format!("{} slots", window.len()),
         total.columns.to_string(),
@@ -363,6 +385,8 @@ fn main() -> ExitCode {
         String::new(),
         String::new(),
         String::new(),
+        String::new(),
+        format!("{:.0}ms", total.first_to_available),
         format!("{:.1}ms", total.recv_to_proc_max),
         format!("{:.1}ms", total.cpu.as_secs_f64() * 1e3),
     ]);

@@ -4,21 +4,23 @@
 //! nothing about the slot). Per-block timelines, dedup (repeat-head FCUs) and
 //! deadline checks are ClickHouse queries over the events, not collector logic.
 //!
-//! Only `NewPayload` messages carry a slot, so the roots they name are kept
-//! for the FCU and verdict rows that follow; a block whose `NewPayload`
-//! predates attach records no slot and is left to the query's join.
+//! `BlockReceived` carries the slot, so the roots it names are kept for the
+//! FCU and verdict rows that follow; a block that arrived before attach
+//! records no slot and is left to the query's join.
 //!
 //! Stages, from the node's spine envelopes:
-//! - `received` — `EngineReq::NewPayload` ingestion ≈ gossip arrival.
-//! - `el_sent` — the same message's publish: CL validated, dispatched to EL.
+//! - `received` — a root's first `BeaconStateEvent::BlockReceived`, at its
+//!   ingestion. The tile announces a block before parking it, so a wait on
+//!   columns or on a parent falls inside `received`→`applied`.
+//! - `el_sent` — `EngineReq::NewPayload` publish: CL validated, dispatched to
+//!   EL.
 //! - `applied` — `EngineReq::Fcu` publish: state transition + commit.
 //! - `el_verdict` — `EngineResp::NewPayload` publish, carries the verdict.
 //! - `column_recv` — a data-column sidecar's arrival, and `column_validated`
-//!   the moment it passed validation: the same pair of observations on one
-//!   message as `received`/`el_sent`, so the gap between them is the columns
-//!   tile's queue delay.
-//! - `da_available` — `DataColumnsEvent::Available`, i.e. the custody set is
-//!   complete and the block's DA gate opens.
+//!   the moment it passed validation: two observations of one message, so the
+//!   gap between them is the columns tile's queue delay.
+//! - `da_available` — `DataColumnsEvent::Available`: the block's data exists
+//!   and its DA gate opens.
 //!
 //! The `block_events_xatu` view renames the one comparable stage onto
 //! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
@@ -32,7 +34,9 @@ use std::{
 
 use flux::{spine::SpineAdapter, timing::InternalMessage};
 use rustc_hash::FxHashMap;
-use silver_common::{DataColumnsEvent, EngineReq, EngineResp, Nanos, SilverSpine};
+use silver_common::{
+    BeaconStateEvent, DataColumnsEvent, EngineReq, EngineResp, Nanos, SilverSpine,
+};
 use silver_config::ChainConfig;
 use tracing::{info, warn};
 
@@ -128,6 +132,9 @@ impl BlockEvents {
     }
 
     fn consume(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.consume_internal_message(|m: &mut InternalMessage<BeaconStateEvent>, _| {
+            self.on_beacon_state(m);
+        });
         adapter.consume_internal_message(|m: &mut InternalMessage<EngineReq>, _| {
             self.on_engine_req(m);
         });
@@ -172,15 +179,27 @@ impl BlockEvents {
         (!self.pending.is_empty()).then(|| take(&mut self.pending).join("\n"))
     }
 
+    /// A parked block is announced again from the replay that admits it, so
+    /// only the first announcement is its arrival.
+    fn on_beacon_state(&mut self, m: &InternalMessage<BeaconStateEvent>) {
+        let BeaconStateEvent::BlockReceived { slot, block_root, source, .. } = *m.data() else {
+            return;
+        };
+        self.slots.retain(|_, tracked| slot.saturating_sub(*tracked) < TRACKED_SLOTS);
+        if self.slots.insert(block_root, slot).is_some() {
+            return;
+        }
+        let source = format!("{source:?}");
+        let attrs = Attrs { source: Some(&source), ..Attrs::default() };
+        let arrival = m.ingestion_time().real();
+        self.push("received", Some(slot), block_root, arrival, attrs);
+    }
+
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
         match *m.data() {
             EngineReq::NewPayload(req) => {
-                self.slots.retain(|_, slot| req.slot.saturating_sub(*slot) < TRACKED_SLOTS);
-                self.slots.insert(req.block_root, req.slot);
                 let source = format!("{:?}", req.block_source);
                 let attrs = Attrs { source: Some(&source), ..Attrs::default() };
-                let received = m.ingestion_time().real();
-                self.push("received", Some(req.slot), req.block_root, received, attrs);
                 let el_sent = m.tracking_timestamp().publish_t();
                 self.push("el_sent", Some(req.slot), req.block_root, el_sent, attrs);
             }
@@ -286,8 +305,8 @@ impl BlockEventsInserter {
 mod tests {
     use flux::timing::{IngestionTime, Instant, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        BlockSource, ColumnSource, EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp,
-        PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, ColumnSource, EngineFcuReq, EngineNewPayloadReq,
+        EngineNewPayloadResp, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -355,6 +374,16 @@ mod tests {
         })
     }
 
+    fn block_received(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {
+        BeaconStateEvent::BlockReceived {
+            slot,
+            block_root: root,
+            stage: BlockStage::AwaitParent,
+            source,
+            parent_slot: None,
+        }
+    }
+
     fn events() -> BlockEvents {
         BlockEvents::new("test-node".into(), "test-net".into(), GENESIS_SECS, SLOT_MS)
     }
@@ -383,6 +412,7 @@ mod tests {
         let mut ev = events();
         let root = [1u8; 32];
 
+        ev.on_beacon_state(&msg(block_received(root, 2, BlockSource::Gossip), at(2, 300)));
         ev.on_engine_req(&msg(new_payload(root, 2, BlockSource::Gossip), at(2, 300)));
         ev.on_engine_req(&msg(fcu(root), at(2, 460)));
         ev.on_engine_resp(&msg(verdict(root, PayloadValidationStatus::Valid), at(2, 520)));
@@ -456,6 +486,7 @@ mod tests {
         let mut ev = events();
         let root = [2u8; 32];
 
+        ev.on_beacon_state(&msg(block_received(root, 7, BlockSource::Rpc), at(900, 4_000)));
         ev.on_engine_req(&msg(new_payload(root, 7, BlockSource::Rpc), at(900, 4_000)));
 
         let rows = json_rows(&mut ev);
@@ -466,6 +497,21 @@ mod tests {
         // The slot is known, so its start is too — only the offset between the
         // two is meaningless here.
         assert_eq!(row(&rows, "received")["slot_start_date_time"], at(7, 0).as_secs_u64());
+    }
+
+    /// The replay that admits a parked block announces it again, at that
+    /// replay's clock.
+    #[test]
+    fn replayed_announcement_does_not_restamp_the_arrival() {
+        let mut ev = events();
+        let root = [3u8; 32];
+
+        ev.on_beacon_state(&msg(block_received(root, 5, BlockSource::Gossip), at(5, 400)));
+        ev.on_beacon_state(&msg(block_received(root, 5, BlockSource::Gossip), at(5, 3_100)));
+
+        let rows = json_rows(&mut ev);
+        assert_eq!(stages(&rows), ["received"], "one arrival per root");
+        assert_eq!(row(&rows, "received")["event_date_time"], at(5, 400).0);
     }
 
     /// FCUs for roots whose NewPayload predates attach are still recorded —

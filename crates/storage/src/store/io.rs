@@ -15,8 +15,8 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
-    DataKind, Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, SyncNeed,
-    TCacheProducer, TCacheRead, TMultiProducer,
+    DataKind, Enr, Origin, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound,
+    SyncNeed, TCacheProducer, TCacheRead, TMultiProducer,
     column_util::{self, columns_of},
     hex32,
     merkle::B256,
@@ -98,6 +98,7 @@ impl Store {
                             root,
                             slot,
                             kind: DataKind::Columns,
+                            origin: Origin::Backfill,
                         }))
                     }
                 }
@@ -207,6 +208,7 @@ impl Store {
                         root: block_root,
                         slot,
                         kind: DataKind::Block,
+                        origin: Origin::Backfill,
                     }));
                 }
                 PendingWrite::BackfillEnvelope { slot, ssz } => {

@@ -84,12 +84,14 @@ pub(crate) fn handle_request_no_el(
         }),
         // EL responded with none of the requested blobs: a count-0 frame.
         EngineReq::GetBlobs(r) => match write_tcache(resp_producer, &0u32.to_le_bytes()) {
-            Some(data) => EngineResp::GetBlobs(EngineGetBlobsResp { id: r.id, ok: true, data }),
-            None => EngineResp::GetBlobs(EngineGetBlobsResp {
-                id: r.id,
-                ok: false,
-                data: unsafe { std::mem::zeroed() },
+            Some(data) => EngineResp::GetBlobs(EngineGetBlobsResp {
+                block_root: r.block_root,
+                slot: r.slot,
+                ok: true,
+                blobs_present: 0,
+                data,
             }),
+            None => EngineResp::GetBlobs(EngineGetBlobsResp::failed(r.block_root, r.slot)),
         },
         EngineReq::GetPayloadBodiesByHash(r) => {
             EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
@@ -206,7 +208,7 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
     let n = r.hash_count as usize;
     let hashes: Vec<String> =
         r.hashes[..n].iter().map(|h| format!("0x{}", hex::encode(h))).collect();
-    get_blobs(client, simd_json::json!([hashes]), r.id);
+    get_blobs(client, simd_json::json!([hashes]), r.block_root, r.slot);
 }
 
 #[inline]

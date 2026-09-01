@@ -1,3 +1,4 @@
+mod availability;
 mod batch;
 pub mod counters;
 mod el_blobs;

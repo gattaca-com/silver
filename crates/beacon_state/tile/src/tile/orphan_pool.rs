@@ -2,8 +2,8 @@ use flux::spine::SpineProducers;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataKind, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RpcSeverity, SyncNeed, TCacheRead, TRandomAccess, hex32, metrics::timed,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, NewGossipMsg, Origin, P2pStreamId,
+    PeerEvent, RpcSeverity, SyncNeed, TCacheRead, TRandomAccess, hex32, metrics::timed,
     ssz_view::SignedBeaconBlockView,
 };
 
@@ -238,6 +238,7 @@ impl BeaconStateTile {
         data: &[u8],
         producers: &mut Producers,
     ) {
+        let block_source = source.source();
         let admitted = match feedback {
             Feedback::RequestParent { parent_root, block_root } => {
                 let block_slot = SignedBeaconBlockView::slot(data);
@@ -262,7 +263,13 @@ impl BeaconStateTile {
         };
 
         if let Some(block_root) = admitted {
-            self.emit_block_received(data, block_root, false, producers);
+            self.emit_block_received(
+                data,
+                block_root,
+                BlockStage::AwaitParent,
+                block_source,
+                producers,
+            );
         }
     }
 
@@ -270,14 +277,16 @@ impl BeaconStateTile {
         &self,
         data: &[u8],
         block_root: B256,
-        applied: bool,
+        stage: BlockStage,
+        source: BlockSource,
         producers: &mut Producers,
     ) {
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         producers.produce(BeaconStateEvent::BlockReceived {
             slot: SignedBeaconBlockView::slot(data),
             block_root,
-            applied,
+            stage,
+            source,
             parent_slot: self
                 .fork_choice
                 .find_node_idx(&parent_root)
@@ -322,6 +331,15 @@ impl BeaconStateTile {
 pub(super) enum PendingBlock {
     Gossip(NewGossipMsg),
     Rpc(P2pStreamId, TCacheRead),
+}
+
+impl PendingBlock {
+    fn source(&self) -> BlockSource {
+        match self {
+            Self::Gossip(_) => BlockSource::Gossip,
+            Self::Rpc(..) => BlockSource::Rpc,
+        }
+    }
 }
 
 /// Resolve a pending block's slot via its source consumer. `None` if the

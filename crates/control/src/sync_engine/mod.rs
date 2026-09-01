@@ -15,9 +15,9 @@ use by_root::ByRootRequests;
 use peers::PeerView;
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataKind, PeerEvent, PeerStatus, RpcInbound, RpcRequest,
-    RpcRequestInbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SyncNeed, SyncRequest,
-    SyncUpdate, SyncingStrategy, ssz_view::StatusView,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, Origin, PeerEvent, PeerStatus, RpcInbound,
+    RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SyncNeed,
+    SyncRequest, SyncUpdate, SyncingStrategy, ssz_view::StatusView,
 };
 use silver_peer::SyncingConfig;
 use sync_window::{FETCH_CEILING, SyncWindow};
@@ -364,10 +364,16 @@ impl SyncEngine {
             SyncNeed::Missing { root, slot, kind, columns, origin } => {
                 self.ctx.root_requests.want(root, kind, columns, origin, slot, now);
             }
-            SyncNeed::Arrived { root, kind, .. } => {
-                self.ctx.root_requests.retire(&root);
-                self.ctx.backfill.on_arrived(kind);
-            }
+            SyncNeed::Arrived { root, slot, kind, origin } => match origin {
+                Origin::Live => {
+                    debug_assert_eq!(kind, DataKind::Columns);
+                    self.on_columns_covered(slot, root);
+                }
+                Origin::Backfill => {
+                    self.ctx.root_requests.retire(&root);
+                    self.ctx.backfill.on_arrived(kind);
+                }
+            },
             SyncNeed::BackfillGap { kind, floor, next } => {
                 self.ctx.backfill.set_owed(kind, floor, next)
             }
@@ -382,8 +388,8 @@ impl SyncEngine {
                 self.on_block_rejected(block_root, source)
             }
             BeaconStateEvent::ReplayComplete => self.on_replay_complete(),
-            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, applied } => {
-                self.on_block_received(slot, block_root, parent_slot, applied)
+            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, stage, .. } => {
+                self.on_block_received(slot, block_root, parent_slot, stage)
             }
             BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
                 self.on_envelope_covered(slot, block_root)
@@ -456,9 +462,9 @@ impl SyncEngine {
         slot: u64,
         block_root: [u8; 32],
         parent_slot: Option<u64>,
-        applied: bool,
+        stage: BlockStage,
     ) {
-        self.window.block_received(slot, block_root, parent_slot, applied);
+        self.window.block_received(slot, block_root, parent_slot, stage == BlockStage::Applied);
         self.phase.note_report(DataKind::Block, slot);
         self.ctx.root_requests.retire(&block_root);
     }
@@ -469,7 +475,7 @@ impl SyncEngine {
         self.phase.note_report(DataKind::Envelope, slot);
     }
 
-    pub fn on_columns_covered(&mut self, slot: u64, block_root: [u8; 32]) {
+    fn on_columns_covered(&mut self, slot: u64, block_root: [u8; 32]) {
         self.ctx.root_requests.retire(&block_root);
         self.window.columns_covered(slot);
         self.phase.note_report(DataKind::Columns, slot);

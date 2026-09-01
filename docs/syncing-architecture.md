@@ -107,7 +107,7 @@ Columns backfill uses a range, not a root, for the same reason as blocks. The st
 
 ## 6. Following
 
-In `Following` the window continues to get data. Gossip blocks come in as `BlockReceived`, and availability as `Available`. Thus the window stays a live picture of the head region.
+In `Following` the window continues to get data. Gossip blocks come in as `BlockReceived`, and custody completion as `Arrived { kind: Columns, origin: Live }`. Thus the window stays a live picture of the head region. `DataColumnsEvent::Available` is not that signal: a supernode reaches it at 64 of 128 columns while still owing the rest, and coverage must mean the node holds what it owes.
 
 From the window the engine calculates `block_gap`: the consecutive slots above the tail with no block and no proof of emptiness, up to the wall slot. That is different from "behind on data" and from "the chain is quiet". A single "are we behind" flag would mix those three conditions. Above `head_lag_threshold_slots` (8), `fell_behind()` becomes true, selection runs again, and the engine goes back to `Syncing`.
 
