@@ -6,7 +6,7 @@
 use std::{collections::VecDeque, ops::Deref, path::Path};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_common::{BlockSource, Nanos, PayloadValidationStatus, SilverSpine};
+use silver_common::{BlockSource, ColumnSource, Nanos, PayloadValidationStatus, SilverSpine};
 use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
 
 pub const MAINNET_GENESIS_UNIX_SECS: u64 = 1_606_824_023;
@@ -16,6 +16,7 @@ const ROWS_CAP: usize = 64;
 
 pub struct ColumnRow {
     pub index: u64,
+    pub source: ColumnSource,
     pub recv: Nanos,
     pub validated: Option<Nanos>,
 }
@@ -74,6 +75,19 @@ impl BlockRow {
             da_available: None,
             columns: Vec::new(),
         }
+    }
+
+    /// When the DA gate opened; columns arriving after it are custody duty,
+    /// not what this block waited for.
+    pub fn da_available(&self) -> Option<Nanos> {
+        self.da_available
+    }
+
+    /// First arrival → last validation across the block's column sidecars.
+    pub fn columns_span(&self) -> Option<(Nanos, Nanos)> {
+        let first = self.columns.iter().map(|c| c.recv).min()?;
+        let last = self.columns.iter().map(|c| c.validated.unwrap_or(c.recv)).max()?;
+        Some((first, last))
     }
 
     pub fn timeline(&self) -> Timeline {
@@ -152,9 +166,9 @@ impl BlockRows {
             Stage::ElVerdict { verdict } => row.verdict = Some((verdict, event.ts)),
             // Duplicate arrivals re-emit `Persist`; one subrow per index,
             // keeping the first arrival and validation.
-            Stage::ColumnRecv { index, .. } => {
+            Stage::ColumnRecv { index, source } => {
                 if row.columns.iter().all(|c| c.index != index) {
-                    row.columns.push(ColumnRow { index, recv: event.ts, validated: None });
+                    row.columns.push(ColumnRow { index, source, recv: event.ts, validated: None });
                 }
             }
             Stage::ColumnValidated { index, .. } => {

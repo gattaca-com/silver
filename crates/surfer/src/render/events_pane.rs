@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{BlockSource, Nanos, PayloadValidationStatus};
+use silver_common::{BlockSource, ColumnSource, Nanos, PayloadValidationStatus};
 
 use crate::sources::events::{BlockRow, Events};
 
@@ -117,17 +117,28 @@ impl EventsPane {
                 let mut columns: Vec<_> = r.columns.iter().collect();
                 columns.sort_unstable_by_key(|c| c.recv);
                 for c in columns {
+                    // Columns past the gate are custody duty, not what this
+                    // block waited for — dimmed.
+                    let past_gate = r.da_available().is_some_and(|gate| c.recv > gate);
+                    let text = |s: String| {
+                        if past_gate {
+                            Text::styled(s, Style::default().fg(Color::DarkGray))
+                        } else {
+                            Text::raw(s)
+                        }
+                    };
+                    let label_color = if past_gate { Color::DarkGray } else { Color::Magenta };
                     let recv_offset = self.data.clock().offset_in_slot(c.recv, r.slot);
                     let cells = vec![
                         Text::raw(""),
                         Text::styled(
                             format!("└ col {}", c.index),
-                            Style::default().fg(Color::Magenta),
+                            Style::default().fg(label_color),
                         ),
-                        Text::raw(""),
-                        Text::raw(c.recv.with_fmt_utc("%H:%M:%S%.3f")),
-                        Text::raw(recv_offset.map_or_else(|| "-".to_string(), dur)),
-                        Text::raw(
+                        text(column_source_label(c.source).to_string()),
+                        text(c.recv.with_fmt_utc("%H:%M:%S%.3f")),
+                        text(recv_offset.map_or_else(|| "-".to_string(), dur)),
+                        text(
                             c.validated
                                 .map_or_else(|| "-".to_string(), |v| dur(v.saturating_sub(c.recv))),
                         ),
@@ -164,6 +175,26 @@ impl EventsPane {
         f.render_stateful_widget(table, area, &mut self.table);
     }
 
+    /// `k/n cols first→last`: columns received by the DA gate against the
+    /// custody total, and the sidecars' first arrival → last validation as
+    /// into-slot offsets. Plain `n` while the gate hasn't opened.
+    fn columns_summary(&self, r: &BlockRow) -> String {
+        let Some((first, last)) = r.columns_span() else {
+            return "no cols".to_string();
+        };
+        let count = match r.da_available() {
+            Some(gate) => format!(
+                "{}/{}",
+                r.columns.iter().filter(|c| c.recv <= gate).count(),
+                r.columns.len()
+            ),
+            None => r.columns.len().to_string(),
+        };
+        let offset =
+            |ts| self.data.clock().offset_in_slot(ts, r.slot).map_or_else(|| "-".to_string(), dur);
+        format!("{count} cols {}→{}", offset(first), offset(last))
+    }
+
     fn block_cells(&self, r: &BlockRow, deadline: Nanos) -> Vec<Text<'static>> {
         let t = r.timeline();
         vec![
@@ -185,16 +216,15 @@ impl EventsPane {
                 stage_line("stf", t.stf, None, Color::LightBlue),
                 stage_line("el", t.el, t.verdict.map(status_label), el_color(t.verdict)),
             ]),
-            // The DA gate: arrival → data available, with the column count.
+            // The DA gate: arrival → data available, over a custody summary —
+            // columns received by the gate / total, first arrival → last
+            // validation (into slot).
             Text::from(vec![
                 Line::styled(
                     t.da.map_or_else(|| "-".to_string(), dur),
                     Style::default().fg(if t.da.is_some() { Color::Magenta } else { Color::Gray }),
                 ),
-                Line::styled(
-                    format!("{} cols", r.columns.len()),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Line::styled(self.columns_summary(r), Style::default().fg(Color::DarkGray)),
             ]),
             Text::raw(t.total.map_or_else(|| "-".to_string(), dur)),
             // Applied into-slot = arrival + validate + stf; that's when
@@ -281,6 +311,14 @@ fn status_label(status: PayloadValidationStatus) -> &'static str {
         PayloadValidationStatus::Invalid => "invalid",
         PayloadValidationStatus::Syncing => "syncing",
         PayloadValidationStatus::Accepted => "accepted",
+    }
+}
+
+fn column_source_label(source: ColumnSource) -> &'static str {
+    match source {
+        ColumnSource::Gossip => "gossip",
+        ColumnSource::Rpc => "rpc",
+        ColumnSource::El => "el",
     }
 }
 
