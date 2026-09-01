@@ -93,7 +93,7 @@ impl EventsPane {
                     }),
                     Text::raw(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
                     Text::raw(t.received.map_or_else(|| "-".to_string(), dur)),
-                    Text::raw(dur(t.validate)),
+                    Text::raw(t.validate.map_or_else(|| "-".to_string(), dur)),
                     // stf and el stacked, coloured differently, so it reads as
                     // "these two run in parallel".
                     Text::from(vec![
@@ -104,7 +104,10 @@ impl EventsPane {
                     // Applied into-slot = arrival + validate + stf; that's when
                     // the head is importable, i.e. when we could attest.
                     margin_text(
-                        t.received.zip(t.stf).map(|(recv, stf)| recv + t.validate + stf),
+                        t.received
+                            .zip(t.validate)
+                            .zip(t.stf)
+                            .map(|((recv, validate), stf)| recv + validate + stf),
                         deadline,
                     ),
                 ]

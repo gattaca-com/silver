@@ -738,6 +738,7 @@ pub enum BeaconStateEvent {
         slot: u64,
         block_root: [u8; 32],
         stage: BlockStage,
+        source: BlockSource,
         // missing if we haven't seen the parent, which is then reported
         // separately as `RequestBlock`
         parent_slot: Option<u64>,

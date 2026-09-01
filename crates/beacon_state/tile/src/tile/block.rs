@@ -55,7 +55,13 @@ impl BeaconStateTile {
             Err(e) => {
                 let f = e.feedback();
                 if let Feedback::AlreadyKnown(block_root) = f {
-                    self.emit_block_received(data, block_root, BlockStage::Applied, producers);
+                    self.emit_block_received(
+                        data,
+                        block_root,
+                        BlockStage::Applied,
+                        source,
+                        producers,
+                    );
                     Self::emit_persist_block(read, source, block_slot, block_root, producers);
                 }
                 return f;
@@ -87,11 +93,11 @@ impl BeaconStateTile {
 
         let applied_root = match f {
             Feedback::Accept(Some(block_root)) => {
-                self.emit_block_received(data, block_root, BlockStage::Applied, producers);
+                self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
                 block_root
             }
             Feedback::AlreadyKnown(block_root) => {
-                self.emit_block_received(data, block_root, BlockStage::Applied, producers);
+                self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
                 Self::emit_persist_block(read, source, block_slot, block_root, producers);
                 return f;
             }

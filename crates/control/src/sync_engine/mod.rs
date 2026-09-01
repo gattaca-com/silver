@@ -388,7 +388,7 @@ impl SyncEngine {
                 self.on_block_rejected(block_root, source)
             }
             BeaconStateEvent::ReplayComplete => self.on_replay_complete(),
-            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, stage } => {
+            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, stage, .. } => {
                 self.on_block_received(slot, block_root, parent_slot, stage)
             }
             BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
