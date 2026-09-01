@@ -1520,6 +1520,7 @@ mod tests {
             if cond(client_h, server_h) {
                 break;
             }
+            std::thread::sleep(Duration::from_micros(10));
         }
     }
 
