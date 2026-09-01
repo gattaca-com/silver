@@ -137,7 +137,7 @@ impl App {
             peers,
             peers_selected: None,
             peers_display_order: Vec::new(),
-            peers_sort_col: 10,
+            peers_sort_col: 11,
             peers_sort_desc: true,
             gossip_selected: None,
             gossip_display_order: Vec::new(),
