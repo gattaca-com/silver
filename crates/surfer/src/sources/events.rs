@@ -26,10 +26,8 @@ pub struct BlockRow {
     pub block_root: [u8; 32],
     /// `None` until the block itself arrives — its columns may come first.
     pub source: Option<BlockSource>,
-    /// Absolute arrival, for correlating with logs and as the delta baseline.
+    /// Absolute arrival, for correlating with logs and as the bar's left edge.
     received_at: Option<Nanos>,
-    /// Arrival offset into the block's own slot.
-    received: Option<Nanos>,
     el_sent: Option<Nanos>,
     applied: Option<Nanos>,
     verdict: Option<(PayloadValidationStatus, Nanos)>,
@@ -38,27 +36,20 @@ pub struct BlockRow {
     pub columns: Vec<ColumnRow>,
 }
 
-/// `stf` and `el` both begin at EL-sent and run concurrently, so they overlap
-/// rather than sum into `total`.
-pub struct Timeline {
-    /// Absolute wall-clock arrival (unix epoch); `None` when only the block's
-    /// columns have been seen so far.
-    pub received_at: Option<Nanos>,
-    /// Slot start → block arrival; `None` once the arrival clock no longer
-    /// belongs to the block's slot.
-    pub received: Option<Nanos>,
-    /// arrival → EL-sent: CL validation, plus any wait on missing data, up to
-    /// dispatching `newPayload`.
-    pub validate: Option<Nanos>,
-    /// EL-sent → applied: state transition + commit.
-    pub stf: Option<Nanos>,
-    /// EL-sent → verdict: `newPayload` round-trip (concurrent with stf).
-    pub el: Option<Nanos>,
-    /// arrival → DA gate open.
-    pub da: Option<Nanos>,
-    pub verdict: Option<PayloadValidationStatus>,
-    /// arrival → last observed event.
-    pub total: Option<Nanos>,
+/// One lane of the block's dependency graph, as drawn by the waterfall: the
+/// whole strip, the data side (`Cols → Kzg → Da`) and the execution side
+/// (`Validate → Stf ‖ El`), joining at attestable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    Strip,
+    Data,
+    Cols,
+    Kzg,
+    Da,
+    Exec,
+    Validate,
+    Stf,
+    El,
 }
 
 impl BlockRow {
@@ -68,7 +59,6 @@ impl BlockRow {
             block_root,
             source: None,
             received_at: None,
-            received: None,
             el_sent: None,
             applied: None,
             verdict: None,
@@ -83,33 +73,75 @@ impl BlockRow {
         self.da_available
     }
 
-    /// First arrival → last validation across the block's column sidecars.
-    pub fn columns_span(&self) -> Option<(Nanos, Nanos)> {
-        let first = self.columns.iter().map(|c| c.recv).min()?;
-        let last = self.columns.iter().map(|c| c.validated.unwrap_or(c.recv)).max()?;
-        Some((first, last))
-    }
-
-    pub fn timeline(&self) -> Timeline {
-        let last = self
-            .applied
+    /// The last event on the block's own path — column custody traffic
+    /// excluded, so an applied block's extent ends at attestable, not at the
+    /// custody tail.
+    fn last_event(&self) -> Option<Nanos> {
+        self.applied
             .into_iter()
             .chain(self.verdict.map(|(_, ts)| ts))
             .chain(self.el_sent)
             .chain(self.da_available)
-            .max();
-        let since_arrival =
-            |ts: Option<Nanos>| ts.zip(self.received_at).map(|(ts, at)| ts.saturating_sub(at));
-        Timeline {
-            received_at: self.received_at,
-            received: self.received,
-            validate: since_arrival(self.el_sent),
-            stf: self.applied.zip(self.el_sent).map(|(ts, sent)| ts.saturating_sub(sent)),
-            el: self.verdict.zip(self.el_sent).map(|((_, ts), sent)| ts.saturating_sub(sent)),
-            da: since_arrival(self.da_available),
-            verdict: self.verdict.map(|(status, _)| status),
-            total: since_arrival(last),
+            .max()
+    }
+
+    /// Where CL validation starts: the DA gate when it held the block (the
+    /// gate precedes dispatch), else arrival.
+    fn validate_from(&self) -> Option<Nanos> {
+        self.received_at.map(|at| match self.da_available {
+            Some(gate) if self.el_sent.is_some_and(|sent| gate < sent) => at.max(gate),
+            _ => at,
+        })
+    }
+
+    /// Wall-clock extent of one lane; `None` while it has no events. An
+    /// instant lane (`Da`) is a zero-length span.
+    pub fn span(&self, lane: Lane) -> Option<(Nanos, Nanos)> {
+        let cols_first = self.columns.iter().map(|c| c.recv).min();
+        match lane {
+            Lane::Strip => {
+                let start = self.received_at.or(cols_first)?;
+                let end = self.applied.or_else(|| self.last_event()).unwrap_or(start);
+                Some((start, end.max(start)))
+            }
+            Lane::Data => {
+                let start = cols_first.or(self.da_available)?;
+                let end = self
+                    .da_available
+                    .or_else(|| self.span(Lane::Kzg).map(|(_, last)| last))
+                    .unwrap_or(start);
+                Some((start, end))
+            }
+            Lane::Cols => Some((cols_first?, self.columns.iter().map(|c| c.recv).max()?)),
+            Lane::Kzg => {
+                let first = self.columns.iter().filter_map(|c| c.validated).min()?;
+                let last = self.columns.iter().filter_map(|c| c.validated).max()?;
+                Some((first, last))
+            }
+            Lane::Da => self.da_available.map(|gate| (gate, gate)),
+            Lane::Exec => {
+                let start = self.validate_from().or(self.el_sent)?;
+                let end = self
+                    .applied
+                    .into_iter()
+                    .chain(self.verdict.map(|(_, ts)| ts))
+                    .chain(self.el_sent)
+                    .max()?;
+                Some((start, end))
+            }
+            Lane::Validate => Some((self.validate_from()?, self.el_sent?)),
+            Lane::Stf => Some((self.el_sent?, self.applied?)),
+            Lane::El => self.verdict.map(|(_, ts)| (self.el_sent.unwrap_or(ts), ts)),
         }
+    }
+
+    /// When the block was applied, i.e. became attestable.
+    pub fn applied_at(&self) -> Option<Nanos> {
+        self.applied
+    }
+
+    pub fn verdict(&self) -> Option<PayloadValidationStatus> {
+        self.verdict.map(|(status, _)| status)
     }
 }
 
@@ -154,7 +186,6 @@ impl BlockRows {
                 if row.received_at.is_none() {
                     row.source = Some(source);
                     row.received_at = Some(event.ts);
-                    row.received = clock.offset_in_slot(event.ts, row.slot);
                 }
             }
             Stage::ElSent { .. } => row.el_sent = Some(event.ts),
@@ -270,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn block_timeline() {
+    fn block_lane_spans() {
         let el_sent = Stage::ElSent { source: BlockSource::Gossip };
         let verdict = Stage::ElVerdict { verdict: PayloadValidationStatus::Valid };
         let rows = fold_all(vec![
@@ -283,15 +314,40 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].slot, 2);
-        let t = rows[0].timeline();
-        assert_eq!(t.received_at, Some(at(2, 300)));
-        assert_eq!(t.received, Some(Nanos(300 * MS)));
-        assert_eq!(t.validate, Some(Nanos(0)));
-        assert_eq!(t.stf, Some(Nanos(160 * MS)));
-        assert_eq!(t.el, Some(Nanos(220 * MS)));
-        assert_eq!(t.da, Some(Nanos(50 * MS)));
-        assert_eq!(t.total, Some(Nanos(220 * MS)));
-        assert_eq!(t.verdict, Some(PayloadValidationStatus::Valid));
+        let r = &rows[0];
+        assert_eq!(r.span(Lane::Strip), Some((at(2, 300), at(2, 460))), "arrival → attestable");
+        // The gate fired after dispatch, so it never held the block.
+        assert_eq!(r.span(Lane::Validate), Some((at(2, 300), at(2, 300))));
+        assert_eq!(r.span(Lane::Stf), Some((at(2, 300), at(2, 460))));
+        assert_eq!(r.span(Lane::El), Some((at(2, 300), at(2, 520))));
+        assert_eq!(r.span(Lane::Da), Some((at(2, 350), at(2, 350))));
+        assert_eq!(r.span(Lane::Cols), None, "no sidecars observed");
+        assert_eq!(r.applied_at(), Some(at(2, 460)));
+        assert_eq!(r.verdict(), Some(PayloadValidationStatus::Valid));
+    }
+
+    /// The DA gate precedes `newPayload` dispatch, so a gated block's
+    /// `validate` starts at the gate — the data wait must not be counted as
+    /// validation.
+    #[test]
+    fn gated_block_measures_validate_from_the_gate() {
+        let el_sent = Stage::ElSent { source: BlockSource::Gossip };
+        let rows = fold_all(vec![
+            event(received(), at(2, 300), Some(2)),
+            event(Stage::DaAvailable, at(2, 410), Some(2)),
+            event(el_sent, at(2, 413), Some(2)),
+            event(Stage::Applied, at(2, 422), Some(2)),
+        ]);
+
+        let r = &rows[0];
+        assert_eq!(r.span(Lane::Da), Some((at(2, 410), at(2, 410))));
+        assert_eq!(
+            r.span(Lane::Validate),
+            Some((at(2, 410), at(2, 413))),
+            "gate → dispatch, not arrival → dispatch"
+        );
+        assert_eq!(r.span(Lane::Stf), Some((at(2, 413), at(2, 422))));
+        assert_eq!(r.span(Lane::Exec), Some((at(2, 410), at(2, 422))));
     }
 
     /// Columns often beat the block itself; the row opens on the first of them
@@ -312,7 +368,9 @@ mod tests {
         assert_eq!(row.columns[0].index, 48);
         assert_eq!(row.columns[0].recv, at(4, 200));
         assert_eq!(row.columns[0].validated, Some(at(4, 210)));
-        assert_eq!(row.timeline().received_at, Some(at(4, 300)));
+        assert_eq!(row.span(Lane::Strip).map(|(start, _)| start), Some(at(4, 300)));
+        assert_eq!(row.span(Lane::Cols), Some((at(4, 200), at(4, 200))));
+        assert_eq!(row.span(Lane::Kzg), Some((at(4, 210), at(4, 210))));
     }
 
     /// A slotless event (an FCU for a root from before attach) has no
@@ -342,7 +400,7 @@ mod tests {
             event(Stage::Applied, at(2, 460), Some(2)),
             event(Stage::Applied, at(2, 900), Some(2)),
         ]);
-        assert_eq!(rows[0].timeline().stf, Some(Nanos(140 * MS)));
+        assert_eq!(rows[0].span(Lane::Stf), Some((at(2, 320), at(2, 460))));
     }
 
     /// A re-announcement past the reader's dedup window must not restamp
@@ -353,7 +411,7 @@ mod tests {
             event(received(), at(4, 300), Some(4)),
             event(received(), at(4, 3_100), Some(4)),
         ]);
-        assert_eq!(rows[0].timeline().received_at, Some(at(4, 300)));
+        assert_eq!(rows[0].span(Lane::Strip).map(|(start, _)| start), Some(at(4, 300)));
     }
 
     /// Duplicate `Persist` events (an already-held column re-arriving) fold

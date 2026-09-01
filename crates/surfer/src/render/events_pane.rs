@@ -1,48 +1,64 @@
-use std::{iter::repeat_n, path::Path};
+//! The Events tab: per-block waterfalls on a shared ms-into-slot axis.
+//!
+//! One line per (slot, root); its bar spans arrival → attestable. Expanding a
+//! line unfolds the block's dependency tree (`data → cols/kzg/da`,
+//! `block → validate/stf/el`), every level drawn with the same grammar:
+//! `label │ start │ bar on the axis │ duration`. Bars that overlap vertically
+//! ran in parallel; a gap in a lane is waiting.
+
+use std::{collections::HashSet, path::Path};
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::{Line, Text},
-    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{BlockSource, ColumnSource, Nanos, PayloadValidationStatus};
+use silver_common::{ColumnSource, Nanos, PayloadValidationStatus};
 
-use crate::sources::events::{BlockRow, Events};
+use crate::sources::events::{BlockRow, Events, Lane};
 
-/// Descriptive title suffix. `stf` and `el` share one cell (stacked) because
-/// they run concurrently — both start at EL-sent, so `total` is not their sum.
-const HINT: &str = "recv into slot, per-step Δ (stf ‖ el), Enter expands columns";
+const HINT: &str = "waterfall, ms into slot — Enter expands, bars overlapping ran in parallel";
 
-const COLS: [&str; 10] = [
-    "slot",
-    "block root",
-    "src",
-    "received time",
-    "into slot",
-    "validate",
-    "stf ‖ el",
-    "da",
-    "total",
-    "attestation deadline",
-];
+/// Fixed-width left columns; the axis takes the rest.
+const LABEL_W: usize = 22;
+/// Wall clock of the row's start, for log correlation.
+const TIME_W: usize = 13;
+const START_W: usize = 9;
+/// Deadline margin, on block strips only.
+const MARGIN_W: usize = 9;
 
-/// The Events tab: a spine data source plus its own scroll/selection state.
+/// Which subtree of a block a display row belongs to; `Enter` toggles the
+/// expandable ones.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Expand {
+    Strip,
+    Data,
+    Cols,
+    Exec,
+}
+
+/// One display row: a lane of the block's graph, or one column sidecar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Node {
+    Lane(Lane),
+    Col(usize),
+}
+
 pub struct EventsPane {
     data: Events,
-    table: TableState,
-    /// Block whose per-column rows are unfolded beneath it.
-    expanded: Option<[u8; 32]>,
+    list: ListState,
+    expanded: HashSet<([u8; 32], Expand)>,
 }
 
 impl EventsPane {
     pub fn open(base_dir: &Path, genesis_unix_secs: u64, slot_ms: u64) -> Self {
         Self {
             data: Events::open(base_dir, genesis_unix_secs, slot_ms),
-            table: TableState::default(),
-            expanded: None,
+            list: ListState::default(),
+            expanded: HashSet::new(),
         }
     }
 
@@ -50,54 +66,82 @@ impl EventsPane {
         self.data.sample();
     }
 
-    /// The block each display row belongs to, newest block first: one row per
-    /// block, plus one per column of the expanded one.
-    fn display_roots(&self) -> Vec<[u8; 32]> {
-        let mut roots = Vec::new();
+    /// The visible tree, newest block first, in display order.
+    fn display(&self) -> Vec<([u8; 32], Node)> {
+        let mut out = Vec::new();
         for r in self.data.rows().iter().rev() {
-            roots.push(r.block_root);
-            if self.expanded == Some(r.block_root) {
-                roots.extend(repeat_n(r.block_root, r.columns.len()));
+            let root = r.block_root;
+            let open = |e| self.expanded.contains(&(root, e));
+            out.push((root, Node::Lane(Lane::Strip)));
+            if !open(Expand::Strip) {
+                continue;
+            }
+            out.push((root, Node::Lane(Lane::Data)));
+            if open(Expand::Data) {
+                out.push((root, Node::Lane(Lane::Cols)));
+                if open(Expand::Cols) {
+                    let mut order: Vec<_> = (0..r.columns.len()).collect();
+                    order.sort_unstable_by_key(|&i| r.columns[i].recv);
+                    out.extend(order.into_iter().map(|i| (root, Node::Col(i))));
+                }
+                out.push((root, Node::Lane(Lane::Kzg)));
+                out.push((root, Node::Lane(Lane::Da)));
+            }
+            out.push((root, Node::Lane(Lane::Exec)));
+            if open(Expand::Exec) {
+                out.push((root, Node::Lane(Lane::Validate)));
+                out.push((root, Node::Lane(Lane::Stf)));
+                out.push((root, Node::Lane(Lane::El)));
             }
         }
-        roots
+        out
     }
 
     pub fn move_selection(&mut self, dir: i32) {
-        let n = self.display_roots().len() as i32;
+        let n = self.display().len() as i32;
         if n == 0 {
             return;
         }
-        let cur = self.table.selected().unwrap_or(0) as i32;
-        self.table.select(Some((cur + dir).rem_euclid(n) as usize));
+        let cur = self.list.selected().unwrap_or(0) as i32;
+        self.list.select(Some((cur + dir).rem_euclid(n) as usize));
     }
 
     pub fn toggle_expand(&mut self) {
-        let roots = self.display_roots();
-        let Some(&root) = self.table.selected().and_then(|i| roots.get(i)) else {
+        let display = self.display();
+        let Some(&(root, node)) = self.list.selected().and_then(|i| display.get(i)) else {
             return;
         };
-        self.expanded = (self.expanded != Some(root)).then_some(root);
+        let expand = match node {
+            Node::Lane(Lane::Strip) => Expand::Strip,
+            Node::Lane(Lane::Data) => Expand::Data,
+            Node::Lane(Lane::Cols) => Expand::Cols,
+            Node::Lane(Lane::Exec) => Expand::Exec,
+            _ => return,
+        };
+        if !self.expanded.remove(&(root, expand)) {
+            self.expanded.insert((root, expand));
+        }
         // The toggle rewrites the display list; keep the highlight on the
-        // toggled block rather than whatever lands at the old index.
-        self.table.select(self.display_roots().iter().position(|&r| r == root));
+        // toggled node rather than whatever lands at the old index.
+        self.list.select(self.display().iter().position(|&e| e == (root, node)));
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
-        let rows = self.data.rows();
-        let display_rows = self.display_roots().len();
-        let title = match self.table.selected() {
-            Some(i) if !rows.is_empty() => {
-                format!(" events {}/{} — {HINT} ", i + 1, display_rows)
-            }
-            _ => format!(" events — {HINT} "),
+        let display = self.display();
+        let title = match self.selected_wall_range(&display) {
+            Some((start, end)) => format!(
+                " events — {} → {} — {HINT} ",
+                start.with_fmt_utc("%H:%M:%S%.3f"),
+                end.with_fmt_utc("%H:%M:%S%.3f"),
+            ),
+            None => format!(" events — {HINT} "),
         };
         let block =
             Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-        if rows.is_empty() {
-            let inner = block.inner(area);
-            f.render_widget(block, area);
+        if display.is_empty() {
             f.render_widget(
                 Paragraph::new("no blocks observed yet")
                     .style(Style::default().fg(Color::DarkGray)),
@@ -106,165 +150,224 @@ impl EventsPane {
             return;
         }
 
-        // Build the styled cell content first so column widths can be sized to
-        // the widest cell (like the builder's DataTable), newest row first.
-        // Block rows are two lines tall; expanded column subrows one.
-        let deadline = self.data.attestation_deadline();
-        let mut grid: Vec<(Vec<Text>, u16)> = Vec::new();
-        for r in rows.iter().rev() {
-            grid.push((self.block_cells(r, deadline), 2));
-            if self.expanded == Some(r.block_root) {
-                let mut columns: Vec<_> = r.columns.iter().collect();
-                columns.sort_unstable_by_key(|c| c.recv);
-                for c in columns {
-                    // Columns past the gate are custody duty, not what this
-                    // block waited for — dimmed.
-                    let past_gate = r.da_available().is_some_and(|gate| c.recv > gate);
-                    let text = |s: String| {
-                        if past_gate {
-                            Text::styled(s, Style::default().fg(Color::DarkGray))
-                        } else {
-                            Text::raw(s)
-                        }
-                    };
-                    let label_color = if past_gate { Color::DarkGray } else { Color::Magenta };
-                    let recv_offset = self.data.clock().offset_in_slot(c.recv, r.slot);
-                    let cells = vec![
-                        Text::raw(""),
-                        Text::styled(
-                            format!("└ col {}", c.index),
-                            Style::default().fg(label_color),
-                        ),
-                        text(column_source_label(c.source).to_string()),
-                        text(c.recv.with_fmt_utc("%H:%M:%S%.3f")),
-                        text(recv_offset.map_or_else(|| "-".to_string(), dur)),
-                        text(
-                            c.validated
-                                .map_or_else(|| "-".to_string(), |v| dur(v.saturating_sub(c.recv))),
-                        ),
-                        Text::raw(""),
-                        Text::raw(""),
-                        Text::raw(""),
-                        Text::raw(""),
-                    ];
-                    grid.push((cells, 1));
-                }
-            }
-        }
+        let axis_w =
+            (inner.width as usize).saturating_sub(LABEL_W + TIME_W + START_W + MARGIN_W + 4);
+        let axis = Axis::fit(axis_w, self.data.attestation_deadline(), self.max_offset());
 
-        let col_widths: Vec<u16> = (0..COLS.len())
-            .map(|c| {
-                let widest = grid.iter().map(|(row, _)| row[c].width()).max().unwrap_or(0);
-                Text::raw(COLS[c]).width().max(widest) as u16
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+        f.render_widget(Paragraph::new(self.header_line(&axis)), chunks[0]);
+
+        let items: Vec<ListItem> = display
+            .iter()
+            .map(|&(root, node)| {
+                let row = self.row(root).expect("display rows come from the ring");
+                ListItem::new(self.node_line(row, node, &axis))
             })
             .collect();
+        let list = List::new(items).highlight_style(Style::default().bg(Color::Indexed(236)));
+        f.render_stateful_widget(list, chunks[1], &mut self.list);
+    }
 
-        let header = Row::new(with_separators(COLS.iter().map(|s| Cell::from(*s)).collect(), 1))
-            .style(Style::default().fg(Color::Cyan));
-        let body = grid.into_iter().map(|(row, height)| {
-            let cells = with_separators(row.into_iter().map(Cell::from).collect(), height as usize);
-            Row::new(cells).height(height)
+    fn row(&self, root: [u8; 32]) -> Option<&BlockRow> {
+        self.data.rows().iter().find(|r| r.block_root == root)
+    }
+
+    /// Absolute wall clock of the selected node's span, for log correlation.
+    fn selected_wall_range(&self, display: &[([u8; 32], Node)]) -> Option<(Nanos, Nanos)> {
+        let &(root, node) = self.list.selected().and_then(|i| display.get(i))?;
+        let row = self.row(root)?;
+        match node {
+            Node::Lane(lane) => row.span(lane),
+            Node::Col(i) => {
+                let c = row.columns.get(i)?;
+                Some((c.recv, c.validated.unwrap_or(c.recv)))
+            }
+        }
+    }
+
+    /// Largest strip end offset, so the axis covers every visible bar.
+    fn max_offset(&self) -> Nanos {
+        self.data
+            .rows()
+            .iter()
+            .filter_map(|r| {
+                let (_, end) = r.span(Lane::Strip)?;
+                self.offset(r, end)
+            })
+            .max()
+            .unwrap_or(Nanos(0))
+    }
+
+    /// Into-slot offset of a wall timestamp, `None` outside the live window.
+    fn offset(&self, r: &BlockRow, ts: Nanos) -> Option<Nanos> {
+        self.data.clock().offset_in_slot(ts, r.slot)
+    }
+
+    fn header_line(&self, axis: &Axis) -> Line<'static> {
+        let mut labels = String::new();
+        for sec in 0.. {
+            let Some(cell) = axis.cell(Nanos::from_secs(sec)) else {
+                break;
+            };
+            while labels.chars().count() < cell {
+                labels.push('\u{254c}'); // ╌
+            }
+            labels.push_str(&format!("{sec}s"));
+        }
+        while labels.chars().count() < axis.width {
+            labels.push('\u{254c}');
+        }
+        let head = format!(
+            "{:<LABEL_W$} {:<TIME_W$} {:<START_W$} {}",
+            "slot/component", "time", "start", labels
+        );
+        Line::styled(head, Style::default().fg(Color::Cyan))
+    }
+
+    /// `label │ start │ bar │ duration [suffix]`, one line per node.
+    fn node_line(&self, r: &BlockRow, node: Node, axis: &Axis) -> Line<'static> {
+        let (label, span, style) = match node {
+            Node::Lane(lane) => (self.lane_label(r, lane), r.span(lane), lane_style(r, lane)),
+            Node::Col(i) => {
+                let c = &r.columns[i];
+                let past_gate = r.da_available().is_some_and(|gate| c.recv > gate);
+                let style =
+                    Style::default().fg(if past_gate { Color::DarkGray } else { Color::White });
+                let span = Some((c.recv, c.validated.unwrap_or(c.recv)));
+                (format!("      col {} {}", c.index, source_label(c.source)), span, style)
+            }
+        };
+
+        let (time_text, start_text, bar) = match span {
+            Some((start, end)) => {
+                let offset = self.offset(r, start);
+                let start_text = offset.map_or_else(|| "-".to_string(), dur);
+                (
+                    start.with_fmt_utc("%H:%M:%S%.3f"),
+                    start_text,
+                    axis.bar(offset, end.saturating_sub(start)),
+                )
+            }
+            None => ("-".to_string(), "-".to_string(), String::new()),
+        };
+
+        let duration = span.map_or_else(String::new, |(start, end)| match node {
+            Node::Lane(Lane::Da) => String::new(),
+            _ => dur(end.saturating_sub(start)),
         });
+        let suffix = self.suffix(r, node);
 
-        let table = Table::new(body, interleave_widths(&col_widths))
-            .header(header)
-            .block(block)
-            .column_spacing(1)
-            .row_highlight_style(Style::default().bg(Color::Indexed(236)))
-            .highlight_symbol("▶ ");
-        f.render_stateful_widget(table, area, &mut self.table);
+        // The first slot of an epoch is highlighted so boundaries stand out.
+        let label_color = match node {
+            Node::Lane(Lane::Strip) if r.slot.is_multiple_of(SLOTS_PER_EPOCH) => Color::Cyan,
+            _ => Color::Gray,
+        };
+        let mut spans = vec![Span::styled(
+            format!("{label:<LABEL_W$} {time_text:<TIME_W$} {start_text:<START_W$} "),
+            Style::default().fg(label_color),
+        )];
+        spans.push(Span::styled(format!("{bar} {duration}{suffix}"), style));
+        if let Node::Lane(Lane::Strip) = node {
+            spans.push(margin_span(self.margin(r)));
+        }
+        Line::from(spans)
     }
 
-    /// `k/n cols first→last`: columns received by the DA gate against the
-    /// custody total, and the sidecars' first arrival → last validation as
-    /// into-slot offsets. Plain `n` while the gate hasn't opened.
-    fn columns_summary(&self, r: &BlockRow) -> String {
-        let Some((first, last)) = r.columns_span() else {
-            return "no cols".to_string();
-        };
-        let count = match r.da_available() {
-            Some(gate) => format!(
-                "{}/{}",
-                r.columns.iter().filter(|c| c.recv <= gate).count(),
-                r.columns.len()
-            ),
-            None => r.columns.len().to_string(),
-        };
-        let offset =
-            |ts| self.data.clock().offset_in_slot(ts, r.slot).map_or_else(|| "-".to_string(), dur);
-        format!("{count} cols {}→{}", offset(first), offset(last))
+    fn lane_label(&self, r: &BlockRow, lane: Lane) -> String {
+        let open = |e| self.expanded.contains(&(r.block_root, e));
+        let arrow = |e| if open(e) { '\u{25be}' } else { '\u{25b8}' }; // ▾ ▸
+        match lane {
+            Lane::Strip => {
+                format!("{} {} {}", arrow(Expand::Strip), r.slot, root_prefix(&r.block_root))
+            }
+            Lane::Data => format!("  {} data", arrow(Expand::Data)),
+            Lane::Cols => format!("    {} cols", arrow(Expand::Cols)),
+            Lane::Kzg => "      kzg".to_string(),
+            Lane::Da => "      da".to_string(),
+            Lane::Exec => format!("  {} block", arrow(Expand::Exec)),
+            Lane::Validate => "      validate".to_string(),
+            Lane::Stf => "      stf".to_string(),
+            Lane::El => "      el".to_string(),
+        }
     }
 
-    fn block_cells(&self, r: &BlockRow, deadline: Nanos) -> Vec<Text<'static>> {
-        let t = r.timeline();
-        vec![
-            slot_text(r.slot),
-            Text::raw(root_prefix(&r.block_root)),
-            Text::raw(match r.source {
-                Some(BlockSource::Gossip) => "gossip",
-                Some(BlockSource::Rpc) => "rpc",
-                None => "-",
-            }),
-            Text::raw(
-                t.received_at.map_or_else(|| "-".to_string(), |at| at.with_fmt_utc("%H:%M:%S%.3f")),
-            ),
-            Text::raw(t.received.map_or_else(|| "-".to_string(), dur)),
-            Text::raw(t.validate.map_or_else(|| "-".to_string(), dur)),
-            // stf and el stacked, coloured differently, so it reads as
-            // "these two run in parallel".
-            Text::from(vec![
-                stage_line("stf", t.stf, None, Color::LightBlue),
-                stage_line("el", t.el, t.verdict.map(status_label), el_color(t.verdict)),
-            ]),
-            // The DA gate: arrival → data available, over a custody summary —
-            // columns received by the gate / total, first arrival → last
-            // validation (into slot).
-            Text::from(vec![
-                Line::styled(
-                    t.da.map_or_else(|| "-".to_string(), dur),
-                    Style::default().fg(if t.da.is_some() { Color::Magenta } else { Color::Gray }),
+    fn suffix(&self, r: &BlockRow, node: Node) -> String {
+        match node {
+            Node::Lane(Lane::Cols) => match r.da_available() {
+                Some(gate) => format!(
+                    " {}/{}",
+                    r.columns.iter().filter(|c| c.recv <= gate).count(),
+                    r.columns.len()
                 ),
-                Line::styled(self.columns_summary(r), Style::default().fg(Color::DarkGray)),
-            ]),
-            Text::raw(t.total.map_or_else(|| "-".to_string(), dur)),
-            // Applied into-slot = arrival + validate + stf; that's when
-            // the head is importable, i.e. when we could attest.
-            margin_text(
-                t.received
-                    .zip(t.validate)
-                    .zip(t.stf)
-                    .map(|((recv, validate), stf)| recv + validate + stf),
-                deadline,
-            ),
-        ]
+                None => format!(" {}", r.columns.len()),
+            },
+            Node::Lane(Lane::El) => {
+                r.verdict().map_or_else(String::new, |v| format!(" {}", status_label(v)))
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Attestation-deadline margin at attestable; `None` before applied.
+    fn margin(&self, r: &BlockRow) -> Option<(Nanos, bool)> {
+        let applied_into_slot = self.offset(r, r.applied_at()?)?;
+        let deadline = self.data.attestation_deadline();
+        Some(if applied_into_slot <= deadline {
+            (deadline.saturating_sub(applied_into_slot), true)
+        } else {
+            (applied_into_slot.saturating_sub(deadline), false)
+        })
     }
 }
 
-/// Interleave a dim, `lines`-tall `│` divider between adjacent cells so the
-/// rules span the full height of multi-line rows.
-fn with_separators(cells: Vec<Cell<'static>>, lines: usize) -> Vec<Cell<'static>> {
-    let mut out = Vec::with_capacity(cells.len() * 2 - 1);
-    for (i, cell) in cells.into_iter().enumerate() {
-        if i > 0 {
-            let bar = Text::from(vec![Line::from("│"); lines]);
-            out.push(Cell::from(bar).style(Style::default().fg(Color::DarkGray)));
-        }
-        out.push(cell);
-    }
-    out
+/// The shared time scale: into-slot nanoseconds → axis cells.
+struct Axis {
+    width: usize,
+    range: Nanos,
 }
 
-/// Column widths with a 1-wide divider column interleaved to match
-/// [`with_separators`].
-fn interleave_widths(widths: &[u16]) -> Vec<Constraint> {
-    let mut out = Vec::with_capacity(widths.len() * 2 - 1);
-    for (i, &w) in widths.iter().enumerate() {
-        if i > 0 {
-            out.push(Constraint::Length(1));
-        }
-        out.push(Constraint::Length(w));
+impl Axis {
+    /// Covers the deadline and every visible bar, with 5% headroom.
+    fn fit(width: usize, deadline: Nanos, max_offset: Nanos) -> Self {
+        let range = Nanos(deadline.0.max(max_offset.0).max(1) * 21 / 20);
+        Self { width, range }
     }
-    out
+
+    fn cell(&self, offset: Nanos) -> Option<usize> {
+        (offset <= self.range)
+            .then(|| {
+                ((offset.0 as u128 * self.width as u128) / self.range.0.max(1) as u128) as usize
+            })
+            .filter(|&c| c < self.width)
+    }
+
+    /// Spaces up to the bar, then at least one bar cell. Empty when the start
+    /// offset is unknown (replay clock).
+    fn bar(&self, start: Option<Nanos>, len: Nanos) -> String {
+        let Some(start_cell) = start.and_then(|s| self.cell(s)) else {
+            return String::new();
+        };
+        let end_cell = start
+            .map(|s| s + len)
+            .and_then(|e| self.cell(e))
+            .unwrap_or(self.width.saturating_sub(1));
+        let bar_len = (end_cell.saturating_sub(start_cell)).max(1);
+        format!("{}{}", " ".repeat(start_cell), "\u{2588}".repeat(bar_len))
+    }
+}
+
+fn lane_style(r: &BlockRow, lane: Lane) -> Style {
+    let color = match lane {
+        Lane::Da => Color::Magenta,
+        Lane::El => el_color(r.verdict()),
+        Lane::Kzg | Lane::Cols => Color::LightMagenta,
+        Lane::Stf | Lane::Validate => Color::LightBlue,
+        _ => Color::White,
+    };
+    Style::default().fg(color)
 }
 
 /// Auto-unit duration via flux's `Nanos` Display ("2.345s", "12.5ms", "910μs"),
@@ -273,33 +376,13 @@ fn dur(d: Nanos) -> String {
     if d.0 == 0 { "0".to_string() } else { d.to_string() }
 }
 
-/// Margin against the attestation deadline at the point the block became
-/// importable (applied): green when we beat it (time to spare), red (`-…`) when
-/// we missed it. `-` when there is no applied-into-slot to compare.
-fn margin_text(applied_into_slot: Option<Nanos>, deadline: Nanos) -> Text<'static> {
-    let Some(applied) = applied_into_slot else {
-        return Text::raw("-");
+/// Green with time to spare, red past the deadline.
+fn margin_span(margin: Option<(Nanos, bool)>) -> Span<'static> {
+    let Some((delta, made_it)) = margin else {
+        return Span::raw("");
     };
-    let (text, color) = if applied <= deadline {
-        (format!("+{}", dur(deadline.saturating_sub(applied))), Color::Green)
-    } else {
-        (format!("-{}", dur(applied.saturating_sub(deadline))), Color::Red)
-    };
-    Text::styled(text, Style::default().fg(color))
-}
-
-/// One line of the stacked `stf ‖ el` cell: `"<label> <dur> [note]"`, coloured;
-/// `-` while the stage hasn't happened.
-fn stage_line(label: &str, d: Option<Nanos>, note: Option<&str>, color: Color) -> Line<'static> {
-    let mut text = match d {
-        Some(d) => format!("{label:<3} {}", dur(d)),
-        None => format!("{label:<3} -"),
-    };
-    if let Some(note) = note {
-        text.push(' ');
-        text.push_str(note);
-    }
-    Line::styled(text, Style::default().fg(color))
+    let (sign, color) = if made_it { ('+', Color::Green) } else { ('-', Color::Red) };
+    Span::styled(format!("  {sign}{}", dur(delta)), Style::default().fg(color))
 }
 
 /// Spelled out next to the `el` duration: a syncing or accepted EL answers in a
@@ -314,7 +397,7 @@ fn status_label(status: PayloadValidationStatus) -> &'static str {
     }
 }
 
-fn column_source_label(source: ColumnSource) -> &'static str {
+fn source_label(source: ColumnSource) -> &'static str {
     match source {
         ColumnSource::Gossip => "gossip",
         ColumnSource::Rpc => "rpc",
@@ -322,23 +405,7 @@ fn column_source_label(source: ColumnSource) -> &'static str {
     }
 }
 
-/// First 4 bytes of the block root as 8 hex chars.
-fn root_prefix(root: &[u8; 32]) -> String {
-    format!("{:02x}{:02x}{:02x}{:02x}", root[0], root[1], root[2], root[3])
-}
-
-/// The first slot of an epoch is highlighted (cyan) so epoch boundaries stand
-/// out. Cosmetic only — assumes the mainnet epoch length.
-fn slot_text(slot: u64) -> Text<'static> {
-    let text = slot.to_string();
-    if slot.is_multiple_of(SLOTS_PER_EPOCH) {
-        Text::styled(text, Style::default().fg(Color::Cyan))
-    } else {
-        Text::raw(text)
-    }
-}
-
-/// Colour for the `el` line, carrying the EL verdict: green valid, red invalid,
+/// Colour for the `el` lane, carrying the EL verdict: green valid, red invalid,
 /// yellow syncing/accepted, grey while the EL has not responded.
 fn el_color(status: Option<PayloadValidationStatus>) -> Color {
     match status {
@@ -347,4 +414,9 @@ fn el_color(status: Option<PayloadValidationStatus>) -> Color {
         Some(PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted) => Color::Yellow,
         None => Color::Gray,
     }
+}
+
+/// First 4 bytes of the block root as 8 hex chars.
+fn root_prefix(root: &[u8; 32]) -> String {
+    format!("{:02x}{:02x}{:02x}{:02x}", root[0], root[1], root[2], root[3])
 }
