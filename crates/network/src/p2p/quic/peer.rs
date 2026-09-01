@@ -1512,15 +1512,24 @@ mod tests {
         max: usize,
         mut cond: F,
     ) {
-        let now = Instant::now();
-        for _ in 0..max {
+        // Time advances 1ms per step so quinn's delayed-ACK timer fires;
+        // frozen time made ACK-driven effects (lease release, acked FIN)
+        // depend on the immediate-ack packet parity. Bounded well under
+        // every live timeout (smallest: GOODBYE_LINGER, 1s).
+        let t0 = Instant::now();
+        for i in 0..max {
             let mut noop_c = |_: NetEvent| {};
             let mut noop_s = |_: NetEvent| {};
-            pair.step(now, client_h, server_h, &mut noop_c, &mut noop_s);
+            pair.step(
+                t0 + Duration::from_millis(i as u64),
+                client_h,
+                server_h,
+                &mut noop_c,
+                &mut noop_s,
+            );
             if cond(client_h, server_h) {
                 break;
             }
-            std::thread::sleep(Duration::from_micros(10));
         }
     }
 
@@ -1833,6 +1842,24 @@ mod tests {
 
         let data: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
         assert_eq!(data, payload);
+        // The release rides the server's ACK, which can land any number of
+        // steps after the data itself: keep pumping until quinn frees its
+        // clone of the payload.
+        let t0 = Instant::now();
+        for i in 0..200 {
+            if pair.client_peer.outbound_lease_wheel.active_count() == 0 {
+                break;
+            }
+            let mut noop_c = |_: NetEvent| {};
+            let mut noop_s = |_: NetEvent| {};
+            pair.step(
+                t0 + Duration::from_millis(i as u64),
+                &mut client_h,
+                &mut server_h,
+                &mut noop_c,
+                &mut noop_s,
+            );
+        }
         assert_eq!(
             pair.client_peer.outbound_lease_wheel.active_count(),
             0,
@@ -1997,8 +2024,8 @@ mod tests {
 
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
-        let now = Instant::now();
         let mut pair = PeerPair::new();
+        let now = Instant::now();
 
         let goodbye = RpcOutbound::Request(RpcRequestOutbound {
             application_id: 0,
@@ -2008,10 +2035,12 @@ mod tests {
         let msg = AcquiredRpcOutbound::from((goodbye, &mut client_h.context.rpc_consumer));
         assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
 
-        // Fixed `now`: the linger deadline never lapses, so the close can
-        // only come from the goodbye's ack — the property under test.
+        // Time advances 1ms per step so the server's delayed ACK fires, but
+        // the 300ms total stays under GOODBYE_LINGER: the linger deadline
+        // never lapses, so the close can only come from the goodbye's ack —
+        // the property under test.
         let mut server_got_goodbye = false;
-        for _ in 0..300 {
+        for i in 0..300u64 {
             let mut ccb = |_: NetEvent| {};
             let mut scb = |e: NetEvent| {
                 if let NetEvent::RpcInbound(RpcInbound::Request(req)) = e &&
@@ -2020,7 +2049,13 @@ mod tests {
                     server_got_goodbye = true;
                 }
             };
-            pair.step(now, &mut client_h, &mut server_h, &mut ccb, &mut scb);
+            pair.step(
+                now + Duration::from_millis(i),
+                &mut client_h,
+                &mut server_h,
+                &mut ccb,
+                &mut scb,
+            );
             if server_got_goodbye && pair.client_peer.connection.is_closed() {
                 break;
             }
