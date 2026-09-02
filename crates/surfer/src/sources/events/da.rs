@@ -93,9 +93,4 @@ impl DataAvailability {
         };
         Some(interval)
     }
-
-    /// Validated by the time the gate opened.
-    pub fn counted_for_gate(&self, column: &Column) -> bool {
-        self.available.is_some_and(|gate| column.validated_at.is_some_and(|v| v <= gate))
-    }
 }

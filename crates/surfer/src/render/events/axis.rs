@@ -37,6 +37,19 @@ impl Axis {
         out
     }
 
+    /// The bar cut at `split`: up to and including the split's cell, then the
+    /// rest. Without a split, or with one past the axis, everything is first.
+    pub fn split_bar(
+        &self,
+        start: Option<Nanos>,
+        len: Nanos,
+        split: Option<Nanos>,
+    ) -> (String, String) {
+        let bar = self.bar(start, len);
+        let cut = split.and_then(|s| self.cell(s)).map_or(self.width, |cell| cell + 1);
+        (bar.chars().take(cut).collect(), bar.chars().skip(cut).collect())
+    }
+
     /// Second marks along the axis; exactly `width` chars, so a mark that
     /// would run past the edge is left off.
     pub fn ticks(&self) -> String {

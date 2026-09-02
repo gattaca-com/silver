@@ -154,6 +154,11 @@ impl Node {
         }
     }
 
+    /// Rows of the data component, whose bars split at the gate.
+    pub fn is_data(self) -> bool {
+        matches!(self, Self::Col { .. } | Self::Span(Span::Da(_)))
+    }
+
     /// A blobless block's data component is nothing but the gate opening.
     pub fn is_instant(self, trace: &BlockTrace) -> bool {
         matches!(self, Self::Span(Span::Da(DaSpan::Root)) if !trace.da.has_columns())

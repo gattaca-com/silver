@@ -73,22 +73,25 @@ impl Grid {
         let style = theme.header();
         let [label, time, start, end, duration, margin] = HEADINGS.map(str::to_string);
         self.line(
-            [label, time, start, end, axis.ticks(), duration, margin].map(|t| (t, style)),
+            [label, time, start, end, axis.ticks(), duration, margin]
+                .map(|t| vec![TextSpan::styled(t, style)]),
             theme,
         )
     }
 
     /// One cell per column, padded to the column and separated by the
-    /// theme's separator symbol.
-    fn line(&self, cells: [(String, Style); 7], theme: &Theme) -> Line<'static> {
+    /// theme's separator symbol. A cell may hold several styled pieces.
+    fn line(&self, cells: [Vec<TextSpan<'static>>; 7], theme: &Theme) -> Line<'static> {
         let widths =
             [self.label, self.time, self.start, self.end, self.axis, self.duration, self.margin];
-        let mut spans = Vec::with_capacity(2 * cells.len());
-        for (i, ((text, style), width)) in cells.into_iter().zip(widths).enumerate() {
+        let mut spans = Vec::with_capacity(3 * cells.len());
+        for (i, (pieces, width)) in cells.into_iter().zip(widths).enumerate() {
             if i > 0 {
                 spans.push(TextSpan::styled(self.separator, theme.separator()));
             }
-            spans.push(TextSpan::styled(format!("{text:<width$}"), style));
+            let filled: usize = pieces.iter().map(|p| p.width()).sum();
+            spans.extend(pieces);
+            spans.push(TextSpan::raw(" ".repeat(width.saturating_sub(filled))));
         }
         Line::from(spans)
     }
@@ -104,7 +107,9 @@ pub struct RowCells {
     pub len: Nanos,
     pub duration: String,
     pub margin: Option<Margin>,
-    bar: Style,
+    /// Into-slot offset of the gate, where a data row's bar changes colour.
+    split: Option<Nanos>,
+    bar: (Style, Style),
     label_style: Style,
 }
 
@@ -131,6 +136,10 @@ impl RowCells {
             Node::Span(Span::Strip) => trace.deadline_margin(clock, deadline),
             _ => None,
         };
+        let split = match node.is_data() {
+            true => trace.da.available().and_then(|gate| trace.offset_in_slot(clock, gate)),
+            false => None,
+        };
         Self {
             label: label(trace, display, theme),
             time,
@@ -144,8 +153,18 @@ impl RowCells {
                 .collect::<Vec<_>>()
                 .join(" "),
             margin,
+            split,
             bar: theme.bar(trace, node),
             label_style: theme.label(trace, node),
+        }
+    }
+
+    /// The duration takes the colour of the bar's end.
+    fn duration_style(&self) -> Style {
+        let (before, after) = self.bar;
+        match (self.split, self.offset) {
+            (Some(split), Some(offset)) if offset + self.len > split => after,
+            _ => before,
         }
     }
 
@@ -158,15 +177,18 @@ impl RowCells {
 
     pub fn into_line(self, grid: &Grid, axis: &Axis, theme: &Theme) -> Line<'static> {
         let margin_text = self.margin_text();
+        let duration_style = self.duration_style();
+        let (before, after) = axis.split_bar(self.offset, self.len, self.split);
+        let one = |text, style| vec![TextSpan::styled(text, style)];
         grid.line(
             [
-                (self.label, self.label_style),
-                (self.time, theme.text()),
-                (self.start, theme.text()),
-                (self.end, theme.text()),
-                (axis.bar(self.offset, self.len), self.bar),
-                (self.duration, self.bar),
-                (margin_text, theme.margin(self.margin)),
+                one(self.label, self.label_style),
+                one(self.time, theme.text()),
+                one(self.start, theme.text()),
+                one(self.end, theme.text()),
+                vec![TextSpan::styled(before, self.bar.0), TextSpan::styled(after, self.bar.1)],
+                one(self.duration, duration_style),
+                one(margin_text, theme.margin(self.margin)),
             ],
             theme,
         )
@@ -223,6 +245,7 @@ fn status_label(status: PayloadValidationStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use silver_common::ColumnSource;
     use silver_stages::Stage;
 
     use super::*;
@@ -254,7 +277,7 @@ mod tests {
     /// Every row of a fully unfolded block, paired with its cells.
     fn all_rows(block: BlockTrace, theme: &Theme) -> Vec<(DisplayRow, RowCells)> {
         let mut expanded = Expanded::default();
-        for group in [Group::Block, Group::Da, Group::Stf] {
+        for group in [Group::Block, Group::Da, Group::Stf, Group::Cols(ColumnSource::Gossip)] {
             expanded.toggle(block.block_root, group);
         }
         let traces = BlockTraces::from_iter([block]);
@@ -327,15 +350,52 @@ mod tests {
         let axis = Axis::fit(grid.axis, DEADLINE, Nanos(0), theme.symbols);
         let (_, apply) = cells.into_iter().find(|(d, _)| d.node == Node::Span(APPLY)).unwrap();
         let line = apply.into_line(&grid, &axis, &theme);
-        // Cells and separators alternate: the bar is the fifth cell, the
-        // duration the sixth.
-        assert_eq!(line.spans[8].style.fg, Some(theme.components.apply));
-        assert_eq!(
-            line.spans[10].style.fg,
-            Some(theme.components.apply),
-            "duration matches its bar"
+        let bar = line.spans.iter().find(|s| s.content.contains(theme.symbols.bar)).unwrap();
+        assert_eq!(bar.style.fg, Some(theme.components.apply));
+        let duration = line.spans.iter().find(|s| s.content == "140ms").unwrap();
+        assert_eq!(duration.style.fg, Some(theme.components.apply), "duration matches its bar");
+        assert!(line.spans.iter().any(|s| s.content == theme.symbols.separator));
+    }
+
+    /// A data row's bar changes colour at the gate; rows ending after it take
+    /// the custody colour for their duration.
+    #[test]
+    fn data_bars_split_at_the_gate() {
+        let theme = Theme::default();
+        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
+        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        let cells = all_rows(
+            trace(&[
+                (received(), 300),
+                (recv(1), 200),
+                (validated(1), 400),
+                (Stage::DaAvailable, 1_000),
+                (recv(2), 2_000),
+                (validated(2), 3_000),
+                (Stage::CustodyDone, 3_001),
+            ]),
+            &theme,
         );
-        assert_eq!(line.spans[9].content, theme.symbols.separator);
+        let grid = Grid::fit(cells.iter().map(|(_, c)| c), INNER_WIDTH, &theme);
+        let axis = Axis::fit(grid.axis, DEADLINE, Nanos(0), theme.symbols);
+
+        let colour_of = |node: Node| {
+            let (_, cells) = cells.iter().find(|(d, _)| d.node == node).unwrap();
+            cells.duration_style().fg
+        };
+        let custody = Node::Span(Span::Da(DaSpan::Custody));
+        assert_eq!(colour_of(Node::Span(DA)), Some(theme.components.da));
+        assert_eq!(colour_of(custody), Some(theme.components.custody));
+        assert_eq!(colour_of(Node::Col { index: 0, arrival: 1 }), Some(theme.components.da));
+        assert_eq!(colour_of(Node::Col { index: 1, arrival: 2 }), Some(theme.components.custody));
+
+        let (_, custody) = cells.into_iter().find(|(d, _)| d.node == custody).unwrap();
+        let line = custody.into_line(&grid, &axis, &theme);
+        let bars: Vec<_> =
+            line.spans.iter().filter(|s| s.content.contains(theme.symbols.bar)).collect();
+        assert_eq!(bars.len(), 2, "one piece each side of the gate");
+        assert_eq!(bars[0].style.fg, Some(theme.components.da));
+        assert_eq!(bars[1].style.fg, Some(theme.components.custody));
     }
 
     #[test]

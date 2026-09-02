@@ -301,7 +301,7 @@ pub mod tests {
     /// The gate opens on the column whose validation crossed the threshold;
     /// later columns are custody traffic.
     #[test]
-    fn columns_validated_by_the_gate_count_for_it() {
+    fn the_data_component_ends_at_the_gate() {
         let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
         let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
         let t = trace(&[
@@ -313,9 +313,12 @@ pub mod tests {
             (recv(3), 300),
             (validated(3), 310),
         ]);
-        let counted: Vec<_> = t.da.columns.iter().map(|c| t.da.counted_for_gate(c)).collect();
-        assert_eq!(counted, [true, true, false]);
-        assert_eq!(t.interval(DA), iv(at(2, 200), at(2, 241)), "the component ends at the gate");
+        assert_eq!(t.interval(DA), iv(at(2, 200), at(2, 241)));
+        assert_eq!(
+            t.interval(cols(ColumnSource::Gossip)),
+            iv(at(2, 200), at(2, 310)),
+            "the source's columns run past the gate"
+        );
     }
 
     /// Custody completion is the node's duty, not the block's wait: it gets

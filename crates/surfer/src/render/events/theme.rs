@@ -35,7 +35,6 @@ impl Default for Symbols {
 pub struct Components {
     pub strip: Color,
     pub da: Color,
-    pub cols: Color,
     pub custody: Color,
     pub stf: Color,
     pub validate: Color,
@@ -47,8 +46,7 @@ impl Default for Components {
         Self {
             strip: Color::White,
             da: Color::Cyan,
-            cols: Color::LightCyan,
-            custody: Color::LightMagenta,
+            custody: Color::Magenta,
             stf: Color::Yellow,
             validate: Color::LightBlue,
             apply: Color::Blue,
@@ -63,7 +61,7 @@ impl Components {
             Span::Strip => Some(self.strip),
             Span::Da(DaSpan::Root) => Some(self.da),
             Span::Da(DaSpan::Custody) => Some(self.custody),
-            Span::Da(DaSpan::Cols(_)) => Some(self.cols),
+            Span::Da(DaSpan::Cols(_)) => Some(self.da),
             Span::Stf(StfSpan::Root) => Some(self.stf),
             Span::Stf(StfSpan::Validate) => Some(self.validate),
             Span::Stf(StfSpan::Apply) => Some(self.apply),
@@ -155,22 +153,21 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// The bar and duration of a row: `el` carries the verdict, a column the
-    /// colour of the row it served, neutral until the gate has opened.
-    pub fn bar(&self, trace: &BlockTrace, node: Node) -> Style {
-        let color = match node {
-            Node::Span(span) => {
-                self.components.of(span).unwrap_or_else(|| self.verdicts.of(trace.el.status()))
+    /// Bar styles before and after the gate. Data rows split there: what the
+    /// gate waited on in the `da` colour, the custody tail after it. Other
+    /// rows are one colour, and `el` wears the verdict.
+    pub fn bar(&self, trace: &BlockTrace, node: Node) -> (Style, Style) {
+        let fg = |color| Style::default().fg(color);
+        match node {
+            Node::Span(Span::Da(_)) | Node::Col { .. } => {
+                (fg(self.components.da), fg(self.components.custody))
             }
-            Node::Col { index, .. } => match trace.da.available() {
-                None => self.components.cols,
-                Some(_) if trace.da.counted_for_gate(&trace.da.columns[index]) => {
-                    self.components.da
-                }
-                Some(_) => self.components.custody,
-            },
-        };
-        Style::default().fg(color)
+            Node::Span(span) => {
+                let color =
+                    self.components.of(span).unwrap_or_else(|| self.verdicts.of(trace.el.status()));
+                (fg(color), fg(color))
+            }
+        }
     }
 
     /// The first slot of an epoch is highlighted so boundaries stand out.
