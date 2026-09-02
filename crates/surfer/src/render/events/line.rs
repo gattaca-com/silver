@@ -1,6 +1,6 @@
 //! One text line per display row, on a grid fitted to the rows being shown:
-//! `label │ time │ start │ end │ bar on the axis │ duration [attributes] │
-//! margin`.
+//! `label │ root │ time │ start │ end │ bar on the axis │ duration [attributes]
+//! │ margin`.
 
 use ratatui::{
     style::Style,
@@ -19,12 +19,14 @@ use crate::{
     sources::events::{BlockTrace, DaSpan, Interval, Margin, Span},
 };
 
-const HEADINGS: [&str; 6] = ["slot/component", "time", "start", "end", "duration", "deadline"];
+const HEADINGS: [&str; 7] =
+    ["slot/component", "root", "time", "start", "end", "duration", "deadline"];
 
 /// Column widths for one draw: each text column is as wide as its widest
 /// cell or heading, and the axis takes what is left.
 pub struct Grid {
     label: usize,
+    root: usize,
     time: usize,
     start: usize,
     end: usize,
@@ -43,8 +45,9 @@ impl Grid {
         let widest = |min: &str, text: fn(&RowCells) -> usize| {
             cells.clone().map(text).max().unwrap_or(0).max(min.chars().count())
         };
-        let [label, time, start, end, duration, margin] = HEADINGS;
+        let [label, root, time, start, end, duration, margin] = HEADINGS;
         let label = widest(label, |c| c.label.chars().count());
+        let root = widest(root, |c| c.root.chars().count());
         let time = widest(time, |c| c.time.chars().count());
         let start = widest(start, |c| c.start.chars().count());
         let end = widest(end, |c| c.end.chars().count());
@@ -52,14 +55,15 @@ impl Grid {
         let margin = widest(margin, |c| c.margin_text().chars().count());
         let separator = theme.symbols.separator;
         let gaps = (HEADINGS.len()) * separator.chars().count();
-        let axis =
-            inner_width.saturating_sub(label + time + start + end + duration + margin + gaps);
-        Self { label, time, start, end, axis, duration, margin, separator }
+        let axis = inner_width
+            .saturating_sub(label + root + time + start + end + duration + margin + gaps);
+        Self { label, root, time, start, end, axis, duration, margin, separator }
     }
 
     #[cfg(test)]
     fn width(&self) -> usize {
         self.label +
+            self.root +
             self.time +
             self.start +
             self.end +
@@ -71,9 +75,9 @@ impl Grid {
 
     pub fn header(&self, axis: &Axis, theme: &Theme) -> Line<'static> {
         let style = theme.header();
-        let [label, time, start, end, duration, margin] = HEADINGS.map(str::to_string);
+        let [label, root, time, start, end, duration, margin] = HEADINGS.map(str::to_string);
         self.line(
-            [label, time, start, end, axis.ticks(), duration, margin]
+            [label, root, time, start, end, axis.ticks(), duration, margin]
                 .map(|t| vec![TextSpan::styled(t, style)]),
             theme,
         )
@@ -81,9 +85,17 @@ impl Grid {
 
     /// One cell per column, padded to the column and separated by the
     /// theme's separator symbol. A cell may hold several styled pieces.
-    fn line(&self, cells: [Vec<TextSpan<'static>>; 7], theme: &Theme) -> Line<'static> {
-        let widths =
-            [self.label, self.time, self.start, self.end, self.axis, self.duration, self.margin];
+    fn line(&self, cells: [Vec<TextSpan<'static>>; 8], theme: &Theme) -> Line<'static> {
+        let widths = [
+            self.label,
+            self.root,
+            self.time,
+            self.start,
+            self.end,
+            self.axis,
+            self.duration,
+            self.margin,
+        ];
         let mut spans = Vec::with_capacity(3 * cells.len());
         for (i, (pieces, width)) in cells.into_iter().zip(widths).enumerate() {
             if i > 0 {
@@ -100,6 +112,7 @@ impl Grid {
 /// The row's text per column plus its bar geometry, ahead of layout.
 pub struct RowCells {
     pub label: String,
+    pub root: String,
     pub time: String,
     pub start: String,
     pub end: String,
@@ -142,6 +155,10 @@ impl RowCells {
         };
         Self {
             label: label(trace, display, theme),
+            root: match node {
+                Node::Span(Span::Strip) => root_prefix(&trace.block_root),
+                _ => String::new(),
+            },
             time,
             start,
             end,
@@ -183,6 +200,7 @@ impl RowCells {
         grid.line(
             [
                 one(self.label, self.label_style),
+                one(self.root, theme.text()),
                 one(self.time, theme.text()),
                 one(self.start, theme.text()),
                 one(self.end, theme.text()),
@@ -201,7 +219,7 @@ fn label(trace: &BlockTrace, display: &DisplayRow, theme: &Theme) -> String {
     let indent = "  ".repeat(display.depth as usize);
     let marker = theme.fold(display.fold);
     let text = match display.node {
-        Node::Span(Span::Strip) => format!("{} {}", trace.slot, root_prefix(&trace.block_root)),
+        Node::Span(Span::Strip) => trace.slot.to_string(),
         Node::Span(span) => span.spec().label.to_string(),
         Node::Col { index, arrival } => format!("#{arrival} col {}", trace.da.columns[index].index),
     };
@@ -299,7 +317,8 @@ mod tests {
         let cells = all_rows(block(), &Theme::default());
 
         let strip = cells_of(&cells, Node::Span(Span::Strip));
-        assert_eq!(strip.label, "▾ 2 01010101");
+        assert_eq!(strip.label, "▾ 2");
+        assert_eq!(strip.root, "01010101");
         assert_eq!(strip.start, "300ms");
         assert_eq!(strip.end, "520ms");
         assert_eq!(strip.duration, "220ms", "arrival → attestable");
