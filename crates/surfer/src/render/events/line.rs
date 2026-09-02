@@ -149,7 +149,7 @@ impl RowCells {
             Node::Span(Span::Strip) => trace.deadline_margin(clock, deadline),
             _ => None,
         };
-        let split = match node.is_data() {
+        let split = match node.splits_at_the_gate() {
             true => trace.da.available().and_then(|gate| trace.offset_in_slot(clock, gate)),
             false => None,
         };
@@ -408,13 +408,26 @@ mod tests {
         assert_eq!(colour_of(Node::Col { index: 0, arrival: 1 }), Some(theme.components.da));
         assert_eq!(colour_of(Node::Col { index: 1, arrival: 2 }), Some(theme.components.custody));
 
-        let (_, custody) = cells.into_iter().find(|(d, _)| d.node == custody).unwrap();
-        let line = custody.into_line(&grid, &axis, &theme);
-        let bars: Vec<_> =
-            line.spans.iter().filter(|s| s.content.contains(theme.symbols.bar)).collect();
-        assert_eq!(bars.len(), 2, "one piece each side of the gate");
-        assert_eq!(bars[0].style.fg, Some(theme.components.da));
-        assert_eq!(bars[1].style.fg, Some(theme.components.custody));
+        let lines: Vec<_> =
+            cells.into_iter().map(|(d, c)| (d.node, c.into_line(&grid, &axis, &theme))).collect();
+        let bars_of = |node: Node| {
+            let (_, line) = lines.iter().find(|(n, _)| *n == node).unwrap();
+            line.spans
+                .iter()
+                .filter(|s| s.content.contains(theme.symbols.bar))
+                .map(|s| s.style.fg)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bars_of(custody),
+            [Some(theme.components.da), Some(theme.components.custody)],
+            "one piece each side of the gate"
+        );
+        assert_eq!(
+            bars_of(Node::Col { index: 1, arrival: 2 }),
+            [Some(theme.components.custody)],
+            "a column crossing the gate is one colour"
+        );
     }
 
     #[test]

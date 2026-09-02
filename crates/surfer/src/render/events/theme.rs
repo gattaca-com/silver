@@ -154,13 +154,20 @@ pub struct Theme {
 
 impl Theme {
     /// Bar styles before and after the gate. Custody rows split there: what the
-    /// gate waited on in the `da` colour, the custody tail after it.
+    /// gate waited on in the `da` colour, the custody tail after it. A column
+    /// is one colour: `da` if it validated by the gate, custody otherwise.
     /// Other rows are one colour, and `el` wears the verdict.
     pub fn bar(&self, trace: &BlockTrace, node: Node) -> (Style, Style) {
         let fg = |color| Style::default().fg(color);
         match node {
-            Node::Span(Span::Da(DaSpan::Custody | DaSpan::Cols(_))) | Node::Col { .. } => {
+            Node::Span(Span::Da(DaSpan::Custody | DaSpan::Cols(_))) => {
                 (fg(self.components.da), fg(self.components.custody))
+            }
+            Node::Col { index, .. } => {
+                let validated_at = trace.da.columns[index].interval().end;
+                let counted = trace.da.available().is_none_or(|gate| validated_at <= gate);
+                let color = if counted { self.components.da } else { self.components.custody };
+                (fg(color), fg(color))
             }
             Node::Span(span) => {
                 let color =

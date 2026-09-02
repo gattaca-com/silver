@@ -21,13 +21,15 @@ impl Group {
     /// Groups whose children are spans; `Cols` holds sidecar rows instead.
     const WITH_SPANS: [Self; 3] = [Self::Block, Self::Da, Self::Stf];
 
+    /// Block children run in the order they end: the gate opens, stf and el
+    /// run, and custody's tail finishes past attestable.
     pub fn children(self) -> &'static [Span] {
         match self {
             Self::Block => &[
                 Span::Da(DaSpan::Root),
-                Span::Da(DaSpan::Custody),
                 Span::Stf(StfSpan::Root),
                 Span::El,
+                Span::Da(DaSpan::Custody),
             ],
             Self::Da => &[
                 Span::Da(DaSpan::Cols(ColumnSource::Gossip)),
@@ -154,9 +156,9 @@ impl Node {
         }
     }
 
-    /// Rows of the data component, whose bars split at the gate.
-    pub fn is_data(self) -> bool {
-        matches!(self, Self::Col { .. } | Self::Span(Span::Da(_)))
+    /// Rows spanning many columns, whose bars split at the gate.
+    pub fn splits_at_the_gate(self) -> bool {
+        matches!(self, Self::Span(Span::Da(_)))
     }
 
     /// A blobless block's data component is nothing but the gate opening.
@@ -300,21 +302,22 @@ mod tests {
         assert_eq!(nodes(&display), [
             Node::Span(Span::Strip),
             Node::Span(DA),
-            Node::Span(Span::Da(DaSpan::Custody)),
-            Node::Span(cols(ColumnSource::Gossip)),
             Node::Span(STF),
             Node::Span(VALIDATE),
             Node::Span(APPLY),
             Node::Span(Span::El),
+            Node::Span(Span::Da(DaSpan::Custody)),
+            Node::Span(cols(ColumnSource::Gossip)),
         ]);
         assert_eq!(display[1].depth, 1);
-        assert_eq!(display[2].depth, 1, "custody sits beside data available");
-        assert_eq!(display[2].fold, Fold::Open, "both data rows open the same group");
-        assert_eq!(display[3].depth, 2, "the column list unfolds under the last opener");
-        assert_eq!(display[3].fold, Fold::Closed, "an unopened group");
-        assert_eq!(display[5].fold, Fold::Leaf, "validate is a leaf");
-        assert_eq!(display[7].depth, 1, "el is a component of its own");
-        assert_eq!(display[7].fold, Fold::Leaf);
+        assert_eq!(display[1].fold, Fold::Open);
+        assert_eq!(display[3].fold, Fold::Leaf, "validate is a leaf");
+        assert_eq!(display[5].depth, 1, "el is a component of its own");
+        assert_eq!(display[5].fold, Fold::Leaf);
+        assert_eq!(display[6].depth, 1, "custody is the block's last component");
+        assert_eq!(display[6].fold, Fold::Open, "both data rows open the same group");
+        assert_eq!(display[7].depth, 2, "the column list unfolds under the last opener");
+        assert_eq!(display[7].fold, Fold::Closed, "an unopened group");
     }
 
     #[test]
