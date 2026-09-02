@@ -144,8 +144,8 @@ pub enum Node {
     Col {
         /// Position in the trace's `da.columns`.
         index: usize,
-        /// 1-based rank by arrival within its source.
-        arrival: usize,
+        /// 1-based position in the source's persist order.
+        rank: usize,
     },
 }
 
@@ -190,12 +190,14 @@ impl Node {
         }
     }
 
-    /// A column or batch the gate waited on: validated by the time it opened.
+    /// A batch the gate waited on, or a column of one.
     pub fn counted_for_gate(self, trace: &BlockTrace) -> bool {
-        match trace.da.available() {
-            None => true,
-            Some(gate) => self.interval(trace).is_none_or(|iv| iv.end <= gate),
-        }
+        let batch = match self {
+            Self::Span(_) => return true,
+            Self::Batch { .. } => self.batch(trace),
+            Self::Col { index, .. } => trace.da.batch_of(index),
+        };
+        batch.is_none_or(|b| b.counted_for_gate(&trace.da.columns, trace.da.available()))
     }
 
     /// Rows spanning many columns, whose bars split at the gate.
@@ -288,7 +290,7 @@ impl Walk<'_> {
     }
 
     /// One row per batch in validation order; a batch of one is its column,
-    /// a larger one folds its columns in arrival order.
+    /// a larger one folds its columns in rank order.
     fn push_columns(&mut self, source: ColumnSource, depth: u8) {
         let root = self.trace.block_root;
         for (batch, columns) in self.trace.da.batches(source).iter().enumerate() {
@@ -309,7 +311,7 @@ impl Walk<'_> {
             }
             self.out.extend(columns.columns.iter().map(|c| DisplayRow {
                 root,
-                node: Node::Col { index: c.index, arrival: c.arrival },
+                node: Node::Col { index: c.index, rank: c.rank },
                 depth: col_depth,
                 fold: Fold::Leaf,
             }));
@@ -332,9 +334,17 @@ mod tests {
         display.iter().map(|d| d.node).collect()
     }
 
+    /// Two columns validated a round apart, so each is a batch of one.
     fn with_columns() -> BlockTrace {
         let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
-        trace(&[(received(), 300), (recv(7), 260), (recv(3), 250)])
+        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        trace(&[
+            (received(), 300),
+            (recv(7), 250),
+            (validated(7), 255),
+            (recv(3), 262),
+            (validated(3), 270),
+        ])
     }
 
     #[test]
@@ -379,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn column_rows_follow_their_group_in_arrival_order() {
+    fn column_rows_follow_their_group_in_persist_order() {
         let block = with_columns();
         let mut expanded = Expanded::default();
         for group in [Group::Block, Group::Da, Group::Cols(ColumnSource::Gossip)] {
@@ -389,8 +399,8 @@ mod tests {
         let display = display_rows(&rows_of(block), &expanded);
         let cols: Vec<_> = display.iter().filter(|d| matches!(d.node, Node::Col { .. })).collect();
         assert_eq!(cols.iter().map(|d| d.node).collect::<Vec<_>>(), [
-            Node::Col { index: 1, arrival: 1 },
-            Node::Col { index: 0, arrival: 2 },
+            Node::Col { index: 0, rank: 1 },
+            Node::Col { index: 1, rank: 2 },
         ]);
         assert!(cols.iter().all(|d| d.depth == 3 && d.fold == Fold::Leaf));
     }
@@ -402,7 +412,7 @@ mod tests {
         assert_eq!(Node::Span(Span::Strip).parent(&block), None);
         assert_eq!(Node::Span(APPLY).parent(&block), Some(Group::Stf));
         assert_eq!(Node::Span(Span::El).parent(&block), Some(Group::Block));
-        let col = Node::Col { index: 0, arrival: 2 };
+        let col = Node::Col { index: 0, rank: 1 };
         assert_eq!(col.parent(&block), Some(Group::Cols(ColumnSource::Gossip)));
         assert_eq!(
             Group::Cols(ColumnSource::Gossip).opener(),
@@ -436,7 +446,7 @@ mod tests {
             expanded.toggle([1u8; 32], group);
         }
         let batch = Node::Batch { source, batch: 0 };
-        let lone = Node::Col { index: 2, arrival: 3 };
+        let lone = Node::Col { index: 2, rank: 3 };
         let under_cols = |display: &[DisplayRow]| {
             display
                 .iter()
@@ -452,14 +462,14 @@ mod tests {
         let display = display_rows(&rows_of(batched()), &expanded);
         assert_eq!(under_cols(&display), [
             (batch, 3, Fold::Open),
-            (Node::Col { index: 0, arrival: 1 }, 4, Fold::Leaf),
-            (Node::Col { index: 1, arrival: 2 }, 4, Fold::Leaf),
+            (Node::Col { index: 0, rank: 1 }, 4, Fold::Leaf),
+            (Node::Col { index: 1, rank: 2 }, 4, Fold::Leaf),
             (lone, 3, Fold::Leaf),
         ]);
 
         let block = batched();
         assert_eq!(
-            Node::Col { index: 0, arrival: 1 }.parent(&block),
+            Node::Col { index: 0, rank: 1 }.parent(&block),
             Some(Group::Batch { source, batch: 0 })
         );
         assert_eq!(

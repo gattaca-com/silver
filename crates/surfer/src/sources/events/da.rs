@@ -27,7 +27,7 @@ impl Column {
 
 #[derive(Default)]
 pub struct DataAvailability {
-    /// One entry per data-column sidecar, in arrival order.
+    /// One entry per data-column sidecar, in persist order.
     pub columns: Vec<Column>,
     available: Option<Nanos>,
     custody_done: Option<Nanos>,

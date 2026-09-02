@@ -222,10 +222,11 @@ fn label(trace: &BlockTrace, display: &DisplayRow, theme: &Theme) -> String {
         Node::Span(Span::Strip) => trace.slot.to_string(),
         Node::Span(span) => span.spec().label.to_string(),
         Node::Batch { .. } => {
-            let (first, last) = display.node.batch(trace).expect("displayed batch").arrivals();
+            let batch = display.node.batch(trace).expect("displayed batch");
+            let (first, last) = batch.ranks();
             format!("#{first}..#{last}")
         }
-        Node::Col { index, arrival } => format!("#{arrival} col {}", trace.da.columns[index].index),
+        Node::Col { index, rank } => format!("#{rank} col {}", trace.da.columns[index].index),
     };
     format!("{indent}{marker}{text}")
 }
@@ -248,8 +249,7 @@ fn attributes(trace: &BlockTrace, node: Node) -> String {
         }
         Node::Batch { .. } => {
             let batch = node.batch(trace).expect("displayed batch");
-            let end = batch.interval(&trace.da.columns).end;
-            let gate = if trace.da.opened_gate(end) { " DA" } else { "" };
+            let gate = if trace.da.opened_gate(&batch) { " DA" } else { "" };
             format!("{} cols{gate}", batch.columns.len())
         }
         Node::Span(Span::El) => {
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(strip.root, "01010101");
         assert_eq!(strip.start, "300ms");
         assert_eq!(strip.end, "520ms");
-        assert_eq!(strip.duration, "220ms", "arrival → attestable");
+        assert_eq!(strip.duration, "220ms", "rank → attestable");
         assert_eq!(strip.margin, Some(Margin { delta: Nanos::from_millis(3_480), made_it: true }));
         assert_eq!(strip.margin_text(), "+3.48s");
 
@@ -415,8 +415,8 @@ mod tests {
         let custody = Node::Span(Span::Da(DaSpan::Custody));
         assert_eq!(colour_of(Node::Span(DA)), Some(theme.components.da));
         assert_eq!(colour_of(custody), Some(theme.components.custody));
-        assert_eq!(colour_of(Node::Col { index: 0, arrival: 1 }), Some(theme.components.da));
-        assert_eq!(colour_of(Node::Col { index: 1, arrival: 2 }), Some(theme.components.custody));
+        assert_eq!(colour_of(Node::Col { index: 0, rank: 1 }), Some(theme.components.da));
+        assert_eq!(colour_of(Node::Col { index: 1, rank: 2 }), Some(theme.components.custody));
 
         let lines: Vec<_> =
             cells.into_iter().map(|(d, c)| (d.node, c.into_line(&grid, &axis, &theme))).collect();
@@ -434,7 +434,7 @@ mod tests {
             "one piece each side of the gate"
         );
         assert_eq!(
-            bars_of(Node::Col { index: 1, arrival: 2 }),
+            bars_of(Node::Col { index: 1, rank: 2 }),
             [Some(theme.components.custody)],
             "a column crossing the gate is one colour"
         );
