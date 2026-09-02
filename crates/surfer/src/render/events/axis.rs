@@ -1,15 +1,19 @@
 use silver_common::Nanos;
 
+use super::theme::Symbols;
+
 /// The shared time scale: into-slot nanoseconds → axis cells.
 pub struct Axis {
     pub width: usize,
     range: Nanos,
+    bar: char,
+    tick: char,
 }
 
 impl Axis {
-    pub fn fit(width: usize, deadline: Nanos, max_offset: Nanos) -> Self {
+    pub fn fit(width: usize, deadline: Nanos, max_offset: Nanos, symbols: Symbols) -> Self {
         let range = Nanos(deadline.0.max(max_offset.0).max(1) * 105 / 100);
-        Self { width, range }
+        Self { width, range, bar: symbols.bar, tick: symbols.tick }
     }
 
     fn cell(&self, offset: Nanos) -> Option<usize> {
@@ -27,7 +31,7 @@ impl Axis {
             let end_cell = self.cell(start + len).unwrap_or(self.width.saturating_sub(1));
             let bar_len = end_cell.saturating_sub(start_cell).max(1);
             out.push_str(&" ".repeat(start_cell));
-            out.push_str(&"█".repeat(bar_len));
+            out.extend(std::iter::repeat_n(self.bar, bar_len));
         }
         out.push_str(&" ".repeat(self.width.saturating_sub(out.chars().count())));
         out
@@ -46,12 +50,12 @@ impl Axis {
                 break;
             }
             while labels.chars().count() < cell {
-                labels.push('╌');
+                labels.push(self.tick);
             }
             labels.push_str(&label);
         }
         while labels.chars().count() < self.width {
-            labels.push('╌');
+            labels.push(self.tick);
         }
         labels
     }
@@ -63,7 +67,7 @@ mod tests {
 
     /// 20 cells over 4 s of deadline: 21 cells per 4.2 s, i.e. 210 ms each.
     fn axis() -> Axis {
-        Axis::fit(20, Nanos::from_secs(4), Nanos(0))
+        Axis::fit(20, Nanos::from_secs(4), Nanos(0), Symbols::default())
     }
 
     #[test]
@@ -96,7 +100,7 @@ mod tests {
         assert!(ticks.starts_with("0s"));
         assert!(!ticks.contains('4'), "4s lands on the last cell and would overflow");
 
-        let wide = Axis::fit(42, Nanos::from_secs(4), Nanos(0)).ticks();
+        let wide = Axis::fit(42, Nanos::from_secs(4), Nanos(0), Symbols::default()).ticks();
         assert_eq!(wide.chars().count(), 42);
         assert!(wide.ends_with("4s"));
     }

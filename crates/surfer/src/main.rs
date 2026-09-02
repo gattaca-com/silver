@@ -33,7 +33,7 @@ mod sources;
 use crate::{
     app::App,
     flamegraph::Flamegraph,
-    render::events::EventsPane,
+    render::events::{EventsPane, Theme},
     sources::{
         counters::CounterSet,
         events::{MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS},
@@ -122,7 +122,7 @@ fn main() -> io::Result<()> {
         env_u64("SURFER_GENESIS_UNIX_SECS", MAINNET_GENESIS_UNIX_SECS),
         env_u64("SURFER_SLOT_MS", MAINNET_SLOT_MS),
     );
-    let events = EventsPane::open(&base_dir, clock);
+    let events = EventsPane::open(&base_dir, clock, Theme::default());
 
     let peers = sources::peers::Peers::open(&base_dir);
 

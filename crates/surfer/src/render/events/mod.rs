@@ -11,11 +11,11 @@ use std::path::Path;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
     widgets::{Block, BorderType, Borders, List, ListState, Paragraph},
 };
 use silver_stages::SlotClock;
 
+pub use self::theme::Theme;
 use self::{
     axis::Axis,
     line::{Grid, RowCells},
@@ -28,7 +28,7 @@ use crate::{
 
 mod axis;
 mod line;
-mod palette;
+mod theme;
 mod tree;
 
 const TITLE: &str = "block pipeline: arrival → attestable, ms into slot";
@@ -37,14 +37,16 @@ pub struct EventsPane {
     data: Events,
     list: ListState,
     expanded: Expanded,
+    theme: Theme,
 }
 
 impl EventsPane {
-    pub fn open(base_dir: &Path, clock: SlotClock) -> Self {
+    pub fn open(base_dir: &Path, clock: SlotClock, theme: Theme) -> Self {
         Self {
             data: Events::open(base_dir, clock),
             list: ListState::default(),
             expanded: Expanded::default(),
+            theme,
         }
     }
 
@@ -107,7 +109,7 @@ impl EventsPane {
 
         if display.is_empty() {
             f.render_widget(
-                Paragraph::new("no blocks observed yet").style(Style::default().fg(palette::EMPTY)),
+                Paragraph::new("no blocks observed yet").style(self.theme.empty()),
                 inner,
             );
             return;
@@ -119,20 +121,26 @@ impl EventsPane {
             .iter()
             .map(|d| {
                 let trace = self.trace(d.root).expect("display rows come from the ring");
-                RowCells::new(trace, d, clock, deadline)
+                RowCells::new(trace, d, clock, deadline, &self.theme)
             })
             .collect();
-        let grid = Grid::fit(rows.iter(), inner.width as usize);
-        let axis = Axis::fit(grid.axis, deadline, self.data.traces().max_strip_offset(clock));
+        let grid = Grid::fit(rows.iter(), inner.width as usize, &self.theme);
+        let axis = Axis::fit(
+            grid.axis,
+            deadline,
+            self.data.traces().max_strip_offset(clock),
+            self.theme.symbols,
+        );
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)])
             .split(inner);
-        f.render_widget(Paragraph::new(grid.header(&axis)), chunks[0]);
+        f.render_widget(Paragraph::new(grid.header(&axis, &self.theme)), chunks[0]);
 
-        let list = List::new(rows.into_iter().map(|cells| cells.into_line(&grid, &axis)))
-            .highlight_style(Style::default().bg(palette::SELECTION_BG));
+        let list =
+            List::new(rows.into_iter().map(|cells| cells.into_line(&grid, &axis, &self.theme)))
+                .highlight_style(self.theme.selection());
         f.render_stateful_widget(list, chunks[1], &mut self.list);
     }
 

@@ -4,10 +4,8 @@
 
 use std::collections::HashSet;
 
-use ratatui::style::Color;
 use silver_common::ColumnSource;
 
-use super::palette;
 use crate::sources::events::{BlockTrace, BlockTraces, DaSpan, Interval, Span, StfSpan};
 
 /// A toggleable subtree; `Enter` on its opener flips it.
@@ -62,24 +60,22 @@ impl Group {
 
 pub struct SpanSpec {
     pub label: &'static str,
-    /// The bar colour before trace-dependent overrides.
-    pub color: Color,
     pub opens: Option<Group>,
 }
 
 impl SpanSpec {
-    const fn new(label: &'static str, color: Color, opens: Option<Group>) -> Self {
-        Self { label, color, opens }
+    const fn new(label: &'static str, opens: Option<Group>) -> Self {
+        Self { label, opens }
     }
 }
 
 impl Span {
     pub fn spec(self) -> SpanSpec {
         match self {
-            Self::Strip => SpanSpec::new("", palette::STRIP, Some(Group::Block)),
+            Self::Strip => SpanSpec::new("", Some(Group::Block)),
             Self::Da(span) => span.spec(),
             Self::Stf(span) => span.spec(),
-            Self::El => SpanSpec::new("el", palette::verdict_color(None), None),
+            Self::El => SpanSpec::new("el", None),
         }
     }
 
@@ -99,11 +95,9 @@ impl Span {
 impl DaSpan {
     fn spec(self) -> SpanSpec {
         match self {
-            Self::Root => SpanSpec::new("data available", palette::DA, Some(Group::Da)),
-            Self::Custody => SpanSpec::new("custody", palette::CUSTODY, Some(Group::Da)),
-            Self::Cols(source) => {
-                SpanSpec::new(cols_label(source), palette::COLS, Some(Group::Cols(source)))
-            }
+            Self::Root => SpanSpec::new("data available", Some(Group::Da)),
+            Self::Custody => SpanSpec::new("custody", Some(Group::Da)),
+            Self::Cols(source) => SpanSpec::new(cols_label(source), Some(Group::Cols(source))),
         }
     }
 }
@@ -111,9 +105,9 @@ impl DaSpan {
 impl StfSpan {
     fn spec(self) -> SpanSpec {
         match self {
-            Self::Root => SpanSpec::new("stf", palette::STF, Some(Group::Stf)),
-            Self::Validate => SpanSpec::new("validate", palette::VALIDATE, None),
-            Self::Apply => SpanSpec::new("apply", palette::APPLY, None),
+            Self::Root => SpanSpec::new("stf", Some(Group::Stf)),
+            Self::Validate => SpanSpec::new("validate", None),
+            Self::Apply => SpanSpec::new("apply", None),
         }
     }
 }
@@ -129,15 +123,19 @@ fn cols_label(source: ColumnSource) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
     Span(Span),
-    /// Position in the trace's `da.columns`.
-    Col(usize),
+    Col {
+        /// Position in the trace's `da.columns`.
+        index: usize,
+        /// 1-based rank by arrival within its source.
+        arrival: usize,
+    },
 }
 
 impl Node {
     pub fn opens(self) -> Option<Group> {
         match self {
             Self::Span(span) => span.spec().opens,
-            Self::Col(_) => None,
+            Self::Col { .. } => None,
         }
     }
 
@@ -145,14 +143,14 @@ impl Node {
     pub fn parent(self, trace: &BlockTrace) -> Option<Group> {
         match self {
             Self::Span(span) => span.parent(),
-            Self::Col(i) => Some(Group::Cols(trace.da.columns[i].source)),
+            Self::Col { index, .. } => Some(Group::Cols(trace.da.columns[index].source)),
         }
     }
 
     pub fn interval(self, trace: &BlockTrace) -> Option<Interval> {
         match self {
             Self::Span(span) => trace.interval(span),
-            Self::Col(i) => Some(trace.da.columns[i].interval()),
+            Self::Col { index, .. } => Some(trace.da.columns[index].interval()),
         }
     }
 
@@ -244,9 +242,9 @@ impl Walk<'_> {
         let columns = &self.trace.da.columns;
         let mut order: Vec<_> = self.trace.da.of_source(source).map(|(i, _)| i).collect();
         order.sort_unstable_by_key(|&i| columns[i].received_at);
-        self.out.extend(order.into_iter().map(|i| DisplayRow {
+        self.out.extend(order.into_iter().zip(1..).map(|(index, arrival)| DisplayRow {
             root: self.trace.block_root,
-            node: Node::Col(i),
+            node: Node::Col { index, arrival },
             depth,
             fold: Fold::Leaf,
         }));
@@ -323,8 +321,11 @@ mod tests {
         }
 
         let display = display_rows(&rows_of(block), &expanded);
-        let cols: Vec<_> = display.iter().filter(|d| matches!(d.node, Node::Col(_))).collect();
-        assert_eq!(cols.iter().map(|d| d.node).collect::<Vec<_>>(), [Node::Col(1), Node::Col(0)]);
+        let cols: Vec<_> = display.iter().filter(|d| matches!(d.node, Node::Col { .. })).collect();
+        assert_eq!(cols.iter().map(|d| d.node).collect::<Vec<_>>(), [
+            Node::Col { index: 1, arrival: 1 },
+            Node::Col { index: 0, arrival: 2 },
+        ]);
         assert!(cols.iter().all(|d| d.depth == 3 && d.fold == Fold::Leaf));
     }
 
@@ -335,7 +336,8 @@ mod tests {
         assert_eq!(Node::Span(Span::Strip).parent(&block), None);
         assert_eq!(Node::Span(APPLY).parent(&block), Some(Group::Stf));
         assert_eq!(Node::Span(Span::El).parent(&block), Some(Group::Block));
-        assert_eq!(Node::Col(0).parent(&block), Some(Group::Cols(ColumnSource::Gossip)));
+        let col = Node::Col { index: 0, arrival: 2 };
+        assert_eq!(col.parent(&block), Some(Group::Cols(ColumnSource::Gossip)));
         assert_eq!(Group::Cols(ColumnSource::Gossip).openers(), [cols(ColumnSource::Gossip)]);
         assert_eq!(Node::Span(Span::Da(DaSpan::Custody)).opens(), Some(Group::Da));
     }
