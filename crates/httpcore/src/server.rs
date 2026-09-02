@@ -178,6 +178,16 @@ impl ServerConnection {
         true
     }
 
+    /// The buffer is full yet holds no complete request: the head alone
+    /// outgrew it, which is the one overrun `dispatch` cannot answer — a body
+    /// declared past the cap is a 413 from its headers and garbage is a 400,
+    /// both before the cap is spent. RFC 6585's 431 covers a head with no end
+    /// in sight.
+    pub fn reject_exhausted(&mut self) {
+        debug_assert!(self.read_end == READ_BUF_MAX, "space to read from remains");
+        self.reject("431 Request Header Fields Too Large");
+    }
+
     /// Scratch for a lingering connection's drain: the bytes are read only to
     /// be dropped, so the buffer is reused as it stands and never grows.
     pub fn discard_space(&mut self) -> &mut [u8] {
@@ -543,6 +553,40 @@ mod tests {
         for declared in [READ_BUF_MAX, READ_BUF_MAX + 1, usize::MAX - 1024] {
             reject_and_linger(&oversized_post(declared), "413 Payload Too Large");
         }
+    }
+
+    /// A head that never ends reaches no verdict `dispatch` can deliver, so
+    /// the buffer filling up is itself the verdict: the 431 of RFC 6585,
+    /// answered and lingered like every other reject rather than a bare drop.
+    #[test]
+    fn an_exhausted_buffer_holding_no_request_writes_431_then_lingers() {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, b"GET /eth/v1/node/health HTTP/1.1\r\nCookie: ");
+        loop {
+            match conn.read_space() {
+                Ok(space) => {
+                    let n = space.len();
+                    space.fill(b'c');
+                    conn.commit_read(n);
+                }
+                Err(_) => break,
+            }
+        }
+
+        assert!(
+            !conn.dispatch(&|_, _: &mut Vec<u8>| panic!("no request can reach the handler")),
+            "an unfinished head must not dispatch"
+        );
+
+        conn.reject_exhausted();
+        assert_eq!(
+            conn.pending_write(),
+            b"HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\
+              Content-Length: 0\r\n\r\n"
+                .as_slice()
+        );
+        drain(&mut conn);
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger);
     }
 
     /// The body the client is still sending is read for one reason only — to

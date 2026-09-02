@@ -80,15 +80,16 @@ impl Connection {
         }
 
         if event.is_readable() {
-            // A full buffer is not yet a verdict: a body declared past the cap
-            // is answered from headers already buffered. Exhaustion ends the
-            // connection only once there is nothing left to answer with.
-            let mut exhausted = None;
+            // A full buffer always leaves something to answer with: a body
+            // declared past the cap is answered from headers already buffered,
+            // and a head that outgrows the whole buffer is answered 431. The
+            // answer, not the exhaustion, is what ends the connection.
+            let mut exhausted = false;
             loop {
                 let space = match self.http.read_space() {
                     Ok(space) => space,
-                    Err(e) => {
-                        exhausted = Some(e);
+                    Err(_) => {
+                        exhausted = true;
                         break;
                     }
                 };
@@ -104,10 +105,13 @@ impl Connection {
                 }
             }
 
-            if self.http.dispatch(request_handler) {
+            let mut answered = self.http.dispatch(request_handler);
+            if !answered && exhausted {
+                self.http.reject_exhausted();
+                answered = true;
+            }
+            if answered {
                 registry.reregister(&mut self.stream, event.token(), Interest::WRITABLE)?;
-            } else if let Some(e) = exhausted {
-                return Err(e);
             }
             return Ok(false);
         }
@@ -853,6 +857,37 @@ mod tests {
 
         assert_eq!(received, PAYLOAD_TOO_LARGE, "{}", String::from_utf8_lossy(&received));
         pump_until(&mut server, "answered connection closed on the peer's own close", |server| {
+            server.api.connections.is_empty()
+        });
+    }
+
+    /// A head that outgrows the whole read buffer declares no length to
+    /// answer from, so filling the buffer is the verdict: a 431, delivered
+    /// like every other reject, where dropping the socket mid-send would be
+    /// the reset that costs a client its node.
+    #[test]
+    fn a_head_that_outgrows_the_read_buffer_is_answered_with_431() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
+
+        let received = serve(
+            &mut server,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                write!(stream, "GET /eth/v1/node/health HTTP/1.1\r\nHost: x\r\nCookie: ")?;
+                let chunk = vec![b'c'; 1 << 20];
+                for _ in 0..17 {
+                    stream.write_all(&chunk)?;
+                }
+                Ok::<_, io::Error>(read_to_eof(stream))
+            }),
+            "unending head absorbed and answered",
+        );
+
+        let received = received.expect("the head must be absorbed, not reset under the sender");
+        let text = String::from_utf8_lossy(&received);
+        assert!(text.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"), "{text}");
+        pump_until(&mut server, "lingering connection closed once the peer went away", |server| {
             server.api.connections.is_empty()
         });
     }
