@@ -94,20 +94,8 @@ impl DataAvailability {
         Some(interval)
     }
 
-    /// The gate counts validated columns, so a column that arrived before it
-    /// but validated after did not help open it.
+    /// Validated by the time the gate opened.
     pub fn counted_for_gate(&self, column: &Column) -> bool {
         self.available.is_some_and(|gate| column.validated_at.is_some_and(|v| v <= gate))
-    }
-
-    /// The column whose validation crossed the DA threshold — the event that
-    /// opened the gate, when gossip columns opened it.
-    pub fn trigger(&self) -> Option<usize> {
-        self.columns
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| self.counted_for_gate(c))
-            .max_by_key(|(_, c)| c.validated_at)
-            .map(|(i, _)| i)
     }
 }

@@ -6,7 +6,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span as TextSpan},
 };
-use silver_common::{Nanos, PayloadValidationStatus};
+use silver_common::{Nanos, PayloadValidationStatus, ssz_view::NUMBER_OF_COLUMNS};
 use silver_stages::SlotClock;
 
 use super::{
@@ -195,22 +195,16 @@ fn attributes(trace: &BlockTrace, node: Node) -> String {
         {
             "no blobs".to_string()
         }
-        Node::Span(Span::Da(DaSpan::Custody)) => format!("{} held", trace.da.columns.len()),
+        // The custody size is not on the wire; a supernode's is every column.
+        Node::Span(Span::Da(DaSpan::Custody)) => {
+            format!("{}/{NUMBER_OF_COLUMNS} cols", trace.da.columns.len())
+        }
         Node::Span(Span::Da(DaSpan::Cols(source))) => {
-            let of_source = || trace.da.of_source(source).map(|(_, c)| c);
-            let received = of_source().count();
-            match trace.da.available() {
-                Some(_) => format!(
-                    "{received} cols, {} validated by gate",
-                    of_source().filter(|c| trace.da.counted_for_gate(c)).count()
-                ),
-                None => format!("{received} cols"),
-            }
+            trace.da.of_source(source).count().to_string()
         }
         Node::Span(Span::El) => {
             trace.el.status().map_or_else(String::new, |v| status_label(v).to_string())
         }
-        Node::Col { index, .. } if trace.da.trigger() == Some(index) => "opened gate".to_string(),
         _ => String::new(),
     }
 }
