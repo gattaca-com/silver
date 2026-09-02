@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 
 use flux::{
-    communication::queue::{ConsumerBare, Queue},
+    communication::queue::{Consumer, Queue},
     tile::metrics::TileSample,
 };
 
@@ -38,7 +38,7 @@ impl UtilBucket {
 
 pub struct TileMetricsSet {
     pub name: String,
-    consumer: ConsumerBare<TileSample>,
+    consumer: Consumer<TileSample>,
     pub latest: TileSample,
     /// In-progress bucket accumulated across drains since the last roll.
     cur: UtilBucket,
@@ -56,7 +56,9 @@ impl TileMetricsSet {
         let queue: Queue<TileSample> = Queue::try_open_shared(&file.path)
             .map_err(|e| format!("open_shared({:?}): {e:?}", file.path))?;
         let label: &'static str = Box::leak(format!("surfer-{}", file.name).into_boxed_str());
-        let consumer = ConsumerBare::<TileSample>::new(queue, label);
+        // `without_log`: surfer sampling at UI cadence is lapped by hot
+        // producers as a matter of course — recover silently.
+        let consumer = Consumer::<TileSample>::new(queue, label).without_log();
         Ok(Self {
             name: file.name.clone(),
             consumer,
@@ -71,17 +73,17 @@ impl TileMetricsSet {
 
     /// Drain everything currently available into the in-progress bucket.
     pub fn drain(&mut self) {
-        let mut sample = TileSample::default();
-        while self.consumer.try_consume(&mut sample).is_ok() {
-            self.latest = sample;
-            self.samples_seen += 1;
-            self.cur.busy += sample.busy_ticks;
-            self.cur.total += sample.total_ticks();
-            self.cur.busy_count += sample.busy_count as u64;
-            self.cur.busy_max = self.cur.busy_max.max(sample.busy_max);
-            self.total_busy += sample.busy_ticks;
-            self.total_ticks += sample.total_ticks();
-        }
+        let Self { consumer, latest, samples_seen, cur, total_busy, total_ticks, .. } = self;
+        while consumer.consume(|sample| {
+            *latest = *sample;
+            *samples_seen += 1;
+            cur.busy += sample.busy_ticks;
+            cur.total += sample.total_ticks();
+            cur.busy_count += sample.busy_count as u64;
+            cur.busy_max = cur.busy_max.max(sample.busy_max);
+            *total_busy += sample.busy_ticks;
+            *total_ticks += sample.total_ticks();
+        }) {}
     }
 
     /// Snapshot the in-progress bucket into the ring and reset. Driven by
