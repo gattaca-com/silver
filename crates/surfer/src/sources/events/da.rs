@@ -6,43 +6,43 @@ use super::trace::Interval;
 pub enum DaSpan {
     /// First sidecar arrival → the gate opening.
     Root,
+    /// First sidecar arrival → the node's custody set complete.
+    Custody,
     /// One source's columns: first arrival → last validation.
     Cols(ColumnSource),
 }
 
-pub struct ColumnRow {
+pub struct Column {
     pub index: u64,
     pub source: ColumnSource,
-    pub recv: Nanos,
-    pub validated: Option<Nanos>,
+    pub received_at: Nanos,
+    pub validated_at: Option<Nanos>,
 }
 
-impl ColumnRow {
+impl Column {
     pub fn interval(&self) -> Interval {
-        Interval { start: self.recv, end: self.validated.unwrap_or(self.recv) }
+        Interval { start: self.received_at, end: self.validated_at.unwrap_or(self.received_at) }
     }
 }
 
-/// The data-availability component: sidecars feeding the DA gate.
 #[derive(Default)]
 pub struct DataAvailability {
     /// One entry per data-column sidecar, in arrival order.
-    pub columns: Vec<ColumnRow>,
+    pub columns: Vec<Column>,
     available: Option<Nanos>,
+    custody_done: Option<Nanos>,
 }
 
 impl DataAvailability {
-    /// A duplicate arrival of a held column re-emits `Persist`; the first
-    /// arrival and validation stand.
     pub(super) fn column_received(&mut self, index: u64, source: ColumnSource, ts: Nanos) {
         if self.columns.iter().all(|c| c.index != index) {
-            self.columns.push(ColumnRow { index, source, recv: ts, validated: None });
+            self.columns.push(Column { index, source, received_at: ts, validated_at: None });
         }
     }
 
     pub(super) fn column_validated(&mut self, index: u64, ts: Nanos) {
         if let Some(col) = self.columns.iter_mut().find(|c| c.index == index) {
-            col.validated.get_or_insert(ts);
+            col.validated_at.get_or_insert(ts);
         }
     }
 
@@ -50,8 +50,10 @@ impl DataAvailability {
         self.available = Some(ts);
     }
 
-    /// When the DA gate opened; columns arriving after it are custody duty,
-    /// not what this block waited for.
+    pub(super) fn custody_completed(&mut self, ts: Nanos) {
+        self.custody_done = Some(ts);
+    }
+
     pub fn available(&self) -> Option<Nanos> {
         self.available
     }
@@ -60,15 +62,18 @@ impl DataAvailability {
         !self.columns.is_empty()
     }
 
+    pub fn of_source(&self, source: ColumnSource) -> impl Iterator<Item = (usize, &Column)> {
+        self.columns.iter().enumerate().filter(move |(_, c)| c.source == source)
+    }
+
     pub fn has_source(&self, source: ColumnSource) -> bool {
-        self.columns.iter().any(|c| c.source == source)
+        self.of_source(source).next().is_some()
     }
 
     pub fn first_column_at(&self) -> Option<Nanos> {
-        self.columns.iter().map(|c| c.recv).min()
+        self.columns.iter().map(|c| c.received_at).min()
     }
 
-    /// `None` while the span has no events.
     pub fn interval(&self, span: DaSpan) -> Option<Interval> {
         let interval = match span {
             DaSpan::Root => {
@@ -79,10 +84,10 @@ impl DataAvailability {
                     .unwrap_or(start);
                 Interval { start, end }
             }
+            DaSpan::Custody => Interval { start: self.first_column_at()?, end: self.custody_done? },
             DaSpan::Cols(source) => {
-                let of_source = || self.columns.iter().filter(|c| c.source == source);
-                let start = of_source().map(|c| c.recv).min()?;
-                let end = of_source().map(|c| c.interval().end).max()?;
+                let start = self.of_source(source).map(|(_, c)| c.received_at).min()?;
+                let end = self.of_source(source).map(|(_, c)| c.interval().end).max()?;
                 Interval { start, end }
             }
         };
@@ -96,8 +101,8 @@ impl DataAvailability {
         self.columns
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.validated.is_some_and(|v| v <= gate))
-            .max_by_key(|(_, c)| c.validated)
+            .filter(|(_, c)| c.validated_at.is_some_and(|v| v <= gate))
+            .max_by_key(|(_, c)| c.validated_at)
             .map(|(i, _)| i)
     }
 }

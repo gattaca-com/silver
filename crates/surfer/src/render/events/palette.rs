@@ -8,6 +8,7 @@ use crate::sources::events::{BlockTrace, Margin, Span};
 pub const STRIP: Color = Color::White;
 pub const DA: Color = Color::Cyan;
 pub const COLS: Color = Color::LightCyan;
+pub const CUSTODY: Color = Color::LightMagenta;
 /// The column whose validation opened the gate.
 pub const TRIGGER: Color = Color::Magenta;
 pub const STF: Color = Color::Yellow;
@@ -25,8 +26,6 @@ pub const EMPTY: Color = Color::DarkGray;
 pub const MARGIN_OK: Color = Color::Green;
 pub const MARGIN_MISSED: Color = Color::Red;
 
-/// Green valid, red invalid, yellow syncing/accepted, grey while the EL has
-/// not responded.
 pub fn verdict_color(status: Option<PayloadValidationStatus>) -> Color {
     match status {
         Some(PayloadValidationStatus::Valid) => Color::Green,
@@ -36,8 +35,6 @@ pub fn verdict_color(status: Option<PayloadValidationStatus>) -> Color {
     }
 }
 
-/// The span's colour, with the trace-dependent overrides: `el` carries the
-/// verdict, a column its position against the gate.
 pub fn node_color(trace: &BlockTrace, node: Node) -> Color {
     match node {
         Node::Span(Span::El) => verdict_color(trace.el.status()),
@@ -45,7 +42,11 @@ pub fn node_color(trace: &BlockTrace, node: Node) -> Color {
         Node::Col(i) => {
             if trace.da.trigger() == Some(i) {
                 TRIGGER
-            } else if trace.da.available().is_some_and(|gate| trace.da.columns[i].recv > gate) {
+            } else if trace
+                .da
+                .available()
+                .is_some_and(|gate| trace.da.columns[i].received_at > gate)
+            {
                 CUSTODY_TAIL
             } else {
                 COLS

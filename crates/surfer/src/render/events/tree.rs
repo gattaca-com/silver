@@ -1,7 +1,6 @@
-//! Which rows the pane shows for a block and in what order. The shape is two
-//! static tables, `Group::children` and `Span::spec`, each written per
-//! component; the only data-driven rows are the column sidecars under an open
-//! `Cols` group.
+//! Which rows the pane shows for a block and in what order: static
+//! per-component tables, plus the column sidecars under an open `Cols`
+//! group as the only data-driven rows.
 
 use std::collections::HashSet;
 
@@ -26,7 +25,12 @@ impl Group {
 
     pub fn children(self) -> &'static [Span] {
         match self {
-            Self::Block => &[Span::Da(DaSpan::Root), Span::Stf(StfSpan::Root), Span::El],
+            Self::Block => &[
+                Span::Da(DaSpan::Root),
+                Span::Da(DaSpan::Custody),
+                Span::Stf(StfSpan::Root),
+                Span::El,
+            ],
             Self::Da => &[
                 Span::Da(DaSpan::Cols(ColumnSource::Gossip)),
                 Span::Da(DaSpan::Cols(ColumnSource::El)),
@@ -37,13 +41,22 @@ impl Group {
         }
     }
 
-    pub fn opener(self) -> Span {
+    /// Rows that toggle this group; the children unfold under the last one.
+    /// The two data rows share the column list, being two ends of the same
+    /// arrivals.
+    pub fn openers(self) -> &'static [Span] {
         match self {
-            Self::Block => Span::Strip,
-            Self::Da => Span::Da(DaSpan::Root),
-            Self::Cols(source) => Span::Da(DaSpan::Cols(source)),
-            Self::Stf => Span::Stf(StfSpan::Root),
+            Self::Block => &[Span::Strip],
+            Self::Da => &[Span::Da(DaSpan::Root), Span::Da(DaSpan::Custody)],
+            Self::Cols(ColumnSource::Gossip) => &[Span::Da(DaSpan::Cols(ColumnSource::Gossip))],
+            Self::Cols(ColumnSource::El) => &[Span::Da(DaSpan::Cols(ColumnSource::El))],
+            Self::Cols(ColumnSource::Rpc) => &[Span::Da(DaSpan::Cols(ColumnSource::Rpc))],
+            Self::Stf => &[Span::Stf(StfSpan::Root)],
         }
+    }
+
+    fn unfolds_after(self, span: Span) -> bool {
+        self.openers().last() == Some(&span)
     }
 }
 
@@ -70,14 +83,16 @@ impl Span {
         }
     }
 
-    /// The group listing this span; `Strip` has none.
     fn parent(self) -> Option<Group> {
         Group::WITH_SPANS.into_iter().find(|g| g.children().contains(&self))
     }
 
-    /// `Cols(source)` hides while no sidecar of that source has arrived.
     fn hidden(self, trace: &BlockTrace) -> bool {
-        matches!(self, Self::Da(DaSpan::Cols(source)) if !trace.da.has_source(source))
+        match self {
+            Self::Da(DaSpan::Cols(source)) => !trace.da.has_source(source),
+            Self::Da(DaSpan::Custody) => !trace.da.has_columns(),
+            _ => false,
+        }
     }
 }
 
@@ -85,6 +100,7 @@ impl DaSpan {
     fn spec(self) -> SpanSpec {
         match self {
             Self::Root => SpanSpec::new("data available", palette::DA, Some(Group::Da)),
+            Self::Custody => SpanSpec::new("custody", palette::CUSTODY, Some(Group::Da)),
             Self::Cols(source) => {
                 SpanSpec::new(cols_label(source), palette::COLS, Some(Group::Cols(source)))
             }
@@ -110,10 +126,10 @@ fn cols_label(source: ColumnSource) -> &'static str {
     }
 }
 
-/// One display row: a span of the block's graph, or one column sidecar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
     Span(Span),
+    /// Position in the trace's `da.columns`.
     Col(usize),
 }
 
@@ -147,12 +163,18 @@ impl Node {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fold {
+    Leaf,
+    Closed,
+    Open,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayRow {
     pub root: [u8; 32],
     pub node: Node,
     pub depth: u8,
-    /// `Some` on a group opener: whether its subtree is unfolded.
-    pub open: Option<bool>,
+    pub fold: Fold,
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -161,7 +183,6 @@ struct OpenGroup {
     group: Group,
 }
 
-/// Which subtrees are unfolded, per block.
 #[derive(Default)]
 pub struct Expanded(HashSet<OpenGroup>);
 
@@ -198,10 +219,14 @@ impl Walk<'_> {
     fn push_span(&mut self, span: Span, depth: u8) {
         let root = self.trace.block_root;
         let opens = span.spec().opens;
-        let open = opens.map(|group| self.expanded.is_open(root, group));
-        self.out.push(DisplayRow { root, node: Node::Span(span), depth, open });
+        let fold = match opens {
+            None => Fold::Leaf,
+            Some(group) if self.expanded.is_open(root, group) => Fold::Open,
+            Some(_) => Fold::Closed,
+        };
+        self.out.push(DisplayRow { root, node: Node::Span(span), depth, fold });
 
-        let Some(group) = opens.filter(|_| open == Some(true)) else {
+        let Some(group) = opens.filter(|g| fold == Fold::Open && g.unfolds_after(span)) else {
             return;
         };
         for &child in group.children() {
@@ -217,14 +242,13 @@ impl Walk<'_> {
     /// Sidecar rows in arrival order.
     fn push_columns(&mut self, source: ColumnSource, depth: u8) {
         let columns = &self.trace.da.columns;
-        let mut order: Vec<_> =
-            (0..columns.len()).filter(|&i| columns[i].source == source).collect();
-        order.sort_unstable_by_key(|&i| columns[i].recv);
+        let mut order: Vec<_> = self.trace.da.of_source(source).map(|(i, _)| i).collect();
+        order.sort_unstable_by_key(|&i| columns[i].received_at);
         self.out.extend(order.into_iter().map(|i| DisplayRow {
             root: self.trace.block_root,
             node: Node::Col(i),
             depth,
-            open: None,
+            fold: Fold::Leaf,
         }));
     }
 }
@@ -257,7 +281,7 @@ mod tests {
             root: [1u8; 32],
             node: Node::Span(Span::Strip),
             depth: 0,
-            open: Some(false),
+            fold: Fold::Closed,
         });
     }
 
@@ -273,6 +297,7 @@ mod tests {
         assert_eq!(nodes(&display), [
             Node::Span(Span::Strip),
             Node::Span(DA),
+            Node::Span(Span::Da(DaSpan::Custody)),
             Node::Span(cols(ColumnSource::Gossip)),
             Node::Span(STF),
             Node::Span(VALIDATE),
@@ -280,11 +305,13 @@ mod tests {
             Node::Span(Span::El),
         ]);
         assert_eq!(display[1].depth, 1);
-        assert_eq!(display[2].depth, 2);
-        assert_eq!(display[2].open, Some(false), "an unopened group");
-        assert_eq!(display[4].open, None, "validate is a leaf");
-        assert_eq!(display[6].depth, 1, "el is a component of its own");
-        assert_eq!(display[6].open, None);
+        assert_eq!(display[2].depth, 1, "custody sits beside data available");
+        assert_eq!(display[2].fold, Fold::Open, "both data rows open the same group");
+        assert_eq!(display[3].depth, 2, "the column list unfolds under the last opener");
+        assert_eq!(display[3].fold, Fold::Closed, "an unopened group");
+        assert_eq!(display[5].fold, Fold::Leaf, "validate is a leaf");
+        assert_eq!(display[7].depth, 1, "el is a component of its own");
+        assert_eq!(display[7].fold, Fold::Leaf);
     }
 
     #[test]
@@ -298,7 +325,7 @@ mod tests {
         let display = display_rows(&rows_of(block), &expanded);
         let cols: Vec<_> = display.iter().filter(|d| matches!(d.node, Node::Col(_))).collect();
         assert_eq!(cols.iter().map(|d| d.node).collect::<Vec<_>>(), [Node::Col(1), Node::Col(0)]);
-        assert!(cols.iter().all(|d| d.depth == 3 && d.open.is_none()));
+        assert!(cols.iter().all(|d| d.depth == 3 && d.fold == Fold::Leaf));
     }
 
     #[test]
@@ -309,7 +336,8 @@ mod tests {
         assert_eq!(Node::Span(APPLY).parent(&block), Some(Group::Stf));
         assert_eq!(Node::Span(Span::El).parent(&block), Some(Group::Block));
         assert_eq!(Node::Col(0).parent(&block), Some(Group::Cols(ColumnSource::Gossip)));
-        assert_eq!(Group::Cols(ColumnSource::Gossip).opener(), cols(ColumnSource::Gossip));
+        assert_eq!(Group::Cols(ColumnSource::Gossip).openers(), [cols(ColumnSource::Gossip)]);
+        assert_eq!(Node::Span(Span::Da(DaSpan::Custody)).opens(), Some(Group::Da));
     }
 
     #[test]

@@ -12,14 +12,12 @@ pub enum StfSpan {
     Apply,
 }
 
-/// The consensus component: CL validation, then STF and fork-choice import.
 #[derive(Default)]
 pub struct StateTransition {
     imported: Option<Nanos>,
 }
 
 impl StateTransition {
-    /// Duplicates re-announce an imported block; the first import stands.
     pub(super) fn imported(&mut self, ts: Nanos) {
         self.imported.get_or_insert(ts);
     }
@@ -28,22 +26,20 @@ impl StateTransition {
         self.imported
     }
 
-    /// The component starts from the block's common points, which the trace
-    /// owns: where validation started and when `newPayload` was dispatched.
     pub fn interval(
         &self,
         span: StfSpan,
         validate_from: Option<Nanos>,
-        el_sent: Option<Nanos>,
+        el_sent_at: Option<Nanos>,
     ) -> Option<Interval> {
         let interval = match span {
             StfSpan::Root => {
-                let start = validate_from.or(el_sent)?;
-                let end = self.imported.or(el_sent)?;
+                let start = validate_from.or(el_sent_at)?;
+                let end = self.imported.or(el_sent_at)?;
                 Interval { start, end: end.max(start) }
             }
-            StfSpan::Validate => Interval { start: validate_from?, end: el_sent? },
-            StfSpan::Apply => Interval { start: el_sent?, end: self.imported? },
+            StfSpan::Validate => Interval { start: validate_from?, end: el_sent_at? },
+            StfSpan::Apply => Interval { start: el_sent_at?, end: self.imported? },
         };
         Some(interval)
     }

@@ -3,7 +3,8 @@ use std::vec::Drain;
 use flux::{spine::SpineAdapter, timing::InternalMessage};
 use rustc_hash::FxHashMap;
 use silver_common::{
-    BeaconStateEvent, BlockStage, DataColumnsEvent, EngineReq, EngineResp, SilverSpine,
+    BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineReq, EngineResp, Origin,
+    SilverSpine, SyncNeed,
 };
 
 use crate::{Stage, StageEvent};
@@ -31,8 +32,6 @@ pub struct StageReader {
 }
 
 impl StageReader {
-    /// Drains the stage-carrying queues and returns the events, oldest
-    /// first.
     pub fn consume(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> Drain<'_, StageEvent> {
         adapter.consume_internal_message(|m: &mut InternalMessage<BeaconStateEvent>, _| {
             self.on_beacon_state(m);
@@ -46,6 +45,9 @@ impl StageReader {
         adapter.consume_internal_message(|m: &mut InternalMessage<DataColumnsEvent>, _| {
             self.on_data_columns(m);
         });
+        adapter.consume_internal_message(|m: &mut InternalMessage<SyncNeed>, _| {
+            self.on_sync_need(m);
+        });
         self.out.drain(..)
     }
 
@@ -57,8 +59,10 @@ impl StageReader {
         else {
             return;
         };
+
         self.roots.retain(|_, t| slot.saturating_sub(t.slot) < TRACKED_SLOTS);
         let tracked = self.roots.entry(block_root).or_insert(Tracked::new(slot));
+
         if !tracked.received {
             tracked.received = true;
             self.out.push(StageEvent {
@@ -90,9 +94,6 @@ impl StageReader {
                     slot: Some(req.slot),
                 });
             }
-            // Repeat-head and tick-driven FCUs re-name the root; every one
-            // is emitted, and picking the first per root is the consumer's
-            // dedup.
             EngineReq::Fcu(req) => {
                 self.out.push(StageEvent {
                     stage: Stage::Applied,
@@ -146,28 +147,40 @@ impl StageReader {
             }
         }
     }
+
+    /// Custody completion is the sync engine's need closing, so it rides
+    /// `SyncNeed` rather than `DataColumnsEvent`; backfill answers are not
+    /// a live block's tail.
+    fn on_sync_need(&mut self, m: &InternalMessage<SyncNeed>) {
+        let SyncNeed::Arrived { root, slot, kind: DataKind::Columns, origin: Origin::Live } =
+            *m.data()
+        else {
+            return;
+        };
+        self.out.push(StageEvent {
+            stage: Stage::CustodyDone,
+            ts: m.tracking_timestamp().publish_t(),
+            block_root: root,
+            slot: Some(slot),
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        BlockSource, BlockStage, ColumnSource, EngineFcuReq, EngineNewPayloadReq,
-        EngineNewPayloadResp, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, ColumnSource, DataKind, EngineFcuReq, EngineNewPayloadReq,
+        EngineNewPayloadResp, Origin, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;
+    use crate::test_clock::at;
 
-    const GENESIS_SECS: u64 = 1_000;
-    const SLOT_MS: u64 = 12_000;
     /// Internal-clock ticks between ingestion and publish. Ticks are TSC, so
     /// the nanoseconds they become are calibration-dependent — assert ordering
     /// against the ingestion time, not an exact value.
     const PUBLISH_TICKS: u64 = 10_000_000;
-
-    fn at(slot: u64, ms_into_slot: u64) -> Nanos {
-        Nanos::from_secs(GENESIS_SECS) + Nanos::from_millis(slot * SLOT_MS + ms_into_slot)
-    }
 
     fn msg<T>(data: T, ingestion: Nanos) -> InternalMessage<T> {
         let ts = TrackingTimestamp {
@@ -368,6 +381,21 @@ mod tests {
         reader.on_engine_req(&msg(fcu(old), at(100, 460)));
 
         assert_eq!(find(&reader.out, "applied").slot, None, "evicted after 64 slots");
+    }
+
+    #[test]
+    fn custody_completion_is_the_live_columns_arrival_only() {
+        let mut reader = StageReader::default();
+        let root = [9u8; 32];
+        let arrived = |kind, origin| SyncNeed::Arrived { root, slot: 3, kind, origin };
+
+        reader.on_sync_need(&msg(arrived(DataKind::Columns, Origin::Backfill), at(3, 100)));
+        reader.on_sync_need(&msg(arrived(DataKind::Block, Origin::Live), at(3, 200)));
+        reader.on_sync_need(&msg(arrived(DataKind::Columns, Origin::Live), at(3, 900)));
+
+        assert_eq!(stages(&reader.out), ["custody_done"]);
+        assert_eq!(reader.out[0].slot, Some(3));
+        assert!(reader.out[0].ts > at(3, 900));
     }
 
     #[test]

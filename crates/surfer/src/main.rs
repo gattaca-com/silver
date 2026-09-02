@@ -21,6 +21,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use silver_stages::SlotClock;
 
 mod app;
 mod discovery;
@@ -117,11 +118,11 @@ fn main() -> io::Result<()> {
     // Events pane reads the node's spine directly (app name baked in as
     // `silver`, so a custom APP_NAME only affects the file sources above).
     // Slot timing is chain config surfer can't discover — env-overridable.
-    let events = EventsPane::open(
-        &base_dir,
+    let clock = SlotClock::new(
         env_u64("SURFER_GENESIS_UNIX_SECS", MAINNET_GENESIS_UNIX_SECS),
         env_u64("SURFER_SLOT_MS", MAINNET_SLOT_MS),
     );
+    let events = EventsPane::open(&base_dir, clock);
 
     let peers = sources::peers::Peers::open(&base_dir);
 

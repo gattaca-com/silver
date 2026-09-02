@@ -122,7 +122,9 @@ impl RowFormatter {
                 (Some(format!("{source:?}")), None, Some(index))
             }
             Stage::ElVerdict { verdict } => (None, Some(format!("{verdict:?}")), None),
-            Stage::Applied | Stage::StfImported | Stage::DaAvailable => (None, None, None),
+            Stage::Applied | Stage::StfImported | Stage::DaAvailable | Stage::CustodyDone => {
+                (None, None, None)
+            }
         };
         serde_json::json!({
             "event_date_time": event.ts.0,

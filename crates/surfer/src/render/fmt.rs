@@ -15,6 +15,10 @@ pub fn root_prefix(root: &[u8; 32]) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}", root[0], root[1], root[2], root[3])
 }
 
+pub fn wall_time(ts: Nanos) -> String {
+    ts.with_fmt_utc("%H:%M:%S%.3f")
+}
+
 pub fn fmt_u64(v: u64) -> String {
     if v >= 1_000_000_000 {
         format!("{:.2}G", v as f64 / 1e9)

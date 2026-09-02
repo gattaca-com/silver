@@ -1,4 +1,4 @@
-//! The Events tab: per-block waterfalls on a shared ms-into-slot axis.
+//! The Events tab: each block's pipeline on a shared ms-into-slot axis.
 //!
 //! One line per (slot, root); its bar spans arrival → attestable. Expanding a
 //! line unfolds the three components that join at attestable (`data available
@@ -12,22 +12,26 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListState, Paragraph},
 };
+use silver_stages::SlotClock;
 
 use self::{
     axis::Axis,
-    line::{axis_width, header, row_line},
+    line::{Grid, RowCells},
     tree::{DisplayRow, Expanded, Node, display_rows},
 };
-use crate::sources::events::{BlockTrace, Events, Interval};
+use crate::{
+    render::fmt::wall_time,
+    sources::events::{BlockTrace, Events, Interval},
+};
 
 mod axis;
 mod line;
 mod palette;
 mod tree;
 
-const HINT: &str = "waterfall, ms into slot — Enter expands, bars overlapping ran in parallel";
+const TITLE: &str = "block pipeline: arrival → attestable, ms into slot";
 
 pub struct EventsPane {
     data: Events,
@@ -36,9 +40,9 @@ pub struct EventsPane {
 }
 
 impl EventsPane {
-    pub fn open(base_dir: &Path, genesis_unix_secs: u64, slot_ms: u64) -> Self {
+    pub fn open(base_dir: &Path, clock: SlotClock) -> Self {
         Self {
-            data: Events::open(base_dir, genesis_unix_secs, slot_ms),
+            data: Events::open(base_dir, clock),
             list: ListState::default(),
             expanded: Expanded::default(),
         }
@@ -53,7 +57,7 @@ impl EventsPane {
     }
 
     fn trace(&self, root: [u8; 32]) -> Option<&BlockTrace> {
-        self.data.traces().iter().find(|r| r.block_root == root)
+        self.data.traces().by_root(root)
     }
 
     fn selected(&self, display: &[DisplayRow]) -> Option<DisplayRow> {
@@ -80,20 +84,21 @@ impl EventsPane {
         };
         self.expanded.toggle(root, group);
         // The toggle rewrites the display list; keep the highlight on the
-        // toggled group rather than whatever lands at the old index.
-        let opener = Node::Span(group.opener());
-        self.list.select(self.display().iter().position(|d| d.root == root && d.node == opener));
+        // toggled row, or on the group's last opener when a child folded it.
+        let keep = match node.opens() {
+            Some(_) => node,
+            None => Node::Span(*group.openers().last().expect("every group has an opener")),
+        };
+        self.list.select(self.display().iter().position(|d| d.root == root && d.node == keep));
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
         let display = self.display();
         let title = match self.selected_wall_range(&display) {
-            Some(iv) => format!(
-                " events — {} → {} — {HINT} ",
-                iv.start.with_fmt_utc("%H:%M:%S%.3f"),
-                iv.end.with_fmt_utc("%H:%M:%S%.3f"),
-            ),
-            None => format!(" events — {HINT} "),
+            Some(iv) => {
+                format!(" {TITLE} — selected {} → {} ", wall_time(iv.start), wall_time(iv.end))
+            }
+            None => format!(" {TITLE} "),
         };
         let block =
             Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title);
@@ -110,26 +115,24 @@ impl EventsPane {
 
         let clock = self.data.clock();
         let deadline = self.data.attestation_deadline();
-        let axis = Axis::fit(
-            axis_width(inner.width as usize),
-            deadline,
-            self.data.traces().max_strip_offset(clock),
-        );
+        let rows: Vec<_> = display
+            .iter()
+            .map(|d| {
+                let trace = self.trace(d.root).expect("display rows come from the ring");
+                RowCells::new(trace, d, clock, deadline)
+            })
+            .collect();
+        let grid = Grid::fit(rows.iter(), inner.width as usize);
+        let axis = Axis::fit(grid.axis, deadline, self.data.traces().max_strip_offset(clock));
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)])
             .split(inner);
-        f.render_widget(Paragraph::new(header(&axis)), chunks[0]);
+        f.render_widget(Paragraph::new(grid.header(&axis)), chunks[0]);
 
-        let items: Vec<ListItem> = display
-            .iter()
-            .map(|d| {
-                let trace = self.trace(d.root).expect("display rows come from the ring");
-                ListItem::new(row_line(trace, d, &axis, clock, deadline))
-            })
-            .collect();
-        let list = List::new(items).highlight_style(Style::default().bg(palette::SELECTION_BG));
+        let list = List::new(rows.into_iter().map(|cells| cells.into_line(&grid, &axis)))
+            .highlight_style(Style::default().bg(palette::SELECTION_BG));
         f.render_stateful_widget(list, chunks[1], &mut self.list);
     }
 

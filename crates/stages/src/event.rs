@@ -1,15 +1,12 @@
 use flux::timing::Nanos;
 use silver_common::{BlockSource, ColumnSource, PayloadValidationStatus};
 
-/// Where in the node's pipeline the event was taken, carrying that point's
-/// own data.
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
-    /// A root's first `BlockReceived`, at its ingestion from gossip
+    /// A root's first `BlockReceived`, at its ingestion.
     Received {
         source: BlockSource,
     },
-    /// A data-column sidecar's arrival on the wire.
     ColumnRecv {
         index: u64,
         source: ColumnSource,
@@ -27,8 +24,10 @@ pub enum Stage {
     ElVerdict {
         verdict: PayloadValidationStatus,
     },
-    /// The block's data exists and its DA gate opens.
     DaAvailable,
+    /// Every column this node custodies is held: the 64 → 128 tail past the
+    /// gate, a duty of the node rather than a wait of the block.
+    CustodyDone,
     /// STF done and the block imported into fork choice: publish of the
     /// root's first `BlockReceived { stage: Applied }`, ahead of the FCU.
     StfImported,
@@ -46,6 +45,7 @@ impl Stage {
             Self::ElSent { .. } => "el_sent",
             Self::ElVerdict { .. } => "el_verdict",
             Self::DaAvailable => "da_available",
+            Self::CustodyDone => "custody_done",
             Self::StfImported => "stf_imported",
             Self::Applied => "applied",
         }
