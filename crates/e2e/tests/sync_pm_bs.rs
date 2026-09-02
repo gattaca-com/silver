@@ -12,7 +12,6 @@ use silver_e2e::{
     utils::{PmBsHarness, block_slot, scan_checkpoint_fixtures},
 };
 
-const FIXTURES: &str = "tests/example_checkpoints";
 const EXPECTED_BLOCKS: usize = 4;
 
 #[test]
@@ -20,7 +19,7 @@ const EXPECTED_BLOCKS: usize = 4;
 fn truncated_responses_drive_two_batches_against_real_checkpoint() {
     // Skip cleanly when fixtures are missing or the API is unreachable —
     // either makes the test meaningless rather than failing.
-    let Some((checkpoint, blocks)) = scan_checkpoint_fixtures(FIXTURES, EXPECTED_BLOCKS) else {
+    let Some((checkpoint, blocks)) = scan_checkpoint_fixtures(EXPECTED_BLOCKS) else {
         eprintln!("skipping: run `make -C crates/e2e checkpoint-fixtures` first");
         return;
     };

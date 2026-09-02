@@ -15,16 +15,17 @@ pub use crate::{
     },
     request::{DataKind, Origin, RequestId, Scope, SyncRequest},
     spine::{
-        ALL_PROTOCOLS, AcquiredRead as TRead, AgentString, BeaconStateEvent, BlockSource,
-        ColumnSource, Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, EngineFcuReq,
-        EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
-        EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
-        EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
-        EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
-        GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ,
-        MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg, P2pConnectionStats, P2pSend,
-        P2pStreamId, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats,
-        PeerStatus, PeerTopicScores, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
+        ALL_PROTOCOLS, AcquiredRead as TRead, AcquiredWithOffset, AgentString, BeaconStateEvent,
+        BlockSource, BlockStage, ColumnSource, Consumer as TConsumer, DataColumnsEvent,
+        ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+        EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
+        EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
+        EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
+        EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError, GossipMsgIn,
+        GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1,
+        MultiProducer as TMultiProducer, NewGossipMsg, P2pConnectionStats, P2pSend, P2pStreamId,
+        PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus,
+        PeerTopicScores, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
         RandomAccessConsumer as TRandomAccess, ReplayBlock, Reservation as TReservation,
         RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
         RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers,
@@ -62,7 +63,7 @@ pub use enr::{
     EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
     SUBNETS_PER_NODE, attnet_subnets,
 };
-pub use flux::timing::Nanos;
+pub use flux::timing::{IngestionTime, Nanos};
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};
 
 pub const APP_NAME: &str = "silver";

@@ -2,8 +2,8 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    AgentString, BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, ELSyncStatus,
-    EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+    AgentString, BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent,
+    ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
     EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
@@ -18,8 +18,8 @@ pub use stream_protocol::{
     ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, RPC_PROTOCOLS, StreamProtocol,
 };
 pub use tcache::{
-    AcquiredRead, Consumer, Error, MultiProducer, Producer, RandomAccessConsumer, Reservation,
-    TCache, TCacheProducer, TCacheRead, TCacheRef,
+    AcquiredRead, AcquiredWithOffset, Consumer, Error, MultiProducer, Producer,
+    RandomAccessConsumer, Reservation, TCache, TCacheProducer, TCacheRead, TCacheRef,
 };
 
 mod messages;
@@ -46,11 +46,11 @@ pub struct SilverSpine {
     pub rpc_inbound: SpineQueue<RpcInbound>,
     #[queue(size(2usize.pow(16)))]
     pub peer_events: SpineQueue<PeerEvent>,
-    #[queue(size(2usize.pow(14)))]
+    #[queue(size(2usize.pow(16)))]
     pub peer_control: SpineQueue<PeerControl>,
     #[queue(size(2usize.pow(14)))]
     pub beacon_events: SpineQueue<BeaconStateEvent>,
-    #[queue(size(2usize.pow(12)))]
+    #[queue(size(2usize.pow(13)))]
     pub data_columns: SpineQueue<DataColumnsEvent>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,

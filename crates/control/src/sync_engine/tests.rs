@@ -5,7 +5,8 @@ use std::{
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BlockSource, DataKind, Origin, RequestId, Scope, SyncNeed, SyncUpdate, SyncingStrategy,
+    BlockSource, BlockStage, DataKind, Origin, RequestId, Scope, SyncNeed, SyncUpdate,
+    SyncingStrategy,
 };
 use silver_peer::SyncingConfig;
 
@@ -81,20 +82,28 @@ fn local_status(e: &mut SyncEngine, head_slot: u64, wall_slot: u64) {
 /// A block whose parent sits at `parent_slot`, which also proves every slot
 /// between them empty.
 fn block_at(e: &mut SyncEngine, slot: u64, parent_slot: Option<u64>) {
-    e.on_block_received(slot, [slot as u8; 32], parent_slot, true);
+    e.on_block_received(slot, [slot as u8; 32], parent_slot, BlockStage::Applied);
 }
 
 /// A block in hand but not applied — beacon state parked it on a
 /// dependency.
 fn parked_at(e: &mut SyncEngine, slot: u64, parent_slot: Option<u64>) {
-    e.on_block_received(slot, [slot as u8; 32], parent_slot, false);
+    e.on_block_received(slot, [slot as u8; 32], parent_slot, BlockStage::AwaitParent);
+}
+
+/// The columns tile holds the whole custody set for the block at `slot`.
+fn columns_covered(e: &mut SyncEngine, slot: u64, root: [u8; 32]) {
+    e.on_sync_need(
+        SyncNeed::Arrived { root, slot, kind: DataKind::Columns, origin: Origin::Live },
+        Instant::now(),
+    );
 }
 
 /// A fully-satisfied slot: block present and its data covered. Says
 /// nothing about *who* served it — use `served` for a range delivery.
 fn covered(e: &mut SyncEngine, slot: u64, parent_slot: Option<u64>) {
     block_at(e, slot, parent_slot);
-    e.on_columns_covered(slot, [slot as u8; 32]);
+    columns_covered(e, slot, [slot as u8; 32]);
     e.on_envelope_covered(slot, [slot as u8; 32]);
 }
 
@@ -247,7 +256,7 @@ fn tail_advances_only_on_coverage() {
     drive(&mut e, now);
     assert_eq!(tail(&e), 0, "block without its data does not retire the slot");
 
-    e.on_columns_covered(1, [1; 32]);
+    columns_covered(&mut e, 1, [1; 32]);
     drive(&mut e, now);
     assert_eq!(tail(&e), 1, "covered slot retires");
 }
@@ -282,7 +291,7 @@ fn fork_sibling_does_not_prove_a_slot_holding_a_block_empty() {
     drive(&mut e, now);
     assert_eq!(tail(&e), 9, "the slot holding a block still owes its columns");
 
-    e.on_columns_covered(10, [10; 32]);
+    columns_covered(&mut e, 10, [10; 32]);
     drive(&mut e, now);
     assert_eq!(tail(&e), 11, "released, and the empty run below the sibling with it");
 }
@@ -437,7 +446,7 @@ fn retarget_drops_the_window_and_re_asks_for_what_it_held() {
     let (rid, ..) = issue_one(&mut e, 200, 0, now);
 
     // Slot 1: columns in hand, and the peer's silence read as empty.
-    e.on_columns_covered(1, [1; 32]);
+    columns_covered(&mut e, 1, [1; 32]);
     e.on_terminator(rid, PEER, true, now);
     assert!(e.window.coverage(1).columns_covered);
 
@@ -461,7 +470,7 @@ fn retarget_drops_the_window_and_re_asks_for_what_it_held() {
         Some(1),
         "the slot is owed again"
     );
-    e.on_columns_covered(1, [1; 32]);
+    columns_covered(&mut e, 1, [1; 32]);
     assert!(e.window.coverage(1).columns_covered, "and the re-delivery restores it");
 }
 
@@ -483,7 +492,7 @@ fn chain_abandoned_for_a_head_target_does_not_carry_its_coverage() {
 
     // Slot 1 goes unserved and holds the tail; slot 5's columns did arrive.
     drive(&mut e, t0).expect("range issued");
-    e.on_columns_covered(5, [5; 32]);
+    columns_covered(&mut e, 5, [5; 32]);
 
     let mut now = t0;
     while now.saturating_duration_since(t0) < CHAIN_UNAVAILABLE_TIMEOUT {
@@ -663,7 +672,7 @@ fn unplaceable_parent_is_chased_by_root() {
     assert_eq!(by_root_chases(&mut e, now), vec![orphan_parent], "parent chased by root");
 
     // Arrival of that very block retires the chase.
-    e.on_block_received(39, orphan_parent, Some(38), true);
+    e.on_block_received(39, orphan_parent, Some(38), BlockStage::Applied);
     assert!(by_root_chases(&mut e, now).is_empty(), "arrival retires the chase");
 }
 
@@ -699,7 +708,7 @@ fn an_unsatisfiable_slot_stalls_the_tail_without_conceding() {
     assert_eq!(discoveries, 1, "escalates once for the stalled slot");
 
     // Coverage finally arriving releases it — the slot was never skipped.
-    e.on_columns_covered(5, [5; 32]);
+    columns_covered(&mut e, 5, [5; 32]);
     drive(&mut e, now);
     assert_eq!(tail(&e), 5, "the tail resumes from the slot it held at");
 }
@@ -722,7 +731,7 @@ fn parked_block_is_not_refetched_and_does_not_settle_its_slot() {
     // the tail stops there while the slots above stay genuinely owed.
     e.on_msg_served(rid);
     parked_at(&mut e, 4, Some(3));
-    e.on_columns_covered(4, [4; 32]);
+    columns_covered(&mut e, 4, [4; 32]);
     e.on_envelope_covered(4, [4; 32]);
 
     e.on_terminator(rid, PEER, true, t0);
@@ -866,19 +875,19 @@ fn the_window_names_the_block_whose_state_it_reports() {
     const B: [u8; 32] = [0xbb; 32];
     let mut e = engine();
 
-    e.on_block_received(4, A, Some(3), false);
+    e.on_block_received(4, A, Some(3), BlockStage::AwaitParent);
     assert_eq!(e.window.seen_blocks(4).root, A, "the parked block is named");
     assert_eq!(e.window.seen_blocks(4).count, 1);
 
     // A sibling parks at the same slot. It did not change what the slot is
     // waiting on, so it must not rename it — but it is worth knowing there
     // are two.
-    e.on_block_received(4, B, Some(3), false);
+    e.on_block_received(4, B, Some(3), BlockStage::AwaitParent);
     assert_eq!(e.window.seen_blocks(4).root, A, "a second parked block does not rename it");
     assert_eq!(e.window.seen_blocks(4).count, 2, "and both are counted");
 
     // The sibling applying does change it, and the name moves with it.
-    e.on_block_received(4, B, Some(3), true);
+    e.on_block_received(4, B, Some(3), BlockStage::Applied);
     assert_eq!(e.window.seen_blocks(4).root, B, "the applied block renames the slot");
     assert_eq!(e.window.coverage(4).block, BlockState::Applied);
 }
@@ -993,7 +1002,7 @@ fn an_unverified_payload_is_chased_by_root() {
     assert_eq!(roots(&emitted, DataKind::Envelope), vec![root], "chased by root, not by range");
     assert!(ranges(&emitted, DataKind::Envelope).is_empty(), "and not by range");
 
-    e.on_sync_need(SyncNeed::Arrived { root, slot: 9, kind: DataKind::Envelope }, now);
+    e.on_envelope_covered(9, root);
     assert!(
         roots(&actions(&mut e, now, true), DataKind::Envelope).is_empty(),
         "coverage retires the need"
@@ -1254,7 +1263,7 @@ fn delivered_tip_span_is_not_re_asked_until_it_moves() {
     // The columns tile reports what it made of them: the span moves on, and
     // the next one is asked for without waiting out the backstop.
     let covered = delivered_for.expect("a range was issued");
-    e.on_columns_covered(covered, [7; 32]);
+    columns_covered(&mut e, covered, [7; 32]);
     let (_, start, ..) = drive_all(&mut e, at).columns.expect("the span moved, so it is asked");
     assert!(start > covered, "and only for what is still owed");
 }

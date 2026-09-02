@@ -2,12 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque, btree_map::Entry},
     ops::Range,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use fxhash::FxHashMap;
 use silver_beacon_state_data::SpecConfig;
 use silver_common::{
-    DataKind, SyncNeed, TRead, column_util,
+    TRead,
+    column_util::{self, KzgBatchEntry, KzgScratch},
     merkle::B256,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, EXECUTION_PAYLOAD_FIXED_GLOAS,
@@ -17,7 +19,13 @@ use silver_common::{
     },
 };
 
-use crate::store::PendingWrite;
+use crate::{StorageCounters, store::PendingWrite};
+
+/// A block whose custody set has not completed by this long after its first
+/// sidecar is dropped, releasing the parked buffers; the range walk re-asks
+/// for the whole set. Under the sync engine's 30s settle timeout so the
+/// re-ask finds the slots owed again.
+const INCOMPLETE_BLOCK_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Block-history backfill **tracker**. Issuance moved to the control-tile
 /// `SyncEngine`; storage reports the gap via `PeerEvent::BackfillState` and
@@ -33,10 +41,24 @@ pub(super) struct Backfill {
     blocks_complete: bool,
 }
 
-pub(super) struct AcceptedColumn {
+/// A block's full custody set, KZG-verified as one batch.
+pub(super) struct VerifiedColumns {
     pub(super) block_root: B256,
     pub(super) slot: u64,
+    pub(super) sidecars: Vec<ParkedSidecar>,
+}
+
+pub(super) struct ParkedSidecar {
     pub(super) column_index: u64,
+    pub(super) ssz: TRead,
+    pub(super) peer: usize,
+}
+
+/// A parked sidecar whose proof failed the per-sidecar fallback: the peer
+/// that served it is culpable, and its column is owed again.
+pub(super) struct RejectedSidecar {
+    pub(super) column_index: u64,
+    pub(super) peer: usize,
 }
 
 impl Backfill {
@@ -63,14 +85,7 @@ impl Backfill {
     /// Link an arriving backfill block to the chain and queue it for write.
     /// Blocks arrive child-first; each links to `next_parent` and drains the
     /// buffer downward. Complete once the chain reaches the gap floor.
-    pub(super) fn add_block<F>(
-        &mut self,
-        ssz: TRead,
-        write_queue: &mut VecDeque<PendingWrite>,
-        emit: &mut F,
-    ) where
-        F: FnMut(SyncNeed),
-    {
+    pub(super) fn add_block(&mut self, ssz: TRead, write_queue: &mut VecDeque<PendingWrite>) {
         let buffer = match ssz.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -94,7 +109,6 @@ impl Backfill {
             write_queue.push_back(PendingWrite::BackfillBlock { block_root, slot, ssz });
             self.earliest_written = self.earliest_written.min(slot);
             self.next_parent = parent_root;
-            emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Block });
         }
 
         if self.earliest_written <= self.range.start {
@@ -120,6 +134,7 @@ pub(super) struct ColumnBackfill {
     /// The slots `pending` covers, for the span the range walk sweeps.
     owed_slots: BTreeSet<u64>,
     scan_complete: bool,
+    kzg_scratch: KzgScratch,
 }
 
 struct PendingColumnBlock {
@@ -127,6 +142,11 @@ struct PendingColumnBlock {
     expect: Expect,
     requested: u128,
     received: u128,
+    /// Sidecars that passed the per-sidecar checks, KZG deferred to the
+    /// block's completion so the whole custody set is one pairing check.
+    /// Holding the `TRead` keeps each buffer acquired until then.
+    parked: Vec<ParkedSidecar>,
+    first_parked_at: Option<Instant>,
 }
 
 enum Expect {
@@ -159,7 +179,6 @@ impl PendingColumnBlock {
                 SidecarLayout::Fulu,
             ) => {
                 column_util::verify_data_column_sidecar_fulu(sidecar) &&
-                    column_util::verify_data_column_sidecar_kzg_proofs_fulu(sidecar) &&
                     column_util::verify_data_column_sidecar_inclusion_proof(sidecar) &&
                     DataColumnSidecarFuluView::slot(sidecar) == self.slot &&
                     DataColumnSidecarFuluView::proposer_index(sidecar) == *proposer_index &&
@@ -170,10 +189,6 @@ impl PendingColumnBlock {
             }
             (Expect::Gloas { commitments }, SidecarLayout::Gloas) => {
                 column_util::verify_data_column_sidecar_gloas(sidecar, commitments) &&
-                    column_util::verify_data_column_sidecar_kzg_proofs_gloas(
-                        sidecar,
-                        commitments,
-                    ) &&
                     DataColumnSidecarGloasView::slot(sidecar) == self.slot
             }
             _ => {
@@ -187,6 +202,36 @@ impl PendingColumnBlock {
             }
         }
     }
+
+    /// `None` when the parked buffer can no longer be read — our failure, not
+    /// the peer's.
+    fn kzg_entry<'a>(&'a self, parked: &'a ParkedSidecar) -> Option<KzgBatchEntry<'a>> {
+        let (buf, _) = parked.ssz.buffer().ok()?;
+        Some(match &self.expect {
+            Expect::Fulu { .. } => KzgBatchEntry {
+                column: DataColumnSidecarFuluView::column(buf),
+                commitments: DataColumnSidecarFuluView::kzg_commitments(buf),
+                proofs: DataColumnSidecarFuluView::kzg_proofs(buf),
+                index: parked.column_index,
+            },
+            Expect::Gloas { commitments } => KzgBatchEntry {
+                column: DataColumnSidecarGloasView::column(buf),
+                commitments,
+                proofs: DataColumnSidecarGloasView::kzg_proofs(buf),
+                index: parked.column_index,
+            },
+        })
+    }
+
+    fn kzg_verify_single(&self, parked: &ParkedSidecar) -> bool {
+        let Ok((buf, _)) = parked.ssz.buffer() else { return false };
+        match &self.expect {
+            Expect::Fulu { .. } => column_util::verify_data_column_sidecar_kzg_proofs_fulu(buf),
+            Expect::Gloas { commitments } => {
+                column_util::verify_data_column_sidecar_kzg_proofs_gloas(buf, commitments)
+            }
+        }
+    }
 }
 
 impl ColumnBackfill {
@@ -196,6 +241,7 @@ impl ColumnBackfill {
             pending: FxHashMap::default(),
             owed_slots: BTreeSet::new(),
             scan_complete: false,
+            kzg_scratch: KzgScratch::default(),
         }
     }
 
@@ -231,6 +277,8 @@ impl ColumnBackfill {
             expect,
             requested: missing,
             received: 0,
+            parked: Vec::new(),
+            first_parked_at: None,
         });
         self.owed_slots.insert(slot);
     }
@@ -246,12 +294,30 @@ impl ColumnBackfill {
         }
     }
 
-    /// Validate + record a received backfill sidecar. On the block's final
-    /// column, clears the need (`ColumnNeed { missing: 0 }`).
-    pub(super) fn add_sidecar<F>(&mut self, sidecar: &TRead, emit: &mut F) -> Option<AcceptedColumn>
-    where
-        F: FnMut(SyncNeed),
-    {
+    /// Check + park a received backfill sidecar. On the block's final column
+    /// the whole custody set is KZG-verified as one batch and returned; a
+    /// failed batch falls back to per-sidecar proofs so only the culpable
+    /// columns are rejected (re-owed) and the rest stay parked.
+    pub(super) fn add_sidecar(
+        &mut self,
+        sidecar: TRead,
+        peer: usize,
+        now: Instant,
+    ) -> (Option<VerifiedColumns>, Vec<RejectedSidecar>) {
+        let Some((block_root, column_index)) = self.park(&sidecar, peer, now) else {
+            return (None, Vec::new());
+        };
+        let Some(block) = self.pending.get_mut(&block_root) else { return (None, Vec::new()) };
+        block.parked.push(ParkedSidecar { column_index, ssz: sidecar, peer });
+        if block.received & block.requested != block.requested {
+            return (None, Vec::new());
+        }
+        self.verify_complete(block_root)
+    }
+
+    /// The per-sidecar checks: shape, header/commitment binding to a pending
+    /// block, and dedup. `Some` = accepted for parking.
+    fn park(&mut self, sidecar: &TRead, peer: usize, now: Instant) -> Option<(B256, u64)> {
         let buffer = match sidecar.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -285,56 +351,116 @@ impl ColumnBackfill {
             SidecarLayout::Gloas => *DataColumnSidecarGloasView::beacon_block_root(buffer),
         };
         let column_bitmask = 1u128 << column_index;
-        let (slot, complete) = {
-            let expected = match self.pending.get_mut(&block_root) {
-                Some(expected) => expected,
-                None => {
-                    tracing::warn!(
-                        block_root = hex::encode(block_root),
-                        "unrequested backfill data column sidecar"
-                    );
-                    return None;
-                }
-            };
-            if expected.requested & column_bitmask == 0 {
-                return None;
-            }
-            if expected.received & column_bitmask != 0 {
-                return None;
-            }
-            if !expected.accepts(layout, buffer) {
-                tracing::warn!(
-                    block_root = hex::encode(block_root),
-                    column_index,
-                    ?layout,
-                    "backfill sidecar does not verify against its block"
-                );
-                return None;
-            }
-
-            expected.received |= column_bitmask;
-            let complete = expected.received & expected.requested == expected.requested;
-            (expected.slot, complete)
+        let Some(expected) = self.pending.get_mut(&block_root) else {
+            tracing::debug!(
+                block_root = hex::encode(block_root),
+                "unrequested backfill data column sidecar"
+            );
+            return None;
         };
-
-        if complete {
-            self.retire(block_root, slot, emit);
+        if expected.requested & column_bitmask == 0 || expected.received & column_bitmask != 0 {
+            return None;
+        }
+        if !expected.accepts(layout, buffer) {
+            tracing::warn!(
+                block_root = hex::encode(block_root),
+                column_index,
+                peer,
+                ?layout,
+                "backfill sidecar does not verify against its block"
+            );
+            return None;
         }
 
-        Some(AcceptedColumn { block_root, slot, column_index })
+        expected.received |= column_bitmask;
+        expected.first_parked_at.get_or_insert(now);
+        Some((block_root, column_index))
     }
 
-    fn retire<F>(&mut self, block_root: B256, slot: u64, emit: &mut F)
-    where
-        F: FnMut(SyncNeed),
-    {
+    fn verify_complete(
+        &mut self,
+        block_root: B256,
+    ) -> (Option<VerifiedColumns>, Vec<RejectedSidecar>) {
+        let Some(block) = self.pending.get_mut(&block_root) else { return (None, Vec::new()) };
+        StorageCounters::BackfillKzgBatches.inc();
+        StorageCounters::BackfillKzgBatchColumns.add(block.parked.len() as u64);
+
+        let all_ok = column_util::kzg_verify_batch_multi(
+            block.parked.iter().filter_map(|p| block.kzg_entry(p)),
+            &mut self.kzg_scratch,
+        );
+        if all_ok {
+            let slot = block.slot;
+            let sidecars = std::mem::take(&mut block.parked);
+            self.retire(block_root, slot);
+            return (Some(VerifiedColumns { block_root, slot, sidecars }), Vec::new());
+        }
+
+        // Combined check failed: re-verify each alone so the reject lands on
+        // the culpable peers only. Their columns go back to owed; the rest
+        // stay parked for the re-ask to complete.
+        StorageCounters::BackfillKzgBatchRejects.inc();
+        let mut rejected = Vec::new();
+        let mut i = 0;
+        while i < block.parked.len() {
+            if block.kzg_verify_single(&block.parked[i]) {
+                i += 1;
+                continue;
+            }
+            let bad = block.parked.swap_remove(i);
+            block.received &= !(1u128 << bad.column_index);
+            tracing::warn!(
+                block_root = hex::encode(block_root),
+                column_index = bad.column_index,
+                peer = bad.peer,
+                "backfill sidecar kzg proof invalid"
+            );
+            rejected.push(RejectedSidecar { column_index: bad.column_index, peer: bad.peer });
+        }
+        (None, rejected)
+    }
+
+    /// Drop blocks whose custody set has sat incomplete past the timeout: the
+    /// parked buffers are released and every column is owed again.
+    pub(super) fn expire_incomplete(&mut self, now: Instant) {
+        let expired: Vec<B256> = self
+            .pending
+            .iter()
+            .filter(|(_, block)| {
+                block
+                    .first_parked_at
+                    .is_some_and(|at| now.saturating_duration_since(at) >= INCOMPLETE_BLOCK_TIMEOUT)
+            })
+            .map(|(root, _)| *root)
+            .collect();
+        for root in expired {
+            if let Some(block) = self.pending.get_mut(&root) {
+                tracing::warn!(
+                    block_root = hex::encode(root),
+                    slot = block.slot,
+                    parked = block.parked.len(),
+                    "backfill block incomplete past timeout; dropping parked columns"
+                );
+                StorageCounters::BackfillIncompleteExpired.inc();
+                block.parked.clear();
+                block.received = 0;
+                block.first_parked_at = None;
+            }
+        }
+    }
+
+    fn retire(&mut self, block_root: B256, slot: u64) {
         self.pending.remove(&block_root);
         self.owed_slots.remove(&slot);
-        emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns });
     }
 
     pub(super) fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn requested_columns(&self, block_root: &B256) -> Option<u128> {
+        self.pending.get(block_root).map(|b| b.requested)
     }
 
     pub(super) fn is_complete(&self) -> bool {
@@ -564,24 +690,11 @@ mod tests {
         cb.seed_block([2u8; 32], 50, &block_bytes(50, [0; 32]), 0b1, &spec());
         assert_eq!(cb.owed_span(), (40, 51));
 
-        let mut arrived = Vec::new();
-        let mut spans = 0;
-        let mut collect = |need| match need {
-            SyncNeed::Arrived { root, slot, kind } => arrived.push((root, slot, kind)),
-            SyncNeed::BackfillGap { .. } => spans += 1,
-            SyncNeed::Missing { .. } => {}
-        };
-        cb.retire([1u8; 32], 40, &mut collect);
+        cb.retire([1u8; 32], 40);
         assert_eq!(cb.owed_span(), (50, 51), "the slot that cleared leaves the span");
-        cb.retire([2u8; 32], 50, &mut collect);
+        cb.retire([2u8; 32], 50);
         assert_eq!(cb.owed_span(), (0, 0), "and the last one empties it");
 
-        assert_eq!(
-            arrived,
-            vec![([1u8; 32], 40, DataKind::Columns), ([2u8; 32], 50, DataKind::Columns),],
-            "one report per block whose custody set completed"
-        );
-        assert_eq!(spans, 0, "the walk does not publish spans; the store does");
         assert_eq!(cb.servable_floor(), 1, "with nothing owed, the floor is the window's");
     }
 
@@ -600,12 +713,16 @@ mod tests {
             },
             requested: 0b1,
             received: 0,
+            parked: Vec::new(),
+            first_parked_at: None,
         };
         let gloas = PendingColumnBlock {
             slot: 1,
             expect: Expect::Gloas { commitments: Box::new([0u8; 48]) },
             requested: 0b1,
             received: 0,
+            parked: Vec::new(),
+            first_parked_at: None,
         };
 
         // Contents are irrelevant: the layout arm is what refuses.
@@ -636,12 +753,191 @@ mod tests {
         for (anchor, links) in [(gloas_root, true), (fulu_root, false)] {
             let mut queue = VecDeque::new();
             let mut backfill = Backfill::new(GLOAS_FORK_SLOT..GLOAS_FORK_SLOT + 1, anchor, spec());
-            backfill.add_block(consumer.acquire(ssz), &mut queue, &mut |_| {});
+            backfill.add_block(consumer.acquire(ssz), &mut queue);
 
             assert_eq!(backfill.is_complete(), links, "anchored at {}", hex::encode(anchor));
             assert_eq!(queue.len(), usize::from(links), "queued for write iff linked");
             queue.clear();
         }
+    }
+
+    /// Two-blob Fulu block plus its 128 sidecars with real c-kzg cells and
+    /// proofs, self-consistent header and inclusion proof. `slot` must be
+    /// pre-gloas for `spec()`, else seeding expects gloas sidecars.
+    struct KzgFixture {
+        block: Vec<u8>,
+        block_root: B256,
+        sidecars: Vec<Vec<u8>>,
+    }
+
+    fn kzg_fixture(slot: u64) -> KzgFixture {
+        use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
+
+        let settings = c_kzg::ethereum_kzg_settings(0);
+        let n = 2usize;
+        let blob = c_kzg::Blob::new([0u8; 131072]);
+        let mut commitments = Vec::new();
+        let mut cells = Vec::new();
+        let mut proofs = Vec::new();
+        for _ in 0..n {
+            let c = settings.blob_to_kzg_commitment(&blob).unwrap();
+            commitments.extend_from_slice(&c.to_bytes().into_inner());
+            let (cs, ps) = settings.compute_cells_and_kzg_proofs(&blob).unwrap();
+            cells.push(cs);
+            proofs.push(ps);
+        }
+
+        // Body: every variable field empty except blob_kzg_commitments.
+        const BODY_FIXED: usize = 396;
+        let mut body = vec![0u8; BODY_FIXED + commitments.len()];
+        for pos in [200usize, 204, 208, 212, 216, 380, 384, 388] {
+            body[pos..pos + 4].copy_from_slice(&(BODY_FIXED as u32).to_le_bytes());
+        }
+        body[392..396].copy_from_slice(&((BODY_FIXED + commitments.len()) as u32).to_le_bytes());
+        body[BODY_FIXED..].copy_from_slice(&commitments);
+
+        // Block: message at 100, header fields, body at 184.
+        let mut block = vec![0u8; 184];
+        block[0..4].copy_from_slice(&100u32.to_le_bytes());
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
+        block.extend_from_slice(&body);
+
+        let mut header = [0u8; 208];
+        header[0..8].copy_from_slice(&slot.to_le_bytes());
+        header[80..112].copy_from_slice(&column_util::body_root(&body));
+        let inclusion_proof = kzg_commitments_inclusion_proof(&body);
+
+        let sidecars: Vec<Vec<u8>> = (0..NUMBER_OF_COLUMNS as u64)
+            .map(|j| {
+                let mut column = Vec::new();
+                let mut col_proofs = Vec::new();
+                for i in 0..n {
+                    column.extend_from_slice(&cells[i][j as usize].to_bytes());
+                    col_proofs.extend_from_slice(&proofs[i][j as usize].to_bytes().into_inner());
+                }
+                let mut out = Vec::new();
+                column_util::push_data_column_sidecar_prefix(
+                    &mut out,
+                    j,
+                    n,
+                    &header,
+                    &inclusion_proof,
+                );
+                out.extend_from_slice(&column);
+                out.extend_from_slice(&commitments);
+                out.extend_from_slice(&col_proofs);
+                out
+            })
+            .collect();
+
+        KzgFixture {
+            block_root: column_util::block_root_from_sidecar(&sidecars[0]),
+            block,
+            sidecars,
+        }
+    }
+
+    /// Producer + random-access consumer pair turning bytes into acquired
+    /// `TRead`s. Declared consumer-after-producer so parked reads (which
+    /// dereference the consumer on release) drop first.
+    struct Tc {
+        producer: silver_common::TProducer,
+        consumer: silver_common::TRandomAccess,
+    }
+
+    impl Tc {
+        fn new(name: &'static str) -> Self {
+            let producer = TCache::producer(name, 1 << 22);
+            let consumer = producer.cache_ref().random_access(name, true).unwrap();
+            Self { producer, consumer }
+        }
+
+        fn tread(&mut self, bytes: &[u8]) -> TRead {
+            let mut res = self.producer.reserve(bytes.len(), true).unwrap();
+            res.write_all(bytes).unwrap();
+            res.flush().unwrap();
+            let handle = res.read();
+            self.consumer.acquire(handle)
+        }
+    }
+
+    /// The custody set is one pairing check at completion: nothing comes out
+    /// until the last column lands, then the whole set does.
+    #[test]
+    fn custody_set_verifies_as_one_batch_on_completion() {
+        let now = Instant::now();
+        let f = kzg_fixture(20);
+        let mut tc = Tc::new("backfill_kzg_batch");
+        let mut cb = ColumnBackfill::new(1..97);
+        let requested = 0b1011u128; // columns 0, 1, 3
+        cb.seed_block(f.block_root, 20, &f.block, requested, &spec());
+
+        for &col in &[0usize, 1] {
+            let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[col]), 7, now);
+            assert!(verified.is_none() && rejected.is_empty(), "col {col} parked, not verified");
+        }
+        assert_eq!(cb.owed_span(), (20, 21), "still owed until the set completes");
+
+        let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[3]), 7, now);
+        assert!(rejected.is_empty());
+        let verified = verified.expect("last column completes the set");
+        assert_eq!((verified.block_root, verified.slot), (f.block_root, 20));
+        let mut cols: Vec<u64> = verified.sidecars.iter().map(|p| p.column_index).collect();
+        cols.sort_unstable();
+        assert_eq!(cols, vec![0, 1, 3]);
+        assert_eq!(cb.owed_span(), (0, 0), "retired");
+    }
+
+    /// A forged proof fails the batch; the fallback blames only that column's
+    /// peer, re-owes only that column, and keeps the honest ones parked.
+    #[test]
+    fn forged_proof_rejects_only_its_column_and_peer() {
+        let now = Instant::now();
+        let f = kzg_fixture(20);
+        let mut tc = Tc::new("backfill_kzg_forged");
+        let mut cb = ColumnBackfill::new(1..97);
+        cb.seed_block(f.block_root, 20, &f.block, 0b11, &spec());
+
+        let mut forged = f.sidecars[1].clone();
+        let proofs_off = column_util::data_column_sidecar_len(2) - 2 * 48;
+        forged[proofs_off] ^= 0x01;
+
+        cb.add_sidecar(tc.tread(&f.sidecars[0]), 7, now);
+        let (verified, rejected) = cb.add_sidecar(tc.tread(&forged), 9, now);
+        assert!(verified.is_none(), "a bad column holds the set back");
+        assert_eq!(rejected.len(), 1);
+        assert_eq!((rejected[0].column_index, rejected[0].peer), (1, 9));
+
+        let block = &cb.pending[&f.block_root];
+        assert_eq!(block.received, 0b01, "only the forged column is owed again");
+        assert_eq!(block.parked.len(), 1, "the honest column stays parked");
+
+        // The re-ask lands a good copy: the set completes.
+        let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[1]), 11, now);
+        assert!(rejected.is_empty());
+        assert_eq!(verified.expect("completes").sidecars.len(), 2);
+    }
+
+    /// Parked buffers are not held forever: an incomplete set past the
+    /// timeout is dropped and every column is owed again.
+    #[test]
+    fn incomplete_set_expires_and_is_owed_again() {
+        let now = Instant::now();
+        let f = kzg_fixture(20);
+        let mut tc = Tc::new("backfill_kzg_expire");
+        let mut cb = ColumnBackfill::new(1..97);
+        cb.seed_block(f.block_root, 20, &f.block, 0b11, &spec());
+        cb.add_sidecar(tc.tread(&f.sidecars[0]), 7, now);
+
+        cb.expire_incomplete(now + INCOMPLETE_BLOCK_TIMEOUT - Duration::from_millis(1));
+        assert_eq!(cb.pending[&f.block_root].parked.len(), 1, "inside the window it is kept");
+
+        cb.expire_incomplete(now + INCOMPLETE_BLOCK_TIMEOUT);
+        let block = &cb.pending[&f.block_root];
+        assert!(block.parked.is_empty(), "parked buffers released");
+        assert_eq!(block.received, 0, "whole set owed again");
+        assert_eq!(cb.owed_span(), (20, 21), "the slot stays in the span");
     }
 
     const BID_BLOCK_HASH: B256 = [0xB1; 32];

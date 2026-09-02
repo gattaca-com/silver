@@ -4540,6 +4540,7 @@ dependencies = [
  "rand 0.8.6",
  "silver_beacon_state_data",
  "silver_common",
+ "tempfile",
  "tracing",
 ]
 
@@ -4651,6 +4652,7 @@ dependencies = [
  "serde_json",
  "silver_beacon_state",
  "silver_beacon_state_data",
+ "silver_columns",
  "silver_common",
  "silver_config",
  "silver_control",

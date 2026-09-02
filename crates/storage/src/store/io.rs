@@ -15,8 +15,11 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
-    Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer,
-    TCacheRead, TMultiProducer, column_util, column_util::columns_of, hex32, merkle::B256,
+    DataKind, Enr, Origin, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound,
+    SyncNeed, TCacheProducer, TCacheRead, TMultiProducer,
+    column_util::{self, columns_of},
+    hex32,
+    merkle::B256,
     ssz_view::SignedBeaconBlockView,
 };
 
@@ -58,6 +61,8 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
+        StorageCounters::WriteQueueLength.set(self.write_queue.len() as u64);
+
         let mut writes = 0;
         while writes < MAX_WRITES_PER_LOOP &&
             let Some(pending) = self.write_queue.pop_front()
@@ -78,13 +83,24 @@ impl Store {
                     record[32..].copy_from_slice(&slot.to_le_bytes());
                     file.write_all(&record)?;
                 }
-                PendingWrite::Column { slot, column, ssz } => {
+                PendingWrite::Column { slot, column, block_root, ssz } => {
                     let dir = self.finalized_slot_dir(Payload::Column, slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
+                    tracing::info!(?path, len = buffer.len(), "writing data column");
                     open_file_write(path, false)?.write_all(buffer)?;
+
                     StorageCounters::BackfillColumnsWritten.inc();
+
+                    if let Some(root) = block_root {
+                        emit(IoEvent::Need(SyncNeed::Arrived {
+                            root,
+                            slot,
+                            kind: DataKind::Columns,
+                            origin: Origin::Backfill,
+                        }))
+                    }
                 }
                 PendingWrite::WriteUnfinalized { slot, key, ssz } => {
                     let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
@@ -174,17 +190,26 @@ impl Store {
                     // Set 2: a block fetched by block backfill that falls in the
                     // column window needs its columns too (the pre-block disk
                     // scan couldn't see it — it wasn't on disk yet). Feed the
-                    // still-live column backfill. Just-written ⇒ no columns on
-                    // disk yet, so the full custody set is missing.
+                    // still-live column backfill. Only what is absent: block
+                    // backfill re-fetches a block whose columns an earlier run
+                    // already wrote, and asking for the full set again rewrote
+                    // every column below finalized on each restart.
                     let is_gloas = self.spec.is_gloas_at_slot(slot);
-                    // Just written ⇒ no columns on disk yet, so the whole
-                    // custody set is missing.
                     let missing = match SignedBeaconBlockView::has_data_columns(buffer, is_gloas) {
-                        true => custody_group_columns,
+                        true => {
+                            custody_group_columns &
+                                !self.present_columns(slot, custody_group_columns)
+                        }
                         false => 0,
                     };
                     self.history.seed(block_root, slot, buffer, missing, is_gloas, &self.spec);
                     StorageCounters::BackfillBlocksWritten.inc();
+                    emit(IoEvent::Need(SyncNeed::Arrived {
+                        root: block_root,
+                        slot,
+                        kind: DataKind::Block,
+                        origin: Origin::Backfill,
+                    }));
                 }
                 PendingWrite::BackfillEnvelope { slot, ssz } => {
                     let dir = self.finalized_slot_dir(Payload::Envelope, slot);
@@ -235,6 +260,8 @@ impl Store {
         // emitted once a request's units drain. `MAX_ITERATIONS_PER_LOOP`
         // bounds drained-request churn so a burst of empty requests can't
         // extend tile time.
+        StorageCounters::ReadQueueLength.set(self.query_queue.len() as u64);
+
         let mut reads = 0;
         let mut iters = 0;
         while iters < MAX_ITERATIONS_PER_LOOP && reads < MAX_READS_PER_LOOP {
@@ -316,6 +343,7 @@ impl Store {
         }
 
         self.scan_columns_step(custody_group_columns);
+        self.expire_incomplete_backfill_columns(Instant::now());
         self.history.step(&mut self.write_queue);
         self.history.publish_owed_spans(&mut |need| emit(IoEvent::Need(need)));
         if let Some(earliest) = self.take_earliest_slot_claim(custody_group_columns) {

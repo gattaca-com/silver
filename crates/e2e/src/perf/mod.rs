@@ -6,8 +6,9 @@ pub mod replay;
 pub mod report;
 pub mod workload;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+pub use fixtures_dir::BlockFixtures;
 pub use replay::ReplayOutcome;
 pub use report::PerfReport;
 pub use workload::BlockWorkload;
@@ -22,9 +23,9 @@ pub struct Fixtures {
 
 impl Fixtures {
     /// `Err` if a fixture file is missing — usually `git lfs pull` wasn't run.
-    pub fn load(dir: &Path) -> Result<Self, String> {
-        let fixtures = fixtures_dir::FixturesDir(dir);
+    pub fn load(fixtures: &BlockFixtures) -> Result<Self, String> {
         let (state_ssz, finalized_slot) = fixtures
+            .root()
             .read_finalized_state()
             .map_err(|e| format!("{e} — run `git lfs pull` or `just perf-update-fixtures`"))?;
         let blocks: Vec<_> =
@@ -34,7 +35,7 @@ impl Fixtures {
             return Err(format!(
                 "no next_block_*.ssz files under {} — run `git lfs pull` or \
                  `just perf-update-fixtures`",
-                dir.display()
+                fixtures.root().path().display()
             ));
         }
 
@@ -44,18 +45,14 @@ impl Fixtures {
     }
 }
 
-pub struct PerfConfig {
-    pub fixtures_dir: PathBuf,
-    pub output_dir: PathBuf,
-}
-
-pub fn run_perf_pipeline(cfg: PerfConfig) -> Result<PerfReport, String> {
-    let fixtures = Fixtures::load(&cfg.fixtures_dir)?;
+pub fn run_perf_pipeline(output_dir: PathBuf) -> Result<PerfReport, String> {
+    let dir = BlockFixtures::perf();
+    let fixtures = Fixtures::load(&dir)?;
     eprintln!("perf: finalized slot {}", fixtures.finalized_slot);
-    eprintln!("perf: fixtures dir = {}", cfg.fixtures_dir.display());
+    eprintln!("perf: fixtures dir = {}", dir.root().path().display());
 
     let outcome = replay::replay(&fixtures);
-    let report = PerfReport::new(outcome, &fixtures, cfg.output_dir);
+    let report = PerfReport::new(outcome, &fixtures, output_dir);
     report.emit();
     Ok(report)
 }

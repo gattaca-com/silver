@@ -10,8 +10,8 @@ use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    DataKind, Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncNeed, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead,
+    DataKind, Enr, Origin, P2pStreamId, PeerEvent, RpcRequestInbound, RpcSeverity, SyncNeed,
+    SyncUpdate, TCacheRead, TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -29,6 +29,7 @@ mod history;
 mod io;
 mod unfinalized;
 
+use backfill::VerifiedColumns;
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
 use history::HistoryBackfill;
@@ -130,6 +131,8 @@ enum PendingWrite {
     Column {
         slot: u64,
         column: u64,
+        /// Set for backfill completions.
+        block_root: Option<[u8; 32]>,
         ssz: TRead,
     },
     /// New unfinalized payload → `<unfinalized dir>/<key>.ssz`.
@@ -338,12 +341,14 @@ impl Store {
         column_index: u64,
         sidecar_ssz: TRead,
         slot: u64,
+        complete: bool,
     ) {
         if slot <= self.finalized_slot {
             // Finalized history (backfill): flat store keyed by slot.
             self.write_queue.push_back(PendingWrite::Column {
                 slot,
                 column: column_index,
+                block_root: complete.then_some(block_root),
                 ssz: sidecar_ssz,
             });
             if let Entry::Vacant(e) = self.root_index.entry(block_root) {
@@ -430,11 +435,8 @@ impl Store {
         });
     }
 
-    pub(super) fn backfill_block<F>(&mut self, ssz: TRead, emit: &mut F)
-    where
-        F: FnMut(SyncNeed),
-    {
-        self.history.add_block(ssz, &mut self.write_queue, emit);
+    pub(super) fn backfill_block(&mut self, ssz: TRead) {
+        self.history.add_block(ssz, &mut self.write_queue);
     }
 
     pub(super) fn backfill_envelope<F>(&mut self, signed: TRead, emit: &mut F)
@@ -443,22 +445,43 @@ impl Store {
     {
         if let Some((block_root, slot)) = self.history.add_envelope(&signed, &self.root_index) {
             self.write_queue.push_back(PendingWrite::BackfillEnvelope { slot, ssz: signed });
-            emit(SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Envelope });
+            emit(SyncNeed::Arrived {
+                root: block_root,
+                slot,
+                kind: DataKind::Envelope,
+                origin: Origin::Backfill,
+            });
         }
     }
 
-    pub(super) fn backfill_data_column<F>(&mut self, sidecar: TRead, emit: &mut F)
-    where
-        F: FnMut(SyncNeed),
+    pub(super) fn backfill_data_column<F>(
+        &mut self,
+        sidecar: TRead,
+        peer: usize,
+        now: Instant,
+        emit: &mut F,
+    ) where
+        F: FnMut(PeerEvent),
     {
-        if let Some(accepted) = self.history.add_sidecar(&sidecar, emit) {
-            self.add_data_column(
-                accepted.block_root,
-                accepted.column_index,
-                sidecar,
-                accepted.slot,
+        let (verified, rejected) = self.history.add_sidecar(sidecar, peer, now);
+        for bad in rejected {
+            tracing::warn!(
+                peer = bad.peer,
+                column_index = bad.column_index,
+                "backfill sidecar rejected"
             );
+            emit(PeerEvent::RpcMisbehaviour { p2p_peer: bad.peer, severity: RpcSeverity::Fatal });
         }
+        if let Some(VerifiedColumns { block_root, slot, sidecars }) = verified {
+            let last = sidecars.len().saturating_sub(1);
+            for (i, parked) in sidecars.into_iter().enumerate() {
+                self.add_data_column(block_root, parked.column_index, parked.ssz, slot, i == last);
+            }
+        }
+    }
+
+    pub(super) fn expire_incomplete_backfill_columns(&mut self, now: Instant) {
+        self.history.expire_incomplete_columns(now);
     }
 
     pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {
@@ -1317,9 +1340,9 @@ mod tests {
         let mut consumer = tc.cache_ref().random_access("colfork_cons", true).unwrap();
         store.add_block(root_a, consumer.acquire(ssz_ba), slot, parent_root);
         store.add_block(root_b, consumer.acquire(ssz_bb), slot, parent_root);
-        store.add_data_column(root_a, 3, consumer.acquire(ssz_a3), slot);
-        store.add_data_column(root_a, 7, consumer.acquire(ssz_a7), slot);
-        store.add_data_column(root_b, 3, consumer.acquire(ssz_b3), slot);
+        store.add_data_column(root_a, 3, consumer.acquire(ssz_a3), slot, false);
+        store.add_data_column(root_a, 7, consumer.acquire(ssz_a7), slot, false);
+        store.add_data_column(root_b, 3, consumer.acquire(ssz_b3), slot, false);
         assert!(store.unfinalized_columns.contains(&root_a));
         assert!(store.unfinalized_columns.contains(&root_b));
 
@@ -1502,7 +1525,7 @@ mod tests {
             block_root,
             super::test_spec(u64::MAX),
         ));
-        store.backfill_block(consumer.acquire(ssz), &mut |_| {});
+        store.backfill_block(consumer.acquire(ssz));
 
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("backfill_index_rpc", 1 << 20);
@@ -1542,10 +1565,10 @@ mod tests {
         let (first, second) = (stage(&[0xC1u8; 64]), stage(&[0xC1u8; 64]));
         let mut consumer = tc.cache_ref().random_access("dedupe_cons", true).unwrap();
 
-        store.add_data_column(block_root, 3, consumer.acquire(first), slot);
+        store.add_data_column(block_root, 3, consumer.acquire(first), slot, false);
         assert_eq!(store.write_queue.len(), 1, "the first copy is written");
 
-        store.add_data_column(block_root, 3, consumer.acquire(second), slot);
+        store.add_data_column(block_root, 3, consumer.acquire(second), slot, false);
         assert_eq!(store.write_queue.len(), 1, "the second is already on disk");
 
         store
@@ -1805,7 +1828,7 @@ mod tests {
             block_root,
             super::test_spec(u64::MAX),
         ));
-        store.backfill_block(consumer.acquire(ssz), &mut |_| {});
+        store.backfill_block(consumer.acquire(ssz));
 
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("column_backfill_rpc", 1 << 20);
@@ -1841,6 +1864,59 @@ mod tests {
             store.earliest_servable(custody_columns),
             slot + 1,
             "a slot whose columns are owed holds the claim above it"
+        );
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    /// Set 2 on restart: block backfill re-fetches a block whose columns an
+    /// earlier run already wrote. Only the columns absent from disk are owed
+    /// — asking for the full custody set rewrote every column below finalized.
+    #[test]
+    fn refetched_backfill_block_owes_only_absent_columns() {
+        use std::io::Write;
+
+        use silver_common::{TCache, TCacheProducer};
+
+        let store_path = format!("/tmp/test_store_refetch_columns_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_fulu(store_path.clone());
+
+        let slot = 96u64;
+        let block = blob_block(slot, [0x31; 32], [0x13; 32]);
+        let block_root = column_util::block_root_fulu(&block);
+        let custody_columns = (1u128 << 3) | (1u128 << 7);
+
+        // Column 3 is already on disk from the previous run; 7 is not.
+        let col_dir = store.finalized_slot_dir(super::Payload::Column, slot);
+        std::fs::create_dir_all(&col_dir).unwrap();
+        std::fs::write(col_dir.join(format!("{slot}_3.ssz")), b"col3").unwrap();
+
+        let mut blocks = TCache::producer("refetch_columns_blocks", 1 << 20);
+        let mut res = blocks.reserve(block.len(), true).unwrap();
+        res.write_all(&block).unwrap();
+        res.flush().unwrap();
+        let ssz = res.read();
+        let mut consumer = blocks.cache_ref().random_access("refetch_columns_cons", true).unwrap();
+
+        store.history.columns = Some(super::backfill::ColumnBackfill::new(1..slot + 1));
+        store.history.blocks = Some(super::backfill::Backfill::new(
+            slot..slot + 1,
+            block_root,
+            super::test_spec(u64::MAX),
+        ));
+        store.backfill_block(consumer.acquire(ssz));
+
+        let producer_cache = TCache::multi_producer("refetch_columns_rpc", 1 << 20);
+        let mut producer = producer_cache.clone();
+        store.file_io(|_| [0u8; 4], custody_columns, &mut producer, &mut |_| {}).unwrap();
+
+        let columns = store.history.columns.as_ref().expect("column walk live");
+        assert_eq!(columns.owed_span(), (slot, slot + 1), "the block is still owed something");
+        assert_eq!(
+            columns.requested_columns(&block_root),
+            Some(1u128 << 7),
+            "only the column absent from disk is requested"
         );
 
         let _ = std::fs::remove_dir_all(&store_path);

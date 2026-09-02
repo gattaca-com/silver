@@ -453,7 +453,7 @@ pub enum PeerEvent {
 #[repr(C, u8)]
 pub enum SyncNeed {
     Missing { root: [u8; 32], slot: u64, kind: DataKind, columns: u128, origin: Origin },
-    Arrived { root: [u8; 32], slot: u64, kind: DataKind },
+    Arrived { root: [u8; 32], slot: u64, kind: DataKind, origin: Origin },
     BackfillGap { kind: DataKind, floor: u64, next: u64 },
 }
 
@@ -738,8 +738,8 @@ pub enum BeaconStateEvent {
     BlockReceived {
         slot: u64,
         block_root: [u8; 32],
-        /// Applied to fork choice, rather than parked on a dependency.
-        applied: bool,
+        stage: BlockStage,
+        source: BlockSource,
         // missing if we haven't seen the parent, which is then reported
         // separately as `RequestBlock`
         parent_slot: Option<u64>,
@@ -757,6 +757,16 @@ pub enum BeaconStateEvent {
         slot: u64,
         block_root: [u8; 32],
     },
+}
+
+/// Why a received block is not in fork choice yet, or that it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BlockStage {
+    /// Held on a missing parent or parent payload; nothing computed yet.
+    AwaitParent,
+    /// Imported into fork choice.
+    Applied,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -917,11 +927,13 @@ pub struct EngineGetPayloadResp {
 }
 
 /// `engine_getBlobsV2` request. `hashes[..hash_count]` are the versioned hashes
-/// derived from the block's KZG commitments.
+/// derived from the block's KZG commitments; the block root is the request's
+/// identity and is echoed back on the response.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsReq {
-    pub id: u64,
+    pub block_root: [u8; 32],
+    pub slot: u64,
     pub hash_count: u8,
     pub hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
 }
@@ -929,13 +941,23 @@ pub struct EngineGetBlobsReq {
 /// Response to `EngineGetBlobsReq`.
 /// When `ok` is true, `data` is a TCache slot with binary-encoded blobs:
 /// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len]
-/// [blob bytes])*` `present == 0` means the entry is null (blob missing).
+/// [blob bytes])*`, where `present == 0` is a null entry and is that byte
+/// alone. `ok` is true even when the EL returned nothing, so `blobs_present`
+/// is the field that says whether it delivered.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsResp {
-    pub id: u64,
+    pub block_root: [u8; 32],
+    pub slot: u64,
     pub ok: bool,
+    pub blobs_present: u8,
     pub data: TCacheRead,
+}
+
+impl EngineGetBlobsResp {
+    pub fn failed(block_root: [u8; 32], slot: u64) -> Self {
+        Self { block_root, slot, ok: false, blobs_present: 0, data: unsafe { std::mem::zeroed() } }
+    }
 }
 
 /// `engine_getPayloadBodiesByHashV1` request.
@@ -1037,8 +1059,7 @@ impl BeaconStateEvent {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum DataColumnsEvent {
-    /// Message sent by the data column tile when all custody data columns for a
-    /// block have been received and KZG-validated.
+    /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
     /// Message sent when a data column has been validated.
     Persist {

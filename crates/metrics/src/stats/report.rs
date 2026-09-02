@@ -2,7 +2,6 @@
 //! timed-frame chain, so a child's time is contained in its parent's.
 
 use flux::timing::Nanos;
-use rustc_hash::FxHashMap;
 
 use super::{
     aggregator::{Aggregator, CallStackSamples},
@@ -10,7 +9,10 @@ use super::{
     counters::Counters,
     names::leaf_name,
 };
-use crate::profiler::{EventsDrainer, FlamegraphMeta, Loss};
+use crate::{
+    fmt_bytes,
+    profiler::{EventsDrainer, FlamegraphMeta, Loss, ThreadEvents, allocator::AllocSample},
+};
 
 pub(super) struct PathStat {
     pub(super) path: Vec<u64>,
@@ -79,31 +81,56 @@ struct PathStatJson<'a> {
 }
 
 pub fn fold_stats(events: &EventsDrainer) -> TimingStats {
-    let threads = events
-        .threads()
-        .map(|t| {
-            let paths = Aggregator::new(t.marks, t.perf, t.alloc).paths;
-            ThreadTimings::new(t.name.to_owned(), paths, t.loss, events.meta())
-        })
-        .collect();
+    let threads = events.threads().map(|t| ThreadTimings::new(t, events.meta())).collect();
     TimingStats::from_threads(threads, events.meta().clone())
+}
+
+/// Samples are absolute and monotonic, so the newest one is the run total —
+/// including allocations outside any timed frame, which the per-path deltas
+/// miss.
+#[derive(Clone, Copy)]
+pub(crate) struct ThreadAlloc {
+    last: AllocSample,
+    max_live: u64,
+}
+
+impl ThreadAlloc {
+    fn from_samples(samples: &[AllocSample]) -> Option<Self> {
+        let last = *samples.last()?;
+        (last.allocated > 0 || last.freed > 0).then(|| Self {
+            last,
+            max_live: samples.iter().map(AllocSample::live).max().unwrap_or(0),
+        })
+    }
+
+    fn merge(&mut self, later: Self) {
+        self.last = later.last;
+        self.max_live = self.max_live.max(later.max_live);
+    }
+
+    pub(super) fn memory_line(&self) -> String {
+        format!(
+            "memory: allocated {}  freed {}  live {}  max live {}",
+            fmt_bytes(self.last.allocated),
+            fmt_bytes(self.last.freed),
+            fmt_bytes(self.last.live()),
+            fmt_bytes(self.max_live)
+        )
+    }
 }
 
 /// One producing thread's folded paths, plus how much of its stream was lost.
 pub(crate) struct ThreadTimings {
     name: String,
     paths: Vec<PathStat>,
+    alloc: Option<ThreadAlloc>,
     loss: Loss,
 }
 
 impl ThreadTimings {
-    pub(crate) fn new(
-        name: String,
-        paths: FxHashMap<Vec<u64>, CallStackSamples>,
-        loss: Loss,
-        meta: &FlamegraphMeta,
-    ) -> Self {
-        let mut paths: Vec<_> = paths
+    pub(crate) fn new(t: ThreadEvents<'_>, meta: &FlamegraphMeta) -> Self {
+        let mut paths: Vec<_> = Aggregator::new(t.marks, t.perf, t.alloc)
+            .paths
             .into_iter()
             .map(|(path, samples)| PathStat { path, metrics: PathMetrics::from_samples(samples) })
             .collect();
@@ -112,12 +139,23 @@ impl ThreadTimings {
         paths.sort_by(|a, b| {
             a.path.iter().map(|id| &meta.names[id]).cmp(b.path.iter().map(|id| &meta.names[id]))
         });
-        Self { name, paths, loss }
+        Self {
+            name: t.name.to_owned(),
+            paths,
+            alloc: ThreadAlloc::from_samples(t.alloc),
+            loss: t.loss,
+        }
     }
 
     fn merge(&mut self, later: Self, meta: &FlamegraphMeta) {
         self.loss.missed += later.loss.missed;
         self.loss.dropped += later.loss.dropped;
+        if let Some(later) = later.alloc {
+            match &mut self.alloc {
+                Some(held) => held.merge(later),
+                none => *none = Some(later),
+            }
+        }
 
         for stat in later.paths {
             match self.paths.iter_mut().find(|held| held.path == stat.path) {
@@ -211,7 +249,13 @@ impl TimingStats {
         tables
             .iter()
             .map(|(t, table)| {
-                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.loss, width))
+                let rule = call_tree::thread_rule(&t.name, t.loss, width);
+                match &t.alloc {
+                    Some(alloc) => {
+                        format!("{rule}\n{}\n{table}", alloc.memory_line())
+                    }
+                    None => format!("{rule}\n{table}"),
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")

@@ -32,6 +32,7 @@ tracing.workspace = true
 workspace = true
 
 [features]
+default = ["thread_park"]
 alloc-profile = ["silver_common/alloc-profile"]
 # Hardware-counter dimension for `#[timed]`: per-call counters via rdpmc on
 # perf-{fn} queues (dev; needs `sudo sysctl kernel.perf_event_paranoid=2`).

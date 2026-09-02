@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-
 use silver_common::{
-    GossipTopic, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
+    GossipTopic, IngestionTime, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
     column_util::KzgBatchEntry,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
@@ -22,6 +20,7 @@ pub(crate) enum RelayMeta {
 pub(crate) struct PendingKzg {
     pub sidecar: TRead,
     pub stream_id: P2pStreamId,
+    pub recv_ts: IngestionTime,
     pub block_root: BlockRoot,
     pub column_index: u64,
     pub bitmask: u128,
@@ -35,23 +34,25 @@ pub(crate) struct PendingKzg {
 /// of one per sidecar.
 pub(crate) struct KzgBatch {
     pub pending: Vec<PendingKzg>,
-    /// `validated_columns` only records at flush, so gossip and RPC copies
-    /// of the same column arriving in one pass dedup here.
-    queued: HashMap<BlockRoot, u128>,
 }
 
 impl KzgBatch {
     pub fn new() -> Self {
-        Self { pending: Vec::with_capacity(NUMBER_OF_COLUMNS), queued: HashMap::new() }
+        Self { pending: Vec::with_capacity(NUMBER_OF_COLUMNS) }
     }
 
-    /// False = a copy of this column is already queued this pass.
+    /// False = a copy of this column is already queued this pass. `validated`
+    /// only records at flush, so a gossip and an RPC copy arriving in the same
+    /// pass would otherwise both verify; the queue drained by that flush is
+    /// itself the memo, so the pass cannot leave a stale one behind.
     pub fn push(&mut self, entry: PendingKzg) -> bool {
-        let queued = self.queued.entry(entry.block_root).or_default();
-        if *queued & entry.bitmask != 0 {
+        let queued = self
+            .pending
+            .iter()
+            .any(|p| p.bitmask == entry.bitmask && p.block_root == entry.block_root);
+        if queued {
             return false;
         }
-        *queued |= entry.bitmask;
         self.pending.push(entry);
         true
     }

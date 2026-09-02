@@ -137,7 +137,7 @@ impl App {
             peers,
             peers_selected: None,
             peers_display_order: Vec::new(),
-            peers_sort_col: 10,
+            peers_sort_col: 11,
             peers_sort_desc: true,
             gossip_selected: None,
             gossip_display_order: Vec::new(),
@@ -256,6 +256,8 @@ impl App {
     }
 
     pub fn sample(&mut self) {
+        // First: the mark rings lap if they wait on the other sources' latency.
+        self.flamegraph.sample();
         for c in &mut self.counters {
             c.sample();
         }
@@ -270,7 +272,6 @@ impl App {
         }
         self.peers.sample();
         self.events.sample();
-        self.flamegraph.sample();
     }
 
     pub fn roll_bucket(&mut self) {
@@ -330,6 +331,11 @@ impl App {
             .unwrap_or(0);
         let new = pos.saturating_add_signed(dir as isize).min(self.gossip_display_order.len() - 1);
         self.gossip_selected = Some(self.gossip_display_order[new]);
+    }
+
+    /// Peers pane: jump selection to the first row of the current sort.
+    pub fn select_top_peer(&mut self) {
+        self.peers_selected = self.peers_display_order.first().copied();
     }
 
     /// Peers pane: move the sort column left/right, wrapping.

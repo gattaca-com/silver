@@ -98,10 +98,10 @@ impl SyncWindow {
         }
     }
 
-    pub fn record_status(&mut self, slot: Slot, finalized_slot: Slot) {
+    pub fn record_status(&mut self, slot: Slot, finalized_slot: Slot, following: bool) {
         self.applied_head = slot;
         self.finalized = finalized_slot;
-        let tail = if self.awaiting_start {
+        let tail = if self.awaiting_start || following {
             self.awaiting_start = false;
             slot
         } else {

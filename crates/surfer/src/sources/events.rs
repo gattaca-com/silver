@@ -4,9 +4,13 @@
 //! envelope: `ingestion_t` is copied verbatim as a block flows tile→tile, and
 //! `publish_delta` records how long after ingestion each stage published.
 //!
-//! Two queues carry everything, keyed by block root:
-//! - `EngineReq::NewPayload` — ingestion time ≈ gossip arrival (received),
-//!   publish time = CL validated + dispatched to the EL (el sent).
+//! Three queues carry everything, keyed by block root:
+//! - `BeaconStateEvent::BlockReceived` — opens the row at its ingestion, the
+//!   block's arrival. The tile announces a block before parking it, so a wait
+//!   on columns or on a parent falls inside `validate`. A block that arrived
+//!   before surfer attached has no row.
+//! - `EngineReq::NewPayload` — publish time = CL validated + dispatched to the
+//!   EL (el sent).
 //! - `EngineReq::Fcu` — the one right after STF commit (applied).
 //! - `EngineResp::NewPayload` — the EL verdict (el verified).
 //!
@@ -17,7 +21,8 @@ use std::{collections::VecDeque, path::Path};
 
 use flux::{spine::SpineAdapter, tile::Tile, timing::InternalMessage};
 use silver_common::{
-    BlockSource, EngineReq, EngineResp, Nanos, PayloadValidationStatus, SilverSpine,
+    BeaconStateEvent, BlockSource, EngineReq, EngineResp, Nanos, PayloadValidationStatus,
+    SilverSpine,
 };
 
 pub const MAINNET_GENESIS_UNIX_SECS: u64 = 1_606_824_023;
@@ -38,7 +43,7 @@ pub struct BlockRow {
     received_at: Nanos,
     /// Arrival offset into the block's own slot.
     received: Option<Nanos>,
-    el_sent: Nanos,
+    el_sent: Option<Nanos>,
     applied: Option<Nanos>,
     verdict: Option<(PayloadValidationStatus, Nanos)>,
 }
@@ -51,8 +56,9 @@ pub struct Timeline {
     /// Slot start → block arrival; `None` once the arrival clock no longer
     /// belongs to the block's slot.
     pub received: Option<Nanos>,
-    /// arrival → EL-sent: CL validation up to dispatching `newPayload`.
-    pub validate: Nanos,
+    /// arrival → EL-sent: CL validation, plus any wait on missing data, up to
+    /// dispatching `newPayload`.
+    pub validate: Option<Nanos>,
     /// EL-sent → applied: state transition + commit.
     pub stf: Option<Nanos>,
     /// EL-sent → verdict: `newPayload` round-trip (concurrent with stf).
@@ -68,14 +74,15 @@ impl BlockRow {
             .applied
             .into_iter()
             .chain(self.verdict.map(|(_, ts)| ts))
+            .chain(self.el_sent)
             .max()
-            .unwrap_or(self.el_sent);
+            .unwrap_or(self.received_at);
         Timeline {
             received_at: self.received_at,
             received: self.received,
-            validate: self.el_sent.saturating_sub(self.received_at),
-            stf: self.applied.map(|ts| ts.saturating_sub(self.el_sent)),
-            el: self.verdict.map(|(_, ts)| ts.saturating_sub(self.el_sent)),
+            validate: self.el_sent.map(|ts| ts.saturating_sub(self.received_at)),
+            stf: self.applied.zip(self.el_sent).map(|(ts, sent)| ts.saturating_sub(sent)),
+            el: self.verdict.zip(self.el_sent).map(|((_, ts), sent)| ts.saturating_sub(sent)),
             verdict: self.verdict.map(|(status, _)| status),
             total: last.saturating_sub(self.received_at),
         }
@@ -98,6 +105,31 @@ impl EventsTile {
         }
     }
 
+    /// A parked block is announced again from the replay that admits it, so
+    /// only the first announcement is its arrival.
+    fn on_beacon_state(&mut self, m: &InternalMessage<BeaconStateEvent>) {
+        let BeaconStateEvent::BlockReceived { slot, block_root, source, .. } = *m.data() else {
+            return;
+        };
+        if self.row_idx(&block_root).is_some() {
+            return;
+        }
+        if self.rows.len() == ROWS_CAP {
+            self.rows.pop_front();
+        }
+        let received = m.ingestion_time().real();
+        self.rows.push_back(BlockRow {
+            slot,
+            block_root,
+            source,
+            received_at: received,
+            received: self.offset_in_slot(received, slot),
+            el_sent: None,
+            applied: None,
+            verdict: None,
+        });
+    }
+
     fn offset_in_slot(&self, t: Nanos, slot: u64) -> Option<Nanos> {
         let start = self.genesis + self.slot_dur * slot;
         let live = start..start + self.slot_dur * LIVE_ARRIVAL_SLOTS;
@@ -107,20 +139,9 @@ impl EventsTile {
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
         match *m.data() {
             EngineReq::NewPayload(req) => {
-                let received = m.ingestion_time().real();
-                if self.rows.len() == ROWS_CAP {
-                    self.rows.pop_front();
+                if let Some(i) = self.row_idx(&req.block_root) {
+                    self.rows[i].el_sent = Some(m.tracking_timestamp().publish_t());
                 }
-                self.rows.push_back(BlockRow {
-                    slot: req.slot,
-                    block_root: req.block_root,
-                    source: req.block_source,
-                    received_at: received,
-                    received: self.offset_in_slot(received, req.slot),
-                    el_sent: m.tracking_timestamp().publish_t(),
-                    applied: None,
-                    verdict: None,
-                });
             }
             // The FCU right after a successful STF names the new head; ignore
             // tick-driven / repeat-head FCUs by filling `applied` only once.
@@ -151,6 +172,9 @@ impl EventsTile {
 
 impl Tile<SilverSpine> for EventsTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.consume_internal_message(|m: &mut InternalMessage<BeaconStateEvent>, _| {
+            self.on_beacon_state(m);
+        });
         adapter.consume_internal_message(|m: &mut InternalMessage<EngineReq>, _| {
             self.on_engine_req(m);
         });
@@ -196,7 +220,8 @@ impl Events {
 mod tests {
     use flux::timing::{IngestionTime, Instant, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp, TCache, TCacheProducer, TCacheRead,
+        BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp, TCache,
+        TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -271,6 +296,40 @@ mod tests {
         )
     }
 
+    fn block_received(
+        root: [u8; 32],
+        slot: u64,
+        source: BlockSource,
+        ingestion: Nanos,
+    ) -> InternalMessage<BeaconStateEvent> {
+        msg(
+            BeaconStateEvent::BlockReceived {
+                slot,
+                block_root: root,
+                stage: BlockStage::AwaitParent,
+                source,
+                parent_slot: None,
+            },
+            ingestion,
+        )
+    }
+
+    /// A block parked on its data reaches the EL long after it landed, so the
+    /// wait belongs inside `validate`.
+    #[test]
+    fn parked_block_dates_from_its_announcement() {
+        let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
+        let root = [3u8; 32];
+
+        tile.on_beacon_state(&block_received(root, 4, BlockSource::Gossip, at(4, 300)));
+        tile.on_beacon_state(&block_received(root, 4, BlockSource::Gossip, at(4, 2_800)));
+        tile.on_engine_req(&new_payload(root, 4, BlockSource::Gossip, at(4, 2_900)));
+
+        let t = tile.rows[0].timeline();
+        assert_eq!(t.received_at, at(4, 300));
+        assert_eq!(t.validate, Some(Nanos(2_600 * MS)), "the column wait is inside validate");
+    }
+
     /// Stage times are encoded via each message's ingestion (publish delta is
     /// zero), so `validate` is zero here.
     #[test]
@@ -278,6 +337,7 @@ mod tests {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [1u8; 32];
 
+        tile.on_beacon_state(&block_received(root, 2, BlockSource::Gossip, at(2, 300)));
         tile.on_engine_req(&new_payload(root, 2, BlockSource::Gossip, at(2, 300)));
         tile.on_engine_req(&fcu(root, at(2, 460)));
         tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Valid, at(2, 520)));
@@ -287,7 +347,7 @@ mod tests {
         let t = tile.rows[0].timeline();
         assert_eq!(t.received_at, at(2, 300));
         assert_eq!(t.received, Some(Nanos(300 * MS)));
-        assert_eq!(t.validate, Nanos(0));
+        assert_eq!(t.validate, Some(Nanos(0)));
         assert_eq!(t.stf, Some(Nanos(160 * MS)));
         assert_eq!(t.el, Some(Nanos(220 * MS)));
         assert_eq!(t.total, Nanos(220 * MS));
@@ -302,6 +362,7 @@ mod tests {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [2u8; 32];
 
+        tile.on_beacon_state(&block_received(root, 7, BlockSource::Rpc, at(7, 11_900)));
         tile.on_engine_req(&new_payload(root, 7, BlockSource::Rpc, at(7, 11_900)));
         tile.on_engine_req(&fcu(root, at(7, 12_000)));
         tile.on_engine_req(&fcu(root, at(7, 13_000)));
@@ -321,6 +382,7 @@ mod tests {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [3u8; 32];
 
+        tile.on_beacon_state(&block_received(root, 7, BlockSource::Rpc, at(900, 4_000)));
         tile.on_engine_req(&new_payload(root, 7, BlockSource::Rpc, at(900, 4_000)));
         tile.on_engine_req(&fcu(root, at(900, 4_050)));
 

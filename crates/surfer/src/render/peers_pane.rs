@@ -79,8 +79,9 @@ fn compare(a: &Key, b: &Key) -> Ordering {
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     if app.peers.is_empty() {
-        let block =
-            Block::default().borders(Borders::ALL).title(" peers — ←/→ sort column · r reverse ");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" peers — ←/→ sort column · r reverse · t top ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         f.render_widget(
@@ -124,8 +125,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|s| s.user_agent.as_str())
         .filter(|a| !a.is_empty());
     let title = match sel_agent {
-        Some(agent) => format!(" peers — ←/→ sort column · r reverse · {agent} "),
-        None => " peers — ←/→ sort column · r reverse ".to_string(),
+        Some(agent) => format!(" peers — ←/→ sort column · r reverse · t top · {agent} "),
+        None => " peers — ←/→ sort column · r reverse · t top ".to_string(),
     };
     let block = Block::default().borders(Borders::ALL).title(title);
 

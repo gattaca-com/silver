@@ -33,6 +33,10 @@ silver_common::declare_counters! {
         // A peer's read-timeout gave up on our response (their reset carried
         // the response-timeout code): direct we-are-slow signal.
         RemoteResponseTimeout,
+        // Stale gossip skipped
+        GossipMsgSkipped,
+        // Gossip delivery or inbound read stalled — connection closed.
+        GossipStallDisconnect,
     }
 }
 

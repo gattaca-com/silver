@@ -8,9 +8,13 @@ use silver_common::{Keypair, PeerId};
 
 use super::tls;
 
+mod leased;
 mod peer;
 mod stream;
 
+pub(crate) use leased::Leased;
+#[cfg(test)]
+pub(crate) use leased::OutboundLeaseWheel;
 pub(crate) use peer::Peer;
 pub(crate) use stream::StreamWriter;
 
@@ -67,4 +71,7 @@ pub enum SendResult {
     StreamGone,
     MessageDropped,
     UnknownPeer,
+    /// Connection is closing/draining: nothing sent on it can be delivered,
+    /// and opening a stream would misreport as credit exhaustion.
+    ConnectionClosing,
 }

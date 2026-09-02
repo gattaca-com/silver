@@ -10,7 +10,7 @@ use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_columns::tile::DataColumnsTile;
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_producer: incoming_gossip_producer,
         gossip_consumer: outgoing_gossip_producer
             .cache_ref()
-            .random_access("p2p_outgoing_gossip", true)?,
+            .strict_random_access("p2p_outgoing_gossip", true)?,
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
@@ -257,10 +257,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let state_reader = beacon_state_tile.reader();
     let data_columns_tile = DataColumnsTile::new(
-        ssz_gossip_consumer_dc,
-        ssz_persist_gossip_consumer_dc,
-        incoming_rpc_consumer_dc,
-        persist_rpc_consumer_dc,
+        ColumnConsumers {
+            gossip: ssz_gossip_consumer_dc,
+            persist_gossip: ssz_persist_gossip_consumer_dc,
+            rpc: incoming_rpc_consumer_dc,
+            persist_rpc: persist_rpc_consumer_dc,
+        },
         state_reader,
         das_custody_groups,
         spec.clone(),

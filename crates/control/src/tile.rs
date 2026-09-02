@@ -2,10 +2,9 @@ use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent,
-    PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer,
-    TRandomAccess,
+    BeaconStateEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound,
+    RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SilverSpine,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TRandomAccess,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -152,12 +151,6 @@ impl Tile<SilverSpine> for Controller {
                     self.peer_manager.record_block_rejected(block_root, source)
                 }
                 _ => {}
-            }
-        });
-
-        adapter.consume(|m: DataColumnsEvent, _producers| {
-            if let DataColumnsEvent::Available { slot, block_root } = m {
-                self.sync_engine.on_columns_covered(slot, block_root);
             }
         });
 
