@@ -41,7 +41,10 @@ impl Listener {
     pub fn bind(bind: &Bind) -> io::Result<Self> {
         match bind {
             Bind::Tcp(addr) => TcpListener::bind(*addr).map(Self::Tcp),
-            Bind::Unix(path) => UnixListener::bind(path).map(Self::Unix),
+            Bind::Unix(path) => {
+                remove_stale_socket(path)?;
+                UnixListener::bind(path).map(Self::Unix)
+            }
         }
     }
 
@@ -72,6 +75,42 @@ impl Listener {
                     .and_then(|addr| addr.as_pathname().map(Path::to_path_buf))
                     .expect("unix listener bound to a path"),
             ),
+        }
+    }
+}
+
+/// A socket file whose process died without removing it fails every later
+/// bind at that path. Only a confirmed corpse is unlinked: the path must be a
+/// socket by `lstat` — a connect to a regular file is also refused, so the
+/// probe alone proves nothing about type — and the connect probe must come
+/// back `ConnectionRefused`, which no live listener produces (a full backlog
+/// blocks or errs differently). Anything else at the path is left standing
+/// for the bind to fail on.
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(meta) if !meta.file_type().is_socket() => return Ok(()),
+        Ok(_) => {}
+    }
+    match UnixStream::connect(path) {
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => std::fs::remove_file(path),
+        _ => Ok(()),
+    }
+}
+
+/// The socket file outlives its listener unless removed here: a path left
+/// behind refuses every later bind until the stale probe above clears it,
+/// which a crash relies on but a clean shutdown need not.
+impl Drop for Listener {
+    fn drop(&mut self) {
+        if let Self::Unix(listener) = self &&
+            let Some(path) =
+                listener.local_addr().ok().and_then(|a| a.as_pathname().map(Path::to_path_buf))
+        {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -248,6 +287,60 @@ mod tests {
         let path = dir.path().join("api.sock");
         let listener = Listener::bind(&Bind::Unix(path.clone())).unwrap();
         assert_eq!(listener.local_addr(), Bind::Unix(path));
+    }
+
+    /// The file a crashed process left carries no listener, so the probe is
+    /// refused and the corpse is cleared — a restart binds where the old
+    /// process died.
+    #[test]
+    fn a_stale_socket_file_is_replaced_on_bind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api.sock");
+        // std's listener does not unlink on drop: dropping it leaves exactly
+        // the corpse a crash leaves.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(path.exists(), "the stale file is the precondition");
+
+        let listener = Listener::bind(&Bind::Unix(path.clone())).unwrap();
+        assert_eq!(listener.local_addr(), Bind::Unix(path));
+    }
+
+    /// A live listener's probe connects rather than being refused, so its
+    /// path is never stolen: the second bind fails and the first keeps
+    /// serving.
+    #[test]
+    fn a_live_listener_keeps_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api.sock");
+        let alive = Listener::bind(&Bind::Unix(path.clone())).unwrap();
+
+        let err = Listener::bind(&Bind::Unix(path.clone())).err().expect("second bind must fail");
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{err}");
+        assert!(path.exists(), "the live listener's file survives the failed bind");
+        drop(alive);
+    }
+
+    /// A connect to a regular file is also `ConnectionRefused`, so the type
+    /// check is what keeps the probe from unlinking someone's data.
+    #[test]
+    fn a_non_socket_at_the_path_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api.sock");
+        std::fs::write(&path, b"not a socket").unwrap();
+
+        assert!(Listener::bind(&Bind::Unix(path.clone())).is_err(), "binding over a file");
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a socket", "the file must survive");
+    }
+
+    #[test]
+    fn the_socket_file_is_removed_when_the_listener_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api.sock");
+        let listener = Listener::bind(&Bind::Unix(path.clone())).unwrap();
+        assert!(path.exists());
+
+        drop(listener);
+        assert!(!path.exists(), "a clean shutdown removes its own socket file");
     }
 
     #[test]
