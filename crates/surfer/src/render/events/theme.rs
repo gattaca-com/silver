@@ -163,9 +163,8 @@ impl Theme {
             Node::Span(Span::Da(DaSpan::Custody | DaSpan::Cols(_))) => {
                 (fg(self.components.da), fg(self.components.custody))
             }
-            Node::Col { index, .. } => {
-                let validated_at = trace.da.columns[index].interval().end;
-                let counted = trace.da.available().is_none_or(|gate| validated_at <= gate);
+            Node::Col { .. } | Node::Batch { .. } => {
+                let counted = node.counted_for_gate(trace);
                 let color = if counted { self.components.da } else { self.components.custody };
                 (fg(color), fg(color))
             }

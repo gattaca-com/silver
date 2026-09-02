@@ -19,7 +19,7 @@ pub use self::theme::Theme;
 use self::{
     axis::Axis,
     line::{Grid, RowCells},
-    tree::{DisplayRow, Expanded, Node, display_rows},
+    tree::{DisplayRow, Expanded, display_rows},
 };
 use crate::{
     render::fmt::wall_time,
@@ -89,7 +89,7 @@ impl EventsPane {
         // toggled row, or on the group's last opener when a child folded it.
         let keep = match node.opens() {
             Some(_) => node,
-            None => Node::Span(*group.openers().last().expect("every group has an opener")),
+            None => group.opener(),
         };
         self.list.select(self.display().iter().position(|d| d.root == root && d.node == keep));
     }

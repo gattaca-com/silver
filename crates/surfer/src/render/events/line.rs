@@ -221,6 +221,10 @@ fn label(trace: &BlockTrace, display: &DisplayRow, theme: &Theme) -> String {
     let text = match display.node {
         Node::Span(Span::Strip) => trace.slot.to_string(),
         Node::Span(span) => span.spec().label.to_string(),
+        Node::Batch { .. } => {
+            let (first, last) = display.node.batch(trace).expect("displayed batch").arrivals();
+            format!("#{first}..#{last}")
+        }
         Node::Col { index, arrival } => format!("#{arrival} col {}", trace.da.columns[index].index),
     };
     format!("{indent}{marker}{text}")
@@ -241,6 +245,12 @@ fn attributes(trace: &BlockTrace, node: Node) -> String {
         }
         Node::Span(Span::Da(DaSpan::Cols(source))) => {
             format!("{} cols", trace.da.of_source(source).count())
+        }
+        Node::Batch { .. } => {
+            let batch = node.batch(trace).expect("displayed batch");
+            let end = batch.interval(&trace.da.columns).end;
+            let gate = if trace.da.opened_gate(end) { " DA" } else { "" };
+            format!("{} cols{gate}", batch.columns.len())
         }
         Node::Span(Span::El) => {
             trace.el.status().map_or_else(String::new, |v| status_label(v).to_string())

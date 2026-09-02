@@ -1,12 +1,12 @@
 //! Which rows the pane shows for a block and in what order: static
-//! per-component tables, plus the column sidecars under an open `Cols`
-//! group as the only data-driven rows.
+//! per-component tables, plus the column batches and sidecars under an open
+//! `Cols` group as the only data-driven rows.
 
 use std::collections::HashSet;
 
 use silver_common::ColumnSource;
 
-use crate::sources::events::{BlockTrace, BlockTraces, DaSpan, Interval, Span, StfSpan};
+use crate::sources::events::{Batch, BlockTrace, BlockTraces, DaSpan, Interval, Span, StfSpan};
 
 /// A toggleable subtree; `Enter` on its opener flips it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -14,6 +14,11 @@ pub enum Group {
     Block,
     Da,
     Cols(ColumnSource),
+    /// Position in the source's `DataAvailability::batches`.
+    Batch {
+        source: ColumnSource,
+        batch: usize,
+    },
     Stf,
 }
 
@@ -21,42 +26,44 @@ impl Group {
     /// Groups whose children are spans; `Cols` holds sidecar rows instead.
     const WITH_SPANS: [Self; 3] = [Self::Block, Self::Da, Self::Stf];
 
-    /// Block children run in the order they end: the gate opens, stf and el
-    /// run, and custody's tail finishes past attestable.
     pub fn children(self) -> &'static [Span] {
         match self {
             Self::Block => &[
                 Span::Da(DaSpan::Root),
+                Span::Da(DaSpan::Custody),
                 Span::Stf(StfSpan::Root),
                 Span::El,
-                Span::Da(DaSpan::Custody),
             ],
             Self::Da => &[
                 Span::Da(DaSpan::Cols(ColumnSource::Gossip)),
                 Span::Da(DaSpan::Cols(ColumnSource::El)),
                 Span::Da(DaSpan::Cols(ColumnSource::Rpc)),
             ],
-            Self::Cols(_) => &[],
+            Self::Cols(_) | Self::Batch { .. } => &[],
             Self::Stf => &[Span::Stf(StfSpan::Validate), Span::Stf(StfSpan::Apply)],
         }
     }
 
-    /// Rows that toggle this group; the children unfold under the last one.
-    /// The two data rows share the column list, being two ends of the same
-    /// arrivals.
-    pub fn openers(self) -> &'static [Span] {
+    /// The row that toggles this group.
+    pub fn opener(self) -> Node {
         match self {
-            Self::Block => &[Span::Strip],
-            Self::Da => &[Span::Da(DaSpan::Root), Span::Da(DaSpan::Custody)],
-            Self::Cols(ColumnSource::Gossip) => &[Span::Da(DaSpan::Cols(ColumnSource::Gossip))],
-            Self::Cols(ColumnSource::El) => &[Span::Da(DaSpan::Cols(ColumnSource::El))],
-            Self::Cols(ColumnSource::Rpc) => &[Span::Da(DaSpan::Cols(ColumnSource::Rpc))],
-            Self::Stf => &[Span::Stf(StfSpan::Root)],
+            Self::Block => Node::Span(Span::Strip),
+            Self::Da => Node::Span(Span::Da(DaSpan::Root)),
+            Self::Cols(source) => Node::Span(Span::Da(DaSpan::Cols(source))),
+            Self::Batch { source, batch } => Node::Batch { source, batch },
+            Self::Stf => Node::Span(Span::Stf(StfSpan::Root)),
         }
     }
 
-    fn unfolds_after(self, span: Span) -> bool {
-        self.openers().last() == Some(&span)
+    /// The group whose children unfold under this row. The column list sits
+    /// below both data rows, being the arrivals the gate and custody are two
+    /// ends of.
+    fn unfolding_after(span: Span) -> Option<Self> {
+        match span {
+            Span::Da(DaSpan::Root) => None,
+            Span::Da(DaSpan::Custody) => Some(Self::Da),
+            _ => span.spec().opens,
+        }
     }
 }
 
@@ -81,8 +88,12 @@ impl Span {
         }
     }
 
+    /// Custody folds the column list it heads, not the block.
     fn parent(self) -> Option<Group> {
-        Group::WITH_SPANS.into_iter().find(|g| g.children().contains(&self))
+        match self {
+            Self::Da(DaSpan::Custody) => Some(Group::Da),
+            _ => Group::WITH_SPANS.into_iter().find(|g| g.children().contains(&self)),
+        }
     }
 
     fn hidden(self, trace: &BlockTrace) -> bool {
@@ -98,7 +109,7 @@ impl DaSpan {
     fn spec(self) -> SpanSpec {
         match self {
             Self::Root => SpanSpec::new("data available", Some(Group::Da)),
-            Self::Custody => SpanSpec::new("custody", Some(Group::Da)),
+            Self::Custody => SpanSpec::new("custody", None),
             Self::Cols(source) => SpanSpec::new(cols_label(source), Some(Group::Cols(source))),
         }
     }
@@ -125,6 +136,11 @@ fn cols_label(source: ColumnSource) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
     Span(Span),
+    /// Columns validated together; a batch of one is shown as its column.
+    Batch {
+        source: ColumnSource,
+        batch: usize,
+    },
     Col {
         /// Position in the trace's `da.columns`.
         index: usize,
@@ -137,6 +153,7 @@ impl Node {
     pub fn opens(self) -> Option<Group> {
         match self {
             Self::Span(span) => span.spec().opens,
+            Self::Batch { source, batch } => Some(Group::Batch { source, batch }),
             Self::Col { .. } => None,
         }
     }
@@ -145,14 +162,39 @@ impl Node {
     pub fn parent(self, trace: &BlockTrace) -> Option<Group> {
         match self {
             Self::Span(span) => span.parent(),
-            Self::Col { index, .. } => Some(Group::Cols(trace.da.columns[index].source)),
+            Self::Batch { source, .. } => Some(Group::Cols(source)),
+            Self::Col { index, .. } => {
+                let source = trace.da.columns[index].source;
+                let batches = trace.da.batches(source);
+                let batch = batches.iter().position(|b| b.contains(index));
+                Some(match batch {
+                    Some(batch) if !batches[batch].is_single() => Group::Batch { source, batch },
+                    _ => Group::Cols(source),
+                })
+            }
         }
+    }
+
+    pub fn batch(self, trace: &BlockTrace) -> Option<Batch> {
+        let Self::Batch { source, batch } = self else {
+            return None;
+        };
+        trace.da.batches(source).into_iter().nth(batch)
     }
 
     pub fn interval(self, trace: &BlockTrace) -> Option<Interval> {
         match self {
             Self::Span(span) => trace.interval(span),
+            Self::Batch { .. } => Some(self.batch(trace)?.interval(&trace.da.columns)),
             Self::Col { index, .. } => Some(trace.da.columns[index].interval()),
+        }
+    }
+
+    /// A column or batch the gate waited on: validated by the time it opened.
+    pub fn counted_for_gate(self, trace: &BlockTrace) -> bool {
+        match trace.da.available() {
+            None => true,
+            Some(gate) => self.interval(trace).is_none_or(|iv| iv.end <= gate),
         }
     }
 
@@ -231,7 +273,8 @@ impl Walk<'_> {
         };
         self.out.push(DisplayRow { root, node: Node::Span(span), depth, fold });
 
-        let Some(group) = opens.filter(|g| fold == Fold::Open && g.unfolds_after(span)) else {
+        let Some(group) = Group::unfolding_after(span).filter(|g| self.expanded.is_open(root, *g))
+        else {
             return;
         };
         for &child in group.children() {
@@ -244,17 +287,33 @@ impl Walk<'_> {
         }
     }
 
-    /// Sidecar rows in arrival order.
+    /// One row per batch in validation order; a batch of one is its column,
+    /// a larger one folds its columns in arrival order.
     fn push_columns(&mut self, source: ColumnSource, depth: u8) {
-        let columns = &self.trace.da.columns;
-        let mut order: Vec<_> = self.trace.da.of_source(source).map(|(i, _)| i).collect();
-        order.sort_unstable_by_key(|&i| columns[i].received_at);
-        self.out.extend(order.into_iter().zip(1..).map(|(index, arrival)| DisplayRow {
-            root: self.trace.block_root,
-            node: Node::Col { index, arrival },
-            depth,
-            fold: Fold::Leaf,
-        }));
+        let root = self.trace.block_root;
+        for (batch, columns) in self.trace.da.batches(source).iter().enumerate() {
+            let mut col_depth = depth;
+            if !columns.is_single() {
+                let open = self.expanded.is_open(root, Group::Batch { source, batch });
+                let fold = if open { Fold::Open } else { Fold::Closed };
+                self.out.push(DisplayRow {
+                    root,
+                    node: Node::Batch { source, batch },
+                    depth,
+                    fold,
+                });
+                if !open {
+                    continue;
+                }
+                col_depth = depth + 1;
+            }
+            self.out.extend(columns.columns.iter().map(|c| DisplayRow {
+                root,
+                node: Node::Col { index: c.index, arrival: c.arrival },
+                depth: col_depth,
+                fold: Fold::Leaf,
+            }));
+        }
     }
 }
 
@@ -302,22 +361,21 @@ mod tests {
         assert_eq!(nodes(&display), [
             Node::Span(Span::Strip),
             Node::Span(DA),
+            Node::Span(Span::Da(DaSpan::Custody)),
+            Node::Span(cols(ColumnSource::Gossip)),
             Node::Span(STF),
             Node::Span(VALIDATE),
             Node::Span(APPLY),
             Node::Span(Span::El),
-            Node::Span(Span::Da(DaSpan::Custody)),
-            Node::Span(cols(ColumnSource::Gossip)),
         ]);
         assert_eq!(display[1].depth, 1);
-        assert_eq!(display[1].fold, Fold::Open);
-        assert_eq!(display[3].fold, Fold::Leaf, "validate is a leaf");
-        assert_eq!(display[5].depth, 1, "el is a component of its own");
-        assert_eq!(display[5].fold, Fold::Leaf);
-        assert_eq!(display[6].depth, 1, "custody is the block's last component");
-        assert_eq!(display[6].fold, Fold::Open, "both data rows open the same group");
-        assert_eq!(display[7].depth, 2, "the column list unfolds under the last opener");
-        assert_eq!(display[7].fold, Fold::Closed, "an unopened group");
+        assert_eq!(display[2].depth, 1, "custody sits beside data available");
+        assert_eq!(display[2].fold, Fold::Leaf, "custody carries no fold marker");
+        assert_eq!(display[3].depth, 2, "the column list unfolds under custody");
+        assert_eq!(display[3].fold, Fold::Closed, "an unopened group");
+        assert_eq!(display[5].fold, Fold::Leaf, "validate is a leaf");
+        assert_eq!(display[7].depth, 1, "el is a component of its own");
+        assert_eq!(display[7].fold, Fold::Leaf);
     }
 
     #[test]
@@ -346,8 +404,70 @@ mod tests {
         assert_eq!(Node::Span(Span::El).parent(&block), Some(Group::Block));
         let col = Node::Col { index: 0, arrival: 2 };
         assert_eq!(col.parent(&block), Some(Group::Cols(ColumnSource::Gossip)));
-        assert_eq!(Group::Cols(ColumnSource::Gossip).openers(), [cols(ColumnSource::Gossip)]);
-        assert_eq!(Node::Span(Span::Da(DaSpan::Custody)).opens(), Some(Group::Da));
+        assert_eq!(
+            Group::Cols(ColumnSource::Gossip).opener(),
+            Node::Span(cols(ColumnSource::Gossip))
+        );
+        let custody = Node::Span(Span::Da(DaSpan::Custody));
+        assert_eq!(custody.opens(), None, "custody is a leaf");
+        assert_eq!(custody.parent(&block), Some(Group::Da), "but folds the column list it heads");
+    }
+
+    /// Columns validated together fold into one batch row; a lone column
+    /// stays a column row, and a column folds back into its batch.
+    #[test]
+    fn batches_fold_their_columns() {
+        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
+        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        let batched = || {
+            trace(&[
+                (received(), 300),
+                (recv(7), 200),
+                (recv(3), 210),
+                (validated(7), 230),
+                (validated(3), 230),
+                (recv(1), 240),
+                (validated(1), 260),
+            ])
+        };
+        let source = ColumnSource::Gossip;
+        let mut expanded = Expanded::default();
+        for group in [Group::Block, Group::Da, Group::Cols(source)] {
+            expanded.toggle([1u8; 32], group);
+        }
+        let batch = Node::Batch { source, batch: 0 };
+        let lone = Node::Col { index: 2, arrival: 3 };
+        let under_cols = |display: &[DisplayRow]| {
+            display
+                .iter()
+                .filter(|d| d.depth >= 3)
+                .map(|d| (d.node, d.depth, d.fold))
+                .collect::<Vec<_>>()
+        };
+
+        let display = display_rows(&rows_of(batched()), &expanded);
+        assert_eq!(under_cols(&display), [(batch, 3, Fold::Closed), (lone, 3, Fold::Leaf)]);
+
+        expanded.toggle([1u8; 32], Group::Batch { source, batch: 0 });
+        let display = display_rows(&rows_of(batched()), &expanded);
+        assert_eq!(under_cols(&display), [
+            (batch, 3, Fold::Open),
+            (Node::Col { index: 0, arrival: 1 }, 4, Fold::Leaf),
+            (Node::Col { index: 1, arrival: 2 }, 4, Fold::Leaf),
+            (lone, 3, Fold::Leaf),
+        ]);
+
+        let block = batched();
+        assert_eq!(
+            Node::Col { index: 0, arrival: 1 }.parent(&block),
+            Some(Group::Batch { source, batch: 0 })
+        );
+        assert_eq!(
+            lone.parent(&block),
+            Some(Group::Cols(source)),
+            "a lone column folds the source"
+        );
+        assert_eq!(batch.parent(&block), Some(Group::Cols(source)));
     }
 
     #[test]

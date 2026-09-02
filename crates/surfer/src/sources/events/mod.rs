@@ -8,11 +8,13 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{Nanos, SilverSpine};
 use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
 
+mod batch;
 mod da;
 mod el;
 mod stf;
 mod trace;
 
+pub use batch::Batch;
 pub use da::DaSpan;
 pub use stf::StfSpan;
 #[cfg(test)]
