@@ -132,12 +132,13 @@ fn parse_endpoint(endpoint: &str) -> Endpoint {
     if endpoint.starts_with("http://") {
         Endpoint::Http(endpoint.to_string())
     } else if endpoint.contains("://") {
-        panic!(
-            "unsupported execution_endpoint scheme (only http:// or a unix socket path): \
-             {endpoint}"
-        )
+        panic!("unsupported execution_endpoint scheme (only http:// is served): {endpoint}")
     } else {
-        Endpoint::Uds(PathBuf::from(endpoint))
+        panic!(
+            "execution_endpoint {endpoint} is a Unix socket path: an EL's IPC socket speaks \
+             raw newline-framed JSON-RPC, which this HTTP client cannot yet produce; use the \
+             EL's http:// engine endpoint"
+        )
     }
 }
 
@@ -317,12 +318,12 @@ mod tests {
         ));
     }
 
+    /// Connecting would succeed and every request would then be HTTP framing
+    /// on a raw JSON-RPC socket, so the path is refused before any connect.
     #[test]
-    fn endpoint_bare_path_parses_to_uds() {
-        assert!(matches!(
-            parse_endpoint("/run/reth/engine.sock"),
-            Endpoint::Uds(p) if p == std::path::Path::new("/run/reth/engine.sock")
-        ));
+    #[should_panic(expected = "is a Unix socket path")]
+    fn endpoint_bare_path_is_refused_at_startup() {
+        parse_endpoint("/run/reth/engine.sock");
     }
 
     #[test]
