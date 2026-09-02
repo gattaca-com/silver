@@ -377,7 +377,7 @@ mod tests {
     }
 
     /// A custody row's bar changes colour at the gate; rows ending after it
-    /// take the tail colour for their duration.
+    /// take the custody colour for their duration.
     #[test]
     fn data_bars_split_at_the_gate() {
         let theme = Theme::default();
@@ -404,17 +404,17 @@ mod tests {
         };
         let custody = Node::Span(Span::Da(DaSpan::Custody));
         assert_eq!(colour_of(Node::Span(DA)), Some(theme.components.da));
-        assert_eq!(colour_of(custody), Some(theme.components.tail));
-        assert_eq!(colour_of(Node::Col { index: 0, arrival: 1 }), Some(theme.components.custody));
-        assert_eq!(colour_of(Node::Col { index: 1, arrival: 2 }), Some(theme.components.tail));
+        assert_eq!(colour_of(custody), Some(theme.components.custody));
+        assert_eq!(colour_of(Node::Col { index: 0, arrival: 1 }), Some(theme.components.da));
+        assert_eq!(colour_of(Node::Col { index: 1, arrival: 2 }), Some(theme.components.custody));
 
         let (_, custody) = cells.into_iter().find(|(d, _)| d.node == custody).unwrap();
         let line = custody.into_line(&grid, &axis, &theme);
         let bars: Vec<_> =
             line.spans.iter().filter(|s| s.content.contains(theme.symbols.bar)).collect();
         assert_eq!(bars.len(), 2, "one piece each side of the gate");
-        assert_eq!(bars[0].style.fg, Some(theme.components.custody));
-        assert_eq!(bars[1].style.fg, Some(theme.components.tail));
+        assert_eq!(bars[0].style.fg, Some(theme.components.da));
+        assert_eq!(bars[1].style.fg, Some(theme.components.custody));
     }
 
     #[test]
