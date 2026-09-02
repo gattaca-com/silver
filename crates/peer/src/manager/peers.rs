@@ -613,7 +613,7 @@ impl PeerManager {
             crate::PeerCounters::MeshPrunedByUs.inc();
         }
         let user_agent = self.peers.get(&conn).map(|p| p.user_agent).unwrap_or_default();
-        tracing::info!(
+        tracing::debug!(
             p2p_peer = conn,
             ?topic,
             reason,
