@@ -37,8 +37,9 @@ impl Axis {
         out
     }
 
-    /// The bar cut at `split`: up to and including the split's cell, then the
-    /// rest. Without a split, or with one past the axis, everything is first.
+    /// The bar cut at `split`'s cell, exclusive like a bar's end, so a bar
+    /// ending at the split and one crossing it change colour in the same
+    /// column. Without a split, or with one past the axis, everything is first.
     pub fn split_bar(
         &self,
         start: Option<Nanos>,
@@ -46,7 +47,7 @@ impl Axis {
         split: Option<Nanos>,
     ) -> (String, String) {
         let bar = self.bar(start, len);
-        let cut = split.and_then(|s| self.cell(s)).map_or(self.width, |cell| cell + 1);
+        let cut = split.and_then(|s| self.cell(s)).unwrap_or(self.width);
         (bar.chars().take(cut).collect(), bar.chars().skip(cut).collect())
     }
 
@@ -104,6 +105,22 @@ mod tests {
         let bar = axis.bar(Some(Nanos::from_secs(3)), Nanos::from_secs(9));
         assert_eq!(bar.chars().count(), 20);
         assert_eq!(bar.trim_end(), format!("{}{}", " ".repeat(14), "█".repeat(5)));
+    }
+
+    /// A bar ending at the split and one crossing it switch colour in the
+    /// same column, so the gate reads as one vertical line down the rows.
+    #[test]
+    fn split_aligns_with_bars_ending_at_the_split() {
+        let axis = axis();
+        let (start, gate) = (Nanos::from_millis(420), Nanos::from_millis(1_260));
+        let ending_at_gate = axis.bar(Some(start), gate - start);
+        let (before, after) = axis.split_bar(Some(start), Nanos::from_millis(1_500), Some(gate));
+        assert_eq!(before, ending_at_gate.trim_end());
+        assert_eq!(after.trim_end(), "███");
+
+        let (before, after) = axis.split_bar(Some(gate), Nanos::from_millis(210), Some(gate));
+        assert_eq!(before.trim(), "", "a bar starting at the gate is all tail");
+        assert_eq!(after.trim_end(), "█");
     }
 
     #[test]

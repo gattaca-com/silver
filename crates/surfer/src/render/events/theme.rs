@@ -36,6 +36,8 @@ pub struct Components {
     pub strip: Color,
     pub da: Color,
     pub custody: Color,
+    /// Columns arriving after the gate has opened.
+    pub tail: Color,
     pub stf: Color,
     pub validate: Color,
     pub apply: Color,
@@ -47,6 +49,7 @@ impl Default for Components {
             strip: Color::White,
             da: Color::Cyan,
             custody: Color::Magenta,
+            tail: Color::DarkGray,
             stf: Color::Yellow,
             validate: Color::LightBlue,
             apply: Color::Blue,
@@ -61,7 +64,7 @@ impl Components {
             Span::Strip => Some(self.strip),
             Span::Da(DaSpan::Root) => Some(self.da),
             Span::Da(DaSpan::Custody) => Some(self.custody),
-            Span::Da(DaSpan::Cols(_)) => Some(self.da),
+            Span::Da(DaSpan::Cols(_)) => Some(self.custody),
             Span::Stf(StfSpan::Root) => Some(self.stf),
             Span::Stf(StfSpan::Validate) => Some(self.validate),
             Span::Stf(StfSpan::Apply) => Some(self.apply),
@@ -153,14 +156,14 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Bar styles before and after the gate. Data rows split there: what the
-    /// gate waited on in the `da` colour, the custody tail after it. Other
-    /// rows are one colour, and `el` wears the verdict.
+    /// Bar styles before and after the gate. Custody rows split there: the
+    /// custody colour for what the gate waited on, the tail colour after it.
+    /// Other rows are one colour, and `el` wears the verdict.
     pub fn bar(&self, trace: &BlockTrace, node: Node) -> (Style, Style) {
         let fg = |color| Style::default().fg(color);
         match node {
-            Node::Span(Span::Da(_)) | Node::Col { .. } => {
-                (fg(self.components.da), fg(self.components.custody))
+            Node::Span(Span::Da(DaSpan::Custody | DaSpan::Cols(_))) | Node::Col { .. } => {
+                (fg(self.components.custody), fg(self.components.tail))
             }
             Node::Span(span) => {
                 let color =
