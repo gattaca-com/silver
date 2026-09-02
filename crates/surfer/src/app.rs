@@ -6,7 +6,7 @@ use silver_common::{GossipTopic, PeerId};
 use crate::{
     discovery::DiscoveredSources,
     flamegraph::Flamegraph,
-    render::events_pane::EventsPane,
+    render::events::EventsPane,
     sources::{
         counters::CounterSet, peers::Peers, tilemetrics::TileMetricsSet, timings::TimingSet,
     },

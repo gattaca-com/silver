@@ -1,5 +1,5 @@
 pub mod counters_pane;
-pub mod events_pane;
+pub mod events;
 pub mod flamegraph_pane;
 pub mod fmt;
 pub mod gossip_pane;

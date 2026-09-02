@@ -29,6 +29,9 @@ pub enum Stage {
     },
     /// The block's data exists and its DA gate opens.
     DaAvailable,
+    /// STF done and the block imported into fork choice: publish of the
+    /// root's first `BlockReceived { stage: Applied }`, ahead of the FCU.
+    StfImported,
     /// An FCU naming the root: state transition + commit. Repeat-head and
     /// tick FCUs re-emit it; a root's first `Applied` is the apply.
     Applied,
@@ -43,6 +46,7 @@ impl Stage {
             Self::ElSent { .. } => "el_sent",
             Self::ElVerdict { .. } => "el_verdict",
             Self::DaAvailable => "da_available",
+            Self::StfImported => "stf_imported",
             Self::Applied => "applied",
         }
     }

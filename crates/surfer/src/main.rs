@@ -32,7 +32,7 @@ mod sources;
 use crate::{
     app::App,
     flamegraph::Flamegraph,
-    render::events_pane::EventsPane,
+    render::events::EventsPane,
     sources::{
         counters::CounterSet,
         events::{MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS},
