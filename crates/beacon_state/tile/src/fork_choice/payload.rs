@@ -106,7 +106,21 @@ impl ForkChoice {
         self.head_moved = true;
     }
 
-    #[cfg(feature = "ef_tests")]
+    pub fn record_ptc_votes(
+        &mut self,
+        block_root: &B256,
+        positions: &[u64; PTC_SIZE / 64],
+        present: bool,
+        da: bool,
+    ) {
+        let Some(idx) = self.find_node_idx(block_root) else {
+            return;
+        };
+        self.nodes[idx].ptc.record_mask(positions, present, da);
+        self.head_moved = true;
+    }
+
+    #[cfg(any(test, feature = "ef_tests"))]
     pub fn ptc_timeliness_votes(&self, block_root: &B256) -> [Option<bool>; PTC_SIZE] {
         match self.find_node_idx(block_root) {
             Some(idx) => self.nodes[idx].ptc.timeliness(),
@@ -114,7 +128,7 @@ impl ForkChoice {
         }
     }
 
-    #[cfg(feature = "ef_tests")]
+    #[cfg(any(test, feature = "ef_tests"))]
     pub fn ptc_data_availability_votes(&self, block_root: &B256) -> [Option<bool>; PTC_SIZE] {
         match self.find_node_idx(block_root) {
             Some(idx) => self.nodes[idx].ptc.availability(),

@@ -20,6 +20,40 @@ pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader) -> B256 {
     merkleize(&chunks)
 }
 
+pub fn hash_tree_root_sync_contribution(
+    slot: u64,
+    beacon_block_root: &B256,
+    subcommittee_index: u64,
+    aggregation_bits: &[u8; 16],
+    signature: &[u8; 96],
+) -> B256 {
+    let mut bits_chunk = [0u8; 32];
+    bits_chunk[..16].copy_from_slice(aggregation_bits);
+    merkleize(&[
+        uint64_chunk(slot),
+        *beacon_block_root,
+        uint64_chunk(subcommittee_index),
+        bits_chunk,
+        hash_fixed_bytes(signature),
+    ])
+}
+
+pub fn hash_tree_root_contribution_and_proof(
+    aggregator_index: u64,
+    contribution_root: &B256,
+    selection_proof: &[u8; 96],
+) -> B256 {
+    merkleize(&[
+        uint64_chunk(aggregator_index),
+        *contribution_root,
+        hash_fixed_bytes(selection_proof),
+    ])
+}
+
+pub fn hash_tree_root_sync_selection_data(slot: u64, subcommittee_index: u64) -> B256 {
+    hash_concat(&uint64_chunk(slot), &uint64_chunk(subcommittee_index))
+}
+
 pub fn hash_checkpoint(cp: &Checkpoint) -> B256 {
     hash_concat(&uint64_chunk(cp.epoch), &cp.root)
 }

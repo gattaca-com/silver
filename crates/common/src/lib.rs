@@ -6,7 +6,8 @@ pub use crate::{
         ATTESTATION_SUBNETS, GOSSIP_TOPIC_COUNTER_SLOTS, GossipTopic,
         MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE,
         MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE, MESSAGE_ID_LEN, MessageId, MessageIdHasher,
-        gossip_topic_for_counter_slot, msg_id_invalid_snappy, msg_id_valid_snappy,
+        SYNC_COMMITTEE_SUBNETS, gossip_topic_for_counter_slot, msg_id_invalid_snappy,
+        msg_id_valid_snappy,
     },
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
     identity::{

@@ -21,10 +21,11 @@ silver_common::declare_counters! {
         // aggregates inflate Miss without ever becoming votes.
         AttestationRootMemoHit,
         AttestationRootMemoMiss,
-        // gossip-attestation batching: size of the latest flush (gauge) and
-        // batch-verify failures that fell back to per-attestation verifies
-        // (non-zero = someone is feeding us invalid signatures).
-        AttestationBatchSize,
-        AttestationBatchFallback,
+        // gossip vote batching (attestations + sync messages + PTC): size of
+        // the latest flush (gauge) and batch-verify failures that fell back
+        // to per-message verifies (non-zero = someone is feeding us invalid
+        // signatures).
+        VoteBatchSize,
+        VoteBatchFallback,
     }
 }

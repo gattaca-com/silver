@@ -228,6 +228,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
             .map(silver_common::GossipTopic::BeaconAttestation)
+            .chain(
+                (0..silver_common::SYNC_COMMITTEE_SUBNETS as u64)
+                    .map(silver_common::GossipTopic::SyncCommittee),
+            )
             .collect(),
     );
 

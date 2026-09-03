@@ -11,7 +11,7 @@ use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_common::{
     Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE,
-    StreamProtocol,
+    SYNC_COMMITTEE_SUBNETS, StreamProtocol,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
@@ -76,6 +76,7 @@ fn default_gossip_topics() -> Vec<String> {
         GossipTopic::BlsToExecutionChange.to_string(),
         GossipTopic::ExecutionPayload.to_string(),
         GossipTopic::PayloadAttestationMessage.to_string(),
+        GossipTopic::SyncCommitteeContributionAndProof.to_string(),
     ]
 }
 
@@ -309,6 +310,7 @@ impl Config {
         builder.eth2(eth2);
         // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
         builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
+        builder.syncnets((1u8 << SYNC_COMMITTEE_SUBNETS) - 1);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);

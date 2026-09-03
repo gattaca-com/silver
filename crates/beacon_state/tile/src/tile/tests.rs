@@ -935,6 +935,22 @@ fn attestation_updates_vote_tracker() {
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
 }
 
+fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> NewGossipMsg {
+    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
+    r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    NewGossipMsg {
+        stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+        topic,
+        msg_hash: MessageId { id: [0u8; 20] },
+        recv_ts: Nanos(0),
+        ssz: read,
+        protobuf: read,
+    }
+}
+
 fn gossip_att_msg(
     producer: &mut TProducer,
     att: &[u8; SINGLE_ATT_SIZE],
@@ -988,15 +1004,15 @@ fn attestation_batch_flush_applies_all() {
     for vi in [0u32, 1] {
         let (buf, subnet) = batched_att(&tile, vi as usize, vi);
         let m = gossip_att_msg(&mut gp, &buf, subnet);
-        tile.defer_attestation(m, &mut adapter.producers);
+        tile.defer_vote(m, &mut adapter.producers);
     }
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32], "vote before flush");
 
-    tile.flush_attestations(&mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
     assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, bbr);
-    assert!(tile.att_batch.is_empty());
-    assert!(tile.att_pending.is_empty());
+    assert!(tile.vote_batch.is_empty());
+    assert!(tile.vote_pending.is_empty());
 }
 
 /// A forged signature (valid G2 point, wrong key) fails the batch verify;
@@ -1010,13 +1026,31 @@ fn attestation_batch_fallback_rejects_only_forged() {
     let (good, good_subnet) = batched_att(&tile, 0, 0);
     let (forged, forged_subnet) = batched_att(&tile, 2, 1);
     let m = gossip_att_msg(&mut gp, &good, good_subnet);
-    tile.defer_attestation(m, &mut adapter.producers);
+    tile.defer_vote(m, &mut adapter.producers);
     let m = gossip_att_msg(&mut gp, &forged, forged_subnet);
-    tile.defer_attestation(m, &mut adapter.producers);
+    tile.defer_vote(m, &mut adapter.producers);
 
-    tile.flush_attestations(&mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
     assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, [0u8; 32], "forged vote");
+}
+
+#[test]
+fn invalid_vote_does_not_deduplicate_later_valid_vote() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.last_applied_block_root;
+
+    // Both messages have the same gossip dedup key. The first is a valid BLS
+    // point signed by the wrong key; only the second may establish "seen".
+    let (forged, subnet) = batched_att(&tile, 1, 0);
+    let (valid, valid_subnet) = batched_att(&tile, 0, 0);
+    assert_eq!(subnet, valid_subnet);
+    tile.defer_vote(gossip_att_msg(&mut gp, &forged, subnet), &mut adapter.producers);
+    tile.defer_vote(gossip_att_msg(&mut gp, &valid, subnet), &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
 }
 
 /// A non-attestation gossip message flushes the pending batch first, so
@@ -1029,13 +1063,288 @@ fn attestation_batch_flushed_before_other_gossip() {
 
     let (buf, subnet) = batched_att(&tile, 0, 0);
     let m = gossip_att_msg(&mut gp, &buf, subnet);
-    tile.defer_attestation(m, &mut adapter.producers);
+    tile.defer_vote(m, &mut adapter.producers);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
 
     let mut exit = gossip_att_msg(&mut gp, &[0u8; SINGLE_ATT_SIZE], 0);
     exit.topic = GossipTopic::VoluntaryExit;
     tile.on_gossip(exit, &mut adapter.producers);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+}
+
+#[test]
+fn sync_message_batch_applies_and_marks_seen() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+    let wall = tile.ticker.current_slot();
+
+    let msg = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
+    let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(1));
+    tile.defer_vote(m, &mut adapter.producers);
+    assert!(!tile.seen_sync_msgs[1].contains(wall, 0), "not applied before flush");
+
+    tile.flush_votes(&mut adapter.producers);
+    assert!(tile.seen_sync_msgs[1].contains(wall, 0));
+    assert!(tile.vote_batch.is_empty() && tile.vote_pending.is_empty());
+}
+
+#[test]
+fn sync_message_uses_gossip_clock_disparity() {
+    let wall = 31;
+    let mut tile = make_tile_at_wall_slot(wall);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+
+    // During the final 500 ms, the next slot is already admissible.
+    tile.ticker.set_since_genesis_ms(wall * 12_000 + 11_750);
+    let next = test_signing::sign_sync_committee_message(0, 0, wall + 1, bbr, &imm);
+    assert!(tile.prepare_sync_message(&next, 0).is_ok());
+
+    // Outside that window it is still from the future.
+    tile.ticker.set_since_genesis_ms(wall * 12_000 + 10_000);
+    assert!(matches!(tile.prepare_sync_message(&next, 0), Err(Feedback::Ignore)));
+}
+
+#[test]
+fn sync_message_uses_next_committee_at_period_handoff() {
+    let period_slots = stf::EPOCHS_PER_SYNC_COMMITTEE_PERIOD * SLOTS_PER_EPOCH;
+    let handoff_slot = period_slots - 1;
+    assert!(!super::gossip::uses_next_sync_committee(handoff_slot - 1));
+    assert!(super::gossip::uses_next_sync_committee(handoff_slot));
+
+    // The test state's cached current committee contains validator 0, while
+    // its default next-committee pubkeys do not. The same current member is
+    // therefore accepted one slot before handoff and rejected at handoff.
+    let imm = Immutable::default();
+    let mut current = make_tile_at_wall_slot(handoff_slot - 1);
+    seed_tile_with_keys(&mut current, 128, handoff_slot - 1);
+    let msg = test_signing::sign_sync_committee_message(
+        0,
+        0,
+        handoff_slot - 1,
+        current.last_applied_block_root,
+        &imm,
+    );
+    assert!(current.prepare_sync_message(&msg, 0).is_ok());
+
+    let mut handoff = make_tile_at_wall_slot(handoff_slot);
+    seed_tile_with_keys(&mut handoff, 128, handoff_slot);
+    let msg = test_signing::sign_sync_committee_message(
+        0,
+        0,
+        handoff_slot,
+        handoff.last_applied_block_root,
+        &imm,
+    );
+    assert!(matches!(handoff.prepare_sync_message(&msg, 0), Err(Feedback::Reject(None))));
+}
+
+#[test]
+fn sync_message_from_non_member_is_rejected() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let wall = tile.ticker.current_slot();
+
+    let msg =
+        test_signing::sign_sync_committee_message(2, 5, wall, tile.last_applied_block_root, &imm);
+    let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(0));
+    tile.defer_vote(m, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+    assert!(!tile.seen_sync_msgs[0].contains(wall, 5));
+}
+
+#[test]
+fn sync_message_forged_signature_rejected_by_fallback() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+    let wall = tile.ticker.current_slot();
+
+    let good = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
+    let forged = test_signing::sign_sync_committee_message(1, 0, wall, bbr, &imm);
+    let m = gossip_msg(&mut gp, &good, GossipTopic::SyncCommittee(0));
+    tile.defer_vote(m, &mut adapter.producers);
+    let m = gossip_msg(&mut gp, &forged, GossipTopic::SyncCommittee(2));
+    tile.defer_vote(m, &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert!(tile.seen_sync_msgs[0].contains(wall, 0), "honest message applied");
+    assert!(!tile.seen_sync_msgs[2].contains(wall, 0), "forgery rejected");
+}
+
+#[test]
+fn mixed_vote_batch_applies_all_kinds() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+    let wall = tile.ticker.current_slot();
+
+    let (att, subnet) = batched_att(&tile, 0, 0);
+    let m = gossip_att_msg(&mut gp, &att, subnet);
+    tile.defer_vote(m, &mut adapter.producers);
+    let msg = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
+    let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(3));
+    tile.defer_vote(m, &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert!(tile.seen_sync_msgs[3].contains(wall, 0));
+}
+
+fn sync_aggregator_slot(imm: &Immutable, qualify: bool) -> (u64, u64) {
+    for slot in 31..4096 {
+        for sub in 0..4u64 {
+            let proof = test_signing::sync_selection_proof(0, slot, sub, imm);
+            if super::gossip::is_sync_aggregator(&proof) == qualify {
+                return (slot, sub);
+            }
+        }
+    }
+    panic!("no qualifying (slot, subcommittee) found");
+}
+
+fn sync_aggregator_slot_for_two_subcommittees(imm: &Immutable) -> (u64, u64, u64) {
+    for slot in 31..4096 {
+        let mut first = None;
+        for sub in 0..4u64 {
+            let proof = test_signing::sync_selection_proof(0, slot, sub, imm);
+            if super::gossip::is_sync_aggregator(&proof) {
+                if let Some(other) = first {
+                    return (slot, other, sub);
+                }
+                first = Some(sub);
+            }
+        }
+    }
+    panic!("no slot qualifying for two subcommittees found");
+}
+
+#[test]
+fn sync_contribution_accepted_then_superset_ignored() {
+    let imm = Immutable::default();
+    let (slot, sub) = sync_aggregator_slot(&imm, true);
+    let mut tile = make_tile_at_wall_slot(slot);
+    seed_tile_with_keys(&mut tile, 128, slot);
+    let bbr = tile.last_applied_block_root;
+
+    let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Accept(None)));
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Ignore));
+}
+
+#[test]
+fn sync_contribution_dedup_is_per_subcommittee() {
+    let imm = Immutable::default();
+    let (slot, first_sub, second_sub) = sync_aggregator_slot_for_two_subcommittees(&imm);
+    let mut tile = make_tile_at_wall_slot(slot);
+    seed_tile_with_keys(&mut tile, 128, slot);
+    let bbr = tile.last_applied_block_root;
+
+    let first = test_signing::sign_contribution_and_proof(0, 0, slot, first_sub, 3, 0, bbr, &imm);
+    let second = test_signing::sign_contribution_and_proof(0, 0, slot, second_sub, 3, 0, bbr, &imm);
+    assert!(matches!(tile.handle_sync_contribution(&first), Feedback::Accept(None)));
+    assert!(matches!(tile.handle_sync_contribution(&second), Feedback::Accept(None)));
+}
+
+#[test]
+fn sync_contribution_non_aggregator_rejected() {
+    let imm = Immutable::default();
+    let (slot, sub) = sync_aggregator_slot(&imm, false);
+    let mut tile = make_tile_at_wall_slot(slot);
+    seed_tile_with_keys(&mut tile, 128, slot);
+    let bbr = tile.last_applied_block_root;
+
+    let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
+}
+
+#[test]
+fn sync_contribution_forged_outer_signature_rejected() {
+    let imm = Immutable::default();
+    let (slot, sub) = sync_aggregator_slot(&imm, true);
+    let mut tile = make_tile_at_wall_slot(slot);
+    seed_tile_with_keys(&mut tile, 128, slot);
+    let bbr = tile.last_applied_block_root;
+
+    let mut buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
+    buf[300] ^= 0x01;
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
+}
+
+#[test]
+fn ptc_rejects_non_canonical_bool_bytes() {
+    let slot = 31;
+    let mut tile = make_tile_at_wall_slot(slot);
+    seed_tile_with_keys(&mut tile, 128, slot);
+    let msg = test_signing::sign_payload_attestation_message(
+        0,
+        0,
+        slot,
+        tile.last_applied_block_root,
+        2,
+        1,
+        &seed_immutable(&tile),
+    );
+
+    assert!(matches!(tile.prepare_ptc(&msg), Err(Feedback::Reject(None))));
+}
+
+#[test]
+fn ptc_requires_referenced_block_at_message_slot() {
+    let message_slot = 31;
+    let mut tile = make_tile_at_wall_slot(message_slot);
+    seed_tile_with_keys(&mut tile, 128, message_slot - 1);
+    let msg = test_signing::sign_payload_attestation_message(
+        0,
+        0,
+        message_slot,
+        tile.last_applied_block_root,
+        1,
+        1,
+        &seed_immutable(&tile),
+    );
+
+    assert!(matches!(tile.prepare_ptc(&msg), Err(Feedback::Ignore)));
+}
+
+#[test]
+fn ptc_vote_records_every_matching_committee_position() {
+    let slot = 31;
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+    seed_tile_with_keys(&mut tile, 128, slot);
+    let root = tile.last_applied_block_root;
+    let msg = test_signing::sign_payload_attestation_message(
+        0,
+        0,
+        slot,
+        root,
+        1,
+        1,
+        &seed_immutable(&tile),
+    );
+
+    let prepared = tile.prepare_ptc(&msg).expect("valid PTC message");
+    assert_eq!(
+        prepared.ptc_positions.iter().map(|word| word.count_ones()).sum::<u32>(),
+        512,
+        "the test PTC repeats validator 0 in every position",
+    );
+    drop(prepared);
+
+    let gossip = gossip_msg(&mut gp, &msg, GossipTopic::PayloadAttestationMessage);
+    tile.defer_vote(gossip, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+    assert!(tile.seen_ptc.contains(slot, 0));
+    assert!(tile.fork_choice.ptc_timeliness_votes(&root).iter().all(|vote| *vote == Some(true)));
+    assert!(
+        tile.fork_choice.ptc_data_availability_votes(&root).iter().all(|vote| *vote == Some(true))
+    );
 }
 
 /// Spec `validate_on_attestation`: a single attestation for a block we

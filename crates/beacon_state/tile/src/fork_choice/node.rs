@@ -107,6 +107,23 @@ impl PtcVotes {
     }
 
     #[inline]
+    pub(super) fn record_mask(&mut self, positions: &[u64; 8], present: bool, da: bool) {
+        for (word, &positions) in self.voted.iter_mut().zip(positions) {
+            *word |= positions;
+        }
+        if present {
+            for (word, &positions) in self.present.iter_mut().zip(positions) {
+                *word |= positions;
+            }
+        }
+        if da {
+            for (word, &positions) in self.da.iter_mut().zip(positions) {
+                *word |= positions;
+            }
+        }
+    }
+
+    #[inline]
     pub(super) fn present_count(&self) -> usize {
         popcount(&self.present)
     }
@@ -116,18 +133,18 @@ impl PtcVotes {
         popcount(&self.da)
     }
 
-    #[cfg(feature = "ef_tests")]
+    #[cfg(any(test, feature = "ef_tests"))]
     pub(super) fn timeliness(&self) -> [Option<bool>; PTC_SIZE] {
         self.optional(&self.present)
     }
 
     /// Data-availability votes (see `timeliness`).
-    #[cfg(feature = "ef_tests")]
+    #[cfg(any(test, feature = "ef_tests"))]
     pub(super) fn availability(&self) -> [Option<bool>; PTC_SIZE] {
         self.optional(&self.da)
     }
 
-    #[cfg(feature = "ef_tests")]
+    #[cfg(any(test, feature = "ef_tests"))]
     fn optional(&self, value: &[u64; 8]) -> [Option<bool>; PTC_SIZE] {
         let mut out = [None; PTC_SIZE];
         for (i, slot) in out.iter_mut().enumerate() {
