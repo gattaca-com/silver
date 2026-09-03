@@ -94,17 +94,14 @@ impl StageReader {
     }
 
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
-        match *m.data() {
-            EngineReq::NewPayload(req) => {
-                self.roots.entry(req.block_root).or_insert(Tracked::new(req.slot));
-                self.out.push(StageEvent {
-                    stage: Stage::ElSent { source: req.block_source },
-                    ts: m.tracking_timestamp().publish_t(),
-                    block_root: req.block_root,
-                    slot: Some(req.slot),
-                });
-            }
-            _ => {}
+        if let EngineReq::NewPayload(req) = *m.data() {
+            self.roots.entry(req.block_root).or_insert(Tracked::new(req.slot));
+            self.out.push(StageEvent {
+                stage: Stage::ElSent { source: req.block_source },
+                ts: m.tracking_timestamp().publish_t(),
+                block_root: req.block_root,
+                slot: Some(req.slot),
+            });
         }
     }
 
