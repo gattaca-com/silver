@@ -1,5 +1,5 @@
 pub mod counters_pane;
-pub mod events_pane;
+pub mod events;
 pub mod flamegraph_pane;
 pub mod fmt;
 pub mod gossip_pane;
@@ -70,8 +70,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("Esc", bold));
         spans.push(Span::raw(" close plot  "));
     } else {
+        let enter_action = if app.pane == Pane::Events { " expand  " } else { " expand plot  " };
         spans.push(Span::styled("Enter", bold));
-        spans.push(Span::raw(" expand plot  "));
+        spans.push(Span::raw(enter_action));
         spans.push(Span::styled("[/]", bold));
         spans.push(Span::raw(" resize  "));
     }

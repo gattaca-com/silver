@@ -21,6 +21,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use silver_stages::SlotClock;
 
 mod app;
 mod discovery;
@@ -32,7 +33,7 @@ mod sources;
 use crate::{
     app::App,
     flamegraph::Flamegraph,
-    render::events_pane::EventsPane,
+    render::events::{EventsPane, Theme},
     sources::{
         counters::CounterSet,
         events::{MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS},
@@ -117,11 +118,11 @@ fn main() -> io::Result<()> {
     // Events pane reads the node's spine directly (app name baked in as
     // `silver`, so a custom APP_NAME only affects the file sources above).
     // Slot timing is chain config surfer can't discover — env-overridable.
-    let events = EventsPane::open(
-        &base_dir,
+    let clock = SlotClock::new(
         env_u64("SURFER_GENESIS_UNIX_SECS", MAINNET_GENESIS_UNIX_SECS),
         env_u64("SURFER_SLOT_MS", MAINNET_SLOT_MS),
     );
+    let events = EventsPane::open(&base_dir, clock, Theme::default());
 
     let peers = sources::peers::Peers::open(&base_dir);
 
@@ -202,6 +203,7 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Esc | KeyCode::Backspace if app.drilled_in => app.drilled_in = false,
+        KeyCode::Enter if app.pane == app::Pane::Events => app.events.toggle_expand(),
         KeyCode::Enter => app.drilled_in = !app.drilled_in,
         KeyCode::Tab => {
             app.pane = app.pane.next();

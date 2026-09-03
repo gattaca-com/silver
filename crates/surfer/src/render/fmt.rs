@@ -2,6 +2,22 @@ use ratatui::{
     style::{Color, Style},
     text::Span,
 };
+use silver_common::Nanos;
+
+/// Auto-unit duration via flux's `Nanos` Display ("2.345s", "12.5ms", "910μs"),
+/// with a plain "0" for the zero it would otherwise render blank.
+pub fn fmt_nanos(d: Nanos) -> String {
+    if d.0 == 0 { "0".to_string() } else { d.to_string() }
+}
+
+/// First 4 bytes of a root as 8 hex chars.
+pub fn root_prefix(root: &[u8; 32]) -> String {
+    format!("{:02x}{:02x}{:02x}{:02x}", root[0], root[1], root[2], root[3])
+}
+
+pub fn wall_time(ts: Nanos) -> String {
+    ts.with_fmt_utc("%H:%M:%S%.3f")
+}
 
 pub fn fmt_u64(v: u64) -> String {
     if v >= 1_000_000_000 {
