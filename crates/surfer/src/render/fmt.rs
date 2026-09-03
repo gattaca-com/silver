@@ -54,7 +54,10 @@ pub fn delta_span(delta: i64, width: usize) -> Span<'static> {
 /// `crate::sources::counters::BUCKET_SECS` wide) as a human-readable
 /// "Nm Ns" string. Anchored to the leftmost bucket's age.
 pub fn fmt_span_ago(n: usize) -> String {
-    let secs = n as u64 * crate::sources::counters::BUCKET_SECS;
+    fmt_secs_ago(n as u64 * crate::sources::counters::BUCKET_SECS)
+}
+
+pub fn fmt_secs_ago(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
@@ -64,7 +67,7 @@ pub fn fmt_span_ago(n: usize) -> String {
     }
 }
 
-fn fmt_signed(v: i64) -> String {
+pub fn fmt_signed(v: i64) -> String {
     let mag = v.unsigned_abs();
     let suffix = if mag >= 1_000_000_000 {
         format!("{:.2}G", mag as f64 / 1e9)
