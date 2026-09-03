@@ -36,7 +36,6 @@ pub use epoch::{
 };
 pub use epoch_shuffling::{EpochShuffling, ShufflingRef};
 pub use fork_transition::upgrade_to_gloas;
-pub(crate) use gloas::get_ptc;
 pub use gloas::{
     collect_sigs_execution_payload_bid, collect_sigs_payload_attestations,
     get_builder_payment_quorum_threshold, process_builder_deposit_request,
@@ -44,6 +43,7 @@ pub use gloas::{
     process_parent_execution_payload, process_payload_attestations, process_ptc_window,
     process_withdrawals_gloas, verify_execution_payload_envelope,
 };
+pub(crate) use gloas::{get_ptc, hash_payload_attestation_data};
 pub(crate) use operations::process_execution_requests;
 pub use operations::{
     collect_sigs_bls_to_execution_changes, collect_sigs_voluntary_exits,

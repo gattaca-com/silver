@@ -12,7 +12,7 @@ use silver_common::{
 };
 use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
-use super::{BeaconStateTile, Producers};
+use super::{BeaconStateTile, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers};
 use crate::{stf, tile::Feedback};
 
 impl BeaconStateTile {
@@ -140,41 +140,95 @@ impl BeaconStateTile {
         }
     }
 
-    pub(super) fn handle_payload_attestation(&mut self, ssz: &[u8]) -> Feedback {
-        if ssz.len() < PAYLOAD_ATTESTATION_MESSAGE_SIZE {
-            return Feedback::Reject(None);
+    pub(super) fn prepare_ptc(
+        &mut self,
+        ssz: &[u8],
+    ) -> Result<crate::tile::gossip::PreparedPtc, Feedback> {
+        use crate::bls::{self, CheckedSignature};
+
+        if ssz.len() != PAYLOAD_ATTESTATION_MESSAGE_SIZE {
+            return Err(Feedback::Reject(None));
         }
         let buf: &[u8; PAYLOAD_ATTESTATION_MESSAGE_SIZE] =
             ssz[..PAYLOAD_ATTESTATION_MESSAGE_SIZE].try_into().unwrap();
 
         let validator_index = PayloadAttestationMessage::validator_index(buf);
         let data = PayloadAttestationMessage::data(buf);
+        // SSZ bools have exactly two canonical encodings. The view accessors
+        // intentionally expose bool semantics, so reject non-canonical bytes
+        // before converting them.
+        if data[40] > 1 || data[41] > 1 {
+            return Err(Feedback::Reject(None));
+        }
         let block_root = *PayloadAttestationData::beacon_block_root(data);
         let slot = PayloadAttestationData::slot(data);
         let present = PayloadAttestationData::payload_present(data);
         let da = PayloadAttestationData::blob_data_available(data);
 
+        if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Err(Feedback::Ignore);
+        }
+        self.seen_ptc
+            .rotate_to(self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY));
+        if self.seen_ptc.contains(slot, validator_index as usize) {
+            return Err(Feedback::Ignore);
+        }
+
         let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
-            return Feedback::Ignore;
+            return Err(Feedback::Ignore);
         };
-        let state_id = self.fork_choice.node(idx).state_id;
+        let node = self.fork_choice.node(idx);
+        if node.slot != slot {
+            return Err(Feedback::Ignore);
+        }
+        let state_id = node.state_id;
 
-        let ptc_idx = {
-            let rv = self.state.read_view(state_id);
-            let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
-            let Some(ptc) = stf::get_ptc(&rv.epoch, state_epoch, slot) else {
-                return Feedback::Ignore;
-            };
-            match ptc.iter().position(|&v| v == validator_index) {
-                Some(p) => p,
-                None => return Feedback::Ignore,
+        let rv = self.state.read_view(state_id);
+        let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
+        let Some(ptc) = stf::get_ptc(&rv.epoch, state_epoch, slot) else {
+            return Err(Feedback::Ignore);
+        };
+        let mut ptc_positions = [0u64; crate::tile::gossip::PTC_MASK_WORDS];
+        for (position, &member) in ptc.iter().enumerate() {
+            if member == validator_index {
+                ptc_positions[position / 64] |= 1 << (position % 64);
             }
+        }
+        if ptc_positions.iter().all(|&word| word == 0) {
+            return Err(Feedback::Ignore);
+        };
+        if validator_index as usize >= rv.validators.count() {
+            return Err(Feedback::Reject(None));
+        }
+
+        let fork_version = rv.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let domain = bls::domain_from_fork_data(
+            bls::DOMAIN_PTC_ATTESTER,
+            &self.fork_data_roots.root(fork_version, &rv.imm.genesis_validators_root),
+        );
+        let signing_root =
+            bls::compute_signing_root(&stf::hash_payload_attestation_data(data), &domain);
+        let Some(signature) = CheckedSignature::parse(PayloadAttestationMessage::signature(buf))
+        else {
+            return Err(Feedback::Reject(None));
         };
 
-        self.fork_choice.record_ptc_vote(&block_root, ptc_idx, present, da);
-        self.recompute_head();
+        Ok(crate::tile::gossip::PreparedPtc {
+            block_root,
+            slot,
+            validator: validator_index,
+            ptc_positions,
+            present,
+            da,
+            pubkey: *rv.validators.pubkey_decompressed(validator_index as usize),
+            signing_root,
+            signature,
+        })
+    }
 
-        Feedback::Accept(Some(block_root))
+    pub(super) fn commit_ptc(&mut self, p: &crate::tile::gossip::PreparedPtc) {
+        self.fork_choice.record_ptc_votes(&p.block_root, &p.ptc_positions, p.present, p.da);
+        self.seen_ptc.mark(p.slot, p.validator as usize);
     }
 
     pub(super) fn notify_ptc_from_block(&mut self, block_data: &[u8]) {

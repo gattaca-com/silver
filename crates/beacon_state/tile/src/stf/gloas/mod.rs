@@ -16,5 +16,6 @@ pub use committee::process_ptc_window;
 pub(crate) use committee::{fill_epoch_ptc, get_ptc};
 pub use envelope::verify_execution_payload_envelope;
 pub use parent_payload::process_parent_execution_payload;
+pub(crate) use payload_attestation::hash_payload_attestation_data;
 pub use payload_attestation::{collect_sigs_payload_attestations, process_payload_attestations};
 pub use withdrawals::process_withdrawals as process_withdrawals_gloas;

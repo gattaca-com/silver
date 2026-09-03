@@ -102,7 +102,7 @@ fn collect_sigs_payload_attestation(
     Ok(())
 }
 
-fn hash_payload_attestation_data(data: &[u8; 42]) -> silver_beacon_state_data::B256 {
+pub(crate) fn hash_payload_attestation_data(data: &[u8; 42]) -> silver_beacon_state_data::B256 {
     let bool_chunk = |b: u8| {
         let mut c = [0u8; 32];
         c[0] = b;

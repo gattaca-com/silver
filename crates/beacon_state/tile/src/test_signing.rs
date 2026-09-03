@@ -9,10 +9,10 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH,
 };
 use silver_common::ssz_view::{
-    ATTESTATION_FIXED, AttestationView, IndexedAttestationView, PROPOSER_SLASHING_SIZE,
-    ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
-    SINGLE_ATT_SIZE, SignedAggregateAndProofView, SignedBlsToExecutionChangeView,
-    SignedVoluntaryExitView, SingleAttestationView,
+    ATTESTATION_FIXED, AttestationView, IndexedAttestationView, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
+    PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
+    SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedAggregateAndProofView,
+    SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
 };
 
 use crate::{
@@ -262,6 +262,117 @@ pub fn resign_single_attestation(sk_idx: usize, buf: &mut [u8; SINGLE_ATT_SIZE],
     let sig = sign(sk_idx, &signing_root);
     buf[144..240].copy_from_slice(&sig);
     debug_assert_eq!(SingleAttestationView::signature(buf), &sig);
+}
+
+pub fn sign_sync_committee_message(
+    sk_idx: usize,
+    vi: u64,
+    slot: u64,
+    beacon_block_root: B256,
+    imm: &Immutable,
+) -> [u8; 144] {
+    let mut buf = [0u8; 144];
+    buf[0..8].copy_from_slice(&slot.to_le_bytes());
+    buf[8..40].copy_from_slice(&beacon_block_root);
+    buf[40..48].copy_from_slice(&vi.to_le_bytes());
+
+    let fv = test_fork_version(slot / SLOTS_PER_EPOCH);
+    let domain = bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fv, &imm.genesis_validators_root);
+    let sig = sign(sk_idx, &bls::compute_signing_root(&beacon_block_root, &domain));
+    buf[48..144].copy_from_slice(&sig);
+    buf
+}
+
+pub fn sign_payload_attestation_message(
+    sk_idx: usize,
+    validator_index: u64,
+    slot: u64,
+    beacon_block_root: B256,
+    payload_present: u8,
+    blob_data_available: u8,
+    imm: &Immutable,
+) -> [u8; PAYLOAD_ATTESTATION_MESSAGE_SIZE] {
+    let mut buf = [0u8; PAYLOAD_ATTESTATION_MESSAGE_SIZE];
+    buf[0..8].copy_from_slice(&validator_index.to_le_bytes());
+    buf[8..40].copy_from_slice(&beacon_block_root);
+    buf[40..48].copy_from_slice(&slot.to_le_bytes());
+    buf[48] = payload_present;
+    buf[49] = blob_data_available;
+
+    let data: &[u8; 42] = (&buf[8..50]).try_into().unwrap();
+    let fv = test_fork_version(slot / SLOTS_PER_EPOCH);
+    let domain = bls::compute_domain(bls::DOMAIN_PTC_ATTESTER, fv, &imm.genesis_validators_root);
+    let signing_root =
+        bls::compute_signing_root(&crate::stf::hash_payload_attestation_data(data), &domain);
+    let signature = sign(sk_idx, &signing_root);
+    buf[50..146].copy_from_slice(&signature);
+    buf
+}
+
+pub fn sync_selection_proof(
+    sk_idx: usize,
+    slot: u64,
+    subcommittee: u64,
+    imm: &Immutable,
+) -> [u8; 96] {
+    let fv = test_fork_version(slot / SLOTS_PER_EPOCH);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+        fv,
+        &imm.genesis_validators_root,
+    );
+    let root = ssz_hash::hash_tree_root_sync_selection_data(slot, subcommittee);
+    sign(sk_idx, &bls::compute_signing_root(&root, &domain))
+}
+
+pub fn sign_contribution_and_proof(
+    sk_agg: usize,
+    aggregator_index: u64,
+    slot: u64,
+    subcommittee: u64,
+    participant_pos: usize,
+    sk_part: usize,
+    beacon_block_root: B256,
+    imm: &Immutable,
+) -> [u8; 360] {
+    let fv = test_fork_version(slot / SLOTS_PER_EPOCH);
+    let domain = |ty| bls::compute_domain(ty, fv, &imm.genesis_validators_root);
+
+    let mut bits = [0u8; 16];
+    bits[participant_pos / 8] |= 1 << (participant_pos % 8);
+    let contrib_sig = sign(
+        sk_part,
+        &bls::compute_signing_root(&beacon_block_root, &domain(bls::DOMAIN_SYNC_COMMITTEE)),
+    );
+    let selection_proof = sync_selection_proof(sk_agg, slot, subcommittee, imm);
+
+    let contribution_root = ssz_hash::hash_tree_root_sync_contribution(
+        slot,
+        &beacon_block_root,
+        subcommittee,
+        &bits,
+        &contrib_sig,
+    );
+    let cap_root = ssz_hash::hash_tree_root_contribution_and_proof(
+        aggregator_index,
+        &contribution_root,
+        &selection_proof,
+    );
+    let outer = sign(
+        sk_agg,
+        &bls::compute_signing_root(&cap_root, &domain(bls::DOMAIN_CONTRIBUTION_AND_PROOF)),
+    );
+
+    let mut buf = [0u8; 360];
+    buf[0..8].copy_from_slice(&aggregator_index.to_le_bytes());
+    buf[8..16].copy_from_slice(&slot.to_le_bytes());
+    buf[16..48].copy_from_slice(&beacon_block_root);
+    buf[48..56].copy_from_slice(&subcommittee.to_le_bytes());
+    buf[56..72].copy_from_slice(&bits);
+    buf[72..168].copy_from_slice(&contrib_sig);
+    buf[168..264].copy_from_slice(&selection_proof);
+    buf[264..360].copy_from_slice(&outer);
+    buf
 }
 
 /// Build a single-signer `Attestation`: `committee_index` is the (single)
