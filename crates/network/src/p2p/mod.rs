@@ -23,7 +23,7 @@ use silver_common::{
 
 use crate::{
     NetworkCounters, RemotePeer,
-    p2p::streams::AcquiredRpcOutbound,
+    p2p::streams::{AcquiredRpcOutbound, RpcCodecPool},
     socket::{MAX_GSO_SEGMENTS, Socket},
 };
 
@@ -107,6 +107,7 @@ pub struct P2p {
     keypair: Keypair,
     endpoint: Endpoint,
     peers: FxHashMap<ConnectionHandle, Peer>,
+    rpc_codec_pool: RpcCodecPool,
     banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
     recv_count: usize,
@@ -122,6 +123,7 @@ impl P2p {
             keypair,
             endpoint,
             peers: FxHashMap::default(),
+            rpc_codec_pool: RpcCodecPool::default(),
             banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
             recv_count: 0,
@@ -179,7 +181,7 @@ impl P2p {
         // connection through its drain (CONNECTION_CLOSE retransmits,
         // endpoint events) until the drained reap removes it.
         if let Some(p) = self.peers.get_mut(&ConnectionHandle(peer)) {
-            p.shutdown(now);
+            p.shutdown(now, &mut self.rpc_codec_pool);
         }
     }
 
@@ -199,7 +201,7 @@ impl P2p {
         self.banned.insert(peer_id);
         if let Some(peer) = self.peers.values_mut().find(|p| p.id().peer_id == peer_id) {
             tracing::info!(?peer_id, "closing connection: peer banned");
-            peer.shutdown(now);
+            peer.shutdown(now, &mut self.rpc_codec_pool);
         }
     }
 
@@ -291,7 +293,14 @@ impl P2p {
 
             // N.B. peer transmit MUST be called before peer.spin();
             did_work |= drain_transmits(peer, socket, poll, now);
-            peer.spin(now, &mut ep_callback, context, on_event, &self.banned);
+            peer.spin(
+                now,
+                &mut ep_callback,
+                context,
+                on_event,
+                &self.banned,
+                &mut self.rpc_codec_pool,
+            );
             // Send what spin produced this pass — a settled peer gets no
             // further visit to flush it.
             did_work |= drain_transmits(peer, socket, poll, now);
@@ -329,7 +338,7 @@ impl P2p {
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
         match context.gossip_consumer.acquire_strict(msg.into()) {
             Some(acquired) => match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
-                Some(peer) => peer.send_gossip(acquired),
+                Some(peer) => peer.send_gossip(acquired, &mut self.rpc_codec_pool),
                 None => SendResult::UnknownPeer,
             },
             None => SendResult::MessageDropped,
@@ -413,7 +422,7 @@ impl P2p {
     pub fn shutdown(&mut self) {
         let now = Instant::now();
         for peer in self.peers.values_mut() {
-            peer.shutdown(now);
+            peer.shutdown(now, &mut self.rpc_codec_pool);
         }
     }
 }

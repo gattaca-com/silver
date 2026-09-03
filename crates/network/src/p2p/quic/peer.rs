@@ -26,7 +26,10 @@ use crate::{
             leased::{Leased, OutboundLeaseWheel},
             stream::StreamIoImpl,
         },
-        streams::{AcquiredRpcOutbound, StreamError, StreamState},
+        streams::{
+            AcquiredRpcOutbound, RpcCodec, RpcCodecDirection, RpcCodecPool, StreamError,
+            StreamState,
+        },
         tls::peer_id_from_certificate,
     },
 };
@@ -150,12 +153,16 @@ impl Peer {
         .min();
     }
 
-    pub(crate) fn send_gossip(&mut self, msg: TRead) -> SendResult {
+    pub(crate) fn send_gossip(
+        &mut self,
+        msg: TRead,
+        rpc_codec_pool: &mut RpcCodecPool,
+    ) -> SendResult {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
         let now = Instant::now();
-        if self.check_outbound_delivery_timeout(now) {
+        if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return SendResult::ConnectionClosing;
         }
         self.dirty = true;
@@ -180,14 +187,18 @@ impl Peer {
         SendResult::StreamCreationError
     }
 
-    fn check_outbound_delivery_timeout(&mut self, now: Instant) -> bool {
+    fn check_outbound_delivery_timeout(
+        &mut self,
+        now: Instant,
+        rpc_codec_pool: &mut RpcCodecPool,
+    ) -> bool {
         if self.connection.is_closed() {
             self.outbound_lease_wheel.terminate();
             return false;
         }
         if let Some(retained) = self.outbound_lease_wheel.expire(now) {
             tracing::warn!(id = ?self.id, retained, "outbound gossip delivery timeout");
-            self.disconnect_on_stall(now);
+            self.disconnect_on_stall(now, rpc_codec_pool);
             return true;
         }
         false
@@ -250,22 +261,22 @@ impl Peer {
         self.streams.values().map(|s| s.out_buffer.len()).sum()
     }
 
-    pub(crate) fn shutdown(&mut self, now: Instant) {
+    pub(crate) fn shutdown(&mut self, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
         self.dirty = true;
         self.pending_shutdown = None;
         self.outbound_lease_wheel.terminate();
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
-        self.clear_streams();
+        self.clear_streams(rpc_codec_pool);
     }
 
     /// A stalled gossip stream costs the connection, not just the stream:
     /// reopening on the same connection spends one of rust-libp2p's five
     /// per-connection substream attempts, after which the remote disables
     /// gossipsub on it silently. A redial gives both sides a fresh budget.
-    fn disconnect_on_stall(&mut self, now: Instant) {
+    fn disconnect_on_stall(&mut self, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
         crate::NetworkCounters::GossipStallDisconnect.inc();
         tracing::warn!(id = ?self.id, "gossip stall: closing connection");
-        self.shutdown(now);
+        self.shutdown(now, rpc_codec_pool);
     }
 
     /// Drop every stream state — and the queued messages (and tcache
@@ -274,8 +285,12 @@ impl Peer {
     /// No per-stream `StreamClosed` events: the PM tears the peer down on
     /// disconnect, and a close event for an outgoing RPC would read as the
     /// peer abandoning a response.
-    fn clear_streams(&mut self) {
-        self.streams.clear();
+    fn clear_streams(&mut self, rpc_codec_pool: &mut RpcCodecPool) {
+        for (_, mut stream) in self.streams.drain() {
+            if let Some(codec) = stream.rpc_codec.take() {
+                rpc_codec_pool.release(codec);
+            }
+        }
         self.inbound_gossip = None;
         self.outbound_gossip = None;
     }
@@ -356,6 +371,7 @@ impl Peer {
         self.streams.insert(id, Stream {
             p2p_id,
             state: Cell::new(stream),
+            rpc_codec: None,
             out_buffer,
             needs_spin: true,
             setup_deadline: None,
@@ -381,6 +397,7 @@ impl Peer {
         context: &mut Context,
         on_event: &mut E,
         banned_peers: &FxHashSet<PeerId>,
+        rpc_codec_pool: &mut RpcCodecPool,
     ) where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
         E: FnMut(crate::NetEvent),
@@ -390,7 +407,7 @@ impl Peer {
         }
 
         if self.pending_shutdown.is_some_and(|(_, at)| now >= at) {
-            self.shutdown(now);
+            self.shutdown(now, rpc_codec_pool);
         }
 
         while let Some(ep_event) = self.connection.poll_endpoint_events() {
@@ -402,7 +419,7 @@ impl Peer {
         // Feeding datagrams to `Connection::handle_event` releases newly
         // ACKed send-buffer owners synchronously. Inspect and advance the
         // wheel now, before a queued Writable event can create another lease.
-        if self.check_outbound_delivery_timeout(now) {
+        if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return;
         }
 
@@ -468,10 +485,10 @@ impl Peer {
                         zombie,
                         "connection lost"
                     );
-                    self.clear_streams();
+                    self.clear_streams(rpc_codec_pool);
                 }
                 quinn_proto::Event::Stream(stream_event) => {
-                    self.handle_stream_event(stream_event, now, context, on_event);
+                    self.handle_stream_event(stream_event, now, context, rpc_codec_pool, on_event);
                 }
                 _ => {}
             }
@@ -493,14 +510,15 @@ impl Peer {
             &mut self.inbound_rpc_limits,
             &mut self.next_deadline,
             &mut self.inbound_gossip,
+            rpc_codec_pool,
             false,
             on_event,
         );
         for id in to_remove {
-            self.end_stream(id, now);
+            self.end_stream(id, now, rpc_codec_pool);
         }
         if stalled {
-            self.disconnect_on_stall(now);
+            self.disconnect_on_stall(now, rpc_codec_pool);
         }
 
         // Read-response timeouts only fire inside a spin; sweep everything
@@ -515,14 +533,15 @@ impl Peer {
                 &mut self.inbound_rpc_limits,
                 &mut self.next_deadline,
                 &mut self.inbound_gossip,
+                rpc_codec_pool,
                 true,
                 on_event,
             );
             for id in to_remove {
-                self.end_stream(id, now);
+                self.end_stream(id, now, rpc_codec_pool);
             }
             if stalled {
-                self.disconnect_on_stall(now);
+                self.disconnect_on_stall(now, rpc_codec_pool);
             }
         }
     }
@@ -534,6 +553,7 @@ impl Peer {
         id: StreamId,
         now: Instant,
         context: &mut Context,
+        rpc_codec_pool: &mut RpcCodecPool,
         on_event: &mut E,
     ) where
         E: FnMut(crate::NetEvent),
@@ -541,14 +561,20 @@ impl Peer {
         let Some(stream) = self.streams.get_mut(&id) else {
             return;
         };
-        let result =
-            stream.spin(&mut self.connection, context, now, &mut self.inbound_rpc_limits, on_event);
+        let result = stream.spin(
+            &mut self.connection,
+            context,
+            rpc_codec_pool,
+            now,
+            &mut self.inbound_rpc_limits,
+            on_event,
+        );
         if let SpinResult::Stalled = result {
-            self.disconnect_on_stall(now);
+            self.disconnect_on_stall(now, rpc_codec_pool);
             return;
         }
         if let SpinResult::End = result {
-            self.end_stream(id, now);
+            self.end_stream(id, now, rpc_codec_pool);
             return;
         }
 
@@ -573,6 +599,7 @@ impl Peer {
         event: quinn_proto::StreamEvent,
         now: Instant,
         context: &mut Context,
+        rpc_codec_pool: &mut RpcCodecPool,
         on_event: &mut E,
     ) where
         E: FnMut(crate::NetEvent),
@@ -591,6 +618,7 @@ impl Peer {
                     self.streams.insert(id, Stream {
                         p2p_id,
                         state: Cell::new(StreamState::new_inbound()),
+                        rpc_codec: None,
                         out_buffer: OutboundBuffer::Unset,
                         needs_spin: true,
                         setup_deadline: None,
@@ -606,7 +634,7 @@ impl Peer {
                 if let Some(stream) = self.streams.get_mut(&id) {
                     stream.last_activity = now;
                 }
-                self.spin_stream(id, now, context, on_event);
+                self.spin_stream(id, now, context, rpc_codec_pool, on_event);
             }
             quinn_proto::StreamEvent::Finished { id } => {
                 // This event is emitted after we call 'finish()' on the send side of
@@ -614,7 +642,7 @@ impl Peer {
                 tracing::debug!(?id, "send half finished");
                 // Goodbye acked: safe to hang up without dropping it.
                 if self.pending_shutdown.is_some_and(|(gid, _)| gid == id) {
-                    self.shutdown(now);
+                    self.shutdown(now, rpc_codec_pool);
                     return;
                 }
                 // Fully-served inbound stream: response acked, nothing left
@@ -626,7 +654,7 @@ impl Peer {
                     stream.is_complete() &&
                     stream.out_buffer.is_empty()
                 {
-                    self.remove_stream(id);
+                    self.remove_stream(id, rpc_codec_pool);
                 }
             }
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
@@ -644,8 +672,8 @@ impl Peer {
                         // There are no Goodbye bytes left to flush once the
                         // remote has stopped the send side. Tear down now
                         // instead of arming the delivery linger.
-                        self.remove_stream(id);
-                        self.shutdown(now);
+                        self.remove_stream(id, rpc_codec_pool);
+                        self.shutdown(now, rpc_codec_pool);
                         return;
                     }
 
@@ -653,11 +681,11 @@ impl Peer {
                         out_id == id
                     {
                         // peer has asked to stop receiving gossip
-                        self.remove_stream(id);
+                        self.remove_stream(id, rpc_codec_pool);
                         self.outbound_gossip.take();
                         on_event(NetEvent::StreamClosed { stream: p2p_id })
                     } else if ended {
-                        self.end_stream(id, now);
+                        self.end_stream(id, now, rpc_codec_pool);
                     }
                 }
             }
@@ -670,7 +698,7 @@ impl Peer {
     /// send, then hang up. Inbound goodbye streams don't shut down here;
     /// the PM owns that disconnect (and a rate-limit-dropped goodbye flood
     /// must not hand the flooder a connection close).
-    fn end_stream(&mut self, id: StreamId, now: Instant) {
+    fn end_stream(&mut self, id: StreamId, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
         if let Some(stream) = self.streams.get(&id) &&
             stream.p2p_id.protocol() == StreamProtocol::Goodbye &&
             !stream.p2p_id.is_incoming()
@@ -680,10 +708,10 @@ impl Peer {
                 .map_or(now + GOODBYE_LINGER, |(_, at)| at.min(now + GOODBYE_LINGER));
             self.pending_shutdown = Some((id, deadline));
         }
-        self.remove_stream(id);
+        self.remove_stream(id, rpc_codec_pool);
     }
 
-    fn remove_stream(&mut self, id: StreamId) {
+    fn remove_stream(&mut self, id: StreamId, rpc_codec_pool: &mut RpcCodecPool) {
         let _ = self.connection.send_stream(id).finish();
         let _ = self.connection.recv_stream(id).stop(VarInt::from_u32(0));
 
@@ -697,7 +725,11 @@ impl Peer {
         {
             self.outbound_gossip.take();
         }
-        self.streams.remove(&id);
+        if let Some(mut stream) = self.streams.remove(&id) &&
+            let Some(codec) = stream.rpc_codec.take()
+        {
+            rpc_codec_pool.release(codec);
+        }
     }
 }
 
@@ -710,6 +742,7 @@ fn spin_streams<E>(
     inbound_rpc_limits: &mut RpcRateLimitSet,
     next_deadline: &mut Option<Instant>,
     inbound_gossip: &mut Option<StreamId>,
+    rpc_codec_pool: &mut RpcCodecPool,
     all: bool,
     on_event: &mut E,
 ) -> (ArrayVec<StreamId, 64>, bool)
@@ -727,7 +760,8 @@ where
             break;
         }
 
-        let result = stream.spin(connection, context, now, inbound_rpc_limits, on_event);
+        let result =
+            stream.spin(connection, context, rpc_codec_pool, now, inbound_rpc_limits, on_event);
         if let SpinResult::Stalled = result {
             stalled = true;
             to_remove.push(*id);
@@ -806,6 +840,7 @@ fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
 struct Stream {
     p2p_id: P2pStreamId,
     state: Cell<StreamState>,
+    rpc_codec: Option<Box<RpcCodec>>,
     out_buffer: OutboundBuffer,
     /// Has work no quinn event re-drives: a tcache-alloc retry, or queued
     /// outbound msgs with the write side idle (mid-write parks are
@@ -833,6 +868,7 @@ impl Stream {
         &mut self,
         connection: &mut Connection,
         context: &mut Context,
+        rpc_codec_pool: &mut RpcCodecPool,
         now: Instant,
         inbound_rpc_limits: &mut RpcRateLimitSet,
         on_event: &mut E,
@@ -865,28 +901,48 @@ impl Stream {
         let was_negotiate = matches!(state, StreamState::Negotiate(_));
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
 
-        let result = state
-            .spin(&mut io, &mut self.p2p_id, context, now, inbound_rpc_limits, on_event)
-            .and_then(|state| {
-                // Negotiation completion transitions into a state that may
-                // already have work — request/response bytes to write, or
-                // surplus bytes quinn buffered past the capped negotiate
-                // read — with no event armed. Step the successor once.
+        let result = state.spin(
+            &mut io,
+            &mut self.p2p_id,
+            context,
+            self.rpc_codec.as_deref_mut(),
+            now,
+            inbound_rpc_limits,
+            on_event,
+        );
+        let result = match result {
+            // Negotiation completion transitions into a state that may
+            // already have work — request/response bytes to write, or
+            // surplus bytes quinn buffered past the capped negotiate
+            // read — with no event armed. Step the successor once.
+            Ok(state)
                 if was_negotiate &&
-                    !matches!(state, StreamState::Negotiate(_) | StreamState::Finished)
-                {
-                    state.spin(
-                        &mut io,
-                        &mut self.p2p_id,
-                        context,
-                        now,
-                        inbound_rpc_limits,
-                        on_event,
-                    )
-                } else {
-                    Ok(state)
+                    !matches!(state, StreamState::Negotiate(_) | StreamState::Finished) =>
+            {
+                if matches!(
+                    state,
+                    StreamState::IncomingRpc { .. } | StreamState::OutgoingRpc { .. }
+                ) {
+                    debug_assert!(self.rpc_codec.is_none());
+                    let direction = if self.p2p_id.is_incoming() {
+                        RpcCodecDirection::Incoming
+                    } else {
+                        RpcCodecDirection::Outgoing
+                    };
+                    self.rpc_codec = Some(rpc_codec_pool.acquire(direction));
                 }
-            });
+                state.spin(
+                    &mut io,
+                    &mut self.p2p_id,
+                    context,
+                    self.rpc_codec.as_deref_mut(),
+                    now,
+                    inbound_rpc_limits,
+                    on_event,
+                )
+            }
+            result => result,
+        };
 
         match result {
             Ok(StreamState::Finished) => {
@@ -1252,6 +1308,7 @@ mod tests {
     /// passed into `Peer::spin`.
     struct PeerHarness {
         context: Context,
+        rpc_codec_pool: RpcCodecPool,
         /// Tail-reads inbound gossip frames (the network's `gossip_producer`
         /// writes here).
         gossip_in_consumer: TConsumer,
@@ -1283,6 +1340,7 @@ mod tests {
                     rpc_consumer: rpc_out_c,
                     identify: None,
                 },
+                rpc_codec_pool: RpcCodecPool::default(),
                 gossip_in_consumer: gossip_in_c,
                 gossip_out_producer: gossip_out_p,
                 received: HashMap::new(),
@@ -1298,7 +1356,7 @@ mod tests {
             res.write_all(payload).unwrap();
             assert!(res.is_committed());
             let read = self.context.gossip_consumer.acquire(res.read());
-            peer.send_gossip(read);
+            peer.send_gossip(read, &mut self.rpc_codec_pool);
         }
 
         /// Pull all newly-arrived inbound frames out of the consumer and
@@ -1480,6 +1538,7 @@ mod tests {
                         &mut client_h.context,
                         client_on_event,
                         &FxHashSet::default(),
+                        &mut client_h.rpc_codec_pool,
                     );
                 }
                 {
@@ -1490,6 +1549,7 @@ mod tests {
                         &mut server_h.context,
                         server_on_event,
                         &FxHashSet::default(),
+                        &mut server_h.rpc_codec_pool,
                     );
                 }
 
@@ -1550,7 +1610,14 @@ mod tests {
             }
         };
 
-        client_peer.spin(t0, &mut cb, &mut client_h.context, &mut on_event, &FxHashSet::default());
+        client_peer.spin(
+            t0,
+            &mut cb,
+            &mut client_h.context,
+            &mut on_event,
+            &FxHashSet::default(),
+            &mut client_h.rpc_codec_pool,
+        );
         assert_eq!(client_peer.streams.len(), 1);
 
         client_peer.spin(
@@ -1559,6 +1626,7 @@ mod tests {
             &mut client_h.context,
             &mut on_event,
             &FxHashSet::default(),
+            &mut client_h.rpc_codec_pool,
         );
         assert_eq!(client_peer.streams.len(), 1);
         assert_eq!(closed.get(), 0);
@@ -1569,6 +1637,7 @@ mod tests {
             &mut client_h.context,
             &mut on_event,
             &FxHashSet::default(),
+            &mut client_h.rpc_codec_pool,
         );
         assert!(client_peer.streams.is_empty());
         assert_eq!(closed.get(), 1);
@@ -1586,6 +1655,7 @@ mod tests {
             quinn_proto::StreamEvent::Stopped { id: stream, error_code: VarInt::from_u32(0) },
             now,
             &mut client_h.context,
+            &mut client_h.rpc_codec_pool,
             &mut on_event,
         );
 
@@ -1605,6 +1675,7 @@ mod tests {
             quinn_proto::StreamEvent::Stopped { id: stream, error_code: VarInt::from_u32(0) },
             now,
             &mut client_h.context,
+            &mut client_h.rpc_codec_pool,
             &mut on_event,
         );
 
@@ -1635,13 +1706,16 @@ mod tests {
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         assert!(!pair.server_peer.streams.is_empty(), "server holds the inbound gossip stream");
 
-        pair.client_peer.shutdown(now);
+        pair.client_peer.shutdown(now, &mut client_h.rpc_codec_pool);
         assert!(pair.client_peer.streams.is_empty(), "local close drops streams at once");
         assert!(pair.client_peer.outbound_gossip.is_none());
         let mut res = client_h.gossip_out_producer.reserve(4, true).unwrap();
         res.write_all(b"late").unwrap();
         let late = client_h.context.gossip_consumer.acquire(res.read());
-        assert!(matches!(pair.client_peer.send_gossip(late), SendResult::ConnectionClosing));
+        assert!(matches!(
+            pair.client_peer.send_gossip(late, &mut client_h.rpc_codec_pool),
+            SendResult::ConnectionClosing
+        ));
         assert!(pair.client_peer.streams.is_empty(), "refused send opens nothing");
 
         let mut noop_c = |_: NetEvent| {};
@@ -1701,7 +1775,14 @@ mod tests {
         let PeerPair { server_ep, server_peer, .. } = &mut pair;
         let mut cb = |h, e| server_ep.handle_event(h, e);
         let mut on_event = |_: NetEvent| {};
-        server_peer.spin(t0, &mut cb, &mut server_h.context, &mut on_event, &FxHashSet::default());
+        server_peer.spin(
+            t0,
+            &mut cb,
+            &mut server_h.context,
+            &mut on_event,
+            &FxHashSet::default(),
+            &mut server_h.rpc_codec_pool,
+        );
 
         assert!(server_peer.connection.is_closed(), "stall must close the connection");
         assert!(server_peer.streams.is_empty(), "closing drops every stream");
@@ -1724,7 +1805,14 @@ mod tests {
         let PeerPair { client_ep, client_peer, .. } = &mut pair;
         let mut cb = |h, e| client_ep.handle_event(h, e);
         let mut on_event = |_: NetEvent| {};
-        client_peer.spin(now, &mut cb, &mut client_h.context, &mut on_event, &FxHashSet::default());
+        client_peer.spin(
+            now,
+            &mut cb,
+            &mut client_h.context,
+            &mut on_event,
+            &FxHashSet::default(),
+            &mut client_h.rpc_codec_pool,
+        );
 
         assert!(client_peer.connection.is_closed(), "delivery timeout must close the connection");
         assert!(client_peer.streams.is_empty(), "closing drops every stream");
@@ -1786,10 +1874,16 @@ mod tests {
             &mut server_h.context,
             &mut on_event,
             &FxHashSet::default(),
+            &mut server_h.rpc_codec_pool,
         );
         assert!(
             !server_peer.streams.values().any(|s| s.p2p_id.protocol() == StreamProtocol::Ping),
             "unanswered inbound rpc stream survived its timeout"
+        );
+        assert_eq!(
+            server_h.rpc_codec_pool.idle_len(),
+            1,
+            "timed-out rpc stream must return its codec"
         );
     }
 
@@ -2139,5 +2233,7 @@ mod tests {
             pair.server_peer.streams.is_empty(),
             "responder must close its stream after the final response chunk"
         );
+        assert_eq!(client_h.rpc_codec_pool.idle_len(), 1);
+        assert_eq!(server_h.rpc_codec_pool.idle_len(), 1);
     }
 }

@@ -38,11 +38,9 @@ pub enum StreamState {
     },
     IncomingRpc {
         rpc: RpcIn,
-        codec: Box<RpcCodec>,
     },
     OutgoingRpc {
         rpc: RpcOut,
-        codec: Box<RpcCodec>,
     },
     IncomingIdentify(WriteIdentifyResponse),
     OutgoingIdentify(ReadIdentifyResponse),
@@ -215,11 +213,13 @@ impl StreamState {
     }
 
     /// Step the stream state.
+    #[allow(clippy::too_many_arguments)]
     pub fn spin<S, F>(
         self,
         io: &mut S,
         id: &mut P2pStreamId,
         context: &mut Context,
+        codec: Option<&mut RpcCodec>,
         now: Instant,
         inbound_rpc_limits: &mut RpcRateLimitSet,
         emit: &mut F,
@@ -284,7 +284,6 @@ impl StreamState {
                                                     rpc: RpcIn::WriteResponse(
                                                         RpcWriteResponse::Idle,
                                                     ),
-                                                    codec: RpcCodec::incoming(),
                                                 })
                                             }
                                             InboundRpcAdmission::RateLimited => {
@@ -294,7 +293,6 @@ impl StreamState {
                                                             AcquiredRpcResponse::rate_limited(),
                                                         )?,
                                                     ),
-                                                    codec: RpcCodec::incoming(),
                                                 })
                                             }
                                             InboundRpcAdmission::Drop => {
@@ -305,7 +303,6 @@ impl StreamState {
                                     } else {
                                         Ok(Self::IncomingRpc {
                                             rpc: RpcIn::ReadRequest(RpcReadRequest::default()),
-                                            codec: RpcCodec::incoming(),
                                         })
                                     }
                                 } else {
@@ -319,7 +316,6 @@ impl StreamState {
                                         rpc: RpcOut::WriteRequest(RpcWriteRequest::new(
                                             app_id, request,
                                         )?),
-                                        codec: RpcCodec::outgoing(),
                                     })
                                 }
                             }
@@ -339,111 +335,123 @@ impl StreamState {
                     Ok(Self::Gossip { read, write })
                 }
             }
-            StreamState::IncomingRpc { rpc, mut codec } => match rpc {
-                RpcIn::ReadRequest(read_request) => {
-                    match read_request.spin(io, id, &mut context.rpc_producer, &mut codec.dec)? {
-                        RpcReadRequest::Complete { msg } => {
-                            match admit_inbound_rpc(inbound_rpc_limits, *id, &msg, now) {
-                                InboundRpcAdmission::Admit => {
-                                    emit(NetEvent::RpcInbound(RpcInbound::Request(
-                                        RpcRequestInbound { stream_id: *id, request: msg },
-                                    )));
-                                    Ok(Self::IncomingRpc {
-                                        rpc: RpcIn::WriteResponse(RpcWriteResponse::Idle),
-                                        codec,
-                                    })
-                                }
-                                InboundRpcAdmission::RateLimited => Ok(Self::IncomingRpc {
-                                    rpc: RpcIn::WriteResponse(RpcWriteResponse::new(
-                                        AcquiredRpcResponse::rate_limited(),
-                                    )?),
-                                    codec,
-                                }),
-                                InboundRpcAdmission::Drop => {
-                                    io.close_write(id.stream_id())?;
-                                    Ok(Self::Finished)
-                                }
-                            }
-                        }
-                        other => Ok(Self::IncomingRpc { rpc: RpcIn::ReadRequest(other), codec }),
-                    }
-                }
-                RpcIn::WriteResponse(mut write_response) => {
-                    write_response = write_response.spin(id, io, &mut codec.enc)?;
-                    if matches!(write_response, RpcWriteResponse::Done) {
-                        return Ok(Self::Finished);
-                    }
-                    Ok(Self::IncomingRpc { rpc: RpcIn::WriteResponse(write_response), codec })
-                }
-            },
-            StreamState::OutgoingRpc { rpc, mut codec } => match rpc {
-                RpcOut::WriteRequest(write_request) => {
-                    match write_request.spin(id, io, &mut codec.enc)? {
-                        RpcWriteRequest::Complete(app_id) => {
-                            // close write side
-                            io.close_write(id.stream_id())?;
-
-                            if id.protocol() == StreamProtocol::Goodbye {
-                                Ok(Self::Finished)
-                            } else {
-                                let read = RpcReadResponse::new(app_id, 0, now, &mut codec.dec);
-                                Ok(Self::OutgoingRpc { rpc: RpcOut::ReadResponse(read), codec })
-                            }
-                        }
-                        other => Ok(Self::OutgoingRpc { rpc: RpcOut::WriteRequest(other), codec }),
-                    }
-                }
-                RpcOut::ReadResponse(read_response) => {
-                    let mut read_response = read_response;
-                    loop {
-                        match read_response.spin(
+            StreamState::IncomingRpc { rpc } => {
+                let codec = codec.ok_or(StreamError::InvalidRpc)?;
+                match rpc {
+                    RpcIn::ReadRequest(read_request) => {
+                        match read_request.spin(
                             io,
                             id,
-                            now,
                             &mut context.rpc_producer,
                             &mut codec.dec,
                         )? {
-                            RpcReadResponse::Complete { app_id, chunk, msg } => {
-                                // For multipart, `RpcResponse::Complete` is the
-                                // synthetic terminator emitted on recv-EOF — at
-                                // that point the stream is done from our side
-                                // and re-arming `ReadingPrefix` would just hit
-                                // `ClosedStream` on the next poll, tripping the
-                                // spin error path and a spurious
-                                // `P2pStreamClosed` peer-score hit. Re-arm only
-                                // for non-terminator chunks; transition to
-                                // `Finished` on `Complete`/`Error`.
-                                let terminal = !id.protocol().has_multipart_response() ||
-                                    matches!(
-                                        msg,
-                                        RpcResponse::Complete | RpcResponse::Error { .. }
-                                    );
-                                emit(NetEvent::RpcInbound(RpcInbound::Response(
-                                    RpcResponseInbound {
-                                        application_id: app_id,
-                                        stream_id: *id,
-                                        response: msg,
-                                    },
-                                )));
-                                if terminal {
-                                    io.close_write(id.stream_id())?;
-                                    return Ok(Self::Finished);
+                            RpcReadRequest::Complete { msg } => {
+                                match admit_inbound_rpc(inbound_rpc_limits, *id, &msg, now) {
+                                    InboundRpcAdmission::Admit => {
+                                        emit(NetEvent::RpcInbound(RpcInbound::Request(
+                                            RpcRequestInbound { stream_id: *id, request: msg },
+                                        )));
+                                        Ok(Self::IncomingRpc {
+                                            rpc: RpcIn::WriteResponse(RpcWriteResponse::Idle),
+                                        })
+                                    }
+                                    InboundRpcAdmission::RateLimited => Ok(Self::IncomingRpc {
+                                        rpc: RpcIn::WriteResponse(RpcWriteResponse::new(
+                                            AcquiredRpcResponse::rate_limited(),
+                                        )?),
+                                    }),
+                                    InboundRpcAdmission::Drop => {
+                                        io.close_write(id.stream_id())?;
+                                        Ok(Self::Finished)
+                                    }
                                 }
-                                // Loop: the next chunk may already be buffered
-                                // in quinn with no further Readable coming.
-                                read_response =
-                                    RpcReadResponse::new(app_id, chunk + 1, now, &mut codec.dec);
                             }
-                            other => {
-                                return Ok(Self::OutgoingRpc {
-                                    rpc: RpcOut::ReadResponse(other),
-                                    codec,
-                                });
+                            other => Ok(Self::IncomingRpc { rpc: RpcIn::ReadRequest(other) }),
+                        }
+                    }
+                    RpcIn::WriteResponse(mut write_response) => {
+                        write_response = write_response.spin(id, io, &mut codec.enc)?;
+                        if matches!(write_response, RpcWriteResponse::Done) {
+                            return Ok(Self::Finished);
+                        }
+                        Ok(Self::IncomingRpc { rpc: RpcIn::WriteResponse(write_response) })
+                    }
+                }
+            }
+            StreamState::OutgoingRpc { rpc } => {
+                let codec = codec.ok_or(StreamError::InvalidRpc)?;
+                match rpc {
+                    RpcOut::WriteRequest(write_request) => {
+                        match write_request.spin(id, io, &mut codec.enc)? {
+                            RpcWriteRequest::Complete(app_id) => {
+                                // close write side
+                                io.close_write(id.stream_id())?;
+
+                                if id.protocol() == StreamProtocol::Goodbye {
+                                    Ok(Self::Finished)
+                                } else {
+                                    let read = RpcReadResponse::new(app_id, 0, now, &mut codec.dec);
+                                    Ok(Self::OutgoingRpc { rpc: RpcOut::ReadResponse(read) })
+                                }
+                            }
+                            other => Ok(Self::OutgoingRpc { rpc: RpcOut::WriteRequest(other) }),
+                        }
+                    }
+                    RpcOut::ReadResponse(read_response) => {
+                        let mut read_response = read_response;
+                        loop {
+                            match read_response.spin(
+                                io,
+                                id,
+                                now,
+                                &mut context.rpc_producer,
+                                &mut codec.dec,
+                            )? {
+                                RpcReadResponse::Complete { app_id, chunk, msg } => {
+                                    // For multipart, `RpcResponse::Complete` is the
+                                    // synthetic terminator emitted on recv-EOF — at
+                                    // that point the stream is done from our side
+                                    // and re-arming `ReadingPrefix` would just hit
+                                    // `ClosedStream` on the next poll, tripping the
+                                    // spin error path and a spurious
+                                    // `P2pStreamClosed` peer-score hit. Re-arm only
+                                    // for non-terminator chunks; transition to
+                                    // `Finished` on `Complete`/`Error`.
+                                    let terminal = !id.protocol().has_multipart_response() ||
+                                        matches!(
+                                            msg,
+                                            RpcResponse::Complete | RpcResponse::Error { .. }
+                                        );
+                                    emit(NetEvent::RpcInbound(RpcInbound::Response(
+                                        RpcResponseInbound {
+                                            application_id: app_id,
+                                            stream_id: *id,
+                                            response: msg,
+                                        },
+                                    )));
+                                    if terminal {
+                                        io.close_write(id.stream_id())?;
+                                        return Ok(Self::Finished);
+                                    }
+                                    // Loop: the next chunk may already be buffered
+                                    // in quinn with no further Readable coming.
+                                    read_response = RpcReadResponse::new(
+                                        app_id,
+                                        chunk + 1,
+                                        now,
+                                        &mut codec.dec,
+                                    );
+                                }
+                                other => {
+                                    return Ok(Self::OutgoingRpc {
+                                        rpc: RpcOut::ReadResponse(other),
+                                    });
+                                }
                             }
                         }
                     }
                 }
-            },
+            }
             StreamState::IncomingIdentify(incoming_identify) => {
                 match incoming_identify.spin(id, io)? {
                     WriteIdentifyResponse::Done => {
