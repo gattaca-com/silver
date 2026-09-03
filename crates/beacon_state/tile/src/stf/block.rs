@@ -542,7 +542,7 @@ fn apply_block_body(
         process_proposer_slashings(&mut *view, epoch, cfg, section)?;
     }
     if let Some(section) = offsets.attester_slashings() {
-        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch, slashed_sink)?;
+        process_attester_slashings(&mut *view, epoch, cfg, section, slashed_sink)?;
     }
     if let Some(section) = offsets.attestations() {
         process_attestations(

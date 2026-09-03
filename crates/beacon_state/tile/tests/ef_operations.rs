@@ -173,15 +173,7 @@ fn fulu_attester_slashing() {
             return false;
         }
         s.with_view_and_epoch(|view, e| {
-            stf::process_attester_slashings(
-                view,
-                *e,
-                &cfg,
-                &list,
-                &mut active_scratch,
-                &mut Vec::new(),
-            )
-            .is_ok()
+            stf::process_attester_slashings(view, *e, &cfg, &list, &mut Vec::new()).is_ok()
         })
     });
 }
