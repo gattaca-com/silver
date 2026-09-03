@@ -37,6 +37,8 @@ silver_common::declare_counters! {
         GossipMsgSkipped,
         // Gossip delivery or inbound read stalled — connection closed.
         GossipStallDisconnect,
+        // RPC codecs currently retained in the network-tile-wide free list.
+        RpcCodecPoolIdle,
     }
 }
 

@@ -27,6 +27,7 @@ pub(crate) struct RpcCodecPool {
 
 impl Default for RpcCodecPool {
     fn default() -> Self {
+        crate::NetworkCounters::RpcCodecPoolIdle.set(0);
         Self { idle: Vec::new(), max_idle: MAX_IDLE_RPC_CODECS }
     }
 }
@@ -34,6 +35,7 @@ impl Default for RpcCodecPool {
 impl RpcCodecPool {
     pub(crate) fn acquire(&mut self, direction: RpcCodecDirection) -> Box<RpcCodec> {
         let mut codec = self.idle.pop().unwrap_or_else(RpcCodec::allocate);
+        crate::NetworkCounters::RpcCodecPoolIdle.set(self.idle.len() as u64);
         codec.enc.reset();
         codec.dec.reset_for_direct(matches!(direction, RpcCodecDirection::Outgoing));
         codec
@@ -42,6 +44,7 @@ impl RpcCodecPool {
     pub(crate) fn release(&mut self, codec: Box<RpcCodec>) {
         if self.idle.len() < self.max_idle {
             self.idle.push(codec);
+            crate::NetworkCounters::RpcCodecPoolIdle.set(self.idle.len() as u64);
         }
     }
 
