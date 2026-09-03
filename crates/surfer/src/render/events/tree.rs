@@ -55,13 +55,12 @@ impl Group {
         }
     }
 
-    /// The group whose children unfold under this row. The column list sits
-    /// below both data rows, being the arrivals the gate and custody are two
-    /// ends of.
+    /// The group whose children unfold under this row. Both data rows open
+    /// the column list, being the arrivals the gate and custody are two ends
+    /// of; it unfolds under the lower one.
     fn unfolding_after(span: Span) -> Option<Self> {
         match span {
             Span::Da(DaSpan::Root) => None,
-            Span::Da(DaSpan::Custody) => Some(Self::Da),
             _ => span.spec().opens,
         }
     }
@@ -88,12 +87,8 @@ impl Span {
         }
     }
 
-    /// Custody folds the column list it heads, not the block.
     fn parent(self) -> Option<Group> {
-        match self {
-            Self::Da(DaSpan::Custody) => Some(Group::Da),
-            _ => Group::WITH_SPANS.into_iter().find(|g| g.children().contains(&self)),
-        }
+        Group::WITH_SPANS.into_iter().find(|g| g.children().contains(&self))
     }
 
     fn hidden(self, trace: &BlockTrace) -> bool {
@@ -109,7 +104,7 @@ impl DaSpan {
     fn spec(self) -> SpanSpec {
         match self {
             Self::Root => SpanSpec::new("data available", Some(Group::Da)),
-            Self::Custody => SpanSpec::new("custody", None),
+            Self::Custody => SpanSpec::new("custody", Some(Group::Da)),
             Self::Cols(source) => SpanSpec::new(cols_label(source), Some(Group::Cols(source))),
         }
     }
@@ -380,7 +375,7 @@ mod tests {
         ]);
         assert_eq!(display[1].depth, 1);
         assert_eq!(display[2].depth, 1, "custody sits beside data available");
-        assert_eq!(display[2].fold, Fold::Leaf, "custody carries no fold marker");
+        assert_eq!(display[2].fold, Fold::Open, "custody carries the same fold marker");
         assert_eq!(display[3].depth, 2, "the column list unfolds under custody");
         assert_eq!(display[3].fold, Fold::Closed, "an unopened group");
         assert_eq!(display[5].fold, Fold::Leaf, "validate is a leaf");
@@ -419,8 +414,7 @@ mod tests {
             Node::Span(cols(ColumnSource::Gossip))
         );
         let custody = Node::Span(Span::Da(DaSpan::Custody));
-        assert_eq!(custody.opens(), None, "custody is a leaf");
-        assert_eq!(custody.parent(&block), Some(Group::Da), "but folds the column list it heads");
+        assert_eq!(custody.opens(), Some(Group::Da), "custody opens the column list it heads");
     }
 
     /// Columns validated together fold into one batch row; a lone column

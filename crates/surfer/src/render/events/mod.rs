@@ -31,7 +31,7 @@ mod line;
 mod theme;
 mod tree;
 
-const TITLE: &str = "block pipeline: arrival → attestable, ms into slot";
+const TITLE: &str = "block pipeline: arrival → attestable";
 
 pub struct EventsPane {
     data: Events,
