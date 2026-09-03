@@ -23,6 +23,8 @@ use crate::discovery::CounterFile;
 pub const BUCKET_SECS: u64 = 1;
 /// 1 s bucket × 240 = 4 minutes of history.
 pub const BUCKET_HISTORY_LEN: usize = 240;
+/// 10 ticks (100 ms) per 1 s bucket — same 4-minute span as the bucket ring.
+pub const TICK_HISTORY_LEN: usize = BUCKET_HISTORY_LEN * 10;
 /// Per-consumer name buffer size (matches
 /// `silver_common::spine::tcache::metrics::NAME_LEN`).
 const CONSUMER_NAME_LEN: usize = 32;
@@ -57,6 +59,9 @@ pub struct CounterSet {
     /// Per-slot ring of absolute values sampled at each bucket close —
     /// drives the drill-in value chart.
     pub value_history: Vec<VecDeque<u64>>,
+    /// Per-slot ring of per-tick (100 ms) deltas — drives the drill-in
+    /// delta chart alongside `history`.
+    pub tick_history: Vec<VecDeque<u64>>,
     /// `false` until the first `sample()` call. The first sample
     /// primes `previous` and `bucket_start` so initial deltas start
     /// at 0 rather than a wraparound (matters for slots initialised
@@ -118,6 +123,7 @@ impl CounterSet {
             value_history: (0..slot_count)
                 .map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN))
                 .collect(),
+            tick_history: (0..slot_count).map(|_| VecDeque::new()).collect(),
             primed: false,
         })
     }
@@ -159,6 +165,20 @@ impl CounterSet {
             self.previous.copy_from_slice(&self.current);
             self.bucket_start.copy_from_slice(&self.current);
             self.primed = true;
+        }
+        for i in 0..self.slot_count {
+            // Same sentinel handling as `roll_bucket`; gauge decrements
+            // wrap negative deltas through the u64, matching `history`.
+            let delta = if self.current[i] == u64::MAX || self.previous[i] == u64::MAX {
+                0
+            } else {
+                self.current[i].wrapping_sub(self.previous[i])
+            };
+            let t = &mut self.tick_history[i];
+            if t.len() == TICK_HISTORY_LEN {
+                t.pop_front();
+            }
+            t.push_back(delta);
         }
     }
 

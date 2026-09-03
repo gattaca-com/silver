@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::{
     app::App,
-    render::fmt::{delta_span, fmt_span_ago, fmt_u64},
+    render::fmt::{delta_span, fmt_secs_ago, fmt_signed, fmt_span_ago, fmt_u64},
 };
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if app.drilled_in {
-        draw_chart(f, area, app);
+        draw_delta_chart(f, area, app);
         return;
     }
     // Vertical split: counter list on top, plot below. Split ratio
@@ -163,7 +163,6 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
 
     let datasets = vec![
         Dataset::default()
-            .name("value")
             .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Cyan))
             .graph_type(GraphType::Line)
@@ -186,6 +185,102 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         .x_axis(
             Axis::default()
                 .bounds([0.0, x_max])
+                .labels(x_labels)
+                .style(Style::default().fg(Color::DarkGray)),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([y_min, y_max])
+                .labels(y_labels)
+                .style(Style::default().fg(Color::DarkGray)),
+        );
+    f.render_widget(chart, area);
+}
+
+fn draw_delta_chart(f: &mut Frame, area: Rect, app: &mut App) {
+    const TICK_SECS: f64 = 0.1;
+
+    let (set_idx, slot_idx) = app.counters_selection;
+    let Some(set) = app.counters.get(set_idx) else {
+        f.render_widget(Block::default().borders(Borders::ALL).title(" deltas "), area);
+        return;
+    };
+    let label = set.slot_names.get(slot_idx).map(String::as_str).unwrap_or("?");
+    let (Some(ticks), Some(buckets)) = (set.tick_history.get(slot_idx), set.history.get(slot_idx))
+    else {
+        f.render_widget(Block::default().borders(Borders::ALL).title(" deltas "), area);
+        return;
+    };
+    let m = ticks.len();
+    let n = buckets.len();
+    let bucket_secs = crate::sources::counters::BUCKET_SECS as f64;
+
+    // Rings store signed deltas wrapped through the u64 (gauge
+    // decrements); cast back via i64 so they plot below zero instead
+    // of as 1.8e19 spikes.
+    let tick_data: Vec<(f64, f64)> = ticks
+        .iter()
+        .enumerate()
+        .map(|(j, &v)| (((j + 1) as f64 - m as f64) * TICK_SECS, v as i64 as f64))
+        .collect();
+    let bucket_data: Vec<(f64, f64)> = buckets
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (((i + 1) as f64 - n as f64) * bucket_secs, v as i64 as f64))
+        .collect();
+
+    let span_secs = (m as f64 * TICK_SECS).max(n as f64 * bucket_secs);
+    let span_label = if m == 0 && n == 0 {
+        "no samples yet".to_string()
+    } else {
+        format!("{} → now", fmt_secs_ago(span_secs.round() as u64))
+    };
+    let title = format!(" {} / {label} — deltas — {span_label} ", set.name);
+    let block = Block::default().borders(Borders::ALL).title(title);
+    if m == 0 && n == 0 {
+        f.render_widget(block, area);
+        return;
+    }
+
+    let ys = tick_data.iter().chain(&bucket_data).map(|&(_, y)| y);
+    let data_lo = ys.clone().fold(0.0f64, f64::min);
+    let data_hi = ys.fold(0.0f64, f64::max);
+    let pad = ((data_hi - data_lo) * 0.05).max(1.0);
+    let y_min = if data_lo < 0.0 { data_lo - pad } else { 0.0 };
+    let y_max = data_hi + pad;
+    let x_min = -span_secs.max(bucket_secs);
+
+    let datasets = vec![
+        Dataset::default()
+            .name("Δ 100ms")
+            .marker(symbols::Marker::Braille)
+            .style(Style::default().fg(Color::Yellow))
+            .graph_type(GraphType::Line)
+            .data(&tick_data),
+        Dataset::default()
+            .name("Δ 1s")
+            .marker(symbols::Marker::Braille)
+            .style(Style::default().fg(Color::Cyan))
+            .graph_type(GraphType::Line)
+            .data(&bucket_data),
+    ];
+
+    let x_labels = vec![
+        Line::from(format!("-{}", fmt_secs_ago(-x_min as u64))),
+        Line::from(format!("-{}", fmt_secs_ago((-x_min / 2.0) as u64))),
+        Line::from("now"),
+    ];
+    let y_labels = vec![
+        Line::from(fmt_signed(y_min.round() as i64)),
+        Line::from(fmt_signed(((y_min + y_max) / 2.0).round() as i64)),
+        Line::from(fmt_signed(y_max.round() as i64)),
+    ];
+
+    let chart = Chart::new(datasets)
+        .block(block)
+        .x_axis(
+            Axis::default()
+                .bounds([x_min, 0.0])
                 .labels(x_labels)
                 .style(Style::default().fg(Color::DarkGray)),
         )
