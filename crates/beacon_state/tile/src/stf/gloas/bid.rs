@@ -14,7 +14,6 @@ use crate::{
     error::ExecutionPayloadBidError as E,
     ssz_hash_gloas::hash_execution_payload_bid,
     stf::get_beacon_proposer_index,
-    tile::get_blob_parameters,
 };
 
 /// Record the block's execution payload bid. The bid's
@@ -53,9 +52,7 @@ pub fn process_execution_payload_bid(
         }
     }
 
-    let max_blobs =
-        get_blob_parameters(current_epoch, &cfg.blob_schedule, cfg.default_blob_params())
-            .max_blobs_per_block as usize;
+    let max_blobs = cfg.blob_params_at(current_epoch).max_blobs_per_block as usize;
     if bid.blob_kzg_commitments.len() > max_blobs {
         return Err(E::TooManyBlobCommitments {
             got: bid.blob_kzg_commitments.len(),

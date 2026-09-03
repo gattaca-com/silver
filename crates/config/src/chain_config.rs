@@ -17,6 +17,8 @@ pub struct ChainConfig {
     #[serde(default)]
     pub checkpoint_pubkeys_file: Option<String>,
     #[serde(default)]
+    pub spec_file: Option<String>,
+    #[serde(default)]
     pub bootstrap_enrs: Vec<Enr>,
     #[serde(default)]
     pub spec: SpecConfig,
@@ -29,6 +31,7 @@ impl Default for ChainConfig {
             prepare_payload_lookahead_millis: 4000,
             checkpoint_file: None,
             checkpoint_pubkeys_file: None,
+            spec_file: None,
             bootstrap_enrs: vec![],
             spec: SpecConfig::mainnet(),
         }
@@ -36,9 +39,8 @@ impl Default for ChainConfig {
 }
 
 impl ChainConfig {
-    /// Single source of truth: `spec.seconds_per_slot` × 1s.
     pub fn slot_duration(&self) -> Duration {
-        Duration::from_secs(self.spec.seconds_per_slot)
+        Duration::from_millis(self.spec.slot_duration_ms())
     }
 
     pub fn playload_lookahead(&self) -> Duration {

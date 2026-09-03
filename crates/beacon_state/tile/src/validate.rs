@@ -175,7 +175,7 @@ pub fn validate_execution_payload(
         });
     }
 
-    let expected_timestamp = view.imm.genesis_time + block_slot * cfg.seconds_per_slot;
+    let expected_timestamp = view.imm.genesis_time + block_slot * cfg.seconds_per_slot();
     let got_timestamp = ExecutionPayloadView::timestamp(payload);
     if got_timestamp != expected_timestamp {
         return Err(ExecutionPayloadError::TimestampMismatch {

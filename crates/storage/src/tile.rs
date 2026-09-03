@@ -455,7 +455,7 @@ impl Tile<SilverSpine> for StorageTile {
         let spec = &*self.spec;
         let gvr = self.genesis_validators_root;
         let fork_digest_at = move |slot: u64| match gvr {
-            Some(gvr) => column_util::fork_digest_at(spec, slot, &gvr),
+            Some(gvr) => spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &gvr),
             None => [0u8; 4],
         };
         if let Err(e) = self.store.file_io(

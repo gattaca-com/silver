@@ -30,7 +30,7 @@ silver_storage.workspace = true
 criterion.workspace = true
 rand.workspace = true
 serde = { version = "1", features = ["derive"] }
-serde_yml = "0.0.12"
+serde_yml.workspace = true
 snap = "0.1"
 
 [[bench]]

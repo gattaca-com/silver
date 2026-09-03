@@ -1,4 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
+use silver_ssz::{
+    merkle::{B256, sha256},
+    ssz_hash::hash_tree_root_fork_data,
+};
 
 const fn default_u64<const V: u64>() -> u64 {
     V
@@ -188,9 +192,14 @@ pub struct SpecConfig {
     pub deposit_network_id: u64,
     #[serde(default = "default_deposit_contract_address", with = "hex_0x")]
     pub deposit_contract_address: [u8; 20],
-    /// Seconds per beacon chain slot. 12 mainnet; testnets may use shorter.
-    #[serde(default = "default_u64::<12>")]
-    pub seconds_per_slot: u64,
+    /// Slot length, in whichever of the two spellings the network's config
+    /// uses: `SECONDS_PER_SLOT` is the older one, `SLOT_DURATION_MS` the one
+    /// ethereum-package now generates. Read them through `seconds_per_slot()`
+    /// and `slot_duration_ms()`, which agree whichever was written.
+    #[serde(default)]
+    pub seconds_per_slot: Option<u64>,
+    #[serde(default)]
+    pub slot_duration_ms: Option<u64>,
     /// Eth1 following parameters. Silver follows no eth1 deposit stream, so
     /// nothing here is used; they are carried so a client can tell which eth1
     /// chain the network it joined votes on.
@@ -343,6 +352,42 @@ impl SpecConfig {
             epoch: self.electra_fork_epoch,
             max_blobs_per_block: self.max_blobs_per_block_electra,
         }
+    }
+
+    pub fn seconds_per_slot(&self) -> u64 {
+        self.seconds_per_slot.unwrap_or_else(|| self.slot_duration_ms.unwrap_or(12_000) / 1000)
+    }
+
+    pub fn slot_duration_ms(&self) -> u64 {
+        self.slot_duration_ms.unwrap_or_else(|| self.seconds_per_slot.unwrap_or(12) * 1000)
+    }
+
+    /// Spec `get_blob_parameters`: the highest `blob_schedule` entry at or
+    /// below `epoch`, and `default_blob_params` when none covers it.
+    pub fn blob_params_at(&self, epoch: u64) -> BlobParameters {
+        for entry in self.blob_schedule.iter().rev() {
+            if epoch >= entry.epoch {
+                return *entry;
+            }
+        }
+        self.default_blob_params()
+    }
+
+    /// Spec `compute_fork_digest`, including the Fulu EIP-7892 mix of the
+    /// active `BLOB_SCHEDULE` entry. Pre-Fulu the digest is the plain
+    /// fork-data root, which no blob schedule can alter.
+    pub fn fork_digest_at(&self, epoch: u64, genesis_validators_root: &B256) -> [u8; 4] {
+        let base = hash_tree_root_fork_data(self.fork_version_at(epoch), genesis_validators_root);
+        if self.fork_at(epoch) < ForkName::Fulu {
+            return base[..4].try_into().unwrap();
+        }
+
+        let bp = self.blob_params_at(epoch);
+        let mut input = [0u8; 16];
+        input[..8].copy_from_slice(&bp.epoch.to_le_bytes());
+        input[8..].copy_from_slice(&bp.max_blobs_per_block.to_le_bytes());
+        let mix = sha256(&input);
+        [base[0] ^ mix[0], base[1] ^ mix[1], base[2] ^ mix[2], base[3] ^ mix[3]]
     }
 
     pub fn fork_at(&self, epoch: u64) -> ForkName {
@@ -527,7 +572,8 @@ impl SpecConfig {
             deposit_chain_id: 560048,
             deposit_network_id: 560048,
             deposit_contract_address: default_deposit_contract_address(),
-            seconds_per_slot: 12,
+            seconds_per_slot: None,
+            slot_duration_ms: None,
             seconds_per_eth1_block: 12,
             eth1_follow_distance: 2048,
             // Identical to mainnet preset / config below this line.
@@ -584,7 +630,8 @@ impl SpecConfig {
             deposit_chain_id: 1,
             deposit_network_id: 1,
             deposit_contract_address: default_deposit_contract_address(),
-            seconds_per_slot: 12,
+            seconds_per_slot: None,
+            slot_duration_ms: None,
             seconds_per_eth1_block: 14,
             eth1_follow_distance: 2048,
             shard_committee_period: 256,
@@ -905,5 +952,133 @@ mod tests {
     fn a_miscased_name_still_disagrees_with_its_fork_version() {
         let spec = SpecConfig { config_name: Some("Mainnet".to_owned()), ..SpecConfig::mainnet() };
         assert_eq!(spec.misnamed_network(), Some("mainnet"));
+    }
+
+    /// EF `compute_fork_digest` vectors: the schedule entry active at each
+    /// epoch mixes into the digest, so a BPO boundary changes it while the
+    /// fork version stays put.
+    #[test]
+    fn ef_fork_digest_vectors() {
+        let v6 = [0x06, 0x00, 0x00, 0x00];
+        let v61 = [0x06, 0x00, 0x00, 0x01];
+        let v7 = [0x07, 0x00, 0x00, 0x00];
+        let v71 = [0x07, 0x00, 0x00, 0x01];
+
+        let cases: &[(u64, [u8; 4], B256, [u8; 4])] = &[
+            (9, v6, [0; 32], [0xab, 0x3a, 0xe6, 0xc8]),
+            (10, v6, [0; 32], [0xab, 0x3a, 0xe6, 0xc8]),
+            (11, v6, [0; 32], [0xab, 0x3a, 0xe6, 0xc8]),
+            (99, v6, [0; 32], [0xab, 0x3a, 0xe6, 0xc8]),
+            (100, v6, [0; 32], [0xdf, 0x67, 0x55, 0x7b]),
+            (101, v6, [0; 32], [0xdf, 0x67, 0x55, 0x7b]),
+            (150, v6, [0; 32], [0x8a, 0xb3, 0x8b, 0x59]),
+            (199, v6, [0; 32], [0x8a, 0xb3, 0x8b, 0x59]),
+            (200, v6, [0; 32], [0xd9, 0xb8, 0x14, 0x38]),
+            (201, v6, [0; 32], [0xd9, 0xb8, 0x14, 0x38]),
+            (250, v6, [0; 32], [0x4e, 0xf3, 0x2a, 0x62]),
+            (299, v6, [0; 32], [0x4e, 0xf3, 0x2a, 0x62]),
+            (300, v6, [0; 32], [0xca, 0x10, 0x0d, 0x64]),
+            (301, v6, [0; 32], [0xca, 0x10, 0x0d, 0x64]),
+            (9, v6, [1; 32], [0x89, 0x67, 0x11, 0x11]),
+            (9, v6, [2; 32], [0xf4, 0x9b, 0x0e, 0x24]),
+            (9, v6, [3; 32], [0x86, 0x54, 0x4e, 0x4f]),
+            (100, v6, [1; 32], [0xfd, 0x3a, 0xa2, 0xa2]),
+            (100, v6, [2; 32], [0x80, 0xc6, 0xbd, 0x97]),
+            (100, v6, [3; 32], [0xf2, 0x09, 0xfd, 0xfc]),
+            (9, v61, [0; 32], [0x30, 0xf8, 0xc2, 0x5b]),
+            (9, v7, [0; 32], [0x04, 0x32, 0xf5, 0xa9]),
+            (9, v71, [0; 32], [0x6e, 0x69, 0xa6, 0x71]),
+            (100, v61, [0; 32], [0x44, 0xa5, 0x71, 0xe8]),
+            (100, v7, [0; 32], [0x70, 0x6f, 0x46, 0x1a]),
+            (100, v71, [0; 32], [0x1a, 0x34, 0x15, 0xc2]),
+        ];
+
+        for (epoch, fork_version, gvr, expected) in cases {
+            let spec = SpecConfig {
+                fulu_fork_epoch: 0,
+                fulu_fork_version: *fork_version,
+                gloas_fork_epoch: unscheduled(),
+                blob_schedule: vec![
+                    BlobParameters { epoch: 9, max_blobs_per_block: 9 },
+                    BlobParameters { epoch: 100, max_blobs_per_block: 100 },
+                    BlobParameters { epoch: 150, max_blobs_per_block: 175 },
+                    BlobParameters { epoch: 200, max_blobs_per_block: 200 },
+                    BlobParameters { epoch: 250, max_blobs_per_block: 275 },
+                    BlobParameters { epoch: 300, max_blobs_per_block: 300 },
+                ],
+                ..SpecConfig::mainnet()
+            };
+            let got = spec.fork_digest_at(*epoch, gvr);
+            assert_eq!(
+                got, *expected,
+                "epoch={epoch} fork_version={fork_version:02x?} gvr[0]={:#04x}",
+                gvr[0]
+            );
+        }
+    }
+
+    const MAINNET_GVR: B256 = [
+        0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f, 0xdd,
+        0x4e, 0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f, 0x51, 0x1b,
+        0xfe, 0x95,
+    ];
+
+    #[test]
+    fn mainnet_fulu_fork_digest_at_419072() {
+        let spec = SpecConfig::mainnet();
+        assert_eq!(spec.blob_params_at(419072), BlobParameters {
+            epoch: 419072,
+            max_blobs_per_block: 21
+        });
+        assert_eq!(spec.fork_digest_at(419072, &MAINNET_GVR), [0x8c, 0x9f, 0x62, 0xfe]);
+    }
+
+    /// A range/root request spanning the Gloas boundary must tag pre- and
+    /// post-fork chunks with different context digests.
+    #[test]
+    fn fork_digest_differs_across_the_gloas_boundary() {
+        let spec = SpecConfig { gloas_fork_epoch: 10, ..SpecConfig::mainnet() };
+        assert_ne!(spec.fork_digest_at(9, &MAINNET_GVR), spec.fork_digest_at(10, &MAINNET_GVR));
+    }
+
+    /// Pre-Fulu the digest is the plain fork-data root: EIP-7892's blob mix
+    /// starts at Fulu, so no schedule entry may reach an earlier epoch.
+    #[test]
+    fn a_pre_fulu_digest_carries_no_blob_mix() {
+        let spec = SpecConfig { fulu_fork_epoch: 100, ..SpecConfig::mainnet() };
+        let epoch = 99;
+        let expected: [u8; 4] = hash_tree_root_fork_data(spec.fork_version_at(epoch), &MAINNET_GVR)
+            [..4]
+            .try_into()
+            .unwrap();
+        assert_eq!(spec.fork_digest_at(epoch, &MAINNET_GVR), expected);
+    }
+
+    /// ethereum-package's generator writes `SLOT_DURATION_MS` and no
+    /// `SECONDS_PER_SLOT`; older configs write only the latter. Both spellings
+    /// have to reach the ticker, or a devnet's slot length silently becomes
+    /// mainnet's.
+    #[test]
+    fn either_spelling_of_the_slot_length_is_read() {
+        let ms: SpecConfig = toml::from_str("SLOT_DURATION_MS = 6000").unwrap();
+        assert_eq!(ms.seconds_per_slot(), 6);
+        assert_eq!(ms.slot_duration_ms(), 6000);
+
+        let secs: SpecConfig = toml::from_str("SECONDS_PER_SLOT = 6").unwrap();
+        assert_eq!(secs.seconds_per_slot(), 6);
+        assert_eq!(secs.slot_duration_ms(), 6000);
+
+        let neither: SpecConfig = toml::from_str("").unwrap();
+        assert_eq!(neither.seconds_per_slot(), 12);
+        assert_eq!(neither.slot_duration_ms(), 12_000);
+    }
+
+    /// A sub-second slot has no whole-second spelling, so the millisecond
+    /// value is the one the ticker must use.
+    #[test]
+    fn a_sub_second_slot_survives_as_milliseconds() {
+        let spec: SpecConfig = toml::from_str("SLOT_DURATION_MS = 500").unwrap();
+        assert_eq!(spec.slot_duration_ms(), 500);
+        assert_eq!(spec.seconds_per_slot(), 0, "no whole second to report");
     }
 }

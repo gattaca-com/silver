@@ -6,8 +6,8 @@ use flux::{
 };
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, BlobParameters,
-    Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
+    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch,
+    SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic,
@@ -21,7 +21,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 use crate::{
     bls,
     fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
-    merkle, ssz_hash, stf,
+    ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots, orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
@@ -372,9 +372,7 @@ impl BeaconStateTile {
         }
 
         let gvr = self.state.state().immutable.genesis_validators_root;
-        let bp =
-            get_blob_parameters(epoch, &self.spec.blob_schedule, self.spec.default_blob_params());
-        let d = compute_fork_digest(self.spec.fork_version_at(epoch), &gvr, Some(bp));
+        let d = self.spec.fork_digest_at(epoch, &gvr);
         self.cached_fork_digest = Some((epoch, d));
         d
     }
@@ -790,40 +788,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// Spec gossip rule: `aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >=
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
-
-/// Spec `compute_fork_digest` (Fulu EIP-7892). `blob_parameters` is `None`
-/// pre-Fulu, `Some` from Fulu onward — the active BLOB_SCHEDULE entry.
-fn compute_fork_digest(
-    fork_version: Version,
-    genesis_validators_root: &B256,
-    blob_parameters: Option<BlobParameters>,
-) -> [u8; 4] {
-    let base = ssz_hash::hash_tree_root_fork_data(fork_version, genesis_validators_root);
-    let Some(bp) = blob_parameters else {
-        return base[..4].try_into().unwrap();
-    };
-    let mut input = [0u8; 16];
-    input[..8].copy_from_slice(&bp.epoch.to_le_bytes());
-    input[8..].copy_from_slice(&bp.max_blobs_per_block.to_le_bytes());
-    let mix = merkle::sha256(&input);
-    [base[0] ^ mix[0], base[1] ^ mix[1], base[2] ^ mix[2], base[3] ^ mix[3]]
-}
-
-/// Spec `get_blob_parameters`. `schedule` must be sorted ascending by epoch;
-/// `default` is `BlobParameters(ELECTRA_FORK_EPOCH,
-/// MAX_BLOBS_PER_BLOCK_ELECTRA)`.
-pub(crate) fn get_blob_parameters(
-    epoch: Epoch,
-    schedule: &[BlobParameters],
-    default: BlobParameters,
-) -> BlobParameters {
-    for entry in schedule.iter().rev() {
-        if epoch >= entry.epoch {
-            return *entry;
-        }
-    }
-    default
-}
 
 #[cfg(test)]
 mod tests;

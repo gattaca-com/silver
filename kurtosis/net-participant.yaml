@@ -1,0 +1,74 @@
+# Kurtosis ethereum-package args for a devnet in which silver is a
+# PARTICIPANT, not a host process:
+#
+#   kurtosis run github.com/ninaiiad/ethereum-package@ng/silver-cl \
+#     --args-file kurtosis/net-participant.yaml \
+#     --enclave silver-participant --image-download always
+
+participants:
+  # silver first, so it is the enclave's bootnode and every other CL is handed
+  # its ENR. validator_count 0 because silver attests nothing: its share of the
+  # validator set would otherwise be assigned and then never vote, and the
+  # chain would struggle to finalize.
+  - el_type: reth
+    cl_type: silver
+    # Drop this once the docker workflow publishes: the launcher already
+    # defaults to ghcr.io/gattaca-com/silver:latest. Keep it to test a local
+    # build.
+    cl_image: silver:local
+    validator_count: 0
+    cl_extra_env_vars:
+      RUST_LOG: "info,silver_network=info,silver_peer=info"
+
+  # Images are pinned to the ethpandaops builds that track ethereum-package's
+  # own HEAD, because that is the only checkout this file can run against.
+  # `ethereum/client-go:latest` and `sigp/lighthouse:latest` both reject the
+  # genesis HEAD's generator produces (geth: `missing entry for fork "osaka"
+  # in blobSchedule`; lighthouse: `missing field SECONDS_PER_SLOT`, since the
+  # generator now writes SLOT_DURATION_MS instead).
+  - el_type: geth
+    el_image: ethpandaops/geth:master
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+  - el_type: reth
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+  - el_type: nethermind
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+
+network_params:
+  preset: mainnet
+  seconds_per_slot: 12
+  # Full custody on every node, so a non-custodying participant like silver can
+  # always source the columns a Fulu block needs. See net.yaml.
+  num_validator_keys_per_node: 128
+  # silver waits for genesis rather than starting pre-genesis, so the delay
+  # only has to cover image pulls and EL init.
+  genesis_delay: 60
+  deneb_fork_epoch: 0
+  electra_fork_epoch: 0
+  fulu_fork_epoch: 0
+
+global_log_level: debug
+
+additional_services:
+  - dora
+  - spamoor
+
+spamoor_params:
+  spammers:
+    - scenario: blobs
+      name: blob-spammer
+      config:
+        throughput: 2
+        sidecars: 3
