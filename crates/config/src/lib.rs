@@ -13,7 +13,8 @@ use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_chain_spec::ForkName;
 use silver_common::{
-    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH, SUBNETS_PER_NODE, SYNC_COMMITTEE_SUBNETS
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
+    SUBNETS_PER_NODE, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
