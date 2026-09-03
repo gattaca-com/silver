@@ -1,4 +1,10 @@
-use std::{error::Error, net::IpAddr, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    error::Error,
+    net::IpAddr,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use flux::{
     tile::{TileConfig, attach_tile},
@@ -33,6 +39,12 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[cfg(feature = "alloc-profile")]
 #[global_allocator]
 static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
+
+const MAINNET_BOOTNODES: [&str; 3] = [
+    "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
+    "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
+    "enr:-Ku4QP2xDnEtUXIjzJ_DhlCRN9SN99RYQPJL92TMlSv7U5C1YnYLjwOQHgZIUXw6c-BvRg2Yc2QsZxxoS_pPRVe0yK8Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQMeFF5GrS7UZpAH2Ly84aLK-TyvH-dRo0JM1i8yygH50YN1ZHCCJxA",
+];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("silver", 10, None, false);
@@ -106,6 +118,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
     let chain_config = config.chain_config();
+    sleep_until_genesis(chain_config.genesis_unix_secs);
     let ticker = SlotTicker::new(
         chain_config.genesis_unix_secs,
         chain_config.slot_duration(),
@@ -157,23 +170,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let now = Instant::now();
 
-    let bootnodes = if !config.chain_config().bootstrap_enrs.is_empty() {
-        config.chain_config().bootstrap_enrs.clone()
-    } else {
-        vec![
-            Enr::from_str(
-                "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
-            )?,
-            Enr::from_str(
-                "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
-            )?,
-            Enr::from_str(
-                "enr:-Ku4QP2xDnEtUXIjzJ_DhlCRN9SN99RYQPJL92TMlSv7U5C1YnYLjwOQHgZIUXw6c-BvRg2Yc2QsZxxoS_pPRVe0yK8Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQMeFF5GrS7UZpAH2Ly84aLK-TyvH-dRo0JM1i8yygH50YN1ZHCCJxA",
-            )?,
-        ]
-    };
+    let bootnodes = &config.chain_config().bootstrap_enrs;
 
-    for enr in &bootnodes {
+    for enr in bootnodes {
         discv5.add_enr(enr, now);
     }
 
@@ -341,6 +340,12 @@ fn load_config() -> Result<Config, silver_common::Error> {
                 .with_discovery_port(31133)
                 .with_quic_port(31123);
 
+            let bootnodes = MAINNET_BOOTNODES
+                .iter()
+                .map(|enr| Enr::from_str(enr).expect("hardcoded mainnet bootnode ENR"))
+                .collect();
+            config = config.with_bootstrap_enrs(bootnodes);
+
             if let Some(ckpt) = args.get(1).filter(|a| !a.starts_with("--")) {
                 config = config.with_checkpoint(ckpt.to_string());
                 if let Some(pk) = args.get(2).filter(|a| !a.starts_with("--")) {
@@ -367,6 +372,16 @@ fn load_config() -> Result<Config, silver_common::Error> {
     tracing::info!("loaded config: {config:#?}");
 
     Ok(config)
+}
+
+fn sleep_until_genesis(genesis_unix_secs: u64) {
+    let genesis = UNIX_EPOCH + Duration::from_secs(genesis_unix_secs);
+    let Ok(remaining) = genesis.duration_since(SystemTime::now()) else {
+        return;
+    };
+
+    tracing::info!("waiting {}s for genesis at {genesis_unix_secs}", remaining.as_secs());
+    std::thread::sleep(remaining);
 }
 
 /// List form for CLI flags whose config counterpart is a TOML array. A comma

@@ -349,10 +349,10 @@ fn configured(spec: &SpecConfig) -> impl IntoIterator<Item = (&'static str, u64)
         ("MIN_GENESIS_TIME", spec.min_genesis_time),
         ("GENESIS_DELAY", spec.genesis_delay),
         ("TERMINAL_BLOCK_HASH_ACTIVATION_EPOCH", spec.terminal_block_hash_activation_epoch),
-        ("SECONDS_PER_SLOT", spec.seconds_per_slot),
+        ("SECONDS_PER_SLOT", spec.seconds_per_slot()),
         // Teku and Nimbus reject a body whose two spellings of the slot length
         // disagree, so this is derived rather than a mainnet literal.
-        ("SLOT_DURATION_MS", spec.seconds_per_slot * 1000),
+        ("SLOT_DURATION_MS", spec.slot_duration_ms()),
         ("SECONDS_PER_ETH1_BLOCK", spec.seconds_per_eth1_block),
         ("ETH1_FOLLOW_DISTANCE", spec.eth1_follow_distance),
         ("SHARD_COMMITTEE_PERIOD", spec.shard_committee_period),
@@ -574,7 +574,7 @@ mod tests {
     /// aborts unless they agree, and `SECONDS_PER_SLOT` is overridable.
     #[test]
     fn slot_duration_ms_follows_an_overridden_seconds_per_slot() {
-        let spec = spec_map(&SpecConfig { seconds_per_slot: 4, ..SpecConfig::mainnet() });
+        let spec = spec_map(&SpecConfig { seconds_per_slot: Some(4), ..SpecConfig::mainnet() });
         assert_eq!(spec["SECONDS_PER_SLOT"], "4");
         assert_eq!(spec["SLOT_DURATION_MS"], "4000");
     }

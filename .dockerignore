@@ -1,0 +1,19 @@
+target/
+debug/
+.git/
+.github/
+.local/
+.claude/
+.cursor/
+.memsearch/
+.idea/
+.vscode/
+docs/
+*.md
+
+# Test fixtures only, and large: the spec-test corpus and the LFS perf/e2e
+# data are both irrelevant to `cargo build --bin silver`.
+crates/beacon_state/tile/consensus-spec-tests/
+crates/e2e/data/
+kurtosis/el/
+kurtosis/*.ssz

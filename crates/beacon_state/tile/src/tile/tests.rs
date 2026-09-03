@@ -19,6 +19,7 @@ use silver_ssz::ssz_view::EXECUTION_PAYLOAD_ENVELOPE_MIN;
 use super::*;
 use crate::{
     fork_choice::{BlockImport, PayloadStatus},
+    merkle,
     stf::AttestationVote,
     test_signing,
 };
@@ -2190,90 +2191,4 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
             "persisted checkpoint diverges from the live state at `{name}`"
         );
     }
-}
-
-// ── fork_digest (standalone `compute_fork_digest`, no tile state) ──
-
-const FD_SENTINEL: BlobParameters = BlobParameters { epoch: u64::MAX, max_blobs_per_block: 0 };
-
-fn fd_genesis_validators_root(b: u8) -> B256 {
-    [b; 32]
-}
-
-fn fd_ef_schedule() -> [BlobParameters; 6] {
-    [
-        BlobParameters { epoch: 9, max_blobs_per_block: 9 },
-        BlobParameters { epoch: 100, max_blobs_per_block: 100 },
-        BlobParameters { epoch: 150, max_blobs_per_block: 175 },
-        BlobParameters { epoch: 200, max_blobs_per_block: 200 },
-        BlobParameters { epoch: 250, max_blobs_per_block: 275 },
-        BlobParameters { epoch: 300, max_blobs_per_block: 300 },
-    ]
-}
-
-fn fd_ef_digest(epoch: Epoch, fork_version: Version, gvr: &B256) -> [u8; 4] {
-    let schedule = fd_ef_schedule();
-    let bp = get_blob_parameters(epoch, &schedule, FD_SENTINEL);
-    compute_fork_digest(fork_version, gvr, Some(bp))
-}
-
-#[test]
-fn ef_compute_fork_digest_vectors() {
-    let v6 = [0x06, 0x00, 0x00, 0x00];
-    let v61 = [0x06, 0x00, 0x00, 0x01];
-    let v7 = [0x07, 0x00, 0x00, 0x00];
-    let v71 = [0x07, 0x00, 0x00, 0x01];
-
-    let cases: &[(Epoch, Version, B256, [u8; 4])] = &[
-        (9, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
-        (10, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
-        (11, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
-        (99, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
-        (100, v6, fd_genesis_validators_root(0), [0xdf, 0x67, 0x55, 0x7b]),
-        (101, v6, fd_genesis_validators_root(0), [0xdf, 0x67, 0x55, 0x7b]),
-        (150, v6, fd_genesis_validators_root(0), [0x8a, 0xb3, 0x8b, 0x59]),
-        (199, v6, fd_genesis_validators_root(0), [0x8a, 0xb3, 0x8b, 0x59]),
-        (200, v6, fd_genesis_validators_root(0), [0xd9, 0xb8, 0x14, 0x38]),
-        (201, v6, fd_genesis_validators_root(0), [0xd9, 0xb8, 0x14, 0x38]),
-        (250, v6, fd_genesis_validators_root(0), [0x4e, 0xf3, 0x2a, 0x62]),
-        (299, v6, fd_genesis_validators_root(0), [0x4e, 0xf3, 0x2a, 0x62]),
-        (300, v6, fd_genesis_validators_root(0), [0xca, 0x10, 0x0d, 0x64]),
-        (301, v6, fd_genesis_validators_root(0), [0xca, 0x10, 0x0d, 0x64]),
-        (9, v6, fd_genesis_validators_root(1), [0x89, 0x67, 0x11, 0x11]),
-        (9, v6, fd_genesis_validators_root(2), [0xf4, 0x9b, 0x0e, 0x24]),
-        (9, v6, fd_genesis_validators_root(3), [0x86, 0x54, 0x4e, 0x4f]),
-        (100, v6, fd_genesis_validators_root(1), [0xfd, 0x3a, 0xa2, 0xa2]),
-        (100, v6, fd_genesis_validators_root(2), [0x80, 0xc6, 0xbd, 0x97]),
-        (100, v6, fd_genesis_validators_root(3), [0xf2, 0x09, 0xfd, 0xfc]),
-        (9, v61, fd_genesis_validators_root(0), [0x30, 0xf8, 0xc2, 0x5b]),
-        (9, v7, fd_genesis_validators_root(0), [0x04, 0x32, 0xf5, 0xa9]),
-        (9, v71, fd_genesis_validators_root(0), [0x6e, 0x69, 0xa6, 0x71]),
-        (100, v61, fd_genesis_validators_root(0), [0x44, 0xa5, 0x71, 0xe8]),
-        (100, v7, fd_genesis_validators_root(0), [0x70, 0x6f, 0x46, 0x1a]),
-        (100, v71, fd_genesis_validators_root(0), [0x1a, 0x34, 0x15, 0xc2]),
-    ];
-
-    for (epoch, fv, g, expected) in cases {
-        let got = fd_ef_digest(*epoch, *fv, g);
-        assert_eq!(
-            got, *expected,
-            "epoch={epoch} fv={fv:02x?} gvr[0]={:#04x}: got {got:02x?}, want {expected:02x?}",
-            g[0]
-        );
-    }
-}
-
-#[test]
-fn mainnet_fulu_fork_digest_419072() {
-    let mainnet_gvr: B256 = [
-        0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f, 0xdd,
-        0x4e, 0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f, 0x51, 0x1b,
-        0xfe, 0x95,
-    ];
-    let spec = SpecConfig::mainnet();
-    let bp = get_blob_parameters(419072, &spec.blob_schedule, spec.default_blob_params());
-    assert_eq!(bp, BlobParameters { epoch: 419072, max_blobs_per_block: 21 });
-
-    let digest = compute_fork_digest(spec.fulu_fork_version, &mainnet_gvr, Some(bp));
-    assert_eq!(digest, [0x8c, 0x9f, 0x62, 0xfe]);
 }

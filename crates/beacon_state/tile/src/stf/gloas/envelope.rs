@@ -68,7 +68,7 @@ pub fn verify_execution_payload_envelope(
     if *ExecutionPayloadView::parent_hash(payload) != state.latest_block_hash {
         return Err(E::PayloadMismatch { field: "parent_hash" });
     }
-    let expected_timestamp = rv.imm.genesis_time + state.slot * cfg.seconds_per_slot;
+    let expected_timestamp = rv.imm.genesis_time + state.slot * cfg.seconds_per_slot();
     if ExecutionPayloadView::timestamp(payload) != expected_timestamp {
         return Err(E::PayloadMismatch { field: "timestamp" });
     }

@@ -1,4 +1,6 @@
 use std::{
+    fs::File,
+    io::Read,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -9,9 +11,10 @@ pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
+use silver_chain_spec::ForkName;
 use silver_common::{
-    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE,
-    StreamProtocol,
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
+    SUBNETS_PER_NODE, StreamProtocol,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
@@ -35,6 +38,15 @@ const fn default_u32<const V: u32>() -> u32 {
 
 const fn default_u64<const V: u64>() -> u64 {
     V
+}
+
+/// The mainnet Fulu digest, for the default run that names no config file.
+const fn default_mainnet_fork_digest() -> [u8; 4] {
+    [0x8c, 0x9f, 0x62, 0xfe]
+}
+
+const fn default_fork_version() -> [u8; 4] {
+    [6, 0, 0, 0]
 }
 
 fn default_beacon_api_bind() -> Vec<String> {
@@ -79,13 +91,28 @@ fn default_gossip_topics() -> Vec<String> {
     ]
 }
 
+/// `BeaconState`'s first two fields are fixed-size, so its `genesis_time`
+/// and `genesis_validators_root` sit at the head of any anchor state's SSZ.
+fn anchor_genesis(path: &str) -> Result<(u64, [u8; 32]), Error> {
+    let mut head = [0u8; 40];
+    let mut file = File::open(path)?;
+    file.read_exact(&mut head).map_err(|e| {
+        Error::ConfigError(format!("anchor state {path} is too short to read its genesis: {e}"))
+    })?;
+    let genesis_unix_secs = u64::from_le_bytes(head[..8].try_into().unwrap());
+    Ok((genesis_unix_secs, head[8..].try_into().unwrap()))
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(with = "hex::serde")]
     secret_key: [u8; 32],
-    #[serde(with = "hex::serde")]
+    /// Both of these are overwritten from `spec` and the anchor state's
+    /// `genesis_validators_root` whenever `checkpoint_file` names one, so a
+    /// literal here applies only to a run with no anchor.
+    #[serde(default = "default_mainnet_fork_digest", with = "hex::serde")]
     fork_digest: [u8; 4],
-    #[serde(with = "hex::serde")]
+    #[serde(default = "default_fork_version", with = "hex::serde")]
     next_fork_version: [u8; 4],
     // FAR_FUTURE (u64::MAX) by default — exceeds TOML's i64 range, so configs
     // for a network with no scheduled next fork simply omit it.
@@ -204,7 +231,8 @@ impl Config {
     /// external IP, ports, secret key) here, so no source edits are needed.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let text = std::fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&text)?;
+        let mut config: Self = toml::from_str(&text)?;
+        config.resolve_from_network_files()?;
 
         let spec = &config.chain_config.spec;
         if let Some(network) = spec.misnamed_network() {
@@ -217,6 +245,50 @@ impl Config {
         }
 
         Ok(config)
+    }
+
+    fn resolve_from_network_files(&mut self) -> Result<(), Error> {
+        if let Some(path) = &self.chain_config.spec_file {
+            let text = std::fs::read_to_string(path)?;
+            self.chain_config.spec = serde_yml::from_str(&text).map_err(|e| {
+                Error::ConfigError(format!("spec_file {path} is not a spec config: {e}"))
+            })?;
+        }
+
+        let anchor_gvr = match &self.chain_config.checkpoint_file {
+            Some(anchor) => {
+                let (genesis_unix_secs, gvr) = anchor_genesis(anchor)?;
+                self.chain_config.genesis_unix_secs = genesis_unix_secs;
+                Some(gvr)
+            }
+            None => None,
+        };
+
+        let epoch = self.slots_since_genesis() / SLOTS_PER_EPOCH;
+        let spec = &self.chain_config.spec;
+
+        let fork = spec.fork_at(epoch);
+        if fork < ForkName::Fulu {
+            return Err(Error::ConfigError(format!(
+                "chain_config.spec puts epoch {epoch} in {}; silver runs Fulu and Gloas only \
+                 (check FULU_FORK_EPOCH)",
+                fork.name()
+            )));
+        }
+
+        if let Some(gvr) = anchor_gvr {
+            self.fork_digest = spec.fork_digest_at(epoch, &gvr);
+            let (version, fork_epoch) = spec.next_fork(epoch);
+            self.next_fork_version = version;
+            self.next_fork_epoch = fork_epoch;
+        }
+        Ok(())
+    }
+
+    fn slots_since_genesis(&self) -> u64 {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        now.saturating_sub(self.chain_config.genesis_unix_secs) /
+            self.chain_config.spec.seconds_per_slot().max(1)
     }
 
     pub fn with_discovery_port(mut self, port: u16) -> Self {
@@ -236,6 +308,11 @@ impl Config {
 
     pub fn with_quic_port(mut self, port: u16) -> Self {
         self.quic_port = Some(port);
+        self
+    }
+
+    pub fn with_bootstrap_enrs(mut self, enrs: Vec<Enr>) -> Self {
+        self.chain_config.bootstrap_enrs = enrs;
         self
     }
 
@@ -280,6 +357,10 @@ impl Config {
 
     pub fn fork_digest(&self) -> [u8; 4] {
         self.fork_digest
+    }
+
+    pub fn next_fork_version(&self) -> [u8; 4] {
+        self.next_fork_version
     }
 
     pub fn p2p_peer_id(&self) -> Result<PeerId, Error> {
@@ -570,5 +651,159 @@ mod tests {
             .with_genesis_unix_secs(1234);
         assert_eq!(cfg.external_ip_v4, Some(Ipv4Addr::new(172, 16, 0, 1)));
         assert_eq!(cfg.chain_config().genesis_unix_secs, 1234);
+    }
+
+    /// A `[u8; 32]` root and a `u64` genesis time at the head of an anchor
+    /// state, which is all `anchor_genesis` reads.
+    fn write_anchor(dir: &std::path::Path, genesis_unix_secs: u64, gvr: [u8; 32]) -> String {
+        let path = dir.join("anchor.ssz");
+        let mut bytes = genesis_unix_secs.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&gvr);
+        bytes.extend_from_slice(&[0u8; 64]);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    fn write_file(dir: &std::path::Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("silver-config-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The whole in-enclave contract: a config naming only the two files a
+    /// network publishes resolves to the same digest a hand-written one
+    /// spells out.
+    #[test]
+    fn spec_file_and_anchor_resolve_the_digest_and_genesis() {
+        let dir = temp_dir("spec-file");
+        let gvr = [7u8; 32];
+        let genesis = 1_600_000_000;
+        let anchor = write_anchor(&dir, genesis, gvr);
+        let spec_file = write_file(
+            &dir,
+            "config.yaml",
+            "CONFIG_NAME: kurtosis\n\
+             GENESIS_FORK_VERSION: 0x10000038\n\
+             FULU_FORK_VERSION: 0x70000038\n\
+             FULU_FORK_EPOCH: 0\n\
+             ELECTRA_FORK_EPOCH: 0\n\
+             MAX_BLOBS_PER_BLOCK_ELECTRA: 9\n\
+             SECONDS_PER_SLOT: 12\n\
+             GLOAS_FORK_EPOCH: 18446744073709551615\n",
+        );
+        let config_file = write_file(
+            &dir,
+            "silver.toml",
+            &format!(
+                "secret_key = \"{}\"\n\
+                 [chain_config]\n\
+                 spec_file = \"{spec_file}\"\n\
+                 checkpoint_file = \"{anchor}\"\n",
+                "11".repeat(32)
+            ),
+        );
+
+        let cfg = Config::from_file(&config_file).unwrap();
+        let spec = &cfg.chain_config().spec;
+        assert_eq!(spec.network_name(), "kurtosis", "the spec came from the YAML");
+        assert_eq!(spec.fulu_fork_version, [0x70, 0x00, 0x00, 0x38]);
+        assert_eq!(cfg.chain_config().genesis_unix_secs, genesis, "read from the anchor");
+
+        let epoch = cfg.slots_since_genesis() / SLOTS_PER_EPOCH;
+        assert_eq!(cfg.fork_digest(), spec.fork_digest_at(epoch, &gvr));
+        assert_eq!(cfg.next_fork_version(), spec.next_fork(epoch).0);
+        assert_eq!(cfg.next_fork_epoch, u64::MAX, "no fork scheduled past Fulu here");
+    }
+
+    /// Literals lose to the network's own files: the anchor carries the
+    /// genesis time and the root the digest is built from, so a config cannot
+    /// assert a digest or a genesis that contradicts the state it boots on.
+    #[test]
+    fn the_anchor_outranks_the_files_literals() {
+        let dir = temp_dir("anchor-wins");
+        let genesis = 1_600_000_000;
+        let gvr = [7u8; 32];
+        let anchor = write_anchor(&dir, genesis, gvr);
+        let spec_file = write_file(
+            &dir,
+            "config.yaml",
+            "FULU_FORK_VERSION: 0x70000038\nFULU_FORK_EPOCH: 0\nELECTRA_FORK_EPOCH: 0\n",
+        );
+        let config_file = write_file(
+            &dir,
+            "silver.toml",
+            &format!(
+                "secret_key = \"{}\"\n\
+                 fork_digest = \"8c9f62fe\"\n\
+                 [chain_config]\n\
+                 genesis_unix_secs = 42\n\
+                 spec_file = \"{spec_file}\"\n\
+                 checkpoint_file = \"{anchor}\"\n",
+                "11".repeat(32)
+            ),
+        );
+
+        let cfg = Config::from_file(&config_file).unwrap();
+        assert_eq!(cfg.chain_config().genesis_unix_secs, genesis, "not the file's 42");
+        let epoch = cfg.slots_since_genesis() / SLOTS_PER_EPOCH;
+        assert_eq!(
+            cfg.fork_digest(),
+            cfg.chain_config().spec.fork_digest_at(epoch, &gvr),
+            "not the file's 8c9f62fe"
+        );
+    }
+
+    /// silver has no pre-Fulu state transition, and an unstated
+    /// FULU_FORK_EPOCH silently inherits mainnet's — which is how a
+    /// Fulu-from-genesis devnet reads as Electra and derives a digest no peer
+    /// gossips on.
+    #[test]
+    fn spec_reading_earlier_than_fulu_is_refused() {
+        let dir = temp_dir("pre-fulu");
+        // A genesis an hour ago, like a devnet's: the wall epoch is then far
+        // below mainnet's fulu_fork_epoch, which is the default in force here.
+        let recent = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 3600;
+        let anchor = write_anchor(&dir, recent, [7u8; 32]);
+        let spec_file = write_file(
+            &dir,
+            "config.yaml",
+            "FULU_FORK_VERSION: 0x70000038\nELECTRA_FORK_EPOCH: 0\n",
+        );
+        let config_file = write_file(
+            &dir,
+            "silver.toml",
+            &format!(
+                "secret_key = \"{}\"\n\
+                 [chain_config]\n\
+                 spec_file = \"{spec_file}\"\n\
+                 checkpoint_file = \"{anchor}\"\n",
+                "11".repeat(32)
+            ),
+        );
+
+        let err = Config::from_file(&config_file).unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("FULU_FORK_EPOCH"), "error should name the key: {text}");
+    }
+
+    /// With no anchor there is nothing to derive from, so the file's own
+    /// literals stand — this is the default mainnet run.
+    #[test]
+    fn without_an_anchor_the_files_literals_stand() {
+        let dir = temp_dir("no-anchor");
+        let config_file = write_file(
+            &dir,
+            "silver.toml",
+            &format!("secret_key = \"{}\"\nfork_digest = \"8c9f62fe\"\n", "11".repeat(32)),
+        );
+        let cfg = Config::from_file(&config_file).unwrap();
+        assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
     }
 }

@@ -36,6 +36,7 @@ pub enum Error {
     EnrError(#[from] crate::enr::Error),
     KeyError(#[from] secp256k1::Error),
     InvalidStreamProtocol,
+    ConfigError(String),
 }
 
 impl fmt::Display for Error {

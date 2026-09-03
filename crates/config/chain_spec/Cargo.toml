@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 serde.workspace = true
 hex.workspace = true
+silver_ssz.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

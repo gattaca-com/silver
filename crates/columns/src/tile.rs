@@ -96,7 +96,8 @@ impl DataColumnsTile {
         engine_resp_consumer: TRandomAccess,
         el_column_producer: TProducer,
     ) -> Self {
-        let epoch_duration = Duration::from_secs(spec.seconds_per_slot) * SLOTS_PER_EPOCH as u32;
+        let epoch_duration =
+            Duration::from_millis(spec.slot_duration_ms()) * SLOTS_PER_EPOCH as u32;
         Self {
             consumers,
             spec,

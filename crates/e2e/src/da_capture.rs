@@ -53,7 +53,7 @@ impl SlotCapture {
     /// A slot whose columns turned up after it ended was served over RPC while
     /// the node caught up; its curve is not a gossip arrival curve.
     pub fn is_backfill(&self) -> bool {
-        let slot_us = SpecConfig::mainnet().seconds_per_slot * 1_000_000;
+        let slot_us = SpecConfig::mainnet().seconds_per_slot() * 1_000_000;
         self.arrivals.first().is_some_and(|a| a.at_us > slot_us)
     }
 }
@@ -130,7 +130,7 @@ impl ColumnFixtures {
                 seen |= 1 << a.index;
                 first
             });
-            let slot_start_us = (genesis + slot * spec.seconds_per_slot) * 1_000_000;
+            let slot_start_us = (genesis + slot * spec.seconds_per_slot()) * 1_000_000;
             for arrival in &mut cap.arrivals {
                 let at = arrival.at_us;
                 assert!(
