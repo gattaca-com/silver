@@ -141,7 +141,7 @@ impl Events {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::ColumnSource;
+    use silver_common::{ColumnSource, PayloadValidationStatus};
 
     use super::{
         trace::tests::{GENESIS_SECS, SLOT_MS, at, event, received},
@@ -182,11 +182,12 @@ mod tests {
         assert_eq!(strip_start(trace), Some(at(4, 300)));
     }
 
-    /// A slotless event (an FCU for a root from before attach) has no
+    /// A slotless event (a verdict for a root from before attach) has no
     /// trace to join and opens none.
     #[test]
     fn slotless_events_open_no_trace() {
-        let traces = fold_all(vec![event(Stage::Applied, at(2, 460), None)]);
+        let verdict = Stage::ElVerdict { verdict: PayloadValidationStatus::Valid };
+        let traces = fold_all(vec![event(verdict, at(2, 460), None)]);
         assert!(traces.is_empty());
     }
 
@@ -215,7 +216,7 @@ mod tests {
         let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
         let mut traces = fold_all(vec![
             event(received(), at(4, 300), Some(4)),
-            event(Stage::StfImported, at(4, 900), Some(4)),
+            event(Stage::Attestable, at(4, 900), Some(4)),
         ]);
         assert_eq!(traces.max_strip_offset(&clock), Nanos::from_millis(900));
 

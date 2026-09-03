@@ -16,12 +16,13 @@ const TRACKED_SLOTS: u64 = 64;
 struct Tracked {
     slot: u64,
     received: bool,
-    imported: bool,
+    stf_done: bool,
+    attestable: bool,
 }
 
 impl Tracked {
     fn new(slot: u64) -> Self {
-        Self { slot, received: false, imported: false }
+        Self { slot, received: false, stf_done: false, attestable: false }
     }
 }
 
@@ -53,7 +54,7 @@ impl StageReader {
 
     /// A parked block is announced again from the replay that admits it, so
     /// only the first announcement is its arrival; an unparked block's one
-    /// announcement carries both its arrival and its import.
+    /// announcement carries its arrival, its post-state and its import.
     fn on_beacon_state(&mut self, m: &InternalMessage<BeaconStateEvent>) {
         let BeaconStateEvent::BlockReceived { slot, block_root, source, stage, .. } = *m.data()
         else {
@@ -72,10 +73,19 @@ impl StageReader {
                 slot: Some(slot),
             });
         }
-        if stage == BlockStage::Applied && !tracked.imported {
-            tracked.imported = true;
+        if stage != BlockStage::AwaitParent && !tracked.stf_done {
+            tracked.stf_done = true;
             self.out.push(StageEvent {
-                stage: Stage::StfImported,
+                stage: Stage::StfDone,
+                ts: m.tracking_timestamp().publish_t(),
+                block_root,
+                slot: Some(slot),
+            });
+        }
+        if stage == BlockStage::Applied && !tracked.attestable {
+            tracked.attestable = true;
+            self.out.push(StageEvent {
+                stage: Stage::Attestable,
                 ts: m.tracking_timestamp().publish_t(),
                 block_root,
                 slot: Some(slot),
@@ -92,14 +102,6 @@ impl StageReader {
                     ts: m.tracking_timestamp().publish_t(),
                     block_root: req.block_root,
                     slot: Some(req.slot),
-                });
-            }
-            EngineReq::Fcu(req) => {
-                self.out.push(StageEvent {
-                    stage: Stage::Applied,
-                    ts: m.tracking_timestamp().publish_t(),
-                    block_root: req.block_root,
-                    slot: self.roots.get(&req.block_root).map(|t| t.slot),
                 });
             }
             _ => {}
@@ -170,8 +172,8 @@ impl StageReader {
 mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        BlockSource, BlockStage, ColumnSource, DataKind, EngineFcuReq, EngineNewPayloadReq,
-        EngineNewPayloadResp, Origin, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, ColumnSource, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
+        Origin, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -211,6 +213,10 @@ mod tests {
         block_received(root, slot, source, BlockStage::AwaitParent)
     }
 
+    fn staged(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {
+        block_received(root, slot, source, BlockStage::Staged)
+    }
+
     fn imported(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {
         block_received(root, slot, source, BlockStage::Applied)
     }
@@ -221,15 +227,6 @@ mod tests {
             block_root: root,
             slot,
             block_source,
-        })
-    }
-
-    fn fcu(root: [u8; 32]) -> EngineReq {
-        EngineReq::Fcu(EngineFcuReq {
-            block_root: root,
-            head_block_hash: [0; 32],
-            safe_block_hash: [0; 32],
-            finalized_block_hash: [0; 32],
         })
     }
 
@@ -266,20 +263,19 @@ mod tests {
 
         reader.on_beacon_state(&msg(imported(root, 2, BlockSource::Gossip), at(2, 300)));
         reader.on_engine_req(&msg(new_payload(root, 2, BlockSource::Gossip), at(2, 300)));
-        reader.on_engine_req(&msg(fcu(root), at(2, 460)));
         reader.on_engine_resp(&msg(verdict(root, PayloadValidationStatus::Valid), at(2, 520)));
 
         assert_eq!(stages(&reader.out), [
             "received",
-            "stf_imported",
+            "stf_done",
+            "attestable",
             "el_sent",
-            "applied",
             "el_verdict"
         ]);
         assert!(reader.out.iter().all(|o| o.block_root == root));
         assert!(
             reader.out.iter().all(|o| o.slot == Some(2)),
-            "fcu/verdict slots resolve via the map"
+            "the verdict slot resolves via the map"
         );
 
         let received = find(&reader.out, "received");
@@ -292,9 +288,9 @@ mod tests {
         // The remaining stages are publish events of their message, so
         // each lands after the ingestion time it was built from.
         for (stage, ingested) in [
-            ("stf_imported", at(2, 300)),
+            ("stf_done", at(2, 300)),
+            ("attestable", at(2, 300)),
             ("el_sent", at(2, 300)),
-            ("applied", at(2, 460)),
             ("el_verdict", at(2, 520)),
         ] {
             let t = find(&reader.out, stage).ts;
@@ -312,9 +308,28 @@ mod tests {
         reader.on_beacon_state(&msg(parked(root, 5, BlockSource::Gossip), at(5, 400)));
         reader.on_beacon_state(&msg(imported(root, 5, BlockSource::Gossip), at(5, 3_100)));
 
-        assert_eq!(stages(&reader.out), ["received", "stf_imported"]);
+        assert_eq!(stages(&reader.out), ["received", "stf_done", "attestable"]);
         assert_eq!(reader.out[0].ts, at(5, 400), "one arrival per root");
         assert!(reader.out[1].ts > at(5, 3_100), "import is the release's publish");
+        assert_eq!(reader.out[1].ts, reader.out[2].ts, "ungated: one publish carries both");
+    }
+
+    /// Data gated the import: the post-state lands with `Staged`, the import
+    /// with the `Applied` that follows, and neither repeats.
+    #[test]
+    fn staged_block_splits_stf_done_from_attestable() {
+        let mut reader = StageReader::default();
+        let root = [10u8; 32];
+
+        reader.on_beacon_state(&msg(staged(root, 5, BlockSource::Gossip), at(5, 400)));
+        reader.on_beacon_state(&msg(staged(root, 5, BlockSource::Rpc), at(5, 500)));
+        reader.on_beacon_state(&msg(imported(root, 5, BlockSource::Gossip), at(5, 700)));
+
+        assert_eq!(stages(&reader.out), ["received", "stf_done", "attestable"]);
+        assert_eq!(reader.out[0].ts, at(5, 400));
+        let stf_done = reader.out[1].ts;
+        assert!(stf_done > at(5, 400) && stf_done < at(5, 500), "the first Staged publish");
+        assert!(reader.out[2].ts > at(5, 700), "the Applied publish");
     }
 
     /// A duplicate of an imported block is announced `Applied` again.
@@ -326,36 +341,9 @@ mod tests {
         reader.on_beacon_state(&msg(imported(root, 5, BlockSource::Gossip), at(5, 400)));
         reader.on_beacon_state(&msg(imported(root, 5, BlockSource::Rpc), at(5, 900)));
 
-        assert_eq!(stages(&reader.out), ["received", "stf_imported"]);
+        assert_eq!(stages(&reader.out), ["received", "stf_done", "attestable"]);
         assert_eq!(reader.out[0].ts, at(5, 400));
-        assert!(reader.out[1].ts < at(5, 900));
-    }
-
-    /// Repeat-head FCUs each emit; keeping the first per root is the
-    /// consumer's dedup.
-    #[test]
-    fn repeat_head_fcus_each_emit() {
-        let mut reader = StageReader::default();
-        let root = [2u8; 32];
-
-        reader.on_beacon_state(&msg(parked(root, 7, BlockSource::Rpc), at(7, 11_900)));
-        reader.on_engine_req(&msg(fcu(root), at(7, 12_000)));
-        reader.on_engine_req(&msg(fcu(root), at(7, 13_000)));
-
-        assert_eq!(stages(&reader.out), ["received", "applied", "applied"]);
-    }
-
-    /// FCUs for roots whose block predates attach are still observed — slot
-    /// resolution is left to the consumer's join.
-    #[test]
-    fn unmatched_fcu_is_observed_without_a_slot() {
-        let mut reader = StageReader::default();
-
-        reader.on_engine_req(&msg(fcu([9u8; 32]), at(2, 460)));
-
-        assert_eq!(stages(&reader.out), ["applied"]);
-        assert_eq!(reader.out[0].slot, None);
-        assert!(reader.roots.is_empty(), "an FCU alone must not pin a root in the map");
+        assert!(reader.out[2].ts < at(5, 900));
     }
 
     /// `NewPayload` carries the slot, so a verdict resolves even when the
@@ -378,9 +366,9 @@ mod tests {
 
         reader.on_beacon_state(&msg(parked(old, 0, BlockSource::Gossip), at(0, 300)));
         reader.on_beacon_state(&msg(parked([6u8; 32], 100, BlockSource::Gossip), at(100, 300)));
-        reader.on_engine_req(&msg(fcu(old), at(100, 460)));
+        reader.on_engine_resp(&msg(verdict(old, PayloadValidationStatus::Valid), at(100, 460)));
 
-        assert_eq!(find(&reader.out, "applied").slot, None, "evicted after 64 slots");
+        assert_eq!(find(&reader.out, "el_verdict").slot, None, "evicted after 64 slots");
     }
 
     #[test]

@@ -73,9 +73,8 @@ impl BlockTrace {
                 }
             }
             Stage::ElSent { .. } => self.el_sent_at = Some(ts),
-            Stage::StfImported => self.stf.imported(ts),
-            // The FCU times dispatch, not import; telemetry keeps it.
-            Stage::Applied => {}
+            Stage::StfDone => self.stf.done(ts),
+            Stage::Attestable => self.stf.attestable(ts),
             Stage::ElVerdict { verdict } => self.el.verdict_received(verdict, ts),
             Stage::ColumnRecv { index, source } => self.da.column_received(index, source, ts),
             Stage::ColumnValidated { index, .. } => self.da.column_validated(index, ts),
@@ -84,20 +83,20 @@ impl BlockTrace {
         }
     }
 
-    /// When the head became attestable: every component done — imported into
-    /// fork choice, the EL verdict `Valid`, and the gate open where it was
+    /// The pane's attestable is stricter than the node's stage: the node's
+    /// `attestable`, the EL verdict `Valid`, and the gate open where it was
     /// seen. `None` while the verdict is pending or not `Valid`.
     pub fn attestable_at(&self) -> Option<Nanos> {
-        let imported = self.stf.imported_at()?;
+        let attestable = self.stf.attestable_at()?;
         let valid = self.el.valid_at()?;
-        Some(imported.max(valid).max(self.da.available().unwrap_or(imported)))
+        Some(attestable.max(valid).max(self.da.available().unwrap_or(attestable)))
     }
 
     /// The last event on the block's own path — column custody traffic
-    /// excluded, so a strip without a verdict ends at import, not at the
+    /// excluded, so a strip without a verdict ends at attestable, not at the
     /// custody tail.
     fn last_event(&self) -> Option<Nanos> {
-        [self.stf.imported_at(), self.el.verdict_at(), self.el_sent_at, self.da.available()]
+        [self.stf.attestable_at(), self.el.verdict_at(), self.el_sent_at, self.da.available()]
             .into_iter()
             .flatten()
             .max()
@@ -197,7 +196,7 @@ pub mod tests {
         let t = trace(&[
             (received(), 300),
             (el_sent(), 300),
-            (Stage::StfImported, 460),
+            (Stage::Attestable, 460),
             (valid(), 520),
             (Stage::DaAvailable, 350),
         ]);
@@ -227,7 +226,7 @@ pub mod tests {
             (received(), 300),
             (Stage::DaAvailable, 410),
             (el_sent(), 413),
-            (Stage::StfImported, 422),
+            (Stage::Attestable, 422),
         ]);
 
         assert_eq!(t.interval(VALIDATE), iv(at(2, 410), at(2, 413)), "gate → dispatch");
@@ -240,22 +239,21 @@ pub mod tests {
     /// path.
     #[test]
     fn attestable_needs_import_and_a_valid_verdict() {
-        let imported_only =
-            trace(&[(received(), 300), (el_sent(), 310), (Stage::StfImported, 460)]);
+        let imported_only = trace(&[(received(), 300), (el_sent(), 310), (Stage::Attestable, 460)]);
         assert_eq!(imported_only.attestable_at(), None);
         assert_eq!(imported_only.interval(Span::Strip), iv(at(2, 300), at(2, 460)));
 
         let syncing = Stage::ElVerdict { verdict: PayloadValidationStatus::Syncing };
-        let optimistic = trace(&[(received(), 300), (Stage::StfImported, 460), (syncing, 330)]);
+        let optimistic = trace(&[(received(), 300), (Stage::Attestable, 460), (syncing, 330)]);
         assert_eq!(optimistic.attestable_at(), None, "an optimistic head is not attestable");
 
-        let verdict_first = trace(&[(received(), 300), (valid(), 330), (Stage::StfImported, 460)]);
+        let verdict_first = trace(&[(received(), 300), (valid(), 330), (Stage::Attestable, 460)]);
         assert_eq!(verdict_first.attestable_at(), Some(at(2, 460)), "the later component decides");
 
         let late_gate = trace(&[
             (received(), 300),
             (valid(), 330),
-            (Stage::StfImported, 460),
+            (Stage::Attestable, 460),
             (Stage::DaAvailable, 470),
         ]);
         assert_eq!(late_gate.attestable_at(), Some(at(2, 470)), "DA joins the max when known");
@@ -267,18 +265,10 @@ pub mod tests {
         let t = trace(&[
             (received(), 300),
             (el_sent(), 320),
-            (Stage::StfImported, 460),
-            (Stage::StfImported, 900),
+            (Stage::Attestable, 460),
+            (Stage::Attestable, 900),
         ]);
         assert_eq!(t.interval(APPLY), iv(at(2, 320), at(2, 460)));
-    }
-
-    /// The FCU no longer times anything here; it stays a stage for telemetry.
-    #[test]
-    fn fcu_moves_no_span() {
-        let t = trace(&[(received(), 300), (el_sent(), 320), (Stage::Applied, 900)]);
-        assert_eq!(t.interval(APPLY), None);
-        assert_eq!(t.interval(Span::Strip), iv(at(2, 300), at(2, 320)));
     }
 
     /// Duplicate `Persist` events (an already-held column re-arriving) fold
@@ -330,7 +320,7 @@ pub mod tests {
             (recv(1), 200),
             (received(), 240),
             (Stage::DaAvailable, 300),
-            (Stage::StfImported, 320),
+            (Stage::Attestable, 320),
             (valid(), 330),
             (recv(2), 900),
             (Stage::CustodyDone, 905),
@@ -348,19 +338,19 @@ pub mod tests {
         let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
         let deadline = Nanos::from_millis(4_000);
 
-        let early = trace(&[(received(), 300), (Stage::StfImported, 460), (valid(), 520)]);
+        let early = trace(&[(received(), 300), (Stage::Attestable, 460), (valid(), 520)]);
         assert_eq!(
             early.deadline_margin(&clock, deadline),
             Some(Margin { delta: Nanos::from_millis(3_480), made_it: true })
         );
 
-        let late = trace(&[(received(), 300), (Stage::StfImported, 4_500), (valid(), 520)]);
+        let late = trace(&[(received(), 300), (Stage::Attestable, 4_500), (valid(), 520)]);
         assert_eq!(
             late.deadline_margin(&clock, deadline),
             Some(Margin { delta: Nanos::from_millis(500), made_it: false })
         );
 
-        let pending = trace(&[(received(), 300), (Stage::StfImported, 460)]);
+        let pending = trace(&[(received(), 300), (Stage::Attestable, 460)]);
         assert_eq!(pending.deadline_margin(&clock, deadline), None);
     }
 }
