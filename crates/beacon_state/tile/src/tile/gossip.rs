@@ -1,7 +1,7 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, BLSPubkey, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, StateId,
-    StateReadView, ValidatorsView, gloas::PTC_SIZE,
+    B256, BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
+    SYNC_COMMITTEE_SIZE, Slot, StateId, StateReadView, ValidatorsView, gloas::PTC_SIZE,
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, DataKind, EngineNewPayloadEnvelopeReq,
@@ -141,8 +141,7 @@ impl SyncSubcommittee<'_> {
 pub(super) fn uses_next_sync_committee(slot: Slot) -> bool {
     let epoch = slot / SLOTS_PER_EPOCH;
     let next_slot_epoch = slot.saturating_add(1) / SLOTS_PER_EPOCH;
-    epoch / stf::EPOCHS_PER_SYNC_COMMITTEE_PERIOD !=
-        next_slot_epoch / stf::EPOCHS_PER_SYNC_COMMITTEE_PERIOD
+    epoch / EPOCHS_PER_SYNC_COMMITTEE_PERIOD != next_slot_epoch / EPOCHS_PER_SYNC_COMMITTEE_PERIOD
 }
 
 fn sync_subcommittee<'a>(view: &StateReadView<'a>, subcommittee: usize) -> SyncSubcommittee<'a> {
