@@ -7,6 +7,7 @@ use flux::{
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
+use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
 use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
@@ -19,8 +20,8 @@ use silver_common::{
 use silver_config::Config;
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
-use silver_engine::EngineTile;
 use silver_gossip::GossipHandler;
+use silver_httpcore::Bind;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
@@ -136,6 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         config.max_connections(),
     );
+    let identify = config.identify()?;
     let p2p_context = Context {
         gossip_producer: incoming_gossip_producer,
         gossip_consumer: outgoing_gossip_producer
@@ -143,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .strict_random_access("p2p_outgoing_gossip", true)?,
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
-        identify: Some(ProtoIdentify::from((&config.identify()?, &keypair))),
+        identify: Some(ProtoIdentify::from((&identify, &keypair))),
     };
 
     let now = Instant::now();
@@ -268,7 +270,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         el_producer,
     );
 
-    let engine_tile = EngineTile::new(
+    let beacon_api_binds =
+        config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
+    let application_boundary_tile = ApplicationBoundaryTile::new(
+        &beacon_api_binds,
+        config.beacon_api_max_connections(),
+        config.beacon_api_idle_timeout(),
+        &keypair,
+        local_enr,
+        &identify,
+        &spec,
+        beacon_state_tile.reader(),
         config.engine_config(),
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,
@@ -287,7 +299,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             TileConfig::new(3, Some(ThreadNiceness::Highest)),
         );
         attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
-        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, Some(ThreadNiceness::Highest)));
+        attach_tile(
+            application_boundary_tile,
+            scoped_spine,
+            TileConfig::new(5, Some(ThreadNiceness::Highest)),
+        );
         attach_tile(
             data_columns_tile,
             scoped_spine,
@@ -334,10 +350,22 @@ fn load_config() -> Result<Config, silver_common::Error> {
     if args.iter().any(|a| a == "--unsafe-no-el") {
         config = config.with_unsafe_no_el(true);
     }
+    if let Some(binds) =
+        args.iter().position(|a| a == "--beacon-api-bind").and_then(|i| args.get(i + 1))
+    {
+        config = config.with_beacon_api_bind(comma_separated(binds));
+    }
 
     tracing::info!("loaded config: {config:#?}");
 
     Ok(config)
+}
+
+/// List form for CLI flags whose config counterpart is a TOML array. A comma
+/// is neither valid in a `SocketAddr` nor sane in a socket path, so it can
+/// never be part of one value.
+fn comma_separated(value: &str) -> Vec<String> {
+    value.split(',').map(str::to_owned).collect()
 }
 
 fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
@@ -372,5 +400,26 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
                 );
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beacon_api_bind_flag_takes_one_value_or_a_comma_separated_list() {
+        assert_eq!(comma_separated("0.0.0.0:5051"), ["0.0.0.0:5051"]);
+
+        let binds = comma_separated("0.0.0.0:5051,[::1]:5052,/run/silver/beacon.sock")
+            .iter()
+            .map(String::as_str)
+            .map(Bind::parse)
+            .collect::<Vec<_>>();
+        assert_eq!(binds, [
+            Bind::Tcp("0.0.0.0:5051".parse().unwrap()),
+            Bind::Tcp("[::1]:5052".parse().unwrap()),
+            Bind::Unix("/run/silver/beacon.sock".into()),
+        ]);
     }
 }

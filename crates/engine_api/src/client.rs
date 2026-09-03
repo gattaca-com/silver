@@ -1,20 +1,18 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
-use mio::{Events, Poll};
+use mio::{Events, Registry};
 use rustc_hash::FxHashMap;
 use silver_common::merkle::B256;
+use silver_httpcore::TokenRange;
 
 use crate::{
     EngineError, JwtSecret,
-    http::{HttpPool, http_pool_enqueue, poll_http_pool},
-    ipc::{IpcPool, ipc_pool_enqueue, poll_ipc_pool},
+    pool::{Endpoint, HttpPool},
     types::{
         ForkchoiceState, PayloadAttributesV3, write_new_payload_params_fulu,
         write_new_payload_params_gloas,
     },
 };
-
-const EVENTS_CAPACITY: usize = 16;
 
 // Sized for the largest expected outgoing request: newPayload with a full block
 // (~30M gas of transactions, hex-encoded in JSON).
@@ -45,15 +43,9 @@ pub enum ReqKind {
     GetPayloadBodiesByRange(u64),
 }
 
-enum Transport {
-    Http(HttpPool),
-    Ipc(IpcPool),
-}
-
 pub struct EngineClient {
-    transport: Transport,
-    poll: Poll,
-    events: Events,
+    pool: HttpPool,
+    registry: Registry,
     id: u64,
     pending_requests: FxHashMap<u64, ReqKind>,
     pub get_payload_method: &'static str,
@@ -61,12 +53,54 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    pub fn new(endpoint: impl Into<String>, jwt: &str) -> Self {
+    pub fn new(
+        registry: &Registry,
+        tokens: TokenRange,
+        endpoint: &str,
+        jwt: &str,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
+        Self::with_endpoint(
+            registry,
+            tokens,
+            parse_endpoint(endpoint),
+            jwt,
+            max_connections,
+            request_timeout,
+        )
+    }
+
+    pub fn new_uds(
+        registry: &Registry,
+        tokens: TokenRange,
+        path: impl Into<PathBuf>,
+        jwt: &str,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
+        Self::with_endpoint(
+            registry,
+            tokens,
+            Endpoint::Uds(path.into()),
+            jwt,
+            max_connections,
+            request_timeout,
+        )
+    }
+
+    fn with_endpoint(
+        registry: &Registry,
+        tokens: TokenRange,
+        endpoint: Endpoint,
+        jwt: &str,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
         let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
-            transport: Transport::Http(HttpPool::new(endpoint.into(), jwt)),
-            poll: Poll::new().expect("mio Poll::new failed"),
-            events: Events::with_capacity(EVENTS_CAPACITY),
+            pool: HttpPool::new(endpoint, jwt, tokens, max_connections, request_timeout),
+            registry: registry.try_clone().expect("mio Registry::try_clone failed"),
             id: 1,
             pending_requests: FxHashMap::default(),
             get_payload_method: "engine_getPayloadV3",
@@ -74,16 +108,37 @@ impl EngineClient {
         }
     }
 
-    pub fn new_ipc(path: impl Into<String>) -> Self {
-        Self {
-            transport: Transport::Ipc(IpcPool::new(path.into())),
-            poll: Poll::new().expect("mio Poll::new failed"),
-            events: Events::with_capacity(EVENTS_CAPACITY),
-            id: 1,
-            pending_requests: FxHashMap::default(),
-            get_payload_method: "engine_getPayloadV3",
-            scratch: Vec::with_capacity(SCRATCH_CAPACITY),
-        }
+    pub fn has_capacity(&self) -> bool {
+        self.pool.has_capacity()
+    }
+
+    /// Drives the I/O the batch reports ready, calling
+    /// `on_complete(req_kind, raw_body)` for each RPC it finishes. Raw bytes
+    /// are the full HTTP response body; handlers parse them as needed.
+    pub fn dispatch<F>(&mut self, events: &Events, mut on_complete: F)
+    where
+        F: FnMut(ReqKind, Result<&mut [u8], EngineError>),
+    {
+        let Self { pool, registry, pending_requests, .. } = self;
+        pool.dispatch_events(events, registry, &mut |rpc_id, res| {
+            if let Some(req_kind) = pending_requests.remove(&rpc_id) {
+                on_complete(req_kind, res);
+            }
+        });
+    }
+}
+
+fn parse_endpoint(endpoint: &str) -> Endpoint {
+    if endpoint.starts_with("http://") {
+        Endpoint::Http(endpoint.to_string())
+    } else if endpoint.contains("://") {
+        panic!("unsupported execution_endpoint scheme (only http:// is served): {endpoint}")
+    } else {
+        panic!(
+            "execution_endpoint {endpoint} is a Unix socket path: an EL's IPC socket speaks \
+             raw newline-framed JSON-RPC, which this HTTP client cannot yet produce; use the \
+             EL's http:// engine endpoint"
+        )
     }
 }
 
@@ -114,10 +169,7 @@ fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
         tracing::warn!("failed to serialize RPC body: {e}");
         return;
     }
-    match &mut c.transport {
-        Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-    }
+    c.pool.enqueue(rpc_id, &c.scratch, &c.registry);
 }
 
 pub fn send_fcu(
@@ -168,10 +220,7 @@ fn send_new_payload_request_impl(
     c.scratch.extend_from_slice(b",\"id\":");
     append_decimal_u64(rpc_id, &mut c.scratch);
     c.scratch.push(b'}');
-    match &mut c.transport {
-        Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-    }
+    c.pool.enqueue(rpc_id, &c.scratch, &c.registry);
     c.pending_requests.insert(rpc_id, ReqKind::NewPayload(block_root));
     Ok(())
 }
@@ -255,34 +304,33 @@ pub fn get_client_version(c: &mut EngineClient) {
     c.pending_requests.insert(id, ReqKind::ClientVersion);
 }
 
-/// Drive I/O, calling `on_complete(req_kind, raw_body)` for each finished RPC.
-/// Raw bytes are the full HTTP/IPC response body; handlers parse them as
-/// needed.
-pub fn poll<F>(c: &mut EngineClient, mut on_complete: F)
-where
-    F: FnMut(ReqKind, Result<&mut [u8], EngineError>),
-{
-    c.poll.poll(&mut c.events, Some(Duration::ZERO)).ok();
-    let EngineClient { transport, events, poll, pending_requests, .. } = c;
-    match transport {
-        Transport::Http(p) => poll_http_pool(p, events, poll, &mut |rpc_id, res| {
-            if let Some(req_kind) = pending_requests.remove(&rpc_id) {
-                on_complete(req_kind, res);
-            }
-        }),
-        Transport::Ipc(p) => poll_ipc_pool(p, events, poll, &mut |rpc_id, res| {
-            if let Some(req_kind) = pending_requests.remove(&rpc_id) {
-                on_complete(req_kind, res);
-            }
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use simd_json::prelude::ValueAsScalar;
 
     use super::*;
+
+    #[test]
+    fn endpoint_http_scheme_parses_to_http() {
+        assert!(matches!(
+            parse_endpoint("http://localhost:8551"),
+            Endpoint::Http(e) if e == "http://localhost:8551"
+        ));
+    }
+
+    /// Connecting would succeed and every request would then be HTTP framing
+    /// on a raw JSON-RPC socket, so the path is refused before any connect.
+    #[test]
+    #[should_panic(expected = "is a Unix socket path")]
+    fn endpoint_bare_path_is_refused_at_startup() {
+        parse_endpoint("/run/reth/engine.sock");
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported execution_endpoint scheme")]
+    fn endpoint_unknown_scheme_panics() {
+        parse_endpoint("https://localhost:8551");
+    }
 
     #[test]
     fn next_id_returns_current_then_increments() {

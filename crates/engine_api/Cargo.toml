@@ -1,5 +1,5 @@
 [package]
-name = "silver_engine"
+name = "silver_engine_api"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -11,17 +11,25 @@ base64.workspace = true
 flux.workspace = true
 hex.workspace = true
 hmac.workspace = true
-httparse.workspace = true
+httparse = { workspace = true, optional = true }
 mio.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 simd-json.workspace = true
 sha2.workspace = true
 silver_common.workspace = true
+silver_httpcore.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[features]
+# Exposes the `test_el` fake execution client to dependents' tests.
+test-el = ["dep:httparse"]
+
 [dev-dependencies]
+httparse.workspace = true
+silver_engine_api = { workspace = true, features = ["test-el"] }
+tempfile = "3"
 tracing-subscriber.workspace = true
 
 [lints]

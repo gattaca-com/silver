@@ -414,7 +414,10 @@ pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile 
         TCache::producer("ef_replay", 1 << 16),
     );
 
-    let mut spec = SpecConfig::mainnet();
+    // Fixtures are generated with the fork under test active from genesis,
+    // and they sit in the first epochs: a block signature is verified against
+    // the fork version the config says is active at the block's epoch.
+    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() };
     if state.is_finalized_post_gloas() {
         spec.gloas_fork_epoch = 0;
     }

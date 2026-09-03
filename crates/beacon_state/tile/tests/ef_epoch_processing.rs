@@ -5,7 +5,8 @@ mod ef_common;
 use ef_common::{
     LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, spec_tests_dir,
 };
-use silver_beacon_state::stf::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD};
+use silver_beacon_state::stf::{self, HISTORICAL_SUMMARY_PERIOD};
+use silver_beacon_state_data::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
 /// Gloas EF config: mainnet preset with Gloas active from genesis, so the
 /// `cfg.is_gloas_at(epoch)`-gated STF branches fire on the loaded Gloas states.
 fn gloas_cfg() -> silver_beacon_state_data::SpecConfig {

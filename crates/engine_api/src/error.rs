@@ -10,8 +10,6 @@ pub enum EngineError {
     Json(#[from] simd_json::Error),
     #[error("jwt: {0}")]
     Jwt(String),
-    #[error("ipc: {0}")]
-    Ipc(String),
     #[error("ssz: {0}")]
     Ssz(String),
 }

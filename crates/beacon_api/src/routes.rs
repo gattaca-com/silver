@@ -1,0 +1,859 @@
+#[cfg(test)]
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+#[cfg(test)]
+use silver_beacon_state_data::BeaconStateOwner;
+use silver_beacon_state_data::{BeaconStateReader, SpecConfig, StateReadView};
+use silver_common::{Enr, Identify, Keypair};
+use silver_httpcore::Query;
+
+use crate::{
+    NodeStatus,
+    ids::{parse_root, parse_uint64},
+    json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
+    node_status::Health,
+    receipts::{
+        post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
+        post_sync_committee_subscriptions,
+    },
+    response::Response,
+    router::{Handler, Method, Request},
+    statics::StaticBodies,
+};
+
+const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// The status a syncing node reports when the request names no other one.
+const DEFAULT_SYNCING_STATUS: u16 = 206;
+
+pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
+    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", not_implemented),
+    (Method::Get, "/eth/v1/beacon/genesis", genesis),
+    (Method::Get, "/eth/v1/beacon/headers/{block_id}", not_implemented),
+    (
+        Method::Get,
+        "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
+        state_finality_checkpoints,
+    ),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
+    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", not_implemented),
+    (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
+    (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
+    (Method::Get, "/eth/v1/config/spec", spec),
+    (Method::Get, "/eth/v1/node/health", health),
+    (Method::Get, "/eth/v1/node/identity", identity),
+    (Method::Get, "/eth/v1/node/peer_count", not_implemented),
+    (Method::Get, "/eth/v1/node/syncing", syncing),
+    (Method::Get, "/eth/v1/node/version", version),
+    (
+        Method::Post,
+        "/eth/v1/validator/beacon_committee_subscriptions",
+        post_beacon_committee_subscriptions,
+    ),
+    (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),
+    (Method::Post, "/eth/v1/validator/register_validator", post_register_validator),
+    (
+        Method::Post,
+        "/eth/v1/validator/sync_committee_subscriptions",
+        post_sync_committee_subscriptions,
+    ),
+    (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", not_implemented),
+    (Method::Get, "/metrics", metrics),
+];
+
+pub(crate) struct ApiCtx {
+    pub(crate) statics: StaticBodies,
+    pub(crate) state: BeaconStateReader,
+    pub(crate) node_status: NodeStatus,
+}
+
+impl ApiCtx {
+    pub(crate) fn new(
+        keypair: &Keypair,
+        local_enr: &Enr,
+        identify: &Identify,
+        spec: &SpecConfig,
+        state: BeaconStateReader,
+    ) -> Self {
+        Self {
+            statics: StaticBodies::new(keypair, local_enr, identify, spec),
+            state,
+            node_status: NodeStatus::default(),
+        }
+    }
+
+    /// Reads the published state, or answers `code`/`message` while the node
+    /// has published none. Which code that is belongs to the endpoint.
+    pub(crate) fn read_state_or<R>(
+        &self,
+        resp: &mut Response<'_>,
+        code: u16,
+        message: &str,
+        read: impl Fn(StateReadView<'_>) -> R,
+    ) -> Option<R> {
+        let result = self.state.read(&read);
+        if result.is_none() {
+            resp.error(code, message);
+        }
+        result
+    }
+
+    /// Resolves `{state_id}` and reads from the state it names, alongside the
+    /// flags those schemas require beside `data`. `read` runs under the seqlock
+    /// and is re-run whole on retry, so it lifts out what the body needs and
+    /// rendering happens afterwards.
+    pub(crate) fn state_read<R>(
+        &self,
+        req: &Request<'_>,
+        resp: &mut Response<'_>,
+        read: impl Fn(StateReadView<'_>) -> R,
+    ) -> Option<StateRead<R>> {
+        let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
+        if state_id != "head" {
+            if is_recognized_state_id(state_id) {
+                resp.error(404, "state not found");
+            } else {
+                resp.error(400, "invalid state_id");
+            }
+            return None;
+        }
+
+        let execution_optimistic = self.node_status.execution_optimistic();
+        let read = |view: StateReadView<'_>| StateRead {
+            flags: ReadFlags {
+                execution_optimistic,
+                // Genesis is the only state that is its own finalized history:
+                // finalization trails the current epoch, so past genesis the
+                // finalized checkpoint is always behind the state's own slot.
+                finalized: view.slot.state().slot == 0,
+            },
+            data: read(view),
+        };
+        self.read_state_or(resp, 404, "state not found", read)
+    }
+
+    /// A `{state_id}` read whose body is the envelope around `render`, for the
+    /// endpoints that answer whatever the state holds.
+    pub(crate) fn state_response<R>(
+        &self,
+        req: &Request<'_>,
+        resp: &mut Response<'_>,
+        read: impl Fn(StateReadView<'_>) -> R,
+        render: impl FnOnce(&mut Json<'_>, &R),
+    ) {
+        let Some(state) = self.state_read(req, resp, read) else {
+            return;
+        };
+        resp.json_body(|json| json.flagged_envelope(state.flags, |json| render(json, &state.data)));
+    }
+}
+
+/// One state read: the flags describe the snapshot `data` came from.
+pub(crate) struct StateRead<R> {
+    pub(crate) flags: ReadFlags,
+    pub(crate) data: R,
+}
+
+/// Whether `state_id` is one of the forms the schemas define — the `head`,
+/// `genesis`, `justified` and `finalized` keywords, a slot, or a state root.
+/// Anything else identifies no state at all, which the schemas answer 400,
+/// where a recognized form silver cannot serve is a 404.
+fn is_recognized_state_id(state_id: &str) -> bool {
+    matches!(state_id, "head" | "genesis" | "justified" | "finalized") ||
+        parse_uint64(state_id).is_some() ||
+        parse_root(state_id).is_some()
+}
+
+/// The surface a request can name ahead of what silver serves: each of these
+/// routes needs data the node does not yet keep (a block store, the validator
+/// registry, duty shuffling, liveness tracking, in-process peer counts), so
+/// the honest answer is the 501 that tells the client to look elsewhere,
+/// rather than a partial answer assembled from the wrong data.
+fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.error(501, "endpoint not implemented by this beacon node");
+}
+
+fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Some(genesis) =
+        ctx.read_state_or(resp, 404, "Chain genesis info is not yet known", |view| GenesisData {
+            genesis_time: view.imm.genesis_time,
+            genesis_validators_root: view.imm.genesis_validators_root,
+            genesis_fork_version: view.imm.genesis_fork_version,
+        })
+    else {
+        return;
+    };
+    resp.json_body(|json| json.data_envelope(|json| json.genesis(&genesis)));
+}
+
+/// This reads no beacon state, and its schema declares no code but 200, so a
+/// node before bootstrap answers out of the status it has.
+fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let syncing = ctx.node_status.syncing_data();
+    resp.json_body(|json| json.data_envelope(|json| json.syncing(&syncing)));
+}
+
+fn state_fork(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    ctx.state_response(req, resp, |view| *view.epoch.fork(), |json, fork| json.fork(fork));
+}
+
+fn state_finality_checkpoints(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    ctx.state_response(
+        req,
+        resp,
+        |view| {
+            let epoch = view.epoch.state();
+            FinalityCheckpoints {
+                previous_justified: epoch.previous_justified_checkpoint,
+                current_justified: epoch.current_justified_checkpoint,
+                finalized: epoch.finalized_checkpoint,
+            }
+        },
+        |json, checkpoints| json.finality_checkpoints(checkpoints),
+    );
+}
+
+fn identity(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.identity);
+}
+
+fn version(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.version);
+}
+
+fn spec(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.spec);
+}
+
+fn fork_schedule(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.fork_schedule);
+}
+
+fn deposit_contract(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.deposit_contract);
+}
+
+/// Health is the status code and nothing else — the schema gives this
+/// endpoint no response body at any code.
+fn health(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Some(syncing_status) = syncing_status(req.query) else {
+        resp.error(400, "invalid syncing_status");
+        return;
+    };
+    let code = match ctx.node_status.health() {
+        Health::Ready => 200,
+        Health::Syncing => syncing_status,
+        Health::Uninitialized => 503,
+    };
+    resp.status_only(code);
+}
+
+/// The optional `syncing_status` query parameter, which replaces the code a
+/// syncing node reports. `None` for a value outside the 100..=599 the schema
+/// allows, which the spec answers with a 400.
+fn syncing_status(query: &str) -> Option<u16> {
+    let named =
+        Query::new(query).find_map(|(name, value)| (name == "syncing_status").then_some(value));
+    match named {
+        Some(value) => value.parse().ok().filter(|code| (100..=599).contains(code)),
+        None => Some(DEFAULT_SYNCING_STATUS),
+    }
+}
+
+fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.empty(METRICS_CONTENT_TYPE);
+}
+
+/// Never-published reader: `read` yields `None`, as on a node before
+/// bootstrap.
+#[cfg(test)]
+pub(crate) fn preboot_ctx() -> ApiCtx {
+    test_ctx(&SpecConfig::mainnet(), BeaconStateOwner::empty_test(0).reader())
+}
+
+#[cfg(test)]
+pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
+    let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
+    let enr = Enr::builder().build(keypair.secret_key()).unwrap();
+    let mut identify = Identify::default();
+    identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
+    ApiCtx::new(&keypair, &enr, &identify, spec, state)
+}
+
+#[cfg(test)]
+mod tests {
+    use silver_beacon_state_data::{
+        BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
+    };
+    use silver_common::{AGENT_VERSION, ELSyncStatus};
+    use silver_httpcore::ParsedRequest;
+
+    use super::*;
+    use crate::{SlotStatus, router::Router};
+
+    /// Wire bytes the pre-table implementation produced for these exact
+    /// inputs (captured before the table dispatch landed).
+    const GOLDEN_IDENTITY: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 478\r\n\r\n{\"data\":{\"peer_id\":\"16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi\",\"enr\":\"enr:-HW4QFVim6voTojjE-JbeUF0GPFRcqmWxgqgJ8-tXE5hh9PFTQSCwUJPHY_61U3Wvzi6OGrvJfb6KNjNpw4Q18sNL_sBgmlkgnY0iXNlY3AyNTZrMaEDG4TFVnsSZECZXT7VqroFZdceGDRgSBn_nBf16dXdB48\",\"p2p_addresses\":[\"/ip4/1.2.3.4/tcp/9000/p2p/16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi\"],\"discovery_addresses\":[],\"metadata\":{\"seq_number\":\"1\",\"attnets\":\"0x0000000000000000\",\"syncnets\":\"0x00\",\"custody_group_count\":\"4\"}}}";
+
+    fn get(router: &Router, ctx: &ApiCtx, path: &str) -> Vec<u8> {
+        query_get(router, ctx, path, "")
+    }
+
+    fn query_get(router: &Router, ctx: &ApiCtx, path: &str, query: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        let req = ParsedRequest {
+            method: "GET",
+            path,
+            query,
+            body: b"",
+            accept: None,
+            content_type: None,
+            eth_consensus_version: None,
+            version: 1,
+            keep_alive: true,
+        };
+        router.dispatch(&req, ctx, &mut out);
+        out
+    }
+
+    fn body(response: &[u8]) -> &[u8] {
+        let s = std::str::from_utf8(response).unwrap();
+        &response[s.find("\r\n\r\n").unwrap() + 4..]
+    }
+
+    #[test]
+    fn identity_wire_bytes_match_pre_table_implementation() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/identity");
+        assert_eq!(std::str::from_utf8(&resp).unwrap(), GOLDEN_IDENTITY);
+    }
+
+    #[test]
+    fn identity_content_length_matches_body() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/identity");
+        let s = std::str::from_utf8(&resp).unwrap();
+        let header_end = s.find("\r\n\r\n").unwrap();
+        let cl: usize = s[..header_end]
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+            .unwrap()
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(cl, s[header_end + 4..].len());
+    }
+
+    #[test]
+    fn version_body_carries_this_build_s_agent_version() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/version");
+        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
+        assert_eq!(
+            std::str::from_utf8(body(&resp)).unwrap(),
+            format!("{{\"data\":{{\"version\":\"{AGENT_VERSION}\"}}}}")
+        );
+    }
+
+    /// Config is boot-time data, so these three answer before the node has a
+    /// state to read — a validator client polls them while silver is still
+    /// syncing.
+    #[test]
+    fn config_endpoints_answer_before_bootstrap() {
+        let router = Router::new(ROUTES);
+        for path in [
+            "/eth/v1/config/spec",
+            "/eth/v1/config/fork_schedule",
+            "/eth/v1/config/deposit_contract",
+        ] {
+            let resp = get(&router, &preboot_ctx(), path);
+            assert!(
+                resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+                "{path}"
+            );
+            let parsed: serde_json::Value = serde_json::from_slice(body(&resp)).expect(path);
+            assert!(parsed.get("data").is_some(), "{path}");
+            assert_eq!(parsed.as_object().unwrap().len(), 1, "{path}: bare data wrapper");
+        }
+    }
+
+    fn ready() -> NodeStatus {
+        NodeStatus {
+            slots: Some(SlotStatus { head_slot: 100, wall_slot: 100, head_optimistic: false }),
+            syncing: false,
+            el: ELSyncStatus::Synced,
+        }
+    }
+
+    fn head_at(head_slot: u64, wall_slot: u64) -> NodeStatus {
+        NodeStatus {
+            slots: Some(SlotStatus { head_slot, wall_slot, head_optimistic: false }),
+            ..ready()
+        }
+    }
+
+    fn health_response(status: NodeStatus, query: &str) -> Vec<u8> {
+        let mut ctx = preboot_ctx();
+        ctx.node_status = status;
+        query_get(&Router::new(ROUTES), &ctx, "/eth/v1/node/health", query)
+    }
+
+    #[test]
+    fn health_is_503_until_the_first_slot_status_arrives() {
+        assert_eq!(
+            health_response(NodeStatus::default(), ""),
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn health_is_200_only_when_both_layers_are_synced() {
+        assert_eq!(health_response(ready(), ""), b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+
+        for el in [ELSyncStatus::Unknown, ELSyncStatus::Syncing, ELSyncStatus::Offline] {
+            let resp = health_response(NodeStatus { el, ..ready() }, "");
+            assert!(resp.starts_with(b"HTTP/1.1 206 Partial Content\r\n"), "{el:?}");
+        }
+        let resp = health_response(NodeStatus { syncing: true, ..ready() }, "");
+        assert_eq!(resp, b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n");
+    }
+
+    #[test]
+    fn syncing_status_replaces_the_206_and_nothing_else() {
+        let syncing = NodeStatus { syncing: true, ..ready() };
+        assert!(health_response(syncing, "syncing_status=200").starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(health_response(syncing, "syncing_status=503").starts_with(b"HTTP/1.1 503 "));
+        assert!(health_response(ready(), "syncing_status=503").starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(
+            health_response(NodeStatus::default(), "syncing_status=200")
+                .starts_with(b"HTTP/1.1 503 ")
+        );
+        assert!(health_response(syncing, "other=1").starts_with(b"HTTP/1.1 206 "));
+    }
+
+    /// A code the schema allows but this API has no phrase for still frames,
+    /// with the empty reason phrase RFC 9112 §4.1 permits.
+    #[test]
+    fn a_syncing_status_with_no_reason_phrase_still_frames() {
+        let syncing = NodeStatus { syncing: true, ..ready() };
+        assert_eq!(
+            health_response(syncing, "syncing_status=250"),
+            b"HTTP/1.1 250 \r\nContent-Length: 0\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn a_syncing_status_outside_the_schema_s_range_is_a_400() {
+        for query in [
+            "syncing_status=99",
+            "syncing_status=600",
+            "syncing_status=",
+            "syncing_status=abc",
+            "syncing_status=-1",
+            "syncing_status=70000",
+        ] {
+            let resp = health_response(ready(), query);
+            assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{query}");
+            assert_eq!(
+                body(&resp),
+                br#"{"code":400,"message":"invalid syncing_status"}"#,
+                "{query}"
+            );
+        }
+    }
+
+    /// Both node-status endpoints answer from `NodeStatus` alone, so a
+    /// never-published reader is the whole context they need.
+    fn status_body(status: NodeStatus, path: &str) -> String {
+        let mut ctx = preboot_ctx();
+        ctx.node_status = status;
+        let resp = get(&Router::new(ROUTES), &ctx, path);
+        assert!(
+            resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+            "{path}: {}",
+            String::from_utf8_lossy(&resp)
+        );
+        String::from_utf8(body(&resp).to_vec()).unwrap()
+    }
+
+    fn syncing_data(status: NodeStatus) -> serde_json::Value {
+        let body = status_body(status, "/eth/v1/node/syncing");
+        let mut parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        parsed["data"].take()
+    }
+
+    /// Body shape: `apis/node/syncing.yaml` — five required fields, slots
+    /// quoted and flags bare.
+    #[test]
+    fn syncing_body_reports_the_head_and_both_layers() {
+        assert_eq!(
+            status_body(ready(), "/eth/v1/node/syncing"),
+            "{\"data\":{\"head_slot\":\"100\",\"sync_distance\":\"0\",\"is_syncing\":false,\
+             \"is_optimistic\":false,\"el_offline\":false}}"
+        );
+    }
+
+    /// `syncing.yaml` declares no 503, and a node with nothing published has
+    /// an answer: no head, the farthest distance the schema can carry, and
+    /// every flag in the not-usable direction.
+    #[test]
+    fn syncing_answers_before_bootstrap_as_a_node_with_no_head() {
+        assert_eq!(
+            status_body(NodeStatus::default(), "/eth/v1/node/syncing"),
+            "{\"data\":{\"head_slot\":\"0\",\"sync_distance\":\"18446744073709551615\",\
+             \"is_syncing\":true,\"is_optimistic\":true,\"el_offline\":true}}"
+        );
+    }
+
+    /// The sync flag answers for the head this node is *chasing*: the control
+    /// tile publishes a `SyncUpdate` only when its target changes, so a node
+    /// that has found no peer to sync from carries `syncing: false` however
+    /// far behind the chain it falls.
+    #[test]
+    fn is_syncing_is_true_past_the_head_tolerance_whatever_the_sync_flag() {
+        assert_eq!(syncing_data(NodeStatus { syncing: true, ..ready() })["is_syncing"], true);
+        let within = syncing_data(head_at(992, 1_000));
+        assert_eq!(within["is_syncing"], false, "within the head tolerance");
+        assert_eq!(syncing_data(head_at(991, 1_000))["is_syncing"], true, "past the tolerance");
+        assert_eq!(
+            syncing_data(head_at(10, 1_000_000))["is_syncing"],
+            true,
+            "a node that never found a peer to sync from is still syncing"
+        );
+    }
+
+    /// One node, one answer: a validator client gating on `/node/health` and
+    /// reading the head from `/node/syncing` must not see the two disagree.
+    #[test]
+    fn health_reports_syncing_wherever_the_syncing_endpoint_does() {
+        let far_behind = head_at(10, 1_000_000);
+        assert_eq!(syncing_data(far_behind)["is_syncing"], true);
+        assert!(health_response(far_behind, "").starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
+    }
+
+    /// The same flag the state envelopes carry: the head's own execution
+    /// status, not a constant and not a reading of the node's sync state.
+    #[test]
+    fn syncing_is_optimistic_is_the_head_s_own_status() {
+        assert_eq!(syncing_data(with_head_optimistic(true))["is_optimistic"], true);
+        assert_eq!(syncing_data(with_head_optimistic(false))["is_optimistic"], false);
+        let syncing_node = NodeStatus { syncing: true, ..with_head_optimistic(false) };
+        assert_eq!(syncing_data(syncing_node)["is_optimistic"], false);
+        let offline_el = NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) };
+        assert_eq!(syncing_data(offline_el)["is_optimistic"], false);
+    }
+
+    /// An EL that answered a healthcheck is reachable whatever it answered;
+    /// one that has never answered is no more reachable than a failed one.
+    #[test]
+    fn el_offline_is_true_only_while_the_el_has_answered_nothing() {
+        for (el, offline) in [
+            (ELSyncStatus::Unknown, true),
+            (ELSyncStatus::Offline, true),
+            (ELSyncStatus::Syncing, false),
+            (ELSyncStatus::Synced, false),
+        ] {
+            let data = syncing_data(NodeStatus { el, ..ready() });
+            assert_eq!(data["el_offline"], offline, "{el:?}");
+            assert_eq!(data["is_syncing"], false, "{el:?}: the EL is not the node's own sync");
+        }
+    }
+
+    #[test]
+    fn sync_distance_is_the_wall_clock_gap_and_never_underflows() {
+        assert_eq!(syncing_data(head_at(90, 100))["sync_distance"], "10");
+        assert_eq!(syncing_data(head_at(100, 100))["sync_distance"], "0");
+        let head_ahead = syncing_data(head_at(101, 100));
+        assert_eq!(head_ahead["sync_distance"], "0", "head ahead of the wall slot");
+        assert_eq!(syncing_data(head_at(0, u64::MAX))["sync_distance"], "18446744073709551615");
+    }
+
+    /// Every stubbed route answers 501 whatever the node's state: routed, so
+    /// a client can tell "this node does not serve it" (501) from "no such
+    /// endpoint exists" (404).
+    #[test]
+    fn stubbed_routes_answer_501_not_404() {
+        let router = Router::new(ROUTES);
+        let ctx = preboot_ctx();
+        for (method, path) in [
+            ("GET", "/eth/v1/beacon/blocks/head/root"),
+            ("GET", "/eth/v1/beacon/headers/head"),
+            ("GET", "/eth/v1/beacon/states/head/validators"),
+            ("POST", "/eth/v1/beacon/states/head/validators"),
+            ("GET", "/eth/v1/beacon/states/head/validators/0"),
+            ("GET", "/eth/v1/node/peer_count"),
+            ("GET", "/eth/v1/validator/duties/proposer/0"),
+            ("POST", "/eth/v1/validator/duties/sync/0"),
+            ("POST", "/eth/v1/validator/liveness/0"),
+            ("GET", "/eth/v2/validator/duties/proposer/0"),
+        ] {
+            let mut out = Vec::new();
+            let req = ParsedRequest {
+                method,
+                path,
+                query: "",
+                body: b"[]",
+                accept: None,
+                content_type: Some("application/json"),
+                eth_consensus_version: None,
+                version: 1,
+                keep_alive: true,
+            };
+            router.dispatch(&req, &ctx, &mut out);
+            assert!(out.starts_with(b"HTTP/1.1 501 Not Implemented\r\n"), "{method} {path}");
+            assert_eq!(
+                body(&out),
+                br#"{"code":501,"message":"endpoint not implemented by this beacon node"}"#,
+                "{method} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn metrics_response_valid_prometheus_format() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/metrics");
+        let s = std::str::from_utf8(&resp).unwrap();
+        assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
+        assert_eq!(body(&resp), b"");
+    }
+
+    #[test]
+    fn unknown_path_returns_404() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/not/real");
+        assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    }
+
+    #[test]
+    fn events_returns_404_v1_defers_sse_clients_poll() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/eth/v1/events");
+        assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    }
+
+    /// First slot of the epoch two past [`epoch_state`]'s finalized
+    /// checkpoint — normal operation, where head is not the finalized state.
+    const HEAD_SLOT: u64 = 12_345 * SLOTS_PER_EPOCH;
+
+    fn epoch_state() -> EpochState {
+        EpochState {
+            fork: Fork {
+                previous_version: [0x05, 0x00, 0x00, 0x00],
+                current_version: [0x06, 0x00, 0x00, 0x00],
+                epoch: 269_568,
+            },
+            previous_justified_checkpoint: Checkpoint { epoch: 12_344, root: [0x01; 32] },
+            current_justified_checkpoint: Checkpoint { epoch: 12_345, root: [0x02; 32] },
+            finalized_checkpoint: Checkpoint { epoch: 12_343, root: [0x03; 32] },
+            ..Default::default()
+        }
+    }
+
+    /// A synced node with its one state published — every distinct value these
+    /// endpoints read is set, so a golden catches a swapped field.
+    fn published_ctx(epoch: EpochState, slot: u64) -> ApiCtx {
+        let mut state = BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], slot);
+        state.immutable.genesis_time = 1_606_824_023;
+        state.immutable.genesis_validators_root = [0x4b; 32];
+        state.immutable.genesis_fork_version = [0x00, 0x00, 0x00, 0x01];
+
+        let mut owner = BeaconStateOwner::new(state);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+
+        let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
+        ctx.node_status = ready();
+        ctx
+    }
+
+    fn state_paths(state_id: &str) -> [String; 2] {
+        [
+            format!("/eth/v1/beacon/states/{state_id}/fork"),
+            format!("/eth/v1/beacon/states/{state_id}/finality_checkpoints"),
+        ]
+    }
+
+    fn state_body(ctx: &ApiCtx, path: &str) -> String {
+        let resp = get(&Router::new(ROUTES), ctx, path);
+        assert!(
+            resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+            "{path}: {}",
+            String::from_utf8_lossy(&resp)
+        );
+        String::from_utf8(body(&resp).to_vec()).unwrap()
+    }
+
+    /// Body shape: `apis/beacon/genesis.yaml` — a bare `data` wrapper, the one
+    /// state read that carries no envelope flags.
+    #[test]
+    fn genesis_body_is_a_bare_data_wrapper() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        assert_eq!(
+            state_body(&ctx, "/eth/v1/beacon/genesis"),
+            "{\"data\":{\"genesis_time\":\"1606824023\",\
+             \"genesis_validators_root\":\"0x4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\",\
+             \"genesis_fork_version\":\"0x00000001\"}}"
+        );
+    }
+
+    /// Body shape: `apis/beacon/states/fork.yaml`.
+    #[test]
+    fn state_fork_body_is_the_envelope_around_the_fork() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        assert_eq!(
+            state_body(&ctx, "/eth/v1/beacon/states/head/fork"),
+            "{\"execution_optimistic\":false,\"finalized\":false,\
+             \"data\":{\"previous_version\":\"0x05000000\",\"current_version\":\"0x06000000\",\
+             \"epoch\":\"269568\"}}"
+        );
+    }
+
+    /// Body shape: `apis/beacon/states/finality_checkpoints.yaml`.
+    #[test]
+    fn finality_checkpoints_body_is_the_envelope_around_three_checkpoints() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        assert_eq!(
+            state_body(&ctx, "/eth/v1/beacon/states/head/finality_checkpoints"),
+            "{\"execution_optimistic\":false,\"finalized\":false,\"data\":{\
+             \"previous_justified\":{\"epoch\":\"12344\",\
+             \"root\":\"0x0101010101010101010101010101010101010101010101010101010101010101\"},\
+             \"current_justified\":{\"epoch\":\"12345\",\
+             \"root\":\"0x0202020202020202020202020202020202020202020202020202020202020202\"},\
+             \"finalized\":{\"epoch\":\"12343\",\
+             \"root\":\"0x0303030303030303030303030303030303030303030303030303030303030303\"}}}"
+        );
+    }
+
+    fn assert_state_not_found(ctx: &ApiCtx, state_id: &str) {
+        for path in state_paths(state_id) {
+            let resp = get(&Router::new(ROUTES), ctx, &path);
+            assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{path}");
+            assert_eq!(body(&resp), br#"{"code":404,"message":"state not found"}"#, "{path}");
+        }
+    }
+
+    /// Silver publishes one state, the head. `justified` and `finalized` name
+    /// states it does not keep, and their checkpoints differ from the head's,
+    /// so answering them with head data would be a wrong answer rather than a
+    /// missing one.
+    #[test]
+    fn only_head_reads_the_published_state() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        for path in state_paths("head") {
+            assert!(state_body(&ctx, &path).starts_with("{\"execution_optimistic\":false,"));
+        }
+        assert_state_not_found(&ctx, "justified");
+        assert_state_not_found(&ctx, "finalized");
+    }
+
+    /// A state silver does not keep — no historical states, and the head is
+    /// the only one published; a slot or root form is 404 even when it is the
+    /// published state's own, which nothing here can check.
+    #[test]
+    fn a_state_id_naming_a_state_silver_does_not_keep_is_404() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        let head_slot = HEAD_SLOT.to_string();
+        for state_id in ["genesis", "0", &head_slot, &format!("0x{}", "ab".repeat(32))] {
+            assert_state_not_found(&ctx, state_id);
+        }
+    }
+
+    /// `Invalid state ID` in the schemas: a value that identifies no state at
+    /// all is a 400, not the 404 an unavailable state gets.
+    #[test]
+    fn a_state_id_naming_no_state_at_all_is_400() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        let short_root = format!("0x{}", "ab".repeat(31));
+        let unhex_root = format!("0x{}", "zz".repeat(32));
+        for state_id in
+            ["current", "banana", "", "-1", "+5", "0x", "1.5", &short_root, &unhex_root, "HEAD"]
+        {
+            for path in state_paths(state_id) {
+                let resp = get(&Router::new(ROUTES), &ctx, &path);
+                assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
+                assert_eq!(body(&resp), br#"{"code":400,"message":"invalid state_id"}"#, "{path}");
+            }
+        }
+    }
+
+    /// Neither endpoint's schema declares a 503, so a node with no state
+    /// published answers 404 — genesis with the phrase its own schema names.
+    #[test]
+    fn state_reads_are_404_before_bootstrap() {
+        let ctx = preboot_ctx();
+        let resp = get(&Router::new(ROUTES), &ctx, "/eth/v1/beacon/genesis");
+        assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+        assert_eq!(body(&resp), br#"{"code":404,"message":"Chain genesis info is not yet known"}"#);
+        assert_state_not_found(&ctx, "head");
+    }
+
+    /// The `state_id` verdict does not depend on there being a state to read.
+    #[test]
+    fn an_invalid_state_id_is_answered_before_the_state_is_read() {
+        for path in state_paths("banana") {
+            let resp = get(&Router::new(ROUTES), &preboot_ctx(), &path);
+            assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
+        }
+    }
+
+    fn with_head_optimistic(head_optimistic: bool) -> NodeStatus {
+        let ready = ready();
+        NodeStatus { slots: Some(SlotStatus { head_optimistic, ..ready.slots.unwrap() }), ..ready }
+    }
+
+    /// The envelope flag is the head's own execution status, not a reading of
+    /// how far behind the node is: an unverified head is optimistic with both
+    /// layers reporting themselves synced, and a verified one is not while they
+    /// do not. A state read served before the first status announces a head is
+    /// optimistic — nothing has vouched for that head's payload yet.
+    #[test]
+    fn execution_optimistic_is_the_head_s_own_status() {
+        let mut ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        for (status, want) in [
+            (with_head_optimistic(true), "true"),
+            (with_head_optimistic(false), "false"),
+            (NodeStatus { syncing: true, ..with_head_optimistic(false) }, "false"),
+            (NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) }, "false"),
+            (NodeStatus { syncing: true, ..with_head_optimistic(true) }, "true"),
+            (NodeStatus::default(), "true"),
+        ] {
+            ctx.node_status = status;
+            for path in state_paths("head") {
+                assert!(
+                    state_body(&ctx, &path)
+                        .starts_with(&format!("{{\"execution_optimistic\":{want},")),
+                    "{status:?} {path}"
+                );
+            }
+        }
+    }
+
+    /// `finalized` describes the state served, and genesis is the only state
+    /// that is its own finalized history.
+    #[test]
+    fn finalized_is_true_only_for_the_genesis_state() {
+        let genesis_epoch = EpochState {
+            previous_justified_checkpoint: Checkpoint::default(),
+            current_justified_checkpoint: Checkpoint::default(),
+            finalized_checkpoint: Checkpoint::default(),
+            ..epoch_state()
+        };
+        let at_genesis = published_ctx(genesis_epoch, 0);
+        let past_genesis = published_ctx(epoch_state(), HEAD_SLOT);
+        for path in state_paths("head") {
+            let flags = "{\"execution_optimistic\":false,\"finalized\":";
+            assert!(state_body(&at_genesis, &path).starts_with(&format!("{flags}true,")));
+            assert!(state_body(&past_genesis, &path).starts_with(&format!("{flags}false,")));
+        }
+    }
+}

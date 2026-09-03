@@ -20,7 +20,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 
 use crate::{
     bls,
-    fork_choice::{FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
+    fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
     merkle, ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
@@ -415,11 +415,10 @@ impl BeaconStateTile {
         );
     }
 
-    fn status_payload(&mut self) -> [u8; STATUS_V2_SIZE] {
+    fn status_payload(&mut self, head_root: B256, head_idx: Option<usize>) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
 
-        let head_root = self.fork_choice.find_head();
-        let (slot, mut finalized) = match self.fork_choice.find_node_idx(&head_root) {
+        let (slot, mut finalized) = match head_idx {
             Some(idx) => {
                 let n = self.fork_choice.node(idx);
                 (n.slot, n.checkpoints.finalized)
@@ -458,10 +457,17 @@ impl BeaconStateTile {
     }
 
     fn status_event(&mut self) -> BeaconStateEvent {
+        let head_root = self.fork_choice.find_head();
+        let head_idx = self.fork_choice.find_node_idx(&head_root);
+        let head_optimistic = head_idx.is_none_or(|idx| {
+            self.fork_choice.node(idx).execution_status != ExecutionStatus::Valid
+        });
+
         BeaconStateEvent::Status {
-            ssz: self.status_payload(),
+            ssz: self.status_payload(head_root, head_idx),
             latest_block_slot: self.last_applied_block_slot(),
             wall_slot: self.ticker.current_slot(),
+            head_optimistic,
             enr_fork_id: self.enr_fork_id(),
         }
     }

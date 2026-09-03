@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 pub use chain_config::ChainConfig;
@@ -35,6 +35,10 @@ const fn default_u32<const V: u32>() -> u32 {
 
 const fn default_u64<const V: u64>() -> u64 {
     V
+}
+
+fn default_beacon_api_bind() -> Vec<String> {
+    vec!["0.0.0.0:5051".into()]
 }
 
 fn default_data_dir() -> String {
@@ -140,6 +144,16 @@ pub struct Config {
     data_storage_dir: String,
     #[serde(default)]
     engine_config: EngineConfig,
+    /// Each entry is a TCP `addr:port` or a unix socket path; the API serves
+    /// all of them at once.
+    #[serde(default = "default_beacon_api_bind")]
+    beacon_api_bind: Vec<String>,
+    #[serde(default = "default_usize::<64>")]
+    beacon_api_max_connections: usize,
+    /// Refreshed by any byte read or written, so a slow but progressing
+    /// transfer never trips it.
+    #[serde(default = "default_u64::<75>")]
+    beacon_api_idle_timeout_secs: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
 }
@@ -175,6 +189,9 @@ impl Config {
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),
+            beacon_api_bind: default_beacon_api_bind(),
+            beacon_api_max_connections: 64,
+            beacon_api_idle_timeout_secs: 75,
             disable_weak_subjectivity_check: false,
         }
     }
@@ -184,7 +201,19 @@ impl Config {
     /// external IP, ports, secret key) here, so no source edits are needed.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let text = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&text)?)
+        let config: Self = toml::from_str(&text)?;
+
+        let spec = &config.chain_config.spec;
+        if let Some(network) = spec.misnamed_network() {
+            tracing::warn!(
+                config_name = %spec.network_name(),
+                genesis_fork_version = %hex::encode(spec.genesis_fork_version),
+                network,
+                "CONFIG_NAME disagrees with the network GENESIS_FORK_VERSION names"
+            );
+        }
+
+        Ok(config)
     }
 
     pub fn with_discovery_port(mut self, port: u16) -> Self {
@@ -224,6 +253,21 @@ impl Config {
 
     pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
         self.engine_config.unsafe_no_el = unsafe_no_el;
+        self
+    }
+
+    pub fn with_beacon_api_bind(mut self, binds: Vec<String>) -> Self {
+        self.beacon_api_bind = binds;
+        self
+    }
+
+    pub fn with_beacon_api_max_connections(mut self, max: usize) -> Self {
+        self.beacon_api_max_connections = max;
+        self
+    }
+
+    pub fn with_beacon_api_idle_timeout_secs(mut self, secs: u64) -> Self {
+        self.beacon_api_idle_timeout_secs = secs;
         self
     }
 
@@ -377,6 +421,18 @@ impl Config {
         self.engine_config.clone()
     }
 
+    pub fn beacon_api_bind(&self) -> &[String] {
+        &self.beacon_api_bind
+    }
+
+    pub fn beacon_api_max_connections(&self) -> usize {
+        self.beacon_api_max_connections
+    }
+
+    pub fn beacon_api_idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.beacon_api_idle_timeout_secs)
+    }
+
     pub fn disable_weak_subjectivity_check(&self) -> bool {
         self.disable_weak_subjectivity_check
     }
@@ -411,6 +467,77 @@ mod tests {
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
         assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
+        assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
+        assert_eq!(cfg.beacon_api_max_connections(), 64);
+        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
+    }
+
+    /// A devnet copying mainnet's `CONFIG_NAME` still runs — `from_file`
+    /// warns about the contradiction rather than rejecting the file, since
+    /// only the operator can say which half is the typo.
+    #[test]
+    fn a_config_name_contradicting_its_fork_version_still_loads() {
+        let path =
+            std::env::temp_dir().join(format!("silver_misnamed_{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"
+            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
+            fork_digest = "8c9f62fe"
+            next_fork_version = "06000000"
+
+            [chain_config.spec]
+            CONFIG_NAME = "mainnet"
+            GENESIS_FORK_VERSION = "0x10000910"
+        "#,
+        )
+        .unwrap();
+
+        let cfg = Config::from_file(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(cfg.chain_config.spec.misnamed_network(), Some("hoodi"));
+        assert_eq!(cfg.chain_config.spec.network_name(), "mainnet");
+    }
+
+    #[test]
+    fn beacon_api_bind_toml_array_keeps_every_entry() {
+        let toml_str = r#"
+            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
+            fork_digest = "8c9f62fe"
+            next_fork_version = "06000000"
+            beacon_api_bind = ["0.0.0.0:5051", "127.0.0.1:5052", "/run/silver/beacon.sock"]
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.beacon_api_bind(), [
+            "0.0.0.0:5051",
+            "127.0.0.1:5052",
+            "/run/silver/beacon.sock"
+        ]);
+    }
+
+    #[test]
+    fn builder_sets_beacon_api_bind() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
+        let cfg = cfg.with_beacon_api_bind(vec!["/run/beacon.sock".into()]);
+        assert_eq!(cfg.beacon_api_bind(), ["/run/beacon.sock"]);
+    }
+
+    #[test]
+    fn builder_sets_beacon_api_max_connections() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        assert_eq!(cfg.beacon_api_max_connections(), 64);
+        let cfg = cfg.with_beacon_api_max_connections(2);
+        assert_eq!(cfg.beacon_api_max_connections(), 2);
+    }
+
+    #[test]
+    fn builder_sets_beacon_api_idle_timeout() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
+        let cfg = cfg.with_beacon_api_idle_timeout_secs(5);
+        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(5));
     }
 
     /// discv5 peers silently drop records over 300 bytes — an oversized ENR

@@ -26,10 +26,9 @@ pub(crate) use epoch::{
     is_valid_builder_deposit_signature, unrealized_checkpoints,
 };
 pub use epoch::{
-    EPOCHS_PER_ETH1_VOTING_PERIOD, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD,
-    MAX_PENDING_DEPOSITS_PER_EPOCH, integer_sqrt, is_valid_deposit_signature,
-    process_effective_balance_updates, process_epoch, process_eth1_data_reset,
-    process_historical_summaries_update, process_inactivity_updates,
+    EPOCHS_PER_ETH1_VOTING_PERIOD, HISTORICAL_SUMMARY_PERIOD, MAX_PENDING_DEPOSITS_PER_EPOCH,
+    integer_sqrt, is_valid_deposit_signature, process_effective_balance_updates, process_epoch,
+    process_eth1_data_reset, process_historical_summaries_update, process_inactivity_updates,
     process_justification_and_finalization, process_participation_flag_updates,
     process_pending_consolidations, process_pending_deposits, process_proposer_lookahead,
     process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,

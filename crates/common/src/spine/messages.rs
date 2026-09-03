@@ -726,6 +726,7 @@ pub enum BeaconStateEvent {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
         wall_slot: u64,
+        head_optimistic: bool,
         enr_fork_id: [u8; 16],
     },
     EnvelopeAvailable {
@@ -1020,9 +1021,10 @@ pub enum EngineResp {
 }
 
 /// Sync status of the attached execution layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ELSyncStatus {
+    #[default]
     Unknown = 0,
     Syncing = 1,
     Synced = 2,

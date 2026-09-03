@@ -4427,6 +4427,7 @@ dependencies = [
  "mimalloc",
  "quinn-proto",
  "rand 0.8.6",
+ "silver_application_boundary",
  "silver_beacon_state",
  "silver_beacon_state_data",
  "silver_columns",
@@ -4434,11 +4435,43 @@ dependencies = [
  "silver_config",
  "silver_control",
  "silver_discovery",
- "silver_engine",
  "silver_gossip",
+ "silver_httpcore",
  "silver_network",
  "silver_peer",
  "silver_storage",
+ "tracing",
+]
+
+[[package]]
+name = "silver_application_boundary"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "hex",
+ "serde_json",
+ "silver_beacon_api",
+ "silver_beacon_state_data",
+ "silver_common",
+ "silver_config",
+ "silver_engine_api",
+ "silver_httpcore",
+ "tempfile",
+]
+
+[[package]]
+name = "silver_beacon_api"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "mio",
+ "serde",
+ "serde_json",
+ "silver_beacon_state_data",
+ "silver_common",
+ "silver_httpcore",
+ "tempfile",
+ "toml",
  "tracing",
 ]
 
@@ -4491,6 +4524,7 @@ version = "0.0.1"
 dependencies = [
  "hex",
  "serde",
+ "toml",
 ]
 
 [[package]]
@@ -4560,6 +4594,7 @@ dependencies = [
  "silver_chain_spec",
  "silver_common",
  "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -4634,7 +4669,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "silver_engine"
+name = "silver_engine_api"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
@@ -4648,7 +4683,10 @@ dependencies = [
  "sha2",
  "silver_common",
  "silver_config",
+ "silver_engine_api",
+ "silver_httpcore",
  "simd-json",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
@@ -4672,6 +4710,16 @@ dependencies = [
  "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "silver_httpcore"
+version = "0.0.1"
+dependencies = [
+ "httparse",
+ "mio",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

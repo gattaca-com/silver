@@ -27,3 +27,12 @@ payloads.
 A transport-free library living inside a tile that owns the loop. Hosted
 crates are hardcoded into their tile, not plugins.
 _Avoid_: plugin, sub-tile, service.
+
+**Beacon API**:
+The standard Ethereum REST API a beacon node serves; validator clients are
+the primary consumers. Served by the `beacon_api` hosted crate.
+
+**Engine API**:
+The standard JSON-RPC protocol between a beacon node and its execution
+client. Called by the `engine_api` hosted crate.
+_Avoid_: bare "engine" (ambiguous with the execution client itself).

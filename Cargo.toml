@@ -1,5 +1,7 @@
 [workspace]
 members = [
+  "crates/application_boundary",
+  "crates/beacon_api",
   "crates/beacon_state/data",
   "crates/beacon_state/tile",
   "crates/bin",
@@ -11,7 +13,8 @@ members = [
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
-  "crates/engine",
+  "crates/httpcore",
+  "crates/engine_api",
   "crates/metrics",
   "crates/network",
   "crates/peer",
@@ -67,6 +70,8 @@ inherits = "dev"
 opt-level = 3
 
 [workspace.dependencies]
+silver_application_boundary = { path = "crates/application_boundary" }
+silver_beacon_api = { path = "crates/beacon_api" }
 silver_beacon_state = { path = "crates/beacon_state/tile" }
 silver_beacon_state_data = { path = "crates/beacon_state/data" }
 silver_chain_spec = { path = "crates/config/chain_spec" }
@@ -79,10 +84,11 @@ silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
+silver_httpcore = { path = "crates/httpcore" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
-silver_engine = { path = "crates/engine"}
+silver_engine_api = { path = "crates/engine_api" }
 flux = { git = "https://github.com/gattaca-com/flux", rev = "b5fbdf6f3e52feb785a527d5c3bba90fee2a56e4"}
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "b5fbdf6f3e52feb785a527d5c3bba90fee2a56e4", features = ["bytes"]}
 flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "b5fbdf6f3e52feb785a527d5c3bba90fee2a56e4"}

@@ -3,11 +3,12 @@ use core::cmp::min;
 use flux_profiler::timed;
 pub(crate) use silver_beacon_state_data::EFFECTIVE_BALANCE_INCREMENT;
 use silver_beacon_state_data::{
-    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochBalances, EpochView,
-    EpochWriteView, Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
-    MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS, PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE,
-    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotStateWriteView,
-    SpecConfig, StateWriterView, TIMELY_TARGET_FLAG, ValidatorsView,
+    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, EPOCHS_PER_SYNC_COMMITTEE_PERIOD,
+    Epoch, EpochBalances, EpochView, EpochWriteView, Eth1WriteView, HistoricalSummary,
+    LongtailGroup, LongtailId, LongtailWriteView, MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS,
+    PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+    SYNC_COMMITTEE_SIZE, SlotStateWriteView, SpecConfig, StateWriterView, TIMELY_TARGET_FLAG,
+    ValidatorsView,
 };
 
 use crate::{
@@ -25,7 +26,6 @@ use crate::{
 };
 
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
-pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 
 pub(crate) const WEIGHT_DENOMINATOR: u64 = 64;
 pub(crate) const PROPOSER_WEIGHT: u64 = 8;

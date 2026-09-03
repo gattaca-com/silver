@@ -156,6 +156,7 @@ impl Node {
             ssz,
             latest_block_slot: slot - 1,
             wall_slot: slot,
+            head_optimistic: false,
             enr_fork_id: [0u8; 16],
         });
         self.turn();
