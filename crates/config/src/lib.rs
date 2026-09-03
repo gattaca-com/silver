@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
-        assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
+        assert_eq!(cfg.gossip_topics().unwrap().len(), 9);
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));

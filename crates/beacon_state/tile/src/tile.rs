@@ -26,6 +26,7 @@ use crate::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots, orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
+        sync_contribution_pool::SyncContributionPool,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -42,6 +43,7 @@ mod orphan_pool;
 mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
+mod sync_contribution_pool;
 
 /// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
 const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
@@ -128,6 +130,7 @@ pub struct BeaconStateTile {
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
     vote_sig_batch: bls::SigBatch,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
+    sync_contribution_pool: SyncContributionPool,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
     fork_data_roots: ForkDataRoots,
@@ -225,6 +228,7 @@ impl BeaconStateTile {
             vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             vote_sig_batch: bls::SigBatch::new(),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
+            sync_contribution_pool: SyncContributionPool::new(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
             attestation_root_memo: AttestationRootMemo::default(),
@@ -549,6 +553,7 @@ impl BeaconStateTile {
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
         self.attestation_pool.prune_before(floor);
+        self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
         advanced
