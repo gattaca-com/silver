@@ -13,7 +13,11 @@ use silver_common::{
 use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
 use super::{BeaconStateTile, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers};
-use crate::{stf, tile::Feedback};
+use crate::{
+    bls::{self, CheckedSignature},
+    stf,
+    tile::{Feedback, gossip::PreparedPtc},
+};
 
 impl BeaconStateTile {
     /// Rebuild fork choice's justified-balance snapshot when its justified
@@ -140,12 +144,7 @@ impl BeaconStateTile {
         }
     }
 
-    pub(super) fn prepare_ptc(
-        &mut self,
-        ssz: &[u8],
-    ) -> Result<crate::tile::gossip::PreparedPtc, Feedback> {
-        use crate::bls::{self, CheckedSignature};
-
+    pub(super) fn prepare_ptc(&mut self, ssz: &[u8]) -> Result<PreparedPtc, Feedback> {
         if ssz.len() != PAYLOAD_ATTESTATION_MESSAGE_SIZE {
             return Err(Feedback::Reject(None));
         }
@@ -213,7 +212,7 @@ impl BeaconStateTile {
             return Err(Feedback::Reject(None));
         };
 
-        Ok(crate::tile::gossip::PreparedPtc {
+        Ok(PreparedPtc {
             block_root,
             slot,
             validator: validator_index,
@@ -226,7 +225,7 @@ impl BeaconStateTile {
         })
     }
 
-    pub(super) fn commit_ptc(&mut self, p: &crate::tile::gossip::PreparedPtc) {
+    pub(super) fn commit_ptc(&mut self, p: &PreparedPtc) {
         self.fork_choice.record_ptc_votes(&p.block_root, &p.ptc_positions, p.present, p.da);
         self.seen_ptc.mark(p.slot, p.validator as usize);
     }

@@ -61,15 +61,15 @@ pub(super) struct PreparedSyncMessage {
 }
 
 pub(crate) struct PreparedPtc {
-    pub(crate) block_root: B256,
-    pub(crate) slot: Slot,
-    pub(crate) validator: u64,
-    pub(crate) ptc_positions: [u64; PTC_MASK_WORDS],
-    pub(crate) present: bool,
-    pub(crate) da: bool,
-    pub(crate) pubkey: PublicKey,
-    pub(crate) signing_root: B256,
-    pub(crate) signature: CheckedSignature,
+    pub block_root: B256,
+    pub slot: Slot,
+    pub validator: u64,
+    pub ptc_positions: [u64; PTC_MASK_WORDS],
+    pub present: bool,
+    pub da: bool,
+    pub pubkey: PublicKey,
+    pub signing_root: B256,
+    pub signature: CheckedSignature,
 }
 
 #[allow(clippy::large_enum_variant)]
