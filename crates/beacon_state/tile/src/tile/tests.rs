@@ -2,9 +2,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, ColumnGroup, ColumnSpec, EpochState,
-    EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
-    PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotStateId, StateReadView, ValSeed, Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, ColumnGroup, ColumnSpec,
+    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
+    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotStateId,
+    StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
@@ -1111,7 +1112,7 @@ fn sync_message_uses_gossip_clock_disparity() {
 
 #[test]
 fn sync_message_uses_next_committee_at_period_handoff() {
-    let period_slots = stf::EPOCHS_PER_SYNC_COMMITTEE_PERIOD * SLOTS_PER_EPOCH;
+    let period_slots = EPOCHS_PER_SYNC_COMMITTEE_PERIOD * SLOTS_PER_EPOCH;
     let handoff_slot = period_slots - 1;
     assert!(!super::gossip::uses_next_sync_committee(handoff_slot - 1));
     assert!(super::gossip::uses_next_sync_committee(handoff_slot));
