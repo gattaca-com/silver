@@ -8,22 +8,27 @@ pub enum StfSpan {
     Root,
     /// CL validation → `newPayload` dispatch.
     Validate,
-    /// `newPayload` dispatch → fork-choice import.
+    /// `newPayload` dispatch → post-state committed.
     Apply,
 }
 
 #[derive(Default)]
 pub struct StateTransition {
-    imported: Option<Nanos>,
+    done: Option<Nanos>,
+    attestable: Option<Nanos>,
 }
 
 impl StateTransition {
-    pub(super) fn imported(&mut self, ts: Nanos) {
-        self.imported.get_or_insert(ts);
+    pub(super) fn done(&mut self, ts: Nanos) {
+        self.done.get_or_insert(ts);
     }
 
-    pub fn imported_at(&self) -> Option<Nanos> {
-        self.imported
+    pub(super) fn attestable(&mut self, ts: Nanos) {
+        self.attestable.get_or_insert(ts);
+    }
+
+    pub fn attestable_at(&self) -> Option<Nanos> {
+        self.attestable
     }
 
     pub fn interval(
@@ -35,11 +40,11 @@ impl StateTransition {
         let interval = match span {
             StfSpan::Root => {
                 let start = validate_from.or(el_sent_at)?;
-                let end = self.imported.or(el_sent_at)?;
+                let end = self.attestable.or(el_sent_at)?;
                 Interval { start, end: end.max(start) }
             }
             StfSpan::Validate => Interval { start: validate_from?, end: el_sent_at? },
-            StfSpan::Apply => Interval { start: el_sent_at?, end: self.imported? },
+            StfSpan::Apply => Interval { start: el_sent_at?, end: self.done.or(self.attestable)? },
         };
         Some(interval)
     }

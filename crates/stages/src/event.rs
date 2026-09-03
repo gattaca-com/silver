@@ -28,12 +28,12 @@ pub enum Stage {
     /// Every column this node custodies is held: the 64 → 128 tail past the
     /// gate, a duty of the node rather than a wait of the block.
     CustodyDone,
-    /// STF done and the block imported into fork choice: publish of the
+    /// Post-state committed: publish of the root's first `BlockReceived`
+    /// past `AwaitParent`. Precedes `Attestable` when data gated the import.
+    StfDone,
+    /// Imported into fork choice with the new head published: publish of the
     /// root's first `BlockReceived { stage: Applied }`, ahead of the FCU.
-    StfImported,
-    /// An FCU naming the root: state transition + commit. Repeat-head and
-    /// tick FCUs re-emit it; a root's first `Applied` is the apply.
-    Applied,
+    Attestable,
 }
 
 impl Stage {
@@ -46,8 +46,8 @@ impl Stage {
             Self::ElVerdict { .. } => "el_verdict",
             Self::DaAvailable => "da_available",
             Self::CustodyDone => "custody_done",
-            Self::StfImported => "stf_imported",
-            Self::Applied => "applied",
+            Self::StfDone => "stf_done",
+            Self::Attestable => "attestable",
         }
     }
 }

@@ -297,7 +297,7 @@ mod tests {
             (received(), 300),
             (el_sent(), 320),
             (Stage::DaAvailable, 350),
-            (Stage::StfImported, 460),
+            (Stage::Attestable, 460),
             (valid(), 520),
         ])
     }
@@ -372,7 +372,7 @@ mod tests {
     fn bars_take_the_component_colour() {
         let theme = Theme::default();
         let cells = all_rows(
-            trace(&[(received(), 300), (el_sent(), 320), (Stage::StfImported, 460)]),
+            trace(&[(received(), 300), (el_sent(), 320), (Stage::Attestable, 460)]),
             &theme,
         );
         let grid = Grid::fit(cells.iter().map(|(_, c)| c), INNER_WIDTH, &theme);

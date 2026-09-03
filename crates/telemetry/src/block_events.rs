@@ -122,7 +122,7 @@ impl RowFormatter {
                 (Some(format!("{source:?}")), None, Some(index))
             }
             Stage::ElVerdict { verdict } => (None, Some(format!("{verdict:?}")), None),
-            Stage::Applied | Stage::StfImported | Stage::DaAvailable | Stage::CustodyDone => {
+            Stage::StfDone | Stage::Attestable | Stage::DaAvailable | Stage::CustodyDone => {
                 (None, None, None)
             }
         };

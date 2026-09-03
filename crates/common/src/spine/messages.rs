@@ -765,6 +765,8 @@ pub enum BeaconStateEvent {
 pub enum BlockStage {
     /// Held on a missing parent or parent payload; nothing computed yet.
     AwaitParent,
+    /// State transition committed; import waits on the block's data columns.
+    Staged,
     /// Imported into fork choice.
     Applied,
 }
