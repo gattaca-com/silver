@@ -156,6 +156,8 @@ pub struct Config {
     beacon_api_idle_timeout_secs: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
+    #[serde(default)]
+    trusted_peers: Vec<Enr>,
 }
 
 impl Config {
@@ -193,6 +195,7 @@ impl Config {
             beacon_api_max_connections: 64,
             beacon_api_idle_timeout_secs: 75,
             disable_weak_subjectivity_check: false,
+            trusted_peers: Default::default(),
         }
     }
 
@@ -439,6 +442,10 @@ impl Config {
 
     pub fn attestation_subnet_count(&self) -> u8 {
         self.attestation_subnet_count
+    }
+
+    pub fn trusted_peers(&self) -> &[Enr] {
+        &self.trusted_peers
     }
 }
 

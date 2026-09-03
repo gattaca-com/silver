@@ -160,7 +160,10 @@ impl PeerManager {
             // survives there. A peer merely covering something we subscribe
             // to gets the ordinary priority cap; everyone else stops at
             // `target_peers`.
-            let cap = if enr_matches_subnets(
+            let cap = if record.is_trusted {
+                tracing::info!(quic=?enr.quic4_socket(), "dialling trusted peer");
+                usize::MAX
+            } else if enr_matches_subnets(
                 enr,
                 self.deficit_attnets,
                 self.deficit_syncnets,
@@ -370,7 +373,7 @@ impl PeerManager {
         let mut spared: Vec<usize> = Vec::new();
         let mut recovered: Vec<usize> = Vec::new();
         for (conn, peer) in &self.peers {
-            if peer.cached_score >= threshold {
+            if peer.is_trusted || peer.cached_score >= threshold {
                 if peer.evict_spared {
                     recovered.push(*conn);
                 }

@@ -159,6 +159,7 @@ impl PmBsHarness {
         let pm = PeerManager::new(
             PeerId::default(),
             Vec::new(),
+            Vec::new(),
             ScoreParams::default(),
             syncing.clone(),
             [0u8; 4], // overwritten via set_status from BS's first emission

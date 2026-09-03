@@ -407,6 +407,11 @@ impl Tile<SilverSpine> for Controller {
             }
         }
     }
+
+    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        self.last_tick = Instant::now() + Duration::from_millis(700);
+        true
+    }
 }
 
 fn handle_peer_control(

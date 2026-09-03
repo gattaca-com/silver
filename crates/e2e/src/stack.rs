@@ -249,7 +249,7 @@ impl PublisherStack {
         );
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
-        let p2p = P2p::new(keypair, endpoint, 1024);
+        let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
@@ -259,6 +259,7 @@ impl PublisherStack {
         let controller = Controller::new(
             PeerManager::new(
                 PeerId::default(),
+                Vec::new(),
                 Vec::new(),
                 ScoreParams::default(),
                 SyncingConfig::default(),
@@ -362,7 +363,7 @@ impl EchoStack {
         );
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
-        let p2p = P2p::new(keypair, endpoint, 1024);
+        let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
@@ -377,6 +378,7 @@ impl EchoStack {
         let controller = Controller::new(
             PeerManager::new(
                 PeerId::default(),
+                Vec::new(),
                 Vec::new(),
                 ScoreParams::default(),
                 SyncingConfig::default(),

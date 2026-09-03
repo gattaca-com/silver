@@ -85,6 +85,8 @@ pub(crate) struct PeerState {
 
     // Graylisted but kept for data-column coverage; dedups the spare log.
     pub evict_spared: bool,
+    /// Whether peer is trusted.
+    pub is_trusted: bool,
 }
 
 impl PeerState {
@@ -111,6 +113,7 @@ impl PeerState {
             last_breakdown: ScoreBreakdown::default(),
             goodbye_sent: false,
             evict_spared: false,
+            is_trusted: false,
         }
     }
 

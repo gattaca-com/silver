@@ -123,6 +123,11 @@ impl PeerManager {
             None
         };
 
+        if let Some(record) = self.database.by_peer_id(&peer_id) {
+            tracing::info!(conn, ?addr, "trusted peer connected");
+            state.is_trusted = record.is_trusted;
+        }
+
         self.peers.insert(conn, state);
         self.peers_by_id.insert(peer_id, conn);
         self.database.add_peer_id(peer_id, conn);
@@ -351,12 +356,12 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let (peer_id, score) = {
+        let (peer_id, score, is_trusted) = {
             let Some(peer) = self.peers.get_mut(&conn) else {
                 return;
             };
             peer.topics.insert(topic);
-            (peer.peer_id, peer.cached_score)
+            (peer.peer_id, peer.cached_score, peer.is_trusted)
         };
 
         let we_want = self.our_topics.contains(&topic);
@@ -366,9 +371,10 @@ impl PeerManager {
         // Opportunistic graft: if this is a topic we care about and our mesh
         // is below d_low, pull the peer in.
         if we_want &&
-            mesh_size < self.params.d_low as usize &&
-            score >= 0.0 &&
-            !self.is_backed_off(conn, topic, now)
+            (is_trusted ||
+                (mesh_size < self.params.d_low as usize &&
+                    score >= 0.0 &&
+                    !self.is_backed_off(conn, topic, now)))
         {
             self.do_graft(conn, peer_id, topic, now, false, emit);
         }
@@ -425,8 +431,7 @@ impl PeerManager {
         // meshes (no first-delivery score → pruned as excess). Reference
         // gossipsub accepts and lets the heartbeat trim past d_high.
         let accept = self.our_topics.contains(&topic) &&
-            score >= 0.0 &&
-            !self.is_backed_off(conn, topic, now);
+            (peer.is_trusted || (score >= 0.0 && !self.is_backed_off(conn, topic, now)));
         if accept {
             crate::PeerCounters::MeshGraftAcceptedByUs.inc();
             self.do_graft(conn, peer_id, topic, now, false, emit);
@@ -723,7 +728,7 @@ impl PeerManager {
             .filter_map(|conn| {
                 self.peers
                     .get(conn)
-                    .filter(|peer| peer.cached_score < 0.0)
+                    .filter(|peer| !peer.is_trusted && peer.cached_score < 0.0)
                     .map(|peer| (*conn, peer.peer_id))
             })
             .collect();
@@ -813,6 +818,9 @@ impl PeerManager {
                             return None;
                         }
                         let p = self.peers.get(conn)?;
+                        if p.is_trusted {
+                            return None;
+                        }
                         Some((
                             *conn,
                             scoring::selection_score(p, &topic, &self.params, now),
