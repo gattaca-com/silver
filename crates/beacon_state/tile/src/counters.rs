@@ -27,5 +27,8 @@ silver_common::declare_counters! {
         // signatures).
         VoteBatchSize,
         VoteBatchFallback,
+        // Valid sync messages are still accepted and relayed when this is
+        // full; only creation of a local contribution is skipped.
+        SyncContributionPoolFull,
     }
 }

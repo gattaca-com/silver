@@ -25,6 +25,7 @@ use super::{
     attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
+    sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
@@ -52,6 +53,8 @@ pub(super) struct PreparedSyncMessage {
     slot: Slot,
     subnet: u64,
     validator: u64,
+    block_root: B256,
+    positions: [u64; SYNC_SUBCOMMITTEE_MASK_WORDS],
     pubkey: PublicKey,
     signing_root: B256,
     signature: CheckedSignature,
@@ -122,6 +125,33 @@ impl SyncSubcommittee<'_> {
                 validator < validators.count() && pubkeys.contains(validators.pubkey(validator))
             }
         }
+    }
+
+    fn positions(
+        &self,
+        validator: usize,
+        validators: &ValidatorsView<'_>,
+    ) -> [u64; SYNC_SUBCOMMITTEE_MASK_WORDS] {
+        let mut positions = [0u64; SYNC_SUBCOMMITTEE_MASK_WORDS];
+        match self {
+            Self::Current(indices) => {
+                for (position, &member) in indices.iter().enumerate() {
+                    if member as usize == validator {
+                        positions[position / 64] |= 1 << (position % 64);
+                    }
+                }
+            }
+            Self::Next(pubkeys) if validator < validators.count() => {
+                let validator_pubkey = validators.pubkey(validator);
+                for (position, member) in pubkeys.iter().enumerate() {
+                    if member == validator_pubkey {
+                        positions[position / 64] |= 1 << (position % 64);
+                    }
+                }
+            }
+            Self::Next(_) => {}
+        }
+        positions
     }
 
     fn validator_at(&self, position: usize, validators: &ValidatorsView<'_>) -> Option<usize> {
@@ -454,17 +484,18 @@ impl BeaconStateTile {
         }
 
         let committee = sync_subcommittee(&view, subnet as usize);
-        if !committee.contains(validator as usize, &view.validators) {
+        let positions = committee.positions(validator as usize, &view.validators);
+        if positions.iter().all(|&word| word == 0) {
             return Err(Feedback::Reject(None));
         }
 
+        let block_root = *SyncCommitteeView::beacon_block_root(buf);
         let fork_version = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
         let domain = bls::domain_from_fork_data(
             bls::DOMAIN_SYNC_COMMITTEE,
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
         );
-        let signing_root =
-            bls::compute_signing_root(SyncCommitteeView::beacon_block_root(buf), &domain);
+        let signing_root = bls::compute_signing_root(&block_root, &domain);
         let Some(signature) = CheckedSignature::parse(SyncCommitteeView::signature(buf)) else {
             return Err(Feedback::Reject(None));
         };
@@ -473,6 +504,8 @@ impl BeaconStateTile {
             slot,
             subnet,
             validator,
+            block_root,
+            positions,
             pubkey: *view.validators.pubkey_decompressed(validator as usize),
             signing_root,
             signature,
@@ -480,6 +513,23 @@ impl BeaconStateTile {
     }
 
     fn commit_sync_message(&mut self, p: &PreparedSyncMessage) {
+        let outcome = self.sync_contribution_pool.insert_verified(
+            p.slot,
+            p.subnet,
+            p.block_root,
+            &p.positions,
+            p.signature.as_sig(),
+        );
+        debug_assert!(outcome != InsertOutcome::Inconsistent);
+        if outcome == InsertOutcome::Full {
+            BeaconStateCounters::SyncContributionPoolFull.inc();
+            tracing::debug!(
+                slot = p.slot,
+                subcommittee = p.subnet,
+                block = hex32(&p.block_root),
+                "sync contribution pool full"
+            );
+        }
         self.seen_sync_msgs[p.subnet as usize].mark(p.slot, p.validator as usize);
     }
 

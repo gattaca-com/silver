@@ -375,6 +375,44 @@ impl SyncCommitteeView {
     }
 }
 
+// -- SyncCommitteeContribution --------------------------------------
+//
+// All fixed, exactly 160B.
+//   [0..8)     slot
+//   [8..40)    beacon_block_root
+//   [40..48)   subcommittee_index
+//   [48..64)   aggregation_bits (Bitvector[128])
+//   [64..160)  signature
+
+pub const SYNC_COMMITTEE_CONTRIBUTION_SIZE: usize = 160;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct SyncCommitteeContributionView;
+
+impl SyncCommitteeContributionView {
+    #[inline]
+    pub fn slot(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> u64 {
+        u64_le(buf, 0)
+    }
+    #[inline]
+    pub fn beacon_block_root(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> &[u8; 32] {
+        fixed(buf, 8)
+    }
+    #[inline]
+    pub fn subcommittee_index(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> u64 {
+        u64_le(buf, 40)
+    }
+    #[inline]
+    pub fn aggregation_bits(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> &[u8; 16] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) -> &[u8; 96] {
+        fixed(buf, 64)
+    }
+}
+
 // -- SignedContributionAndProof (sync_committee_contribution_and_proof)
 //
 // All fixed, exactly 360B.
@@ -405,24 +443,30 @@ impl SignedContributionAndProofView {
         u64_le(buf, 0)
     }
     #[inline]
+    pub fn contribution(
+        buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE],
+    ) -> &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE] {
+        fixed(buf, 8)
+    }
+    #[inline]
     pub fn slot(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> u64 {
-        u64_le(buf, 8)
+        SyncCommitteeContributionView::slot(Self::contribution(buf))
     }
     #[inline]
     pub fn beacon_block_root(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 32] {
-        fixed(buf, 16)
+        SyncCommitteeContributionView::beacon_block_root(Self::contribution(buf))
     }
     #[inline]
     pub fn subcommittee_index(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> u64 {
-        u64_le(buf, 48)
+        SyncCommitteeContributionView::subcommittee_index(Self::contribution(buf))
     }
     #[inline]
     pub fn aggregation_bits(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 16] {
-        fixed(buf, 56)
+        SyncCommitteeContributionView::aggregation_bits(Self::contribution(buf))
     }
     #[inline]
     pub fn contribution_signature(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 96] {
-        fixed(buf, 72)
+        SyncCommitteeContributionView::signature(Self::contribution(buf))
     }
     #[inline]
     pub fn selection_proof(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> &[u8; 96] {

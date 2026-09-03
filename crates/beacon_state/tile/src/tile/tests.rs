@@ -13,6 +13,7 @@ use silver_common::{
         ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
         SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
         SINGLE_ATT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
+        SyncCommitteeContributionView,
     },
 };
 use silver_ssz::ssz_view::EXECUTION_PAYLOAD_ENVELOPE_MIN;
@@ -1085,9 +1086,15 @@ fn sync_message_batch_applies_and_marks_seen() {
     let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(1));
     tile.defer_vote(m, &mut adapter.producers);
     assert!(!tile.seen_sync_msgs[1].contains(wall, 0), "not applied before flush");
+    assert_eq!(tile.sync_contribution_pool.contribution_ssz(wall, 1, bbr), None);
 
     tile.flush_votes(&mut adapter.producers);
     assert!(tile.seen_sync_msgs[1].contains(wall, 0));
+    let contribution =
+        tile.sync_contribution_pool.contribution_ssz(wall, 1, bbr).expect("pooled contribution");
+    // The test state's default current committee repeats validator 0 in all
+    // 128 positions of each subcommittee.
+    assert_eq!(SyncCommitteeContributionView::aggregation_bits(&contribution), &[0xff; 16]);
     assert!(tile.vote_batch.is_empty() && tile.vote_pending.is_empty());
 }
 
@@ -1176,6 +1183,8 @@ fn sync_message_forged_signature_rejected_by_fallback() {
     tile.flush_votes(&mut adapter.producers);
     assert!(tile.seen_sync_msgs[0].contains(wall, 0), "honest message applied");
     assert!(!tile.seen_sync_msgs[2].contains(wall, 0), "forgery rejected");
+    assert!(tile.sync_contribution_pool.contribution_ssz(wall, 0, bbr).is_some());
+    assert_eq!(tile.sync_contribution_pool.contribution_ssz(wall, 2, bbr), None);
 }
 
 #[test]
