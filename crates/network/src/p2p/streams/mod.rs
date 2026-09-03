@@ -16,7 +16,7 @@ mod rpc;
 mod snappy;
 mod state;
 
-pub(crate) use rpc::AcquiredRpcOutbound;
+pub(crate) use rpc::{AcquiredRpcOutbound, RpcCodec, RpcCodecDirection, RpcCodecPool};
 pub use state::StreamState;
 
 #[derive(Debug, Error)]

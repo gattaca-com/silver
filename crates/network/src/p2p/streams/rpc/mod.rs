@@ -1,9 +1,11 @@
+mod pool;
 mod request_in;
 mod request_out;
 mod reservation;
 mod response_in;
 mod response_out;
 
+pub(crate) use pool::{RpcCodecDirection, RpcCodecPool};
 pub use request_in::RpcReadRequest;
 pub use request_out::RpcWriteRequest;
 use reservation::{Rpc, RpcReservation, alloc_incoming_rpc};
@@ -28,16 +30,8 @@ pub struct RpcCodec {
 }
 
 impl RpcCodec {
-    pub fn incoming() -> Box<Self> {
+    fn allocate() -> Box<Self> {
         Box::new(Self { enc: SnappyEncoder::new(), dec: SnappyDecoder::default() })
-    }
-
-    /// Outbound stream: responses carry the bulk inbound payload
-    /// (BeaconBlock / DataColumnSidecar). KZG cells are incompressible ⇒
-    /// peers emit `CHUNK_UNCOMPRESSED` frames; stream those straight into
-    /// the tcache (direct decode).
-    pub fn outgoing() -> Box<Self> {
-        Box::new(Self { enc: SnappyEncoder::new(), dec: SnappyDecoder::new_direct() })
     }
 }
 

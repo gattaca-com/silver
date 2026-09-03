@@ -114,6 +114,7 @@ impl SnappyDecoder {
     /// error if a frame overshoots — otherwise an over-long frame stalls on
     /// zero-length reads (the inbound-RPC hang this path once caused). See
     /// `response_in::ReadingBody`.
+    #[cfg(test)]
     pub fn new_direct() -> Self {
         Self { direct: true, ..Self::default() }
     }
@@ -126,6 +127,19 @@ impl SnappyDecoder {
         self.parsing_uncompressed = false;
         self.consumed = 0;
         self.frames = 0;
+    }
+
+    /// Reset all stream-local state and select the mode required by the next
+    /// RPC stream. Plain `reset` intentionally preserves the mode while an
+    /// existing multipart stream advances from one chunk to the next.
+    pub fn reset_for_direct(&mut self, direct: bool) {
+        self.reset();
+        self.direct = direct;
+    }
+
+    #[cfg(test)]
+    pub fn is_direct(&self) -> bool {
+        self.direct
     }
 
     /// Bytes of an in-progress uncompressed frame to read directly into the
