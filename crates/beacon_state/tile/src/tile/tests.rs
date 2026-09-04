@@ -8,15 +8,16 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
+    GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+    TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
-        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
-        SyncCommitteeContributionView,
+        SIGNED_BEACON_BLOCK_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedAggregateAndProofView,
+        SingleAttestationView, StatusView,
     },
 };
-use silver_ssz::ssz_view::EXECUTION_PAYLOAD_ENVELOPE_MIN;
+use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
 use super::*;
 use crate::{
@@ -383,6 +384,53 @@ fn block_unknown_parent_rejected() {
 
     assert_eq!(tile.last_applied, head_before, "head must be unchanged");
     assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
+}
+
+/// A gossip block shorter than the fixed prefix must not reach any
+/// `SignedBeaconBlockView` accessor: they slice compile-time offsets and
+/// `unwrap`, and `release-prod` aborts on panic.
+#[test]
+fn short_gossip_block_rejected_before_any_field_read() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    tile.sync_target = SyncUpdate::Following;
+
+    for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
+        let (data, read) = publish_block_bytes(&mut gp, &vec![0u8; len]);
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            false,
+            &mut adapter.producers,
+            |_| panic!("a malformed block must never be relayed"),
+        );
+        assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
+    }
+
+    // Control: at the minimum length the gate lets the block through, so the
+    // assertions above are about the bound and not about a blanket reject.
+    let mut bytes = vec![0u8; SIGNED_BEACON_BLOCK_MIN];
+    bytes[116] = 0xFF; // unknown parent_root
+    let (data, read) = publish_block_bytes(&mut gp, &bytes);
+    let feedback =
+        tile.apply_block(&data, read, BlockSource::Gossip, false, &mut adapter.producers, |_| {
+            panic!("an unimportable block must never be relayed")
+        });
+    assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
+}
+
+/// The tile reads gossip blocks out of its own tcache, so a test buffer has
+/// to be published there to be readable back as `apply_block` sees it.
+fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCacheRead) {
+    let mut r = producer.reserve(bytes.len().max(1), true).expect("reserve");
+    if let Ok(buf) = r.buffer() {
+        buf[..bytes.len()].copy_from_slice(bytes);
+    }
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    (bytes.to_vec(), read)
 }
 
 // ── pending-block bounds ──

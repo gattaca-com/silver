@@ -128,6 +128,8 @@ impl DataColumnsTile {
             }
         };
 
+        debug_assert!(SignedBeaconBlockView::check_size(buffer));
+
         let slot = SignedBeaconBlockView::slot(buffer);
         if slot <= self.sync_state.data_availability_floor() {
             return None;
@@ -377,11 +379,19 @@ impl DataColumnsTile {
         stream_id: P2pStreamId,
         producers: &mut SilverSpineProducers,
     ) {
-        let parent_root = t_read
-            .buffer()
-            .ok()
-            .filter(|(buf, _)| SignedBeaconBlockView::check_size(buf))
-            .map(|(buf, _)| *SignedBeaconBlockView::parent_root(buf));
+        let parent_root = match t_read.buffer() {
+            Ok((buf, _)) if SignedBeaconBlockView::check_size(buf) => {
+                *SignedBeaconBlockView::parent_root(buf)
+            }
+            Ok((buf, _)) => {
+                tracing::warn!(?stream_id, len = buf.len(), "malformed beacon block");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(?e, ?stream_id, "failed to read beacon block cache buffer");
+                return;
+            }
+        };
 
         let root = self.beacon_block(stream_id, t_read, producers);
 
@@ -390,9 +400,7 @@ impl DataColumnsTile {
         {
             self.drain_pending_gloas_columns(block_root, producers);
         }
-        if let Some(parent_root) = parent_root {
-            self.drain_parent_pending_columns(parent_root, producers);
-        }
+        self.drain_parent_pending_columns(parent_root, producers);
     }
 
     #[timed]
@@ -679,6 +687,7 @@ mod tests {
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{
         EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        ssz_view::SIGNED_BEACON_BLOCK_MIN,
     };
     use tempfile::TempDir;
 
@@ -839,6 +848,32 @@ mod tests {
             assert_eq!(slot, 42, "the need carries the slot the engine suppresses against");
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
             assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
+        }
+    }
+
+    /// `handle_beacon_block` is the gossip and RPC entry, so it owns the size
+    /// gate: every `SignedBeaconBlockView` accessor slices a compile-time
+    /// offset and `unwrap`s, and `release-prod` aborts on panic.
+    #[test]
+    fn short_block_stops_at_the_entry_gate() {
+        for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
+            let (mut consumer, ssz) = produce_block(&vec![0u8; len], "short_block_cons");
+            let read = consumer.acquire(ssz);
+
+            rig.tile.handle_beacon_block(
+                read,
+                P2pStreamId::new(2, 2, StreamProtocol::GossipSub, true),
+                &mut rig.conn.producers,
+            );
+            let out = rig.drain();
+
+            assert_eq!(
+                out.available + out.persisted + out.engine + out.missing.len(),
+                0,
+                "len {len}: a malformed block says nothing"
+            );
         }
     }
 

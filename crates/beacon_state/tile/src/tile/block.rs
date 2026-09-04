@@ -46,6 +46,11 @@ impl BeaconStateTile {
         producers: &mut Producers,
         mut send_gossip: impl FnMut(&mut Producers),
     ) -> Feedback {
+        if let Err(e) = Self::check_block_size(data) {
+            tracing::warn!(?source, "{e}");
+            return e.feedback();
+        }
+
         let block_slot = SignedBeaconBlockView::slot(data);
         let parsed = match self.parse_and_verify_block(data, pre_verified) {
             Ok(parsed) => {
@@ -427,14 +432,20 @@ impl BeaconStateTile {
         self.maybe_finalize();
     }
 
-    fn precheck_block(&self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
-        if !SignedBeaconBlockView::check_size(data) {
-            return Err(PrecheckError::SizeMismatch {
-                expected_min: ssz_view::SIGNED_BEACON_BLOCK_MIN,
-                expected_max: ssz_view::SIGNED_BEACON_BLOCK_MAX,
-                got: data.len(),
-            });
+    fn check_block_size(data: &[u8]) -> Result<(), PrecheckError> {
+        if SignedBeaconBlockView::check_size(data) {
+            return Ok(());
         }
+        Err(PrecheckError::SizeMismatch {
+            expected_min: ssz_view::SIGNED_BEACON_BLOCK_MIN,
+            expected_max: ssz_view::SIGNED_BEACON_BLOCK_MAX,
+            got: data.len(),
+        })
+    }
+
+    fn precheck_block(&self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
+        Self::check_block_size(data)?;
+
         let block_slot = SignedBeaconBlockView::slot(data);
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
         let finalized_epoch = self.fork_choice.finalized_checkpoint.epoch;
