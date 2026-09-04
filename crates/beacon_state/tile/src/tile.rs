@@ -111,6 +111,7 @@ struct ParsedBlock {
     parent_state_id: StateId,
     is_gloas: bool,
     parent_payload_status: PayloadStatus,
+    relay_eligible: bool,
 }
 
 pub struct BeaconStateTile {

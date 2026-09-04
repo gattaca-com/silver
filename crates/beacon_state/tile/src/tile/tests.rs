@@ -530,6 +530,48 @@ fn fulu_block_with_payload(slot: u64, timestamp: u64, n_commitments: usize) -> V
     b
 }
 
+/// `proposer_lookahead` reaches only the parent's current and next epoch. A
+/// block past a long skipped-slot run has no entry, so silver cannot check its
+/// proposer — it still imports, but must not go on the wire as if it had.
+#[test]
+fn block_past_the_lookahead_window_imports_but_is_not_relayed() {
+    const PARENT_SLOT: u64 = 10;
+
+    // The parent sits in epoch 0, so the lookahead index is the slot itself
+    // and the window is `[0, PROPOSER_LOOKAHEAD_SIZE)`.
+    let last_in_window = PROPOSER_LOOKAHEAD_SIZE as u64 - 1;
+    for (slot, want_relay) in [
+        (PARENT_SLOT + 1, true),
+        (last_in_window, true),
+        (last_in_window + 1, false),
+        (last_in_window + SLOTS_PER_EPOCH, false),
+    ] {
+        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+        seed_tile(&mut tile, 4, PARENT_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+
+        let mut bytes = empty_block(200);
+        bytes[100..108].copy_from_slice(&slot.to_le_bytes());
+        bytes[116..148].copy_from_slice(&ANCHOR_ROOT);
+        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+
+        let mut relayed = false;
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            true,
+            &mut adapter.producers,
+            |_| relayed = true,
+        );
+
+        assert_eq!(relayed, want_relay, "slot {slot}: {feedback:?}");
+        // Either way the block is not thrown away: the proposer window is our
+        // limit, not grounds to refuse the block.
+        assert!(!matches!(feedback, Feedback::Ignore), "slot {slot}: {feedback:?}");
+    }
+}
+
 // ── pending-block bounds ──
 
 #[test]

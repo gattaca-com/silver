@@ -55,7 +55,9 @@ impl BeaconStateTile {
         let block_slot = SignedBeaconBlockView::slot(data);
         let parsed = match self.parse_and_verify_block(data, pre_verified) {
             Ok(parsed) => {
-                send_gossip(producers);
+                if parsed.relay_eligible {
+                    send_gossip(producers);
+                }
                 parsed
             }
             Err(e) => {
@@ -517,21 +519,28 @@ impl BeaconStateTile {
         }
 
         let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
-        // Fulu proposer selection via `proposer_lookahead` (current + next
-        // epoch, 64 slots), fixed at the parent's prior epoch boundary — read
-        // it from the parent post-state.
-        if block_epoch == parent_epoch || block_epoch == parent_epoch + 1 {
-            let lookahead_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
-            if let Some(expected) = rv.epoch.proposer_at(lookahead_idx) &&
-                proposer_index != expected
-            {
+        // Fulu proposer selection via `proposer_lookahead`, fixed at the
+        // parent's prior epoch boundary and covering only its current + next
+        // epoch.
+        let lookahead_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
+        let relay_eligible = match rv.epoch.proposer_at(lookahead_idx) {
+            Some(expected) if proposer_index != expected => {
                 return Err(PrecheckError::ProposerLookaheadMismatch {
                     expected,
                     got: proposer_index,
                     block_root,
                 });
             }
-        }
+            Some(_) => true,
+            None => {
+                tracing::debug!(
+                    block_slot,
+                    parent_slot,
+                    "proposer lookahead does not reach this block — not relayed"
+                );
+                false
+            }
+        };
 
         let validator_count = rv.validators.count();
         if proposer_index as usize >= validator_count {
@@ -555,6 +564,7 @@ impl BeaconStateTile {
             parent_state_id,
             is_gloas,
             parent_payload_status,
+            relay_eligible,
         })
     }
 
