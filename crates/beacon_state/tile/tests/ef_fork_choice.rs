@@ -4,12 +4,10 @@
 //! asserts head / justified / finalized / proposer_boost_root after each step.
 //!
 //! Runs the follower-relevant handlers (`ex_ante`, `get_head`, `on_block`,
-//! including the `peerdas` data-availability cases — `is_data_available` is
+//! including the `future_block` and `peerdas` cases — `is_data_available` is
 //! modeled by running silver's real column-sidecar verification and importing
-//! only when it passes). Skipped, logged not silent: the proposer-only
-//! `get_proposer_head` / `should_override_forkchoice_update` handlers, and
-//! `future_block` (silver's gossip next-slot tolerance vs the strict store
-//! rule).
+//! only when it passes). The proposer-only `get_proposer_head` /
+//! `should_override_forkchoice_update` handlers are not driven at all.
 
 mod ef_common;
 
@@ -18,38 +16,32 @@ use std::path::{Path, PathBuf};
 use ef_common::{case_file, ef_tile, iter_test_cases, parse_root, snappy_decode, spec_tests_dir};
 use serde_yml::{Mapping, Value};
 use silver_beacon_state::BeaconStateTile;
-use silver_beacon_state_data::{BeaconState, SpecConfig};
+use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH, SpecConfig};
+use silver_common::ssz_view::DataColumnSidecarFuluView;
 
 fn fork_choice_dir(fork: &str, handler: &str) -> PathBuf {
     spec_tests_dir().join("tests").join("mainnet").join(fork).join("fork_choice").join(handler)
 }
 
-/// Cases we knowingly don't cover yet — logged, never silently passed.
-fn known_skip(name: &str) -> Option<&'static str> {
-    if name.contains("future_block") {
-        // silver permits a next-slot block (gossip clock-disparity tolerance);
-        // the EF on_block handler enforces the strict store rule.
-        return Some("silver allows next-slot blocks (gossip tolerance)");
-    }
-    None
-}
-
 /// Spec `is_data_available`: run silver's real column-sidecar verification
 /// (shape + inclusion proof + KZG, from the storage tile) over the columns the
 /// step provides. Available iff non-empty and every column verifies.
-fn columns_available(dir: &Path, cols: &[Value]) -> bool {
+fn columns_available(dir: &Path, cols: &[Value], spec: &SpecConfig) -> bool {
     !cols.is_empty() &&
         cols.iter().all(|c| {
             let sc = case_file(dir, c.as_str().unwrap());
-            silver_common::column_util::verify_data_column_sidecar_fulu(&sc) &&
+            let epoch = DataColumnSidecarFuluView::slot(&sc) / SLOTS_PER_EPOCH;
+            let max_blobs = spec.blob_params_at(epoch).max_blobs_per_block as usize;
+            silver_common::column_util::verify_data_column_sidecar_fulu(&sc, max_blobs) &&
                 silver_common::column_util::verify_data_column_sidecar_inclusion_proof(&sc) &&
                 silver_common::column_util::verify_data_column_sidecar_kzg_proofs_fulu(&sc)
         })
 }
 
 fn run_case(name: &str, dir: &Path) {
+    let spec = SpecConfig::mainnet();
     let anchor = snappy_decode(&dir.join("anchor_state.ssz_snappy"));
-    let state = BeaconState::decompose(&anchor, &SpecConfig::mainnet(), None)
+    let state = BeaconState::decompose(&anchor, &spec, None)
         .unwrap_or_else(|e| panic!("{name}: decompose anchor_state: {e}"));
     let genesis_time = state.immutable.genesis_time;
     let mut tile = ef_tile(state);
@@ -68,7 +60,7 @@ fn run_case(name: &str, dir: &Path) {
                 // peerdas: spec `is_data_available` gates import on the columns
                 // verifying. An unavailable block stays out of fork choice, so
                 // the head is unchanged — model the gate by not importing.
-                Some(cols) if !columns_available(dir, cols) => {
+                Some(cols) if !columns_available(dir, cols, &spec) => {
                     assert!(!valid, "{name} step {si}: block {b} unavailable but valid");
                 }
                 _ => {
@@ -171,16 +163,10 @@ fn run_checks(name: &str, si: usize, tile: &BeaconStateTile, checks: &Mapping) {
 fn run_handler(fork: &str, handler: &str) {
     let cases = iter_test_cases(&fork_choice_dir(fork, handler));
     assert!(!cases.is_empty(), "{fork}/{handler}: no fork_choice cases found");
-    let mut skipped = 0;
     for (name, path) in &cases {
-        if let Some(reason) = known_skip(name) {
-            eprintln!("SKIP {fork}/{handler}/{name}: {reason}");
-            skipped += 1;
-            continue;
-        }
         run_case(&format!("{fork}/{handler}/{name}"), path);
     }
-    eprintln!("{fork}/{handler}: {} run, {skipped} skipped", cases.len() - skipped);
+    eprintln!("{fork}/{handler}: {} run", cases.len());
 }
 
 #[test]

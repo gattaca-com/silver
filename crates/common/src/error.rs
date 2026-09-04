@@ -20,6 +20,7 @@ pub enum Error {
     BufferTooSmall,
     GossipFrameTooLarge,
     GossipPayloadTooLarge,
+    GossipPayloadTooSmall,
     ParseTopicError,
     InvalidSnappy,
     IoError(#[from] std::io::Error),

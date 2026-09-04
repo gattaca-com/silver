@@ -2,6 +2,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type Slot = u64;
 
+/// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
+pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
+
 // slot/24 before next slot = 500ms on mainnet.
 const FORK_CHOICE_LOOKAHEAD_DIVISOR: u64 = 24;
 // slot/4 before next slot = 3s on mainnet, state advance fires at 3/4.

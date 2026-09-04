@@ -463,7 +463,7 @@ impl Store {
     ) where
         F: FnMut(PeerEvent),
     {
-        let (verified, rejected) = self.history.add_sidecar(sidecar, peer, now);
+        let (verified, rejected) = self.history.add_sidecar(sidecar, peer, now, &self.spec);
         for bad in rejected {
             tracing::warn!(
                 peer = bad.peer,
@@ -1507,6 +1507,8 @@ mod tests {
         let parent_root = [0x42; 32];
         let state_root = [0x24; 32];
         let mut block = vec![0u8; 184];
+        block[0..4].copy_from_slice(&100u32.to_le_bytes());
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
         block[100..108].copy_from_slice(&slot.to_le_bytes());
         block[108..116].copy_from_slice(&7u64.to_le_bytes());
         block[116..148].copy_from_slice(&parent_root);
@@ -1682,6 +1684,8 @@ mod tests {
     fn blob_block(slot: u64, parent_root: [u8; 32], state_root: [u8; 32]) -> Vec<u8> {
         let (body_start, body_len) = (184usize, 404usize);
         let mut block = vec![0u8; body_start + body_len];
+        block[0..4].copy_from_slice(&100u32.to_le_bytes());
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
         block[100..108].copy_from_slice(&slot.to_le_bytes());
         block[108..116].copy_from_slice(&11u64.to_le_bytes());
         block[116..148].copy_from_slice(&parent_root);
@@ -1937,15 +1941,7 @@ mod tests {
         let slot = 96u64;
         let parent_root = [0x31; 32];
         let state_root = [0x13; 32];
-        let body_start = 184usize;
-        let body_len = 404usize;
-        let mut block = vec![0u8; body_start + body_len];
-        block[100..108].copy_from_slice(&slot.to_le_bytes());
-        block[108..116].copy_from_slice(&11u64.to_le_bytes());
-        block[116..148].copy_from_slice(&parent_root);
-        block[148..180].copy_from_slice(&state_root);
-        block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
-        block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
+        let block = blob_block(slot, parent_root, state_root);
 
         // Block on disk, no columns — exactly the post-sync state.
         let dir = store.finalized_slot_dir(super::Payload::Block, slot);
@@ -2010,7 +2006,7 @@ mod tests {
 
         // Stand the backlog up at the cap without touching the cursor.
         let cb = store.history.columns.as_mut().unwrap();
-        let block = vec![0u8; 184 + 404];
+        let block = blob_block(0, [0u8; 32], [0u8; 32]);
         for i in 0..super::io::MAX_OPEN_COLUMN_NEEDS {
             cb.seed_block([i as u8; 32], (i as u64) + 1, &block, 0b1, &super::test_spec(u64::MAX));
         }

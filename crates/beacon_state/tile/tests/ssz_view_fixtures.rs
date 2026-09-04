@@ -21,8 +21,16 @@ fn snappy_decode(path: &Path) -> Vec<u8> {
 }
 
 fn cases_for(container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
-    let dir =
-        spec_tests_dir().join("tests/mainnet/fulu/ssz_static").join(container).join("ssz_random");
+    cases_for_fork("fulu", container)
+}
+
+fn cases_for_fork(fork: &str, container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
+    let dir = spec_tests_dir()
+        .join("tests/mainnet")
+        .join(fork)
+        .join("ssz_static")
+        .join(container)
+        .join("ssz_random");
     let mut dirs: Vec<PathBuf> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()).filter(|p| p.is_dir()))
@@ -244,8 +252,20 @@ fn signed_beacon_block() {
         let m = &v["message"];
 
         // Outer: offset to message (==100); body offset at [180..184) (== 84).
+        // `check_size` enforces both, so the fixture is what proves the
+        // enforced constants are the ones real encodings carry.
+        assert!(SignedBeaconBlockView::check_size(buf), "{}", _case.display());
         assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 100);
         assert_eq!(u32::from_le_bytes(buf[180..184].try_into().unwrap()), 84);
+        for off in [0, 180] {
+            let mut bad = bytes.clone();
+            bad[off] = bad[off].wrapping_add(1);
+            assert!(
+                !SignedBeaconBlockView::check_size(&bad),
+                "{}: offset at {off} not enforced",
+                _case.display()
+            );
+        }
 
         assert_eq!(*SignedBeaconBlockView::signature(buf), b96(&v["signature"]));
         assert_eq!(SignedBeaconBlockView::slot(buf), u(&m["slot"]));
@@ -266,9 +286,20 @@ fn signed_aggregate_and_proof() {
 
         // Layout invariants: outer message offset 100, inner aggregate offset
         // 108 (rel. to 100), aggregation_bits offset 236 (rel. to 208).
+        // `check_size` enforces all three.
+        assert!(SignedAggregateAndProofView::check_size(buf), "{}", _case.display());
         assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 100);
         assert_eq!(u32::from_le_bytes(buf[108..112].try_into().unwrap()), 108);
         assert_eq!(u32::from_le_bytes(buf[208..212].try_into().unwrap()), 236);
+        for off in [0, 108, 208] {
+            let mut bad = bytes.clone();
+            bad[off] = bad[off].wrapping_add(1);
+            assert!(
+                !SignedAggregateAndProofView::check_size(&bad),
+                "{}: offset at {off} not enforced",
+                _case.display()
+            );
+        }
 
         assert_eq!(*SignedAggregateAndProofView::signature(buf), b96(&v["signature"]));
         assert_eq!(SignedAggregateAndProofView::aggregator_index(buf), u(&m["aggregator_index"]));
@@ -302,11 +333,27 @@ fn attester_slashing() {
 
         // Layout invariants: att_1 offset 8; att_2 offset monotonic;
         // each IndexedAttestation's attesting_indices offset is 228.
+        // `check_size` enforces all three plus 8-byte index alignment.
+        assert!(AttesterSlashingView::check_size(buf), "{}", _case.display());
         assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 8);
         let att2_off = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
         assert!(att2_off >= 8 + 228 && att2_off <= buf.len());
         assert_eq!(u32::from_le_bytes(buf[8..12].try_into().unwrap()), 228);
         assert_eq!(u32::from_le_bytes(buf[att2_off..att2_off + 4].try_into().unwrap()), 228);
+        for off in [0, 8, att2_off] {
+            let mut bad = bytes.clone();
+            bad[off] = bad[off].wrapping_add(1);
+            assert!(
+                !AttesterSlashingView::check_size(&bad),
+                "{}: offset at {off} not enforced",
+                _case.display()
+            );
+        }
+        // A misaligned att_2 offset leaves att_1's index list holding a
+        // partial u64, which the `chunks_exact(8)` readers would drop.
+        let mut bad = bytes.clone();
+        bad[4..8].copy_from_slice(&(att2_off as u32 + 1).to_le_bytes());
+        assert!(!AttesterSlashingView::check_size(&bad), "{}", _case.display());
 
         let a1 = &v["attestation_1"];
         let a2 = &v["attestation_2"];

@@ -1,15 +1,19 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, Checkpoint, Epoch, SLOTS_PER_EPOCH, StateId,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot,
+    StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
     SyncUpdate, TCacheRead, hex32,
-    ssz_view::{self, SignedBeaconBlockView},
+    ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
 
-use super::{BeaconStateTile, Feedback, ParsedBlock, Producers, gossip::EnvelopeCheck};
+use super::{
+    BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, ParsedBlock, Producers,
+    gossip::EnvelopeCheck,
+};
 use crate::{
     bls,
     error::PrecheckError,
@@ -46,10 +50,17 @@ impl BeaconStateTile {
         producers: &mut Producers,
         mut send_gossip: impl FnMut(&mut Producers),
     ) -> Feedback {
+        if let Err(e) = Self::check_block_size(data) {
+            tracing::warn!(?source, "{e}");
+            return e.feedback();
+        }
+
         let block_slot = SignedBeaconBlockView::slot(data);
         let parsed = match self.parse_and_verify_block(data, pre_verified) {
             Ok(parsed) => {
-                send_gossip(producers);
+                if parsed.relay_eligible {
+                    send_gossip(producers);
+                }
                 parsed
             }
             Err(e) => {
@@ -427,21 +438,22 @@ impl BeaconStateTile {
         self.maybe_finalize();
     }
 
-    fn precheck_block(&self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
-        if !SignedBeaconBlockView::check_size(data) {
-            return Err(PrecheckError::SizeMismatch {
-                expected_min: ssz_view::SIGNED_BEACON_BLOCK_MIN,
-                expected_max: ssz_view::SIGNED_BEACON_BLOCK_MAX,
-                got: data.len(),
-            });
+    fn check_block_size(data: &[u8]) -> Result<(), PrecheckError> {
+        if SignedBeaconBlockView::check_size(data) {
+            return Ok(());
         }
+        Err(PrecheckError::SizeMismatch {
+            expected_min: ssz_view::SIGNED_BEACON_BLOCK_MIN,
+            expected_max: ssz_view::SIGNED_BEACON_BLOCK_MAX,
+            got: data.len(),
+        })
+    }
+
+    fn precheck_block(&self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
+        Self::check_block_size(data)?;
+
         let block_slot = SignedBeaconBlockView::slot(data);
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        let finalized_epoch = self.fork_choice.finalized_checkpoint.epoch;
-        if block_epoch < finalized_epoch {
-            return Err(PrecheckError::PreFinalized { block_epoch, finalized_epoch });
-        }
-
         let proposer_index = SignedBeaconBlockView::proposer_index(data);
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         let state_root = *SignedBeaconBlockView::state_root(data);
@@ -449,6 +461,16 @@ impl BeaconStateTile {
         let body = SignedBeaconBlockView::body(data);
 
         let is_gloas = self.spec.is_gloas_at(block_epoch);
+
+        let canonical = if is_gloas {
+            BeaconBlockBodyGloasView::check_canonical(body)
+        } else {
+            BeaconBlockBodyFuluView::check_canonical(body)
+        };
+        if !canonical {
+            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
+        }
+
         let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
 
         let block_header = BeaconBlockHeader {
@@ -462,6 +484,11 @@ impl BeaconStateTile {
         let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
         if self.fork_choice.find_node_idx(&block_root).is_some() {
             return Err(PrecheckError::AlreadyKnown { block_root });
+        }
+
+        let finalized_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        if block_slot <= finalized_slot {
+            return Err(PrecheckError::PreFinalized { block_slot, finalized_slot });
         }
 
         let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
@@ -497,28 +524,36 @@ impl BeaconStateTile {
             return Err(PrecheckError::PastSlot { block_slot, parent_slot });
         }
 
-        // Spec gossip rule: IGNORE blocks whose slot exceeds wall slot.
-        let wall_slot_plus_one = self.ticker.current_slot() + 1;
-        if block_slot > wall_slot_plus_one {
-            return Err(PrecheckError::FutureSlot { block_slot, wall_slot_plus_one });
+        if block_slot > self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Err(PrecheckError::FutureSlot {
+                block_slot,
+                wall_slot: self.ticker.current_slot(),
+            });
         }
 
         let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
-        // Fulu proposer selection via `proposer_lookahead` (current + next
-        // epoch, 64 slots), fixed at the parent's prior epoch boundary — read
-        // it from the parent post-state.
-        if block_epoch == parent_epoch || block_epoch == parent_epoch + 1 {
-            let lookahead_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
-            if let Some(expected) = rv.epoch.proposer_at(lookahead_idx) &&
-                proposer_index != expected
-            {
+        // Fulu proposer selection via `proposer_lookahead`, fixed at the
+        // parent's prior epoch boundary and covering only its current + next
+        // epoch.
+        let lookahead_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
+        let relay_eligible = match rv.epoch.proposer_at(lookahead_idx) {
+            Some(expected) if proposer_index != expected => {
                 return Err(PrecheckError::ProposerLookaheadMismatch {
                     expected,
                     got: proposer_index,
                     block_root,
                 });
             }
-        }
+            Some(_) => true,
+            None => {
+                tracing::debug!(
+                    block_slot,
+                    parent_slot,
+                    "proposer lookahead does not reach this block — not relayed"
+                );
+                false
+            }
+        };
 
         let validator_count = rv.validators.count();
         if proposer_index as usize >= validator_count {
@@ -527,6 +562,10 @@ impl BeaconStateTile {
                 validator_count,
                 block_root,
             });
+        }
+
+        if !is_gloas {
+            self.precheck_fulu_payload(body, block_slot, block_epoch, &rv, block_root)?;
         }
 
         let has_data_columns = SignedBeaconBlockView::has_data_columns(data, is_gloas);
@@ -538,7 +577,41 @@ impl BeaconStateTile {
             parent_state_id,
             is_gloas,
             parent_payload_status,
+            relay_eligible,
         })
+    }
+
+    /// The Fulu gossip rules require the execution timestamp and the active
+    /// blob limit before propagation. The STF re-checks both, but that runs
+    /// after the relay has already gone out.
+    fn precheck_fulu_payload(
+        &self,
+        body: &[u8],
+        block_slot: Slot,
+        block_epoch: Epoch,
+        rv: &StateReadView<'_>,
+        block_root: B256,
+    ) -> Result<(), PrecheckError> {
+        let Some(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
+            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
+        };
+        let payload = offsets.payload();
+        if payload.len() < ssz_view::EXECUTION_PAYLOAD_FIXED {
+            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
+        }
+        let expected = rv.imm.genesis_time + block_slot * self.spec.seconds_per_slot();
+        let got = ssz_view::ExecutionPayloadView::timestamp(payload);
+        if got != expected {
+            return Err(PrecheckError::PayloadTimestamp { expected, got, block_root });
+        }
+
+        let max = self.spec.blob_params_at(block_epoch).max_blobs_per_block as usize;
+        let got = offsets.blob_commitments_fulu().len() / ssz_view::BYTES_PER_KZG_COMMITMENT;
+        if got > max {
+            return Err(PrecheckError::TooManyCommitments { got, max, block_root });
+        }
+
+        Ok(())
     }
 
     fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {

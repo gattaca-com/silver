@@ -6,9 +6,13 @@ use crate::{
     ssz_hash::{hash_eth1_data_bytes, hash_sync_aggregate},
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
-        AttestationView, AttesterSlashingView, BeaconBlockBodyGloasView, DepositView,
-        PayloadAttestationView, ProposerSlashingView, SignedBlsToExecutionChangeView,
-        SignedExecutionPayloadBidView, SignedVoluntaryExitView,
+        AttestationView, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
+        BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE, DepositView,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK, PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE,
+        PayloadAttestationView, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_EXECUTION_PAYLOAD_BID_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
+        SignedBlsToExecutionChangeView, SignedExecutionPayloadBidView, SignedVoluntaryExitView,
+        fixed_list_ok, offsets_ok, variable_field, variable_list_ok,
     },
 };
 
@@ -17,6 +21,32 @@ impl ProgressiveContainer for BeaconBlockBodyGloasView {
 }
 
 impl BeaconBlockBodyGloasView {
+    pub fn check_canonical(body: &[u8]) -> bool {
+        const OFFSETS: [usize; 9] = BeaconBlockBodyFuluView::VARIABLE_OFFSETS;
+        const UNCAPPED: usize = usize::MAX;
+        if body.len() < BEACON_BLOCK_BODY_FIXED ||
+            !offsets_ok(body, &OFFSETS, BEACON_BLOCK_BODY_FIXED)
+        {
+            return false;
+        }
+        let field = |i: usize| variable_field(body, &OFFSETS, i);
+        let bid = field(6);
+        fixed_list_ok(field(0), PROPOSER_SLASHING_SIZE, UNCAPPED) &&
+            variable_list_ok(field(1), UNCAPPED, AttesterSlashingView::check_size) &&
+            variable_list_ok(field(2), UNCAPPED, AttestationView::check_canonical) &&
+            fixed_list_ok(field(3), DEPOSIT_SIZE, UNCAPPED) &&
+            fixed_list_ok(field(4), SIGNED_VOLUNTARY_EXIT_SIZE, UNCAPPED) &&
+            fixed_list_ok(field(5), SIGNED_BLS_CHANGE_SIZE, UNCAPPED) &&
+            SignedExecutionPayloadBidView::check_size(bid) &&
+            fixed_list_ok(
+                &bid[SIGNED_EXECUTION_PAYLOAD_BID_MIN..],
+                BYTES_PER_KZG_COMMITMENT,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            ) &&
+            fixed_list_ok(field(7), PAYLOAD_ATTESTATION_SIZE, UNCAPPED) &&
+            ExecutionRequestsView::check_canonical(field(8))
+    }
+
     #[timed]
     pub fn hash_tree_root(body: &[u8]) -> B256 {
         match Self::field_roots(body) {

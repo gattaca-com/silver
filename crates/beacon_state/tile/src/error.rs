@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{B256, BLSPubkey, BlockBodyError, Epoch, Slot};
+use silver_beacon_state_data::{B256, BLSPubkey, BlockBodyError, Slot};
 use thiserror::Error;
 
 use crate::tile::Feedback;
@@ -19,16 +19,16 @@ pub enum PrecheckError {
         b256_hex(block_root)
     )]
     ParentInvalid { parent_root: B256, block_root: B256 },
-    #[error("past block: block_epoch={block_epoch} finalized_epoch={finalized_epoch}")]
-    PreFinalized { block_epoch: Epoch, finalized_epoch: Epoch },
+    #[error("past block: block_slot={block_slot} finalized_slot={finalized_slot}")]
+    PreFinalized { block_slot: Slot, finalized_slot: Slot },
+    #[error("block body is not canonical SSZ: block_slot={block_slot} body_len={body_len}")]
+    NonCanonicalBody { block_slot: Slot, body_len: usize },
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
     PastSlot { block_slot: Slot, parent_slot: Slot },
     #[error("block already imported: block_root=0x{}", b256_hex(block_root))]
     AlreadyKnown { block_root: B256 },
-    #[error(
-        "block ticker slot precheck failed: block_slot={block_slot} ticker={wall_slot_plus_one}"
-    )]
-    FutureSlot { block_slot: Slot, wall_slot_plus_one: Slot },
+    #[error("block ticker slot precheck failed: block_slot={block_slot} wall_slot={wall_slot}")]
+    FutureSlot { block_slot: Slot, wall_slot: Slot },
     #[error(
         "block proposer lookahead precheck failed: expected={expected} got={got} \
          block_root=0x{}",
@@ -47,6 +47,18 @@ pub enum PrecheckError {
         b256_hex(block_root)
     )]
     UnverifiedParentPayload { parent_root: B256, block_root: B256 },
+    #[error(
+        "block execution payload timestamp precheck failed: expected={expected} got={got} \
+         block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    PayloadTimestamp { expected: u64, got: u64, block_root: B256 },
+    #[error(
+        "block blob commitment count precheck failed: got={got} max={max} \
+         block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    TooManyCommitments { got: usize, max: usize, block_root: B256 },
     #[error("invalid block signature: block_root=0x{}", b256_hex(block_root))]
     InvalidSignature { block_root: B256 },
 }
@@ -54,7 +66,7 @@ pub enum PrecheckError {
 impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
-            Self::SizeMismatch { .. } => Feedback::Reject(None),
+            Self::SizeMismatch { .. } | Self::NonCanonicalBody { .. } => Feedback::Reject(None),
             Self::ParentMissing { parent_root, block_root, .. } => {
                 Feedback::RequestParent { parent_root, block_root }
             }
@@ -67,7 +79,9 @@ impl PrecheckError {
             }
             Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
-            Self::ProposerIndexTooBig { block_root, .. } => Feedback::Reject(Some(block_root)),
+            Self::ProposerIndexTooBig { block_root, .. } |
+            Self::PayloadTimestamp { block_root, .. } |
+            Self::TooManyCommitments { block_root, .. } => Feedback::Reject(Some(block_root)),
             Self::InvalidSignature { block_root } => Feedback::Reject(Some(block_root)),
         }
     }

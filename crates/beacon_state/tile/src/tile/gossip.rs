@@ -1167,7 +1167,9 @@ impl BeaconStateTile {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if !self.sync_target.is_following() => {
                 match self.parse_and_verify_block(data, pre_verified) {
-                    Ok(_) if do_relay => Self::relay_gossip(&m, producers),
+                    Ok(parsed) if do_relay && parsed.relay_eligible => {
+                        Self::relay_gossip(&m, producers)
+                    }
                     Err(err) if matches!(err.feedback(), Feedback::Reject(_)) => {
                         producers.produce(PeerEvent::P2pGossipInvalidMsg {
                             p2p_peer: m.stream_id.peer(),

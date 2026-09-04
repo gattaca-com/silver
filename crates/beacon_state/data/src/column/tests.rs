@@ -433,22 +433,29 @@ fn block_roots_ring_wraps_and_hashes_as_a_vector() {
     assert_eq!(wv.hash_root(), hash_b256_vector(&expected));
 }
 
-/// `contains` walks back from `from_slot`, so it sees every written bucket but
-/// nothing written above the slot it is asked about.
+/// `slot_of` walks back from `from_slot`, so it sees every written bucket but
+/// nothing written above the slot it is asked about. A block at slot 100
+/// followed by two empty slots occupies buckets 100..=102, and the slot
+/// reported is the block's own.
 #[test]
-fn block_roots_contains_scans_back_from_the_given_slot() {
+fn block_roots_slot_of_scans_back_from_the_given_slot() {
     let mut g = BlockRootsGroup::zeroed_vector();
     let id = {
         let mut wv = g.roll_fresh();
-        wv.set(100, [0xAA; 32]);
-        wv.set(101, [0xBB; 32]);
+        wv.set(99, [0x99; 32]);
+        for slot in 100..=102 {
+            wv.set(slot, [0xAA; 32]);
+        }
+        wv.set(103, [0xBB; 32]);
         wv.commit()
     };
     let reader = g.view(id);
 
-    assert!(reader.contains(&[0xAA; 32], 101));
-    assert!(reader.contains(&[0xBB; 32], 101));
-    assert!(!reader.contains(&[0xCC; 32], 101));
+    assert_eq!(reader.slot_of(&[0xAA; 32], 103), Some(100));
+    assert_eq!(reader.slot_of(&[0xAA; 32], 101), Some(100));
+    assert_eq!(reader.slot_of(&[0xBB; 32], 103), Some(103));
+    assert_eq!(reader.slot_of(&[0xBB; 32], 102), None, "written above the asked slot");
+    assert_eq!(reader.slot_of(&[0xCC; 32], 103), None);
 }
 
 /// A block's reveal accumulates into the current epoch's bucket; the boundary

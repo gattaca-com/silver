@@ -8,26 +8,71 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
+    GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+    TProducer,
     ssz_view::{
-        ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
-        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
-        SyncCommitteeContributionView,
+        ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
+        EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
+        SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SignedAggregateAndProofView, SingleAttestationView, StatusView,
     },
 };
-use silver_ssz::ssz_view::EXECUTION_PAYLOAD_ENVELOPE_MIN;
+use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
 use super::*;
 use crate::{
     fork_choice::{BlockImport, PayloadStatus},
-    merkle,
+    merkle, ssz_hash,
     stf::AttestationVote,
     test_signing,
 };
 
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
 const ANCHOR_ROOT: B256 = [0x01u8; 32];
+
+/// Byte position of the body inside a `SignedBeaconBlock`.
+const BODY: usize = SIGNED_BEACON_BLOCK_MIN;
+
+fn put_u32(b: &mut [u8], at: usize, v: usize) {
+    b[at..at + 4].copy_from_slice(&(v as u32).to_le_bytes());
+}
+
+/// Smallest canonical Fulu `SignedBeaconBlock`: every list empty, the
+/// execution payload at its fixed size, and every offset table pointing where
+/// a strict decoder expects. Fields go in at their fixed offsets.
+fn empty_block() -> Vec<u8> {
+    let payload_end = BEACON_BLOCK_BODY_FIXED + EXECUTION_PAYLOAD_FIXED;
+    let mut b = vec![0u8; BODY + payload_end + EXECUTION_REQUESTS_FULU_FIXED];
+    put_u32(&mut b, 0, 100);
+    put_u32(&mut b, 180, 84);
+    for off in [200, 204, 208, 212, 216, 380] {
+        put_u32(&mut b, BODY + off, BEACON_BLOCK_BODY_FIXED);
+    }
+    for off in [384, 388, 392] {
+        put_u32(&mut b, BODY + off, payload_end);
+    }
+    let payload = BODY + BEACON_BLOCK_BODY_FIXED;
+    for off in [436, 504, 508] {
+        put_u32(&mut b, payload + off, EXECUTION_PAYLOAD_FIXED);
+    }
+    let requests = BODY + payload_end;
+    for off in [0, 4, 8] {
+        put_u32(&mut b, requests + off, EXECUTION_REQUESTS_FULU_FIXED);
+    }
+    b
+}
+
+/// Zeroed `SignedAggregateAndProof` with the three offsets
+/// `SignedAggregateAndProofView` pins and an empty, well-formed bitlist.
+fn empty_aggregate() -> Vec<u8> {
+    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN + 1];
+    buf[0..4].copy_from_slice(&100u32.to_le_bytes());
+    buf[108..112].copy_from_slice(&108u32.to_le_bytes());
+    buf[208..212].copy_from_slice(&236u32.to_le_bytes());
+    buf[SIGNED_AGG_PROOF_MIN] = 0b1; // bitlist sentinel
+    buf
+}
 
 fn make_tile() -> BeaconStateTile {
     make_tile_at_wall_slot(1)
@@ -96,7 +141,7 @@ fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer, TProduc
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
 /// as a buffered gossip orphan whose slot the tile can read back.
 fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
-    let mut bytes = vec![0u8; 200];
+    let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
     if let Ok(buf) = r.buffer() {
@@ -368,7 +413,7 @@ fn block_unknown_parent_rejected() {
     // Minimal SignedBeaconBlock: message at fixed offset 100 (4-byte
     // offset + 96-byte signature), parent_root @ 116 set to an unknown
     // root so precheck bails with ParentMissing before any state change.
-    let mut buf = vec![0u8; 200];
+    let mut buf = empty_block();
     buf[100..108].copy_from_slice(&11u64.to_le_bytes()); // slot
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116] = 0xFF; // parent_root[0]
@@ -383,6 +428,241 @@ fn block_unknown_parent_rejected() {
 
     assert_eq!(tile.last_applied, head_before, "head must be unchanged");
     assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
+}
+
+/// A gossip block shorter than the fixed prefix must not reach any
+/// `SignedBeaconBlockView` accessor: they slice compile-time offsets and
+/// `unwrap`, and `release-prod` aborts on panic.
+#[test]
+fn short_gossip_block_rejected_before_any_field_read() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    tile.sync_target = SyncUpdate::Following;
+
+    for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
+        let (data, read) = publish_block_bytes(&mut gp, &vec![0u8; len]);
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            false,
+            &mut adapter.producers,
+            |_| panic!("a malformed block must never be relayed"),
+        );
+        assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
+    }
+
+    // Control: a well-formed block gets through the gate, so the assertions
+    // above are about the bound and not about a blanket reject.
+    let mut bytes = empty_block();
+    bytes[100..108].copy_from_slice(&11u64.to_le_bytes());
+    bytes[116] = 0xFF; // unknown parent_root
+    let (data, read) = publish_block_bytes(&mut gp, &bytes);
+    let feedback =
+        tile.apply_block(&data, read, BlockSource::Gossip, false, &mut adapter.producers, |_| {
+            panic!("an unimportable block must never be relayed")
+        });
+    assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
+}
+
+/// The tile reads gossip blocks out of its own tcache, so a test buffer has
+/// to be published there to be readable back as `apply_block` sees it.
+fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCacheRead) {
+    let mut r = producer.reserve(bytes.len().max(1), true).expect("reserve");
+    if let Ok(buf) = r.buffer() {
+        buf[..bytes.len()].copy_from_slice(bytes);
+    }
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    (bytes.to_vec(), read)
+}
+
+/// Fulu requires the execution timestamp and the active blob limit before a
+/// block is propagated. The STF checks both, but that runs after the relay.
+#[test]
+fn payload_timestamp_and_blob_count_are_checked_before_relay() {
+    const PARENT_SLOT: u64 = 10;
+    let slot = PARENT_SLOT + 1;
+
+    let spec = SpecConfig::mainnet();
+    let max_blobs = spec.blob_params_at(0).max_blobs_per_block as usize;
+    // The test state's genesis_time is 0, so the stamp is purely slot-derived.
+    let good_stamp = slot * spec.seconds_per_slot();
+
+    for (stamp, commitments, want_accepted) in [
+        (good_stamp, max_blobs, true),
+        (good_stamp + 1, 0, false),
+        (good_stamp - 1, 0, false),
+        (good_stamp, max_blobs + 1, false),
+    ] {
+        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(PARENT_SLOT + 2);
+        seed_tile(&mut tile, 4, PARENT_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+
+        let bytes = fulu_block_with_payload(slot, stamp, commitments);
+        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+
+        let mut relayed = false;
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            true, // pre_verified: the signature is not what these cases are about
+            &mut adapter.producers,
+            |_| relayed = true,
+        );
+
+        assert_eq!(
+            !matches!(feedback, Feedback::Reject(_)),
+            want_accepted,
+            "stamp={stamp} commitments={commitments}: {feedback:?}"
+        );
+        assert_eq!(
+            relayed, want_accepted,
+            "stamp={stamp} commitments={commitments}: relay must follow the precheck"
+        );
+    }
+}
+
+/// `empty_block` on the anchor at `slot`, its payload stamped `timestamp` and
+/// followed by `n_commitments` (zeroed) blob commitments.
+fn fulu_block_with_payload(slot: u64, timestamp: u64, n_commitments: usize) -> Vec<u8> {
+    let mut b = empty_block();
+    b[100..108].copy_from_slice(&slot.to_le_bytes());
+    b[116..148].copy_from_slice(&ANCHOR_ROOT);
+
+    let payload = BODY + BEACON_BLOCK_BODY_FIXED;
+    b[payload + 428..payload + 436].copy_from_slice(&timestamp.to_le_bytes());
+
+    let commitments_at = payload + EXECUTION_PAYLOAD_FIXED;
+    let commitments_len = n_commitments * BYTES_PER_KZG_COMMITMENT;
+    b.splice(commitments_at..commitments_at, std::iter::repeat_n(0u8, commitments_len));
+    put_u32(&mut b, BODY + 392, commitments_at - BODY + commitments_len); // execution_requests
+    b
+}
+
+/// Non-canonical re-encoding of a Fulu block with the same field contents:
+/// a 4-byte gap between the body's fixed part and its first list, every body
+/// offset shifted past it.
+fn body_with_gap(block: &[u8]) -> Vec<u8> {
+    let mut b = block.to_vec();
+    let gap = BODY + BEACON_BLOCK_BODY_FIXED;
+    b.splice(gap..gap, [0u8; 4]);
+    for off in [200, 204, 208, 212, 216, 380, 384, 388, 392] {
+        let at = BODY + off;
+        let v = u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) as usize;
+        put_u32(&mut b, at, v + 4);
+    }
+    b
+}
+
+/// The gap re-encoding hashes to the honest body root, so the proposer's
+/// signature still verifies over it; only the canonical check stands between
+/// it and a relay that every strict peer would penalise.
+#[test]
+fn non_canonical_body_is_rejected_before_relay() {
+    const PARENT_SLOT: u64 = 10;
+    let slot = PARENT_SLOT + 1;
+    let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
+
+    let honest = fulu_block_with_payload(slot, stamp, 0);
+    let gapped = body_with_gap(&honest);
+    assert_eq!(
+        ssz_hash::hash_tree_root_body_fulu(&honest[BODY..]),
+        ssz_hash::hash_tree_root_body_fulu(&gapped[BODY..]),
+        "the attack premise: the gap is invisible to the hash"
+    );
+
+    for (bytes, want_reject) in [(honest, false), (gapped, true)] {
+        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(PARENT_SLOT + 2);
+        seed_tile(&mut tile, 4, PARENT_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+
+        let mut relayed = false;
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            true,
+            &mut adapter.producers,
+            |_| relayed = true,
+        );
+
+        assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
+        assert_eq!(relayed, !want_reject, "relay must follow the canonical check");
+    }
+}
+
+/// Spec: a block must sit strictly after the finalized checkpoint's start
+/// slot, not merely in or after its epoch.
+#[test]
+fn block_at_the_finalized_start_slot_is_ignored() {
+    const PARENT_SLOT: u64 = 31;
+    let finalized_slot = SLOTS_PER_EPOCH;
+
+    for (slot, want_ignore) in [(finalized_slot, true), (finalized_slot + 1, false)] {
+        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot + 1);
+        seed_tile(&mut tile, 4, PARENT_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+        tile.fork_choice.finalized_checkpoint.epoch = 1;
+
+        let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
+        let bytes = fulu_block_with_payload(slot, stamp, 0);
+        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            true,
+            &mut adapter.producers,
+            |_| {},
+        );
+
+        assert_eq!(matches!(feedback, Feedback::Ignore), want_ignore, "slot {slot}: {feedback:?}");
+    }
+}
+
+/// `proposer_lookahead` reaches only the parent's current and next epoch. A
+/// block past a long skipped-slot run has no entry, so silver cannot check its
+/// proposer — it still imports, but must not go on the wire as if it had.
+#[test]
+fn block_past_the_lookahead_window_imports_but_is_not_relayed() {
+    const PARENT_SLOT: u64 = 10;
+
+    // The parent sits in epoch 0, so the lookahead index is the slot itself
+    // and the window is `[0, PROPOSER_LOOKAHEAD_SIZE)`.
+    let last_in_window = PROPOSER_LOOKAHEAD_SIZE as u64 - 1;
+    for (slot, want_relay) in [
+        (PARENT_SLOT + 1, true),
+        (last_in_window, true),
+        (last_in_window + 1, false),
+        (last_in_window + SLOTS_PER_EPOCH, false),
+    ] {
+        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+        seed_tile(&mut tile, 4, PARENT_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+
+        let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
+        let bytes = fulu_block_with_payload(slot, stamp, 0);
+        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+
+        let mut relayed = false;
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            true,
+            &mut adapter.producers,
+            |_| relayed = true,
+        );
+
+        assert_eq!(relayed, want_relay, "slot {slot}: {feedback:?}");
+        // Either way the block is not thrown away: the proposer window is our
+        // limit, not grounds to refuse the block.
+        assert!(!matches!(feedback, Feedback::Ignore), "slot {slot}: {feedback:?}");
+    }
 }
 
 // ── pending-block bounds ──
@@ -447,7 +727,7 @@ fn buffer_orphan_idx(
 /// Signed block just well-formed enough to reach the parent lookup: the
 /// message's slot sits at [100..108) and its parent root at [116..148).
 fn rpc_block(producer: &mut TProducer, slot: u64, parent_root: B256) -> silver_common::TCacheRead {
-    let mut bytes = vec![0u8; 200];
+    let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     bytes[116..148].copy_from_slice(&parent_root);
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
@@ -844,7 +1124,7 @@ fn block_known_parent_bad_sig_rejected() {
 
     // Valid structure, zeroed BLS signature → precheck reaches and fails
     // signature verification, so no fork-choice node is added.
-    let mut buf = vec![0u8; 200];
+    let mut buf = empty_block();
     buf[100..108].copy_from_slice(&11u64.to_le_bytes()); // slot
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116..148].copy_from_slice(&parent_root); // parent_root
@@ -1657,7 +1937,7 @@ fn justified_balances_rebuilt_on_checkpoint_change_only() {
 fn agg_multi_committee_bits_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    let mut buf = empty_aggregate();
     buf[436] = 0b0000_0011; // two committee bits
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
 }
@@ -1666,7 +1946,7 @@ fn agg_multi_committee_bits_rejected() {
 fn agg_unknown_block_root_ignored() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001; // single committee bit
     buf[228] = 0xFF; // beacon_block_root not in fork choice
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
@@ -1809,7 +2089,7 @@ fn agg_slot_too_old_ignored() {
 fn agg_slot_too_future_ignored() {
     let mut tile = make_tile_at_wall_slot(0);
     seed_tile(&mut tile, 128, 0);
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001;
     buf[212] = 5; // slot = 5 > wall (0)
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);

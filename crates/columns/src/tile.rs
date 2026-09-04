@@ -100,8 +100,8 @@ impl DataColumnsTile {
             Duration::from_millis(spec.slot_duration_ms()) * SLOTS_PER_EPOCH as u32;
         Self {
             consumers,
+            validator: ColumnValidator::new(beacon_state, spec.clone(), epoch_duration),
             spec,
-            validator: ColumnValidator::new(beacon_state, epoch_duration),
             kzg_batch: KzgBatch::new(),
             tracker: ColumnTracker::new(custody_group_columns, epoch_duration),
             gloas_pending_columns: Wheel::new(epoch_duration),
@@ -127,6 +127,8 @@ impl DataColumnsTile {
                 return None;
             }
         };
+
+        debug_assert!(SignedBeaconBlockView::check_size(buffer));
 
         let slot = SignedBeaconBlockView::slot(buffer);
         if slot <= self.sync_state.data_availability_floor() {
@@ -257,7 +259,7 @@ impl DataColumnsTile {
                 }
                 ColumnDisposition::Ignored
             }
-            ColumnOutcome::Record { block_root, column_index, bitmask, slot } => {
+            ColumnOutcome::Record { block_root, column_index, bitmask, slot, relay_eligible } => {
                 let queued = self.kzg_batch.push(PendingKzg {
                     sidecar: column.sidecar,
                     stream_id: column.stream_id,
@@ -267,7 +269,7 @@ impl DataColumnsTile {
                     bitmask,
                     slot,
                     is_gloas,
-                    relay,
+                    relay: if relay_eligible { relay } else { RelayMeta::None },
                 });
                 if queued { ColumnDisposition::Batched } else { ColumnDisposition::Ignored }
             }
@@ -377,11 +379,19 @@ impl DataColumnsTile {
         stream_id: P2pStreamId,
         producers: &mut SilverSpineProducers,
     ) {
-        let parent_root = t_read
-            .buffer()
-            .ok()
-            .filter(|(buf, _)| SignedBeaconBlockView::check_size(buf))
-            .map(|(buf, _)| *SignedBeaconBlockView::parent_root(buf));
+        let parent_root = match t_read.buffer() {
+            Ok((buf, _)) if SignedBeaconBlockView::check_size(buf) => {
+                *SignedBeaconBlockView::parent_root(buf)
+            }
+            Ok((buf, _)) => {
+                tracing::warn!(?stream_id, len = buf.len(), "malformed beacon block");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(?e, ?stream_id, "failed to read beacon block cache buffer");
+                return;
+            }
+        };
 
         let root = self.beacon_block(stream_id, t_read, producers);
 
@@ -390,9 +400,7 @@ impl DataColumnsTile {
         {
             self.drain_pending_gloas_columns(block_root, producers);
         }
-        if let Some(parent_root) = parent_root {
-            self.drain_parent_pending_columns(parent_root, producers);
-        }
+        self.drain_parent_pending_columns(parent_root, producers);
     }
 
     #[timed]
@@ -437,13 +445,15 @@ impl DataColumnsTile {
                 p2p_peer: stream_id.peer(),
                 severity: RpcSeverity::Fatal,
             });
-            producers.produce(SyncNeed::Missing {
-                root: block_root,
-                slot,
-                kind: DataKind::Columns,
-                columns: bitmask,
-                origin: Origin::Live,
-            });
+            if bitmask != 0 {
+                producers.produce(SyncNeed::Missing {
+                    root: block_root,
+                    slot,
+                    kind: DataKind::Columns,
+                    columns: bitmask,
+                    origin: Origin::Live,
+                });
+            }
         }
     }
 
@@ -556,7 +566,7 @@ impl DataColumnsTile {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let block_root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
 
-                        self.validator.note_persisted(block_root);
+                        self.validator.note_persisted(block_root, slot);
 
                         self.drain_parent_pending_columns(block_root, producers);
                     }
@@ -679,6 +689,7 @@ mod tests {
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{
         EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        ssz_view::{DATA_COLUMN_SIDECAR_MIN, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN},
     };
     use tempfile::TempDir;
 
@@ -839,6 +850,138 @@ mod tests {
             assert_eq!(slot, 42, "the need carries the slot the engine suppresses against");
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
             assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
+        }
+    }
+
+    /// A sidecar whose gossip checks could not all be completed is still
+    /// imported, but must not reach the mesh with us as its relayer. The relay
+    /// is dropped at batch time, so the flush has nothing to send.
+    #[test]
+    fn relay_ineligible_column_is_batched_without_a_relay() {
+        for (relay_eligible, want_relay, cache) in
+            [(true, true, "relay_ok"), (false, false, "relay_gated")]
+        {
+            // `consumer` is declared before `rig` so it outlives the batched
+            // `TRead` that points back at it.
+            let (mut consumer, ssz) = produce_block(&blob_block_bytes(7), cache);
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            let read = consumer.acquire(ssz);
+
+            let disposition = rig.tile.handle_column(
+                ColumnOutcome::Record {
+                    block_root: [4u8; 32],
+                    column_index: 3,
+                    bitmask: 1 << 3,
+                    slot: 7,
+                    relay_eligible,
+                },
+                PendingColumn {
+                    stream_id: P2pStreamId::new(
+                        2,
+                        2,
+                        StreamProtocol::DataColumnSidecarsByRange,
+                        true,
+                    ),
+                    sidecar: read,
+                    gossip_subnet: None,
+                    recv_ts: IngestionTime::now(),
+                },
+                false,
+                RelayMeta::Rpc { ssz },
+                &mut rig.conn.producers,
+            );
+
+            assert!(
+                matches!(disposition, ColumnDisposition::Batched),
+                "relay_eligible={relay_eligible}: imported either way"
+            );
+            let queued = rig.tile.kzg_batch.pending.first().expect("batched");
+            assert_eq!(
+                !matches!(queued.relay, RelayMeta::None),
+                want_relay,
+                "relay_eligible={relay_eligible}"
+            );
+            rig.tile.kzg_batch.pending.clear();
+        }
+    }
+
+    /// Fulu-layout sidecar with empty lists: enough for `SidecarLayout::of`
+    /// and the index read, which is all these cases need.
+    fn synth_fulu_sidecar(index: u64, slot: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; DATA_COLUMN_SIDECAR_MIN];
+        buf[0..8].copy_from_slice(&index.to_le_bytes());
+        for off in [8usize, 12, 16] {
+            buf[off..off + 4].copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
+        }
+        buf[20..28].copy_from_slice(&slot.to_le_bytes());
+        buf
+    }
+
+    fn feed_sidecar(rig: &mut Rig, bytes: &[u8], cache: &'static str) -> ColumnDisposition {
+        let (mut consumer, ssz) = produce_block(bytes, cache);
+        let read = consumer.acquire(ssz);
+        rig.tile.data_columns(
+            PendingColumn {
+                stream_id: P2pStreamId::new(2, 2, StreamProtocol::DataColumnSidecarsByRange, true),
+                sidecar: read,
+                gossip_subnet: None,
+                recv_ts: IngestionTime::now(),
+            },
+            RelayMeta::None,
+            &mut rig.conn.producers,
+        )
+    }
+
+    /// `1u128 << index` is only defined below 128, and `release-prod` masks an
+    /// over-wide shift rather than trapping — so an out-of-range index used to
+    /// reject while naming a different, innocent column to re-request.
+    #[test]
+    fn out_of_range_column_index_names_no_column_to_refetch() {
+        for index in [NUMBER_OF_COLUMNS as u64, NUMBER_OF_COLUMNS as u64 + 3, u64::MAX] {
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            let disposition = feed_sidecar(&mut rig, &synth_fulu_sidecar(index, 7), "oor_index");
+            let out = rig.drain();
+
+            assert!(
+                matches!(disposition, ColumnDisposition::Rejected { bitmask: 0, .. }),
+                "index {index}: rejected with no column named"
+            );
+            assert!(out.missing.is_empty(), "index {index}: nothing to re-own");
+        }
+
+        // Control: an in-range index does name its column, so the assertions
+        // above are about the bound and not about a blanket empty bitmask.
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        let disposition = feed_sidecar(&mut rig, &synth_fulu_sidecar(3, 7), "in_range_index");
+        assert!(
+            matches!(disposition, ColumnDisposition::Rejected { bitmask, .. } if bitmask == 1 << 3),
+            "an in-range index is re-owed"
+        );
+    }
+
+    /// `handle_beacon_block` is the gossip and RPC entry, so it owns the size
+    /// gate: every `SignedBeaconBlockView` accessor slices a compile-time
+    /// offset and `unwrap`s, and `release-prod` aborts on panic.
+    #[test]
+    fn short_block_stops_at_the_entry_gate() {
+        for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
+            let (mut consumer, ssz) = produce_block(&vec![0u8; len], "short_block_cons");
+            let read = consumer.acquire(ssz);
+
+            rig.tile.handle_beacon_block(
+                read,
+                P2pStreamId::new(2, 2, StreamProtocol::GossipSub, true),
+                &mut rig.conn.producers,
+            );
+            let out = rig.drain();
+
+            assert_eq!(
+                out.available + out.persisted + out.engine + out.missing.len(),
+                0,
+                "len {len}: a malformed block says nothing"
+            );
         }
     }
 

@@ -205,6 +205,9 @@ fn read_message_length(msg: &[u8], gossip_topic: &GossipTopic) -> Result<usize, 
     if len > gossip_topic.max_uncompressed_size() {
         return Err(Error::GossipPayloadTooLarge);
     }
+    if len < gossip_topic.min_uncompressed_size() {
+        return Err(Error::GossipPayloadTooSmall);
+    }
     Ok(len)
 }
 

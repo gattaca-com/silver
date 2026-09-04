@@ -39,13 +39,16 @@ impl RootsView<'_, BlockRoots> {
         self.get(slot as usize % SLOTS_PER_HISTORICAL_ROOT)
     }
 
-    /// Whether the ring holds `root` at or below `from_slot`. Fork choice is
-    /// what writes a root here, so membership means "seen and validated".
-    /// Walks most-recent-first: a queried parent is virtually always a slot or
-    /// two back, while a miss costs the whole ring either way.
-    pub fn contains(&self, root: &B256, from_slot: Slot) -> bool {
-        (0..SLOTS_PER_HISTORICAL_ROOT as u64)
-            .any(|back| self.at_slot(from_slot.saturating_sub(back)) == *root)
+    /// Slot of the block with `root`, if the ring holds it at or below
+    /// `from_slot`. Fork choice is what writes a root here, so a hit means
+    /// "seen and validated".
+    pub fn slot_of(&self, root: &B256, from_slot: Slot) -> Option<Slot> {
+        let oldest = from_slot.saturating_sub(SLOTS_PER_HISTORICAL_ROOT as u64 - 1);
+        let mut slot = (oldest..=from_slot).rev().find(|&s| self.at_slot(s) == *root)?;
+        while slot > oldest && self.at_slot(slot - 1) == *root {
+            slot -= 1;
+        }
+        Some(slot)
     }
 }
 

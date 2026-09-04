@@ -86,7 +86,7 @@ pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
     ])
 }
 
-fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8]) -> bool {
+fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8], max_blobs: usize) -> bool {
     if !column.len().is_multiple_of(BYTES_PER_CELL) ||
         !commits.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) ||
         !proofs.len().is_multiple_of(BYTES_PER_KZG_PROOF)
@@ -96,10 +96,13 @@ fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8]) -> bool {
     let n_cells = column.len() / BYTES_PER_CELL;
     let n_commits = commits.len() / BYTES_PER_KZG_COMMITMENT;
     let n_proofs = proofs.len() / BYTES_PER_KZG_PROOF;
-    n_cells == n_commits && n_commits == n_proofs && n_commits <= MAX_BLOB_COMMITMENTS_PER_BLOCK
+    n_cells == n_commits &&
+        n_commits == n_proofs &&
+        n_commits >= 1 &&
+        n_commits <= max_blobs.min(MAX_BLOB_COMMITMENTS_PER_BLOCK)
 }
 
-pub fn verify_data_column_sidecar_fulu(sidecar: &[u8]) -> bool {
+pub fn verify_data_column_sidecar_fulu(sidecar: &[u8], max_blobs: usize) -> bool {
     if !DataColumnSidecarFuluView::check_size(sidecar) {
         return false;
     }
@@ -110,10 +113,15 @@ pub fn verify_data_column_sidecar_fulu(sidecar: &[u8]) -> bool {
         DataColumnSidecarFuluView::column(sidecar),
         DataColumnSidecarFuluView::kzg_commitments(sidecar),
         DataColumnSidecarFuluView::kzg_proofs(sidecar),
+        max_blobs,
     )
 }
 
-pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> bool {
+pub fn verify_data_column_sidecar_gloas(
+    sidecar: &[u8],
+    commitments: &[u8],
+    max_blobs: usize,
+) -> bool {
     if !DataColumnSidecarGloasView::check_size(sidecar) {
         return false;
     }
@@ -124,6 +132,7 @@ pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> b
         DataColumnSidecarGloasView::column(sidecar),
         commitments,
         DataColumnSidecarGloasView::kzg_proofs(sidecar),
+        max_blobs,
     )
 }
 
@@ -403,6 +412,10 @@ pub fn push_data_column_sidecar_prefix(
 
 #[cfg(test)]
 mod tests {
+    /// Above every count these tests build, so a case that fails does so on
+    /// the property it names rather than on the schedule bound.
+    const MAX_BLOBS: usize = 128;
+
     use super::*;
 
     #[test]
@@ -436,33 +449,57 @@ mod tests {
         buf
     }
 
+    /// Every sidecar carries at least one blob; the active schedule is the
+    /// upper bound, not the SSZ list limit.
     #[test]
     fn verify_shape_accepts_synthetic_sidecar() {
-        for n in [0usize, 1, 2, 6, 72] {
+        for n in [1usize, 2, 6, 72] {
             let buf = synth_sidecar(0, n, n, n);
-            assert!(verify_data_column_sidecar_fulu(&buf), "n={n}");
+            assert!(verify_data_column_sidecar_fulu(&buf, n), "n={n}");
         }
+    }
+
+    #[test]
+    fn verify_shape_rejects_zero_blob_sidecar() {
+        let buf = synth_sidecar(0, 0, 0, 0);
+        assert!(!verify_data_column_sidecar_fulu(&buf, MAX_BLOBS));
+        assert!(!verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 0, 0), &[], MAX_BLOBS));
+    }
+
+    /// The bound tracked is the epoch's `blob_schedule` entry, so the same
+    /// bytes are accepted under one schedule and rejected under a tighter one.
+    #[test]
+    fn verify_shape_tracks_the_active_blob_schedule() {
+        let buf = synth_sidecar(0, 7, 7, 7);
+        assert!(verify_data_column_sidecar_fulu(&buf, 7));
+        assert!(verify_data_column_sidecar_fulu(&buf, 9));
+        assert!(!verify_data_column_sidecar_fulu(&buf, 6));
+
+        let gloas = synth_gloas_sidecar(0, 7, 7);
+        let commits = vec![0u8; 7 * BYTES_PER_KZG_COMMITMENT];
+        assert!(verify_data_column_sidecar_gloas(&gloas, &commits, 7));
+        assert!(!verify_data_column_sidecar_gloas(&gloas, &commits, 6));
     }
 
     #[test]
     fn verify_shape_rejects_out_of_range_index() {
         let mut buf = synth_sidecar(0, 1, 1, 1);
         buf[0..8].copy_from_slice(&(NUMBER_OF_COLUMNS as u64).to_le_bytes());
-        assert!(!verify_data_column_sidecar_fulu(&buf));
+        assert!(!verify_data_column_sidecar_fulu(&buf, MAX_BLOBS));
     }
 
     #[test]
     fn verify_shape_rejects_length_mismatch() {
         // 2 cells but only 1 commitment + 1 proof — count mismatch.
         let buf = synth_sidecar(0, 2, 1, 1);
-        assert!(!verify_data_column_sidecar_fulu(&buf));
+        assert!(!verify_data_column_sidecar_fulu(&buf, MAX_BLOBS));
     }
 
     #[test]
     fn verify_shape_rejects_truncated_buffer() {
         let mut buf = synth_sidecar(0, 1, 1, 1);
         buf.truncate(DATA_COLUMN_SIDECAR_MIN - 1);
-        assert!(!verify_data_column_sidecar_fulu(&buf));
+        assert!(!verify_data_column_sidecar_fulu(&buf, MAX_BLOBS));
     }
 
     #[test]
@@ -500,18 +537,29 @@ mod tests {
     fn gloas_sidecar_shape_checks() {
         let commits = |n: usize| vec![0u8; n * BYTES_PER_KZG_COMMITMENT];
         // 1 cell / 1 commit / 1 proof — well-formed.
-        assert!(verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 1, 1), &commits(1)));
-        // empty.
-        assert!(verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 0, 0), &commits(0)));
+        assert!(verify_data_column_sidecar_gloas(
+            &synth_gloas_sidecar(0, 1, 1),
+            &commits(1),
+            MAX_BLOBS
+        ));
         // index out of range.
         assert!(!verify_data_column_sidecar_gloas(
             &synth_gloas_sidecar(NUMBER_OF_COLUMNS as u64, 1, 1),
-            &commits(1)
+            &commits(1),
+            MAX_BLOBS
         ));
         // cell/proof count mismatch.
-        assert!(!verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 2, 1), &commits(2)));
+        assert!(!verify_data_column_sidecar_gloas(
+            &synth_gloas_sidecar(0, 2, 1),
+            &commits(2),
+            MAX_BLOBS
+        ));
         // commitment-count mismatch.
-        assert!(!verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 1, 1), &commits(2)));
+        assert!(!verify_data_column_sidecar_gloas(
+            &synth_gloas_sidecar(0, 1, 1),
+            &commits(2),
+            MAX_BLOBS
+        ));
     }
 
     /// End-to-end gloas: real cells + proofs through the gloas sidecar layout,
@@ -549,7 +597,7 @@ mod tests {
             buf.extend_from_slice(&column);
             buf.extend_from_slice(&col_proofs);
 
-            assert!(verify_data_column_sidecar_gloas(&buf, &commitments), "shape j={j}");
+            assert!(verify_data_column_sidecar_gloas(&buf, &commitments, MAX_BLOBS), "shape j={j}");
             assert!(verify_data_column_sidecar_kzg_proofs_gloas(&buf, &commitments), "kzg j={j}");
         }
     }
@@ -623,10 +671,39 @@ mod tests {
             out.extend_from_slice(&col_proofs);
             assert_eq!(out.len(), data_column_sidecar_len(n));
 
-            assert!(verify_data_column_sidecar_fulu(&out), "shape, col {j}");
+            assert!(verify_data_column_sidecar_fulu(&out, MAX_BLOBS), "shape, col {j}");
             assert_eq!(DataColumnSidecarFuluView::index(&out), j);
             assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "kzg, col {j}");
             assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
         }
+    }
+
+    /// The zero-blob sidecar needs no key: take any honest blobless block, and
+    /// an empty commitments list re-roots to its `body_root`, so the inclusion
+    /// proof verifies and the KZG batch passes on zero cells. The shape check
+    /// is the only thing standing between that and a recorded column.
+    #[test]
+    fn zero_blob_sidecar_off_a_blobless_block_is_refused_by_shape_alone() {
+        use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
+
+        let body = synth_body_with_commitments(&[]);
+        let mut header = [0u8; 208];
+        header[80..112].copy_from_slice(&hash_tree_root_body_fulu(&body));
+
+        let mut out = Vec::with_capacity(data_column_sidecar_len(0));
+        push_data_column_sidecar_prefix(
+            &mut out,
+            0,
+            0,
+            &header,
+            &kzg_commitments_inclusion_proof(&body),
+        );
+        assert_eq!(out.len(), data_column_sidecar_len(0));
+
+        // Everything downstream of the shape check waves it through.
+        assert!(verify_data_column_sidecar_inclusion_proof(&out), "the proof really does verify");
+        assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "the empty batch really passes");
+
+        assert!(!verify_data_column_sidecar_fulu(&out, MAX_BLOBS));
     }
 }
