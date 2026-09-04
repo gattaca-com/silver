@@ -1,19 +1,81 @@
-use std::io::{Error, ErrorKind};
+use std::{
+    io::{Error, ErrorKind},
+    ops::RangeInclusive,
+};
 
 use silver_common::{
     P2pStreamId, RpcRequest, RpcResponse, StreamProtocol, TCacheProducer, TProducer, TReservation,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        STATUS_V1_SIZE, STATUS_V2_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MAX,
+        DC_BY_RANGE_REQ_MAX, DC_BY_RANGE_REQ_MIN, DC_BY_ROOT_SINGLE_SIZE,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, MAX_PAYLOAD_SIZE,
+        METADATA_SIZE, PING_SIZE, SIGNED_BEACON_BLOCK_MAX, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, STATUS_V1_SIZE, STATUS_V2_SIZE,
     },
 };
+
+fn payload_bounds(id: &P2pStreamId) -> RangeInclusive<usize> {
+    let exact = |n: usize| n..=n;
+    if id.is_incoming() {
+        // Requests.
+        match id.protocol() {
+            StreamProtocol::StatusV1 => exact(STATUS_V1_SIZE),
+            StreamProtocol::StatusV2 => exact(STATUS_V2_SIZE),
+            StreamProtocol::Ping => exact(PING_SIZE),
+            StreamProtocol::Goodbye => exact(GOODBYE_SIZE),
+            StreamProtocol::Metadata => 0..=0,
+            StreamProtocol::BeaconBlocksByRange => exact(BLOCKS_BY_RANGE_REQ_SIZE),
+            StreamProtocol::ExecutionPayloadEnvelopesByRange => {
+                exact(EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE)
+            }
+            StreamProtocol::DataColumnSidecarsByRange => DC_BY_RANGE_REQ_MIN..=DC_BY_RANGE_REQ_MAX,
+            // `List[Root, MAX_REQUEST_BLOCKS]` and its column/envelope
+            // siblings: whole elements, and the tcache caps the total.
+            StreamProtocol::BeaconBlocksByRoot |
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => 32..=MAX_PAYLOAD_SIZE,
+            StreamProtocol::DataColumnSidecarsByRoot => DC_BY_ROOT_SINGLE_SIZE..=MAX_PAYLOAD_SIZE,
+            _ => 0..=0,
+        }
+    } else {
+        // Responses.
+        match id.protocol() {
+            StreamProtocol::StatusV1 => exact(STATUS_V1_SIZE),
+            StreamProtocol::StatusV2 => exact(STATUS_V2_SIZE),
+            StreamProtocol::Ping => exact(PING_SIZE),
+            StreamProtocol::Metadata => exact(METADATA_SIZE),
+            StreamProtocol::BeaconBlocksByRange | StreamProtocol::BeaconBlocksByRoot => {
+                SIGNED_BEACON_BLOCK_MIN..=SIGNED_BEACON_BLOCK_MAX
+            }
+            // Both sidecar layouts share the protocol; gloas is the shorter.
+            StreamProtocol::DataColumnSidecarsByRange |
+            StreamProtocol::DataColumnSidecarsByRoot => {
+                DATA_COLUMN_SIDECAR_GLOAS_MIN..=DATA_COLUMN_SIDECAR_MAX
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRange |
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN..=MAX_PAYLOAD_SIZE
+            }
+            _ => 0..=0,
+        }
+    }
+}
 
 pub fn alloc_incoming_rpc(
     rpc_in: &mut TProducer,
     id: &P2pStreamId,
     len: usize,
 ) -> Result<RpcReservation, Error> {
+    let bounds = payload_bounds(id);
+    if !bounds.contains(&len) {
+        tracing::warn!(
+            ?id,
+            len,
+            min = bounds.start(),
+            max = bounds.end(),
+            "rpc chunk length outside the protocol's bounds"
+        );
+        return Err(ErrorKind::InvalidData.into());
+    }
     let (inbound, tcache) = if id.is_incoming() {
         // incoming rpc = request
         match id.protocol() {

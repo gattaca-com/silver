@@ -178,7 +178,7 @@ impl ColumnValidator {
             );
         }
 
-        if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {
+        if sync_state.is_synced() && sync_state.is_future_slot(slot, self.spec.slot_duration_ms()) {
             tracing::debug!(
                 ?stream_id,
                 slot,
@@ -329,7 +329,7 @@ impl ColumnValidator {
         let PendingColumn { stream_id, gossip_subnet, .. } = *column;
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
-        if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {
+        if sync_state.is_synced() && sync_state.is_future_slot(slot, self.spec.slot_duration_ms()) {
             tracing::debug!(
                 ?stream_id,
                 slot,

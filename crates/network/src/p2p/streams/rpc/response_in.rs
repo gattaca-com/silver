@@ -326,7 +326,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TRead};
+    use silver_common::{StreamProtocol, TCache, TRead, ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN};
 
     use super::*;
     use crate::p2p::streams::{rpc::AcquiredRpcOutbound, snappy::SnappyEncoder};
@@ -449,8 +449,8 @@ mod tests {
         const STREAM_IDENTIFIER: [u8; 10] =
             [0xff, 0x06, 0x00, 0x00, b's', b'N', b'a', b'P', b'p', b'Y'];
 
-        let declared = 8usize; // SSZ length advertised to the reader
-        let data_len = 100usize; // actual uncompressed frame data — overshoots
+        let declared = DATA_COLUMN_SIDECAR_GLOAS_MIN; // SSZ length advertised
+        let data_len = declared + 44; // actual uncompressed frame data — overshoots
 
         // [status=0][fork_digest:4][varint declared][stream id][uncompressed frame]
         let mut wire = vec![0u8];
