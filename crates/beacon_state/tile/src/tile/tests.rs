@@ -11,10 +11,10 @@ use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
     TProducer,
     ssz_view::{
-        ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BEACON_BLOCK_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedAggregateAndProofView,
-        SingleAttestationView, StatusView,
+        ATTESTATION_DATA_SIZE, AttestationView, BYTES_PER_KZG_COMMITMENT, EXECUTION_PAYLOAD_FIXED,
+        PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
+        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
     },
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
@@ -451,6 +451,83 @@ fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCac
     let read = r.read();
     producer.publish_head();
     (bytes.to_vec(), read)
+}
+
+/// Fulu requires the execution timestamp and the active blob limit before a
+/// block is propagated. The STF checks both, but that runs after the relay.
+#[test]
+fn payload_timestamp_and_blob_count_are_checked_before_relay() {
+    const PARENT_SLOT: u64 = 10;
+    let slot = PARENT_SLOT + 1;
+
+    let spec = SpecConfig::mainnet();
+    let max_blobs = spec.blob_params_at(0).max_blobs_per_block as usize;
+    // The test state's genesis_time is 0, so the stamp is purely slot-derived.
+    let good_stamp = slot * spec.seconds_per_slot();
+
+    for (stamp, commitments, want_accepted) in [
+        (good_stamp, max_blobs, true),
+        (good_stamp + 1, 0, false),
+        (good_stamp - 1, 0, false),
+        (good_stamp, max_blobs + 1, false),
+    ] {
+        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(PARENT_SLOT + 2);
+        seed_tile(&mut tile, 4, PARENT_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+
+        let bytes = fulu_block_with_payload(slot, stamp, commitments);
+        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+
+        let mut relayed = false;
+        let feedback = tile.apply_block(
+            &data,
+            read,
+            BlockSource::Gossip,
+            true, // pre_verified: the signature is not what these cases are about
+            &mut adapter.producers,
+            |_| relayed = true,
+        );
+
+        assert_eq!(
+            !matches!(feedback, Feedback::Reject(_)),
+            want_accepted,
+            "stamp={stamp} commitments={commitments}: {feedback:?}"
+        );
+        assert_eq!(
+            relayed, want_accepted,
+            "stamp={stamp} commitments={commitments}: relay must follow the precheck"
+        );
+    }
+}
+
+/// Fulu block whose body is long enough for `BodyOffsets`, carrying an
+/// execution payload at its fixed size followed by `n` blob commitments.
+/// Every other variable field is empty.
+fn fulu_block_with_payload(slot: u64, timestamp: u64, n_commitments: usize) -> Vec<u8> {
+    const BODY: usize = 184;
+    const FIXED: usize = 396;
+    let payload_end = FIXED + EXECUTION_PAYLOAD_FIXED;
+    let body_len = payload_end + n_commitments * BYTES_PER_KZG_COMMITMENT;
+
+    let mut b = empty_block(BODY + body_len);
+    b[100..108].copy_from_slice(&slot.to_le_bytes());
+    b[116..148].copy_from_slice(&ANCHOR_ROOT);
+
+    // Empty lists all point at the end of the fixed part.
+    for off in [200usize, 204, 208, 212, 216] {
+        b[BODY + off..BODY + off + 4].copy_from_slice(&(FIXED as u32).to_le_bytes());
+    }
+    let put = |b: &mut Vec<u8>, off: usize, v: usize| {
+        b[BODY + off..BODY + off + 4].copy_from_slice(&(v as u32).to_le_bytes());
+    };
+    put(&mut b, 380, FIXED); // execution_payload
+    put(&mut b, 384, payload_end); // bls_to_execution_changes
+    put(&mut b, 388, payload_end); // blob_kzg_commitments
+    put(&mut b, 392, body_len); // execution_requests
+
+    let payload = BODY + FIXED;
+    b[payload + 428..payload + 436].copy_from_slice(&timestamp.to_le_bytes());
+    b
 }
 
 // ── pending-block bounds ──

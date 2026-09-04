@@ -143,6 +143,16 @@ impl<'a> BodyOffsets<'a> {
         )
         .unwrap_or(&[])
     }
+
+    #[inline]
+    pub fn blob_commitments_fulu(&self) -> &'a [u8] {
+        self.slice(
+            BeaconBlockBodyFuluView::blob_kzg_commitments_offset(self.body),
+            BeaconBlockBodyFuluView::execution_requests_offset(self.body),
+        )
+        .unwrap_or(&[])
+    }
+
     #[inline]
     pub fn execution_requests(&self) -> &'a [u8] {
         self.slice(

@@ -1,7 +1,8 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, Checkpoint, Epoch, SLOTS_PER_EPOCH, StateId,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot,
+    StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
@@ -541,6 +542,10 @@ impl BeaconStateTile {
             });
         }
 
+        if !is_gloas {
+            self.precheck_fulu_payload(body, block_slot, block_epoch, &rv, block_root)?;
+        }
+
         let has_data_columns = SignedBeaconBlockView::has_data_columns(data, is_gloas);
 
         Ok(ParsedBlock {
@@ -551,6 +556,44 @@ impl BeaconStateTile {
             is_gloas,
             parent_payload_status,
         })
+    }
+
+    /// The Fulu gossip rules require the execution timestamp and the active
+    /// blob limit before propagation. The STF re-checks both, but that runs
+    /// after the relay has already gone out.
+    fn precheck_fulu_payload(
+        &self,
+        body: &[u8],
+        block_slot: Slot,
+        block_epoch: Epoch,
+        rv: &StateReadView<'_>,
+        block_root: B256,
+    ) -> Result<(), PrecheckError> {
+        let Some(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
+            return Ok(()); // body_root hashing already tolerates a short body
+        };
+
+        let payload = offsets.payload();
+        if payload.len() < ssz_view::EXECUTION_PAYLOAD_FIXED {
+            return Err(PrecheckError::PayloadTooShort {
+                len: payload.len(),
+                min: ssz_view::EXECUTION_PAYLOAD_FIXED,
+                block_root,
+            });
+        }
+        let expected = rv.imm.genesis_time + block_slot * self.spec.seconds_per_slot();
+        let got = ssz_view::ExecutionPayloadView::timestamp(payload);
+        if got != expected {
+            return Err(PrecheckError::PayloadTimestamp { expected, got, block_root });
+        }
+
+        let max = self.spec.blob_params_at(block_epoch).max_blobs_per_block as usize;
+        let got = offsets.blob_commitments_fulu().len() / ssz_view::BYTES_PER_KZG_COMMITMENT;
+        if got > max {
+            return Err(PrecheckError::TooManyCommitments { got, max, block_root });
+        }
+
+        Ok(())
     }
 
     fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
