@@ -566,7 +566,7 @@ impl DataColumnsTile {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let block_root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
 
-                        self.validator.note_persisted(block_root);
+                        self.validator.note_persisted(block_root, slot);
 
                         self.drain_parent_pending_columns(block_root, producers);
                     }

@@ -34,6 +34,13 @@ pub(crate) enum ColumnOutcome {
     Record { block_root: BlockRoot, column_index: u64, bitmask: u128, slot: u64 },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ParentCheck {
+    Seen,
+    Unseen,
+    NotExtending { parent_slot: u64 },
+}
+
 /// Per-sidecar validation, i.e. everything except the KZG cell proofs —
 /// those are deferred to the end-of-pass batch, so `Record` means "passed
 /// every check but KZG". Owns the caches only validation consults.
@@ -42,8 +49,9 @@ pub(crate) struct ColumnValidator {
     spec: Arc<SpecConfig>,
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
     gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
-    // Roots of persisted blocks — parent-seen checks beyond the head fork.
-    persisted_block_roots: Wheel<BlockRoot, (), 16>,
+    // Persisted blocks and the slot each sits at — parent-seen and
+    // parent-slot checks beyond the head fork.
+    persisted_block_roots: Wheel<BlockRoot, u64, 16>,
 }
 
 impl ColumnValidator {
@@ -65,8 +73,18 @@ impl ColumnValidator {
         self.spec.blob_params_at(slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize
     }
 
-    pub fn note_persisted(&mut self, block_root: BlockRoot) {
-        self.persisted_block_roots.insert(block_root, ());
+    pub fn note_persisted(&mut self, block_root: BlockRoot, slot: u64) {
+        self.persisted_block_roots.insert(block_root, slot);
+    }
+
+    /// Fulu requires a sidecar to be proposed strictly after its parent block.
+    fn check_parent(&self, parent_root: &BlockRoot, slot: u64, in_head_fork: bool) -> ParentCheck {
+        match self.persisted_block_roots.get(parent_root) {
+            Some(&parent_slot) if slot <= parent_slot => ParentCheck::NotExtending { parent_slot },
+            Some(_) => ParentCheck::Seen,
+            None if in_head_fork => ParentCheck::Seen,
+            None => ParentCheck::Unseen,
+        }
     }
 
     pub fn gloas_commitments(&self, block_root: &BlockRoot) -> Option<&[u8]> {
@@ -227,18 +245,21 @@ impl ColumnValidator {
             tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
-        // The state view sees only the head fork's chain; the store holds
-        // every BS-accepted block (all forks, incl. validated children of the
-        // head that aren't head yet).
-        let parent_validated = parent_validated || self.persisted_block_roots.contains(parent_root);
-        if !parent_validated {
-            tracing::warn!(
-                ?stream_id,
-                slot,
-                parent_root = hex::encode(parent_root),
-                "sidecar parent_root not yet validated — ignoring (not penalized)"
-            );
-            return ColumnOutcome::AwaitParent { parent_root: *parent_root };
+        match self.check_parent(parent_root, slot, parent_validated) {
+            ParentCheck::Seen => {}
+            ParentCheck::Unseen => {
+                tracing::warn!(
+                    ?stream_id,
+                    slot,
+                    parent_root = hex::encode(parent_root),
+                    "sidecar parent_root not yet validated — ignoring (not penalized)"
+                );
+                return ColumnOutcome::AwaitParent { parent_root: *parent_root };
+            }
+            ParentCheck::NotExtending { parent_slot } => {
+                tracing::warn!(?stream_id, slot, parent_slot, "sidecar does not extend its parent");
+                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            }
         }
         if !proposer_matches {
             tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
