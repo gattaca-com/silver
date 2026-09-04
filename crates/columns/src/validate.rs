@@ -1,11 +1,15 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use flux_profiler::timed;
-use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     IngestionTime, P2pStreamId, StreamProtocol, TRead, Wheel, column_util as util,
     ssz_view::{
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, SidecarLayout, SignedBeaconBlockView,
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS, SidecarLayout,
+        SignedBeaconBlockView,
     },
 };
 
@@ -35,6 +39,7 @@ pub(crate) enum ColumnOutcome {
 /// every check but KZG". Owns the caches only validation consults.
 pub(crate) struct ColumnValidator {
     beacon_state: BeaconStateReader,
+    spec: Arc<SpecConfig>,
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
     gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
     // Roots of persisted blocks — parent-seen checks beyond the head fork.
@@ -42,12 +47,22 @@ pub(crate) struct ColumnValidator {
 }
 
 impl ColumnValidator {
-    pub fn new(beacon_state: BeaconStateReader, epoch_duration: Duration) -> Self {
+    pub fn new(
+        beacon_state: BeaconStateReader,
+        spec: Arc<SpecConfig>,
+        epoch_duration: Duration,
+    ) -> Self {
         Self {
             beacon_state,
+            spec,
             gloas_commitments: Wheel::new(epoch_duration),
             persisted_block_roots: Wheel::new(epoch_duration),
         }
+    }
+
+    /// EIP-7892 `blob_schedule` entry active at `slot`'s epoch.
+    fn max_blobs_at(&self, slot: u64) -> usize {
+        self.spec.blob_params_at(slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize
     }
 
     pub fn note_persisted(&mut self, block_root: BlockRoot) {
@@ -129,6 +144,10 @@ impl ColumnValidator {
 
         let block_root = util::block_root_from_sidecar(buffer);
         let column_index = DataColumnSidecarFuluView::index(buffer);
+        if column_index >= NUMBER_OF_COLUMNS as u64 {
+            tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
+            return ColumnOutcome::Reject { block_root, slot, bitmask: 0 };
+        }
         let column_bitmask = 1u128 << column_index;
 
         if let Some(subnet) = gossip_subnet &&
@@ -143,7 +162,7 @@ impl ColumnValidator {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
-        if !util::verify_data_column_sidecar_fulu(buffer) {
+        if !util::verify_data_column_sidecar_fulu(buffer, self.max_blobs_at(slot)) {
             tracing::warn!(?stream_id, "badly formed data column sidecar");
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
@@ -272,6 +291,10 @@ impl ColumnValidator {
 
         let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let column_index = DataColumnSidecarGloasView::index(buffer);
+        if column_index >= NUMBER_OF_COLUMNS as u64 {
+            tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
+            return ColumnOutcome::Reject { block_root, slot, bitmask: 0 };
+        }
         let column_bitmask = 1u128 << column_index;
 
         if let Some(subnet) = gossip_subnet &&
@@ -288,7 +311,7 @@ impl ColumnValidator {
             return ColumnOutcome::Buffer { block_root };
         };
 
-        if !util::verify_data_column_sidecar_gloas(buffer, commitments) {
+        if !util::verify_data_column_sidecar_gloas(buffer, commitments, self.max_blobs_at(slot)) {
             tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }

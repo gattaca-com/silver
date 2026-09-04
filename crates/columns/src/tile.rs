@@ -100,8 +100,8 @@ impl DataColumnsTile {
             Duration::from_millis(spec.slot_duration_ms()) * SLOTS_PER_EPOCH as u32;
         Self {
             consumers,
+            validator: ColumnValidator::new(beacon_state, spec.clone(), epoch_duration),
             spec,
-            validator: ColumnValidator::new(beacon_state, epoch_duration),
             kzg_batch: KzgBatch::new(),
             tracker: ColumnTracker::new(custody_group_columns, epoch_duration),
             gloas_pending_columns: Wheel::new(epoch_duration),
@@ -445,13 +445,15 @@ impl DataColumnsTile {
                 p2p_peer: stream_id.peer(),
                 severity: RpcSeverity::Fatal,
             });
-            producers.produce(SyncNeed::Missing {
-                root: block_root,
-                slot,
-                kind: DataKind::Columns,
-                columns: bitmask,
-                origin: Origin::Live,
-            });
+            if bitmask != 0 {
+                producers.produce(SyncNeed::Missing {
+                    root: block_root,
+                    slot,
+                    kind: DataKind::Columns,
+                    columns: bitmask,
+                    origin: Origin::Live,
+                });
+            }
         }
     }
 
@@ -687,7 +689,7 @@ mod tests {
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{
         EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
-        ssz_view::SIGNED_BEACON_BLOCK_MIN,
+        ssz_view::{DATA_COLUMN_SIDECAR_MIN, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN},
     };
     use tempfile::TempDir;
 
@@ -849,6 +851,60 @@ mod tests {
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
             assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
         }
+    }
+
+    /// Fulu-layout sidecar with empty lists: enough for `SidecarLayout::of`
+    /// and the index read, which is all these cases need.
+    fn synth_fulu_sidecar(index: u64, slot: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; DATA_COLUMN_SIDECAR_MIN];
+        buf[0..8].copy_from_slice(&index.to_le_bytes());
+        for off in [8usize, 12, 16] {
+            buf[off..off + 4].copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
+        }
+        buf[20..28].copy_from_slice(&slot.to_le_bytes());
+        buf
+    }
+
+    fn feed_sidecar(rig: &mut Rig, bytes: &[u8], cache: &'static str) -> ColumnDisposition {
+        let (mut consumer, ssz) = produce_block(bytes, cache);
+        let read = consumer.acquire(ssz);
+        rig.tile.data_columns(
+            PendingColumn {
+                stream_id: P2pStreamId::new(2, 2, StreamProtocol::DataColumnSidecarsByRange, true),
+                sidecar: read,
+                gossip_subnet: None,
+                recv_ts: IngestionTime::now(),
+            },
+            RelayMeta::None,
+            &mut rig.conn.producers,
+        )
+    }
+
+    /// `1u128 << index` is only defined below 128, and `release-prod` masks an
+    /// over-wide shift rather than trapping — so an out-of-range index used to
+    /// reject while naming a different, innocent column to re-request.
+    #[test]
+    fn out_of_range_column_index_names_no_column_to_refetch() {
+        for index in [NUMBER_OF_COLUMNS as u64, NUMBER_OF_COLUMNS as u64 + 3, u64::MAX] {
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            let disposition = feed_sidecar(&mut rig, &synth_fulu_sidecar(index, 7), "oor_index");
+            let out = rig.drain();
+
+            assert!(
+                matches!(disposition, ColumnDisposition::Rejected { bitmask: 0, .. }),
+                "index {index}: rejected with no column named"
+            );
+            assert!(out.missing.is_empty(), "index {index}: nothing to re-own");
+        }
+
+        // Control: an in-range index does name its column, so the assertions
+        // above are about the bound and not about a blanket empty bitmask.
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        let disposition = feed_sidecar(&mut rig, &synth_fulu_sidecar(3, 7), "in_range_index");
+        assert!(
+            matches!(disposition, ColumnDisposition::Rejected { bitmask, .. } if bitmask == 1 << 3),
+            "an in-range index is re-owed"
+        );
     }
 
     /// `handle_beacon_block` is the gossip and RPC entry, so it owns the size

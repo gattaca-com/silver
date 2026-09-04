@@ -202,9 +202,10 @@ impl HistoryBackfill {
         sidecar: TRead,
         peer: usize,
         now: Instant,
+        spec: &SpecConfig,
     ) -> (Option<VerifiedColumns>, Vec<RejectedSidecar>) {
         match self.columns.as_mut() {
-            Some(columns) => columns.add_sidecar(sidecar, peer, now),
+            Some(columns) => columns.add_sidecar(sidecar, peer, now, spec),
             None => {
                 tracing::error!("received backfill data column with no active column backfill!");
                 (None, Vec::new())

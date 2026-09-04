@@ -463,7 +463,7 @@ impl Store {
     ) where
         F: FnMut(PeerEvent),
     {
-        let (verified, rejected) = self.history.add_sidecar(sidecar, peer, now);
+        let (verified, rejected) = self.history.add_sidecar(sidecar, peer, now, &self.spec);
         for bad in rejected {
             tracing::warn!(
                 peer = bad.peer,

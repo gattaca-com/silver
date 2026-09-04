@@ -6,7 +6,7 @@ use std::{
 };
 
 use fxhash::FxHashMap;
-use silver_beacon_state_data::SpecConfig;
+use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     TRead,
     column_util::{self, KzgBatchEntry, KzgScratch},
@@ -172,13 +172,15 @@ impl Expect {
 }
 
 impl PendingColumnBlock {
-    fn accepts(&self, layout: SidecarLayout, sidecar: &[u8]) -> bool {
+    fn accepts(&self, layout: SidecarLayout, sidecar: &[u8], spec: &SpecConfig) -> bool {
+        let max_blobs =
+            spec.blob_params_at(self.slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize;
         match (&self.expect, layout) {
             (
                 Expect::Fulu { proposer_index, parent_root, state_root, body_root, signature },
                 SidecarLayout::Fulu,
             ) => {
-                column_util::verify_data_column_sidecar_fulu(sidecar) &&
+                column_util::verify_data_column_sidecar_fulu(sidecar, max_blobs) &&
                     column_util::verify_data_column_sidecar_inclusion_proof(sidecar) &&
                     DataColumnSidecarFuluView::slot(sidecar) == self.slot &&
                     DataColumnSidecarFuluView::proposer_index(sidecar) == *proposer_index &&
@@ -188,7 +190,7 @@ impl PendingColumnBlock {
                     DataColumnSidecarFuluView::block_signature(sidecar) == signature
             }
             (Expect::Gloas { commitments }, SidecarLayout::Gloas) => {
-                column_util::verify_data_column_sidecar_gloas(sidecar, commitments) &&
+                column_util::verify_data_column_sidecar_gloas(sidecar, commitments, max_blobs) &&
                     DataColumnSidecarGloasView::slot(sidecar) == self.slot
             }
             _ => {
@@ -303,8 +305,9 @@ impl ColumnBackfill {
         sidecar: TRead,
         peer: usize,
         now: Instant,
+        spec: &SpecConfig,
     ) -> (Option<VerifiedColumns>, Vec<RejectedSidecar>) {
-        let Some((block_root, column_index)) = self.park(&sidecar, peer, now) else {
+        let Some((block_root, column_index)) = self.park(&sidecar, peer, now, spec) else {
             return (None, Vec::new());
         };
         let Some(block) = self.pending.get_mut(&block_root) else { return (None, Vec::new()) };
@@ -317,7 +320,13 @@ impl ColumnBackfill {
 
     /// The per-sidecar checks: shape, header/commitment binding to a pending
     /// block, and dedup. `Some` = accepted for parking.
-    fn park(&mut self, sidecar: &TRead, peer: usize, now: Instant) -> Option<(B256, u64)> {
+    fn park(
+        &mut self,
+        sidecar: &TRead,
+        peer: usize,
+        now: Instant,
+        spec: &SpecConfig,
+    ) -> Option<(B256, u64)> {
         let buffer = match sidecar.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -361,7 +370,7 @@ impl ColumnBackfill {
         if expected.requested & column_bitmask == 0 || expected.received & column_bitmask != 0 {
             return None;
         }
-        if !expected.accepts(layout, buffer) {
+        if !expected.accepts(layout, buffer, spec) {
             tracing::warn!(
                 block_root = hex::encode(block_root),
                 column_index,
@@ -591,7 +600,6 @@ impl PendingEnvelope {
 mod tests {
     use std::io::Write;
 
-    use silver_beacon_state_data::SLOTS_PER_EPOCH;
     use silver_common::{TCache, TCacheProducer};
 
     use super::*;
@@ -726,8 +734,8 @@ mod tests {
         };
 
         // Contents are irrelevant: the layout arm is what refuses.
-        assert!(!fulu.accepts(SidecarLayout::Gloas, &[0u8; 512]));
-        assert!(!gloas.accepts(SidecarLayout::Fulu, &[0u8; 512]));
+        assert!(!fulu.accepts(SidecarLayout::Gloas, &[0u8; 512], &spec()));
+        assert!(!gloas.accepts(SidecarLayout::Fulu, &[0u8; 512], &spec()));
     }
 
     /// A gloas-era block links only if its root is computed with the gloas body
@@ -874,12 +882,12 @@ mod tests {
         cb.seed_block(f.block_root, 20, &f.block, requested, &spec());
 
         for &col in &[0usize, 1] {
-            let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[col]), 7, now);
+            let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[col]), 7, now, &spec());
             assert!(verified.is_none() && rejected.is_empty(), "col {col} parked, not verified");
         }
         assert_eq!(cb.owed_span(), (20, 21), "still owed until the set completes");
 
-        let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[3]), 7, now);
+        let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[3]), 7, now, &spec());
         assert!(rejected.is_empty());
         let verified = verified.expect("last column completes the set");
         assert_eq!((verified.block_root, verified.slot), (f.block_root, 20));
@@ -903,8 +911,8 @@ mod tests {
         let proofs_off = column_util::data_column_sidecar_len(2) - 2 * 48;
         forged[proofs_off] ^= 0x01;
 
-        cb.add_sidecar(tc.tread(&f.sidecars[0]), 7, now);
-        let (verified, rejected) = cb.add_sidecar(tc.tread(&forged), 9, now);
+        cb.add_sidecar(tc.tread(&f.sidecars[0]), 7, now, &spec());
+        let (verified, rejected) = cb.add_sidecar(tc.tread(&forged), 9, now, &spec());
         assert!(verified.is_none(), "a bad column holds the set back");
         assert_eq!(rejected.len(), 1);
         assert_eq!((rejected[0].column_index, rejected[0].peer), (1, 9));
@@ -914,7 +922,7 @@ mod tests {
         assert_eq!(block.parked.len(), 1, "the honest column stays parked");
 
         // The re-ask lands a good copy: the set completes.
-        let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[1]), 11, now);
+        let (verified, rejected) = cb.add_sidecar(tc.tread(&f.sidecars[1]), 11, now, &spec());
         assert!(rejected.is_empty());
         assert_eq!(verified.expect("completes").sidecars.len(), 2);
     }
@@ -928,7 +936,7 @@ mod tests {
         let mut tc = Tc::new("backfill_kzg_expire");
         let mut cb = ColumnBackfill::new(1..97);
         cb.seed_block(f.block_root, 20, &f.block, 0b11, &spec());
-        cb.add_sidecar(tc.tread(&f.sidecars[0]), 7, now);
+        cb.add_sidecar(tc.tread(&f.sidecars[0]), 7, now, &spec());
 
         cb.expire_incomplete(now + INCOMPLETE_BLOCK_TIMEOUT - Duration::from_millis(1));
         assert_eq!(cb.pending[&f.block_root].parked.len(), 1, "inside the window it is kept");
