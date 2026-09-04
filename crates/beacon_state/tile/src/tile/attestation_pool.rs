@@ -40,7 +40,7 @@ pub(super) enum InsertOutcome {
     /// Slot below the retention floor — valid vote, just not aggregable.
     Stale,
     Full,
-    /// Position ≥ committee length, or length differs from the entry's.
+    /// Participation metadata is invalid or conflicts with the entry's.
     Inconsistent,
 }
 

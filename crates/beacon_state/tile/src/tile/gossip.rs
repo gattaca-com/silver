@@ -1,6 +1,7 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
+    B256, BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
+    SYNC_COMMITTEE_SIZE, Slot, StateId, StateReadView, ValidatorsView, gloas::PTC_SIZE,
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, DataKind, EngineNewPayloadEnvelopeReq,
@@ -10,17 +11,21 @@ use silver_common::{
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBlsToExecutionChangeView,
+        SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SYNC_COMMITTEE_MSG_SIZE, SignedBlsToExecutionChangeView,
+        SignedContributionAndProofView as ContributionView,
         SignedExecutionPayloadEnvelopeView as SignedPayload, SignedVoluntaryExitView,
-        SingleAttestationView,
+        SingleAttestationView, SyncCommitteeView,
     },
 };
 
 use super::{
-    ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, Producers,
+    ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY,
+    Producers,
     attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
+    sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
@@ -28,7 +33,10 @@ use crate::{
     merkle, ssz_hash, stf, validate,
 };
 
-pub(super) const ATT_BATCH_CAP: usize = 1024;
+pub(super) const VOTE_BATCH_CAP: usize = 1024;
+
+const SYNC_SUBCOMMITTEE_SIZE: usize = SYNC_COMMITTEE_SIZE / silver_common::SYNC_COMMITTEE_SUBNETS;
+pub(super) const PTC_MASK_WORDS: usize = PTC_SIZE.div_ceil(64);
 
 pub(super) struct PreparedAttestation {
     buf: [u8; SINGLE_ATT_SIZE],
@@ -39,6 +47,144 @@ pub(super) struct PreparedAttestation {
     data_root: B256,
     signature: CheckedSignature,
     vote: stf::AttestationVote,
+}
+
+pub(super) struct PreparedSyncMessage {
+    slot: Slot,
+    subnet: u64,
+    validator: u64,
+    block_root: B256,
+    positions: [u64; SYNC_SUBCOMMITTEE_MASK_WORDS],
+    pubkey: PublicKey,
+    signing_root: B256,
+    signature: CheckedSignature,
+}
+
+pub(crate) struct PreparedPtc {
+    pub block_root: B256,
+    pub slot: Slot,
+    pub validator: u64,
+    pub ptc_positions: [u64; PTC_MASK_WORDS],
+    pub present: bool,
+    pub da: bool,
+    pub pubkey: PublicKey,
+    pub signing_root: B256,
+    pub signature: CheckedSignature,
+}
+
+#[allow(clippy::large_enum_variant)]
+pub(super) enum PreparedVote {
+    Attestation(PreparedAttestation),
+    SyncMessage(PreparedSyncMessage),
+    Ptc(PreparedPtc),
+}
+
+impl PreparedVote {
+    fn sig_parts(&self) -> (&PublicKey, CheckedSignature, &B256) {
+        match self {
+            Self::Attestation(p) => (&p.pubkey, p.signature, &p.signing_root),
+            Self::SyncMessage(p) => (&p.pubkey, p.signature, &p.signing_root),
+            Self::Ptc(p) => (&p.pubkey, p.signature, &p.signing_root),
+        }
+    }
+
+    fn is_seen(&self, tile: &BeaconStateTile) -> bool {
+        match self {
+            Self::Attestation(p) => {
+                tile.seen_attesters.contains(p.vote.target_epoch, p.vote.validator as usize)
+            }
+            Self::SyncMessage(p) => {
+                tile.seen_sync_msgs[p.subnet as usize].contains(p.slot, p.validator as usize)
+            }
+            Self::Ptc(p) => tile.seen_ptc.contains(p.slot, p.validator as usize),
+        }
+    }
+
+    fn dedup_key(&self) -> (u8, u64, u64, u64) {
+        match self {
+            Self::Attestation(p) => (0, p.vote.validator as u64, p.vote.target_epoch, 0),
+            Self::SyncMessage(p) => (1, p.validator, p.slot, p.subnet),
+            Self::Ptc(p) => (2, p.validator, p.slot, 0),
+        }
+    }
+}
+
+enum SyncSubcommittee<'a> {
+    /// Current committee indices are cached in the state.
+    Current(&'a [u32]),
+    /// The next committee has no index cache; resolve only the positions that
+    /// validation needs from its committed pubkeys.
+    Next(&'a [BLSPubkey]),
+}
+
+impl SyncSubcommittee<'_> {
+    fn contains(&self, validator: usize, validators: &ValidatorsView<'_>) -> bool {
+        match self {
+            Self::Current(indices) => indices.iter().any(|&v| v as usize == validator),
+            Self::Next(pubkeys) => {
+                validator < validators.count() && pubkeys.contains(validators.pubkey(validator))
+            }
+        }
+    }
+
+    fn positions(
+        &self,
+        validator: usize,
+        validators: &ValidatorsView<'_>,
+    ) -> [u64; SYNC_SUBCOMMITTEE_MASK_WORDS] {
+        let mut positions = [0u64; SYNC_SUBCOMMITTEE_MASK_WORDS];
+        match self {
+            Self::Current(indices) => {
+                for (position, &member) in indices.iter().enumerate() {
+                    if member as usize == validator {
+                        positions[position / 64] |= 1 << (position % 64);
+                    }
+                }
+            }
+            Self::Next(pubkeys) if validator < validators.count() => {
+                let validator_pubkey = validators.pubkey(validator);
+                for (position, member) in pubkeys.iter().enumerate() {
+                    if member == validator_pubkey {
+                        positions[position / 64] |= 1 << (position % 64);
+                    }
+                }
+            }
+            Self::Next(_) => {}
+        }
+        positions
+    }
+
+    fn validator_at(&self, position: usize, validators: &ValidatorsView<'_>) -> Option<usize> {
+        match self {
+            Self::Current(indices) => {
+                let validator = *indices.get(position)? as usize;
+                (validator < validators.count()).then_some(validator)
+            }
+            Self::Next(pubkeys) => validators
+                .find_by_pubkey(pubkeys.get(position)?)
+                .map(|validator| validator as usize),
+        }
+    }
+}
+
+#[inline]
+pub(super) fn uses_next_sync_committee(slot: Slot) -> bool {
+    let epoch = slot / SLOTS_PER_EPOCH;
+    let next_slot_epoch = slot.saturating_add(1) / SLOTS_PER_EPOCH;
+    epoch / EPOCHS_PER_SYNC_COMMITTEE_PERIOD != next_slot_epoch / EPOCHS_PER_SYNC_COMMITTEE_PERIOD
+}
+
+fn sync_subcommittee<'a>(view: &StateReadView<'a>, subcommittee: usize) -> SyncSubcommittee<'a> {
+    let base = subcommittee * SYNC_SUBCOMMITTEE_SIZE;
+    let end = base + SYNC_SUBCOMMITTEE_SIZE;
+    let committees = view.longtail.sync_committees();
+    // The spec selects from the state at `state.slot + 1`, not from the
+    // message slot. They differ during the clock-disparity window.
+    if uses_next_sync_committee(view.slot.slot_number()) {
+        SyncSubcommittee::Next(&committees.next().pubkeys[base..end])
+    } else {
+        SyncSubcommittee::Current(&committees.indices()[base..end])
+    }
 }
 
 pub(super) enum EnvelopeCheck {
@@ -192,48 +338,61 @@ impl BeaconStateTile {
         self.seen_attesters.mark(p.vote.target_epoch, p.vote.validator as usize);
     }
 
-    pub(super) fn defer_attestation(&mut self, m: NewGossipMsg, producers: &mut Producers) {
-        self.att_batch.push(m);
-        if self.att_batch.len() >= ATT_BATCH_CAP {
-            self.flush_attestations(producers);
+    pub(super) fn defer_vote(&mut self, m: NewGossipMsg, producers: &mut Producers) {
+        self.vote_batch.push(m);
+        if self.vote_batch.len() >= VOTE_BATCH_CAP {
+            self.flush_votes(producers);
         }
     }
 
-    pub(super) fn flush_attestations(&mut self, producers: &mut Producers) {
-        if !self.att_batch.is_empty() {
-            self.verify_and_commit_attestations(producers);
+    pub(super) fn flush_votes(&mut self, producers: &mut Producers) {
+        if !self.vote_batch.is_empty() {
+            self.verify_and_commit_votes(producers);
         }
     }
 
-    /// Apply the deferred attestations: sequential cheap validation (in
-    /// arrival order, so intra-batch duplicate attesters dedup naturally),
-    /// then one multi-pairing verify for the survivors. A failed batch falls
-    /// back to per-attestation verification so only the culprits are
-    /// rejected.
+    /// Apply the deferred votes (attestations, sync committee messages, PTC
+    /// attestations): sequential cheap validation in arrival order, then one
+    /// multi-pairing verify for the survivors. A failed batch falls back to
+    /// per-message verification so only the culprits are rejected.
     #[timed]
-    fn verify_and_commit_attestations(&mut self, producers: &mut Producers) {
-        debug_assert!(!self.att_batch.is_empty());
-        BeaconStateCounters::AttestationBatchSize.set(self.att_batch.len() as u64);
+    fn verify_and_commit_votes(&mut self, producers: &mut Producers) {
+        debug_assert!(!self.vote_batch.is_empty());
+        BeaconStateCounters::VoteBatchSize.set(self.vote_batch.len() as u64);
 
-        self.att_sig_batch.clear();
-        debug_assert!(self.att_pending.is_empty());
+        self.vote_sig_batch.clear();
+        debug_assert!(self.vote_pending.is_empty());
 
-        while !self.att_batch.is_empty() {
-            let m = self.att_batch.swap_remove(0);
-            let GossipTopic::BeaconAttestation(subnet) = m.topic else { continue };
+        // Drain from the back after one in-place reversal: this preserves
+        // arrival order without O(n) front-removes or another allocation.
+        self.vote_batch.reverse();
+        while let Some(m) = self.vote_batch.pop() {
             let acquired = self.gossip_consumer.acquire(m.ssz);
             let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { continue };
-            match self.prepare_attestation(data, subnet) {
+            let prepared = match m.topic {
+                GossipTopic::BeaconAttestation(subnet) => {
+                    self.prepare_attestation(data, subnet).map(PreparedVote::Attestation)
+                }
+                GossipTopic::SyncCommittee(subnet) => {
+                    self.prepare_sync_message(data, subnet).map(PreparedVote::SyncMessage)
+                }
+                GossipTopic::PayloadAttestationMessage => {
+                    self.prepare_ptc(data).map(PreparedVote::Ptc)
+                }
+                _ => continue,
+            };
+            match prepared {
                 Ok(p) => {
-                    let duplicate = self.att_pending.iter().any(|(_, q)| {
-                        q.vote.validator == p.vote.validator &&
-                            q.vote.target_epoch == p.vote.target_epoch
-                    });
-                    if duplicate {
-                        continue;
+                    // Pair only the first candidate for each dedup key, but
+                    // retain later candidates. If that representative makes
+                    // the batch fail, fallback verification can still find a
+                    // later valid candidate for the same key.
+                    let key = p.dedup_key();
+                    if !self.vote_pending.iter().any(|(_, q)| q.dedup_key() == key) {
+                        let (pk, sig, root) = p.sig_parts();
+                        self.vote_sig_batch.push_parsed(pk, sig, *root);
                     }
-                    self.att_sig_batch.push_parsed(&p.pubkey, p.signature, p.signing_root);
-                    self.att_pending.push((m, p));
+                    self.vote_pending.push((m, p));
                 }
                 Err(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
                     p2p_peer: m.stream_id.peer(),
@@ -244,18 +403,32 @@ impl BeaconStateTile {
             }
         }
 
-        let batch_ok = self.att_sig_batch.verify_all();
-        if !batch_ok && !self.att_pending.is_empty() {
-            BeaconStateCounters::AttestationBatchFallback.inc();
+        let batch_ok = self.vote_sig_batch.verify_all();
+        if !batch_ok && !self.vote_pending.is_empty() {
+            BeaconStateCounters::VoteBatchFallback.inc();
         }
 
         let mut accepted = false;
-        while !self.att_pending.is_empty() {
-            let (m, p) = self.att_pending.swap_remove(0);
-            let valid =
-                batch_ok || bls::verify_one_checked(&p.pubkey, &p.signature, &p.signing_root);
+        let mut committed_ptc = false;
+        self.vote_pending.reverse();
+        while let Some((m, p)) = self.vote_pending.pop() {
+            // Deduplicate only against votes whose signatures have already
+            // verified and been committed. An invalid earlier arrival with
+            // the same key must not suppress a later valid vote.
+            if p.is_seen(self) {
+                continue;
+            }
+            let (pk, sig, root) = p.sig_parts();
+            let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
             if valid {
-                self.commit_attestation(&p);
+                match &p {
+                    PreparedVote::Attestation(p) => self.commit_attestation(p),
+                    PreparedVote::SyncMessage(p) => self.commit_sync_message(p),
+                    PreparedVote::Ptc(p) => {
+                        self.commit_ptc(p);
+                        committed_ptc = true;
+                    }
+                }
                 Self::relay_gossip(&m, producers);
                 accepted = true;
             } else {
@@ -267,9 +440,197 @@ impl BeaconStateTile {
             }
         }
 
+        // PTC votes all dirty the same fork-choice structure; fold the whole
+        // flush in one head recomputation rather than once per message.
+        if committed_ptc {
+            self.recompute_head();
+        }
+
         if accepted {
             self.on_accept(None, producers);
         }
+    }
+
+    pub(super) fn prepare_sync_message(
+        &mut self,
+        data: &[u8],
+        subnet: u64,
+    ) -> Result<PreparedSyncMessage, Feedback> {
+        if data.len() != SYNC_COMMITTEE_MSG_SIZE {
+            return Err(Feedback::Reject(None));
+        }
+        let buf: &[u8; SYNC_COMMITTEE_MSG_SIZE] =
+            data[..SYNC_COMMITTEE_MSG_SIZE].try_into().unwrap();
+        let slot = SyncCommitteeView::slot(buf);
+        let validator = SyncCommitteeView::validator_index(buf);
+
+        if subnet >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
+            return Err(Feedback::Reject(None));
+        }
+        if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Err(Feedback::Ignore);
+        }
+
+        let seen = &mut self.seen_sync_msgs[subnet as usize];
+        seen.rotate_to(self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY));
+        if seen.contains(slot, validator as usize) {
+            return Err(Feedback::Ignore);
+        }
+
+        let canon_id = self.canonical_state_id();
+        let view = self.state.read_view(canon_id);
+        if validator as usize >= view.validators.count() {
+            return Err(Feedback::Reject(None));
+        }
+
+        let committee = sync_subcommittee(&view, subnet as usize);
+        let positions = committee.positions(validator as usize, &view.validators);
+        if positions.iter().all(|&word| word == 0) {
+            return Err(Feedback::Reject(None));
+        }
+
+        let block_root = *SyncCommitteeView::beacon_block_root(buf);
+        let fork_version = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let domain = bls::domain_from_fork_data(
+            bls::DOMAIN_SYNC_COMMITTEE,
+            &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
+        );
+        let signing_root = bls::compute_signing_root(&block_root, &domain);
+        let Some(signature) = CheckedSignature::parse(SyncCommitteeView::signature(buf)) else {
+            return Err(Feedback::Reject(None));
+        };
+
+        Ok(PreparedSyncMessage {
+            slot,
+            subnet,
+            validator,
+            block_root,
+            positions,
+            pubkey: *view.validators.pubkey_decompressed(validator as usize),
+            signing_root,
+            signature,
+        })
+    }
+
+    fn commit_sync_message(&mut self, p: &PreparedSyncMessage) {
+        let outcome = self.sync_contribution_pool.insert_verified(
+            p.slot,
+            p.subnet,
+            p.block_root,
+            &p.positions,
+            p.signature.as_sig(),
+        );
+        debug_assert!(outcome != InsertOutcome::Inconsistent);
+        if outcome == InsertOutcome::Full {
+            BeaconStateCounters::SyncContributionPoolFull.inc();
+            tracing::debug!(
+                slot = p.slot,
+                subcommittee = p.subnet,
+                block = hex32(&p.block_root),
+                "sync contribution pool full"
+            );
+        }
+        self.seen_sync_msgs[p.subnet as usize].mark(p.slot, p.validator as usize);
+    }
+
+    #[timed]
+    pub(super) fn handle_sync_contribution(&mut self, data: &[u8]) -> Feedback {
+        if data.len() != SIGNED_CONTRIBUTION_AND_PROOF_SIZE {
+            return Feedback::Reject(None);
+        }
+        let buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE] =
+            data[..SIGNED_CONTRIBUTION_AND_PROOF_SIZE].try_into().unwrap();
+        let slot = ContributionView::slot(buf);
+        let subcommittee = ContributionView::subcommittee_index(buf);
+        let aggregator = ContributionView::aggregator_index(buf);
+        let block_root = *ContributionView::beacon_block_root(buf);
+        let bits = ContributionView::aggregation_bits(buf);
+
+        if subcommittee >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
+            return Feedback::Reject(None);
+        }
+        if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Feedback::Ignore;
+        }
+
+        let seen = &mut self.seen_contribution_aggregators[subcommittee as usize];
+        seen.rotate_to(self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY));
+        if seen.contains(slot, aggregator as usize) {
+            return Feedback::Ignore;
+        }
+        let coverage = self.seen_aggregates.coverage(slot, subcommittee, block_root, bits);
+        if coverage == Coverage::BySuperset {
+            return Feedback::Ignore;
+        }
+
+        if !is_sync_aggregator(ContributionView::selection_proof(buf)) {
+            return Feedback::Reject(None);
+        }
+
+        let canon_id = self.canonical_state_id();
+        let view = self.state.read_view(canon_id);
+        let count = view.validators.count();
+        if aggregator as usize >= count {
+            return Feedback::Ignore;
+        }
+        let committee = sync_subcommittee(&view, subcommittee as usize);
+        if !committee.contains(aggregator as usize, &view.validators) {
+            return Feedback::Reject(None);
+        }
+
+        let fv = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let fork_data_root =
+            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
+
+        let sr_sp = bls::compute_signing_root(
+            &ssz_hash::hash_tree_root_sync_selection_data(slot, subcommittee),
+            &domain(bls::DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF),
+        );
+        let contribution_root = ssz_hash::hash_tree_root_sync_contribution(
+            slot,
+            &block_root,
+            subcommittee,
+            bits,
+            ContributionView::contribution_signature(buf),
+        );
+        let cap_root = ssz_hash::hash_tree_root_contribution_and_proof(
+            aggregator,
+            &contribution_root,
+            ContributionView::selection_proof(buf),
+        );
+        let sr_outer =
+            bls::compute_signing_root(&cap_root, &domain(bls::DOMAIN_CONTRIBUTION_AND_PROOF));
+        let sr_agg = bls::compute_signing_root(&block_root, &domain(bls::DOMAIN_SYNC_COMMITTEE));
+
+        let mut participants = 0usize;
+        let mut unknown = false;
+        self.sig_batch.clear();
+        let aggregator_pk = view.validators.pubkey_decompressed(aggregator as usize);
+        self.sig_batch.push_one(aggregator_pk, ContributionView::selection_proof(buf), sr_sp);
+        self.sig_batch.push_one(aggregator_pk, ContributionView::signature(buf), sr_outer);
+        self.sig_batch.push_aggregate(
+            (0..SYNC_SUBCOMMITTEE_SIZE).filter_map(|i| {
+                if bits[i / 8] & (1 << (i % 8)) == 0 {
+                    return None;
+                }
+                participants += 1;
+                let Some(vi) = committee.validator_at(i, &view.validators) else {
+                    unknown = true;
+                    return None;
+                };
+                Some(view.validators.pubkey_decompressed(vi))
+            }),
+            ContributionView::contribution_signature(buf),
+            sr_agg,
+        );
+        if unknown || participants == 0 || !self.sig_batch.verify_all() {
+            return Feedback::Reject(None);
+        }
+
+        self.seen_aggregates.record(slot, subcommittee, block_root, bits);
+        self.seen_contribution_aggregators[subcommittee as usize].mark(slot, aggregator as usize);
+        Feedback::Accept(None)
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
@@ -846,7 +1207,7 @@ impl BeaconStateTile {
                 BlockSource::Gossip,
                 producers,
             ),
-            GossipTopic::PayloadAttestationMessage => self.handle_payload_attestation(data),
+            GossipTopic::SyncCommitteeContributionAndProof => self.handle_sync_contribution(data),
             _ => return,
         };
         match feedback {
@@ -897,6 +1258,13 @@ impl BeaconStateTile {
 pub(super) fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
     const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
+    let h = merkle::sha256(selection_proof);
+    u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
+}
+
+pub(super) fn is_sync_aggregator(selection_proof: &[u8; 96]) -> bool {
+    const TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE: u64 = 16;
+    let modulo = (SYNC_SUBCOMMITTEE_SIZE as u64 / TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE).max(1);
     let h = merkle::sha256(selection_proof);
     u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
 }

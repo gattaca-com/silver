@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use flux::{
     spine::{FluxSpine, SpineAdapter, SpineProducers},
@@ -26,6 +26,7 @@ use crate::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots, orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
+        sync_contribution_pool::SyncContributionPool,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -42,6 +43,10 @@ mod orphan_pool;
 mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
+mod sync_contribution_pool;
+
+/// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
+const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
@@ -121,9 +126,13 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
-    att_batch: Vec<NewGossipMsg>,
-    att_pending: Vec<(NewGossipMsg, gossip::PreparedAttestation)>,
-    att_sig_batch: bls::SigBatch,
+    vote_batch: Vec<NewGossipMsg>,
+    vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
+    vote_sig_batch: bls::SigBatch,
+    seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
+    sync_contribution_pool: SyncContributionPool,
+    seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
+    seen_ptc: SeenValidators,
     fork_data_roots: ForkDataRoots,
 
     /// Canonical in-process state: finalized base + per-fork per-tier rings.
@@ -215,9 +224,13 @@ impl BeaconStateTile {
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
-            att_batch: Vec::with_capacity(gossip::ATT_BATCH_CAP),
-            att_pending: Vec::with_capacity(gossip::ATT_BATCH_CAP),
-            att_sig_batch: bls::SigBatch::new(),
+            vote_batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            vote_sig_batch: bls::SigBatch::new(),
+            seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
+            sync_contribution_pool: SyncContributionPool::new(),
+            seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
+            seen_ptc: SeenValidators::new(val_cap),
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
@@ -540,6 +553,7 @@ impl BeaconStateTile {
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
         self.attestation_pool.prune_before(floor);
+        self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
         advanced
@@ -602,18 +616,25 @@ impl BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
-        self.flush_attestations(&mut adapter.producers);
+        self.flush_votes(&mut adapter.producers);
         self.gossip_consumer.free();
     }
 
-    /// Attestations are deferred into the batch; anything else flushes it
-    /// first, so the queue order the batch reorders is restored here.
+    /// Per-validator votes (attestations, sync committee messages, PTC
+    /// attestations) are deferred into the shared batch; anything else
+    /// flushes it first, so the queue order the batch reorders is restored
+    /// here.
     fn on_gossip(&mut self, m: NewGossipMsg, producers: &mut Producers) {
-        if matches!(m.topic, GossipTopic::BeaconAttestation(_)) {
-            self.defer_attestation(m, producers);
+        if matches!(
+            m.topic,
+            GossipTopic::BeaconAttestation(_) |
+                GossipTopic::SyncCommittee(_) |
+                GossipTopic::PayloadAttestationMessage
+        ) {
+            self.defer_vote(m, producers);
             return;
         }
-        self.flush_attestations(producers);
+        self.flush_votes(producers);
         self.handle_gossip(m.ssz, m, true, false, producers);
     }
 
@@ -751,7 +772,14 @@ impl BeaconStateTile {
     }
 
     pub fn ef_apply_payload_attestation(&mut self, ssz: &[u8]) -> bool {
-        matches!(self.handle_payload_attestation(ssz), Feedback::Accept(_))
+        match self.prepare_ptc(ssz) {
+            Ok(p) => {
+                self.commit_ptc(&p);
+                self.recompute_head();
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn ef_payload_verdict(
