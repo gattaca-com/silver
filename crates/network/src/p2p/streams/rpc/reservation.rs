@@ -6,11 +6,12 @@ use std::{
 use silver_common::{
     P2pStreamId, RpcRequest, RpcResponse, StreamProtocol, TCacheProducer, TProducer, TReservation,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MAX,
-        DC_BY_RANGE_REQ_MAX, DC_BY_RANGE_REQ_MIN, DC_BY_ROOT_SINGLE_SIZE,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, MAX_PAYLOAD_SIZE,
-        METADATA_SIZE, PING_SIZE, SIGNED_BEACON_BLOCK_MAX, SIGNED_BEACON_BLOCK_MIN,
-        SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, STATUS_V1_SIZE, STATUS_V2_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, BLOCKS_BY_ROOT_REQ_MAX, DATA_COLUMN_SIDECAR_GLOAS_MIN,
+        DATA_COLUMN_SIDECAR_MAX, DC_BY_RANGE_REQ_MAX, DC_BY_RANGE_REQ_MIN, DC_BY_ROOT_SINGLE_SIZE,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, EXECUTION_PAYLOAD_ENVELOPES_BY_ROOT_REQ_MAX,
+        GOODBYE_SIZE, MAX_PAYLOAD_SIZE, METADATA_SIZE, PING_SIZE, SIGNED_BEACON_BLOCK_MAX,
+        SIGNED_BEACON_BLOCK_MIN, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, STATUS_V1_SIZE,
+        STATUS_V2_SIZE,
     },
 };
 
@@ -29,10 +30,11 @@ fn payload_bounds(id: &P2pStreamId) -> RangeInclusive<usize> {
                 exact(EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE)
             }
             StreamProtocol::DataColumnSidecarsByRange => DC_BY_RANGE_REQ_MIN..=DC_BY_RANGE_REQ_MAX,
-            // `List[Root, MAX_REQUEST_BLOCKS]` and its column/envelope
-            // siblings: whole elements, and the tcache caps the total.
-            StreamProtocol::BeaconBlocksByRoot |
-            StreamProtocol::ExecutionPayloadEnvelopesByRoot => 32..=MAX_PAYLOAD_SIZE,
+            StreamProtocol::BeaconBlocksByRoot => 32..=BLOCKS_BY_ROOT_REQ_MAX,
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                32..=EXECUTION_PAYLOAD_ENVELOPES_BY_ROOT_REQ_MAX
+            }
+            // Variable-size identifiers, so only the tcache caps the total.
             StreamProtocol::DataColumnSidecarsByRoot => DC_BY_ROOT_SINGLE_SIZE..=MAX_PAYLOAD_SIZE,
             _ => 0..=0,
         }
@@ -60,13 +62,22 @@ fn payload_bounds(id: &P2pStreamId) -> RangeInclusive<usize> {
     }
 }
 
+/// Requests that are a `List[Root, _]`: the length must be whole roots.
+fn is_root_list_request(id: &P2pStreamId) -> bool {
+    id.is_incoming() &&
+        matches!(
+            id.protocol(),
+            StreamProtocol::BeaconBlocksByRoot | StreamProtocol::ExecutionPayloadEnvelopesByRoot
+        )
+}
+
 pub fn alloc_incoming_rpc(
     rpc_in: &mut TProducer,
     id: &P2pStreamId,
     len: usize,
 ) -> Result<RpcReservation, Error> {
     let bounds = payload_bounds(id);
-    if !bounds.contains(&len) {
+    if !bounds.contains(&len) || (is_root_list_request(id) && !len.is_multiple_of(32)) {
         tracing::warn!(
             ?id,
             len,

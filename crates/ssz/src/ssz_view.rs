@@ -49,6 +49,64 @@ fn fixed<const N: usize>(buf: &[u8], off: usize) -> &[u8; N] {
     buf[off..off + N].try_into().unwrap()
 }
 
+// -- Canonical-encoding checks -----------------------------------------
+//
+// SSZ has exactly one encoding per value, and strict decoders (the other
+// clients) reject anything else. Hashing does not: a gap after an offset table
+// or a padded list hashes like the honest bytes, so a message can keep a valid
+// signature while every strict peer rejects it and penalises whoever relayed
+// it. These helpers pin what the hash leaves loose.
+
+/// `List[T, max]` of fixed-size elements: whole elements, at most `max`.
+#[inline]
+pub(crate) fn fixed_list_ok(data: &[u8], elem: usize, max: usize) -> bool {
+    data.len().is_multiple_of(elem) && data.len() / elem <= max
+}
+
+/// `List[T, max]` of variable-size elements: the first offset is the table's
+/// own length, offsets never decrease, the last element ends at the end of
+/// `data`, and every element passes `elem_ok`.
+pub(crate) fn variable_list_ok(data: &[u8], max: usize, elem_ok: impl Fn(&[u8]) -> bool) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+    if data.len() < 4 {
+        return false;
+    }
+    let table_len = u32_le(data, 0) as usize;
+    if table_len == 0 || !table_len.is_multiple_of(4) || table_len > data.len() {
+        return false;
+    }
+    let count = table_len / 4;
+    if count > max {
+        return false;
+    }
+    let mut start = table_len;
+    for i in 1..=count {
+        let end = if i < count { u32_le(data, i * 4) as usize } else { data.len() };
+        if end < start || end > data.len() || !elem_ok(&data[start..end]) {
+            return false;
+        }
+        start = end;
+    }
+    true
+}
+
+/// A container's variable-field offsets, read at `positions` in field order:
+/// the first equals the fixed part's length, they never decrease, and none
+/// points past `buf`.
+pub(crate) fn offsets_ok(buf: &[u8], positions: &[usize], fixed_len: usize) -> bool {
+    let mut prev = fixed_len;
+    for (i, &pos) in positions.iter().enumerate() {
+        let off = u32_le(buf, pos) as usize;
+        if (i == 0 && off != fixed_len) || off < prev || off > buf.len() {
+            return false;
+        }
+        prev = off;
+    }
+    true
+}
+
 // -- Spec size bounds (Fulu) ------------------------------------------
 //
 // Global cap on any uncompressed gossip/RPC payload. Per-type SSZ bounds
@@ -242,6 +300,16 @@ impl AttestationView {
     #[inline]
     pub fn aggregation_bits(buf: &[u8]) -> &[u8] {
         &buf[ATTESTATION_FIXED..]
+    }
+
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        if buf.len() <= ATTESTATION_FIXED || u32_le(buf, 0) as usize != ATTESTATION_FIXED {
+            return false;
+        }
+        let bits = &buf[ATTESTATION_FIXED..];
+        let last = bits[bits.len() - 1];
+        last != 0 &&
+            (bits.len() - 1) * 8 + 7 - last.leading_zeros() as usize <= MAX_ATTESTING_INDICES
     }
 }
 
@@ -740,6 +808,43 @@ impl BeaconBlockBodyFuluView {
     pub fn execution_requests_offset(buf: &[u8]) -> u32 {
         u32_le(buf, 392)
     }
+
+    pub const VARIABLE_OFFSETS: [usize; 9] = [200, 204, 208, 212, 216, 380, 384, 388, 392];
+
+    pub fn check_canonical(body: &[u8]) -> bool {
+        if body.len() < BEACON_BLOCK_BODY_FIXED ||
+            !offsets_ok(body, &Self::VARIABLE_OFFSETS, BEACON_BLOCK_BODY_FIXED)
+        {
+            return false;
+        }
+        let field = |i: usize| variable_field(body, &Self::VARIABLE_OFFSETS, i);
+        fixed_list_ok(field(0), PROPOSER_SLASHING_SIZE, MAX_PROPOSER_SLASHINGS) &&
+            variable_list_ok(
+                field(1),
+                MAX_ATTESTER_SLASHINGS_ELECTRA,
+                AttesterSlashingView::check_size,
+            ) &&
+            variable_list_ok(
+                field(2),
+                MAX_ATTESTATIONS_ELECTRA,
+                AttestationView::check_canonical,
+            ) &&
+            fixed_list_ok(field(3), DEPOSIT_SIZE, MAX_DEPOSITS) &&
+            fixed_list_ok(field(4), SIGNED_VOLUNTARY_EXIT_SIZE, MAX_VOLUNTARY_EXITS) &&
+            ExecutionPayloadView::check_canonical(field(5)) &&
+            fixed_list_ok(field(6), SIGNED_BLS_CHANGE_SIZE, MAX_BLS_TO_EXECUTION_CHANGES) &&
+            fixed_list_ok(field(7), BYTES_PER_KZG_COMMITMENT, MAX_BLOB_COMMITMENTS_PER_BLOCK) &&
+            ExecutionRequestsFuluView::check_canonical(field(8))
+    }
+}
+
+/// Field `i` of a container whose offset table `offsets_ok` has already
+/// accepted; the last field runs to the end of `buf`.
+#[inline]
+pub(crate) fn variable_field<'a>(buf: &'a [u8], positions: &[usize], i: usize) -> &'a [u8] {
+    let start = u32_le(buf, positions[i]) as usize;
+    let end = positions.get(i + 1).map_or(buf.len(), |&p| u32_le(buf, p) as usize);
+    &buf[start..end]
 }
 
 // -- SignedAggregateAndProof (beacon_aggregate_and_proof) -------------
@@ -854,7 +959,7 @@ impl SignedAggregateAndProofView {
             buf.len() <= SIGNED_AGG_PROOF_MAX &&
             u32_le(buf, 0) as usize == 100 &&
             u32_le(buf, 108) as usize == 108 &&
-            u32_le(buf, 208) as usize == 236
+            AttestationView::check_canonical(&buf[208..])
     }
 }
 
@@ -2422,6 +2527,43 @@ impl DepositView {
     }
 }
 
+// -- ExecutionRequests (Fulu) -----------------------------------------
+//
+// Variable. Three bounded Lists of fixed-size elements, so the fixed part
+// is the 12B offset table:
+//   [0..4)   offset: deposits (== 12)
+//   [4..8)   offset: withdrawals
+//   [8..12)  offset: consolidations
+
+pub const EXECUTION_REQUESTS_FULU_FIXED: usize = 12;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct ExecutionRequestsFuluView;
+
+impl ExecutionRequestsFuluView {
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        const OFFSETS: [usize; 3] = [0, 4, 8];
+        buf.len() >= EXECUTION_REQUESTS_FULU_FIXED &&
+            offsets_ok(buf, &OFFSETS, EXECUTION_REQUESTS_FULU_FIXED) &&
+            fixed_list_ok(
+                variable_field(buf, &OFFSETS, 0),
+                DEPOSIT_REQUEST_SIZE,
+                MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            ) &&
+            fixed_list_ok(
+                variable_field(buf, &OFFSETS, 1),
+                WITHDRAWAL_REQUEST_SIZE,
+                MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            ) &&
+            fixed_list_ok(
+                variable_field(buf, &OFFSETS, 2),
+                CONSOLIDATION_REQUEST_SIZE,
+                MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+            )
+    }
+}
+
 // -- DepositRequest (192B; ExecutionRequests.deposits element) --------
 //   [0..48)    pubkey
 //   [48..80)   withdrawal_credentials
@@ -2661,6 +2803,26 @@ impl ExecutionPayloadView {
     #[inline]
     pub fn withdrawals_offset(buf: &[u8]) -> u32 {
         u32_le(buf, 508)
+    }
+
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        const OFFSETS: [usize; 3] = [436, 504, 508];
+        if buf.len() < EXECUTION_PAYLOAD_FIXED ||
+            !offsets_ok(buf, &OFFSETS, EXECUTION_PAYLOAD_FIXED)
+        {
+            return false;
+        }
+        variable_field(buf, &OFFSETS, 0).len() <= MAX_EXTRA_DATA_BYTES &&
+            variable_list_ok(
+                variable_field(buf, &OFFSETS, 1),
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                |tx| tx.len() <= MAX_BYTES_PER_TRANSACTION,
+            ) &&
+            fixed_list_ok(
+                variable_field(buf, &OFFSETS, 2),
+                WITHDRAWAL_SIZE,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+            )
     }
     #[inline]
     pub fn block_access_list_offset(buf: &[u8]) -> u32 {

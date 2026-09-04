@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc, time::Duration};
+use std::{fmt::Debug, sync::Arc};
 
 use flux::{
     spine::{FluxSpine, SpineAdapter, SpineProducers},
@@ -14,7 +14,7 @@ use silver_common::{
     NewGossipMsg, Origin, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
     SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
-    ticker::{SlotTicker, TickEvent},
+    ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
 use silver_config::{PendingBounds, SyncingConfig};
 
@@ -44,9 +44,6 @@ mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
 mod sync_contribution_pool;
-
-/// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
-const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {

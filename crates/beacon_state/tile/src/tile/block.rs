@@ -7,10 +7,13 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
     SyncUpdate, TCacheRead, hex32,
-    ssz_view::{self, SignedBeaconBlockView},
+    ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
 
-use super::{BeaconStateTile, Feedback, ParsedBlock, Producers, gossip::EnvelopeCheck};
+use super::{
+    BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, ParsedBlock, Producers,
+    gossip::EnvelopeCheck,
+};
 use crate::{
     bls,
     error::PrecheckError,
@@ -451,11 +454,6 @@ impl BeaconStateTile {
 
         let block_slot = SignedBeaconBlockView::slot(data);
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        let finalized_epoch = self.fork_choice.finalized_checkpoint.epoch;
-        if block_epoch < finalized_epoch {
-            return Err(PrecheckError::PreFinalized { block_epoch, finalized_epoch });
-        }
-
         let proposer_index = SignedBeaconBlockView::proposer_index(data);
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         let state_root = *SignedBeaconBlockView::state_root(data);
@@ -463,6 +461,16 @@ impl BeaconStateTile {
         let body = SignedBeaconBlockView::body(data);
 
         let is_gloas = self.spec.is_gloas_at(block_epoch);
+
+        let canonical = if is_gloas {
+            BeaconBlockBodyGloasView::check_canonical(body)
+        } else {
+            BeaconBlockBodyFuluView::check_canonical(body)
+        };
+        if !canonical {
+            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
+        }
+
         let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
 
         let block_header = BeaconBlockHeader {
@@ -476,6 +484,11 @@ impl BeaconStateTile {
         let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
         if self.fork_choice.find_node_idx(&block_root).is_some() {
             return Err(PrecheckError::AlreadyKnown { block_root });
+        }
+
+        let finalized_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        if block_slot <= finalized_slot {
+            return Err(PrecheckError::PreFinalized { block_slot, finalized_slot });
         }
 
         let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
@@ -511,7 +524,7 @@ impl BeaconStateTile {
             return Err(PrecheckError::PastSlot { block_slot, parent_slot });
         }
 
-        if self.ticker.is_future_slot(block_slot) {
+        if block_slot > self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
             return Err(PrecheckError::FutureSlot {
                 block_slot,
                 wall_slot: self.ticker.current_slot(),
@@ -580,16 +593,11 @@ impl BeaconStateTile {
         block_root: B256,
     ) -> Result<(), PrecheckError> {
         let Some(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
-            return Ok(()); // body_root hashing already tolerates a short body
+            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
         };
-
         let payload = offsets.payload();
         if payload.len() < ssz_view::EXECUTION_PAYLOAD_FIXED {
-            return Err(PrecheckError::PayloadTooShort {
-                len: payload.len(),
-                min: ssz_view::EXECUTION_PAYLOAD_FIXED,
-                block_root,
-            });
+            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
         }
         let expected = rv.imm.genesis_time + block_slot * self.spec.seconds_per_slot();
         let got = ssz_view::ExecutionPayloadView::timestamp(payload);

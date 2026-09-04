@@ -2,7 +2,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type Slot = u64;
 
-pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS: u64 = 500;
+/// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
+pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
 
 // slot/24 before next slot = 500ms on mainnet.
 const FORK_CHOICE_LOOKAHEAD_DIVISOR: u64 = 24;
@@ -111,11 +112,24 @@ impl SlotTicker {
         self.millis_since_genesis() / self.slot_ms
     }
 
-    /// Spec gossip rule: a block or sidecar from a future slot is IGNOREd,
-    /// with a `MAXIMUM_GOSSIP_CLOCK_DISPARITY` allowance.
-    pub fn is_future_slot(&self, slot: Slot) -> bool {
-        slot.saturating_mul(self.slot_ms) >
-            self.millis_since_genesis() + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS
+    /// Whether `slot` is current after extending both ends of its wall-clock
+    /// interval by `disparity`. Consensus gossip validation uses this for its
+    /// permitted clock skew around slot boundaries.
+    pub fn is_current_slot_with_disparity(&self, slot: Slot, disparity: Duration) -> bool {
+        let now = self.millis_since_genesis();
+        let disparity_ms = u64::try_from(disparity.as_millis()).unwrap_or(u64::MAX);
+        let start = slot.saturating_mul(self.slot_ms);
+        let end = slot.saturating_add(1).saturating_mul(self.slot_ms);
+        now.saturating_add(disparity_ms) >= start && now <= end.saturating_add(disparity_ms)
+    }
+
+    /// The newest slot admitted by [`Self::is_current_slot_with_disparity`].
+    /// A two-slot seen-cache can rotate to this value and retain every slot
+    /// that is valid at the current instant, including across the boundary.
+    pub fn latest_slot_with_disparity(&self, disparity: Duration) -> Slot {
+        let wall = self.current_slot();
+        let next = wall.saturating_add(1);
+        if self.is_current_slot_with_disparity(next, disparity) { next } else { wall }
     }
 
     pub fn is_before_attesting_interval(&self, is_gloas: bool) -> bool {
@@ -230,5 +244,26 @@ mod tests {
         // Should fire events for slot 3, not replay slots 0-2.
         let ev = t.tick();
         assert!(matches!(ev, TickEvent::SlotStart(3)));
+    }
+
+    #[test]
+    fn current_slot_disparity_covers_both_boundary_sides() {
+        let mut t = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4));
+        let disparity = Duration::from_millis(500);
+
+        t.set_since_genesis_ms(12_000 + 499);
+        assert!(t.is_current_slot_with_disparity(0, disparity));
+        assert!(t.is_current_slot_with_disparity(1, disparity));
+        assert!(!t.is_current_slot_with_disparity(2, disparity));
+        assert_eq!(t.latest_slot_with_disparity(disparity), 1);
+
+        t.set_since_genesis_ms(24_000 - 500);
+        assert!(t.is_current_slot_with_disparity(1, disparity));
+        assert!(t.is_current_slot_with_disparity(2, disparity));
+        assert_eq!(t.latest_slot_with_disparity(disparity), 2);
+
+        t.set_since_genesis_ms(24_000 - 501);
+        assert!(!t.is_current_slot_with_disparity(2, disparity));
+        assert_eq!(t.latest_slot_with_disparity(disparity), 1);
     }
 }

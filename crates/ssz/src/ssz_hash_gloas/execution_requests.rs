@@ -7,8 +7,9 @@ use crate::{
     progressive::{ProgressiveContainer, ProgressiveHasher, packed_active_fields},
     ssz_view::{
         BUILDER_DEPOSIT_REQUEST_SIZE, BUILDER_EXIT_REQUEST_SIZE, BuilderDepositRequestView,
-        BuilderExitRequestView, ConsolidationRequestView, DepositRequestView,
-        WithdrawalRequestView,
+        BuilderExitRequestView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
+        DEPOSIT_REQUEST_SIZE, DepositRequestView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
+        fixed_list_ok, offsets_ok, variable_field,
     },
 };
 
@@ -43,6 +44,22 @@ impl ExecutionRequestsView {
             }
         }
         out
+    }
+
+    pub fn check_canonical(data: &[u8]) -> bool {
+        const OFFSETS: [usize; 5] = [0, 4, 8, 12, 16];
+        const ELEMENT_SIZES: [usize; 5] = [
+            DEPOSIT_REQUEST_SIZE,
+            WITHDRAWAL_REQUEST_SIZE,
+            CONSOLIDATION_REQUEST_SIZE,
+            BUILDER_DEPOSIT_REQUEST_SIZE,
+            BUILDER_EXIT_REQUEST_SIZE,
+        ];
+        data.len() >= 20 &&
+            offsets_ok(data, &OFFSETS, 20) &&
+            ELEMENT_SIZES.iter().enumerate().all(|(i, &elem)| {
+                fixed_list_ok(variable_field(data, &OFFSETS, i), elem, usize::MAX)
+            })
     }
 
     #[timed]

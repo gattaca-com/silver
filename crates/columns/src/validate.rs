@@ -69,6 +69,13 @@ enum ParentCheck {
     NotExtending { parent_slot: u64 },
 }
 
+impl ParentCheck {
+    /// Fulu requires a sidecar to be proposed strictly after its parent block.
+    fn extending(slot: u64, parent_slot: u64) -> Self {
+        if slot > parent_slot { Self::Seen } else { Self::NotExtending { parent_slot } }
+    }
+}
+
 /// Per-sidecar validation, i.e. everything except the KZG cell proofs —
 /// those are deferred to the end-of-pass batch, so `Record` means "passed
 /// every check but KZG". Owns the caches only validation consults.
@@ -103,16 +110,6 @@ impl ColumnValidator {
 
     pub fn note_persisted(&mut self, block_root: BlockRoot, slot: u64) {
         self.persisted_block_roots.insert(block_root, slot);
-    }
-
-    /// Fulu requires a sidecar to be proposed strictly after its parent block.
-    fn check_parent(&self, parent_root: &BlockRoot, slot: u64, in_head_fork: bool) -> ParentCheck {
-        match self.persisted_block_roots.get(parent_root) {
-            Some(&parent_slot) if slot <= parent_slot => ParentCheck::NotExtending { parent_slot },
-            Some(_) => ParentCheck::Seen,
-            None if in_head_fork => ParentCheck::Seen,
-            None => ParentCheck::Unseen,
-        }
     }
 
     pub fn gloas_commitments(&self, block_root: &BlockRoot) -> Option<&[u8]> {
@@ -178,7 +175,7 @@ impl ColumnValidator {
             );
         }
 
-        if sync_state.is_synced() && sync_state.is_future_slot(slot, self.spec.slot_duration_ms()) {
+        if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {
             tracing::debug!(
                 ?stream_id,
                 slot,
@@ -223,6 +220,7 @@ impl ColumnValidator {
         // BLS verify runs OUTSIDE the closure (slow; would hold the
         // notional read lock too long otherwise).
         let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
+        let persisted_parent_slot = self.persisted_block_roots.get(parent_root).copied();
         let checks = self.beacon_state.read(&|v| {
             let state_epoch = v.slot.current_epoch();
             // proposer_lookahead is anchored to `state_epoch` and covers
@@ -233,8 +231,14 @@ impl ColumnValidator {
                 Some(_) => ProposerCheck::Mismatch,
                 None => ProposerCheck::Unresolvable,
             };
-            let parent_in_head_fork = parent_root == sync_state.head_root() ||
-                v.block_roots.contains(parent_root, v.slot.slot_number());
+            let parent = match persisted_parent_slot {
+                Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
+                None if parent_root == sync_state.head_root() => ParentCheck::Seen,
+                None => match v.block_roots.slot_of(parent_root, v.slot.slot_number()) {
+                    Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
+                    None => ParentCheck::Unseen,
+                },
+            };
             let is_above_finalized =
                 util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
 
@@ -244,7 +248,7 @@ impl ColumnValidator {
 
             (
                 is_above_finalized,
-                parent_in_head_fork,
+                parent,
                 proposer,
                 pubkey,
                 v.epoch.fork().current_version, // TODO for backfill
@@ -252,9 +256,7 @@ impl ColumnValidator {
             )
         });
         // No snapshot yet (pre-bootstrap): nothing can be validated.
-        let Some((above_finalized, parent_in_head_fork, proposer, pubkey, fork_version, gvr)) =
-            checks
-        else {
+        let Some((above_finalized, parent, proposer, pubkey, fork_version, gvr)) = checks else {
             tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         };
@@ -263,7 +265,7 @@ impl ColumnValidator {
             tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
-        match self.check_parent(parent_root, slot, parent_in_head_fork) {
+        match parent {
             ParentCheck::Seen => {}
             ParentCheck::Unseen => {
                 tracing::warn!(
@@ -329,7 +331,7 @@ impl ColumnValidator {
         let PendingColumn { stream_id, gossip_subnet, .. } = *column;
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
-        if sync_state.is_synced() && sync_state.is_future_slot(slot, self.spec.slot_duration_ms()) {
+        if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {
             tracing::debug!(
                 ?stream_id,
                 slot,

@@ -21,8 +21,16 @@ fn snappy_decode(path: &Path) -> Vec<u8> {
 }
 
 fn cases_for(container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
-    let dir =
-        spec_tests_dir().join("tests/mainnet/fulu/ssz_static").join(container).join("ssz_random");
+    cases_for_fork("fulu", container)
+}
+
+fn cases_for_fork(fork: &str, container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
+    let dir = spec_tests_dir()
+        .join("tests/mainnet")
+        .join(fork)
+        .join("ssz_static")
+        .join(container)
+        .join("ssz_random");
     let mut dirs: Vec<PathBuf> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()).filter(|p| p.is_dir()))
