@@ -508,10 +508,11 @@ impl BeaconStateTile {
             return Err(PrecheckError::PastSlot { block_slot, parent_slot });
         }
 
-        // Spec gossip rule: IGNORE blocks whose slot exceeds wall slot.
-        let wall_slot_plus_one = self.ticker.current_slot() + 1;
-        if block_slot > wall_slot_plus_one {
-            return Err(PrecheckError::FutureSlot { block_slot, wall_slot_plus_one });
+        if self.ticker.is_future_slot(block_slot) {
+            return Err(PrecheckError::FutureSlot {
+                block_slot,
+                wall_slot: self.ticker.current_slot(),
+            });
         }
 
         let parent_epoch = parent_slot / SLOTS_PER_EPOCH;

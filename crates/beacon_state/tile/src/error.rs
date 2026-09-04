@@ -25,10 +25,8 @@ pub enum PrecheckError {
     PastSlot { block_slot: Slot, parent_slot: Slot },
     #[error("block already imported: block_root=0x{}", b256_hex(block_root))]
     AlreadyKnown { block_root: B256 },
-    #[error(
-        "block ticker slot precheck failed: block_slot={block_slot} ticker={wall_slot_plus_one}"
-    )]
-    FutureSlot { block_slot: Slot, wall_slot_plus_one: Slot },
+    #[error("block ticker slot precheck failed: block_slot={block_slot} wall_slot={wall_slot}")]
+    FutureSlot { block_slot: Slot, wall_slot: Slot },
     #[error(
         "block proposer lookahead precheck failed: expected={expected} got={got} \
          block_root=0x{}",
