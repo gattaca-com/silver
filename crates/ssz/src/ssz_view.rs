@@ -600,11 +600,14 @@ impl SignedBeaconBlockView {
         &buf[184..]
     }
     /// Validates `buf` is large enough for every accessor above to read
-    /// without panicking. Accessors only read compile-time fixed offsets
-    /// plus `&buf[184..]`, so a bare length bound suffices.
+    /// without panicking, and that the two offsets those accessors hardcode
+    /// carry their canonical values.
     #[inline]
     pub fn check_size(buf: &[u8]) -> bool {
-        buf.len() >= SIGNED_BEACON_BLOCK_MIN && buf.len() <= SIGNED_BEACON_BLOCK_MAX
+        buf.len() >= SIGNED_BEACON_BLOCK_MIN &&
+            buf.len() <= SIGNED_BEACON_BLOCK_MAX &&
+            u32_le(buf, 0) as usize == 100 &&
+            u32_le(buf, 180) as usize == 84
     }
 
     #[inline]
@@ -842,11 +845,16 @@ impl SignedAggregateAndProofView {
     pub fn aggregate(buf: &[u8]) -> &[u8] {
         &buf[208..]
     }
-    /// All accessors read compile-time fixed offsets plus `&buf[444..]`;
-    /// a length bound suffices.
+    /// Bounds the length and pins the three nested offsets the accessors
+    /// hardcode. None of them reaches the attestation data root, so an
+    /// honestly signed aggregate stays verifiable with any of them rewritten.
     #[inline]
     pub fn check_size(buf: &[u8]) -> bool {
-        buf.len() >= SIGNED_AGG_PROOF_MIN && buf.len() <= SIGNED_AGG_PROOF_MAX
+        buf.len() >= SIGNED_AGG_PROOF_MIN &&
+            buf.len() <= SIGNED_AGG_PROOF_MAX &&
+            u32_le(buf, 0) as usize == 100 &&
+            u32_le(buf, 108) as usize == 108 &&
+            u32_le(buf, 208) as usize == 236
     }
 }
 
@@ -972,17 +980,30 @@ impl AttesterSlashingView {
     }
     /// Validates:
     ///   - `buf.len()` within [MIN, MAX];
+    ///   - the outer att_1 offset and both inner `attesting_indices` offsets
+    ///     carry their canonical values (8, 228, 228);
     ///   - `att2_off` at least 236 (att_1 fixed ends there) so
     ///     `&buf[236..att2_off]` is a valid slice;
     ///   - `att2_off + 228 <= buf.len()` so att_2's fixed reads and the
-    ///     `&buf[att2_off+228..]` tail are in-bounds.
+    ///     `&buf[att2_off+228..]` tail are in-bounds;
+    ///   - both `attesting_indices` regions hold whole `u64` elements, which
+    ///     the `chunks_exact(8)` readers downstream would otherwise truncate
+    ///     past silently.
     #[inline]
     pub fn check_size(buf: &[u8]) -> bool {
         if buf.len() < ATTESTER_SLASHING_MIN || buf.len() > ATTESTER_SLASHING_MAX {
             return false;
         }
+        if u32_le(buf, 0) as usize != 8 || u32_le(buf, 8) as usize != 228 {
+            return false;
+        }
         let off2 = u32_le(buf, 4) as usize;
-        off2 >= 236 && off2.saturating_add(228) <= buf.len()
+        if off2 < 236 || off2.saturating_add(228) > buf.len() {
+            return false;
+        }
+        (off2 - 236).is_multiple_of(8) &&
+            (buf.len() - off2 - 228).is_multiple_of(8) &&
+            u32_le(buf, off2) as usize == 228
     }
 }
 

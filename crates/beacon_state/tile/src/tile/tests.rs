@@ -30,6 +30,26 @@ use crate::{
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
 const ANCHOR_ROOT: B256 = [0x01u8; 32];
 
+/// Zeroed `SignedBeaconBlock` with the offsets `SignedBeaconBlockView` pins:
+/// message at 100, body at 184. Fields go in at their fixed offsets.
+fn empty_block(len: usize) -> Vec<u8> {
+    assert!(len >= SIGNED_BEACON_BLOCK_MIN);
+    let mut bytes = vec![0u8; len];
+    bytes[0..4].copy_from_slice(&100u32.to_le_bytes());
+    bytes[180..184].copy_from_slice(&84u32.to_le_bytes());
+    bytes
+}
+
+/// Zeroed `SignedAggregateAndProof` with the three offsets
+/// `SignedAggregateAndProofView` pins.
+fn empty_aggregate() -> Vec<u8> {
+    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    buf[0..4].copy_from_slice(&100u32.to_le_bytes());
+    buf[108..112].copy_from_slice(&108u32.to_le_bytes());
+    buf[208..212].copy_from_slice(&236u32.to_le_bytes());
+    buf
+}
+
 fn make_tile() -> BeaconStateTile {
     make_tile_at_wall_slot(1)
 }
@@ -97,7 +117,7 @@ fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer, TProduc
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
 /// as a buffered gossip orphan whose slot the tile can read back.
 fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
-    let mut bytes = vec![0u8; 200];
+    let mut bytes = empty_block(200);
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
     if let Ok(buf) = r.buffer() {
@@ -369,7 +389,7 @@ fn block_unknown_parent_rejected() {
     // Minimal SignedBeaconBlock: message at fixed offset 100 (4-byte
     // offset + 96-byte signature), parent_root @ 116 set to an unknown
     // root so precheck bails with ParentMissing before any state change.
-    let mut buf = vec![0u8; 200];
+    let mut buf = empty_block(200);
     buf[100..108].copy_from_slice(&11u64.to_le_bytes()); // slot
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116] = 0xFF; // parent_root[0]
@@ -410,7 +430,7 @@ fn short_gossip_block_rejected_before_any_field_read() {
 
     // Control: at the minimum length the gate lets the block through, so the
     // assertions above are about the bound and not about a blanket reject.
-    let mut bytes = vec![0u8; SIGNED_BEACON_BLOCK_MIN];
+    let mut bytes = empty_block(SIGNED_BEACON_BLOCK_MIN);
     bytes[116] = 0xFF; // unknown parent_root
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
     let feedback =
@@ -495,7 +515,7 @@ fn buffer_orphan_idx(
 /// Signed block just well-formed enough to reach the parent lookup: the
 /// message's slot sits at [100..108) and its parent root at [116..148).
 fn rpc_block(producer: &mut TProducer, slot: u64, parent_root: B256) -> silver_common::TCacheRead {
-    let mut bytes = vec![0u8; 200];
+    let mut bytes = empty_block(200);
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     bytes[116..148].copy_from_slice(&parent_root);
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
@@ -892,7 +912,7 @@ fn block_known_parent_bad_sig_rejected() {
 
     // Valid structure, zeroed BLS signature → precheck reaches and fails
     // signature verification, so no fork-choice node is added.
-    let mut buf = vec![0u8; 200];
+    let mut buf = empty_block(200);
     buf[100..108].copy_from_slice(&11u64.to_le_bytes()); // slot
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116..148].copy_from_slice(&parent_root); // parent_root
@@ -1705,7 +1725,7 @@ fn justified_balances_rebuilt_on_checkpoint_change_only() {
 fn agg_multi_committee_bits_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    let mut buf = empty_aggregate();
     buf[436] = 0b0000_0011; // two committee bits
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
 }
@@ -1714,7 +1734,7 @@ fn agg_multi_committee_bits_rejected() {
 fn agg_unknown_block_root_ignored() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001; // single committee bit
     buf[228] = 0xFF; // beacon_block_root not in fork choice
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
@@ -1857,7 +1877,7 @@ fn agg_slot_too_old_ignored() {
 fn agg_slot_too_future_ignored() {
     let mut tile = make_tile_at_wall_slot(0);
     seed_tile(&mut tile, 128, 0);
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+    let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001;
     buf[212] = 5; // slot = 5 > wall (0)
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
