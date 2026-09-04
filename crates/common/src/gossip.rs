@@ -3,13 +3,16 @@ use std::fmt;
 use crate::{
     Error,
     ssz_view::{
-        ATTESTER_SLASHING_MAX, AttesterSlashingView, DATA_COLUMN_SIDECAR_MAX,
-        DataColumnSidecarFuluView, LIGHT_CLIENT_FINALITY_UPDATE_MAX,
-        LIGHT_CLIENT_OPTIMISTIC_UPDATE_MAX, LightClientFinalityUpdateView,
-        LightClientOptimisticUpdateView, MAX_PAYLOAD_SIZE, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
-        PROPOSER_SLASHING_SIZE, PayloadAttestationMessageView, ProposerSlashingView,
-        SIGNED_AGG_PROOF_MAX, SIGNED_BLS_CHANGE_SIZE, SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
-        SIGNED_EXECUTION_PAYLOAD_BID_MAX, SIGNED_PROPOSER_PREFERENCES_SIZE,
+        ATTESTER_SLASHING_MAX, ATTESTER_SLASHING_MIN, AttesterSlashingView,
+        DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MAX, DataColumnSidecarFuluView,
+        LIGHT_CLIENT_FINALITY_UPDATE_MAX, LIGHT_CLIENT_FINALITY_UPDATE_MIN,
+        LIGHT_CLIENT_OPTIMISTIC_UPDATE_MAX, LIGHT_CLIENT_OPTIMISTIC_UPDATE_MIN,
+        LightClientFinalityUpdateView, LightClientOptimisticUpdateView, MAX_PAYLOAD_SIZE,
+        PAYLOAD_ATTESTATION_MESSAGE_SIZE, PROPOSER_SLASHING_SIZE, PayloadAttestationMessageView,
+        ProposerSlashingView, SIGNED_AGG_PROOF_MAX, SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+        SIGNED_EXECUTION_PAYLOAD_BID_MAX, SIGNED_EXECUTION_PAYLOAD_BID_MIN,
+        SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_PROPOSER_PREFERENCES_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
         SignedAggregateAndProofView, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
         SignedContributionAndProofView, SignedExecutionPayloadBidView,
@@ -176,6 +179,29 @@ impl GossipTopic {
             Self::BlsToExecutionChange => SIGNED_BLS_CHANGE_SIZE,
             Self::DataColumnSidecar(_) => DATA_COLUMN_SIDECAR_MAX,
             Self::ExecutionPayloadBid => SIGNED_EXECUTION_PAYLOAD_BID_MAX,
+            Self::PayloadAttestationMessage => PAYLOAD_ATTESTATION_MESSAGE_SIZE,
+            Self::ProposerPreferences => SIGNED_PROPOSER_PREFERENCES_SIZE,
+        }
+    }
+
+    pub fn min_uncompressed_size(self) -> usize {
+        match self {
+            Self::BeaconBlock => SIGNED_BEACON_BLOCK_MIN,
+            Self::ExecutionPayload => SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN,
+            Self::BeaconAggregateAndProof => SIGNED_AGG_PROOF_MIN,
+            Self::BeaconAttestation(_) => SINGLE_ATT_SIZE,
+            Self::VoluntaryExit => SIGNED_VOLUNTARY_EXIT_SIZE,
+            Self::ProposerSlashing => PROPOSER_SLASHING_SIZE,
+            Self::AttesterSlashing => ATTESTER_SLASHING_MIN,
+            Self::SyncCommitteeContributionAndProof => SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+            Self::SyncCommittee(_) => SYNC_COMMITTEE_MSG_SIZE,
+            Self::LightClientFinalityUpdate => LIGHT_CLIENT_FINALITY_UPDATE_MIN,
+            Self::LightClientOptimisticUpdate => LIGHT_CLIENT_OPTIMISTIC_UPDATE_MIN,
+            Self::BlsToExecutionChange => SIGNED_BLS_CHANGE_SIZE,
+            // Both sidecar layouts share the topic, and the gloas one is
+            // shorter (its commitments live on the bid, not the sidecar).
+            Self::DataColumnSidecar(_) => DATA_COLUMN_SIDECAR_GLOAS_MIN,
+            Self::ExecutionPayloadBid => SIGNED_EXECUTION_PAYLOAD_BID_MIN,
             Self::PayloadAttestationMessage => PAYLOAD_ATTESTATION_MESSAGE_SIZE,
             Self::ProposerPreferences => SIGNED_PROPOSER_PREFERENCES_SIZE,
         }
