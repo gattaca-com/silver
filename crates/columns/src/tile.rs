@@ -259,7 +259,7 @@ impl DataColumnsTile {
                 }
                 ColumnDisposition::Ignored
             }
-            ColumnOutcome::Record { block_root, column_index, bitmask, slot } => {
+            ColumnOutcome::Record { block_root, column_index, bitmask, slot, relay_eligible } => {
                 let queued = self.kzg_batch.push(PendingKzg {
                     sidecar: column.sidecar,
                     stream_id: column.stream_id,
@@ -269,7 +269,7 @@ impl DataColumnsTile {
                     bitmask,
                     slot,
                     is_gloas,
-                    relay,
+                    relay: if relay_eligible { relay } else { RelayMeta::None },
                 });
                 if queued { ColumnDisposition::Batched } else { ColumnDisposition::Ignored }
             }
@@ -850,6 +850,58 @@ mod tests {
             assert_eq!(slot, 42, "the need carries the slot the engine suppresses against");
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
             assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
+        }
+    }
+
+    /// A sidecar whose gossip checks could not all be completed is still
+    /// imported, but must not reach the mesh with us as its relayer. The relay
+    /// is dropped at batch time, so the flush has nothing to send.
+    #[test]
+    fn relay_ineligible_column_is_batched_without_a_relay() {
+        for (relay_eligible, want_relay, cache) in
+            [(true, true, "relay_ok"), (false, false, "relay_gated")]
+        {
+            // `consumer` is declared before `rig` so it outlives the batched
+            // `TRead` that points back at it.
+            let (mut consumer, ssz) = produce_block(&blob_block_bytes(7), cache);
+            let mut rig = Rig::new(CUSTODY_COLUMNS);
+            let read = consumer.acquire(ssz);
+
+            let disposition = rig.tile.handle_column(
+                ColumnOutcome::Record {
+                    block_root: [4u8; 32],
+                    column_index: 3,
+                    bitmask: 1 << 3,
+                    slot: 7,
+                    relay_eligible,
+                },
+                PendingColumn {
+                    stream_id: P2pStreamId::new(
+                        2,
+                        2,
+                        StreamProtocol::DataColumnSidecarsByRange,
+                        true,
+                    ),
+                    sidecar: read,
+                    gossip_subnet: None,
+                    recv_ts: IngestionTime::now(),
+                },
+                false,
+                RelayMeta::Rpc { ssz },
+                &mut rig.conn.producers,
+            );
+
+            assert!(
+                matches!(disposition, ColumnDisposition::Batched),
+                "relay_eligible={relay_eligible}: imported either way"
+            );
+            let queued = rig.tile.kzg_batch.pending.first().expect("batched");
+            assert_eq!(
+                !matches!(queued.relay, RelayMeta::None),
+                want_relay,
+                "relay_eligible={relay_eligible}"
+            );
+            rig.tile.kzg_batch.pending.clear();
         }
     }
 

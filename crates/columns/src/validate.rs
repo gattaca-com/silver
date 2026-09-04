@@ -6,7 +6,7 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    IngestionTime, P2pStreamId, StreamProtocol, TRead, Wheel, column_util as util,
+    IngestionTime, P2pStreamId, TRead, Wheel, column_util as util,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS, SidecarLayout,
         SignedBeaconBlockView,
@@ -27,11 +27,39 @@ pub(crate) struct PendingColumn {
 
 pub(crate) enum ColumnOutcome {
     Skip,
-    AlreadyHeld { block_root: BlockRoot, column_index: u64, slot: u64 },
-    Reject { block_root: BlockRoot, slot: u64, bitmask: u128 },
-    Buffer { block_root: BlockRoot },
-    AwaitParent { parent_root: BlockRoot },
-    Record { block_root: BlockRoot, column_index: u64, bitmask: u128, slot: u64 },
+    AlreadyHeld {
+        block_root: BlockRoot,
+        column_index: u64,
+        slot: u64,
+    },
+    Reject {
+        block_root: BlockRoot,
+        slot: u64,
+        bitmask: u128,
+    },
+    Buffer {
+        block_root: BlockRoot,
+    },
+    AwaitParent {
+        parent_root: BlockRoot,
+    },
+    /// `relay_eligible` is false when a check the gossip rules require could
+    /// not be completed — the sidecar is still imported, but it must not enter
+    /// the mesh on our authority.
+    Record {
+        block_root: BlockRoot,
+        column_index: u64,
+        bitmask: u128,
+        slot: u64,
+        relay_eligible: bool,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProposerCheck {
+    Matches,
+    Mismatch,
+    Unresolvable,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -174,8 +202,6 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
-        let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
-
         if tracker.has_any(&block_root, column_bitmask) {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
@@ -199,26 +225,18 @@ impl ColumnValidator {
         let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
         let checks = self.beacon_state.read(&|v| {
             let state_epoch = v.slot.current_epoch();
-
-            let (proposer_matches, parent_validated, is_above_finalized) = if do_parent_checks {
-                // proposer_lookahead is anchored to `state_epoch` and covers
-                // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
-                // outside that window we cannot resolve here.
-                let lookahead_idx = slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
-                let expected_proposer = v.epoch.proposer_at(lookahead_idx);
-                let parent_validated = parent_root == sync_state.head_root() ||
-                    v.block_roots.contains(parent_root, v.slot.slot_number());
-                let is_above_finalized =
-                    util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
-                (
-                    expected_proposer == Some(claimed_proposer_index),
-                    parent_validated,
-                    is_above_finalized,
-                )
-            } else {
-                // Sync / RPC blocks cannot validate proposer shuffling.
-                (true, true, true)
+            // proposer_lookahead is anchored to `state_epoch` and covers
+            // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64).
+            let lookahead_idx = slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
+            let proposer = match v.epoch.proposer_at(lookahead_idx) {
+                Some(expected) if expected == claimed_proposer_index => ProposerCheck::Matches,
+                Some(_) => ProposerCheck::Mismatch,
+                None => ProposerCheck::Unresolvable,
             };
+            let parent_in_head_fork = parent_root == sync_state.head_root() ||
+                v.block_roots.contains(parent_root, v.slot.slot_number());
+            let is_above_finalized =
+                util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
 
             let idx = claimed_proposer_index as usize;
             let pubkey =
@@ -226,15 +244,15 @@ impl ColumnValidator {
 
             (
                 is_above_finalized,
-                parent_validated,
-                proposer_matches,
+                parent_in_head_fork,
+                proposer,
                 pubkey,
                 v.epoch.fork().current_version, // TODO for backfill
                 v.imm.genesis_validators_root,
             )
         });
         // No snapshot yet (pre-bootstrap): nothing can be validated.
-        let Some((above_finalized, parent_validated, proposer_matches, pubkey, fork_version, gvr)) =
+        let Some((above_finalized, parent_in_head_fork, proposer, pubkey, fork_version, gvr)) =
             checks
         else {
             tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
@@ -245,7 +263,7 @@ impl ColumnValidator {
             tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
-        match self.check_parent(parent_root, slot, parent_validated) {
+        match self.check_parent(parent_root, slot, parent_in_head_fork) {
             ParentCheck::Seen => {}
             ParentCheck::Unseen => {
                 tracing::warn!(
@@ -261,10 +279,18 @@ impl ColumnValidator {
                 return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
             }
         }
-        if !proposer_matches {
-            tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
-        }
+        let relay_eligible = match proposer {
+            ProposerCheck::Matches => true,
+            ProposerCheck::Mismatch => {
+                tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
+                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            }
+            // Spec answer is IGNORE.
+            ProposerCheck::Unresolvable => {
+                tracing::debug!(?stream_id, slot, "sidecar proposer unresolvable — not relayed");
+                false
+            }
+        };
 
         // BLS verify cache: skip the ~1 ms verify iff the sidecar's
         // signature bytes match a previously-validated signature for
@@ -283,7 +309,13 @@ impl ColumnValidator {
             tracker.set_signature(block_root, sig_bytes);
         }
 
-        ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }
+        ColumnOutcome::Record {
+            block_root,
+            column_index,
+            bitmask: column_bitmask,
+            slot,
+            relay_eligible,
+        }
     }
 
     #[timed]
@@ -337,6 +369,12 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
-        ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }
+        ColumnOutcome::Record {
+            block_root,
+            column_index,
+            bitmask: column_bitmask,
+            slot,
+            relay_eligible: true,
+        }
     }
 }
