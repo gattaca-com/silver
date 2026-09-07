@@ -28,7 +28,7 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
         self.engine.intake(adapter);
         self.readiness.wait(Duration::ZERO);
         self.engine.spin(adapter, self.readiness.events());
-        self.refresh_node_status(adapter);
+        self.consume_spine_events(adapter);
         if self.beacon.pump(self.readiness.events()) {
             adapter.mark_work();
         }
@@ -80,7 +80,7 @@ impl ApplicationBoundaryTile {
         Self { readiness, beacon, engine }
     }
 
-    fn refresh_node_status(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let beacon = &mut self.beacon;
 
         // Consumed every iteration, and never behind the engine's capacity
