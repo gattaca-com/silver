@@ -41,7 +41,7 @@ pub enum StreamError {
     InvalidPubkey(#[from] TryFromSliceError),
     IdentifyTooBig,
     ReadResponseTimeout,
-    GossipReadStall,
+    ReadStall,
 }
 
 impl fmt::Display for StreamError {
@@ -52,7 +52,7 @@ impl fmt::Display for StreamError {
 
 pub trait StreamIo {
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError>;
-    fn write_gossip_to_stream(
+    fn write_leased_to_stream(
         &mut self,
         id: StreamId,
         data: Leased<AcquiredWithOffset>,

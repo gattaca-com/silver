@@ -88,7 +88,7 @@ impl GossipWriteState {
                     return Ok(Spin::Next(Self::Idle));
                 };
 
-                let n = io.write_gossip_to_stream(p2p_id.stream_id(), message.child(r_offset))?;
+                let n = io.write_leased_to_stream(p2p_id.stream_id(), message.child(r_offset))?;
                 offset += n;
                 if offset == length {
                     return Ok(Spin::Next(Self::Idle));
@@ -122,7 +122,7 @@ mod tests {
             Ok(data.len().min(self.budget))
         }
 
-        fn write_gossip_to_stream(
+        fn write_leased_to_stream(
             &mut self,
             _id: StreamId,
             data: Leased<silver_common::AcquiredWithOffset>,

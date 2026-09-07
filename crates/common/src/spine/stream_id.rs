@@ -4,6 +4,12 @@ use quinn_proto::{ConnectionHandle, StreamId, VarInt};
 
 use crate::StreamProtocol;
 
+/// Synthetic stream used as the origin of gossip submitted locally rather
+/// than received from a connected peer. Its impossible connection handle
+/// means normal gossip fanout excludes no live peer.
+pub const LOCAL_GOSSIP_STREAM_ID: P2pStreamId =
+    P2pStreamId::new(usize::MAX, 0, StreamProtocol::GossipSub, false);
+
 /// P2p stream id.
 /// N.B. for PartialEq and Hash only connection and stream fields are used.
 #[derive(Clone, Copy, Debug)]
@@ -17,7 +23,12 @@ pub struct P2pStreamId {
 }
 
 impl P2pStreamId {
-    pub fn new(connection: usize, stream: u64, protocol: StreamProtocol, incoming: bool) -> Self {
+    pub const fn new(
+        connection: usize,
+        stream: u64,
+        protocol: StreamProtocol,
+        incoming: bool,
+    ) -> Self {
         Self { connection, stream, protocol, incoming, _padding: [0u8; 6] }
     }
 

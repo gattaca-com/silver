@@ -60,7 +60,7 @@ impl GossipReadState {
                         now.saturating_duration_since(*last_read) > GOSSIP_BODY_STALL_TIMEOUT
                     {
                         tracing::warn!(?p2p_id, remaining, "gossip body read stalled");
-                        return Err(StreamError::GossipReadStall);
+                        return Err(StreamError::ReadStall);
                     }
                     return Ok(gossip_read_state);
                 }
@@ -236,7 +236,7 @@ mod tests {
             "127.0.0.1:0".parse().unwrap()
         }
 
-        fn write_gossip_to_stream(
+        fn write_leased_to_stream(
             &mut self,
             _id: StreamId,
             _data: crate::p2p::quic::Leased<silver_common::AcquiredWithOffset>,
@@ -302,7 +302,7 @@ mod tests {
                 &mut |_| {},
             )
             .expect_err("stalled past deadline");
-        assert!(matches!(err, StreamError::GossipReadStall));
+        assert!(matches!(err, StreamError::ReadStall));
     }
 
     #[test]

@@ -988,7 +988,7 @@ impl Stream {
 
                 // TODO error info.
                 on_event(NetEvent::StreamClosed { stream: self.p2p_id });
-                if matches!(e, StreamError::GossipReadStall) {
+                if matches!(e, StreamError::ReadStall) {
                     SpinResult::Stalled
                 } else {
                     SpinResult::End

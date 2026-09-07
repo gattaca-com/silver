@@ -14,8 +14,8 @@ use crate::{
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
         EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
-        SszView, StatusView,
+        SINGLE_ATT_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
+        SignedExecutionPayloadEnvelopeView, SszView, StatusView,
     },
 };
 
@@ -36,9 +36,59 @@ pub struct GossipMsgIn {
     pub tcache: TCacheRead,
 }
 
-/// New inbound, decoded gossip message. Consumed by beacon state tile. The
-/// `protobuf` message can be broadcast by producing `PeerEvent::SendGossip`
-/// with details from this message.
+/// Work submitted by the Beacon API to tile-owned state machines.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+pub enum BeaconApiRequest {
+    /// A signed single attestation awaiting cluster admission and Beacon
+    /// State validation.
+    /// `validator_pubkey` must be resolved from the attester index in
+    /// `ssz`, not accepted as an untrusted request field.
+    LocalAttestation {
+        request_id: u64,
+        validator_pubkey: [u8; 48],
+        subnet: u64,
+        ssz: [u8; SINGLE_ATT_SIZE],
+    },
+}
+
+/// Completion of work submitted through [`BeaconApiRequest`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, u8)]
+pub enum BeaconApiResponse {
+    LocalAttestationResponse { request_id: u64, response: LocalAttestationResult },
+}
+
+/// Final result for one locally submitted attestation. `Success` is emitted
+/// only after Beacon State has validated the attestation and requested gossip
+/// publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, u8)]
+pub enum LocalAttestationResult {
+    Success,
+    Failure(LocalAttestationFailure),
+}
+
+/// Stable failure reason for a locally submitted attestation. The Beacon API
+/// can render request failures as the specification's indexed error response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LocalAttestationFailure {
+    NotSynced,
+    BeforeStartupFloor,
+    TooOld,
+    Future,
+    ConflictingAttestation,
+    TimedOut,
+    Invalid,
+    Internal,
+}
+
+/// New decoded gossip message, either received from the network or injected
+/// locally. Consumed by the beacon state tile. The `protobuf` message can be
+/// broadcast by producing `PeerEvent::SendGossip` with details from this
+/// message.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct NewGossipMsg {
@@ -48,7 +98,8 @@ pub struct NewGossipMsg {
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
     pub ssz: TCacheRead,
-    /// Protobuf wrapped snappy compressed - as received.
+    /// Protobuf-wrapped Snappy payload, either retained from network ingress
+    /// or constructed for a local message.
     /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
     pub protobuf: TCacheRead,
 }
