@@ -8,8 +8,8 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
-    TProducer,
+    GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent, StreamProtocol, TCache,
+    TCacheProducer, TCcheRead, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -1334,6 +1334,36 @@ fn invalid_vote_does_not_deduplicate_later_valid_vote() {
 
     tile.flush_votes(&mut adapter.producers);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+}
+
+#[test]
+fn ignored_local_attestation_emits_terminal_invalid() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    // Prime the PeerEvent cursor before producing into it.
+    adapter.consume(|_: PeerEvent, _| {});
+
+    let (mut buf, subnet) = batched_att(&tile, 0, 0);
+    // An unknown block is an ordinary gossip IGNORE, rather than a peer
+    // penalty, but a local request still needs a terminal failure result.
+    buf[32..64].fill(0xAA);
+    let mut message = gossip_att_msg(&mut gp, &buf, subnet);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x55; 20] };
+    tile.defer_vote(message, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    let mut invalid = Vec::new();
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash } = event {
+            invalid.push((p2p_peer, topic, hash));
+        }
+    });
+    assert_eq!(invalid, [(
+        LOCAL_GOSSIP_STREAM_ID.peer(),
+        GossipTopic::BeaconAttestation(subnet),
+        MessageId { id: [0x55; 20] },
+    )]);
 }
 
 /// A non-attestation gossip message flushes the pending batch first, so

@@ -5,8 +5,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, DataKind, EngineNewPayloadEnvelopeReq,
-    EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK, NewGossipMsg, Origin, PeerEvent, SyncNeed,
-    TCacheRead, TRead, hex32,
+    EngineReq, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, Origin,
+    PeerEvent, SyncNeed, TCacheRead, TRead, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -368,7 +368,10 @@ impl BeaconStateTile {
         self.vote_batch.reverse();
         while let Some(m) = self.vote_batch.pop() {
             let acquired = self.gossip_consumer.acquire(m.ssz);
-            let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { continue };
+            let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else {
+                Self::reject_local_gossip(&m, producers);
+                continue;
+            };
             let prepared = match m.topic {
                 GossipTopic::BeaconAttestation(subnet) => {
                     self.prepare_attestation(data, subnet).map(PreparedVote::Attestation)
@@ -394,12 +397,8 @@ impl BeaconStateTile {
                     }
                     self.vote_pending.push((m, p));
                 }
-                Err(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
-                    p2p_peer: m.stream_id.peer(),
-                    topic: m.topic,
-                    hash: m.msg_hash,
-                }),
-                Err(_) => {}
+                Err(Feedback::Reject(_)) => Self::reject_gossip(&m, producers),
+                Err(_) => Self::reject_local_gossip(&m, producers),
             }
         }
 
@@ -416,6 +415,7 @@ impl BeaconStateTile {
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
             if p.is_seen(self) {
+                Self::reject_local_gossip(&m, producers);
                 continue;
             }
             let (pk, sig, root) = p.sig_parts();
@@ -432,11 +432,7 @@ impl BeaconStateTile {
                 Self::relay_gossip(&m, producers);
                 accepted = true;
             } else {
-                producers.produce(PeerEvent::P2pGossipInvalidMsg {
-                    p2p_peer: m.stream_id.peer(),
-                    topic: m.topic,
-                    hash: m.msg_hash,
-                });
+                Self::reject_gossip(&m, producers);
             }
         }
 
@@ -1254,6 +1250,22 @@ impl BeaconStateTile {
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,
         });
+    }
+
+    fn reject_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        producers.produce(PeerEvent::P2pGossipInvalidMsg {
+            p2p_peer: m.stream_id.peer(),
+            topic: m.topic,
+            hash: m.msg_hash,
+        });
+    }
+
+    /// Network gossip ignores are deliberately silent. A local API request,
+    /// however, needs a terminal validation result so Control can complete it.
+    pub(super) fn reject_local_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+            Self::reject_gossip(m, producers);
+        }
     }
 }
 

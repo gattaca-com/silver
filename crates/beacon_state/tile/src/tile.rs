@@ -582,7 +582,7 @@ impl BeaconStateTile {
     fn syncing_loop(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.consume_shared(adapter);
 
-        adapter.consume(|m: NewGossipMsg, _producers| {
+        adapter.consume(|m: NewGossipMsg, producers| {
             tracing::trace!(
                 topic = ?m.topic,
                 p2p_peer = m.stream_id.peer(),
@@ -590,6 +590,7 @@ impl BeaconStateTile {
                 head_slot = self.head_state_slot(),
                 "gossip dropped: BeaconState in Syncing mode"
             );
+            Self::reject_local_gossip(&m, producers);
         });
         self.gossip_consumer.free();
     }

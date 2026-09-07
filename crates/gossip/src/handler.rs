@@ -1,11 +1,12 @@
-use std::{collections::VecDeque, time::Instant};
+use std::{collections::VecDeque, io::Write, time::Instant};
 
 use buffa::MessageView;
 use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgIn, GossipMsgOut, GossipTopic, MessageId,
-    P2pStreamId, PeerControl, PeerEvent, SilverSpine, TCacheProducer, TCacheRead, TProducer,
-    TRandomAccess, msg_id_valid_snappy, ssz_view::StatusView,
+    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgIn, GossipMsgOut, GossipTopic,
+    LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
+    SilverSpine, TCacheProducer, TCacheRead, TProducer, TRandomAccess, msg_id_valid_snappy,
+    ssz_view::StatusView,
 };
 
 use crate::{
@@ -138,6 +139,72 @@ impl GossipHandler {
         .ok()?;
         self.mcache.insert(msg_id, topic, read);
         Some((msg_id, read))
+    }
+
+    /// Inject a locally-originated, not-yet-validated SSZ message at the same
+    /// boundary as decoded inbound gossip. The queued TCache references are
+    /// retained by `NewGossipMsg` until Beacon State accepts or rejects it;
+    /// mcache insertion remains on the accepted `PeerEvent::SendGossip` path.
+    ///
+    /// Local submissions deliberately bypass inbound deduplication so every
+    /// API request receives a Beacon State validation outcome. `Ok(None)`
+    /// means the fork digest is not available yet.
+    pub fn inject_local(
+        &mut self,
+        topic: GossipTopic,
+        ssz: &[u8],
+        recv_ts: Nanos,
+    ) -> Result<Option<MessageId>, Error> {
+        if self.fork_digest_hex.is_empty() {
+            return Ok(None);
+        }
+        if ssz.len() > topic.max_uncompressed_size() {
+            return Err(Error::GossipPayloadTooLarge);
+        }
+
+        let wire = topic.to_wire(&self.fork_digest_hex);
+        self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
+        let compressed_len = self.snap_encoder.compress(ssz, &mut self.snap_scratch)?;
+        let compressed = &self.snap_scratch[..compressed_len];
+        let msg_id = msg_id_valid_snappy(&wire, ssz);
+        let fast_hash = self.dedup_cache.contains_fast(&wire, compressed).ok();
+
+        let mut ssz_reservation =
+            self.incoming_gossip_publish.reserve(ssz.len(), false).ok_or(Error::BufferTooSmall)?;
+        ssz_reservation.write_all(ssz)?;
+        let ssz_read = ssz_reservation.read();
+
+        // From here onward a network duplicate must not race this local
+        // candidate into Beacon State first. Roll the entry back if either
+        // TCache message cannot be completed.
+        let inserted =
+            fast_hash.is_some_and(|fast_hash| self.dedup_cache.insert(fast_hash, msg_id));
+        let protobuf =
+            match copy_compressed_to_protobuf_output(&mut self.mcache_publish, compressed, &wire) {
+                Ok(protobuf) => protobuf,
+                Err(error) => {
+                    if inserted {
+                        self.dedup_cache.remove(fast_hash.unwrap(), &msg_id);
+                    }
+                    return Err(error);
+                }
+            };
+        if let Err(error) = ssz_reservation.flush() {
+            if inserted {
+                self.dedup_cache.remove(fast_hash.unwrap(), &msg_id);
+            }
+            return Err(error.into());
+        }
+
+        self.events.push_back(GossipHandlerEvent::NewGossip(NewGossipMsg {
+            stream_id: LOCAL_GOSSIP_STREAM_ID,
+            topic,
+            msg_hash: msg_id,
+            recv_ts,
+            ssz: ssz_read,
+            protobuf,
+        }));
+        Ok(Some(msg_id))
     }
 
     pub fn set_fork_digest(&mut self, status_ssz: &[u8; 92]) {
@@ -325,5 +392,73 @@ impl GossipHandler {
         self.incoming_gossip.free();
 
         did_work
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use silver_common::{TCache, TCacheProducer, ssz_view::SINGLE_ATT_SIZE};
+
+    use super::*;
+
+    #[test]
+    fn local_injection_uses_inbound_tcaches_without_precaching() {
+        let incoming = TCache::producer("inject_local_in", 1 << 12);
+        let incoming_consumer = incoming
+            .cache_ref()
+            .random_access("inject_local_handler", true)
+            .expect("incoming consumer");
+
+        let ssz_producer = TCache::producer("inject_local_ssz", 1 << 12);
+        let mut ssz_consumer = ssz_producer
+            .cache_ref()
+            .random_access("inject_local_ssz_test", true)
+            .expect("ssz consumer");
+        let protobuf_producer = TCache::producer("inject_local_protobuf", 1 << 12);
+        let mut protobuf_consumer = protobuf_producer
+            .cache_ref()
+            .random_access("inject_local_protobuf_test", true)
+            .expect("protobuf consumer");
+
+        let mut handler = GossipHandler::new(
+            incoming_consumer,
+            ssz_producer,
+            protobuf_producer,
+            "01020304".to_owned(),
+        )
+        .expect("gossip handler");
+        let topic = GossipTopic::BeaconAttestation(7);
+        let ssz = [42; SINGLE_ATT_SIZE];
+
+        let msg_id = handler
+            .inject_local(topic, &ssz, Nanos::now())
+            .expect("local injection")
+            .expect("new message");
+        let message = match handler.pop_event().expect("new gossip event") {
+            GossipHandlerEvent::NewGossip(message) => message,
+            GossipHandlerEvent::PeerEvent(_) | GossipHandlerEvent::SendGossip(_) => {
+                panic!("unexpected local injection event")
+            }
+        };
+
+        assert_eq!(message.stream_id, LOCAL_GOSSIP_STREAM_ID);
+        assert_eq!(message.topic, topic);
+        assert_eq!(message.msg_hash, msg_id);
+        assert_eq!(ssz_consumer.acquire(message.ssz).buffer().unwrap().0, ssz);
+        assert!(!protobuf_consumer.acquire(message.protobuf).buffer().unwrap().0.is_empty());
+        assert!(handler.dedup_cache.has(&msg_id));
+        assert!(!handler.mcache.has(&msg_id));
+
+        assert_eq!(handler.inject_local(topic, &ssz, Nanos::now()).unwrap(), Some(msg_id));
+        let duplicate = match handler.pop_event().expect("duplicate local gossip event") {
+            GossipHandlerEvent::NewGossip(message) => message,
+            GossipHandlerEvent::PeerEvent(_) | GossipHandlerEvent::SendGossip(_) => {
+                panic!("unexpected duplicate local injection event")
+            }
+        };
+        assert_eq!(duplicate.msg_hash, msg_id);
+
+        handler.mcache_insert(msg_id, topic, message.protobuf);
+        assert!(handler.mcache.has(&msg_id));
     }
 }
