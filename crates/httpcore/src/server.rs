@@ -225,8 +225,9 @@ impl ServerConnection {
         true
     }
 
-    /// Moves both buffers without copying. Buffered pipelined requests are
-    /// abandoned; the read buffer becomes discard scratch.
+    /// Takes ownership of both buffers, resizing their allocations for
+    /// streaming. Buffered pipelined requests are abandoned; the read buffer
+    /// becomes discard scratch.
     pub fn into_stream(self, now: Instant) -> ChunkedResponse {
         debug_assert!(self.write_pos == 0, "the head has not started leaving yet");
         ChunkedResponse::new(self.write_buf, self.read_buf, now)

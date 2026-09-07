@@ -3,9 +3,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Includes the response head and chunk framing, but not spare capacity or
-// the discard buffer. Send progress is tracked separately from this cap.
+// Reserve the full output allowance at construction so accepted pushes do
+// not reallocate. The response head and chunk framing count against it.
 const PENDING_MAX: usize = 64 << 10;
+const DISCARD_LEN: usize = 4096;
 
 /// Does not emit a terminal chunk; the caller ends the stream by closing
 /// the connection.
@@ -19,8 +20,15 @@ pub struct ChunkedResponse {
 }
 
 impl ChunkedResponse {
-    pub(crate) fn new(head: Vec<u8>, discard: Vec<u8>, now: Instant) -> Self {
-        debug_assert!(!head.is_empty(), "a stream begins with its response head");
+    /// Trim inherited buffer capacity so a subscription does not retain
+    /// large allocations from request handling.
+    pub(crate) fn new(mut head: Vec<u8>, mut discard: Vec<u8>, now: Instant) -> Self {
+        assert!(!head.is_empty(), "a stream begins with its response head");
+        assert!(head.len() <= PENDING_MAX, "the stream head alone exceeds the send cap");
+        head.reserve_exact(PENDING_MAX - head.len());
+        head.shrink_to(PENDING_MAX);
+        discard.truncate(DISCARD_LEN);
+        discard.shrink_to_fit();
         Self { pending: head, write_pos: 0, discard, waiting_since: Some(now) }
     }
 
@@ -208,13 +216,16 @@ mod tests {
             }
             assert!(stream.pending_write().len() <= PENDING_MAX, "round {round}");
             assert!(stream.pending.len() <= PENDING_MAX, "round {round}: consumed prefix retained");
+            assert_eq!(stream.pending.capacity(), PENDING_MAX, "round {round}");
         }
     }
 
     #[test]
-    fn capacity_is_bounded_by_the_largest_burst_not_by_lifetime() {
+    fn the_send_buffer_is_allocated_once_at_the_cap_and_never_moves() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
+        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        let allocation = stream.pending.as_ptr();
         let frame = vec![b'f'; 450];
         let burst = |stream: &mut ChunkedResponse| {
             for _ in 0..3 {
@@ -226,14 +237,45 @@ mod tests {
             assert!(stream.pending_write().is_empty());
         };
 
-        burst(&mut stream);
-        burst(&mut stream);
-        let settled = stream.pending.capacity();
         for _ in 0..1000 {
             burst(&mut stream);
         }
-        assert_eq!(stream.pending.capacity(), settled);
-        assert!(settled <= PENDING_MAX, "{settled} bytes held for a 2 KiB burst");
+        let payload = vec![b'x'; largest_fitting_payload(&stream)];
+        assert!(stream.push(&payload, t0), "a cap-sized burst fits the allocation as it is");
+        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.as_ptr(), allocation);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the send cap")]
+    fn a_head_past_the_cap_is_a_bug() {
+        let _ = ChunkedResponse::new(vec![b'h'; PENDING_MAX + 1], vec![0; 16], Instant::now());
+    }
+
+    #[test]
+    fn a_read_buffer_grown_by_an_earlier_request_is_cut_back_to_scratch_size() {
+        let t0 = Instant::now();
+        let mut conn = ServerConnection::new();
+        let body = vec![b'b'; 6000];
+        let mut request = format!(
+            "POST /eth/v1/events HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&body);
+        let mut rest = request.as_slice();
+        while !rest.is_empty() {
+            let space = conn.read_space().unwrap();
+            let n = space.len().min(rest.len());
+            space[..n].copy_from_slice(&rest[..n]);
+            conn.commit_read(n);
+            rest = &rest[n..];
+        }
+        assert!(conn.dispatch(&subscribe_head));
+
+        let mut stream = conn.into_stream(t0);
+        assert_eq!(stream.discard_space().len(), DISCARD_LEN);
+        assert_eq!(stream.discard.capacity(), DISCARD_LEN);
     }
 
     #[test]
@@ -296,19 +338,20 @@ mod tests {
     }
 
     #[test]
-    fn into_stream_moves_both_buffers_without_copying() {
+    fn into_stream_keeps_the_read_buffer_and_sizes_the_send_buffer_to_the_cap() {
         let t0 = Instant::now();
         let mut conn = ServerConnection::new();
         let read_buf = feed(&mut conn, b"GET /eth/v1/events HTTP/1.1\r\nHost: x\r\n\r\n");
-        let write_buf = Cell::new(std::ptr::null());
+        let head_len = Cell::new(0);
         assert!(conn.dispatch(&|req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
             subscribe_head(req, out);
-            write_buf.set(out.as_ptr());
+            head_len.set(out.len());
         }));
 
         let mut stream = conn.into_stream(t0);
-        assert_eq!(stream.pending_write().as_ptr(), write_buf.get());
         assert_eq!(stream.discard_space().as_ptr(), read_buf);
+        assert_eq!(stream.pending_write().len(), head_len.get());
+        assert_eq!(stream.pending.capacity(), PENDING_MAX);
     }
 
     #[test]
