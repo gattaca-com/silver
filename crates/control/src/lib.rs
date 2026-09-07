@@ -1,3 +1,4 @@
+pub mod cluster;
 mod counters;
 pub mod sync_engine;
 mod tile;
