@@ -55,6 +55,7 @@ pub(crate) struct Peer {
     streams: FxHashMap<StreamId, Stream>,
     inbound_gossip: Option<StreamId>,
     outbound_gossip: Option<StreamId>,
+    cluster_stream: Option<StreamId>,
     /// When the connection object was created (dial initiated / inbound
     /// accepted). Used to report connection age on disconnect.
     created_at: Instant,
@@ -98,6 +99,7 @@ impl Peer {
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
             inbound_gossip: None,
             outbound_gossip: None,
+            cluster_stream: None,
             created_at: now,
             handshake_completed: false,
             inbound_rpc_limits: RpcRateLimitSet::default(),
@@ -122,6 +124,10 @@ impl Peer {
 
     pub(crate) fn is_drained(&self) -> bool {
         self.connection.is_drained()
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.connection.is_closed()
     }
 
     /// Needs a transmit+spin cycle now: un-polled inputs, a lapsed wake
@@ -179,6 +185,40 @@ impl Peer {
         let msg = self.outbound_lease_wheel.leased(msg, now);
         if let Some(stream) = self.streams.get_mut(&stream_id) {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
+                let dropped = buffer.add_msg(msg);
+                stream.needs_spin = true;
+                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+            }
+        }
+        SendResult::StreamCreationError
+    }
+
+    pub(crate) fn send_cluster(
+        &mut self,
+        msg: TRead,
+        rpc_codec_pool: &mut RpcCodecPool,
+    ) -> SendResult {
+        if self.connection.is_closed() {
+            return SendResult::ConnectionClosing;
+        }
+        let now = Instant::now();
+        if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
+            return SendResult::ConnectionClosing;
+        }
+        self.dirty = true;
+        let stream_id = match self.cluster_stream {
+            Some(id) => id,
+            None => match self.open_stream(StreamProtocol::Cluster) {
+                Some(id) => {
+                    self.cluster_stream.replace(id);
+                    id
+                }
+                None => return SendResult::StreamCreationError,
+            },
+        };
+        let msg = self.outbound_lease_wheel.leased(msg, now);
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            if let OutboundBuffer::Cluster(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
                 stream.needs_spin = true;
                 return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
@@ -293,6 +333,7 @@ impl Peer {
         }
         self.inbound_gossip = None;
         self.outbound_gossip = None;
+        self.cluster_stream = None;
     }
 
     /// Stream-leak diagnostics: one line per over-populated connection
@@ -357,6 +398,9 @@ impl Peer {
         // even for request-response protocols.
         if protocol == StreamProtocol::GossipSub && self.outbound_gossip.is_some() {
             tracing::warn!(id=?self.id, "open stream: already have outbound gossip stream");
+            return None;
+        } else if protocol == StreamProtocol::Cluster && self.cluster_stream.is_some() {
+            tracing::warn!(id=?self.id, "open stream: already have cluster stream");
             return None;
         }
 
@@ -466,6 +510,11 @@ impl Peer {
                         local_dialler,
                         "connected"
                     );
+
+                    if let Some(nodes) = context.cluster_nodes.as_mut() {
+                        nodes.connected(self.id());
+                    }
+
                     on_event(NetEvent::PeerConnected {
                         peer: self.id.clone(),
                         addr: self.connection.remote_address(),
@@ -725,6 +774,9 @@ impl Peer {
         {
             self.outbound_gossip.take();
         }
+        if self.cluster_stream == Some(id) {
+            self.cluster_stream = None;
+        }
         if let Some(mut stream) = self.streams.remove(&id) &&
             let Some(codec) = stream.rpc_codec.take()
         {
@@ -825,6 +877,7 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
 fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
     match id.protocol() {
         StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(8 * 1024)),
+        StreamProtocol::Cluster => OutboundBuffer::Cluster(OutBuffer::new(128)),
         StreamProtocol::BeaconBlocksByRange |
         StreamProtocol::BeaconBlocksByRoot |
         StreamProtocol::DataColumnSidecarsByRange |
@@ -1090,6 +1143,7 @@ pub(super) enum OutboundBuffer {
     Unset,
     Gossip(OutBuffer<Leased<TRead>>),
     Rpc(OutBuffer<AcquiredRpcOutbound>),
+    Cluster(OutBuffer<Leased<TRead>>),
 }
 
 impl OutboundBuffer {
@@ -1098,6 +1152,7 @@ impl OutboundBuffer {
             OutboundBuffer::Unset => 0,
             OutboundBuffer::Gossip(out_buffer) => out_buffer.len(),
             OutboundBuffer::Rpc(out_buffer) => out_buffer.len(),
+            OutboundBuffer::Cluster(out_buffer) => out_buffer.len(),
         }
     }
 
@@ -1106,6 +1161,7 @@ impl OutboundBuffer {
             OutboundBuffer::Unset => true,
             OutboundBuffer::Gossip(out_buffer) => out_buffer.is_empty(),
             OutboundBuffer::Rpc(out_buffer) => out_buffer.is_empty(),
+            OutboundBuffer::Cluster(out_buffer) => out_buffer.is_empty(),
         }
     }
 }
@@ -1171,11 +1227,18 @@ impl<T> OutBuffer<T> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::SocketAddr, sync::Arc, time::Instant};
 
+    use mio::{Poll, Token};
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
-    use silver_common::{Keypair, TCache, TCacheProducer, TConsumer, TProducer};
+    use silver_common::{Enr, Keypair, TCache, TCacheProducer, TConsumer, TProducer};
 
     use super::*;
-    use crate::p2p::quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK};
+    use crate::{
+        p2p::{
+            ClusterNodes, P2p,
+            quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK},
+        },
+        socket::Socket,
+    };
 
     const TCACHE_BYTES: usize = 64 * 1024;
 
@@ -1315,6 +1378,7 @@ mod tests {
         /// Test enqueues outbound gossip payloads here. The network's
         /// `gossip_consumer` reads via random access.
         gossip_out_producer: TProducer,
+        cluster_out_producer: TProducer,
         /// Bytes received per stream — extracted from inbound frames in
         /// `drain_inbound`.
         received: HashMap<P2pStreamId, Vec<u8>>,
@@ -1332,6 +1396,13 @@ mod tests {
             let rpc_out_p = TCache::producer("rpc_out", TCACHE_BYTES);
             let rpc_out_c = rpc_out_p.cache_ref().random_access("peer_rpc_out", false).unwrap();
 
+            let cluster_in = TCache::producer("cluster_in", TCACHE_BYTES);
+            let cluster_out_producer = TCache::producer("cluster_out", TCACHE_BYTES);
+            let cluster_out = cluster_out_producer
+                .cache_ref()
+                .strict_random_access("peer_cluster_out", true)
+                .unwrap();
+
             Self {
                 context: Context {
                     gossip_producer: gossip_in_p,
@@ -1339,10 +1410,14 @@ mod tests {
                     rpc_producer: rpc_in_p,
                     rpc_consumer: rpc_out_c,
                     identify: None,
+                    cluster_nodes: None,
+                    cluster_inbound_producer: cluster_in,
+                    cluster_outbound_consumer: cluster_out,
                 },
                 rpc_codec_pool: RpcCodecPool::default(),
                 gossip_in_consumer: gossip_in_c,
                 gossip_out_producer: gossip_out_p,
+                cluster_out_producer,
                 received: HashMap::new(),
             }
         }
@@ -1357,6 +1432,14 @@ mod tests {
             assert!(res.is_committed());
             let read = self.context.gossip_consumer.acquire(res.read());
             peer.send_gossip(read, &mut self.rpc_codec_pool);
+        }
+
+        fn send_cluster(&mut self, payload: &[u8], peer: &mut Peer) -> SendResult {
+            let mut reservation = self.cluster_out_producer.reserve(payload.len(), true).unwrap();
+            reservation.write_all(payload).unwrap();
+            let read =
+                self.context.cluster_outbound_consumer.acquire_strict(reservation.read()).unwrap();
+            peer.send_cluster(read, &mut self.rpc_codec_pool)
         }
 
         /// Pull all newly-arrived inbound frames out of the consumer and
@@ -1681,6 +1764,95 @@ mod tests {
 
         assert!(!pair.client_peer.connection.is_closed());
         assert!(!pair.client_peer.streams.contains_key(&stream));
+    }
+
+    #[test]
+    fn stopped_cluster_stream_reopens_and_shutdown_clears_it() {
+        let mut client_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+
+        assert_eq!(client_h.send_cluster(b"first", &mut pair.client_peer), SendResult::Ok);
+        let stream = pair.client_peer.cluster_stream.unwrap();
+        assert_eq!(pair.client_peer.outbound_lease_wheel.active_count(), 1);
+
+        let other_stream = pair.client_peer.open_stream(StreamProtocol::Ping).unwrap();
+        pair.client_peer.remove_stream(other_stream, &mut client_h.rpc_codec_pool);
+        assert_eq!(pair.client_peer.cluster_stream, Some(stream));
+
+        pair.client_peer.handle_stream_event(
+            quinn_proto::StreamEvent::Stopped { id: stream, error_code: VarInt::from_u32(0) },
+            now,
+            &mut client_h.context,
+            &mut client_h.rpc_codec_pool,
+            &mut |_| {},
+        );
+
+        assert!(!pair.client_peer.is_closed());
+        assert!(!pair.client_peer.streams.contains_key(&stream));
+        assert_eq!(pair.client_peer.cluster_stream, None);
+        assert_eq!(pair.client_peer.outbound_lease_wheel.active_count(), 0);
+
+        assert_eq!(client_h.send_cluster(b"second", &mut pair.client_peer), SendResult::Ok);
+        let replacement = pair.client_peer.cluster_stream.unwrap();
+        assert_ne!(replacement, stream);
+        assert!(pair.client_peer.streams.contains_key(&replacement));
+
+        pair.client_peer.shutdown(now, &mut client_h.rpc_codec_pool);
+        assert!(pair.client_peer.is_closed());
+        assert!(pair.client_peer.streams.is_empty());
+        assert_eq!(pair.client_peer.cluster_stream, None);
+        assert_eq!(pair.client_peer.outbound_lease_wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn poll_cleans_cluster_routes_for_local_and_remote_closes() {
+        for local_close in [true, false] {
+            let mut client_h = PeerHarness::new();
+            let mut server_h = PeerHarness::new();
+            let mut pair = PeerPair::new();
+            let now = Instant::now();
+            let server_keypair = Keypair::from_secret(&[1; 32]).unwrap();
+            let client_keypair = Keypair::from_secret(&[2; 32]).unwrap();
+            let mut nodes = ClusterNodes::new(HashMap::from([(
+                7,
+                Enr::empty(server_keypair.secret_key()).unwrap(),
+            )]));
+            nodes.connected(pair.client_peer.id());
+            let handle = pair.client_peer.handle;
+            client_h.context.cluster_nodes = Some(nodes);
+            assert_eq!(client_h.context.cluster_peer(7), Some(handle.0));
+            assert_eq!(client_h.context.raft_id(handle.0), Some(7));
+
+            if !local_close {
+                pair.server_peer.shutdown(now, &mut server_h.rpc_codec_pool);
+                pair.step(now, &mut client_h, &mut server_h, &mut |_| {}, &mut |_| {});
+                assert!(pair.client_peer.is_closed());
+            }
+
+            let PeerPair { client_ep, client_peer, .. } = pair;
+            let mut p2p = P2p::new(client_keypair, client_ep, 16, FxHashSet::default());
+            p2p.peers.insert(handle, client_peer);
+            if local_close {
+                p2p.disconnect(handle.0, now);
+            }
+
+            let poll = Poll::new().unwrap();
+            let mut socket = Socket::new("127.0.0.1:0".parse().unwrap(), &poll, Token(0)).unwrap();
+            p2p.poll(now, &poll, &mut socket, &mut client_h.context, &mut |_| {});
+            assert_eq!(client_h.context.cluster_peer(7), None);
+            assert_eq!(client_h.context.raft_id(handle.0), None);
+            assert!(p2p.peers.contains_key(&handle), "cleanup must precede the drained reap");
+
+            let after_drain = now + Duration::from_secs(60);
+            p2p.poll(after_drain, &poll, &mut socket, &mut client_h.context, &mut |_| {});
+            assert!(!p2p.peers.contains_key(&handle));
+
+            let non_member = Keypair::from_secret(&[3; 32]).unwrap().peer_id();
+            p2p.connect(non_member, "127.0.0.1:5000".parse().unwrap(), after_drain).unwrap();
+            assert_eq!(p2p.peers[&handle].id().peer_id, non_member);
+            assert_eq!(client_h.context.raft_id(handle.0), None);
+        }
     }
 
     /// Closing drops stream state (and the queued acquires in its buffers)

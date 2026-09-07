@@ -243,6 +243,10 @@ mod tests {
         ) -> Result<usize, StreamError> {
             unreachable!("read-only test io")
         }
+
+        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+            None
+        }
     }
 
     /// A frame shorter than the 10-byte length read, pipelined hard against

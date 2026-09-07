@@ -40,6 +40,9 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[global_allocator]
 static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 
+/// Normal Raft protocol messages only.
+const CLUSTER_MESSAGE_TCACHE_SIZE: usize = 1 << 22;
+
 const MAINNET_BOOTNODES: [&str; 3] = [
     "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
     "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
@@ -99,6 +102,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_engine_resp_producer.cache_ref().random_access("engine_incoming_resp", true)?;
     let incoming_engine_resp_consumer_ds =
         incoming_engine_resp_producer.cache_ref().random_access("ds_engine_incoming_resp", true)?;
+
+    let cluster_inbound_producer = TCache::producer("cluster_inbound", CLUSTER_MESSAGE_TCACHE_SIZE);
+    let cluster_outbound_producer =
+        TCache::producer("cluster_outbound", CLUSTER_MESSAGE_TCACHE_SIZE);
+    let cluster_outbound_consumer = cluster_outbound_producer
+        .cache_ref()
+        .strict_random_access("network_cluster_outbound", true)?;
 
     // rpc producer
     let outgoing_rpc_producer =
@@ -166,6 +176,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
+        cluster_nodes: None,
+        cluster_inbound_producer,
+        cluster_outbound_consumer,
     };
 
     let now = Instant::now();
