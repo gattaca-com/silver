@@ -52,10 +52,10 @@ impl Default for StreamLimits {
 
 struct Connection {
     stream: Stream,
-    machine: Machine,
+    state: State,
 }
 
-enum Machine {
+enum State {
     Requests(Requests),
     Subscription(Subscription),
 }
@@ -73,20 +73,17 @@ struct Subscription {
 
 impl Connection {
     fn new(stream: Stream, now: Instant) -> Self {
-        Self { stream, machine: Machine::Requests(Requests::new(now)) }
+        Self { stream, state: State::Requests(Requests::new(now)) }
     }
 
     /// Buffered requests behind the subscription are abandoned; subsequent
     /// inbound bytes are discarded.
     fn subscribed(self, channels: ChannelSet, now: Instant) -> Self {
-        let Machine::Requests(requests) = self.machine else {
+        let State::Requests(requests) = self.state else {
             unreachable!("only a request handler begins a stream")
         };
         let body = requests.http.into_stream(now);
-        Self {
-            stream: self.stream,
-            machine: Machine::Subscription(Subscription { body, channels }),
-        }
+        Self { stream: self.stream, state: State::Subscription(Subscription { body, channels }) }
     }
 
     fn expired(
@@ -96,9 +93,9 @@ impl Connection {
         linger: &Linger,
         streams: &StreamLimits,
     ) -> bool {
-        match &self.machine {
-            Machine::Requests(requests) => requests.expired(now, idle_timeout, linger),
-            Machine::Subscription(subscription) => {
+        match &self.state {
+            State::Requests(requests) => requests.expired(now, idle_timeout, linger),
+            State::Subscription(subscription) => {
                 subscription.body.stalled(now, streams.send_deadline)
             }
         }
@@ -111,11 +108,11 @@ impl Connection {
         now: Instant,
         request_handler: &F,
     ) -> io::Result<bool> {
-        match &mut self.machine {
-            Machine::Requests(requests) => {
+        match &mut self.state {
+            State::Requests(requests) => {
                 requests.handle_event(&mut self.stream, registry, event, now, request_handler)
             }
-            Machine::Subscription(subscription) => {
+            State::Subscription(subscription) => {
                 subscription.handle_event(&mut self.stream, registry, event, now)
             }
         }
@@ -420,7 +417,7 @@ impl BeaconApi {
         let Self { connections, registry, .. } = self;
         let mut pushed = false;
         connections.retain(|token, conn| {
-            let Machine::Subscription(subscription) = &mut conn.machine else { return true };
+            let State::Subscription(subscription) = &mut conn.state else { return true };
             if !wants(subscription) {
                 return true;
             }
@@ -556,17 +553,17 @@ impl BeaconApi {
             if !conn.expired(now, idle.timeout, linger, streams) {
                 return true;
             }
-            match &conn.machine {
-                Machine::Subscription(subscription) => tracing::warn!(
+            match &conn.state {
+                State::Subscription(subscription) => tracing::warn!(
                     "beacon api subscriber made no write progress for over {:?} with {} bytes pending, closing",
                     streams.send_deadline,
                     subscription.body.pending_write().len()
                 ),
-                Machine::Requests(Requests { linger_since: Some(since), .. }) => tracing::warn!(
+                State::Requests(Requests { linger_since: Some(since), .. }) => tracing::warn!(
                     "beacon api connection still sending {:?} after its answer, closing",
                     now.duration_since(*since)
                 ),
-                Machine::Requests(requests) => tracing::warn!(
+                State::Requests(requests) => tracing::warn!(
                     "beacon api connection idle for {:?}, closing",
                     now.duration_since(requests.last_activity)
                 ),
@@ -1332,7 +1329,7 @@ mod tests {
             .api
             .connections
             .values()
-            .filter(|conn| matches!(conn.machine, Machine::Subscription(_)))
+            .filter(|conn| matches!(conn.state, State::Subscription(_)))
             .count()
     }
 
@@ -1341,9 +1338,9 @@ mod tests {
             .api
             .connections
             .values()
-            .map(|conn| match &conn.machine {
-                Machine::Subscription(subscription) => subscription.body.pending_write().len(),
-                Machine::Requests(_) => 0,
+            .map(|conn| match &conn.state {
+                State::Subscription(subscription) => subscription.body.pending_write().len(),
+                State::Requests(_) => 0,
             })
             .sum()
     }
