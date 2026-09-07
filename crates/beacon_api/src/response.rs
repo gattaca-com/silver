@@ -108,11 +108,12 @@ impl<'a> Response<'a> {
         frame_response_with_headers(self.out, status, content_type, headers, body);
     }
 
-    /// Beacon-API error shape: `{"code":<status>,"message":"..."}`.
+    /// Messages can include client input, so they need JSON escaping.
     pub(crate) fn error(&mut self, code: u16, message: &str) {
-        debug_assert!(json_safe(message), "message goes into JSON unescaped");
-        let body = format!("{{\"code\":{code},\"message\":\"{message}\"}}");
-        self.send(code, Some(JSON_CONTENT_TYPE), &[], body.as_bytes());
+        let mut body = format!("{{\"code\":{code},\"message\":").into_bytes();
+        Json::new(&mut body).string(message);
+        body.push(b'}');
+        self.send(code, Some(JSON_CONTENT_TYPE), &[], &body);
     }
 
     /// Beacon-API `IndexedErrorMessage` shape, for requests carrying a list of
@@ -173,6 +174,19 @@ mod tests {
         Response::new(&mut out).error(400, "invalid state_id");
         let expected: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 41\r\n\r\n{\"code\":400,\"message\":\"invalid state_id\"}";
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn error_escapes_client_input_in_the_message() {
+        let out = framed(|resp| resp.error(400, "unknown topic: \"he\\ad\"\n"));
+        let body = br#"{"code":400,"message":"unknown topic: \"he\\ad\"\n"}"#;
+        let mut expected = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        expected.extend_from_slice(body);
+        assert_eq!(out, expected, "{}", String::from_utf8_lossy(&out));
     }
 
     #[test]

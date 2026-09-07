@@ -1414,7 +1414,7 @@ mod tests {
         let got = serve(&mut server, client, "400 for an unserved topic");
         assert_same_bytes(
             &got,
-            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 39\r\n\r\n{\"code\":400,\"message\":\"invalid topics\"}",
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"head\\\"\"}",
         );
         assert_eq!(subscribers(&server), 0);
     }

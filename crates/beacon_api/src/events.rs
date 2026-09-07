@@ -32,29 +32,37 @@ impl ChannelSet {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Refused {
+    NoTopic,
+    Unknown(String),
+}
+
 /// Reject the whole subscription if any topic is unsupported, so clients
 /// are not left waiting for events this server cannot publish.
 pub(crate) fn events(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
     match topics(req.query) {
-        Some(channels) => {
+        Ok(channels) => {
             resp.begin_stream(EVENT_STREAM_CONTENT_TYPE, EVENT_STREAM_HEADERS, channels)
         }
-        None => resp.error(400, "invalid topics"),
+        Err(Refused::NoTopic) => resp.error(400, "no topics"),
+        Err(Refused::Unknown(topic)) => resp.error(400, &format!("unknown topic \"{topic}\"")),
     }
 }
 
 /// Clients send both comma-separated and repeated `topics` parameters.
-fn topics(query: &str) -> Option<ChannelSet> {
+fn topics(query: &str) -> Result<ChannelSet, Refused> {
     let mut channels = ChannelSet::default();
     for (name, value) in Query::new(query) {
         if name != "topics" {
             continue;
         }
         for topic in value.split(',') {
-            channels.insert(channel(topic)?);
+            let channel = channel(topic).ok_or_else(|| Refused::Unknown(topic.to_string()))?;
+            channels.insert(channel);
         }
     }
-    (!channels.is_empty()).then_some(channels)
+    if channels.is_empty() { Err(Refused::NoTopic) } else { Ok(channels) }
 }
 
 fn channel(topic: &str) -> Option<Channel> {
@@ -104,26 +112,46 @@ mod tests {
         (served, out)
     }
 
-    #[test]
-    fn topics_arrive_comma_joined_or_repeated() {
-        assert_eq!(topics("topics=block"), Some(block_only()));
-        assert_eq!(topics("topics=block,block"), Some(block_only()));
-        assert_eq!(topics("topics=block&topics=block"), Some(block_only()));
-        assert_eq!(topics("topics=block%2Cblock"), Some(block_only()), "percent-encoded comma");
+    fn bad_request(message_json: &str) -> Vec<u8> {
+        let body = format!("{{\"code\":400,\"message\":\"{message_json}\"}}");
+        format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
     }
 
     #[test]
-    fn a_topic_silver_does_not_serve_refuses_the_whole_subscription() {
-        assert_eq!(topics("topics=head"), None);
-        assert_eq!(topics("topics=block,head"), None);
-        assert_eq!(topics("topics=block&topics=chain_reorg"), None);
+    fn topics_arrive_comma_joined_or_repeated() {
+        assert_eq!(topics("topics=block"), Ok(block_only()));
+        assert_eq!(topics("topics=block,block"), Ok(block_only()));
+        assert_eq!(topics("topics=block&topics=block"), Ok(block_only()));
+        assert_eq!(topics("topics=block%2Cblock"), Ok(block_only()), "percent-encoded comma");
+    }
+
+    #[test]
+    fn a_topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
+        let unknown = |topic: &str| Err(Refused::Unknown(topic.to_string()));
+        assert_eq!(topics("topics=head"), unknown("head"));
+        assert_eq!(topics("topics=block,head"), unknown("head"));
+        assert_eq!(topics("topics=block&topics=chain_reorg"), unknown("chain_reorg"));
     }
 
     #[test]
     fn no_topic_is_no_subscription() {
-        assert_eq!(topics(""), None);
-        assert_eq!(topics("topics="), None);
-        assert_eq!(topics("other=block"), None);
+        assert_eq!(topics(""), Err(Refused::NoTopic));
+        assert_eq!(topics("other=block"), Err(Refused::NoTopic));
+    }
+
+    /// Empty entries must not silently turn a malformed list into a valid
+    /// subscription.
+    #[test]
+    fn an_empty_name_is_refused_like_any_unknown_one() {
+        let empty = Err(Refused::Unknown(String::new()));
+        assert_eq!(topics("topics="), empty);
+        assert_eq!(topics("topics=,"), empty);
+        assert_eq!(topics("topics=block,"), empty);
+        assert_eq!(topics("topics=&topics=block"), empty);
     }
 
     #[test]
@@ -144,12 +172,30 @@ mod tests {
     }
 
     #[test]
-    fn an_unserved_topic_is_a_400_on_an_ordinary_connection() {
-        let (served, out) = dispatch("topics=head");
+    fn an_unserved_topic_is_a_400_naming_it_on_an_ordinary_connection() {
+        let (served, out) = dispatch("topics=block,head");
         assert_eq!(served, Served::Response);
-        assert_eq!(
-            out,
-            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 39\r\n\r\n{\"code\":400,\"message\":\"invalid topics\"}"
-        );
+        assert_eq!(out, bad_request(r#"unknown topic \"head\""#));
+    }
+
+    #[test]
+    fn an_empty_name_is_a_400_showing_the_empty_quotes() {
+        let (served, out) = dispatch("topics=block,");
+        assert_eq!(served, Served::Response);
+        assert_eq!(out, bad_request(r#"unknown topic \"\""#));
+    }
+
+    #[test]
+    fn a_named_topic_is_json_escaped() {
+        let (served, out) = dispatch("topics=%22he%5Cad%22");
+        assert_eq!(served, Served::Response);
+        assert_eq!(out, bad_request(r#"unknown topic \"\"he\\ad\"\""#));
+    }
+
+    #[test]
+    fn no_topic_is_a_400() {
+        let (served, out) = dispatch("");
+        assert_eq!(served, Served::Response);
+        assert_eq!(out, bad_request("no topics"));
     }
 }
