@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent, StreamProtocol, TCache,
-    TCacheProducer, TCcheRead, TProducer,
+    TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
