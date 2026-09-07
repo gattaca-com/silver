@@ -2,6 +2,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::net::UnixStream,
+    sync::mpsc::{self, Receiver},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -11,9 +12,9 @@ use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr, Identify, Keypair,
-    PayloadValidationStatus, SilverSpine, SyncUpdate, TCache, TCacheProducer,
-    ssz_view::STATUS_V2_SIZE,
+    BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
+    Enr, Identify, Keypair, PayloadValidationStatus, SilverSpine, SyncUpdate, TCache,
+    TCacheProducer, ssz_view::STATUS_V2_SIZE,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
@@ -132,6 +133,49 @@ fn drain_fcu_completions(
             out.push((r.block_root, r.status));
         }
     });
+}
+
+const SSE_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+
+fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
+    BeaconStateEvent::BlockReceived {
+        slot,
+        block_root: [byte; 32],
+        stage,
+        source: BlockSource::Gossip,
+        parent_slot: Some(slot - 1),
+    }
+}
+
+fn block_frame(slot: u64, byte: u8) -> Vec<u8> {
+    let data = format!(
+        "event: block\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"execution_optimistic\":true}}\n\n",
+        hex::encode([byte; 32])
+    );
+    let mut frame = format!("{:x}\r\n", data.len()).into_bytes();
+    frame.extend_from_slice(data.as_bytes());
+    frame.extend_from_slice(b"\r\n");
+    frame
+}
+
+/// Signals after receiving the response head so events are not published
+/// before the subscription is active.
+fn events_subscriber(addr: SocketAddr, frame_len: usize) -> (JoinHandle<Vec<u8>>, Receiver<()>) {
+    let (subscribed, on_subscribed) = mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(stream, "GET /eth/v1/events?topics=block HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut head = vec![0; SSE_HEAD.len()];
+        stream.read_exact(&mut head).unwrap();
+        assert_eq!(head, SSE_HEAD, "{}", String::from_utf8_lossy(&head));
+        subscribed.send(()).unwrap();
+        let mut frame = vec![0; frame_len];
+        stream.read_exact(&mut frame).unwrap();
+        frame
+    });
+    (client, on_subscribed)
 }
 
 fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> BeaconStateEvent {
@@ -669,4 +713,48 @@ fn serves_concurrent_clients_with_no_engine_registered() {
     for client in clients {
         assert_identity_ok(&client.join().unwrap());
     }
+}
+
+#[test]
+fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_sse_gossip",
+        "cs_sse_rpc",
+        "cs_sse_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    // Initialize the consumer before publishing: its first consume skips
+    // events already on the spine.
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let expected = block_frame(10, 0xab);
+    let (client, on_subscribed) = events_subscriber(addr, expected.len());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    while on_subscribed.try_recv().is_err() {
+        crank(&mut tile, "stream head reaches the subscriber");
+    }
+
+    inj.produce(block_received(8, 0x08, BlockStage::AwaitParent));
+    inj.produce(block_received(9, 0x09, BlockStage::Staged));
+    inj.produce(block_received(10, 0xab, BlockStage::Applied));
+    while !client.is_finished() {
+        crank(&mut tile, "block frame reaches the subscriber");
+    }
+    let got = client.join().unwrap();
+    assert!(
+        got == expected,
+        "\n     got: {:?}\nexpected: {:?}",
+        String::from_utf8_lossy(&got),
+        String::from_utf8_lossy(&expected)
+    );
 }
