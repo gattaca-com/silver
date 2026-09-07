@@ -47,6 +47,11 @@ pub fn broadcast(c: &mut Criterion) {
                         let rpc_in = TCache::producer("bench_small", 32);
                         let rpc_out = rpc_in.cache_ref().random_access("bench", true).unwrap();
 
+                        // dummys
+                        let cluster_in = TCache::producer("cluster_in", 32);
+                        let cluster_out =
+                            cluster_in.cache_ref().random_access("cluster_out", true).unwrap();
+
                         let (mut server_tile, server_id) = {
                             let secret = secp256k1::SecretKey::new(&mut rng);
                             let key_bytes: [u8; 32] = secret.secret_bytes();
@@ -67,6 +72,9 @@ pub fn broadcast(c: &mut Criterion) {
                                 rpc_producer: rpc_in,
                                 rpc_consumer: rpc_out,
                                 identify: None,
+                                cluster_nodes: None,
+                                cluster_inbound_producer: cluster_in,
+                                cluster_outbound_consumer: cluster_out,
                             };
 
                             let p2p = P2p::new(keypair, server_endpoint, 1024, Default::default());
@@ -119,6 +127,10 @@ pub fn broadcast(c: &mut Criterion) {
                                 go_producer.cache_ref().random_access("bench", true).unwrap();
                             let rpc_in = TCache::producer("bench_small", 32);
                             let rpc_out = rpc_in.cache_ref().random_access("bench", false).unwrap();
+                            // dummys
+                            let cluster_in = TCache::producer("cluster_in", 32);
+                            let cluster_out =
+                                cluster_in.cache_ref().random_access("cluster_out", true).unwrap();
 
                             let context = Context {
                                 gossip_producer: gi_producer,
@@ -126,6 +138,9 @@ pub fn broadcast(c: &mut Criterion) {
                                 rpc_producer: rpc_in,
                                 rpc_consumer: rpc_out,
                                 identify: None,
+                                cluster_nodes: None,
+                                cluster_inbound_producer: cluster_in,
+                                cluster_outbound_consumer: cluster_out,
                             };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);

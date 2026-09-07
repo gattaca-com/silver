@@ -4,7 +4,9 @@ mod tile;
 
 use std::net::SocketAddr;
 
-pub use p2p::{Context, NetEvent, P2p, SendResult, create_endpoint, create_server_config};
+pub use p2p::{
+    ClusterNodes, Context, NetEvent, P2p, SendResult, create_endpoint, create_server_config,
+};
 use silver_common::PeerId;
 pub use tile::{Event as NetworkTileEvent, NetworkTile, NetworkTileInner};
 

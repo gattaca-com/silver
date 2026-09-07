@@ -7,6 +7,8 @@ use thiserror::Error;
 
 use crate::p2p::{quic::Leased, streams::snappy::SnappyError};
 
+mod cluster_in;
+mod cluster_out;
 pub(crate) mod gossip_in;
 pub(crate) mod gossip_out;
 mod identify_in;
@@ -42,6 +44,8 @@ pub enum StreamError {
     IdentifyTooBig,
     ReadResponseTimeout,
     ReadStall,
+    ClusterFrameTooLarge,
+    ClusterFrameZeroSize,
 }
 
 impl fmt::Display for StreamError {
@@ -61,5 +65,6 @@ pub trait StreamIo {
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError>;
     fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound>;
     fn gossip_next(&mut self) -> Option<Leased<TRead>>;
+    fn cluster_next(&mut self) -> Option<Leased<TRead>>;
     fn remote_addr(&self) -> SocketAddr;
 }
