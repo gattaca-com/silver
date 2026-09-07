@@ -4,7 +4,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, Enr, Identify, Keypair, SilverSpine, SyncUpdate, TProducer, TRandomAccess,
+    BeaconStateEvent, BlockStage, Enr, Identify, Keypair, SilverSpine, SyncUpdate, TProducer,
+    TRandomAccess,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -80,21 +81,26 @@ impl ApplicationBoundaryTile {
     }
 
     fn refresh_node_status(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let status = self.beacon.node_status_mut();
+        let beacon = &mut self.beacon;
 
         // Consumed every iteration, and never behind the engine's capacity
         // gate: a consumer's first `consume` jumps its cursor to the
         // producer's write head, so a queue left unread while the pool is
         // saturated loses everything published in the meantime.
-        adapter.consume(|event: BeaconStateEvent, _| {
-            if let BeaconStateEvent::Status {
-                latest_block_slot, wall_slot, head_optimistic, ..
-            } = event
-            {
-                status.slots =
+        adapter.consume(|event: BeaconStateEvent, _| match event {
+            BeaconStateEvent::Status { latest_block_slot, wall_slot, head_optimistic, .. } => {
+                beacon.node_status_mut().slots =
                     Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
             }
+            BeaconStateEvent::BlockReceived {
+                slot,
+                block_root,
+                stage: BlockStage::Applied,
+                ..
+            } => beacon.publish_block(slot, &block_root),
+            _ => {}
         });
+        let status = beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {
             status.syncing = !matches!(update, SyncUpdate::Following);
         });

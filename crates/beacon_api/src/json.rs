@@ -215,6 +215,22 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn block_event(
+        &mut self,
+        slot: u64,
+        block_root: &[u8; 32],
+        execution_optimistic: bool,
+    ) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(slot);
+        self.key("block");
+        self.hex(block_root);
+        self.key("execution_optimistic");
+        self.bool(execution_optimistic);
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -463,5 +479,16 @@ mod tests {
         assert!(json_safe("active_ongoing"));
         assert!(!json_safe("say \"hi\""));
         assert!(!json_safe("back\\slash"));
+    }
+
+    #[test]
+    fn block_event_quotes_the_slot_and_hexes_the_root() {
+        let mut out = Vec::new();
+        Json::new(&mut out).block_event(10, &[0x9a; 32], false);
+        let expected = format!(
+            "{{\"slot\":\"10\",\"block\":\"0x{}\",\"execution_optimistic\":false}}",
+            "9a".repeat(32)
+        );
+        assert_eq!(out, expected.as_bytes());
     }
 }

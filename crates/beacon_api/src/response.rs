@@ -1,13 +1,18 @@
 use std::{fmt::Write, str};
 
-use silver_httpcore::frame_response_with_headers;
+use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
-use crate::json::{Json, json_safe};
+use crate::{
+    events::ChannelSet,
+    json::{Json, json_safe},
+    router::Served,
+};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 pub(crate) struct Response<'a> {
     out: &'a mut Vec<u8>,
+    stream: Option<ChannelSet>,
 }
 
 /// One entry of a beacon-API `IndexedErrorMessage.failures` list; `index` is
@@ -19,7 +24,27 @@ pub(crate) struct Failure<'a> {
 
 impl<'a> Response<'a> {
     pub(crate) fn new(out: &'a mut Vec<u8>) -> Self {
-        Self { out }
+        Self { out, stream: None }
+    }
+
+    /// Queues the head and records the subscription; writing begins after
+    /// the handler returns.
+    pub(crate) fn begin_stream(
+        &mut self,
+        content_type: &str,
+        headers: &[(&str, &str)],
+        channels: ChannelSet,
+    ) {
+        debug_assert!(self.out.is_empty(), "a stream head follows no other response");
+        frame_chunked_head(self.out, content_type, headers);
+        self.stream = Some(channels);
+    }
+
+    pub(crate) fn served(self) -> Served {
+        match self.stream {
+            Some(channels) => Served::Stream(channels),
+            None => Served::Response,
+        }
     }
 
     pub(crate) fn json(&mut self, body: &[u8]) {

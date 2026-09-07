@@ -60,3 +60,21 @@ render that outruns the synchronous model above, and each is deferred to its
 own PR rather than served from the wrong data. The ~1GiB/~0.9s registry
 figures stand as the recorded cost a bounded-render design has to answer
 before that endpoint returns.
+
+Amended 2026-09-07: `ChunkedResponse` in `silver_httpcore` owns the HTTP chunk
+framing and pending output for a subscription. The handler queues the response
+head, then the connection replaces its `ServerConnection` with this machine.
+Each SSE frame occupies one HTTP chunk. Closing the connection ends the stream
+without a terminal chunk.
+
+Subscriptions are exempt from the request idle timeout. A push that would take
+pending output past 64 KiB closes the connection. The expiry sweep also closes
+connections whose pending output has made no socket write progress for over
+12 seconds. This measures writes accepted by the socket, not reads by the peer.
+The pump queues keep-alive comments every 15 seconds, including when no events
+are published.
+
+`beacon_api` owns SSE framing, topic selection, and delivery to subscribers.
+The tile calls `publish_block` without accessing connections. `/eth/v1/events`
+serves `block` and rejects other topics with 400. Further topics and
+silver-specific SSE routes can use the same subscription mechanism.

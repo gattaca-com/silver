@@ -1,4 +1,5 @@
 mod config;
+mod events;
 mod identity;
 mod ids;
 mod json;

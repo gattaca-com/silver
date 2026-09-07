@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::HashMap,
     io::{self, Read, Write},
     time::{Duration, Instant},
@@ -8,12 +9,15 @@ use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::{
-    AfterResponse, Bind, Listener, ParsedRequest, ServerConnection, Stream, TokenRange,
+    AfterResponse, Bind, ChunkedResponse, Listener, ParsedRequest, ServerConnection, Stream,
+    TokenRange,
 };
 
 use crate::{
     NodeStatus,
-    router::Router,
+    events::{self, Channel, ChannelSet},
+    json::Json,
+    router::{Router, Served},
     routes::{ApiCtx, ROUTES},
 };
 
@@ -33,28 +37,94 @@ impl Default for Linger {
     }
 }
 
+/// Quiet subscriptions must survive the request idle timeout. Keep-alive
+/// comments also exercise the write path when no events are published.
+struct StreamLimits {
+    send_deadline: Duration,
+    keep_alive_every: Duration,
+}
+
+impl Default for StreamLimits {
+    fn default() -> Self {
+        Self { send_deadline: Duration::from_secs(12), keep_alive_every: Duration::from_secs(15) }
+    }
+}
+
 struct Connection {
     stream: Stream,
+    machine: Machine,
+}
+
+enum Machine {
+    Requests(Requests),
+    Subscription(Subscription),
+}
+
+struct Requests {
     http: ServerConnection,
     last_activity: Instant,
     linger_since: Option<Instant>,
 }
 
+struct Subscription {
+    body: ChunkedResponse,
+    channels: ChannelSet,
+}
+
 impl Connection {
-    /// Reads what the peer is still sending only to drop it: nothing on this
-    /// connection will be parsed again, and the reading is what keeps the
-    /// answer already written from dying with the socket.
-    fn drain_discarded(&mut self, now: Instant) -> io::Result<bool> {
-        loop {
-            match self.stream.read(self.http.discard_space()) {
-                Ok(0) => return Ok(true),
-                Ok(_) => self.last_activity = now,
-                Err(e) if would_block(&e) => return Ok(false),
-                Err(e) if interrupted(&e) => continue,
-                // However the peer ended it, the connection is over.
-                Err(_) => return Ok(true),
+    fn new(stream: Stream, now: Instant) -> Self {
+        Self { stream, machine: Machine::Requests(Requests::new(now)) }
+    }
+
+    /// Buffered requests behind the subscription are abandoned; subsequent
+    /// inbound bytes are discarded.
+    fn subscribed(self, channels: ChannelSet, now: Instant) -> Self {
+        let Machine::Requests(requests) = self.machine else {
+            unreachable!("only a request handler begins a stream")
+        };
+        let body = requests.http.into_stream(now);
+        Self {
+            stream: self.stream,
+            machine: Machine::Subscription(Subscription { body, channels }),
+        }
+    }
+
+    fn expired(
+        &self,
+        now: Instant,
+        idle_timeout: Duration,
+        linger: &Linger,
+        streams: &StreamLimits,
+    ) -> bool {
+        match &self.machine {
+            Machine::Requests(requests) => requests.expired(now, idle_timeout, linger),
+            Machine::Subscription(subscription) => {
+                subscription.body.stalled(now, streams.send_deadline)
             }
         }
+    }
+
+    fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
+        &mut self,
+        registry: &Registry,
+        event: &Event,
+        now: Instant,
+        request_handler: &F,
+    ) -> io::Result<bool> {
+        match &mut self.machine {
+            Machine::Requests(requests) => {
+                requests.handle_event(&mut self.stream, registry, event, now, request_handler)
+            }
+            Machine::Subscription(subscription) => {
+                subscription.handle_event(&mut self.stream, registry, event, now)
+            }
+        }
+    }
+}
+
+impl Requests {
+    fn new(now: Instant) -> Self {
+        Self { http: ServerConnection::new(), last_activity: now, linger_since: None }
     }
 
     /// A lingering connection has answered already, so it lives by the linger
@@ -68,15 +138,29 @@ impl Connection {
         }
     }
 
+    /// Draining unread input before closing avoids a TCP reset that could
+    /// prevent the peer from receiving the response.
+    fn drain(&mut self, stream: &mut Stream, now: Instant) -> bool {
+        match drop_inbound(stream, self.http.discard_space()) {
+            None => true,
+            Some(0) => false,
+            Some(_) => {
+                self.last_activity = now;
+                false
+            }
+        }
+    }
+
     fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
         &mut self,
+        stream: &mut Stream,
         registry: &Registry,
         event: &Event,
         now: Instant,
         request_handler: &F,
     ) -> io::Result<bool> {
         if self.linger_since.is_some() {
-            return self.drain_discarded(now);
+            return Ok(self.drain(stream, now));
         }
 
         if event.is_readable() {
@@ -93,7 +177,7 @@ impl Connection {
                         break;
                     }
                 };
-                match self.stream.read(space) {
+                match stream.read(space) {
                     Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
                     Ok(n) => {
                         self.last_activity = now;
@@ -111,7 +195,7 @@ impl Connection {
                 answered = true;
             }
             if answered {
-                registry.reregister(&mut self.stream, event.token(), Interest::WRITABLE)?;
+                registry.reregister(stream, event.token(), Interest::WRITABLE)?;
             }
             return Ok(false);
         }
@@ -119,7 +203,7 @@ impl Connection {
         if event.is_writable() {
             if !self.http.pending_write().is_empty() {
                 loop {
-                    match self.stream.write(self.http.pending_write()) {
+                    match stream.write(self.http.pending_write()) {
                         Ok(0) => {
                             return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
                         }
@@ -142,16 +226,16 @@ impl Connection {
                         // socket stays readable, so a body still on its way is
                         // drained instead of resetting the connection that
                         // carried the answer.
-                        self.stream.shutdown_write()?;
+                        stream.shutdown_write()?;
                         self.linger_since = Some(now);
-                        registry.reregister(&mut self.stream, event.token(), Interest::READABLE)?;
-                        return self.drain_discarded(now);
+                        registry.reregister(stream, event.token(), Interest::READABLE)?;
+                        return Ok(self.drain(stream, now));
                     }
                     AfterResponse::ResponsePending => {
-                        registry.reregister(&mut self.stream, event.token(), Interest::WRITABLE)?
+                        registry.reregister(stream, event.token(), Interest::WRITABLE)?
                     }
                     AfterResponse::AwaitRequest => {
-                        registry.reregister(&mut self.stream, event.token(), Interest::READABLE)?
+                        registry.reregister(stream, event.token(), Interest::READABLE)?
                     }
                 }
             }
@@ -159,6 +243,52 @@ impl Connection {
         }
 
         Ok(false)
+    }
+}
+
+impl Subscription {
+    fn handle_event(
+        &mut self,
+        stream: &mut Stream,
+        registry: &Registry,
+        event: &Event,
+        now: Instant,
+    ) -> io::Result<bool> {
+        if event.is_readable() && drop_inbound(stream, self.body.discard_space()).is_none() {
+            return Ok(true);
+        }
+
+        if event.is_writable() {
+            while !self.body.pending_write().is_empty() {
+                match stream.write(self.body.pending_write()) {
+                    Ok(0) => {
+                        return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
+                    }
+                    Ok(n) => self.body.commit_write(n, now),
+                    Err(e) if would_block(&e) => return Ok(false),
+                    Err(e) if interrupted(&e) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            registry.reregister(stream, event.token(), Interest::READABLE)?;
+        }
+
+        Ok(false)
+    }
+}
+
+/// Returns the bytes discarded before `WouldBlock`, or `None` on EOF or
+/// an unrecoverable read error.
+fn drop_inbound(stream: &mut Stream, scratch: &mut [u8]) -> Option<usize> {
+    let mut dropped = 0;
+    loop {
+        match stream.read(scratch) {
+            Ok(0) => return None,
+            Ok(n) => dropped += n,
+            Err(e) if would_block(&e) => return Some(dropped),
+            Err(e) if interrupted(&e) => continue,
+            Err(_) => return None,
+        }
     }
 }
 
@@ -192,6 +322,8 @@ pub struct BeaconApi {
     max_connections: usize,
     idle: IdleSweep,
     linger: Linger,
+    streams: StreamLimits,
+    last_keep_alive: Instant,
     next_connection_offset: usize,
     connections: HashMap<Token, Connection>,
     router: Router,
@@ -240,6 +372,8 @@ impl BeaconApi {
             max_connections,
             idle: IdleSweep::new(idle_timeout),
             linger: Linger::default(),
+            streams: StreamLimits::default(),
+            last_keep_alive: Instant::now(),
             next_connection_offset: listeners.len(),
             listeners,
             connections: HashMap::new(),
@@ -255,6 +389,59 @@ impl BeaconApi {
     /// In-place update seam for the status's single writer.
     pub fn node_status_mut(&mut self) -> &mut NodeStatus {
         &mut self.ctx.node_status
+    }
+
+    /// Import notifications can precede payload validation, so events are
+    /// marked optimistic without consulting the current verdict. Repeated
+    /// notifications are not deduplicated.
+    pub fn publish_block(&mut self, slot: u64, block_root: &[u8; 32]) {
+        let mut data = Vec::new();
+        Json::new(&mut data).block_event(slot, block_root, true);
+        self.publish(Channel::Block, "block", &data);
+    }
+
+    fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
+        let mut frame = Vec::new();
+        events::frame(&mut frame, event, data);
+        self.fan_out(
+            |subscription| subscription.channels.contains(channel),
+            &frame,
+            Instant::now(),
+        );
+    }
+
+    /// Returns whether any output was queued, so the pump can report work.
+    fn fan_out(
+        &mut self,
+        wants: impl Fn(&Subscription) -> bool,
+        chunk: &[u8],
+        now: Instant,
+    ) -> bool {
+        let Self { connections, registry, .. } = self;
+        let mut pushed = false;
+        connections.retain(|token, conn| {
+            let Machine::Subscription(subscription) = &mut conn.machine else { return true };
+            if !wants(subscription) {
+                return true;
+            }
+            if !subscription.body.push(chunk, now) {
+                tracing::warn!(
+                    "beacon api subscriber would exceed send cap with {} bytes already pending, closing",
+                    subscription.body.pending_write().len()
+                );
+                let _ = registry.deregister(&mut conn.stream);
+                return false;
+            }
+            pushed = true;
+            let interest = Interest::READABLE | Interest::WRITABLE;
+            if let Err(e) = registry.reregister(&mut conn.stream, *token, interest) {
+                tracing::warn!("beacon api subscriber lost: {e}");
+                let _ = registry.deregister(&mut conn.stream);
+                return false;
+            }
+            true
+        });
+        pushed
     }
 
     pub fn pump(&mut self, events: &Events) -> bool {
@@ -274,6 +461,10 @@ impl BeaconApi {
 
         if self.idle.due(now) {
             did_work |= self.close_expired(now);
+        }
+        if now.duration_since(self.last_keep_alive) >= self.streams.keep_alive_every {
+            self.last_keep_alive = now;
+            did_work |= self.fan_out(|_| true, events::KEEP_ALIVE, now);
         }
 
         did_work
@@ -304,12 +495,7 @@ impl BeaconApi {
             }
             let token = self.take_connection_token();
             self.registry.register(&mut stream, token, Interest::READABLE).unwrap();
-            self.connections.insert(token, Connection {
-                stream,
-                http: ServerConnection::new(),
-                last_activity: now,
-                linger_since: None,
-            });
+            self.connections.insert(token, Connection::new(stream, now));
         }
         did_work
     }
@@ -317,14 +503,23 @@ impl BeaconApi {
     fn serve(&mut self, event: &Event, now: Instant) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
-        match conn.handle_event(&self.registry, event, now, &|req, out| {
-            self.router.dispatch(req, &self.ctx, out)
-        }) {
+        let subscribed = Cell::new(None);
+        let outcome = conn.handle_event(&self.registry, event, now, &|req, out| {
+            if let Served::Stream(channels) = self.router.dispatch(req, &self.ctx, out) {
+                subscribed.set(Some(channels));
+            }
+        });
+        match outcome {
+            Ok(false) => {
+                if let Some(channels) = subscribed.get() {
+                    let conn = self.connections.remove(&token).expect("looked up above");
+                    self.connections.insert(token, conn.subscribed(channels, now));
+                }
+            }
             Ok(true) => {
                 let _ = self.registry.deregister(&mut conn.stream);
                 self.connections.remove(&token);
             }
-            Ok(false) => {}
             Err(e) => {
                 tracing::warn!("connection error: {e}");
                 let _ = self.registry.deregister(&mut conn.stream);
@@ -355,20 +550,25 @@ impl BeaconApi {
     }
 
     fn close_expired(&mut self, now: Instant) -> bool {
-        let Self { connections, registry, idle, linger, .. } = self;
+        let Self { connections, registry, idle, linger, streams, .. } = self;
         let before = connections.len();
         connections.retain(|_, conn| {
-            if !conn.expired(now, idle.timeout, linger) {
+            if !conn.expired(now, idle.timeout, linger, streams) {
                 return true;
             }
-            match conn.linger_since {
-                Some(since) => tracing::warn!(
-                    "beacon api connection still sending {:?} after its answer, closing",
-                    now.duration_since(since)
+            match &conn.machine {
+                Machine::Subscription(subscription) => tracing::warn!(
+                    "beacon api subscriber made no write progress for over {:?} with {} bytes pending, closing",
+                    streams.send_deadline,
+                    subscription.body.pending_write().len()
                 ),
-                None => tracing::warn!(
+                Machine::Requests(Requests { linger_since: Some(since), .. }) => tracing::warn!(
+                    "beacon api connection still sending {:?} after its answer, closing",
+                    now.duration_since(*since)
+                ),
+                Machine::Requests(requests) => tracing::warn!(
                     "beacon api connection idle for {:?}, closing",
-                    now.duration_since(conn.last_activity)
+                    now.duration_since(requests.last_activity)
                 ),
             }
             let _ = registry.deregister(&mut conn.stream);
@@ -1115,5 +1315,213 @@ mod tests {
             "fresh client served once the sweep freed the slot",
         );
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    }
+
+    const SSE_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+
+    fn subscribe(stream: &mut impl Write, topics: &str) {
+        write!(
+            stream,
+            "GET /eth/v1/events?topics={topics} HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n"
+        )
+        .unwrap();
+    }
+
+    fn subscribers(server: &Server) -> usize {
+        server
+            .api
+            .connections
+            .values()
+            .filter(|conn| matches!(conn.machine, Machine::Subscription(_)))
+            .count()
+    }
+
+    fn bytes_waiting_for_subscribers(server: &Server) -> usize {
+        server
+            .api
+            .connections
+            .values()
+            .map(|conn| match &conn.machine {
+                Machine::Subscription(subscription) => subscription.body.pending_write().len(),
+                Machine::Requests(_) => 0,
+            })
+            .sum()
+    }
+
+    fn chunk(payload: &[u8]) -> Vec<u8> {
+        let mut out = format!("{:x}\r\n", payload.len()).into_bytes();
+        out.extend_from_slice(payload);
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    fn block_frame(slot: u64, block_root: &[u8; 32]) -> Vec<u8> {
+        let data = format!(
+            "event: block\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"execution_optimistic\":true}}\n\n",
+            hex::encode(block_root)
+        );
+        chunk(data.as_bytes())
+    }
+
+    fn read_exactly(mut stream: impl Read + Send + 'static, n: usize) -> JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut got = vec![0; n];
+            stream.read_exact(&mut got).unwrap();
+            got
+        })
+    }
+
+    fn assert_same_bytes(got: &[u8], expected: &[u8]) {
+        assert!(
+            got == expected,
+            "\n     got: {:?}\nexpected: {:?}",
+            String::from_utf8_lossy(got),
+            String::from_utf8_lossy(expected)
+        );
+    }
+
+    #[test]
+    fn a_subscriber_gets_the_head_then_every_block_published_on_its_channel() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.publish_block(10, &[0xab; 32]);
+        server.api.publish_block(11, &[0xcd; 32]);
+
+        let expected =
+            [SSE_HEAD, &block_frame(10, &[0xab; 32]), &block_frame(11, &[0xcd; 32])].concat();
+        let got = serve(&mut server, read_exactly(client, expected.len()), "two block frames");
+        assert_same_bytes(&got, &expected);
+        assert_eq!(subscribers(&server), 1, "delivery keeps the subscription");
+    }
+
+    #[test]
+    fn a_topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
+        let client = std::thread::spawn(move || {
+            let mut stream = connect(addr);
+            write!(
+                stream,
+                "GET /eth/v1/events?topics=head HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            read_to_eof(stream)
+        });
+
+        let got = serve(&mut server, client, "400 for an unserved topic");
+        assert_same_bytes(
+            &got,
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 39\r\n\r\n{\"code\":400,\"message\":\"invalid topics\"}",
+        );
+        assert_eq!(subscribers(&server), 0);
+    }
+
+    #[test]
+    fn keep_alive_comments_reach_a_subscriber_nothing_is_published_to() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.streams.keep_alive_every = Duration::from_millis(20);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "block");
+
+        let expected = [SSE_HEAD, &chunk(events::KEEP_ALIVE), &chunk(events::KEEP_ALIVE)].concat();
+        let got =
+            serve(&mut server, read_exactly(client, expected.len()), "two keep-alive comments");
+        assert_same_bytes(&got, &expected);
+    }
+
+    #[test]
+    fn a_subscriber_that_stops_reading_is_closed_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        let mut client = connect_uds(&socket);
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut published = 0;
+        while subscribers(&server) == 1 {
+            assert!(Instant::now() < deadline, "timeout: subscriber closed at the cap");
+            server.api.publish_block(published, &[0x11; 32]);
+            published += 1;
+            server.pump();
+        }
+        assert!(server.api.connections.is_empty(), "closed, not demoted");
+        assert!(published > 64, "the cap is bytes, not frames: {published} frames");
+        drop(client);
+    }
+
+    #[test]
+    fn a_subscriber_that_takes_nothing_for_the_send_deadline_is_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        server.api.streams.send_deadline = Duration::from_millis(100);
+        let mut client = connect_uds(&socket);
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed and head sent", |server| {
+            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while bytes_waiting_for_subscribers(&server) == 0 {
+            assert!(Instant::now() < deadline, "timeout: the kernel buffer never filled");
+            server.api.publish_block(1, &[0x22; 32]);
+            server.pump();
+        }
+        assert_eq!(subscribers(&server), 1, "bytes waiting is not yet a stall");
+
+        pump_until(&mut server, "stalled subscriber closed", |server| {
+            server.api.connections.is_empty()
+        });
+        drop(client);
+    }
+
+    #[test]
+    fn a_quiet_subscriber_outlives_the_idle_timeout() {
+        let idle_timeout = Duration::from_millis(100);
+        let mut server = server_with(64, idle_timeout);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let until = Instant::now() + idle_timeout * 4;
+        pump_until(&mut server, "clock", |_| Instant::now() >= until);
+        assert_eq!(subscribers(&server), 1);
+    }
+
+    #[test]
+    fn a_subscriber_that_hangs_up_is_forgotten() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        drop(client);
+        pump_until(&mut server, "hung-up subscriber removed", |server| {
+            server.api.connections.is_empty()
+        });
+    }
+
+    #[test]
+    fn a_request_pipelined_behind_the_subscribe_is_never_answered() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        write!(
+            client,
+            "GET /eth/v1/events?topics=block HTTP/1.1\r\nHost: x\r\n\r\nGET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n"
+        )
+        .unwrap();
+        pump_until(&mut server, "subscribed and head sent", |server| {
+            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
+        });
+
+        server.api.publish_block(3, &[0x33; 32]);
+        let expected = [SSE_HEAD, &block_frame(3, &[0x33; 32])].concat();
+        let got = serve(&mut server, read_exactly(client, expected.len()), "only the stream");
+        assert_same_bytes(&got, &expected);
     }
 }
