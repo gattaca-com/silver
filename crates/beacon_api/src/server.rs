@@ -46,7 +46,7 @@ struct StreamLimits {
 
 impl Default for StreamLimits {
     fn default() -> Self {
-        Self { send_deadline: Duration::from_secs(12), keep_alive_every: Duration::from_secs(15) }
+        Self { send_deadline: Duration::from_secs(30), keep_alive_every: Duration::from_secs(15) }
     }
 }
 
