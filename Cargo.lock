@@ -4696,6 +4696,9 @@ dependencies = [
 name = "silver_control"
 version = "0.0.1"
 dependencies = [
+ "buffa",
+ "buffa-build",
+ "bytes",
  "flux",
  "fxhash",
  "raft",
