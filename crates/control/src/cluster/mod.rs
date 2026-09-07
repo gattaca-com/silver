@@ -6,7 +6,6 @@ mod command;
 mod generated;
 mod lock_store;
 mod node;
-#[allow(dead_code)]
 mod wire;
 
 pub use admission::AdmissionError;
