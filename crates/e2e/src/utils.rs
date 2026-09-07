@@ -178,13 +178,22 @@ impl PmBsHarness {
             String::new(),
         )
         .unwrap();
+        let cluster_in = TCache::producer("test_cluster_in", 1 << 12);
+        let cluster_in_consumer = cluster_in
+            .cache_ref()
+            .strict_random_access("test_control_cluster_in", true)
+            .expect("cluster inbound random access");
         let mut ctl = Controller::new(
             pm,
             gossip_handler,
             TCache::multi_producer("rpc_out_dummy", 32),
             rpc_p.cache_ref().random_access("ctl_test", true).expect("ctl rpc ra"),
+            TCache::producer("test_cluster_out", 1 << 12),
+            cluster_in_consumer,
+            None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),
-        );
+        )
+        .expect("controller");
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
         let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);

@@ -2,15 +2,22 @@ use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{
-    BeaconStateEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound,
-    RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TRandomAccess,
+    BeaconApiRequest, BeaconStateEvent, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos, P2pSend,
+    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
+    RpcResponse, RpcResponseInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate,
+    TMultiProducer, TProducer, TRandomAccess,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
 use silver_peer::PeerManager;
 
-use crate::sync_engine::{SyncAction, SyncEngine};
+use self::attestation_cluster::AttestationClusterHandler;
+use crate::{
+    cluster::{AttestationClusterConfig, ClusterError},
+    sync_engine::{SyncAction, SyncEngine},
+};
+
+mod attestation_cluster;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -25,6 +32,7 @@ pub struct Controller {
     /// Reads `incoming_rpc` sidecar payloads referenced by
     /// `PeerEvent::PublishDataColumn`.
     rpc_ssz_consumer: TRandomAccess,
+    attestation_cluster: AttestationClusterHandler,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
@@ -47,26 +55,39 @@ impl Controller {
     /// Build a Controller. `status` and `metadata` start empty — callers
     /// update them via `set_status` / `set_metadata` once chain state is
     /// available.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         peer_manager: PeerManager,
         gossip_handler: GossipHandler,
         rpc_producer: TMultiProducer,
         rpc_ssz_consumer: TRandomAccess,
+        cluster_outbound_producer: TProducer,
+        cluster_inbound_consumer: TRandomAccess,
+        cluster_config: Option<AttestationClusterConfig>,
         sync_engine: SyncEngine,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ClusterError> {
+        let now = Instant::now();
+        let attestation_cluster = AttestationClusterHandler::new(
+            cluster_outbound_producer,
+            cluster_inbound_consumer,
+            cluster_config,
+            now,
+        )?;
+
+        Ok(Self {
             peer_manager,
             gossip_handler,
             sync_engine,
             rpc_producer,
             rpc_ssz_consumer,
-            last_tick: Instant::now(),
-            last_ping: Instant::now(),
-            last_status: Instant::now(),
-            last_peer_persist: Instant::now(),
+            attestation_cluster,
+            last_tick: now,
+            last_ping: now,
+            last_status: now,
+            last_peer_persist: now,
             auto_ping: true,
             pending_subnet_topics: Vec::new(),
-        }
+        })
     }
 
     pub fn set_pending_subnet_topics(&mut self, topics: Vec<GossipTopic>) {
@@ -133,6 +154,7 @@ impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let now = Instant::now();
         self.rpc_ssz_consumer.free();
+        self.attestation_cluster.free();
 
         // Local status must land before the sync drive below: issuance is
         // capped against the imported head, and a one-loop-stale watermark
@@ -143,6 +165,7 @@ impl Tile<SilverSpine> for Controller {
 
             match beacon_event {
                 BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot, .. } => {
+                    self.attestation_cluster.on_status(StatusView::head_slot(&ssz), wall_slot);
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
                 // PM keeps the reject for peer eviction (Status backing a
@@ -153,6 +176,17 @@ impl Tile<SilverSpine> for Controller {
                 _ => {}
             }
         });
+
+        adapter.consume(|request: BeaconApiRequest, producers| {
+            self.attestation_cluster.on_beacon_api_request(
+                request,
+                now,
+                &mut self.gossip_handler,
+                producers,
+            );
+        });
+
+        self.attestation_cluster.spin(now, adapter, &mut self.gossip_handler);
 
         adapter.consume(|need: SyncNeed, _producers| self.sync_engine.on_sync_need(need, now));
 
@@ -202,6 +236,18 @@ impl Tile<SilverSpine> for Controller {
                 return;
             }
 
+            // Beacon State uses the synthetic local stream for a terminal
+            // local validation failure. Complete the API request without
+            // counting that failure against a (non-existent) network peer.
+            if matches!(
+                event,
+                PeerEvent::P2pGossipInvalidMsg { p2p_peer, .. }
+                    if p2p_peer == LOCAL_GOSSIP_STREAM_ID.peer()
+            ) {
+                self.attestation_cluster.on_peer_event(&event, producers);
+                return;
+            }
+
             self.sync_engine.on_peer_event(event, self.peer_manager.our_fork_digest());
 
             if let PeerEvent::SendGossip {
@@ -223,7 +269,15 @@ impl Tile<SilverSpine> for Controller {
                     producers,
                 )
             });
+
+            // A local Beacon API request completes only after Beacon State's
+            // validation result has gone through the normal gossip path.
+            self.attestation_cluster.on_peer_event(&event, producers);
         });
+
+        // Consume every validation outcome already queued before expiring
+        // requests, so an event arriving at the deadline wins the race.
+        self.attestation_cluster.expire_pending_validation(now, &mut adapter.producers);
 
         adapter.consume(|rpc: RpcInbound, producers| {
             self.sync_engine.rpc_event(&rpc, self.peer_manager.our_fork_digest());

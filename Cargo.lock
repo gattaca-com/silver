@@ -4706,6 +4706,7 @@ dependencies = [
  "silver_common",
  "silver_gossip",
  "silver_peer",
+ "tempfile",
  "tracing",
 ]
 
