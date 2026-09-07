@@ -1,4 +1,9 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    time::Instant,
+};
+
+use crate::chunked_response::ChunkedResponse;
 
 // Hard cap on the read buffer. Raw SSZ, uncompressed. 16 MiB matches observed
 // production maximums (21 blobs × 128 KiB plus block fields).
@@ -218,6 +223,13 @@ impl ServerConnection {
             self.read_end = 0;
         }
         true
+    }
+
+    /// Moves both buffers without copying. Buffered pipelined requests are
+    /// abandoned; the read buffer becomes discard scratch.
+    pub fn into_stream(self, now: Instant) -> ChunkedResponse {
+        debug_assert!(self.write_pos == 0, "the head has not started leaving yet");
+        ChunkedResponse::new(self.write_buf, self.read_buf, now)
     }
 
     pub fn pending_write(&self) -> &[u8] {

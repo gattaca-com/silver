@@ -1,3 +1,4 @@
+mod chunked_response;
 mod client;
 mod query;
 mod readiness;
@@ -5,6 +6,7 @@ mod server;
 mod stream;
 mod token_range;
 
+pub use chunked_response::{ChunkedResponse, frame_chunked_head};
 pub use client::{ClientConnection, frame_request};
 pub use query::Query;
 pub use readiness::Readiness;
