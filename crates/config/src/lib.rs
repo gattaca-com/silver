@@ -6,6 +6,7 @@ use std::{
 };
 
 pub use chain_config::ChainConfig;
+pub use cluster_config::ClusterConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
@@ -19,6 +20,7 @@ use silver_common::{
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
 mod chain_config;
+mod cluster_config;
 mod discovery_config;
 mod engine_config;
 mod peer_score_params;
@@ -185,6 +187,8 @@ pub struct Config {
     disable_weak_subjectivity_check: bool,
     #[serde(default)]
     trusted_peers: Vec<Enr>,
+    #[serde(default)]
+    cluster_config: Option<ClusterConfig>,
 }
 
 impl Config {
@@ -223,6 +227,7 @@ impl Config {
             beacon_api_idle_timeout_secs: 75,
             disable_weak_subjectivity_check: false,
             trusted_peers: Default::default(),
+            cluster_config: Default::default(),
         }
     }
 
@@ -528,6 +533,10 @@ impl Config {
 
     pub fn trusted_peers(&self) -> &[Enr] {
         &self.trusted_peers
+    }
+
+    pub fn cluster_config(&self) -> Option<&ClusterConfig> {
+        self.cluster_config.as_ref()
     }
 }
 

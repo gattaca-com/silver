@@ -3,13 +3,13 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage,
-    ColumnSource, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq,
-    EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
-    EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
-    EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgIn, GossipMsgOut, IpBytes,
-    LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
-    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend, PREFILL_SLOTS,
+    ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnSource, DataColumnsEvent, ELSyncStatus,
+    EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
+    EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
+    EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
+    GossipMsgIn, GossipMsgOut, IpBytes, LocalAttestationFailure, LocalAttestationResult,
+    MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, PREFILL_SLOTS, P2pConnectionStats, P2pSend,
     PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus,
     PeerTopicScores, Prefill, ReplayBlock, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
     RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
@@ -46,6 +46,12 @@ pub struct SilverSpine {
     /// RPC recv messages.
     #[queue(size(2usize.pow(14)))]
     pub rpc_inbound: SpineQueue<RpcInbound>,
+    /// Raft messages received from other cluster nodes.
+    #[queue(size(2usize.pow(14)))]
+    pub cluster_inbound: SpineQueue<ClusterIn>,
+    /// Raft messages to send to other cluster nodes.
+    #[queue(size(2usize.pow(14)))]
+    pub cluster_outbound: SpineQueue<ClusterMsgOut>,
     /// Requests submitted by the Beacon API.
     #[queue(size(2usize.pow(14)))]
     pub beacon_api_requests: SpineQueue<BeaconApiRequest>,
