@@ -24,7 +24,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
-    fn write_gossip_to_stream(
+    fn write_leased_to_stream(
         &mut self,
         id: StreamId,
         data: Leased<AcquiredWithOffset>,

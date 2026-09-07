@@ -1048,4 +1048,52 @@ mod tests {
             "expected only peer 3 to receive the broadcast, got {recipients:?}"
         );
     }
+
+    #[test]
+    fn locally_originated_gossip_excludes_no_mesh_peer() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.d_low = 0;
+        params.d = 0;
+        params.d_high = 8;
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+
+        for i in 1..=3u8 {
+            connect(&mut mgr, &mut cap, i as usize, i, now);
+            mgr.handle_event(
+                PeerEvent::P2pGossipTopicSubscribe {
+                    p2p_peer: i as usize,
+                    topic: GossipTopic::BeaconBlock,
+                },
+                now,
+                &mut |event| cap.0.push(event),
+            );
+            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i as usize);
+        }
+        cap.0.clear();
+
+        mgr.handle_event(
+            PeerEvent::SendGossip {
+                originator_stream_id: silver_common::LOCAL_GOSSIP_STREAM_ID,
+                topic: GossipTopic::BeaconBlock,
+                msg_hash: silver_common::MessageId { id: [0xCD; 20] },
+                recv_ts: silver_common::Nanos::now(),
+                protobuf: mk_tcache_read(),
+            },
+            now,
+            &mut |event| cap.0.push(event),
+        );
+
+        let recipients: Vec<usize> = cap
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
+                    Some(*peer_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(recipients, vec![1, 2, 3]);
+    }
 }

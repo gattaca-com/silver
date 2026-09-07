@@ -2,18 +2,20 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    AgentString, BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent,
-    ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
-    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
-    EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
-    EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
-    GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ,
-    NewGossipMsg, P2pConnectionStats, P2pSend, PayloadValidationStatus, PeerControl, PeerEvent,
-    PeerScores, PeerStats, PeerStatus, PeerTopicScores, ReplayBlock, RpcInbound, RpcOutbound,
-    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    RpcResponseOutbound, RpcSeverity, SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
+    AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage,
+    ColumnSource, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq,
+    EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
+    EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
+    EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
+    EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgIn, GossipMsgOut, IpBytes,
+    LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
+    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend, PayloadValidationStatus,
+    PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus, PeerTopicScores, ReplayBlock,
+    RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncNeed, SyncUpdate, SyncingStrategy,
+    WithdrawalInline,
 };
-pub use stream_id::P2pStreamId;
+pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
 pub use stream_protocol::{
     ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, RPC_PROTOCOLS, StreamProtocol,
 };
@@ -44,6 +46,12 @@ pub struct SilverSpine {
     /// RPC recv messages.
     #[queue(size(2usize.pow(14)))]
     pub rpc_inbound: SpineQueue<RpcInbound>,
+    /// Requests submitted by the Beacon API.
+    #[queue(size(2usize.pow(14)))]
+    pub beacon_api_requests: SpineQueue<BeaconApiRequest>,
+    /// Responses returned to the Beacon API.
+    #[queue(size(2usize.pow(14)))]
+    pub beacon_api_responses: SpineQueue<BeaconApiResponse>,
     #[queue(size(2usize.pow(16)))]
     pub peer_events: SpineQueue<PeerEvent>,
     #[queue(size(2usize.pow(16)))]

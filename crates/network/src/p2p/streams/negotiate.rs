@@ -300,7 +300,7 @@ mod tests {
             "127.0.0.1:12345".parse().unwrap()
         }
 
-        fn write_gossip_to_stream(
+        fn write_leased_to_stream(
             &mut self,
             _id: StreamId,
             _data: crate::p2p::quic::Leased<silver_common::AcquiredWithOffset>,
