@@ -11,7 +11,7 @@ use silver_beacon_state_data::{
     Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic,
+    BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadRoots,
     NewGossipMsg, Origin, PayloadValidationStatus, ReplayBlock, RequestId, RpcInbound, RpcResponse,
     RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
     ssz_view::STATUS_V2_SIZE,
@@ -111,6 +111,21 @@ impl Debug for Feedback {
     }
 }
 
+/// Resolved once so each Status uses one fork's head metadata.
+#[derive(Clone, Copy)]
+struct SelectedHead {
+    root: B256,
+    /// `None` only before the anchor is seeded, where no node is resident.
+    idx: Option<usize>,
+    optimistic: bool,
+}
+
+impl SelectedHead {
+    fn reported(&self) -> (B256, bool) {
+        (self.root, self.optimistic)
+    }
+}
+
 pub struct BeaconStateTile {
     sync_target: SyncUpdate,
     ticker: SlotTicker,
@@ -148,6 +163,9 @@ pub struct BeaconStateTile {
     precomputed_epochs: PrecomputedEpochs,
 
     last_seen_head_root: B256,
+    /// Kept separate from the reorg marker: an early Status must not hide a
+    /// reorg that the end-of-loop check has yet to report.
+    emitted_head: (B256, bool),
 
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
@@ -225,6 +243,7 @@ impl BeaconStateTile {
             last_applied_block_root: [0u8; 32],
             precomputed_epochs: PrecomputedEpochs::default(),
             last_seen_head_root: [0u8; 32],
+            emitted_head: ([0u8; 32], true),
             initial_status_emitted: false,
             cached_fork_digest: None,
             stf_scratch: stf::StfScratch::new(val_cap),
@@ -341,6 +360,7 @@ impl BeaconStateTile {
             trusted,
             header.slot,
             block_root,
+            header.state_root,
             execution_block_hash,
             anchor_is_gloas,
             anchor,
@@ -452,19 +472,61 @@ impl BeaconStateTile {
         self.slot_state_at(self.last_applied).latest_block_header.slot
     }
 
-    fn status_event(&mut self) -> BeaconStateEvent {
-        let head_root = self.fork_choice.find_head();
-        let head_idx = self.fork_choice.find_node_idx(&head_root);
-        let head_optimistic = head_idx.is_none_or(|idx| {
+    fn selected_head(&self) -> SelectedHead {
+        let root = self.fork_choice.find_head();
+        let idx = self.fork_choice.find_node_idx(&root);
+        let optimistic = idx.is_none_or(|idx| {
             self.fork_choice.node(idx).execution_status != ExecutionStatus::Valid
         });
+        SelectedHead { root, idx, optimistic }
+    }
 
+    /// A missing node or overwritten checkpoint history makes the whole
+    /// root bundle unavailable; partial metadata cannot describe the head.
+    fn head_roots(&self, head: SelectedHead) -> HeadRoots {
+        let Some(idx) = head.idx else { return HeadRoots::default() };
+        let node = self.fork_choice.node(idx);
+        let epoch = node.slot / SLOTS_PER_EPOCH;
+        let view = self.state.read_view(node.state_id);
+        let state_slot = view.slot.state().slot;
+        let dependent =
+            |epoch| view.block_roots.duty_dependent_root(epoch, node.slot, head.root, state_slot);
+        match (dependent(epoch.saturating_sub(1)), dependent(epoch)) {
+            (Some(previous), Some(current)) => HeadRoots {
+                state_root: node.state_root,
+                previous_duty_dependent_root: previous,
+                current_duty_dependent_root: current,
+            },
+            _ => HeadRoots::default(),
+        }
+    }
+
+    fn status_event(&mut self, head: SelectedHead) -> BeaconStateEvent {
         BeaconStateEvent::Status {
-            ssz: self.status_payload(head_root, head_idx),
+            ssz: self.status_payload(head.root, head.idx),
             latest_block_slot: self.last_applied_block_slot(),
             wall_slot: self.ticker.current_slot(),
-            head_optimistic,
+            head_optimistic: head.optimistic,
             enr_fork_id: self.enr_fork_id(),
+            head_roots: self.head_roots(head),
+        }
+    }
+
+    pub(super) fn publish_status(&mut self, producers: &mut Producers) {
+        self.publish_selected_head(self.selected_head(), producers);
+    }
+
+    fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
+        self.emitted_head = head.reported();
+        let event = self.status_event(head);
+        producers.produce(event);
+    }
+
+    /// Covers changes since the last Status, including execution verdicts.
+    fn publish_status_on_head_change(&mut self, producers: &mut Producers) {
+        let head = self.selected_head();
+        if head.reported() != self.emitted_head {
+            self.publish_selected_head(head, producers);
         }
     }
 
@@ -614,7 +676,7 @@ impl BeaconStateTile {
                 let prev_head = self.fork_choice.find_head();
                 let advanced = self.slot_tick(slot);
                 if advanced || self.fork_choice.find_head() != prev_head {
-                    adapter.produce(self.status_event());
+                    self.publish_status(&mut adapter.producers);
                 }
             }
             TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
@@ -733,7 +795,7 @@ impl BeaconStateTile {
             }
             ReplayBlock::Done => {
                 producers.produce(BeaconStateEvent::ReplayComplete);
-                producers.produce(self.status_event());
+                self.publish_status(producers);
             }
         }
     }
@@ -897,7 +959,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         if !self.initial_status_emitted {
             tracing::info!("producing initial status");
-            adapter.produce(self.status_event());
+            self.publish_status(&mut adapter.producers);
             self.initial_status_emitted = true;
         }
 
@@ -909,6 +971,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
 
         if self.fork_choice.take_head_moved() {
             self.try_detect_reorg(&mut adapter.producers);
+            self.publish_status_on_head_change(&mut adapter.producers);
         }
     }
 }

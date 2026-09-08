@@ -15,7 +15,7 @@ use silver_httpcore::{
 
 use crate::{
     NodeStatus,
-    events::{self, Channel, ChannelSet},
+    events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
     router::{Router, Served},
     routes::{ApiCtx, ROUTES},
@@ -397,6 +397,13 @@ impl BeaconApi {
         self.publish(Channel::Block, "block", &data);
     }
 
+    /// Head-change detection belongs to the caller.
+    pub fn publish_head(&mut self, head: &HeadEvent) {
+        let mut data = Vec::new();
+        Json::new(&mut data).head_event(head);
+        self.publish(Channel::Head, "head", &data);
+    }
+
     fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
         let mut frame = Vec::new();
         events::frame(&mut frame, event, data);
@@ -594,6 +601,7 @@ mod tests {
     };
 
     use silver_beacon_state_data::BeaconStateOwner;
+    use silver_common::HeadRoots;
     use silver_httpcore::Readiness;
 
     use super::*;
@@ -1394,6 +1402,64 @@ mod tests {
         assert_eq!(subscribers(&server), 1, "delivery keeps the subscription");
     }
 
+    fn head_event(slot: u64, block_root: &[u8; 32], execution_optimistic: bool) -> HeadEvent {
+        HeadEvent {
+            slot,
+            block_root: *block_root,
+            roots: HeadRoots {
+                state_root: [0x60; 32],
+                previous_duty_dependent_root: [0x5e; 32],
+                current_duty_dependent_root: [0x91; 32],
+            },
+            epoch_transition: false,
+            execution_optimistic,
+        }
+    }
+
+    fn head_frame(slot: u64, block_root: &[u8; 32], execution_optimistic: bool) -> Vec<u8> {
+        let data = format!(
+            "event: head\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"epoch_transition\":false,\"previous_duty_dependent_root\":\"0x{}\",\"current_duty_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}\n\n",
+            hex::encode(block_root),
+            "60".repeat(32),
+            "5e".repeat(32),
+            "91".repeat(32),
+        );
+        chunk(data.as_bytes())
+    }
+
+    #[test]
+    fn each_subscriber_receives_only_the_channels_it_asked_for() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
+        let (mut blocks, mut heads, mut both) = (connect(addr), connect(addr), connect(addr));
+        subscribe(&mut blocks, "block");
+        subscribe(&mut heads, "head");
+        subscribe(&mut both, "block,head");
+        pump_until(&mut server, "three subscribed", |server| subscribers(server) == 3);
+
+        server.api.publish_block(10, &[0xab; 32]);
+        server.api.publish_head(&head_event(10, &[0xab; 32], true));
+
+        let block_only = [SSE_HEAD, &block_frame(10, &[0xab; 32])].concat();
+        let head_only = [SSE_HEAD, &head_frame(10, &[0xab; 32], true)].concat();
+        let mixed =
+            [SSE_HEAD, &block_frame(10, &[0xab; 32]), &head_frame(10, &[0xab; 32], true)].concat();
+
+        let readers = [
+            read_exactly(blocks, block_only.len()),
+            read_exactly(heads, head_only.len()),
+            read_exactly(both, mixed.len()),
+        ];
+        pump_until(&mut server, "every subscriber served", |_| {
+            readers.iter().all(JoinHandle::is_finished)
+        });
+        let [got_blocks, got_heads, got_both] = readers.map(|r| r.join().unwrap());
+
+        assert_same_bytes(&got_blocks, &block_only);
+        assert_same_bytes(&got_heads, &head_only);
+        assert_same_bytes(&got_both, &mixed);
+    }
+
     #[test]
     fn a_topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
         let mut server = server_with(64, LONG_TIMEOUT);
@@ -1402,7 +1468,7 @@ mod tests {
             let mut stream = connect(addr);
             write!(
                 stream,
-                "GET /eth/v1/events?topics=head HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                "GET /eth/v1/events?topics=head_v2 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
             read_to_eof(stream)
@@ -1411,7 +1477,7 @@ mod tests {
         let got = serve(&mut server, client, "400 for an unserved topic");
         assert_same_bytes(
             &got,
-            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"head\\\"\"}",
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"head_v2\\\"\"}",
         );
         assert_eq!(subscribers(&server), 0);
     }

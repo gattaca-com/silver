@@ -827,17 +827,42 @@ pub enum ColumnSource {
     El,
 }
 
+/// A zero `state_root` marks the whole bundle unavailable. This can occur
+/// before seeding or when checkpoint history has overwritten a dependent
+/// root. Consumers tracking head changes must ignore incomplete bundles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct HeadRoots {
+    pub state_root: [u8; 32],
+    /// Root at the slot before the head block's previous epoch starts,
+    /// saturating to slot zero.
+    pub previous_duty_dependent_root: [u8; 32],
+    /// Root at the slot before the head block's epoch starts, saturating to
+    /// slot zero.
+    pub current_duty_dependent_root: [u8; 32],
+}
+
+impl HeadRoots {
+    pub fn is_complete(&self) -> bool {
+        self.state_root != [0u8; 32]
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
+    /// An observation that may repeat unchanged. Consumers decide which
+    /// fields require action. `latest_block_slot` tracks import progress;
+    /// the selected head's slot in `ssz` can differ.
     Status {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
         wall_slot: u64,
         head_optimistic: bool,
         enr_fork_id: [u8; 16],
+        head_roots: HeadRoots,
     },
     EnvelopeAvailable {
         ssz: TCacheRead,

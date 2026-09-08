@@ -29,8 +29,8 @@ use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, DataKind, EngineReq, GossipTopic, MessageId, Nanos,
-    NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, StreamProtocol, SyncNeed, SyncUpdate,
+    BeaconStateEvent, DataColumnsEvent, DataKind, EngineReq, GossipTopic, HeadRoots, MessageId,
+    Nanos, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, StreamProtocol, SyncNeed, SyncUpdate,
     TCache, TCacheProducer, TProducer,
     profiler::InProcessReader,
     ssz_view::{DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, STATUS_V2_SIZE},
@@ -165,6 +165,7 @@ impl Node {
             wall_slot: slot,
             head_optimistic: false,
             enr_fork_id: [0u8; 16],
+            head_roots: HeadRoots::default(),
         });
         self.turn();
     }
