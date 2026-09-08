@@ -582,6 +582,30 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
 }
 
+#[cfg(feature = "ef_tests")]
+#[test]
+fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "consensus-spec-tests/tests/mainnet/fulu/sanity/slots/pyspec_tests/slots_2/post.ssz_snappy",
+    );
+    let raw = fs::read(&path)
+        .unwrap_or_else(|e| panic!("{}: {e} (run `just ef-tests-download`)", path.display()));
+    let ssz = snap::Decoder::new().decompress_vec(&raw).expect("snappy post");
+    let state = BeaconState::from_checkpoint(&ssz, &SpecConfig::mainnet(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+
+    let view = state.slot_states.finalized_view();
+    let (state_slot, block_slot) = (view.slot_number(), view.state().latest_block_header.slot);
+    assert!(state_slot > block_slot, "fixture premise: state {state_slot}, block {block_slot}");
+
+    let (mut tile, _gp, _rp) = make_tile_with_gossip(state_slot, state);
+    let BeaconStateEvent::Status { ssz, .. } = tile.status_event() else {
+        panic!("status_event produces Status")
+    };
+    assert_eq!(StatusView::head_slot(&ssz), block_slot, "p2p Status names the anchor block");
+    assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
+}
+
 /// Fulu requires the execution timestamp and the active blob limit before a
 /// block is propagated. The STF checks both, but that runs after the relay.
 #[test]
