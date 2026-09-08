@@ -10,6 +10,9 @@ pub enum StfSpan {
     Validate,
     /// `newPayload` dispatch → post-state committed.
     Apply,
+    /// Post-state committed → fork-choice import, while the block is parked
+    /// on its data columns.
+    DaWait,
 }
 
 #[derive(Default)]
@@ -31,6 +34,13 @@ impl StateTransition {
         self.attestable
     }
 
+    /// An unparked import announces its post-state and its import in one
+    /// message, so the two stamps coincide; a parked block's import comes
+    /// later, or not yet.
+    pub fn parked(&self) -> bool {
+        self.done.is_some() && self.done != self.attestable
+    }
+
     pub fn interval(
         &self,
         span: StfSpan,
@@ -45,6 +55,7 @@ impl StateTransition {
             }
             StfSpan::Validate => Interval { start: validate_from?, end: el_sent_at? },
             StfSpan::Apply => Interval { start: el_sent_at?, end: self.done.or(self.attestable)? },
+            StfSpan::DaWait => Interval { start: self.done?, end: self.attestable? },
         };
         Some(interval)
     }

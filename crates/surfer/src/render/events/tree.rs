@@ -40,7 +40,11 @@ impl Group {
                 Span::Da(DaSpan::Cols(ColumnSource::Rpc)),
             ],
             Self::Cols(_) | Self::Batch { .. } => &[],
-            Self::Stf => &[Span::Stf(StfSpan::Validate), Span::Stf(StfSpan::Apply)],
+            Self::Stf => &[
+                Span::Stf(StfSpan::Validate),
+                Span::Stf(StfSpan::Apply),
+                Span::Stf(StfSpan::DaWait),
+            ],
         }
     }
 
@@ -95,6 +99,7 @@ impl Span {
         match self {
             Self::Da(DaSpan::Cols(source)) => !trace.da.has_source(source),
             Self::Da(DaSpan::Custody) => !trace.da.has_columns(),
+            Self::Stf(StfSpan::DaWait) => !trace.stf.parked(),
             _ => false,
         }
     }
@@ -116,6 +121,7 @@ impl StfSpan {
             Self::Root => SpanSpec::new("stf", Some(Group::Stf)),
             Self::Validate => SpanSpec::new("validate", None),
             Self::Apply => SpanSpec::new("apply", None),
+            Self::DaWait => SpanSpec::new("da wait", None),
         }
     }
 }
@@ -319,7 +325,9 @@ mod tests {
     use silver_stages::Stage;
 
     use super::*;
-    use crate::sources::events::trace_tests::{APPLY, DA, STF, VALIDATE, cols, received, trace};
+    use crate::sources::events::trace_tests::{
+        APPLY, DA, DA_WAIT, STF, VALIDATE, cols, el_sent, received, trace,
+    };
 
     fn rows_of(trace: BlockTrace) -> BlockTraces {
         BlockTraces::from_iter([trace])
@@ -381,6 +389,37 @@ mod tests {
         assert_eq!(display[5].fold, Fold::Leaf, "validate is a leaf");
         assert_eq!(display[7].depth, 1, "el is a component of its own");
         assert_eq!(display[7].fold, Fold::Leaf);
+    }
+
+    /// The wait row exists only for a block that parked on its columns.
+    #[test]
+    fn da_wait_unfolds_only_for_a_parked_block() {
+        let stf_rows = |block: BlockTrace| {
+            let mut expanded = Expanded::default();
+            expanded.toggle(block.block_root, Group::Block);
+            expanded.toggle(block.block_root, Group::Stf);
+            let display = display_rows(&rows_of(block), &expanded);
+            nodes(&display)
+                .into_iter()
+                .filter(|n| matches!(n, Node::Span(Span::Stf(_))))
+                .collect::<Vec<_>>()
+        };
+
+        let parked = trace(&[
+            (received(), 300),
+            (el_sent(), 301),
+            (Stage::StfDone, 308),
+            (Stage::Attestable, 337),
+        ]);
+        assert_eq!(stf_rows(parked), [STF, VALIDATE, APPLY, DA_WAIT].map(Node::Span));
+
+        let unparked = trace(&[
+            (received(), 300),
+            (el_sent(), 301),
+            (Stage::StfDone, 308),
+            (Stage::Attestable, 308),
+        ]);
+        assert_eq!(stf_rows(unparked), [STF, VALIDATE, APPLY].map(Node::Span));
     }
 
     #[test]
