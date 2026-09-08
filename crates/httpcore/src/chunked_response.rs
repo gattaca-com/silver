@@ -42,11 +42,13 @@ impl ChunkedResponse {
             return false;
         }
 
-        if self.write_pos > 0 {
+        // Delay compaction to avoid moving unsent bytes while there is room
+        // to append after them.
+        if self.pending.len() + framed > PENDING_MAX {
             self.pending.drain(..self.write_pos);
             self.write_pos = 0;
         }
-        if self.pending.is_empty() {
+        if self.pending_write().is_empty() {
             self.waiting_since = Some(now);
         }
         write!(self.pending, "{:x}\r\n", chunk.len()).unwrap();
@@ -150,6 +152,11 @@ mod tests {
         (1..room).rev().find(|&n| hex_digits(n) + 4 + n <= room).unwrap()
     }
 
+    fn payload_framed_to(len: usize) -> Vec<u8> {
+        let n = (len.saturating_sub(12)..len).find(|&n| hex_digits(n) + 4 + n == len).unwrap();
+        vec![b'e'; n]
+    }
+
     #[test]
     fn the_head_leaves_first_ahead_of_chunks_pushed_before_the_first_drain() {
         let t0 = Instant::now();
@@ -244,6 +251,95 @@ mod tests {
         assert!(stream.push(&payload, t0), "a cap-sized burst fits the allocation as it is");
         assert_eq!(stream.pending.capacity(), PENDING_MAX);
         assert_eq!(stream.pending.as_ptr(), allocation);
+    }
+
+    #[test]
+    fn consumed_bytes_stay_until_a_frame_needs_their_room() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        drain_all(&mut stream, t0);
+        let first = vec![b'1'; 1000];
+        let second = vec![b'2'; 1000];
+        assert!(stream.push(&first, t0));
+        drain(&mut stream, 500, t0);
+        let allocation = stream.pending.as_ptr();
+
+        assert!(stream.push(&second, t0));
+        assert_eq!(
+            stream.write_pos, 500,
+            "appending within the limit preserves the consumed prefix"
+        );
+        let mut expected = framed(&first)[500..].to_vec();
+        expected.extend(framed(&second));
+        assert_eq!(stream.pending_write(), expected);
+
+        let third = vec![b'3'; largest_fitting_payload(&stream)];
+        assert!(
+            stream.pending.len() + framed(&third).len() > PENDING_MAX,
+            "the frame fits the unsent-byte cap but requires compaction"
+        );
+        assert!(stream.push(&third, t0));
+        assert_eq!(stream.write_pos, 0, "the consumed prefix is dropped to make room");
+        expected.extend(framed(&third));
+        assert_eq!(stream.pending_write(), expected);
+        assert_eq!(stream.pending.len(), expected.len());
+        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.as_ptr(), allocation, "compaction happens inside the allocation");
+    }
+
+    #[test]
+    fn an_exact_fit_behind_a_consumed_prefix_is_appended_without_compaction() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        drain_all(&mut stream, t0);
+        assert!(stream.push(&[b'f'; 1000], t0));
+        drain(&mut stream, 500, t0);
+        let allocation = stream.pending.as_ptr();
+
+        let exact = payload_framed_to(PENDING_MAX - stream.pending.len());
+        assert!(stream.push(&exact, t0));
+        assert_eq!(stream.write_pos, 500, "a frame ending exactly at the allocation's end fits");
+        assert_eq!(stream.pending.len(), PENDING_MAX);
+
+        assert!(stream.push(b"y", t0), "the cap still has the consumed prefix's room to give");
+        assert_eq!(stream.write_pos, 0, "one byte past the allocation forces compaction");
+        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.as_ptr(), allocation);
+    }
+
+    /// Moving bytes within the buffer is not progress towards the socket.
+    #[test]
+    fn compaction_does_not_restart_the_waiting_clock() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        drain_all(&mut stream, t0);
+        assert!(stream.push(&[b'f'; 1000], t0));
+        let t1 = t0 + Duration::from_secs(1);
+        drain(&mut stream, 500, t1);
+        assert_eq!(stream.waiting_since, Some(t1));
+
+        let t2 = t1 + DEADLINE * 2;
+        let filler = vec![b'g'; largest_fitting_payload(&stream)];
+        assert!(stream.pending.len() + framed(&filler).len() > PENDING_MAX, "this push compacts");
+        assert!(stream.push(&filler, t2));
+        assert_eq!(stream.write_pos, 0);
+        assert_eq!(stream.waiting_since, Some(t1));
+        assert!(stream.stalled(t2, DEADLINE));
+    }
+
+    #[test]
+    fn a_refused_push_moves_nothing_either() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        drain_all(&mut stream, t0);
+        assert!(stream.push(&[b'f'; 1000], t0));
+        drain(&mut stream, 500, t0);
+        let held = stream.pending.clone();
+
+        let room = PENDING_MAX - stream.pending_write().len();
+        assert!(!stream.push(&vec![b'z'; room], t0), "framing alone takes this past the cap");
+        assert_eq!(stream.write_pos, 500);
+        assert_eq!(stream.pending, held);
     }
 
     #[test]
