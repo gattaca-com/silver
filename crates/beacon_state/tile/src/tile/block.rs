@@ -444,6 +444,7 @@ impl BeaconStateTile {
         self.fork_choice.on_block(BlockImport {
             slot: parsed.header.slot,
             block_root: parsed.block_root,
+            state_root: parsed.header.state_root,
             parent_root: parsed.header.parent_root,
             execution_block_hash,
             justified,

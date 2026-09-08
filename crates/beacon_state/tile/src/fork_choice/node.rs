@@ -22,6 +22,9 @@ pub enum PayloadStatus {
 pub struct ForkChoiceNode {
     pub slot: Slot,
     pub block_root: B256,
+    /// Retained because a reorg can select this block after its bytes have
+    /// left the cache.
+    pub state_root: B256,
     pub execution_block_hash: B256,
 
     pub parent_ix: usize,

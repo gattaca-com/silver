@@ -5,6 +5,8 @@
 
 use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
 
+use crate::events::HeadEvent;
+
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 /// Appends JSON to a buffer the caller owns — fresh or reused is the caller's
@@ -231,6 +233,25 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn head_event(&mut self, head: &HeadEvent) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(head.slot);
+        self.key("block");
+        self.hex(&head.block_root);
+        self.key("state");
+        self.hex(&head.roots.state_root);
+        self.key("epoch_transition");
+        self.bool(head.epoch_transition);
+        self.key("previous_duty_dependent_root");
+        self.hex(&head.roots.previous_duty_dependent_root);
+        self.key("current_duty_dependent_root");
+        self.hex(&head.roots.current_duty_dependent_root);
+        self.key("execution_optimistic");
+        self.bool(head.execution_optimistic);
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -253,6 +274,7 @@ pub(crate) fn json_safe(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::FAR_FUTURE_EPOCH;
+    use silver_common::HeadRoots;
 
     use super::*;
 
@@ -479,6 +501,30 @@ mod tests {
         assert!(json_safe("active_ongoing"));
         assert!(!json_safe("say \"hi\""));
         assert!(!json_safe("back\\slash"));
+    }
+
+    #[test]
+    fn head_event_matches_the_specification_s_field_order() {
+        let mut out = Vec::new();
+        Json::new(&mut out).head_event(&HeadEvent {
+            slot: 10,
+            block_root: [0x9a; 32],
+            roots: HeadRoots {
+                state_root: [0x60; 32],
+                previous_duty_dependent_root: [0x5e; 32],
+                current_duty_dependent_root: [0x91; 32],
+            },
+            epoch_transition: true,
+            execution_optimistic: false,
+        });
+        let expected = format!(
+            "{{\"slot\":\"10\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"epoch_transition\":true,\"previous_duty_dependent_root\":\"0x{}\",\"current_duty_dependent_root\":\"0x{}\",\"execution_optimistic\":false}}",
+            "9a".repeat(32),
+            "60".repeat(32),
+            "5e".repeat(32),
+            "91".repeat(32),
+        );
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 
     #[test]

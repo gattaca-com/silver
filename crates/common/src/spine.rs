@@ -7,7 +7,7 @@ pub use messages::{
     EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
     EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
     EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgIn, GossipMsgOut, IpBytes,
+    EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgIn, GossipMsgOut, HeadRoots, IpBytes,
     LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
     MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend, PayloadValidationStatus,
     PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus, PeerTopicScores, ReplayBlock,

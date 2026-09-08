@@ -5,11 +5,15 @@ use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockStage, Enr, Identify, Keypair, SilverSpine, SyncUpdate, TProducer,
-    TRandomAccess,
+    TRandomAccess, ssz_view::StatusView,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
+
+use crate::observed_head::ObservedHead;
+
+mod observed_head;
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
@@ -21,6 +25,7 @@ pub struct ApplicationBoundaryTile {
     readiness: Readiness,
     pub beacon: BeaconApi,
     engine: EngineApi,
+    head: ObservedHead,
 }
 
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
@@ -77,20 +82,35 @@ impl ApplicationBoundaryTile {
             rpc_consumer,
             resp_producer,
         );
-        Self { readiness, beacon, engine }
+        Self { readiness, beacon, engine, head: ObservedHead::default() }
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let beacon = &mut self.beacon;
+        let Self { beacon, head, .. } = self;
 
         // Consumed every iteration, and never behind the engine's capacity
         // gate: a consumer's first `consume` jumps its cursor to the
         // producer's write head, so a queue left unread while the pool is
         // saturated loses everything published in the meantime.
         adapter.consume(|event: BeaconStateEvent, _| match event {
-            BeaconStateEvent::Status { latest_block_slot, wall_slot, head_optimistic, .. } => {
+            BeaconStateEvent::Status {
+                ssz,
+                latest_block_slot,
+                wall_slot,
+                head_optimistic,
+                head_roots,
+                ..
+            } => {
                 beacon.node_status_mut().slots =
                     Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
+                if let Some(event) = head.observe(
+                    StatusView::head_slot(&ssz),
+                    *StatusView::head_root(&ssz),
+                    head_optimistic,
+                    head_roots,
+                ) {
+                    beacon.publish_head(&event);
+                }
             }
             BeaconStateEvent::BlockReceived {
                 slot,
@@ -100,7 +120,7 @@ impl ApplicationBoundaryTile {
             } => beacon.publish_block(slot, &block_root),
             _ => {}
         });
-        let status = beacon.node_status_mut();
+        let status = self.beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {
             status.syncing = !matches!(update, SyncUpdate::Following);
         });
