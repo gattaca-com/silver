@@ -210,6 +210,28 @@ impl StorageTile {
 }
 
 impl StorageTile {
+    /// Defer checkpoint scheduling until the head is near the wall clock.
+    /// Record the scheduled epoch so repeated observations do not schedule it
+    /// again.
+    fn on_status(&mut self, ssz: &[u8; 92], wall_slot: u64) {
+        self.wall_slot = wall_slot;
+        let head_slot = StatusView::head_slot(ssz);
+        let finalized_epoch = StatusView::finalized_epoch(ssz);
+        self.store.update_head(
+            head_slot,
+            *StatusView::head_root(ssz),
+            finalized_epoch * SLOTS_PER_EPOCH,
+            *StatusView::finalized_root(ssz),
+        );
+
+        if finalized_epoch > self.checkpointed_epoch &&
+            head_slot + CAUGHT_UP_SLACK_SLOTS >= wall_slot
+        {
+            self.checkpointed_epoch = finalized_epoch;
+            self.persist_pending = true;
+        }
+    }
+
     #[timed]
     fn handle_beacon_state_event(
         &mut self,
@@ -404,24 +426,7 @@ impl Tile<SilverSpine> for StorageTile {
         });
 
         if let Some((ssz, wall_slot)) = latest_status_event {
-            self.wall_slot = wall_slot;
-            let head_slot = StatusView::head_slot(&ssz);
-            let head_root = *StatusView::head_root(&ssz);
-            let finalized_epoch = StatusView::finalized_epoch(&ssz);
-            let finalized_root = *StatusView::finalized_root(&ssz);
-            self.store.update_head(
-                head_slot,
-                head_root,
-                finalized_epoch * SLOTS_PER_EPOCH,
-                finalized_root,
-            );
-
-            if finalized_epoch > self.checkpointed_epoch &&
-                head_slot + CAUGHT_UP_SLACK_SLOTS >= wall_slot
-            {
-                self.checkpointed_epoch = finalized_epoch;
-                self.persist_pending = true;
-            }
+            self.on_status(&ssz, wall_slot);
         }
 
         adapter.consume(|sync_update: SyncUpdate, _| self.store.sync_update(sync_update));
@@ -504,6 +509,79 @@ mod tests {
         b[184 + 388..184 + 392].copy_from_slice(&blob_off.to_le_bytes());
         b[184 + 392..184 + 396].copy_from_slice(&exec_off.to_le_bytes());
         b
+    }
+
+    fn status_ssz(head_slot: u64, finalized_epoch: u64) -> [u8; 92] {
+        let mut ssz = [0u8; 92];
+        ssz[36..44].copy_from_slice(&finalized_epoch.to_le_bytes());
+        ssz[44..76].copy_from_slice(&[0xAB; 32]);
+        ssz[76..84].copy_from_slice(&head_slot.to_le_bytes());
+        ssz
+    }
+
+    fn empty_tile(store_dir: &str) -> StorageTile {
+        let pg = TCache::producer("st_pg", 1 << 16);
+        let rpc = TCache::producer("st_rpc", 1 << 16);
+        let pr = TCache::producer("st_pr", 1 << 16);
+        let el = TCache::producer("st_el", 1 << 16);
+        StorageTile::new(
+            pg.cache_ref().random_access("st_pg", true).unwrap(),
+            rpc.cache_ref().random_access("st_rpc", true).unwrap(),
+            pr.cache_ref().random_access("st_pr", true).unwrap(),
+            el.cache_ref().random_access("st_el", true).unwrap(),
+            TCache::multi_producer("st_rpc_out", 1 << 16),
+            TCache::producer("st_replay_out", 1 << 16),
+            BeaconStateOwner::empty_test(0).reader(),
+            0,
+            Arc::new(SpecConfig::mainnet()),
+            store_dir.to_string(),
+            true,
+        )
+    }
+
+    /// Checks scheduling deduplication; no checkpoint write is performed here.
+    #[test]
+    fn a_repeated_status_arms_no_second_checkpoint_persist() {
+        let store_dir = format!("/tmp/test_storage_status_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_dir);
+        let mut tile = empty_tile(&store_dir);
+
+        tile.on_status(&status_ssz(96, 2), 96);
+        assert!(tile.persist_pending, "a finalization not yet scheduled");
+        assert_eq!(tile.checkpointed_epoch, 2);
+
+        tile.persist_pending = false;
+        tile.on_status(&status_ssz(96, 2), 96);
+        assert!(!tile.persist_pending, "the same finalization was already scheduled");
+        assert_eq!(tile.checkpointed_epoch, 2);
+
+        tile.on_status(&status_ssz(128, 3), 128);
+        assert!(tile.persist_pending, "an advanced finalization arms the next one");
+        assert_eq!(tile.checkpointed_epoch, 3);
+
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    /// Deferring a checkpoint must leave it eligible when the head catches up,
+    /// even if finalization has not advanced again.
+    #[test]
+    fn a_status_whose_head_lags_the_wall_clock_arms_no_persist() {
+        let store_dir = format!("/tmp/test_storage_lag_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_dir);
+        let mut tile = empty_tile(&store_dir);
+
+        tile.on_status(&status_ssz(96, 2), 96 + CAUGHT_UP_SLACK_SLOTS + 1);
+        assert!(!tile.persist_pending);
+        assert_eq!(tile.checkpointed_epoch, 0, "the deferred epoch is not recorded as scheduled");
+
+        tile.on_status(&status_ssz(96, 2), 96);
+        assert!(
+            tile.persist_pending,
+            "caught up at the same finalization, the checkpoint is not lost"
+        );
+        assert_eq!(tile.checkpointed_epoch, 2);
+
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     #[test]

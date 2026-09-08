@@ -688,7 +688,7 @@ mod tests {
 
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{
-        EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        EngineReq, HeadRoots, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
         ssz_view::{DATA_COLUMN_SIDECAR_MIN, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN},
     };
     use tempfile::TempDir;
@@ -817,6 +817,52 @@ mod tests {
         let mut ssz = [0u8; 92];
         ssz[36..44].copy_from_slice(&finalized_epoch.to_le_bytes());
         ssz
+    }
+
+    fn head_status(head_root: BlockRoot) -> BeaconStateEvent {
+        let mut ssz = status_ssz(0);
+        ssz[44..76].copy_from_slice(&head_root);
+        BeaconStateEvent::Status {
+            ssz,
+            latest_block_slot: 7,
+            wall_slot: 7,
+            head_optimistic: false,
+            enr_fork_id: [0u8; 16],
+            head_roots: HeadRoots::default(),
+        }
+    }
+
+    /// A repeated head root can unblock newly buffered columns. This test
+    /// checks buffer removal; its synthetic sidecar does not pass
+    /// validation.
+    #[test]
+    fn each_status_drains_whatever_is_buffered_on_its_head() {
+        const PARENT: BlockRoot = [0x77; 32];
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        let (mut consumer, ssz) = produce_block(&synth_fulu_sidecar(3, 7), "drain_once");
+        let buffer = |rig: &mut Rig, read| {
+            rig.tile.parent_pending_columns.entry(PARENT).or_default().push(PendingColumn {
+                stream_id: P2pStreamId::new(2, 2, StreamProtocol::DataColumnSidecarsByRange, true),
+                sidecar: read,
+                gossip_subnet: None,
+                recv_ts: IngestionTime::now(),
+            });
+        };
+        let pending = |rig: &Rig| rig.tile.parent_pending_columns.get(&PARENT).map(Vec::len);
+
+        buffer(&mut rig, consumer.acquire(ssz));
+        assert_eq!(pending(&rig), Some(1), "one column is waiting on that root");
+
+        rig.tile.handle_beacon_state_event(head_status(PARENT), &mut rig.conn.producers);
+        assert_eq!(pending(&rig), None, "the first Status drains the buffer");
+
+        rig.tile.handle_beacon_state_event(head_status(PARENT), &mut rig.conn.producers);
+        assert_eq!(pending(&rig), None, "the repeat has nothing to find or re-buffer");
+
+        buffer(&mut rig, consumer.acquire(ssz));
+        assert_eq!(pending(&rig), Some(1), "a column buffered after the drain waits again");
+        rig.tile.handle_beacon_state_event(head_status(PARENT), &mut rig.conn.producers);
+        assert_eq!(pending(&rig), None, "and the next Status naming that root takes it");
     }
 
     #[test]

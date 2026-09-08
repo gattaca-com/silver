@@ -826,6 +826,45 @@ fn the_replay_gate_holds_every_request_until_replay_reports_complete() {
     assert!(drive(&mut e, now).is_some(), "and released by the report, not by a clock");
 }
 
+/// Intermediate observations do not complete replay. The Status following
+/// ReplayComplete establishes where network requests resume.
+#[test]
+fn replay_completion_determines_where_requests_resume() {
+    let now = Instant::now();
+    let mut e = engine_awaiting_replay();
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 0, 200);
+    advance(&mut e);
+
+    local_status(&mut e, 60, 200);
+    assert!(actions(&mut e, now, true).is_empty(), "the gate holds every request");
+
+    e.on_replay_complete();
+    local_status(&mut e, 100, 200);
+
+    let (_, start, _) = drive(&mut e, now).expect("requests open after replay");
+    assert_eq!(tail(&e), 100, "the completion Status is the floor");
+    assert_eq!(start, 101, "so fetching resumes above it");
+}
+
+/// While syncing, import progress and range coverage advance independently.
+/// Following uses a different policy: Status can move the tail to the head.
+#[test]
+fn a_repeated_local_status_while_syncing_leaves_the_window_where_it_is() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 50, 200);
+    advance(&mut e);
+    let before = (tail(&e), e.window.applied_head());
+
+    local_status(&mut e, 50, 200);
+    assert_eq!((tail(&e), e.window.applied_head()), before);
+
+    local_status(&mut e, 60, 200);
+    assert_eq!(e.window.applied_head(), 60, "a moved head moves the watermark");
+    assert_eq!(tail(&e), before.0, "with nothing covered, the tail stays");
+}
+
 /// The columns tile refuses to acknowledge data availability at or below
 /// what finalization already settles, so the engine must not ask for it
 /// there: the columns would arrive, go unacknowledged, and hold the tail on

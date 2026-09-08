@@ -944,6 +944,30 @@ mod tests {
     }
 
     #[test]
+    fn update_head_assigns_the_head_but_advances_finalization_only_forward() {
+        let store_path = format!("/tmp/test_store_update_head_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = load_fulu(store_path.clone());
+
+        store.update_head(64, [0xAA; 32], 32, [0x11; 32]);
+        assert_eq!((store.head_slot, store.head_root), (64, [0xAA; 32]));
+        assert_eq!((store.finalized_slot, store.finalized_root), (32, [0x11; 32]));
+
+        store.update_head(65, [0xBB; 32], 32, [0x11; 32]);
+        assert_eq!((store.head_slot, store.head_root), (65, [0xBB; 32]), "the head still moves");
+        assert_eq!(
+            (store.finalized_slot, store.finalized_root),
+            (32, [0x11; 32]),
+            "a repeated finalization changes nothing"
+        );
+
+        store.update_head(96, [0xCC; 32], 64, [0x33; 32]);
+        assert_eq!((store.finalized_slot, store.finalized_root), (64, [0x33; 32]));
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    #[test]
     fn fork_tree_persist_serve_promote() {
         use silver_common::{
             P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponse,
