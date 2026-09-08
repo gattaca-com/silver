@@ -59,14 +59,14 @@ impl PerfReport {
                 threshold: t.max_decompose,
             },
             Gauge {
-                label: "apply_and_publish (p50)",
-                actual: self.outcome.stats.aggregate_leaf_p50("apply_and_publish<BeaconStateTile>"),
-                threshold: t.max_apply_and_publish_p50,
+                label: "stage_block (p50)",
+                actual: self.outcome.stats.aggregate_leaf_p50("stage_block<BeaconStateTile>"),
+                threshold: t.max_stage_block_p50,
             },
             Gauge {
-                label: "apply_and_publish (max)",
-                actual: self.outcome.stats.aggregate_leaf_max("apply_and_publish<BeaconStateTile>"),
-                threshold: t.max_apply_and_publish_max,
+                label: "stage_block (max)",
+                actual: self.outcome.stats.aggregate_leaf_max("stage_block<BeaconStateTile>"),
+                threshold: t.max_stage_block_max,
             },
             Gauge {
                 label: "process_epoch (avg)",

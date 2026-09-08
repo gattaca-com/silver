@@ -119,7 +119,7 @@ impl ValidatorsGroup {
         let Self { finalized, deltas, hash } = self;
         deltas.get(winner.data).promote_into_base(finalized);
 
-        hash.finalize(&winner, survivors, |s| s.hash);
+        hash.finalize(winner.hash, survivors, |s| s.hash);
 
         let fresh_data: Vec<_> = fresh.iter().map(|f| f.data).collect();
         deltas.free_outdated(&fresh_data);

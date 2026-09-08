@@ -178,7 +178,7 @@ fn finalize_preserves_survivor_reads_and_root() {
     let winner = wv.commit();
 
     let survivor = g.roll_from(winner).commit(); // inherits the winner's state
-    g.finalize(&winner, &[winner, survivor], |&id| id); // ids stay valid unchanged
+    g.finalize(winner, &[winner, survivor], |&id| id); // ids stay valid unchanged
 
     let wv = g.roll_from(survivor);
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![1_000, 5_000, 0, 7_000]);
@@ -199,7 +199,7 @@ fn finalize_returns_survivor_ids_unchanged() {
     let shared = g.roll_from(winner).commit();
     let other = g.roll_from(winner).commit();
 
-    g.finalize(&winner, &[winner, shared, shared, other], |&id| id);
+    g.finalize(winner, &[winner, shared, shared, other], |&id| id);
 
     // Every survivor still reads the finalized state (through fresh forks).
     assert_eq!(g.roll_from(shared).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
@@ -257,7 +257,7 @@ fn promote_reproduces_root_over_new_base() {
     let s = wv.commit();
 
     // Finalize promotes the fork's overlay into the base.
-    g.finalize(&s, &[s], |&id| id);
+    g.finalize(s, &[s], |&id| id);
 
     // A fresh fork over the promoted base reproduces the same root with zero SHA
     // work (cached-hash promote) and reads the promoted values.
@@ -290,11 +290,11 @@ fn aba_finalize_keeps_reverted_value() {
     let s3 = wv3.commit();
 
     // Finalize D1 (winner s1): base[0] → A. Ids are unchanged.
-    g.finalize(&s1, &[s1, s2, s3], |&id| id);
+    g.finalize(s1, &[s1, s2, s3], |&id| id);
     assert_eq!(g.roll_from(s3).get(0), A);
 
     // Finalize D2 (winner s2): base[0] → B; D3's own tree still holds A.
-    g.finalize(&s2, &[s2, s3], |&id| id);
+    g.finalize(s2, &[s2, s3], |&id| id);
     let wv3 = g.roll_from(s3);
     assert_eq!(wv3.get(0), A, "D3 must not inherit B");
     assert_root_matches(&wv3);

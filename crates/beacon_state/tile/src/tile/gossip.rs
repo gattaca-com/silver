@@ -1088,25 +1088,25 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let canon_id = self.canonical_state_id();
+        let mut votes = self.vote_buffers.pop().unwrap_or_default();
         let ok = {
             let view = self.state.read_view(canon_id);
             stf::validate_attester_slashing_for_gossip(
                 &view,
                 data,
-                &mut self.slashed_indices_scratch,
+                &mut votes.slashed,
                 &mut self.sig_batch,
             )
         };
-        if !ok {
-            return Feedback::Reject(None);
-        }
         // Mark the equivocators (spec `on_attester_slashing`) so fork choice
         // excludes them. Idempotent; removes any live LMD weight next recompute.
-        for i in 0..self.slashed_indices_scratch.len() {
-            let idx = self.slashed_indices_scratch[i] as usize;
-            self.fork_choice.mark_equivocating(idx);
+        if ok {
+            for &idx in &votes.slashed {
+                self.fork_choice.mark_equivocating(idx as usize);
+            }
         }
-        Feedback::Accept(None)
+        self.recycle_votes(votes);
+        if ok { Feedback::Accept(None) } else { Feedback::Reject(None) }
     }
 
     #[timed]
@@ -1223,7 +1223,7 @@ impl BeaconStateTile {
             Feedback::RequestParent { .. } => {
                 self.park_block(feedback, PendingBlock::Gossip(m), data, producers)
             }
-            Feedback::AwaitData(_) | Feedback::AwaitParentPayload { .. } => {
+            Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
@@ -1238,7 +1238,7 @@ impl BeaconStateTile {
                     origin: Origin::Live,
                 })
             }
-            Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
+            Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
         }
     }
 

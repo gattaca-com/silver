@@ -25,3 +25,13 @@ fn scenario_3_blob_gossip_relayed_before_data_columns() {
 fn scenario_4_finalized_target_does_not_gate_on_data_availability() {
     common::run_scenario(&cases_dir().join("scenario_4_blob_da_syncing_finalized"));
 }
+
+#[test]
+fn scenario_5_data_columns_before_block_imports_on_arrival() {
+    common::run_scenario(&cases_dir().join("scenario_5_blob_da_before_block"));
+}
+
+#[test]
+fn scenario_6_blob_block_staged_then_applied_on_data_columns() {
+    common::run_scenario(&cases_dir().join("scenario_6_blob_staged_then_applied"));
+}

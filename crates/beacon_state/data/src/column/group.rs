@@ -136,8 +136,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     /// Promote the winner into the base and free everything below the oldest
     /// survivor. Survivor ids stay valid unchanged — columns never reanchor.
     #[timed]
-    pub fn finalize<S>(&mut self, promoted: &S, survivors: &[S], idx: impl Fn(&S) -> Id<Self>) {
-        let winner = idx(promoted);
+    pub fn finalize<S>(&mut self, winner: Id<Self>, survivors: &[S], idx: impl Fn(&S) -> Id<Self>) {
         debug_assert!(
             survivors.iter().any(|s| idx(s) == winner),
             "winner must be among the survivors"

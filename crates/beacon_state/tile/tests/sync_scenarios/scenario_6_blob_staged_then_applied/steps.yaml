@@ -1,0 +1,37 @@
+# Scenario 6: the stages a blob-carrying gossip block passes through when its
+# columns arrive after it. The state transition runs on arrival (block_staged),
+# a duplicate while staged announces nothing, and DataColumnsAvailable imports
+# it (block_applied) without a second relay.
+#
+# Source: EF's sanity/blocks/one_blob case — same fixtures as scenario 3.
+
+startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/pre.ssz_snappy
+slots_missing: 3
+
+steps:
+  - kind: sync_target
+    target: following
+  - kind: step
+
+  - kind: gossip_block
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [send_gossip, block_staged]
+    outbound_lacks: [block_applied, persist_block]
+
+  - kind: gossip_block
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_lacks: [send_gossip, block_staged, block_applied, persist_block]
+
+  - kind: data_columns_available
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [block_applied, persist_block]
+    outbound_lacks: [send_gossip, block_staged]
+
+  - kind: state_root_matches
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/post.ssz_snappy

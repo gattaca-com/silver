@@ -12,7 +12,7 @@ use silver_common::{
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, ParsedBlock, Producers,
-    gossip::EnvelopeCheck,
+    data_availability::WaitingBlock, gossip::EnvelopeCheck,
 };
 use crate::{
     bls,
@@ -30,10 +30,44 @@ struct AppliedBlock {
     bid_block_hash: B256,
 }
 
+/// A block whose post-state is committed but not yet in fork choice. Carries
+/// the STF's vote and slashing output: spec `on_block` implies receiving the
+/// body's attestations and slashings, so they enter fork choice with the block
+/// and never if it is dropped.
+pub(super) struct StagedBlock {
+    pub(super) parsed: ParsedBlock,
+    applied: AppliedBlock,
+    votes: stf::BlockVotes,
+}
+
+impl StagedBlock {
+    #[cfg(test)]
+    pub(super) fn state_id(&self) -> StateId {
+        self.applied.id
+    }
+
+    pub(super) fn state_id_mut(&mut self) -> &mut StateId {
+        &mut self.applied.id
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_state_id(parsed: ParsedBlock, id: StateId) -> Self {
+        let applied = AppliedBlock {
+            id,
+            justified: Checkpoint::default(),
+            finalized: Checkpoint::default(),
+            unrealized: Default::default(),
+            execution_block_hash: [0u8; 32],
+            bid_block_hash: [0u8; 32],
+        };
+        Self { parsed, applied, votes: stf::BlockVotes::default() }
+    }
+}
+
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
         match self.parse_and_verify_block(data, false) {
-            Ok(parsed) => self.apply_and_publish(parsed, data, false, |_block_root| {}),
+            Ok(parsed) => self.stage_and_import(parsed, data),
             Err(err) => err.feedback(),
         }
     }
@@ -79,19 +113,48 @@ impl BeaconStateTile {
             }
         };
 
-        let gate_da = self.da_required();
-        let f = self.apply_and_publish(parsed, data, gate_da, |root| {
-            producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
-                data: read,
-                block_root: root,
-                slot: block_slot,
-                block_source: source,
-            }));
-        });
-
-        if let Feedback::Reject(Some(block_root)) = f {
-            producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
+        let waits_for_columns = self.waits_for_columns(&parsed);
+        if waits_for_columns && !self.data_availability.has_room() {
+            tracing::warn!(
+                block = hex32(&parsed.block_root),
+                "too many blocks awaiting data availability; dropped"
+            );
+            return Feedback::Ignore;
         }
+
+        producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
+            data: read,
+            block_root: parsed.block_root,
+            slot: block_slot,
+            block_source: source,
+        }));
+
+        let f = match self.stage_block(parsed, data) {
+            Ok(staged) if waits_for_columns => {
+                let block_root = staged.parsed.block_root;
+                self.data_availability.hold(WaitingBlock { staged, read, source });
+                self.emit_block_received(
+                    data,
+                    block_root,
+                    BlockStage::AwaitData,
+                    source,
+                    producers,
+                );
+                Feedback::AwaitData(block_root)
+            }
+            Ok(staged) => {
+                let block_root = staged.parsed.block_root;
+                self.import_staged(staged, data);
+                self.announce_imported(data, block_root, read, source, producers);
+                Feedback::Accept(Some(block_root))
+            }
+            Err(f) => {
+                if let Feedback::Reject(Some(block_root)) = f {
+                    producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
+                }
+                f
+            }
+        };
         tracing::info!(
             ?source,
             head_slot = self.head_state_slot(),
@@ -101,25 +164,23 @@ impl BeaconStateTile {
             "applied block: {:?}",
             f
         );
+        f
+    }
 
-        let applied_root = match f {
-            Feedback::Accept(Some(block_root)) => {
-                self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
-                block_root
-            }
-            Feedback::AlreadyKnown(block_root) => {
-                self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
-                Self::emit_persist_block(read, source, block_slot, block_root, producers);
-                return f;
-            }
-            Feedback::Accept(None) => {
-                debug_assert!(false, "block accepted without a root");
-                return f;
-            }
-            _ => return f,
-        };
-
-        Self::emit_persist_block(read, source, block_slot, applied_root, producers);
+    /// Everything the rest of the node learns from an import, in the order it
+    /// needs it: the stage, the bytes to persist, the FCU, then the next
+    /// epoch's shuffling warmed off the new head.
+    pub(super) fn announce_imported(
+        &mut self,
+        data: &[u8],
+        block_root: B256,
+        read: TCacheRead,
+        source: BlockSource,
+        producers: &mut Producers,
+    ) {
+        let block_slot = SignedBeaconBlockView::slot(data);
+        self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
+        Self::emit_persist_block(read, source, block_slot, block_root, producers);
 
         let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
         producers.produce(EngineReq::Fcu(EngineFcuReq {
@@ -130,8 +191,6 @@ impl BeaconStateTile {
         }));
 
         self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
-
-        f
     }
 
     /// Warm epoch `block_epoch + 1`'s attester shuffling and committee
@@ -159,6 +218,12 @@ impl BeaconStateTile {
         !matches!(self.sync_target, SyncUpdate::SyncingFinalized { .. })
     }
 
+    fn waits_for_columns(&self, parsed: &ParsedBlock) -> bool {
+        self.da_required() &&
+            parsed.has_data_columns &&
+            !self.data_availability.is_available(&parsed.block_root)
+    }
+
     pub(super) fn replay_block(&mut self, read: TCacheRead) {
         let acquired = self.replay_consumer.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
@@ -172,7 +237,7 @@ impl BeaconStateTile {
 
         let block_slot = SignedBeaconBlockView::slot(data);
         let feedback = match self.parse_and_verify_block(data, false) {
-            Ok(parsed) => self.apply_and_publish(parsed, data, false, |_block_root| {}),
+            Ok(parsed) => self.stage_and_import(parsed, data),
             Err(err) => err.feedback(),
         };
 
@@ -242,29 +307,23 @@ impl BeaconStateTile {
         Ok(parsed)
     }
 
-    /// Ingest → published: the tick-to-attestable window. Work that may run
-    /// after the new head is visible to readers belongs in the caller.
+    /// Replay and test ingest: no wait for columns, no EL, no announcements.
+    fn stage_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
+        let staged = match self.stage_block(parsed, data) {
+            Ok(staged) => staged,
+            Err(feedback) => return feedback,
+        };
+        let block_root = staged.parsed.block_root;
+        self.import_staged(staged, data);
+
+        Feedback::Accept(Some(block_root))
+    }
+
     #[timed]
-    pub(super) fn apply_and_publish<F: FnMut([u8; 32])>(
-        &mut self,
-        parsed: ParsedBlock,
-        data: &[u8],
-        gate_da: bool,
-        mut notify_el: F,
-    ) -> Feedback {
-        if gate_da && parsed.has_data_columns && !self.dc_available.contains_key(&parsed.block_root)
-        {
-            return Feedback::AwaitData(parsed.block_root);
-        }
-
-        // Fire as early as possible so the EL round-trip overlaps with the
-        // state transition — mirrors Lighthouse's async payload notification.
-        // After the DA gate, so a block parked on AwaitData doesn't re-send
-        // newPayload on every retry.
-        notify_el(parsed.block_root);
-
-        let applied = match self.apply_stf_and_commit(&parsed, data) {
-            Ok(committed) => committed,
+    fn stage_block(&mut self, parsed: ParsedBlock, data: &[u8]) -> Result<StagedBlock, Feedback> {
+        let mut votes = self.vote_buffers.pop().unwrap_or_default();
+        match self.apply_stf_and_commit(&parsed, data, &mut votes) {
+            Ok(applied) => Ok(StagedBlock { parsed, applied, votes }),
             Err(e) => {
                 tracing::error!(
                     error = %e,
@@ -272,13 +331,15 @@ impl BeaconStateTile {
                     head_slot = self.head_state_slot(),
                     "block rejected"
                 );
-                return Feedback::Reject(Some(parsed.block_root));
+                self.recycle_votes(votes);
+                Err(Feedback::Reject(Some(parsed.block_root)))
             }
-        };
+        }
+    }
 
-        self.publish_applied_block(&parsed, data, applied);
-
-        Feedback::Accept(Some(parsed.block_root))
+    pub(super) fn recycle_votes(&mut self, mut votes: stf::BlockVotes) {
+        votes.clear();
+        self.vote_buffers.push(votes);
     }
 
     /// Run the per-block STF against a COW child of the parent post-state and
@@ -291,6 +352,7 @@ impl BeaconStateTile {
         &mut self,
         parsed: &ParsedBlock,
         data: &[u8],
+        votes: &mut stf::BlockVotes,
     ) -> crate::Result<AppliedBlock> {
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
 
@@ -313,8 +375,6 @@ impl BeaconStateTile {
         // publish-last.
         let parent = parsed.parent_state_id;
         let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
-        self.attestation_votes_scratch.clear();
-        self.slashed_indices_scratch.clear();
         let (epoch_idx, longtail_idx) = stf::apply_block(
             &self.spec,
             &mut view,
@@ -325,8 +385,7 @@ impl BeaconStateTile {
             &parsed.header,
             Some(&sref),
             &mut self.stf_scratch,
-            &mut self.attestation_votes_scratch,
-            &mut self.slashed_indices_scratch,
+            votes,
             &mut self.sig_batch,
         )?;
 
@@ -351,13 +410,11 @@ impl BeaconStateTile {
         })
     }
 
+    /// Fork-choice import and head publish; the tick-to-attestable window
+    /// ends when this returns.
     #[timed]
-    fn publish_applied_block(
-        &mut self,
-        parsed: &ParsedBlock,
-        block_data: &[u8],
-        applied: AppliedBlock,
-    ) {
+    pub(super) fn import_staged(&mut self, staged: StagedBlock, block_data: &[u8]) {
+        let StagedBlock { parsed, applied, votes } = staged;
         let AppliedBlock {
             id: new_id,
             justified,
@@ -376,9 +433,8 @@ impl BeaconStateTile {
 
         // Fold block-included attestations into the LMD vote tracker.
         let n = self.head_validator_count();
-        for i in 0..self.attestation_votes_scratch.len() {
-            let v = self.attestation_votes_scratch[i];
-            self.fork_choice.record_vote(&v, n);
+        for vote in &votes.votes {
+            self.fork_choice.record_vote(vote, n);
         }
 
         self.fork_choice.on_block(BlockImport {
@@ -400,10 +456,10 @@ impl BeaconStateTile {
         // Block-included attester slashings: mark the slashed validators
         // equivocating (spec `on_attester_slashing`), removing any live LMD
         // weight on the next recompute.
-        for i in 0..self.slashed_indices_scratch.len() {
-            let idx = self.slashed_indices_scratch[i] as usize;
-            self.fork_choice.mark_equivocating(idx);
+        for &idx in &votes.slashed {
+            self.fork_choice.mark_equivocating(idx as usize);
         }
+        self.recycle_votes(votes);
 
         // Proposer boost: the FIRST current-slot block that arrived before the
         // attesting deadline (first 1/3) gets a transient weight bonus, expired
@@ -420,7 +476,7 @@ impl BeaconStateTile {
             self.fork_choice.set_proposer_boost(parsed.block_root);
         }
 
-        self.dc_available.remove(&parsed.block_root);
+        self.data_availability.discard_available(&parsed.block_root);
 
         // Adopt the new block as head before recompute so `lift_checkpoints`
         // reads ITS post-state checkpoints — an epoch-boundary block's justified
@@ -484,6 +540,9 @@ impl BeaconStateTile {
         let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
         if self.fork_choice.find_node_idx(&block_root).is_some() {
             return Err(PrecheckError::AlreadyKnown { block_root });
+        }
+        if self.data_availability.is_awaiting(&block_root) {
+            return Err(PrecheckError::AwaitingData { block_root });
         }
 
         let finalized_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;

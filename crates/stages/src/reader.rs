@@ -211,7 +211,7 @@ mod tests {
     }
 
     fn staged(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {
-        block_received(root, slot, source, BlockStage::Staged)
+        block_received(root, slot, source, BlockStage::AwaitData)
     }
 
     fn imported(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {

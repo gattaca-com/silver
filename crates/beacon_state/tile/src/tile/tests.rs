@@ -2,9 +2,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, ColumnGroup, ColumnSpec,
+    BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
-    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotStateId,
+    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
@@ -20,7 +20,7 @@ use silver_common::{
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
-use super::*;
+use super::{block::StagedBlock, data_availability::WaitingBlock, *};
 use crate::{
     fork_choice::{BlockImport, PayloadStatus},
     merkle, ssz_hash,
@@ -421,10 +421,7 @@ fn block_unknown_parent_rejected() {
     let head_before = tile.last_applied;
     let nodes_before = tile.fork_choice.nodes.len();
 
-    let _ = match tile.parse_and_verify_block(&buf, false) {
-        Ok(parsed) => tile.apply_and_publish(parsed, &buf, false, |_block_root| {}),
-        Err(err) => err.feedback(),
-    };
+    let _ = tile.try_apply_block(&buf);
 
     assert_eq!(tile.last_applied, head_before, "head must be unchanged");
     assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -513,11 +510,14 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
             |_| relayed = true,
         );
 
-        assert_eq!(
-            !matches!(feedback, Feedback::Reject(_)),
-            want_accepted,
-            "stamp={stamp} commitments={commitments}: {feedback:?}"
-        );
+        // The well-formed case still fails the STF (synthetic parent root), so
+        // only the precheck rejections are observable through the feedback.
+        if !want_accepted {
+            assert!(
+                matches!(feedback, Feedback::Reject(_)),
+                "stamp={stamp} commitments={commitments}: {feedback:?}"
+            );
+        }
         assert_eq!(
             relayed, want_accepted,
             "stamp={stamp} commitments={commitments}: relay must follow the precheck"
@@ -1129,10 +1129,7 @@ fn block_known_parent_bad_sig_rejected() {
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-    let _ = match tile.parse_and_verify_block(&buf, false) {
-        Ok(parsed) => tile.apply_and_publish(parsed, &buf, false, |_block_root| {}),
-        Err(err) => err.feedback(),
-    };
+    let _ = tile.try_apply_block(&buf);
 
     assert_eq!(tile.fork_choice.nodes.len(), 1);
 }
@@ -2453,6 +2450,127 @@ fn epoch_transition_keeps_base_until_finality() {
     assert_eq!(*head_validators.pubkey(1), pk);
 }
 
+const F_ROOT: B256 = [0x0F; 32];
+const D_ROOT: B256 = [0x0D; 32];
+const F2_ROOT: B256 = [0xF2; 32];
+
+/// Three forks off the anchor, ready for `maybe_finalize` to promote F:
+/// F (finality target, child of anchor), D (head, child of F), F2 (sibling of
+/// F, pruned). Each bundle copies its parent's and re-points the rolled
+/// tiers (slot + balances + block roots; the others shared).
+struct ThreeForks {
+    tile: BeaconStateTile,
+    f2_id: StateId,
+    d_id: StateId,
+}
+
+impl ThreeForks {
+    fn roll(&mut self, parent: StateId, slot: Slot, root: B256) -> StateId {
+        let mut g = self.tile.state.write();
+        let balances_idx = g.balances.roll_from(parent.balances_idx).commit();
+        let mut sw = g.slot_states.roll_from(parent.slot_idx);
+        sw.state_mut().slot = slot;
+        let slot_idx = sw.commit();
+        // The block-roots column, written where `process_slot` writes it.
+        let mut w = g.block_roots.roll_from(parent.block_roots_idx);
+        w.set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, root);
+        let block_roots_idx = w.commit();
+        StateId { balances_idx, slot_idx, block_roots_idx, ..parent }
+    }
+
+    fn node(
+        &mut self,
+        slot: Slot,
+        block_root: B256,
+        parent_root: B256,
+        cp: Checkpoint,
+        id: StateId,
+    ) {
+        self.tile.fork_choice.on_block(BlockImport {
+            slot,
+            block_root,
+            parent_root,
+            execution_block_hash: [0u8; 32],
+            justified: cp,
+            finalized: cp,
+            unrealized_justified: cp,
+            unrealized_finalized: cp,
+            state_id: id,
+            bid_block_hash: [0u8; 32],
+            parent_payload_status: PayloadStatus::Full,
+            payload_verified: true,
+            is_gloas: false,
+        });
+    }
+
+    fn new() -> Self {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let anchor_id = tile.last_applied;
+        let mut forks = Self { tile, f2_id: anchor_id, d_id: anchor_id };
+        let f_cp = Checkpoint { epoch: 0, root: F_ROOT };
+
+        let f_id = forks.roll(anchor_id, 1, F_ROOT);
+        forks.d_id = forks.roll(f_id, 2, D_ROOT);
+        forks.f2_id = forks.roll(anchor_id, 1, F2_ROOT);
+
+        // Insert F2 first so its idx is below F's — fork choice's `prune`
+        // only drops the prefix below the finalized node, so the sibling has
+        // to live ahead of the to-be-finalized node to be reclaimed.
+        forks.node(1, F2_ROOT, ANCHOR_ROOT, Checkpoint::default(), forks.f2_id);
+        forks.node(1, F_ROOT, ANCHOR_ROOT, f_cp, f_id);
+        forks.node(2, D_ROOT, F_ROOT, f_cp, forks.d_id);
+
+        // Head is D; finality target is F.
+        forks.tile.last_applied = forks.d_id;
+        forks.tile.last_applied_block_root = D_ROOT;
+        forks.tile.fork_choice.finalized_checkpoint = f_cp;
+        // Republish so the seqlock control matches the new head.
+        forks.tile.state.publish_state_id(forks.d_id);
+        forks
+    }
+
+    fn block_roots(&self, id: StateId, slots: &[Slot]) -> Vec<B256> {
+        let roots = self.tile.state.state().block_roots.view(id.block_roots_idx);
+        slots.iter().map(|&s| roots.at_slot(s)).collect()
+    }
+
+    /// A block staged on its data columns: STF committed to `id`, not in
+    /// fork choice.
+    fn stage(
+        &mut self,
+        producer: &mut TProducer,
+        root: B256,
+        parent_root: B256,
+        parent: StateId,
+        slot: Slot,
+    ) -> StateId {
+        let id = self.roll(parent, slot, root);
+        let PendingBlock::Gossip(msg) = gossip_pending(producer, slot) else { unreachable!() };
+        let parsed = ParsedBlock {
+            header: BeaconBlockHeader {
+                slot,
+                proposer_index: 0,
+                parent_root,
+                state_root: [0u8; 32],
+                body_root: [0u8; 32],
+            },
+            block_root: root,
+            has_data_columns: true,
+            parent_state_id: parent,
+            is_gloas: false,
+            parent_payload_status: PayloadStatus::Full,
+            relay_eligible: false,
+        };
+        self.tile.data_availability.hold(WaitingBlock {
+            staged: StagedBlock::with_state_id(parsed, id),
+            read: msg.ssz,
+            source: BlockSource::Gossip,
+        });
+        id
+    }
+}
+
 /// `maybe_finalize` with `fin_idx > 0` must (a) promote the finalized
 /// delta into the base, (b) prune non-descendant siblings from fork
 /// choice, (c) leave the surviving descendant reading the same values it
@@ -2461,127 +2579,16 @@ fn epoch_transition_keeps_base_until_finality() {
 /// single-fork tests take the no-promote branch (`fin_idx == 0`).
 #[test]
 fn multi_fork_finalize_promotes_and_rebases() {
-    let mut tile = make_tile();
-    seed_tile(&mut tile, 4, 0);
-    let anchor_id = tile.last_applied;
-
-    const F_ROOT: B256 = [0x0F; 32];
-    const D_ROOT: B256 = [0x0D; 32];
-    const F2_ROOT: B256 = [0xF2; 32];
-    const ZERO_CP: Checkpoint = Checkpoint { epoch: 0, root: [0u8; 32] };
-    let f_cp = Checkpoint { epoch: 0, root: F_ROOT };
-
-    // Roll a slot-group fork off `parent` with a slot number, then commit —
-    // the writer→commit path (no in-place re-open).
-    let roll_slot = |st: &mut BeaconStateOwner, parent: SlotStateId, slot: Slot| {
-        let mut g = st.write();
-        let mut sw = g.slot_states.roll_from(parent);
-        sw.state_mut().slot = slot;
-        sw.commit()
-    };
-    // The block-roots column, written where `process_slot` writes it.
-    let roll_block_roots =
-        |st: &mut BeaconStateOwner, parent: BlockRootsId, slot: Slot, root: B256| {
-            let mut g = st.write();
-            let mut w = g.block_roots.roll_from(parent);
-            w.set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, root);
-            w.commit()
-        };
-    let roll_balances = |st: &mut BeaconStateOwner, parent| {
-        let mut g = st.write();
-        g.balances.roll_from(parent).commit()
-    };
-
-    // F: child of anchor (to be finalized). Each fork's bundle copies its
-    // parent's and re-points the rolled tiers (slot + balances + block roots
-    // here, the others shared for this test).
-    let f_id = StateId {
-        balances_idx: roll_balances(&mut tile.state, anchor_id.balances_idx),
-        slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1),
-        block_roots_idx: roll_block_roots(&mut tile.state, anchor_id.block_roots_idx, 1, F_ROOT),
-        ..anchor_id
-    };
-
-    // D: child of F (head, survives). Shares F's pages for slot 1 and writes
-    // its own bucket for slot 2.
-    let d_id = StateId {
-        balances_idx: roll_balances(&mut tile.state, f_id.balances_idx),
-        slot_idx: roll_slot(&mut tile.state, f_id.slot_idx, 2),
-        block_roots_idx: roll_block_roots(&mut tile.state, f_id.block_roots_idx, 2, D_ROOT),
-        ..f_id
-    };
-
-    // F2: sibling of F (will be pruned by fork choice).
-    let f2_id = StateId {
-        balances_idx: roll_balances(&mut tile.state, anchor_id.balances_idx),
-        slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1),
-        block_roots_idx: roll_block_roots(&mut tile.state, anchor_id.block_roots_idx, 1, F2_ROOT),
-        ..anchor_id
-    };
-
-    // Insert F2 first so its idx is below F's — fork choice's `prune`
-    // only drops the prefix below the finalized node, so the sibling has
-    // to live ahead of the to-be-finalized node to be reclaimed.
-    tile.fork_choice.on_block(BlockImport {
-        slot: 1,
-        block_root: F2_ROOT,
-        parent_root: ANCHOR_ROOT,
-        execution_block_hash: [0u8; 32],
-        justified: ZERO_CP,
-        finalized: ZERO_CP,
-        unrealized_justified: ZERO_CP,
-        unrealized_finalized: ZERO_CP,
-        state_id: f2_id,
-        bid_block_hash: [0u8; 32],
-        parent_payload_status: PayloadStatus::Full,
-        payload_verified: true,
-        is_gloas: false,
-    });
-    tile.fork_choice.on_block(BlockImport {
-        slot: 1,
-        block_root: F_ROOT,
-        parent_root: ANCHOR_ROOT,
-        execution_block_hash: [0u8; 32],
-        justified: f_cp,
-        finalized: f_cp,
-        unrealized_justified: f_cp,
-        unrealized_finalized: f_cp,
-        state_id: f_id,
-        bid_block_hash: [0u8; 32],
-        parent_payload_status: PayloadStatus::Full,
-        payload_verified: true,
-        is_gloas: false,
-    });
-    tile.fork_choice.on_block(BlockImport {
-        slot: 2,
-        block_root: D_ROOT,
-        parent_root: F_ROOT,
-        execution_block_hash: [0u8; 32],
-        justified: f_cp,
-        finalized: f_cp,
-        unrealized_justified: f_cp,
-        unrealized_finalized: f_cp,
-        state_id: d_id,
-        bid_block_hash: [0u8; 32],
-        parent_payload_status: PayloadStatus::Full,
-        payload_verified: true,
-        is_gloas: false,
-    });
-
-    // Head is D; finality target is F.
-    tile.last_applied = d_id;
-    tile.last_applied_block_root = D_ROOT;
-    tile.fork_choice.finalized_checkpoint = f_cp;
-    // Republish so the seqlock control matches the new head.
-    tile.state.publish_state_id(d_id);
+    let mut forks = ThreeForks::new();
+    let d_id = forks.d_id;
 
     // Sanity: pre-finalize state.
-    assert_eq!(tile.state.state().slot_states.finalized_view().slot_number(), 0);
-    let d_roots = tile.state.state().block_roots.view(d_id.block_roots_idx);
-    assert_eq!([d_roots.at_slot(1), d_roots.at_slot(2)], [F_ROOT, D_ROOT]);
-    assert!(tile.fork_choice.find_node_idx(&F2_ROOT).is_some());
+    assert_eq!(forks.tile.state.state().slot_states.finalized_view().slot_number(), 0);
+    assert_eq!(forks.block_roots(d_id, &[1, 2]), [F_ROOT, D_ROOT]);
+    assert!(forks.tile.fork_choice.find_node_idx(&F2_ROOT).is_some());
 
-    tile.maybe_finalize();
+    forks.tile.maybe_finalize();
+    let tile = &forks.tile;
 
     // (a) Base advanced to F's slot scalars.
     let base = tile.state.state().slot_states.finalized_view();
@@ -2596,13 +2603,38 @@ fn multi_fork_finalize_promotes_and_rebases() {
     //     into the base, D's through its own. Finalize re-anchored D into a
     //     fresh slot fork, so re-read its bundle from the fork-choice node.
     let d_rebased = tile.fork_choice.node(d_node).state_id;
-    let d_roots = tile.state.state().block_roots.view(d_rebased.block_roots_idx);
-    assert_eq!([d_roots.at_slot(1), d_roots.at_slot(2)], [F_ROOT, D_ROOT], "D's roots survive");
+    assert_eq!(forks.block_roots(d_rebased, &[1, 2]), [F_ROOT, D_ROOT], "D's roots survive");
 
     // (d) D was the head, so `last_applied` got the same re-anchored
     //     bundle (not the stale pre-finalize one).
     assert_eq!(tile.last_applied, d_rebased, "head bundle refreshed");
     assert_ne!(tile.last_applied, d_id, "stale head bundle replaced");
+}
+
+/// A block staged on its data columns holds a committed state off a live
+/// parent: finalization re-anchors it like a node when its parent survives
+/// and drops it when its parent is pruned.
+#[test]
+fn staged_blocks_follow_finalization() {
+    const S_ROOT: B256 = [0x05; 32];
+    const S2_ROOT: B256 = [0x52; 32];
+    let mut forks = ThreeForks::new();
+    let mut producer = TCache::producer("test_staged_finalize", 1 << 12);
+    let s_id = forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+    forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
+
+    forks.tile.maybe_finalize();
+
+    let da = &forks.tile.data_availability;
+    assert!(!da.is_awaiting(&S2_ROOT), "S2 dropped with F2");
+    assert!(da.is_awaiting(&S_ROOT), "S survives");
+    let s_rebased = da.state_id(&S_ROOT).unwrap();
+    assert_ne!(s_rebased, s_id, "stale staged bundle replaced");
+    assert_eq!(
+        forks.block_roots(s_rebased, &[1, 2, 3]),
+        [F_ROOT, D_ROOT, S_ROOT],
+        "S's roots survive"
+    );
 }
 
 /// Write a sentinel into every tier on a fork, finalize it, and require the
@@ -2673,7 +2705,7 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
         // Deliberately no `..anchor_id` shorthand: every field is written out,
         // so adding a field to `StateId` is a compile error here. Whoever adds
         // one must then write a sentinel for it in this test and call its
-        // `finalize` in `promote_and_rebase`. Builders get no sentinel: the
+        // `finalize` in `BeaconState::finalize`. Builders get no sentinel: the
         // field is Gloas-only and a Fulu encode never reads it.
         let a = &anchor_id;
         StateId {

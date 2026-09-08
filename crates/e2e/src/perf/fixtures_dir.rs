@@ -22,12 +22,12 @@ pub struct Thresholds {
     /// One-shot cost of `decompose` at harness boot.
     #[serde(deserialize_with = "de_duration")]
     pub max_decompose: Option<Nanos>,
-    /// `apply_and_publish` — ingest → published, the tick-to-attestable
-    /// window, so the gate covers the publish half too.
+    /// `stage_block` — STF + commit + the block's votes into fork choice; the
+    /// STF leg of the receive → attestable path.
     #[serde(deserialize_with = "de_duration")]
-    pub max_apply_and_publish_p50: Option<Nanos>,
+    pub max_stage_block_p50: Option<Nanos>,
     #[serde(deserialize_with = "de_duration")]
-    pub max_apply_and_publish_max: Option<Nanos>,
+    pub max_stage_block_max: Option<Nanos>,
     /// Average wall time of one `process_epoch` (epoch-transition) call.
     #[serde(deserialize_with = "de_duration")]
     pub max_process_epoch_avg: Option<Nanos>,
