@@ -464,7 +464,8 @@ impl SyncEngine {
         parent_slot: Option<u64>,
         stage: BlockStage,
     ) {
-        self.window.block_received(slot, block_root, parent_slot, stage == BlockStage::Applied);
+        let applied = matches!(stage, BlockStage::Applied | BlockStage::AlreadyKnown);
+        self.window.block_received(slot, block_root, parent_slot, applied);
         self.phase.note_report(DataKind::Block, slot);
         self.ctx.root_requests.retire(&block_root);
     }

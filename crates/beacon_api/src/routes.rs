@@ -9,6 +9,7 @@ use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
+    events::events,
     ids::{parse_root, parse_uint64},
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
@@ -42,6 +43,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
     (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
     (Method::Get, "/eth/v1/config/spec", spec),
+    (Method::Get, "/eth/v1/events", events),
     (Method::Get, "/eth/v1/node/health", health),
     (Method::Get, "/eth/v1/node/identity", identity),
     (Method::Get, "/eth/v1/node/peer_count", not_implemented),
@@ -294,7 +296,10 @@ mod tests {
     use silver_httpcore::ParsedRequest;
 
     use super::*;
-    use crate::{SlotStatus, router::Router};
+    use crate::{
+        SlotStatus,
+        router::{Router, Served},
+    };
 
     /// Wire bytes the pre-table implementation produced for these exact
     /// inputs (captured before the table dispatch landed).
@@ -317,7 +322,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        router.dispatch(&req, ctx, &mut out);
+        assert_eq!(router.dispatch(&req, ctx, &mut out), Served::Response);
         out
     }
 
@@ -607,7 +612,7 @@ mod tests {
                 version: 1,
                 keep_alive: true,
             };
-            router.dispatch(&req, &ctx, &mut out);
+            assert_eq!(router.dispatch(&req, &ctx, &mut out), Served::Response);
             assert!(out.starts_with(b"HTTP/1.1 501 Not Implemented\r\n"), "{method} {path}");
             assert_eq!(
                 body(&out),
@@ -631,13 +636,6 @@ mod tests {
     fn unknown_path_returns_404() {
         let router = Router::new(ROUTES);
         let resp = get(&router, &preboot_ctx(), "/not/real");
-        assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-    }
-
-    #[test]
-    fn events_returns_404_v1_defers_sse_clients_poll() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/events");
         assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     }
 

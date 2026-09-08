@@ -190,7 +190,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::Router,
+        router::{Router, Served},
         routes::{ROUTES, preboot_ctx},
     };
 
@@ -244,7 +244,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        Router::new(ROUTES).dispatch(&req, &preboot_ctx(), &mut out);
+        assert_eq!(Router::new(ROUTES).dispatch(&req, &preboot_ctx(), &mut out), Served::Response);
         out
     }
 

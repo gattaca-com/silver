@@ -1,6 +1,6 @@
 use silver_httpcore::{ParsedRequest, frame_response};
 
-use crate::{response::Response, routes::ApiCtx};
+use crate::{events::ChannelSet, response::Response, routes::ApiCtx};
 
 const MAX_PARAMS: usize = 4;
 
@@ -23,6 +23,13 @@ impl Method {
 }
 
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "Stream requires switching the connection to the subscription machine"]
+pub(crate) enum Served {
+    Response,
+    Stream(ChannelSet),
+}
 
 // `method` and `path` become live with a handler that answers on more than the
 // route it was dispatched by; until then only tests read them.
@@ -125,7 +132,12 @@ impl Router {
         Self { routes }
     }
 
-    pub(crate) fn dispatch(&self, req: &ParsedRequest<'_>, ctx: &ApiCtx, out: &mut Vec<u8>) {
+    pub(crate) fn dispatch(
+        &self,
+        req: &ParsedRequest<'_>,
+        ctx: &ApiCtx,
+        out: &mut Vec<u8>,
+    ) -> Served {
         let method = Method::parse(req.method);
         let mut path_known = false;
         for route in &self.routes {
@@ -142,8 +154,9 @@ impl Router {
                 content_type: req.content_type,
                 body: req.body,
             };
-            (route.handler)(&request, ctx, &mut Response::new(out));
-            return;
+            let mut response = Response::new(out);
+            (route.handler)(&request, ctx, &mut response);
+            return response.served();
         }
         if path_known {
             Response::new(out).error(405, "method not allowed");
@@ -151,6 +164,7 @@ impl Router {
             tracing::warn!("unknown path: {}", req.path);
             frame_response(out, "404 Not Found", None, b"");
         }
+        Served::Response
     }
 }
 
@@ -205,7 +219,10 @@ mod tests {
 
     fn dispatch(router: &Router, method: &str, path: &str) -> Vec<u8> {
         let mut out = Vec::new();
-        router.dispatch(&request(method, path), &preboot_ctx(), &mut out);
+        assert_eq!(
+            router.dispatch(&request(method, path), &preboot_ctx(), &mut out),
+            Served::Response
+        );
         out
     }
 
@@ -261,7 +278,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        router.dispatch(&req, &preboot_ctx(), &mut out);
+        assert_eq!(router.dispatch(&req, &preboot_ctx(), &mut out), Served::Response);
         out
     }
 
@@ -345,7 +362,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        router.dispatch(&req, &preboot_ctx(), &mut out);
+        assert_eq!(router.dispatch(&req, &preboot_ctx(), &mut out), Served::Response);
         assert_eq!(body(&out), b"k=v|payload");
     }
 

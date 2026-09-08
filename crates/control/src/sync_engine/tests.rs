@@ -892,6 +892,16 @@ fn the_window_names_the_block_whose_state_it_reports() {
     assert_eq!(e.window.coverage(4).block, BlockState::Applied);
 }
 
+#[test]
+fn an_already_known_block_covers_its_slot_as_applied() {
+    const C: [u8; 32] = [0xcc; 32];
+    let mut e = engine();
+
+    e.on_block_received(4, C, Some(3), BlockStage::AlreadyKnown);
+    assert_eq!(e.window.coverage(4).block, BlockState::Applied);
+    assert_eq!(e.window.seen_blocks(4).root, C);
+}
+
 /// Step 3 of the starvation policy: one slot holding the tail long enough
 /// is the chain's problem, not the round's, so selection is handed
 /// something else to try. Nothing is conceded — the slot is still owed.

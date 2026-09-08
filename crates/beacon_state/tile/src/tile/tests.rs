@@ -1,4 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "ef_tests")]
+use std::{fs, path::PathBuf};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
@@ -8,14 +10,14 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent, StreamProtocol, TCache,
-    TCacheProducer, TCacheRead, TProducer,
+    BlockStage, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent,
+    StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
         SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SignedAggregateAndProofView, SingleAttestationView, StatusView,
+        SignedAggregateAndProofView, SignedBeaconBlockView, SingleAttestationView, StatusView,
     },
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
@@ -111,7 +113,10 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
 
 /// Like `make_tile_at_wall_slot` but returns the gossip producer so tests
 /// can write real block buffers the tile's consumer can read back.
-fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer, TProducer) {
+fn make_tile_with_gossip(
+    wall_slot: u64,
+    state: BeaconState,
+) -> (BeaconStateTile, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
@@ -133,7 +138,7 @@ fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer, TProduc
         engine_c,
         replay_c,
         true,
-        BeaconState::empty_test(0),
+        state,
     );
     (tile, gossip_p, event_p)
 }
@@ -475,6 +480,108 @@ fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCac
     (bytes.to_vec(), read)
 }
 
+struct Sink;
+
+impl Tile<SilverSpine> for Sink {
+    fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
+}
+
+fn block_stages(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, BlockStage)> {
+    let mut stages = Vec::new();
+    sink.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::BlockReceived { block_root, stage, .. } = event {
+            stages.push((block_root, stage));
+        }
+    });
+    stages
+}
+
+fn anchor_child(block_root: B256, state_id: StateId) -> BlockImport {
+    let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+    BlockImport {
+        slot: 11,
+        block_root,
+        parent_root: ANCHOR_ROOT,
+        execution_block_hash: [0u8; 32],
+        justified: anchor_cp,
+        finalized: anchor_cp,
+        unrealized_justified: anchor_cp,
+        unrealized_finalized: anchor_cp,
+        state_id,
+        bid_block_hash: [0u8; 32],
+        parent_payload_status: PayloadStatus::Full,
+        payload_verified: true,
+        is_gloas: false,
+    }
+}
+
+#[test]
+fn a_block_already_in_fork_choice_is_reported_already_known() {
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+
+    let mut bytes = empty_block();
+    bytes[100..108].copy_from_slice(&11u64.to_le_bytes());
+    bytes[116..148].copy_from_slice(&ANCHOR_ROOT);
+    let header = BeaconBlockHeader {
+        slot: 11,
+        proposer_index: 0,
+        parent_root: ANCHOR_ROOT,
+        state_root: [0u8; 32],
+        body_root: ssz_hash::hash_tree_root_body(SignedBeaconBlockView::body(&bytes), false),
+    };
+    let block_root = ssz_hash::hash_tree_root_block_header(&header);
+    tile.fork_choice.on_block(anchor_child(block_root, tile.last_applied));
+
+    let (data, read) = publish_block_bytes(&mut gp, &bytes);
+    let feedback =
+        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+            panic!("a repeat is never relayed")
+        });
+    assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
+    assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn a_block_is_applied_once_and_already_known_on_repeat() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
+    let read = |name: &str| {
+        let path = fixture.join(name);
+        fs::read(&path)
+            .unwrap_or_else(|e| panic!("{}: {e} (run `just ef-tests-download`)", path.display()))
+    };
+    let (pre, block) = (read("pre.ssz_snappy"), read("blocks_0.ssz_snappy"));
+    let pre_ssz = snap::Decoder::new().decompress_vec(&pre).expect("snappy pre");
+    let block_ssz = snap::Decoder::new().decompress_vec(&block).expect("snappy block");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+    let block_slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(block_slot + 1, state);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+
+    // The checkpoint was loaded without decompressed pubkeys, so this import
+    // bypasses proposer-signature verification.
+    let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
+    let feedback =
+        tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+    let Feedback::Accept(Some(block_root)) = feedback else { panic!("{feedback:?}") };
+    assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
+
+    let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
+    let feedback =
+        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+            panic!("a repeat is never relayed")
+        });
+    assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
+    assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
+}
+
 /// Fulu requires the execution timestamp and the active blob limit before a
 /// block is propagated. The STF checks both, but that runs after the relay.
 #[test]
@@ -688,9 +795,16 @@ fn pending_admission_window_bounds() {
 fn tile_with_producers(
     wall_slot: u64,
 ) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+    tile_with_producers_on(wall_slot, BeaconState::empty_test(0))
+}
+
+fn tile_with_producers_on(
+    wall_slot: u64,
+    state: BeaconState,
+) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let (tile, gp, rp) = make_tile_with_gossip(wall_slot);
+    let (tile, gp, rp) = make_tile_with_gossip(wall_slot, state);
     let base = std::env::temp_dir().join(format!(
         "silver-pending-{}-{}",
         std::process::id(),

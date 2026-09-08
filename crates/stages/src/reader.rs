@@ -60,6 +60,11 @@ impl StageReader {
         else {
             return;
         };
+        // A repeat's timestamp does not date the original import or state
+        // transition, even if the root is no longer tracked.
+        if stage == BlockStage::AlreadyKnown {
+            return;
+        }
 
         self.roots.retain(|_, t| slot.saturating_sub(t.slot) < TRACKED_SLOTS);
         let tracked = self.roots.entry(block_root).or_insert(Tracked::new(slot));
@@ -293,6 +298,24 @@ mod tests {
             let t = find(&reader.out, stage).ts;
             assert!(t > ingested, "{stage} at {t} must follow its ingestion {ingested}");
         }
+    }
+
+    #[test]
+    fn a_repeat_receipt_of_an_imported_block_adds_no_stage() {
+        let mut reader = StageReader::default();
+        let root = [7u8; 32];
+        reader.on_beacon_state(&msg(imported(root, 2, BlockSource::Gossip), at(2, 300)));
+        let after_import = stages(&reader.out);
+
+        let repeat = block_received(root, 2, BlockSource::Rpc, BlockStage::AlreadyKnown);
+        reader.on_beacon_state(&msg(repeat, at(2, 900)));
+        assert_eq!(stages(&reader.out), after_import);
+
+        let untracked = [8u8; 32];
+        let repeat = block_received(untracked, 1, BlockSource::Rpc, BlockStage::AlreadyKnown);
+        reader.on_beacon_state(&msg(repeat, at(2, 950)));
+        assert_eq!(stages(&reader.out), after_import);
+        assert!(!reader.roots.contains_key(&untracked));
     }
 
     /// The replay that admits a parked block announces it again, at that
