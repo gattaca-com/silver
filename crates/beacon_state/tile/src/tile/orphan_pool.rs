@@ -27,12 +27,11 @@ impl BeaconStateTile {
             msgs.retain(|(_, msg)| outlives(msg));
             !msgs.is_empty()
         });
-        self.dc_pending_blocks.retain(|_, msg| outlives(msg));
         self.payload_pending_blocks.retain(|_, msgs| {
             msgs.retain(&mut outlives);
             !msgs.is_empty()
         });
-        self.dc_available.retain(|_, slot| *slot > finalized_slot);
+        self.data_availability.clear_finalized(finalized_slot);
 
         self.pending_envelopes.retain(|root, handle| {
             let held = handle.buffer().is_ok();
@@ -106,13 +105,17 @@ impl BeaconStateTile {
         }
 
         self.pending_blocks.entry(parent_root).or_default().push((block_root, pending));
-        producers.produce(SyncNeed::Missing {
-            root: parent_root,
-            slot: block_slot,
-            kind: DataKind::Block,
-            columns: 0,
-            origin: Origin::Live,
-        });
+        // A parent awaiting data availability is already held; its import drains this
+        // child.
+        if !self.data_availability.is_awaiting(&parent_root) {
+            producers.produce(SyncNeed::Missing {
+                root: parent_root,
+                slot: block_slot,
+                kind: DataKind::Block,
+                columns: 0,
+                origin: Origin::Live,
+            });
+        }
         true
     }
 
@@ -123,24 +126,6 @@ impl BeaconStateTile {
         let finalized_slot = self.head_finalized_checkpoint().epoch * SLOTS_PER_EPOCH;
         block_slot > finalized_slot &&
             block_slot <= self.ticker.current_slot() + self.pending_bounds.future_tolerance
-    }
-
-    pub(super) fn buffer_awaiting_columns(
-        &mut self,
-        block_root: B256,
-        pending: PendingBlock,
-    ) -> bool {
-        if !has_room(&self.dc_pending_blocks, self.pending_bounds.max_dc, &block_root) {
-            tracing::warn!(
-                block = hex32(&block_root),
-                cap = self.pending_bounds.max_dc,
-                "dc-pending buffer full; block awaiting columns dropped"
-            );
-            return false;
-        }
-
-        self.dc_pending_blocks.entry(block_root).or_insert(pending);
-        true
     }
 
     pub(super) fn buffer_awaiting_payload(
@@ -202,27 +187,6 @@ impl BeaconStateTile {
         }
     }
 
-    pub(super) fn handle_data_columns_available(
-        &mut self,
-        block_root: B256,
-        slot: u64,
-        producers: &mut Producers,
-    ) {
-        self.dc_available.insert(block_root, slot);
-        tracing::debug!(
-            block = hex32(&block_root),
-            slot = slot,
-            is_buffered = self.dc_pending_blocks.contains_key(&block_root),
-            dc_pending = self.dc_pending_blocks.len(),
-            "DataColumnsAvailable received"
-        );
-        if let Some(pending) = self.dc_pending_blocks.remove(&block_root) {
-            // Already relayed and BLS-verified when first seen (it reached the
-            // DA gate, which is past the signature check).
-            self.replay_pending_block(pending, false, true, producers);
-        }
-    }
-
     pub(super) fn on_accept(&mut self, block_root: Option<B256>, producers: &mut Producers) {
         if let Some(root) = block_root {
             self.apply_pending_blocks(root, producers);
@@ -244,9 +208,6 @@ impl BeaconStateTile {
                 let block_slot = SignedBeaconBlockView::slot(data);
                 self.buffer_orphan(parent_root, block_root, source, block_slot, producers)
                     .then_some(block_root)
-            }
-            Feedback::AwaitData(block_root) => {
-                self.buffer_awaiting_columns(block_root, source).then_some(block_root)
             }
             Feedback::AwaitParentPayload { parent_root, block_root } => self
                 .buffer_awaiting_payload(
@@ -322,7 +283,7 @@ impl BeaconStateTile {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::Fatal,
             }),
-            Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
+            Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
             _ => self.park_block(feedback, PendingBlock::Rpc(sender, read), data, producers),
         }
     }

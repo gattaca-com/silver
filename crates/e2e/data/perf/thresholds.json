@@ -1,8 +1,8 @@
-{
-  "max_decompose": "36s",
-  "max_apply_and_publish_p50": "32ms",
-  "max_apply_and_publish_max": "230ms",
-  "max_process_epoch_avg": "140ms",
-  "max_hash_tree_root_state_avg": "50us",
-  "max_finalize_avg": "8ms"
-}
+[
+  { "frame": "decompose", "stat": "total", "max": "36s" },
+  { "frame": "stage_and_import<BeaconStateTile>", "stat": "p50", "max": "32ms" },
+  { "frame": "stage_and_import<BeaconStateTile>", "stat": "max", "max": "230ms" },
+  { "frame": "process_epoch", "stat": "avg", "max": "140ms" },
+  { "frame": "hash_tree_root_state", "stat": "avg", "max": "50us" },
+  { "frame": "finalize<BeaconStateTile>", "stat": "avg", "max": "8ms" }
+]

@@ -25,8 +25,10 @@ local and CI: `just perf-local`, driven by `sync_pm_bs_perf.rs`.
 just perf-local
 ```
 
-Ceilings live in `crates/e2e/data/perf/thresholds.json` (either field `null`
-to disable) — no env overrides; tune by editing it in a PR.
+Ceilings live in `crates/e2e/data/perf/thresholds.json`: one row per
+`#[timed]` frame and statistic (`total`, `avg`, `p50`, `max`), with `max` as
+the ceiling (`null` lists the row without gating). No env overrides; tune by
+editing it in a PR.
 
 ### Refresh
 

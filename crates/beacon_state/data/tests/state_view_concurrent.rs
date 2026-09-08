@@ -134,7 +134,7 @@ fn fuzz_concurrent_reads_observe_consistent_state() {
             // resolve a bundle whose slot id was already re-anchored.
             let mut guard = control.write();
             let bs = guard.deref_mut();
-            bs.block_roots.finalize(&head, &[head], |s| s.block_roots_idx);
+            bs.block_roots.finalize(head.block_roots_idx, &[head], |s| s.block_roots_idx);
             let fresh = bs.slot_states.finalize(head.slot_idx, &[head.slot_idx]);
             head = StateId { slot_idx: fresh[0], ..head };
             guard.set_state_id(head);

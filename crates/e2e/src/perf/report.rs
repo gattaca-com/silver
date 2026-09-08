@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use silver_common::Nanos;
 use silver_metrics::table::{Column, Table};
 
-use crate::perf::{BlockWorkload, Fixtures, fixtures_dir::Thresholds, replay::ReplayOutcome};
+use crate::perf::{BlockWorkload, Fixtures, replay::ReplayOutcome, thresholds::Threshold};
 
 pub struct PerfReport {
     outcome: ReplayOutcome,
     workloads: Vec<BlockWorkload>,
     finalized_slot: u64,
     out_dir: PathBuf,
-    thresholds: Thresholds,
+    thresholds: Vec<Threshold>,
 }
 
 impl PerfReport {
@@ -23,7 +23,7 @@ impl PerfReport {
             workloads,
             finalized_slot: fixtures.finalized_slot,
             out_dir,
-            thresholds: fixtures.thresholds,
+            thresholds: fixtures.thresholds.clone(),
         }
     }
 
@@ -51,49 +51,14 @@ impl PerfReport {
     /// Shared by `print_key_metrics` and `check_thresholds` so both views
     /// agree on the same set of metrics in the same order.
     fn gauges(&self) -> Vec<Gauge> {
-        let t = &self.thresholds;
-        vec![
-            Gauge {
-                label: "decompose",
-                actual: self.frame_total_ns("decompose"),
-                threshold: t.max_decompose,
-            },
-            Gauge {
-                label: "apply_and_publish (p50)",
-                actual: self.outcome.stats.aggregate_leaf_p50("apply_and_publish<BeaconStateTile>"),
-                threshold: t.max_apply_and_publish_p50,
-            },
-            Gauge {
-                label: "apply_and_publish (max)",
-                actual: self.outcome.stats.aggregate_leaf_max("apply_and_publish<BeaconStateTile>"),
-                threshold: t.max_apply_and_publish_max,
-            },
-            Gauge {
-                label: "process_epoch (avg)",
-                actual: self.frame_avg_ns("process_epoch"),
-                threshold: t.max_process_epoch_avg,
-            },
-            Gauge {
-                label: "hash_tree_root_state (avg)",
-                actual: self.frame_avg_ns("hash_tree_root_state"),
-                threshold: t.max_hash_tree_root_state_avg,
-            },
-            Gauge {
-                label: "finalize (avg)",
-                actual: self.frame_avg_ns("finalize<BeaconStateTile>"),
-                threshold: t.max_finalize_avg,
-            },
-        ]
-    }
-
-    fn frame_total_ns(&self, frame: &str) -> Option<Nanos> {
-        let (sum, count) = self.outcome.stats.aggregate_leaf(frame);
-        (count > 0).then_some(sum)
-    }
-
-    fn frame_avg_ns(&self, frame: &str) -> Option<Nanos> {
-        let (sum, count) = self.outcome.stats.aggregate_leaf(frame);
-        (count > 0).then(|| sum / count)
+        self.thresholds
+            .iter()
+            .map(|t| Gauge {
+                label: t.label(),
+                actual: t.stat.measure(&self.outcome.stats, &t.frame),
+                threshold: t.max,
+            })
+            .collect()
     }
 
     fn n_blocks(&self) -> u64 {
@@ -169,7 +134,7 @@ impl PerfReport {
 }
 
 struct Gauge {
-    label: &'static str,
+    label: String,
     actual: Option<Nanos>,
     threshold: Option<Nanos>,
 }
@@ -195,7 +160,7 @@ impl Gauge {
             (Some(a), Some(c)) if a > c => (c.to_string(), "BREACH"),
             (_, Some(c)) => (c.to_string(), "ok"),
         };
-        vec![self.label.to_string(), actual, threshold, status.to_string()]
+        vec![self.label.clone(), actual, threshold, status.to_string()]
     }
 
     /// Breach-panic row: a self-contained line for the failure message, which

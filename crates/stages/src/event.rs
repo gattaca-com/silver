@@ -31,7 +31,7 @@ pub enum Stage {
     /// Post-state committed: publish of the root's first `BlockReceived`
     /// past `AwaitParent`. Precedes `Attestable` when data gated the import.
     StfDone,
-    /// Imported into fork choice with the new head published: publish of the
+    /// In fork choice with the new head published: publish of the
     /// root's first `BlockReceived { stage: Applied }`, ahead of the FCU.
     Attestable,
 }

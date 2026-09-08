@@ -48,6 +48,7 @@ mod delta_view;
 mod encode;
 mod epoch;
 mod eth1;
+mod finalize;
 pub mod gloas;
 mod longtail;
 mod parsed;

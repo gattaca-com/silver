@@ -16,7 +16,7 @@ use crate::{
     merkle,
     ssz_hash::{self, hash_tree_root_block_header},
     stf::{
-        AttestationVote, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
+        AttestationVote, BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
         collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_execution_payload_bid,
         collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
@@ -41,8 +41,7 @@ pub fn apply_block(
     header: &BeaconBlockHeader,
     shuffling: Option<&ShufflingRef<'_>>,
     scratch: &mut StfScratch,
-    attestation_votes: &mut Vec<AttestationVote>,
-    slashed_sink: &mut Vec<u32>,
+    out: &mut BlockVotes,
     sig_batch: &mut SigBatch,
 ) -> Result<(Option<EpochId>, Option<LongtailId>)> {
     let block_slot = header.slot;
@@ -96,8 +95,8 @@ pub fn apply_block(
         block_slot,
         proposer_index,
         shuffling,
-        attestation_votes,
-        slashed_sink,
+        &mut out.votes,
+        &mut out.slashed,
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
@@ -542,7 +541,7 @@ fn apply_block_body(
         process_proposer_slashings(&mut *view, epoch, cfg, section)?;
     }
     if let Some(section) = offsets.attester_slashings() {
-        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch, slashed_sink)?;
+        process_attester_slashings(&mut *view, epoch, cfg, section, slashed_sink)?;
     }
     if let Some(section) = offsets.attestations() {
         process_attestations(

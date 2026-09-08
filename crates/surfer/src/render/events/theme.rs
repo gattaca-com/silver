@@ -39,6 +39,7 @@ pub struct Components {
     pub stf: Color,
     pub validate: Color,
     pub apply: Color,
+    pub da_wait: Color,
 }
 
 impl Default for Components {
@@ -50,6 +51,7 @@ impl Default for Components {
             stf: Color::Yellow,
             validate: Color::LightBlue,
             apply: Color::Blue,
+            da_wait: Color::DarkGray,
         }
     }
 }
@@ -65,6 +67,7 @@ impl Components {
             Span::Stf(StfSpan::Root) => Some(self.stf),
             Span::Stf(StfSpan::Validate) => Some(self.validate),
             Span::Stf(StfSpan::Apply) => Some(self.apply),
+            Span::Stf(StfSpan::DaWait) => Some(self.da_wait),
             Span::El => None,
         }
     }

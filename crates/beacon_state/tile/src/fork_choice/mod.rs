@@ -338,7 +338,7 @@ impl ForkChoice {
         self.current_slot / SLOTS_PER_EPOCH
     }
 
-    pub fn live_state_ids(&self) -> impl Iterator<Item = StateId> + '_ {
-        self.nodes.iter().map(|n| n.state_id)
+    pub fn live_state_ids_mut(&mut self) -> impl Iterator<Item = &mut StateId> {
+        self.nodes.iter_mut().map(|node| &mut node.state_id)
     }
 }

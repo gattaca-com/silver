@@ -242,16 +242,11 @@ pub(crate) fn for_each_sorted_intersection(i1: &[u8], i2: &[u8], mut f: impl FnM
 }
 
 /// Pass 2 — validate data + state, slash the intersection. BLS verified.
-///
-/// `scratch` is a u32 scratch that holds the slashable-intersection
-/// indices between read-phase and mutate-phase. Caller-provided so the
-/// allocation amortises; bounded by `MAX_ATTESTING_INDICES`.
 pub fn process_attester_slashings(
     view: &mut StateWriterView,
     epoch: EpochView,
     cfg: &SpecConfig,
     data: &[u8],
-    scratch: &mut Vec<u32>,
     slashed_sink: &mut Vec<u32>,
 ) -> Result<(), AttesterSlashingError> {
     if data.is_empty() {
@@ -279,31 +274,19 @@ pub fn process_attester_slashings(
 
             // Spec requires ≥1 currently-slashable validator in the
             // intersection; a no-op slashing makes the block invalid.
-            let mut slashed_any = false;
-            // Collect slashable indices first to avoid holding `view` while
-            // calling the mutating `slash_validator`.
-            scratch.clear();
-            {
-                let v = view.validators.reader();
-                for_each_sorted_intersection(i1, i2, |vi| {
-                    let vi32 = vi as u32;
-                    if vi < n && is_slashable_validator(&v, vi32, current_epoch) {
-                        scratch.push(vi32);
-                    }
-                    false
-                });
-            }
-            for &vi in scratch.iter() {
-                // Re-check slashability after each prior slash mutation in the
-                // loop.
-                if is_slashable_validator(&view.validators.reader(), vi, current_epoch) {
-                    slash_validator(cfg, view, vi, proposer_index);
-                    slashed_sink.push(vi);
-                    slashed_any = true;
+            let start = slashed_sink.len();
+            let validators = view.validators.reader();
+            for_each_sorted_intersection(i1, i2, |vi| {
+                if vi < n && is_slashable_validator(&validators, vi as u32, current_epoch) {
+                    slashed_sink.push(vi as u32);
                 }
-            }
-            if !slashed_any {
+                false
+            });
+            if slashed_sink.len() == start {
                 return Err(AttesterSlashingError::NoSlashedIntersection);
+            }
+            for &vi in &slashed_sink[start..] {
+                slash_validator(cfg, view, vi, proposer_index);
             }
             Ok(())
         },

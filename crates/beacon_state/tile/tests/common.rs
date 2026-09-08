@@ -17,7 +17,7 @@ use silver_beacon_state::{
 };
 use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, DataColumnsEvent, DataKind, GossipTopic, MessageId, NewGossipMsg,
+    BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, GossipTopic, MessageId, NewGossipMsg,
     P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncNeed,
     SyncUpdate, TCache, TCacheProducer, TProducer, TRandomAccess, hex32,
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
@@ -105,6 +105,8 @@ pub enum OutboundKind {
     SendGossip,
     ReplayComplete,
     BlockReceived,
+    BlockStaged,
+    BlockApplied,
     RequestBlock,
     RequestEnvelope,
     Reorg,
@@ -120,6 +122,8 @@ impl OutboundKind {
             "send_gossip" => Self::SendGossip,
             "replay_complete" => Self::ReplayComplete,
             "block_received" => Self::BlockReceived,
+            "block_staged" => Self::BlockStaged,
+            "block_applied" => Self::BlockApplied,
             "request_block" => Self::RequestBlock,
             "request_envelope" => Self::RequestEnvelope,
             "reorg" => Self::Reorg,
@@ -136,6 +140,19 @@ impl OutboundKind {
             BeaconStateEvent::ReplayComplete => Self::ReplayComplete,
             BeaconStateEvent::BlockReceived { .. } => Self::BlockReceived,
             BeaconStateEvent::Reorg { .. } => Self::Reorg,
+        }
+    }
+
+    /// The stage a `BlockReceived` carries, logged beside `BlockReceived`.
+    fn classify_stage(ev: &BeaconStateEvent) -> Option<Self> {
+        match ev {
+            BeaconStateEvent::BlockReceived { stage: BlockStage::AwaitData, .. } => {
+                Some(Self::BlockStaged)
+            }
+            BeaconStateEvent::BlockReceived { stage: BlockStage::Applied, .. } => {
+                Some(Self::BlockApplied)
+            }
+            _ => None,
         }
     }
 
@@ -261,6 +278,7 @@ impl Harness {
         let log = &mut self.outbound_log;
         self.inj_adapter.consume(|ev: BeaconStateEvent, _| {
             log.push(OutboundKind::classify(&ev));
+            log.extend(OutboundKind::classify_stage(&ev));
         });
         self.inj_adapter.consume(|need: SyncNeed, _| {
             if let Some(kind) = OutboundKind::classify_need(&need) {

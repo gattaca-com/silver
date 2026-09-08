@@ -309,8 +309,8 @@ impl PmBsHarness {
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
         let (start, count, peer, _request_id) = self.next_range_request();
         assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
-        // DA events first so blob-carrying blocks aren't held in
-        // dc_pending_blocks (same ordering as perf::replay).
+        // DA events first so blob-carrying blocks import on arrival instead
+        // of staging (same ordering as perf::replay).
         for sig in blocks.iter().filter_map(|b| data_columns_available(b)) {
             self.emit_data_columns_available(sig);
         }

@@ -13,7 +13,7 @@ use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic,
     NewGossipMsg, Origin, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
     SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
-    ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
+    ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
 use silver_config::{PendingBounds, SyncingConfig};
@@ -24,7 +24,8 @@ use crate::{
     ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
-        fork_data_roots::ForkDataRoots, orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
+        data_availability::DataAvailability, fork_data_roots::ForkDataRoots,
+        orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
         sync_contribution_pool::SyncContributionPool,
     },
@@ -35,6 +36,7 @@ mod attestation_pool;
 // `pub` for the crate's `attestation_root_memo` criterion bench.
 pub mod attestation_root_memo;
 mod block;
+mod data_availability;
 mod finalize;
 mod fork_choice;
 mod fork_data_roots;
@@ -58,6 +60,8 @@ pub enum Feedback {
         parent_root: B256,
         block_root: B256,
     },
+    /// State transition committed; fork-choice import waits on the block's
+    /// data columns.
     AwaitData(B256),
     AwaitParentPayload {
         parent_root: B256,
@@ -149,28 +153,20 @@ pub struct BeaconStateTile {
     /// Reusable state-transition scratch buffers, threaded into
     /// `apply_block` / `process_slots`.
     stf_scratch: stf::StfScratch,
-    /// Per-block buffer of votes emitted by `process_attestations` so the
-    /// tile can fold them into the vote tracker after `apply_block` returns.
-    attestation_votes_scratch: Vec<stf::AttestationVote>,
-    /// Per-block buffer of validator indices actually slashed by a block's
-    /// attester slashings; consumed in `publish_applied_block` to mark them
-    /// equivocating in fork choice. Also reused transiently by the gossip
-    /// attester-slashing path.
-    slashed_indices_scratch: Vec<u32>,
+    /// Free list; a block's transition output travels with it while it waits
+    /// for its data columns and returns here at import, so the pool grows to
+    /// the peak number of waiting blocks and then stops allocating.
+    vote_buffers: Vec<stf::BlockVotes>,
     /// Pre-validation pass collects every BLS sig in the block here, then
     /// runs `verify_all` once before pass 2 mutates state.
     sig_batch: bls::SigBatch,
     /// Pending blocks - blocks we have received for which we do not have a
     /// parent block. Keyed by the parent block_hash.
     pending_blocks: FxHashMap<B256, Vec<(B256, PendingBlock)>>,
-    /// Blocks fully prechecked but withheld from the STF until their data
-    /// columns are available.
-    dc_pending_blocks: FxHashMap<B256, PendingBlock>,
     /// Gloas: blocks withheld until their parent's execution-payload envelope
     /// is verified.
     payload_pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
-    /// Block roots the storage tile has signalled data-available.
-    dc_available: FxHashMap<B256, Slot>,
+    data_availability: DataAvailability,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: FxHashMap<B256, TRead>,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
@@ -237,15 +233,11 @@ impl BeaconStateTile {
             initial_status_emitted: false,
             cached_fork_digest: None,
             stf_scratch: stf::StfScratch::new(val_cap),
-            attestation_votes_scratch: Vec::with_capacity(
-                MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES,
-            ),
-            slashed_indices_scratch: Vec::with_capacity(MAX_ATTESTING_INDICES),
+            vote_buffers: vec![stf::BlockVotes::with_max_capacity()],
             sig_batch: bls::SigBatch::new(),
             pending_blocks: root_map(),
-            dc_pending_blocks: root_map(),
             payload_pending_blocks: root_map(),
-            dc_available: root_map(),
+            data_availability: DataAvailability::new(syncing.pending.max_dc),
             pending_envelopes: root_map(),
             pending_bounds: syncing.pending,
             gossip_consumer,
@@ -586,7 +578,7 @@ impl BeaconStateTile {
             tracing::trace!(
                 topic = ?m.topic,
                 p2p_peer = m.stream_id.peer(),
-                dc_pending_len = self.dc_pending_blocks.len(),
+                awaiting_len = self.data_availability.awaiting_len(),
                 head_slot = self.head_state_slot(),
                 "gossip dropped: BeaconState in Syncing mode"
             );

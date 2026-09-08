@@ -153,6 +153,7 @@ pub mod tests {
     pub const STF: Span = Span::Stf(StfSpan::Root);
     pub const VALIDATE: Span = Span::Stf(StfSpan::Validate);
     pub const APPLY: Span = Span::Stf(StfSpan::Apply);
+    pub const DA_WAIT: Span = Span::Stf(StfSpan::DaWait);
 
     pub fn cols(source: ColumnSource) -> Span {
         Span::Da(DaSpan::Cols(source))
@@ -257,6 +258,36 @@ pub mod tests {
             (Stage::DaAvailable, 470),
         ]);
         assert_eq!(late_gate.attestable_at(), Some(at(2, 470)), "DA joins the max when known");
+    }
+
+    /// A block parked on its columns commits its post-state, then waits; the
+    /// wait is its own span, and an unparked import has none.
+    #[test]
+    fn parked_block_waits_between_apply_and_import() {
+        let parked = trace(&[
+            (received(), 300),
+            (el_sent(), 301),
+            (Stage::StfDone, 308),
+            (Stage::DaAvailable, 336),
+            (Stage::Attestable, 337),
+        ]);
+        assert_eq!(parked.interval(APPLY), iv(at(2, 301), at(2, 308)), "dispatch → staged");
+        assert_eq!(parked.interval(DA_WAIT), iv(at(2, 308), at(2, 337)), "staged → import");
+        assert_eq!(parked.interval(STF), iv(at(2, 300), at(2, 337)));
+        assert!(parked.stf.parked());
+
+        let waiting = trace(&[(received(), 300), (el_sent(), 301), (Stage::StfDone, 308)]);
+        assert!(waiting.stf.parked(), "still parked");
+        assert_eq!(waiting.interval(DA_WAIT), None, "no import yet");
+
+        let unparked = trace(&[
+            (received(), 300),
+            (el_sent(), 301),
+            (Stage::StfDone, 308),
+            (Stage::Attestable, 308),
+        ]);
+        assert!(!unparked.stf.parked());
+        assert_eq!(unparked.interval(DA_WAIT), iv(at(2, 308), at(2, 308)));
     }
 
     /// Duplicates re-announce an imported block; the first import is the apply.

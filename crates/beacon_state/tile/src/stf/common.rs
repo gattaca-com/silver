@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{B256, Epoch, PendingDeposit, Slot};
-use silver_ssz::ssz_view::MAX_ATTESTING_INDICES;
+use silver_ssz::ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES};
 
 use crate::stf::MAX_PENDING_DEPOSITS_PER_EPOCH;
 
@@ -15,6 +15,28 @@ pub struct AttestationVote {
     // [New in Gloas]
     pub attestation_slot: Slot,
     pub payload_present: bool,
+}
+
+/// What a block's transition hands fork choice: its attesters' votes and the
+/// validators its attester slashings slashed.
+#[derive(Default)]
+pub struct BlockVotes {
+    pub votes: Vec<AttestationVote>,
+    pub slashed: Vec<u32>,
+}
+
+impl BlockVotes {
+    pub fn with_max_capacity() -> Self {
+        Self {
+            votes: Vec::with_capacity(MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES),
+            slashed: Vec::with_capacity(MAX_ATTESTING_INDICES),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.votes.clear();
+        self.slashed.clear();
+    }
 }
 
 /// Reusable scratch buffers threaded together through the state transition

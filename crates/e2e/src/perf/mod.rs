@@ -4,6 +4,7 @@
 pub mod fixtures_dir;
 pub mod replay;
 pub mod report;
+pub mod thresholds;
 pub mod workload;
 
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ pub struct Fixtures {
     pub state_ssz: Vec<u8>,
     pub blocks: Vec<Vec<u8>>,
     pub expected_head_state_root: [u8; 32],
-    pub thresholds: fixtures_dir::Thresholds,
+    pub thresholds: Vec<thresholds::Threshold>,
 }
 
 impl Fixtures {
