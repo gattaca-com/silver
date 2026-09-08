@@ -315,7 +315,7 @@ impl BeaconStateTile {
         // `latest_block_header.state_root` stays `[0;32]` — the first
         // post-bootstrap `process_slot` hashes that canonical state and a
         // patched value would shift the result.
-        let (block_root, execution_block_hash) = {
+        let (header, block_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
             let state_root = ssz_hash::hash_tree_root_state(&rv);
             let mut header = rv.slot.state().latest_block_header;
@@ -323,6 +323,7 @@ impl BeaconStateTile {
                 header.state_root = state_root;
             }
             (
+                header,
                 ssz_hash::hash_tree_root_block_header(&header),
                 rv.slot.state().latest_execution_payload_header.block_hash,
             )
@@ -333,10 +334,12 @@ impl BeaconStateTile {
         self.last_seen_head_root = block_root;
 
         let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
+        // A checkpoint state can be ahead of its latest block. Peers need
+        // the block's slot in Status.
         self.fork_choice = ForkChoice::init(
             trusted,
             trusted,
-            slot,
+            header.slot,
             block_root,
             execution_block_hash,
             anchor_is_gloas,
