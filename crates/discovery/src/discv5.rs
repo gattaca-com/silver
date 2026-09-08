@@ -1633,6 +1633,29 @@ mod tests {
         assert_eq!(d.local_enr.seq(), seq_after);
     }
 
+    /// A sequence bump advertises a changed ENR to peers. Repeating the same
+    /// fork ID should leave the record and its sequence unchanged.
+    #[test]
+    fn update_enr_fork_id_leaves_the_enr_untouched_when_it_already_says_that() {
+        let digest = [0x01, 0x02, 0x03, 0x04u8];
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let mut eth2 = [0u8; 16];
+        eth2[..4].copy_from_slice(&digest);
+        eth2[4..8].copy_from_slice(&digest);
+        eth2[8..].copy_from_slice(&u64::MAX.to_le_bytes());
+        let mut enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(20100u16).build(&sk).unwrap();
+        enr.set_eth2(eth2, &sk).unwrap();
+        let mut d = DiscV5::new(DiscoveryConfig::default(), sk, enr, digest);
+
+        let (seq, raw) = (d.local_enr.seq(), d.local_enr_raw.clone());
+        d.update_enr_fork_id(eth2);
+
+        assert_eq!(d.local_enr.seq(), seq, "no sequence bump");
+        assert_eq!(d.local_enr_raw, raw, "the signed record is byte-identical");
+        assert_eq!(d.fork_digest, digest);
+        assert!(d.previous_fork_digest.is_none(), "nothing was superseded");
+    }
+
     #[test]
     fn test_nodes_fork_digest_filter() {
         let now = Instant::now();
