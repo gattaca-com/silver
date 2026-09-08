@@ -46,11 +46,12 @@ impl DataAvailability {
         self.awaiting.len() < self.max_awaiting
     }
 
-    pub(super) fn hold(&mut self, waiting: WaitingBlock) {
+    pub(super) fn hold(&mut self, waiting: WaitingBlock) -> B256 {
         let block_root = waiting.staged.parsed.block_root;
         debug_assert!(!self.awaiting.contains_key(&block_root));
         debug_assert!(!self.available.contains_key(&block_root));
         self.awaiting.insert(block_root, waiting);
+        block_root
     }
 
     /// Records availability; returns the block it releases, if any.

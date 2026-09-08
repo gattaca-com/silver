@@ -129,10 +129,23 @@ impl BeaconStateTile {
             block_source: source,
         }));
 
-        let f = match self.stage_block(parsed, data) {
-            Ok(staged) if waits_for_columns => {
-                let block_root = staged.parsed.block_root;
-                self.data_availability.hold(WaitingBlock { staged, read, source });
+        let f = if waits_for_columns {
+            match self.stage_block(parsed, data) {
+                Ok(staged) => Feedback::AwaitData(self.data_availability.hold(WaitingBlock {
+                    staged,
+                    read,
+                    source,
+                })),
+                Err(f) => f,
+            }
+        } else {
+            self.stage_and_import(parsed, data)
+        };
+        match f {
+            Feedback::Accept(Some(block_root)) => {
+                self.announce_imported(data, block_root, read, source, producers);
+            }
+            Feedback::AwaitData(block_root) => {
                 self.emit_block_received(
                     data,
                     block_root,
@@ -140,21 +153,12 @@ impl BeaconStateTile {
                     source,
                     producers,
                 );
-                Feedback::AwaitData(block_root)
             }
-            Ok(staged) => {
-                let block_root = staged.parsed.block_root;
-                self.import_staged(staged, data);
-                self.announce_imported(data, block_root, read, source, producers);
-                Feedback::Accept(Some(block_root))
+            Feedback::Reject(Some(block_root)) => {
+                producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
             }
-            Err(f) => {
-                if let Feedback::Reject(Some(block_root)) = f {
-                    producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
-                }
-                f
-            }
-        };
+            _ => {}
+        }
         tracing::info!(
             ?source,
             head_slot = self.head_state_slot(),
@@ -307,7 +311,7 @@ impl BeaconStateTile {
         Ok(parsed)
     }
 
-    /// Replay and test ingest: no wait for columns, no EL, no announcements.
+    #[timed]
     fn stage_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
         let staged = match self.stage_block(parsed, data) {
             Ok(staged) => staged,
