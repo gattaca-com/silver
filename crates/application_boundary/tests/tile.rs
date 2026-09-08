@@ -744,8 +744,9 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
         crank(&mut tile, "stream head reaches the subscriber");
     }
 
+    inj.produce(block_received(7, 0x07, BlockStage::AlreadyKnown));
     inj.produce(block_received(8, 0x08, BlockStage::AwaitParent));
-    inj.produce(block_received(9, 0x09, BlockStage::Staged));
+    inj.produce(block_received(9, 0x09, BlockStage::AwaitData));
     inj.produce(block_received(10, 0xab, BlockStage::Applied));
     while !client.is_finished() {
         crank(&mut tile, "block frame reaches the subscriber");

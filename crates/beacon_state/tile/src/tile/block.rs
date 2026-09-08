@@ -103,7 +103,7 @@ impl BeaconStateTile {
                     self.emit_block_received(
                         data,
                         block_root,
-                        BlockStage::Applied,
+                        BlockStage::AlreadyKnown,
                         source,
                         producers,
                     );

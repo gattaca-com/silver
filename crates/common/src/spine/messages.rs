@@ -821,6 +821,8 @@ pub enum BlockStage {
     AwaitData,
     /// In fork choice.
     Applied,
+    /// Root already present in fork choice when this receipt was checked.
+    AlreadyKnown,
 }
 
 #[derive(Clone, Copy, Debug)]
