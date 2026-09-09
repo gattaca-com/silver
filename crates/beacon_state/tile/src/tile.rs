@@ -108,11 +108,9 @@ impl Debug for Feedback {
 /// Resolved once so each Status uses one fork's head metadata.
 #[derive(Clone, Copy)]
 struct SelectedHead {
-    root: B256,
+    observation: HeadObservation,
     /// `None` only before the anchor is seeded, where no node is resident.
     idx: Option<usize>,
-    optimistic: bool,
-    payload: PayloadResolution,
 }
 
 /// Head changes that require a Status even without an import or slot tick.
@@ -121,12 +119,6 @@ struct HeadObservation {
     root: B256,
     optimistic: bool,
     payload: PayloadResolution,
-}
-
-impl SelectedHead {
-    fn observation(&self) -> HeadObservation {
-        HeadObservation { root: self.root, optimistic: self.optimistic, payload: self.payload }
-    }
 }
 
 struct ParsedBlock {
@@ -501,7 +493,7 @@ impl BeaconStateTile {
         });
         let payload =
             idx.map_or(PayloadResolution::Empty, |idx| self.fork_choice.payload_resolution(idx));
-        SelectedHead { root, idx, optimistic, payload }
+        SelectedHead { observation: HeadObservation { root, optimistic, payload }, idx }
     }
 
     /// A missing node or overwritten checkpoint history makes the whole
@@ -512,8 +504,14 @@ impl BeaconStateTile {
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(node.state_id);
         let state_slot = view.slot.state().slot;
-        let dependent =
-            |epoch| view.block_roots.duty_dependent_root(epoch, node.slot, head.root, state_slot);
+        let dependent = |epoch| {
+            view.block_roots.duty_dependent_root(
+                epoch,
+                node.slot,
+                head.observation.root,
+                state_slot,
+            )
+        };
         match (dependent(epoch.saturating_sub(1)), dependent(epoch)) {
             (Some(previous), Some(current)) => HeadRoots {
                 state_root: node.state_root,
@@ -526,13 +524,13 @@ impl BeaconStateTile {
 
     fn status_event(&mut self, head: SelectedHead) -> BeaconStateEvent {
         BeaconStateEvent::Status {
-            ssz: self.status_payload(head.root, head.idx),
+            ssz: self.status_payload(head.observation.root, head.idx),
             latest_block_slot: self.last_applied_block_slot(),
             wall_slot: self.ticker.current_slot(),
-            head_optimistic: head.optimistic,
+            head_optimistic: head.observation.optimistic,
             enr_fork_id: self.enr_fork_id(),
             head_roots: self.head_roots(head),
-            head_payload: head.payload,
+            head_payload: head.observation.payload,
         }
     }
 
@@ -541,7 +539,7 @@ impl BeaconStateTile {
     }
 
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
-        self.emitted_head = head.observation();
+        self.emitted_head = head.observation;
         let event = self.status_event(head);
         producers.produce(event);
     }
@@ -549,7 +547,7 @@ impl BeaconStateTile {
     /// Covers changes since the last Status, including execution verdicts.
     fn publish_status_on_head_change(&mut self, producers: &mut Producers) {
         let head = self.selected_head();
-        if head.observation() != self.emitted_head {
+        if head.observation != self.emitted_head {
             self.publish_selected_head(head, producers);
         }
     }
