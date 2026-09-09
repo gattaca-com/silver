@@ -252,6 +252,33 @@ impl Json<'_> {
         self.end_object();
     }
 
+    /// `version` names the fork in force at the head block's slot.
+    pub(crate) fn head_v2_event(&mut self, head: &HeadEvent, version: &str) {
+        self.begin_object();
+        self.key("version");
+        self.string(version);
+        self.key("data");
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(head.slot);
+        self.key("block");
+        self.hex(&head.block_root);
+        self.key("state");
+        self.hex(&head.roots.state_root);
+        self.key("payload_status");
+        self.string(head.payload.name());
+        self.key("epoch_transition");
+        self.bool(head.epoch_transition);
+        self.key("current_epoch_dependent_root");
+        self.hex(&head.roots.previous_duty_dependent_root);
+        self.key("next_epoch_dependent_root");
+        self.hex(&head.roots.current_duty_dependent_root);
+        self.key("execution_optimistic");
+        self.bool(head.execution_optimistic);
+        self.end_object();
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -274,7 +301,7 @@ pub(crate) fn json_safe(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::FAR_FUTURE_EPOCH;
-    use silver_common::HeadRoots;
+    use silver_common::{HeadRoots, PayloadResolution};
 
     use super::*;
 
@@ -514,11 +541,41 @@ mod tests {
                 previous_duty_dependent_root: [0x5e; 32],
                 current_duty_dependent_root: [0x91; 32],
             },
+            payload: PayloadResolution::Full,
             epoch_transition: true,
             execution_optimistic: false,
         });
         let expected = format!(
             "{{\"slot\":\"10\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"epoch_transition\":true,\"previous_duty_dependent_root\":\"0x{}\",\"current_duty_dependent_root\":\"0x{}\",\"execution_optimistic\":false}}",
+            "9a".repeat(32),
+            "60".repeat(32),
+            "5e".repeat(32),
+            "91".repeat(32),
+        );
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
+    }
+
+    /// Distinct dependent roots catch a swap in the renamed fields.
+    #[test]
+    fn head_v2_event_wraps_the_versioned_data_and_maps_the_dependent_roots() {
+        let mut out = Vec::new();
+        Json::new(&mut out).head_v2_event(
+            &HeadEvent {
+                slot: 10,
+                block_root: [0x9a; 32],
+                roots: HeadRoots {
+                    state_root: [0x60; 32],
+                    previous_duty_dependent_root: [0x5e; 32],
+                    current_duty_dependent_root: [0x91; 32],
+                },
+                payload: PayloadResolution::Empty,
+                epoch_transition: false,
+                execution_optimistic: true,
+            },
+            "gloas",
+        );
+        let expected = format!(
+            "{{\"version\":\"gloas\",\"data\":{{\"slot\":\"10\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"payload_status\":\"empty\",\"epoch_transition\":false,\"current_epoch_dependent_root\":\"0x{}\",\"next_epoch_dependent_root\":\"0x{}\",\"execution_optimistic\":true}}}}",
             "9a".repeat(32),
             "60".repeat(32),
             "5e".repeat(32),

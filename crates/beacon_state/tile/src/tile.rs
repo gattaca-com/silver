@@ -12,8 +12,9 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadRoots,
-    NewGossipMsg, Origin, PayloadValidationStatus, ReplayBlock, RequestId, RpcInbound, RpcResponse,
-    RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
+    NewGossipMsg, Origin, PayloadResolution, PayloadValidationStatus, ReplayBlock, RequestId,
+    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead,
+    hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -118,11 +119,20 @@ struct SelectedHead {
     /// `None` only before the anchor is seeded, where no node is resident.
     idx: Option<usize>,
     optimistic: bool,
+    payload: PayloadResolution,
+}
+
+/// Head changes that require a Status even without an import or slot tick.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HeadObservation {
+    root: B256,
+    optimistic: bool,
+    payload: PayloadResolution,
 }
 
 impl SelectedHead {
-    fn reported(&self) -> (B256, bool) {
-        (self.root, self.optimistic)
+    fn observation(&self) -> HeadObservation {
+        HeadObservation { root: self.root, optimistic: self.optimistic, payload: self.payload }
     }
 }
 
@@ -165,7 +175,7 @@ pub struct BeaconStateTile {
     last_seen_head_root: B256,
     /// Kept separate from the reorg marker: an early Status must not hide a
     /// reorg that the end-of-loop check has yet to report.
-    emitted_head: (B256, bool),
+    emitted_head: HeadObservation,
 
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
@@ -243,7 +253,11 @@ impl BeaconStateTile {
             last_applied_block_root: [0u8; 32],
             precomputed_epochs: PrecomputedEpochs::default(),
             last_seen_head_root: [0u8; 32],
-            emitted_head: ([0u8; 32], true),
+            emitted_head: HeadObservation {
+                root: [0u8; 32],
+                optimistic: true,
+                payload: PayloadResolution::Empty,
+            },
             initial_status_emitted: false,
             cached_fork_digest: None,
             stf_scratch: stf::StfScratch::new(val_cap),
@@ -478,7 +492,9 @@ impl BeaconStateTile {
         let optimistic = idx.is_none_or(|idx| {
             self.fork_choice.node(idx).execution_status != ExecutionStatus::Valid
         });
-        SelectedHead { root, idx, optimistic }
+        let payload =
+            idx.map_or(PayloadResolution::Empty, |idx| self.fork_choice.payload_resolution(idx));
+        SelectedHead { root, idx, optimistic, payload }
     }
 
     /// A missing node or overwritten checkpoint history makes the whole
@@ -509,6 +525,7 @@ impl BeaconStateTile {
             head_optimistic: head.optimistic,
             enr_fork_id: self.enr_fork_id(),
             head_roots: self.head_roots(head),
+            head_payload: head.payload,
         }
     }
 
@@ -517,7 +534,7 @@ impl BeaconStateTile {
     }
 
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
-        self.emitted_head = head.reported();
+        self.emitted_head = head.observation();
         let event = self.status_event(head);
         producers.produce(event);
     }
@@ -525,7 +542,7 @@ impl BeaconStateTile {
     /// Covers changes since the last Status, including execution verdicts.
     fn publish_status_on_head_change(&mut self, producers: &mut Producers) {
         let head = self.selected_head();
-        if head.reported() != self.emitted_head {
+        if head.observation() != self.emitted_head {
             self.publish_selected_head(head, producers);
         }
     }

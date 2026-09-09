@@ -13,8 +13,8 @@ use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, HeadRoots, Identify, Keypair, PayloadValidationStatus, SilverSpine, SyncUpdate, TCache,
-    TCacheProducer, ssz_view::STATUS_V2_SIZE,
+    Enr, HeadRoots, Identify, Keypair, PayloadResolution, PayloadValidationStatus, SilverSpine,
+    SyncUpdate, TCache, TCacheProducer, ssz_view::STATUS_V2_SIZE,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
@@ -190,6 +190,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
         wall_slot,
         enr_fork_id: [0u8; 16],
         head_roots: HeadRoots::default(),
+        head_payload: PayloadResolution::Full,
     }
 }
 
@@ -201,7 +202,12 @@ fn head_roots() -> HeadRoots {
     }
 }
 
-fn head_status(slot: u64, block_root: u8, head_optimistic: bool) -> BeaconStateEvent {
+fn head_status(
+    slot: u64,
+    block_root: u8,
+    head_optimistic: bool,
+    head_payload: PayloadResolution,
+) -> BeaconStateEvent {
     let mut ssz = [0u8; STATUS_V2_SIZE];
     ssz[44..76].copy_from_slice(&[block_root; 32]);
     ssz[76..84].copy_from_slice(&slot.to_le_bytes());
@@ -212,7 +218,15 @@ fn head_status(slot: u64, block_root: u8, head_optimistic: bool) -> BeaconStateE
         wall_slot: slot,
         enr_fork_id: [0u8; 16],
         head_roots: head_roots(),
+        head_payload,
     }
+}
+
+fn chunked(data: &str) -> Vec<u8> {
+    let mut frame = format!("{:x}\r\n", data.len()).into_bytes();
+    frame.extend_from_slice(data.as_bytes());
+    frame.extend_from_slice(b"\r\n");
+    frame
 }
 
 fn head_frame(slot: u64, block_root: u8, execution_optimistic: bool) -> Vec<u8> {
@@ -223,10 +237,24 @@ fn head_frame(slot: u64, block_root: u8, execution_optimistic: bool) -> Vec<u8> 
         "5e".repeat(32),
         "91".repeat(32),
     );
-    let mut frame = format!("{:x}\r\n", data.len()).into_bytes();
-    frame.extend_from_slice(data.as_bytes());
-    frame.extend_from_slice(b"\r\n");
-    frame
+    chunked(&data)
+}
+
+fn head_v2_frame(
+    slot: u64,
+    block_root: u8,
+    version: &str,
+    payload_status: &str,
+    execution_optimistic: bool,
+) -> Vec<u8> {
+    let data = format!(
+        "event: head_v2\ndata: {{\"version\":\"{version}\",\"data\":{{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"payload_status\":\"{payload_status}\",\"epoch_transition\":false,\"current_epoch_dependent_root\":\"0x{}\",\"next_epoch_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}}}\n\n",
+        hex::encode([block_root; 32]),
+        "60".repeat(32),
+        "5e".repeat(32),
+        "91".repeat(32),
+    );
+    chunked(&data)
 }
 
 #[test]
@@ -830,11 +858,11 @@ fn an_optimistic_then_validated_head_reaches_an_events_subscriber() {
 
     // Establish a baseline, then change the head and validate it.
     // Repeated observations between those changes produce no frames.
-    inj.produce(head_status(33, 0x0a, true));
-    inj.produce(head_status(33, 0x0a, true));
-    inj.produce(head_status(40, 0xab, true));
-    inj.produce(head_status(40, 0xab, true));
-    inj.produce(head_status(40, 0xab, false));
+    inj.produce(head_status(33, 0x0a, true, PayloadResolution::Full));
+    inj.produce(head_status(33, 0x0a, true, PayloadResolution::Full));
+    inj.produce(head_status(40, 0xab, true, PayloadResolution::Full));
+    inj.produce(head_status(40, 0xab, true, PayloadResolution::Full));
+    inj.produce(head_status(40, 0xab, false, PayloadResolution::Full));
     while !client.is_finished() {
         crank(&mut tile, "both head frames reach the subscriber");
     }
@@ -854,6 +882,65 @@ fn an_optimistic_then_validated_head_reaches_an_events_subscriber() {
     );
 }
 
+/// A payload resolution change is visible to `head_v2` alone; the later
+/// validation reaches both topics.
+#[test]
+fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_head_v2_gossip",
+        "cs_head_v2_rpc",
+        "cs_head_v2_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let fulu = SpecConfig::mainnet().fulu_fork_epoch * 32;
+    let legacy_expected =
+        [head_frame(fulu + 8, 0xab, true), head_frame(fulu + 8, 0xab, false)].concat();
+    let v2_expected = [
+        head_v2_frame(fulu + 8, 0xab, "fulu", "empty", true),
+        head_v2_frame(fulu + 8, 0xab, "fulu", "full", true),
+        head_v2_frame(fulu + 8, 0xab, "fulu", "full", false),
+    ]
+    .concat();
+    let (legacy, legacy_subscribed) = events_subscriber(addr, "head", legacy_expected.len());
+    let (v2, v2_subscribed) = events_subscriber(addr, "head_v2", v2_expected.len());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    for subscribed in [legacy_subscribed, v2_subscribed] {
+        while subscribed.try_recv().is_err() {
+            crank(&mut tile, "both stream heads reach their subscribers");
+        }
+    }
+
+    inj.produce(head_status(fulu + 1, 0x0a, true, PayloadResolution::Full));
+    inj.produce(head_status(fulu + 8, 0xab, true, PayloadResolution::Empty));
+    inj.produce(head_status(fulu + 8, 0xab, true, PayloadResolution::Full));
+    inj.produce(head_status(fulu + 8, 0xab, false, PayloadResolution::Full));
+    while !legacy.is_finished() || !v2.is_finished() {
+        crank(&mut tile, "every frame reaches its subscriber");
+    }
+    for (got, expected) in
+        [(legacy.join().unwrap(), legacy_expected), (v2.join().unwrap(), v2_expected)]
+    {
+        assert!(
+            got == expected,
+            "\n     got: {:?}\nexpected: {:?}",
+            String::from_utf8_lossy(&got),
+            String::from_utf8_lossy(&expected)
+        );
+    }
+}
+
 /// The initial head observation emits no event but still updates node status.
 #[test]
 fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
@@ -868,14 +955,14 @@ fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
 
-    inj.produce(head_status(32, 0x0a, true));
+    inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
     tile.loop_body(&mut adapter);
     assert_eq!(
         tile.beacon.node_status_mut().slots,
         Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: true })
     );
 
-    inj.produce(head_status(32, 0x0a, false));
+    inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
     tile.loop_body(&mut adapter);
     assert_eq!(
         tile.beacon.node_status_mut().slots,

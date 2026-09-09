@@ -848,6 +848,25 @@ impl HeadRoots {
     }
 }
 
+/// Fork choice's selection of the block's own payload, independent of its
+/// execution validation status. Selected pre-Gloas blocks resolve `Full`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PayloadResolution {
+    Empty,
+    Full,
+}
+
+impl PayloadResolution {
+    /// The beacon-API `payload_status` spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -863,6 +882,7 @@ pub enum BeaconStateEvent {
         head_optimistic: bool,
         enr_fork_id: [u8; 16],
         head_roots: HeadRoots,
+        head_payload: PayloadResolution,
     },
     EnvelopeAvailable {
         ssz: TCacheRead,
