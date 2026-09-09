@@ -405,9 +405,8 @@ impl BeaconApi {
     }
 
     pub fn publish_head_v2(&mut self, head: &HeadEvent) {
-        let version = self.ctx.spec.fork_at_slot(head.slot).name();
         let mut data = Vec::new();
-        Json::new(&mut data).head_v2_event(head, version);
+        Json::new(&mut data).head_v2_event(head, self.ctx.spec.fork_at_slot(head.slot).name());
         self.publish(Channel::HeadV2, "head_v2", &data);
     }
 
