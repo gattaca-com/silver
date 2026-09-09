@@ -98,4 +98,15 @@ leaves that baseline unchanged. Node-status updates continue independently.
 `epoch_transition` compares consecutive complete observations and is true
 only when the head epoch advances. Same-block validation updates and backward
 reorgs report false. New subscriptions receive future changes without an
-initial snapshot. `head_v2` remains unsupported.
+initial snapshot.
+
+Amended 2026-09-09: `/eth/v1/events` also serves `head_v2`. Status carries
+fork choice's empty/full resolution of the selected block's own payload.
+The end-of-loop check publishes an updated Status when this resolution
+changes, even if the root and optimism stay the same.
+
+The boundary publishes `head_v2` when the root, optimism or resolution
+changes, including both empty-to-full and full-to-empty transitions. Legacy
+`head` retains its root-and-optimism filter. Both topics use the same
+complete observation. The v2 `version` names the configured fork at the head
+block's slot; selected pre-Gloas blocks report `full`.

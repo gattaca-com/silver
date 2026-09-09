@@ -9,11 +9,11 @@ pub use messages::{
     EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
     EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgIn, GossipMsgOut, HeadRoots, IpBytes,
     LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
-    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend, PayloadValidationStatus,
-    PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus, PeerTopicScores, ReplayBlock,
-    RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncNeed, SyncUpdate, SyncingStrategy,
-    WithdrawalInline,
+    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend, PayloadResolution,
+    PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus,
+    PeerTopicScores, ReplayBlock, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
+    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
+    SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
 };
 pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
 pub use stream_protocol::{

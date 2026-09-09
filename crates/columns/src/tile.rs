@@ -688,7 +688,8 @@ mod tests {
 
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{
-        EngineReq, HeadRoots, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        EngineReq, HeadRoots, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
+        TCacheProducer, TCacheRead,
         ssz_view::{DATA_COLUMN_SIDECAR_MIN, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN},
     };
     use tempfile::TempDir;
@@ -829,6 +830,7 @@ mod tests {
             head_optimistic: false,
             enr_fork_id: [0u8; 16],
             head_roots: HeadRoots::default(),
+            head_payload: PayloadResolution::Full,
         }
     }
 

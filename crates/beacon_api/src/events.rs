@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use silver_beacon_state_data::B256;
-use silver_common::HeadRoots;
+use silver_common::{HeadRoots, PayloadResolution};
 use silver_httpcore::Query;
 
 use crate::{response::Response, router::Request, routes::ApiCtx};
@@ -16,14 +16,17 @@ pub(crate) const KEEP_ALIVE: &[u8] = b": keep-alive\n\n";
 pub(crate) enum Channel {
     Block,
     Head,
+    HeadV2,
 }
 
 /// `epoch_transition` compares this head with the publisher's previous
-/// complete observation.
+/// complete observation. Only `head_v2` renders `payload`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeadEvent {
     pub slot: u64,
     pub block_root: B256,
     pub roots: HeadRoots,
+    pub payload: PayloadResolution,
     pub epoch_transition: bool,
     pub execution_optimistic: bool,
 }
@@ -82,6 +85,7 @@ fn channel(topic: &str) -> Option<Channel> {
     match topic {
         "block" => Some(Channel::Block),
         "head" => Some(Channel::Head),
+        "head_v2" => Some(Channel::HeadV2),
         _ => None,
     }
 }
@@ -158,11 +162,21 @@ mod tests {
     }
 
     #[test]
+    fn head_v2_is_served_alone_and_alongside_the_other_topics() {
+        let all = set(&[Channel::Block, Channel::Head, Channel::HeadV2]);
+        assert_eq!(topics("topics=head_v2"), Ok(set(&[Channel::HeadV2])));
+        assert_eq!(topics("topics=head_v2,head_v2"), Ok(set(&[Channel::HeadV2])));
+        assert_eq!(topics("topics=head,head_v2"), Ok(set(&[Channel::Head, Channel::HeadV2])));
+        assert_eq!(topics("topics=block,head,head_v2"), Ok(all));
+        assert_eq!(topics("topics=head_v2&topics=block&topics=head"), Ok(all));
+    }
+
+    #[test]
     fn a_topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
         let unknown = |topic: &str| Err(Refused::Unknown(topic.to_string()));
-        assert_eq!(topics("topics=head_v2"), unknown("head_v2"));
-        assert_eq!(topics("topics=block,head_v2"), unknown("head_v2"));
-        assert_eq!(topics("topics=head&topics=chain_reorg"), unknown("chain_reorg"));
+        assert_eq!(topics("topics=finalized_checkpoint"), unknown("finalized_checkpoint"));
+        assert_eq!(topics("topics=block,finalized_checkpoint"), unknown("finalized_checkpoint"));
+        assert_eq!(topics("topics=head_v2&topics=chain_reorg"), unknown("chain_reorg"));
     }
 
     #[test]

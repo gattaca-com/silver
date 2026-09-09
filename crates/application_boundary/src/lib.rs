@@ -11,7 +11,7 @@ use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
 
-use crate::observed_head::ObservedHead;
+use crate::observed_head::{HeadChange, ObservedHead};
 
 mod observed_head;
 
@@ -99,17 +99,22 @@ impl ApplicationBoundaryTile {
                 wall_slot,
                 head_optimistic,
                 head_roots,
+                head_payload,
                 ..
             } => {
                 beacon.node_status_mut().slots =
                     Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
-                if let Some(event) = head.observe(
+                if let Some(HeadChange { event, legacy }) = head.observe(
                     StatusView::head_slot(&ssz),
                     *StatusView::head_root(&ssz),
                     head_optimistic,
+                    head_payload,
                     head_roots,
                 ) {
-                    beacon.publish_head(&event);
+                    if legacy {
+                        beacon.publish_head(&event);
+                    }
+                    beacon.publish_head_v2(&event);
                 }
             }
             BeaconStateEvent::BlockReceived {

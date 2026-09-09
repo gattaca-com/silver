@@ -1,3 +1,5 @@
+use silver_common::PayloadResolution;
+
 use super::{
     vote::{Vote, branch_voted_for},
     *,
@@ -988,6 +990,95 @@ fn gloas_boost_is_pending_not_empty() {
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert!(fc.head_payload_present());
+}
+
+fn head_idx(fc: &ForkChoice) -> usize {
+    fc.find_node_idx(&fc.find_head()).unwrap()
+}
+
+#[test]
+fn payload_resolution_follows_the_selected_node() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full, "pre-Gloas anchor");
+
+    fc.on_block(block(1, root(2), root(1), g, g));
+    assert_eq!(fc.find_head(), root(2));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full, "pre-Gloas block");
+
+    fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, false));
+    assert_eq!(fc.find_head(), root(3));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty, "no envelope yet");
+
+    fc.mark_payload_verified(&root(3));
+    assert_eq!(fc.find_head(), root(3));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
+}
+
+#[test]
+fn a_gloas_anchor_resolves_empty_until_its_envelope_is_verified() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        true,
+        test_state_id(),
+        8,
+    );
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty);
+
+    fc.mark_payload_verified(&root(1));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
+}
+
+/// Verification alone does not determine the selected payload resolution.
+#[test]
+fn a_verified_payload_resolves_empty_when_its_empty_branch_is_heavier() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
+    fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, true));
+    fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, true));
+    fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true));
+
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
+    d[2].pending = 50;
+    d[3].pending = 100;
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
+    assert_eq!(fc.find_head(), root(4));
+
+    let a = fc.find_node_idx(&root(2)).unwrap();
+    assert!(fc.nodes[a].payload.verified);
+    assert_eq!(fc.payload_resolution(a), PayloadResolution::Empty);
+    assert_eq!(
+        fc.payload_resolution(head_idx(&fc)),
+        PayloadResolution::Full,
+        "the selected child's own payload is full despite its empty parent edge"
+    );
 }
 
 /// Two branches meeting at 2@slot 2, with heads level at slot 10 but at

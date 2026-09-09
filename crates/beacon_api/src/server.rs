@@ -404,6 +404,13 @@ impl BeaconApi {
         self.publish(Channel::Head, "head", &data);
     }
 
+    pub fn publish_head_v2(&mut self, head: &HeadEvent) {
+        let version = self.ctx.spec.fork_at_slot(head.slot).name();
+        let mut data = Vec::new();
+        Json::new(&mut data).head_v2_event(head, version);
+        self.publish(Channel::HeadV2, "head_v2", &data);
+    }
+
     fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
         let mut frame = Vec::new();
         events::frame(&mut frame, event, data);
@@ -600,8 +607,8 @@ mod tests {
         time::Instant,
     };
 
-    use silver_beacon_state_data::BeaconStateOwner;
-    use silver_common::HeadRoots;
+    use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
+    use silver_common::{HeadRoots, PayloadResolution};
     use silver_httpcore::Readiness;
 
     use super::*;
@@ -1411,9 +1418,26 @@ mod tests {
                 previous_duty_dependent_root: [0x5e; 32],
                 current_duty_dependent_root: [0x91; 32],
             },
+            payload: PayloadResolution::Full,
             epoch_transition: false,
             execution_optimistic,
         }
+    }
+
+    fn head_v2_frame(
+        slot: u64,
+        block_root: &[u8; 32],
+        version: &str,
+        execution_optimistic: bool,
+    ) -> Vec<u8> {
+        let data = format!(
+            "event: head_v2\ndata: {{\"version\":\"{version}\",\"data\":{{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"payload_status\":\"full\",\"epoch_transition\":false,\"current_epoch_dependent_root\":\"0x{}\",\"next_epoch_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}}}\n\n",
+            hex::encode(block_root),
+            "60".repeat(32),
+            "5e".repeat(32),
+            "91".repeat(32),
+        );
+        chunk(data.as_bytes())
     }
 
     fn head_frame(slot: u64, block_root: &[u8; 32], execution_optimistic: bool) -> Vec<u8> {
@@ -1461,6 +1485,79 @@ mod tests {
     }
 
     #[test]
+    fn head_and_head_v2_are_separate_channels() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&server);
+        let (mut legacy, mut v2, mut heads, mut all) =
+            (connect(addr), connect(addr), connect(addr), connect(addr));
+        subscribe(&mut legacy, "head");
+        subscribe(&mut v2, "head_v2");
+        subscribe(&mut heads, "head,head_v2");
+        subscribe(&mut all, "block,head,head_v2");
+        pump_until(&mut server, "four subscribed", |server| subscribers(server) == 4);
+
+        let slot = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
+        let root = [0xab; 32];
+        server.api.publish_block(slot, &root);
+        server.api.publish_head(&head_event(slot, &root, true));
+        server.api.publish_head_v2(&head_event(slot, &root, true));
+
+        let legacy_frames = [SSE_HEAD, &head_frame(slot, &root, true)].concat();
+        let v2_frames = [SSE_HEAD, &head_v2_frame(slot, &root, "fulu", true)].concat();
+        let head_frames =
+            [SSE_HEAD, &head_frame(slot, &root, true), &head_v2_frame(slot, &root, "fulu", true)]
+                .concat();
+        let all_frames = [
+            SSE_HEAD,
+            &block_frame(slot, &root),
+            &head_frame(slot, &root, true),
+            &head_v2_frame(slot, &root, "fulu", true),
+        ]
+        .concat();
+
+        let readers = [
+            read_exactly(legacy, legacy_frames.len()),
+            read_exactly(v2, v2_frames.len()),
+            read_exactly(heads, head_frames.len()),
+            read_exactly(all, all_frames.len()),
+        ];
+        pump_until(&mut server, "every subscriber served", |_| {
+            readers.iter().all(JoinHandle::is_finished)
+        });
+        let [got_legacy, got_v2, got_heads, got_all] = readers.map(|r| r.join().unwrap());
+
+        assert_same_bytes(&got_legacy, &legacy_frames);
+        assert_same_bytes(&got_v2, &v2_frames);
+        assert_same_bytes(&got_heads, &head_frames);
+        assert_same_bytes(&got_all, &all_frames);
+    }
+
+    #[test]
+    fn head_v2_names_the_fork_at_the_head_slot() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head_v2");
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let fulu = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
+        let root = [0xab; 32];
+        for slot in [fulu - 1, fulu, fulu + 1, fulu - 1] {
+            server.api.publish_head_v2(&head_event(slot, &root, false));
+        }
+
+        let expected = [
+            SSE_HEAD,
+            &head_v2_frame(fulu - 1, &root, "electra", false),
+            &head_v2_frame(fulu, &root, "fulu", false),
+            &head_v2_frame(fulu + 1, &root, "fulu", false),
+            &head_v2_frame(fulu - 1, &root, "electra", false),
+        ]
+        .concat();
+        let got = serve(&mut server, read_exactly(client, expected.len()), "four versioned frames");
+        assert_same_bytes(&got, &expected);
+    }
+
+    #[test]
     fn a_topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
@@ -1468,7 +1565,7 @@ mod tests {
             let mut stream = connect(addr);
             write!(
                 stream,
-                "GET /eth/v1/events?topics=head_v2 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                "GET /eth/v1/events?topics=chain_reorg HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
             read_to_eof(stream)
@@ -1477,7 +1574,7 @@ mod tests {
         let got = serve(&mut server, client, "400 for an unserved topic");
         assert_same_bytes(
             &got,
-            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"head_v2\\\"\"}",
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 54\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"chain_reorg\\\"\"}",
         );
         assert_eq!(subscribers(&server), 0);
     }

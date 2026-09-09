@@ -12,8 +12,8 @@ mod tests;
 mod vote;
 
 pub use lookup::NodeLookup;
-use node::{Branch, NodeCheckpoints, PayloadAxis, PtcVotes};
-pub use node::{ExecutionStatus, ForkChoiceNode, PayloadStatus};
+use node::{Branch, NodeCheckpoints, PtcVotes};
+pub use node::{ExecutionStatus, ForkChoiceNode, PayloadAxis, PayloadStatus};
 pub use vote::{VoteTracker, WeightDelta};
 
 /// Pre-allocation hint only — the node table and the state rings both grow

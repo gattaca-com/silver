@@ -70,6 +70,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
 
 pub(crate) struct ApiCtx {
     pub(crate) statics: StaticBodies,
+    pub(crate) spec: SpecConfig,
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
 }
@@ -84,6 +85,7 @@ impl ApiCtx {
     ) -> Self {
         Self {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
+            spec: spec.clone(),
             state,
             node_status: NodeStatus::default(),
         }

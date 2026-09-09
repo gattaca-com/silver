@@ -11,8 +11,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId,
-    PayloadValidationStatus, PeerEvent, StreamProtocol, TCache, TCacheProducer, TCacheRead,
-    TProducer,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, TCache, TCacheProducer,
+    TCacheRead, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -25,7 +25,7 @@ use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContribu
 
 use super::{block::StagedBlock, data_availability::WaitingBlock, *};
 use crate::{
-    fork_choice::{BlockImport, PayloadStatus},
+    fork_choice::{BlockImport, PayloadAxis, PayloadStatus},
     merkle, ssz_hash,
     stf::AttestationVote,
     test_signing,
@@ -462,6 +462,7 @@ struct StatusHead {
     slot: Slot,
     optimistic: bool,
     roots: HeadRoots,
+    payload: PayloadResolution,
 }
 
 struct Published(Vec<BeaconStateEvent>);
@@ -477,14 +478,15 @@ impl Published {
         self.0
             .iter()
             .filter_map(|event| match event {
-                BeaconStateEvent::Status { ssz, head_optimistic, head_roots, .. } => {
-                    Some(StatusHead {
-                        root: *StatusView::head_root(ssz),
-                        slot: StatusView::head_slot(ssz),
-                        optimistic: *head_optimistic,
-                        roots: *head_roots,
-                    })
-                }
+                BeaconStateEvent::Status {
+                    ssz, head_optimistic, head_roots, head_payload, ..
+                } => Some(StatusHead {
+                    root: *StatusView::head_root(ssz),
+                    slot: StatusView::head_slot(ssz),
+                    optimistic: *head_optimistic,
+                    roots: *head_roots,
+                    payload: *head_payload,
+                }),
                 _ => None,
             })
             .collect()
@@ -601,6 +603,62 @@ impl HeadRig {
         previous: B256,
         current: B256,
     ) -> StateId {
+        let payload = PayloadAxis {
+            bid_block_hash: [0u8; 32],
+            parent_status: PayloadStatus::Full,
+            verified: true,
+            is_gloas: false,
+        };
+        self.import_node(block_root, slot, parent_root, parent_state, previous, current, payload)
+    }
+
+    fn import_gloas(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        previous: B256,
+        current: B256,
+        payload_verified: bool,
+    ) -> StateId {
+        let payload = PayloadAxis {
+            bid_block_hash: block_root,
+            parent_status: PayloadStatus::Full,
+            verified: payload_verified,
+            is_gloas: true,
+        };
+        let anchor = self.anchor;
+        self.import_node(block_root, slot, ANCHOR_ROOT, anchor, previous, current, payload)
+    }
+
+    /// A verified Gloas block extending `parent_root`'s empty payload.
+    fn import_empty_child(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        parent_root: B256,
+        parent_state: StateId,
+        previous: B256,
+        current: B256,
+    ) -> StateId {
+        let payload = PayloadAxis {
+            bid_block_hash: block_root,
+            parent_status: PayloadStatus::Empty,
+            verified: true,
+            is_gloas: true,
+        };
+        self.import_node(block_root, slot, parent_root, parent_state, previous, current, payload)
+    }
+
+    fn import_node(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        parent_root: B256,
+        parent_state: StateId,
+        previous: B256,
+        current: B256,
+        payload: PayloadAxis,
+    ) -> StateId {
         let state_id = self.post_state(parent_state, slot, previous, current);
         let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
         self.tile.fork_choice.on_block(BlockImport {
@@ -614,10 +672,10 @@ impl HeadRig {
             unrealized_justified: anchor_cp,
             unrealized_finalized: anchor_cp,
             state_id,
-            bid_block_hash: [0u8; 32],
-            parent_payload_status: PayloadStatus::Full,
-            payload_verified: true,
-            is_gloas: false,
+            bid_block_hash: payload.bid_block_hash,
+            parent_payload_status: payload.parent_status,
+            payload_verified: payload.verified,
+            is_gloas: payload.is_gloas,
         });
         self.tile.last_applied = state_id;
         self.tile.last_applied_block_root = block_root;
@@ -638,7 +696,34 @@ impl HeadRig {
         self.tile.ticker.set_since_genesis_ms(slot * 12_000);
     }
 
+    /// Bypasses gossip validation and supplies the recomputation normally
+    /// performed after committing PTC votes.
+    fn ptc_majority(&mut self, block_root: B256) {
+        self.tile.fork_choice.record_ptc_votes(&block_root, &[u64::MAX; 8], true, true);
+        self.tile.recompute_head();
+    }
+
     fn vote_for(&mut self, block_root: B256, validators: std::ops::Range<u32>) {
+        self.vote(block_root, validators, 71, true);
+    }
+
+    /// Slot-72 votes can distinguish the slot-71 block's empty/full payload.
+    fn vote_on_payload(
+        &mut self,
+        block_root: B256,
+        validators: std::ops::Range<u32>,
+        present: bool,
+    ) {
+        self.vote(block_root, validators, 72, present);
+    }
+
+    fn vote(
+        &mut self,
+        block_root: B256,
+        validators: std::ops::Range<u32>,
+        attestation_slot: Slot,
+        payload_present: bool,
+    ) {
         let n = self.tile.head_validator_count();
         for validator in validators {
             self.tile.fork_choice.record_vote(
@@ -646,8 +731,8 @@ impl HeadRig {
                     validator,
                     block_root,
                     target_epoch: 2,
-                    attestation_slot: 71,
-                    payload_present: true,
+                    attestation_slot,
+                    payload_present,
                 },
                 n,
             );
@@ -673,6 +758,7 @@ fn head_a(optimistic: bool) -> StatusHead {
             previous_duty_dependent_root: A_PREVIOUS,
             current_duty_dependent_root: A_CURRENT,
         },
+        payload: PayloadResolution::Full,
     }
 }
 
@@ -686,6 +772,7 @@ fn head_b(optimistic: bool) -> StatusHead {
             previous_duty_dependent_root: B_PREVIOUS,
             current_duty_dependent_root: B_CURRENT,
         },
+        payload: PayloadResolution::Full,
     }
 }
 
@@ -699,6 +786,7 @@ fn head_anchor() -> StatusHead {
             previous_duty_dependent_root: ANCHOR_PREVIOUS,
             current_duty_dependent_root: ANCHOR_CURRENT,
         },
+        payload: PayloadResolution::Full,
     }
 }
 
@@ -747,6 +835,98 @@ fn an_invalid_verdict_publishes_the_snapshot_of_the_head_it_moved_to() {
     let events = rig.crank();
     assert_eq!(events.heads(), [head_b(true)]);
     assert_eq!(events.reorgs(), [70], "the head left A's branch for its sibling");
+}
+
+fn head_a_empty(optimistic: bool) -> StatusHead {
+    StatusHead { payload: PayloadResolution::Empty, ..head_a(optimistic) }
+}
+
+/// Mark verification directly to isolate publication from envelope validation.
+#[test]
+fn verifying_the_gloas_head_s_envelope_publishes_the_full_resolution_once() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    assert_eq!(rig.drain().heads(), [head_a_empty(true)], "the unverified payload resolves empty");
+    assert_eq!(rig.crank().heads(), []);
+
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    let events = rig.crank();
+    assert_eq!(events.heads(), [head_a(true)]);
+    assert!(events.reorgs().is_empty(), "the head block did not move");
+    assert_eq!(rig.crank().heads(), [], "the full resolution is now the emitted one");
+}
+
+/// An invalid Gloas payload can leave its block selected with an empty
+/// resolution.
+#[test]
+fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_reorg() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    assert_eq!(rig.drain().heads(), [head_a(true)]);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let events = rig.crank();
+    assert_eq!(events.heads(), [head_a_empty(true)]);
+    assert!(events.reorgs().is_empty());
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    assert_eq!(rig.crank().heads(), [], "a repeat changes nothing to report");
+}
+
+/// Inject slot-72 votes early so their weight is already folded while the
+/// previous-slot rule still applies. This isolates the rule's expiry and
+/// Status publication; normal gossip would defer these votes until slot 73.
+#[test]
+fn the_tick_closing_the_previous_slot_window_publishes_the_vote_weighted_resolution() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    assert_eq!(rig.drain().heads(), [head_a(true)]);
+
+    rig.vote_on_payload(A_ROOT, 0..8, false);
+    rig.advance_to_slot(72);
+    assert_eq!(rig.crank().heads(), [head_a(true)], "the slot-start Status is the only one");
+
+    rig.advance_to_slot(73);
+    let events = rig.crank();
+    assert_eq!(events.heads(), [head_a_empty(true)]);
+    assert!(events.reorgs().is_empty());
+    assert_eq!(rig.crank().heads(), []);
+}
+
+/// The boosted empty-edge child makes the parent's resolution depend on PTC
+/// votes. Here the child is viable, so the majority also changes the head root.
+#[test]
+fn a_ptc_majority_returns_the_head_to_the_parent_with_its_full_payload() {
+    let mut rig = HeadRig::new();
+    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    rig.advance_to_slot(72);
+    let _ = rig.crank();
+
+    rig.tile.fork_choice.set_proposer_boost(B_ROOT);
+    rig.import_empty_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
+    let b = StatusHead { slot: 72, ..head_b(true) };
+    assert_eq!(rig.drain().heads(), [b], "boost on the empty child resolves A empty");
+    assert_eq!(rig.crank().heads(), []);
+
+    rig.ptc_majority(A_ROOT);
+    let events = rig.crank();
+    assert_eq!(events.heads(), [head_a(true)]);
+    assert_eq!(events.reorgs(), [71], "the head left B for its parent");
+
+    rig.ptc_majority(A_ROOT);
+    assert_eq!(rig.crank().heads(), [], "a repeated majority changes nothing to report");
+}
+
+#[test]
+fn a_verification_and_a_valid_verdict_in_one_iteration_publish_one_snapshot() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    assert_eq!(rig.drain().heads(), [head_a_empty(true)]);
+
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().heads(), [head_a(false)]);
+    assert_eq!(rig.crank().heads(), []);
 }
 
 /// Votes take effect when the next slot tick recomputes the head.
@@ -1058,6 +1238,7 @@ fn an_imported_fixture_block_s_status_carries_its_own_roots() {
         slot: 33,
         optimistic: true,
         roots: expected,
+        payload: PayloadResolution::Full,
     }]);
 }
 
