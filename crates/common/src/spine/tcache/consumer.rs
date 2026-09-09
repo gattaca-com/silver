@@ -248,9 +248,22 @@ impl AcquiredRead {
         consumer.cache.read(self.read.seq).map(|(data, _, ts)| (data, ts))
     }
 
+    #[inline]
     pub fn with_offset(&self, offset: usize) -> Option<AcquiredWithOffset> {
         let consumer = unsafe { &mut *(self.consumer as *mut RandomAccessConsumer) };
-        consumer.acquire_strict(self.read).map(|read| AcquiredWithOffset { read, offset })
+        let read = consumer.acquire_strict(self.read)?;
+        let length = read.buffer().ok()?.0.len().checked_sub(offset)?;
+        Some(AcquiredRange { read, offset, length })
+    }
+
+    #[inline]
+    pub fn with_range(&self, offset: usize, length: usize) -> Option<AcquiredRange> {
+        let mut range = self.with_offset(offset)?;
+        if length > range.length {
+            return None;
+        }
+        range.length = length;
+        Some(range)
     }
 }
 
@@ -280,6 +293,7 @@ impl Drop for AcquiredRead {
 }
 
 impl Clone for AcquiredRead {
+    #[inline]
     fn clone(&self) -> Self {
         unsafe {
             let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
@@ -289,15 +303,32 @@ impl Clone for AcquiredRead {
     }
 }
 
-pub struct AcquiredWithOffset {
+pub type AcquiredWithOffset = AcquiredRange;
+
+#[derive(Clone, Debug)]
+pub struct AcquiredRange {
     read: AcquiredRead,
     offset: usize,
+    length: usize,
 }
 
-impl AsRef<[u8]> for AcquiredWithOffset {
+impl AcquiredRange {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+}
+
+impl AsRef<[u8]> for AcquiredRange {
+    #[inline]
     fn as_ref(&self) -> &[u8] {
         match self.read.buffer() {
-            Ok((buffer, _)) => &buffer[self.offset..],
+            Ok((buffer, _)) => &buffer[self.offset..self.offset + self.length],
             Err(_) => &[],
         }
     }
@@ -437,6 +468,8 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    use bytes::Bytes;
 
     use super::*;
     use crate::spine::tcache::{Producer, TCache, producer::TCacheProducer};
@@ -602,6 +635,230 @@ mod tests {
         // All guards drop here; release() should run for each without panic.
         drop(acquired);
         consumer.free();
+    }
+
+    #[test]
+    fn acquired_ranges_share_cell_and_proof_bytes() {
+        let mut producer = TCache::producer("", 1 << 16);
+        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let mut reservation = producer.reserve(2098, true).unwrap();
+        let buffer = reservation.buffer().unwrap();
+        buffer.fill(0xff);
+        buffer[1..2049].fill(0x11);
+        buffer[2049..2097].fill(0x22);
+        reservation.increment_offset(2098);
+
+        let acquired = consumer.acquire_strict(reservation.read()).unwrap();
+        let cell = acquired.with_range(1, 2048).unwrap();
+        let proof = acquired.with_range(2049, 48).unwrap();
+        let buffer = acquired.buffer().unwrap().0;
+
+        assert_eq!(cell.as_ref(), &[0x11; 2048]);
+        assert_eq!(proof.as_ref(), &[0x22; 48]);
+        assert_eq!(cell.as_ref().as_ptr(), buffer[1..].as_ptr());
+        assert_eq!(proof.as_ref().as_ptr(), buffer[2049..].as_ptr());
+        assert_eq!(cell.len(), 2048);
+        assert_eq!(proof.len(), 48);
+        assert!(!cell.is_empty());
+        assert!(!proof.is_empty());
+    }
+
+    #[test]
+    fn acquired_range_checks_bounds_without_leaking_pins() {
+        let mut producer = TCache::producer("", 1 << 16);
+        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let read = write_marker(&mut producer, 32, 0xab);
+        let acquired = consumer.acquire_strict(read).unwrap();
+        let bucket = consumer.active.bucket_index(read.seq());
+
+        for (offset, length) in [(0, 0), (0, 32), (5, 7), (31, 1), (32, 0)] {
+            let range = acquired.with_range(offset, length).unwrap();
+            assert_eq!(range.as_ref(), &acquired.buffer().unwrap().0[offset..offset + length]);
+            assert_eq!(range.len(), length);
+            assert_eq!(range.is_empty(), length == 0);
+            assert_eq!(consumer.active.buckets[bucket], 2);
+            drop(range);
+            assert_eq!(consumer.active.buckets[bucket], 1);
+        }
+
+        for (offset, length) in [
+            (33, 0),
+            (32, 1),
+            (31, 2),
+            (0, 33),
+            (0, usize::MAX),
+            (usize::MAX, 0),
+            (usize::MAX, 1),
+            (1, usize::MAX),
+        ] {
+            assert!(acquired.with_range(offset, length).is_none(), "{offset}, {length}");
+            assert_eq!(consumer.active.buckets[bucket], 1);
+        }
+        drop(acquired);
+        assert_eq!(consumer.active.buckets[bucket], 0);
+    }
+
+    #[test]
+    fn acquired_offset_preserves_suffix_access() {
+        let mut producer = TCache::producer("", 1 << 16);
+        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let read = write_marker(&mut producer, 32, 0xab);
+        let acquired = consumer.acquire_strict(read).unwrap();
+        let bucket = consumer.active.bucket_index(read.seq());
+
+        for offset in [0, 1, 31, 32] {
+            let range: AcquiredWithOffset = acquired.with_offset(offset).unwrap();
+            assert_eq!(range.as_ref(), &acquired.buffer().unwrap().0[offset..]);
+            assert_eq!(range.len(), 32 - offset);
+            assert_eq!(range.is_empty(), offset == 32);
+        }
+        for offset in [33, usize::MAX] {
+            assert!(acquired.with_offset(offset).is_none());
+            assert_eq!(consumer.active.buckets[bucket], 1);
+        }
+    }
+
+    #[test]
+    fn acquired_range_clones_release_exactly_once() {
+        let mut producer = TCache::producer("", 1 << 18);
+        let mut consumer = producer.cache_ref().strict_random_access("", false).unwrap();
+        let read = write_marker(&mut producer, 2096, 0xab);
+        let acquired = consumer.acquire_strict(read).unwrap();
+        let cell = acquired.with_range(0, 2048).unwrap();
+        let proof = acquired.with_range(2048, 48).unwrap();
+        let cell_clone = cell.clone();
+        let bucket = consumer.active.bucket_index(read.seq());
+        assert_eq!(consumer.active.buckets[bucket], 4);
+
+        write_marker(&mut producer, 3 * 32 * 1024, 0xcd);
+        let newer = write_marker(&mut producer, 32, 0xef);
+        drop(consumer.acquire_strict(newer).unwrap());
+
+        drop(acquired);
+        assert_eq!(consumer.active.buckets[bucket], 3);
+        drop(cell);
+        assert_eq!(consumer.active.buckets[bucket], 2);
+        drop(proof);
+        assert_eq!(consumer.active.buckets[bucket], 1);
+        assert_eq!(cell_clone.as_ref(), &[0xab; 2048]);
+        consumer.free();
+        assert_eq!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire), 0);
+
+        drop(cell_clone);
+        assert_eq!(consumer.active.buckets[bucket], 0);
+        consumer.free();
+        assert!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire) > read.seq());
+    }
+
+    #[test]
+    fn acquired_range_bytes_slices_share_one_pin() {
+        let mut producer = TCache::producer("", 1 << 16);
+        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let read = write_marker(&mut producer, 2096, 0xab);
+        let acquired = consumer.acquire_strict(read).unwrap();
+        let bytes = Bytes::from_owner(acquired.with_range(0, 2096).unwrap());
+        let cell = bytes.slice(..2048);
+        let proof = bytes.slice(2048..);
+        let clone = cell.clone();
+        let bucket = consumer.active.bucket_index(read.seq());
+        assert_eq!(consumer.active.buckets[bucket], 2);
+
+        drop(acquired);
+        drop(bytes);
+        drop(cell);
+        drop(proof);
+        assert_eq!(consumer.active.buckets[bucket], 1);
+        assert_eq!(clone.as_ref(), &[0xab; 2048]);
+
+        drop(clone);
+        assert_eq!(consumer.active.buckets[bucket], 0);
+    }
+
+    #[test]
+    fn strict_acquired_ranges_block_overwrite_until_last_drop() {
+        const CAPACITY: usize = 1 << 18;
+        const MESSAGE_LEN: usize = 8 * 1024;
+
+        let mut producer = TCache::producer("", CAPACITY);
+        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let read = write_marker(&mut producer, 2096, 0xab);
+        let acquired = consumer.acquire_strict(read).unwrap();
+        let cell = acquired.with_range(0, 2048).unwrap();
+        let proof = acquired.with_range(2048, 48).unwrap();
+        drop(acquired);
+
+        let mut produced = 0;
+        while let Some(mut reservation) = producer.reserve(MESSAGE_LEN, true) {
+            reservation.buffer().unwrap().fill(0xcd);
+            reservation.increment_offset(MESSAGE_LEN);
+            drop(consumer.acquire_strict(reservation.read()).unwrap());
+            produced += 1;
+            assert!(produced <= CAPACITY / MESSAGE_LEN, "overwrote a pinned record");
+        }
+
+        assert!(produced > 0);
+        assert_eq!(cell.as_ref(), &[0xab; 2048]);
+        drop(cell);
+        assert!(producer.reserve(MESSAGE_LEN, true).is_none());
+        assert_eq!(proof.as_ref(), &[0xab; 48]);
+
+        drop(proof);
+        assert!(producer.reserve(MESSAGE_LEN, true).is_some());
+        assert!(consumer.acquire_strict(read).is_none());
+    }
+
+    #[test]
+    fn acquired_range_rejects_stale_reads_and_hides_overwritten_data() {
+        const CAPACITY: usize = 1 << 18;
+
+        let mut producer = TCache::producer("", CAPACITY);
+        let mut consumer = producer.cache_ref().random_access("", true).unwrap();
+        let read = write_marker(&mut producer, 32, 0xab);
+        let acquired = consumer.acquire_strict(read).unwrap();
+        let range = acquired.with_range(16, 16).unwrap();
+
+        write_marker(&mut producer, CAPACITY - 16 * 1024, 0xcd);
+        let newer = write_marker(&mut producer, 32, 0xef);
+        let newer = consumer.acquire_strict(newer).unwrap();
+        consumer.free();
+        assert!(consumer.active.tail_seq > read.seq());
+        assert!(consumer.cache.check_seq(read.seq()));
+        assert!(acquired.with_range(0, 1).is_none());
+        assert!(acquired.with_range(0, 0).is_none());
+        assert!(acquired.with_offset(0).is_none());
+
+        write_marker(&mut producer, 32 * 1024, 0x11);
+        assert!(!consumer.cache.check_seq(read.seq()));
+        assert!(range.as_ref().is_empty());
+        let clone = range.clone();
+        assert!(clone.as_ref().is_empty());
+        drop(acquired);
+        drop(range);
+        drop(clone);
+        assert_eq!(consumer.active.buckets.iter().sum::<u16>(), 1);
+        assert_eq!(newer.buffer().unwrap().0, &[0xef; 32]);
+        drop(newer);
+        assert_eq!(consumer.active.buckets.iter().sum::<u16>(), 0);
+    }
+
+    #[test]
+    fn acquired_range_rejects_uncommitted_reads_without_leaking_pins() {
+        let mut producer = TCache::producer("", 1 << 16);
+        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let mut reservation = producer.reserve(32, true).unwrap();
+        let acquired = consumer.acquire(reservation.read());
+        let bucket = consumer.active.bucket_index(reservation.seq());
+
+        assert!(acquired.with_range(0, 1).is_none());
+        assert!(acquired.with_offset(0).is_none());
+        assert_eq!(consumer.active.buckets[bucket], 1);
+
+        reservation.buffer().unwrap().fill(0xab);
+        reservation.increment_offset(32);
+        let range = acquired.with_range(0, 1).unwrap();
+        assert_eq!(range.as_ref(), &[0xab]);
+        drop(range);
+        assert_eq!(consumer.active.buckets[bucket], 1);
     }
 
     /// A consumer that keeps acquiring without ever releasing must not

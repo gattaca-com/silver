@@ -8,7 +8,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub use consumer::{AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead};
+pub use consumer::{
+    AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
+};
 use flux::{Timer, timing::Nanos, tracing};
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
 use thiserror::Error;
