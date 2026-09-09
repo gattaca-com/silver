@@ -22,4 +22,5 @@ workspace = true
 
 [dev-dependencies]
 rand.workspace = true
+snap.workspace = true
 tempfile = "3"

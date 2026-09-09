@@ -84,9 +84,10 @@ pub(crate) struct ColumnValidator {
     spec: Arc<SpecConfig>,
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
     gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
-    // Persisted blocks and the slot each sits at — parent-seen and
-    // parent-slot checks beyond the head fork.
-    persisted_block_roots: Wheel<BlockRoot, u64, 16>,
+    // Blocks past validation (imported, or staged on their columns) and the
+    // slot each sits at — parent-seen and parent-slot checks beyond the head
+    // fork.
+    validated_block_roots: Wheel<BlockRoot, u64, 16>,
 }
 
 impl ColumnValidator {
@@ -99,7 +100,7 @@ impl ColumnValidator {
             beacon_state,
             spec,
             gloas_commitments: Wheel::new(epoch_duration),
-            persisted_block_roots: Wheel::new(epoch_duration),
+            validated_block_roots: Wheel::new(epoch_duration),
         }
     }
 
@@ -108,8 +109,20 @@ impl ColumnValidator {
         self.spec.blob_params_at(slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize
     }
 
-    pub fn note_persisted(&mut self, block_root: BlockRoot, slot: u64) {
-        self.persisted_block_roots.insert(block_root, slot);
+    pub fn note_validated(&mut self, block_root: BlockRoot, slot: u64) {
+        if !self.validated_block_roots.contains(&block_root) {
+            self.validated_block_roots.insert(block_root, slot);
+        }
+    }
+
+    /// A block the beacon state dropped no longer vouches for its children.
+    pub fn note_rejected(&mut self, block_root: &BlockRoot) {
+        self.validated_block_roots.remove(block_root);
+    }
+
+    #[cfg(test)]
+    pub fn is_validated(&self, block_root: &BlockRoot) -> bool {
+        self.validated_block_roots.contains(block_root)
     }
 
     pub fn gloas_commitments(&self, block_root: &BlockRoot) -> Option<&[u8]> {
@@ -128,7 +141,7 @@ impl ColumnValidator {
 
     pub fn rotate(&mut self, now: Instant) {
         self.gloas_commitments.maybe_rotate(now);
-        self.persisted_block_roots.maybe_rotate(now);
+        self.validated_block_roots.maybe_rotate(now);
     }
 
     pub fn validate(
@@ -220,7 +233,7 @@ impl ColumnValidator {
         // BLS verify runs OUTSIDE the closure (slow; would hold the
         // notional read lock too long otherwise).
         let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
-        let persisted_parent_slot = self.persisted_block_roots.get(parent_root).copied();
+        let validated_parent_slot = self.validated_block_roots.get(parent_root).copied();
         let checks = self.beacon_state.read(&|v| {
             let state_epoch = v.slot.current_epoch();
             // proposer_lookahead is anchored to `state_epoch` and covers
@@ -231,7 +244,7 @@ impl ColumnValidator {
                 Some(_) => ProposerCheck::Mismatch,
                 None => ProposerCheck::Unresolvable,
             };
-            let parent = match persisted_parent_slot {
+            let parent = match validated_parent_slot {
                 Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
                 None if parent_root == sync_state.head_root() => ParentCheck::Seen,
                 None => match v.block_roots.slot_of(parent_root, v.slot.slot_number()) {

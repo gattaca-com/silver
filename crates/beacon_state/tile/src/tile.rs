@@ -11,8 +11,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic,
-    NewGossipMsg, Origin, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
-    SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
+    NewGossipMsg, Origin, PayloadValidationStatus, ReplayBlock, RequestId, RpcInbound, RpcResponse,
+    RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -24,8 +24,7 @@ use crate::{
     ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
-        data_availability::DataAvailability, fork_data_roots::ForkDataRoots,
-        orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
+        fork_data_roots::ForkDataRoots, held_blocks::HeldBlocks, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
         sync_contribution_pool::SyncContributionPool,
     },
@@ -36,11 +35,11 @@ mod attestation_pool;
 // `pub` for the crate's `attestation_root_memo` criterion bench.
 pub mod attestation_root_memo;
 mod block;
-mod data_availability;
 mod finalize;
 mod fork_choice;
 mod fork_data_roots;
 mod gossip;
+mod held_blocks;
 mod orphan_pool;
 mod seen_aggregates;
 mod seen_validators;
@@ -153,20 +152,10 @@ pub struct BeaconStateTile {
     /// Reusable state-transition scratch buffers, threaded into
     /// `apply_block` / `process_slots`.
     stf_scratch: stf::StfScratch,
-    /// Free list; a block's transition output travels with it while it waits
-    /// for its data columns and returns here at import, so the pool grows to
-    /// the peak number of waiting blocks and then stops allocating.
-    vote_buffers: Vec<stf::BlockVotes>,
     /// Pre-validation pass collects every BLS sig in the block here, then
     /// runs `verify_all` once before pass 2 mutates state.
     sig_batch: bls::SigBatch,
-    /// Pending blocks - blocks we have received for which we do not have a
-    /// parent block. Keyed by the parent block_hash.
-    pending_blocks: FxHashMap<B256, Vec<(B256, PendingBlock)>>,
-    /// Gloas: blocks withheld until their parent's execution-payload envelope
-    /// is verified.
-    payload_pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
-    data_availability: DataAvailability,
+    held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: FxHashMap<B256, TRead>,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
@@ -233,11 +222,8 @@ impl BeaconStateTile {
             initial_status_emitted: false,
             cached_fork_digest: None,
             stf_scratch: stf::StfScratch::new(val_cap),
-            vote_buffers: vec![stf::BlockVotes::with_max_capacity()],
             sig_batch: bls::SigBatch::new(),
-            pending_blocks: root_map(),
-            payload_pending_blocks: root_map(),
-            data_availability: DataAvailability::new(syncing.pending.max_dc),
+            held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
             pending_bounds: syncing.pending,
             gossip_consumer,
@@ -549,9 +535,24 @@ impl BeaconStateTile {
         advanced
     }
 
-    fn handle_engine_response(&mut self, eng_resp: EngineResp, _producers: &mut Producers) {
+    fn handle_engine_response(&mut self, eng_resp: EngineResp, producers: &mut Producers) {
         match eng_resp {
             EngineResp::NewPayload(r) => {
+                // A staged block is not in fork choice yet, so its INVALID must
+                // be caught here or it imports optimistic once its columns arrive.
+                if r.status == PayloadValidationStatus::Invalid &&
+                    let Some(source) = self.held.reject_staged(&r.block_root)
+                {
+                    tracing::warn!(
+                        block = hex32(&r.block_root),
+                        "EL rejected a staged block; dropped"
+                    );
+                    producers.produce(BeaconStateEvent::BlockRejected {
+                        block_root: r.block_root,
+                        source,
+                    });
+                    return;
+                }
                 self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
             }
             EngineResp::Fcu(r) => {
@@ -578,7 +579,7 @@ impl BeaconStateTile {
             tracing::trace!(
                 topic = ?m.topic,
                 p2p_peer = m.stream_id.peer(),
-                awaiting_len = self.data_availability.awaiting_len(),
+                staged_len = self.held.staged_len(),
                 head_slot = self.head_state_slot(),
                 "gossip dropped: BeaconState in Syncing mode"
             );
@@ -655,6 +656,12 @@ impl BeaconStateTile {
             tracing::info!(from = ?self.sync_target, to = ?target, "BeaconState mode transition");
         }
         self.sync_target = target;
+        if !self.da_required() {
+            let dropped = self.held.drop_all_staged();
+            if dropped > 0 {
+                tracing::warn!(dropped, "staged blocks dropped: chasing a finalized target");
+            }
+        }
     }
 
     fn on_rpc_inbound(&mut self, m: RpcInbound, producers: &mut Producers) {
@@ -716,9 +723,6 @@ impl BeaconStateTile {
 
 /// EF `fork_choice`/`sync` vector harness API: thin gated wrappers over the
 /// private production methods.
-#[cfg(feature = "ef_tests")]
-use silver_common::PayloadValidationStatus;
-
 #[cfg(feature = "ef_tests")]
 impl BeaconStateTile {
     pub fn ef_fork_choice(&self) -> &ForkChoice {

@@ -29,6 +29,8 @@ pub enum PrecheckError {
     AlreadyKnown { block_root: B256 },
     #[error("block awaiting data availability: block_root=0x{}", b256_hex(block_root))]
     AwaitingData { block_root: B256 },
+    #[error("block already rejected: block_root=0x{}", b256_hex(block_root))]
+    Rejected { block_root: B256 },
     #[error("block ticker slot precheck failed: block_slot={block_slot} wall_slot={wall_slot}")]
     FutureSlot { block_slot: Slot, wall_slot: Slot },
     #[error(
@@ -80,6 +82,7 @@ impl PrecheckError {
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
+            Self::Rejected { block_root } |
             Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } |

@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{default_u64, default_usize};
 
+/// The range fetch window plus room for blocks staged off gossip.
+const DEFAULT_MAX_DC: usize = 128 + 64;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SyncingConfig {
     /// Max remembered rejected roots (one set; failed block roots + the
@@ -52,8 +55,9 @@ pub struct PendingBounds {
     /// Max distinct missing-parent roots buffered.
     #[serde(default = "default_usize::<64>")]
     pub max_parents: usize,
-    /// Max blocks buffered awaiting data columns.
-    #[serde(default = "default_usize::<512>")]
+    /// Max blocks staged on their data columns, each holding a committed
+    /// post-state; also caps the gloas payload-pending and envelope pools.
+    #[serde(default = "default_usize::<DEFAULT_MAX_DC>")]
     pub max_dc: usize,
     /// Max forward slot gap (orphan slot − head) tolerated for by-root
     /// backtracking; beyond it syncing covers the gap instead.
@@ -63,6 +67,6 @@ pub struct PendingBounds {
 
 impl Default for PendingBounds {
     fn default() -> Self {
-        Self { future_tolerance: 2, max_parents: 64, max_dc: 512, max_chain_len: 64 }
+        Self { future_tolerance: 2, max_parents: 64, max_dc: DEFAULT_MAX_DC, max_chain_len: 64 }
     }
 }

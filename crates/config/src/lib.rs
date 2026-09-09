@@ -154,10 +154,9 @@ pub struct Config {
     #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_ssz_tcache_size: usize,
     /// Inbound RPC ring: block, column-sidecar and envelope chunks; the
-    /// producer wraps when full. Beacon state parks its handles, so
-    /// lapping a block awaiting its columns voids coverage already emitted
-    /// for its slot — symptom is `parked block lapped in the tcache` at
-    /// finalization.
+    /// producer wraps when full. Beacon state parks its handles, so a block
+    /// lapped while parked or staged is fetched again by root — symptom is
+    /// `lapped in the tcache` in the beacon state log.
     ///
     /// Floor is the fetch window, `2 * BATCH` = 128 blocks (mainnet ~225 KB
     /// mean, ~476 KB max — see `crates/e2e/data/perf`). The rest is

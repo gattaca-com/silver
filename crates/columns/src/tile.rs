@@ -11,10 +11,10 @@ use flux::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, EngineResp,
-    GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
-    RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed,
-    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
+    EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
+    SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
 };
@@ -171,14 +171,25 @@ impl DataColumnsTile {
             self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, producers);
         }
 
-        producers.produce(SyncNeed::Missing {
-            root: block_root,
-            slot,
-            kind: DataKind::Columns,
-            columns: to_request,
-            origin: Origin::Live,
-        });
+        producers.produce(SyncNeed::missing_columns(block_root, slot, to_request));
         Some((block_root, is_gloas))
+    }
+
+    /// Children's sidecars validate against a staged block, and its custody
+    /// columns are chased even when the block never passed through this tile.
+    fn note_staged_block(
+        &mut self,
+        block_root: BlockRoot,
+        slot: u64,
+        producers: &mut SilverSpineProducers,
+    ) {
+        self.validator.note_validated(block_root, slot);
+        self.drain_parent_pending_columns(block_root, producers);
+
+        let to_request = self.tracker.to_request(&block_root);
+        if to_request != 0 {
+            producers.produce(SyncNeed::missing_columns(block_root, slot, to_request));
+        }
     }
 
     #[timed]
@@ -446,13 +457,7 @@ impl DataColumnsTile {
                 severity: RpcSeverity::Fatal,
             });
             if bitmask != 0 {
-                producers.produce(SyncNeed::Missing {
-                    root: block_root,
-                    slot,
-                    kind: DataKind::Columns,
-                    columns: bitmask,
-                    origin: Origin::Live,
-                });
+                producers.produce(SyncNeed::missing_columns(block_root, slot, bitmask));
             }
         }
     }
@@ -532,13 +537,7 @@ impl DataColumnsTile {
             p2p_peer: p.stream_id.peer(),
             severity: RpcSeverity::Fatal,
         });
-        producers.produce(SyncNeed::Missing {
-            root: p.block_root,
-            slot: p.slot,
-            kind: DataKind::Columns,
-            columns: p.bitmask,
-            origin: Origin::Live,
-        });
+        producers.produce(SyncNeed::missing_columns(p.block_root, p.slot, p.bitmask));
     }
 }
 
@@ -558,6 +557,17 @@ impl DataColumnsTile {
                 self.drain_parent_pending_columns(*StatusView::head_root(&ssz), producers);
                 latest_status_event = Some((ssz, wall_slot));
             }
+            BeaconStateEvent::BlockReceived {
+                stage: BlockStage::AwaitData,
+                block_root,
+                slot,
+                ..
+            } => {
+                self.note_staged_block(block_root, slot, producers);
+            }
+            BeaconStateEvent::BlockRejected { block_root, .. } => {
+                self.validator.note_rejected(&block_root);
+            }
             BeaconStateEvent::PersistBlock { ssz, source, .. } => {
                 let t_read = self.consumers.acquire_persisted(source, ssz);
 
@@ -566,7 +576,7 @@ impl DataColumnsTile {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let block_root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
 
-                        self.validator.note_persisted(block_root, slot);
+                        self.validator.note_validated(block_root, slot);
 
                         self.drain_parent_pending_columns(block_root, producers);
                     }
@@ -684,12 +694,16 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{io::Write, path::Path};
 
-    use silver_beacon_state_data::BeaconStateOwner;
+    use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
     use silver_common::{
-        EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
-        ssz_view::{DATA_COLUMN_SIDECAR_MIN, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN},
+        BlockSource, BlockStage, EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer,
+        TCacheRead,
+        ssz_view::{
+            DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
+            SIGNED_BEACON_BLOCK_MIN,
+        },
     };
     use tempfile::TempDir;
 
@@ -717,6 +731,14 @@ mod tests {
 
     impl Rig {
         fn new(custody: u128) -> Self {
+            Self::with_state(
+                custody,
+                BeaconStateOwner::empty_test(0).reader(),
+                SpecConfig::mainnet(),
+            )
+        }
+
+        fn with_state(custody: u128, beacon_state: BeaconStateReader, spec: SpecConfig) -> Self {
             let gossip_tc = TCache::producer("gossip_blocks", 1024 * 1024);
             let gossip_consumer = gossip_tc.cache_ref().random_access("gossip_cons", true).unwrap();
 
@@ -742,9 +764,9 @@ mod tests {
                     rpc: rpc_consumer,
                     persist_rpc: persist_rpc_consumer,
                 },
-                BeaconStateOwner::empty_test(0).reader(),
+                beacon_state,
                 custody,
-                Arc::new(SpecConfig::mainnet()),
+                Arc::new(spec),
                 engine_resp_consumer,
                 TCache::producer("el_columns", 1024 * 1024),
             );
@@ -817,6 +839,139 @@ mod tests {
         let mut ssz = [0u8; 92];
         ssz[36..44].copy_from_slice(&finalized_epoch.to_le_bytes());
         ssz
+    }
+
+    fn block_received(stage: BlockStage, block_root: B256, slot: u64) -> BeaconStateEvent {
+        BeaconStateEvent::BlockReceived {
+            slot,
+            block_root,
+            stage,
+            source: BlockSource::Rpc,
+            parent_slot: None,
+        }
+    }
+
+    /// EF fixtures run the fork under test from genesis; signatures verify
+    /// against the fork version the config puts at the block's epoch.
+    fn fulu_from_genesis() -> SpecConfig {
+        SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
+    }
+
+    /// Decoded EF vector, `None` when the beacon state tile crate has not
+    /// fetched them (`make` in that crate's directory).
+    fn ef_vector(case: &str, file: &str) -> Option<Vec<u8>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu")
+            .join(case)
+            .join(file);
+        let compressed = std::fs::read(path).ok()?;
+        Some(snap::raw::Decoder::new().decompress_vec(&compressed).unwrap())
+    }
+
+    fn reader_over(state_ssz: &[u8]) -> BeaconStateReader {
+        let state = BeaconState::from_checkpoint(state_ssz, &fulu_from_genesis(), &[]).unwrap();
+        let mut owner = BeaconStateOwner::new(state);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        owner.reader()
+    }
+
+    /// A block the beacon state holds for its data columns may never have
+    /// passed through this tile: dropped while unsynced, or lapped in its
+    /// ring. The report alone must start the chase for its custody columns.
+    #[test]
+    fn staged_block_requests_its_columns() {
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        rig.tile.handle_beacon_state_event(
+            block_received(BlockStage::AwaitData, [7u8; 32], 42),
+            &mut rig.conn.producers,
+        );
+        let out = rig.drain();
+
+        let [SyncNeed::Missing { root, slot, kind, columns, origin }] = out.missing[..] else {
+            panic!("expected exactly one missing-columns need, got {}", out.missing.len());
+        };
+        assert_eq!((root, slot), ([7u8; 32], 42));
+        assert_eq!(kind, DataKind::Columns);
+        assert_eq!(columns, CUSTODY_COLUMNS, "nothing held yet: the whole custody set");
+        assert_eq!(origin, Origin::Live);
+    }
+
+    /// A staged block vouches for its children's sidecars only while the
+    /// beacon state holds it; the EL can still declare it invalid.
+    #[test]
+    fn rejected_block_stops_vouching_for_its_children() {
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        let root = [7u8; 32];
+        rig.tile.handle_beacon_state_event(
+            block_received(BlockStage::AwaitData, root, 42),
+            &mut rig.conn.producers,
+        );
+        assert!(rig.tile.validator.is_validated(&root));
+
+        rig.tile.handle_beacon_state_event(
+            BeaconStateEvent::BlockRejected { block_root: root, source: BlockSource::Rpc },
+            &mut rig.conn.producers,
+        );
+        assert!(!rig.tile.validator.is_validated(&root), "the rejection is forgotten with it");
+    }
+
+    /// A sidecar whose parent is unknown is held. A parent the beacon state
+    /// has staged (state transition done, its own columns pending) counts as
+    /// seen, so the child's sidecar validates and is persisted, whichever of
+    /// the two arrives first.
+    #[test]
+    fn sidecar_of_staged_parent_is_accepted() {
+        // A valid sidecar whose parent root names no block, over the state it
+        // was built on.
+        const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
+                            gossip_data_column_sidecar__ignore_parent_not_seen";
+        const SIDECAR: &str = "data_column_sidecar_\
+                               0xb3dc72a861576b8fbdf96f82507c6f07112884f4443f9e2ea229eb95ef86a992.ssz_snappy";
+        let Some(sidecar) = ef_vector(CASE, SIDECAR) else { return };
+        let reader = reader_over(&ef_vector(CASE, "state.ssz_snappy").unwrap());
+        let parent_root = *DataColumnSidecarFuluView::parent_root(&sidecar);
+        let parent_slot = DataColumnSidecarFuluView::slot(&sidecar) - 1;
+        let staged_parent = || block_received(BlockStage::AwaitData, parent_root, parent_slot);
+
+        for parent_first in [false, true] {
+            let (mut consumer, ssz) = produce_block(&sidecar, "staged_parent_sidecar");
+            let mut rig = Rig::with_state(CUSTODY_COLUMNS | 1, reader.clone(), fulu_from_genesis());
+            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
+            rig.tile.sync_state.update(status_ssz(0), 1);
+            let read = consumer.acquire(ssz);
+
+            if parent_first {
+                rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
+            }
+            rig.tile.data_columns(
+                PendingColumn {
+                    stream_id: P2pStreamId::new(
+                        2,
+                        2,
+                        StreamProtocol::DataColumnSidecarsByRoot,
+                        false,
+                    ),
+                    sidecar: read,
+                    gossip_subnet: None,
+                    recv_ts: IngestionTime::now(),
+                },
+                RelayMeta::None,
+                &mut rig.conn.producers,
+            );
+            if !parent_first {
+                rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
+            }
+            if !rig.tile.kzg_batch.is_empty() {
+                rig.tile.flush_kzg_batch(&mut rig.conn.producers);
+            }
+            let out = rig.drain();
+
+            assert_eq!(
+                out.persisted, 1,
+                "parent_first={parent_first}: the sidecar is ours to keep"
+            );
+        }
     }
 
     #[test]

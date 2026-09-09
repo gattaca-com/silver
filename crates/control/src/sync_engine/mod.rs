@@ -259,7 +259,8 @@ impl SyncEngine {
             cfg.pending.max_dc
         );
 
-        let by_root_cap = cfg.pending.max_parents + cfg.pending.max_dc;
+        // A staged block may want its columns and, once lapped, its bytes.
+        let by_root_cap = cfg.pending.max_parents + 2 * cfg.pending.max_dc;
         Self {
             ctx: Ctx {
                 custody_columns,
@@ -370,7 +371,7 @@ impl SyncEngine {
                     self.on_columns_covered(slot, root);
                 }
                 Origin::Backfill => {
-                    self.ctx.root_requests.retire(&root);
+                    self.ctx.root_requests.retire(&root, kind);
                     self.ctx.backfill.on_arrived(kind);
                 }
             },
@@ -437,6 +438,7 @@ impl SyncEngine {
 
     fn on_block_rejected(&mut self, block_root: [u8; 32], source: BlockSource) {
         self.ctx.peers.mark_rejected(block_root);
+        self.ctx.root_requests.retire_all(&block_root);
         self.phase.on_block_rejected(&mut self.ctx, source);
         self.mark_dirty();
     }
@@ -467,17 +469,17 @@ impl SyncEngine {
         let applied = matches!(stage, BlockStage::Applied | BlockStage::AlreadyKnown);
         self.window.block_received(slot, block_root, parent_slot, applied);
         self.phase.note_report(DataKind::Block, slot);
-        self.ctx.root_requests.retire(&block_root);
+        self.ctx.root_requests.retire(&block_root, DataKind::Block);
     }
 
     fn on_envelope_covered(&mut self, slot: u64, block_root: [u8; 32]) {
-        self.ctx.root_requests.retire(&block_root);
+        self.ctx.root_requests.retire(&block_root, DataKind::Envelope);
         self.window.envelope_covered(slot);
         self.phase.note_report(DataKind::Envelope, slot);
     }
 
     fn on_columns_covered(&mut self, slot: u64, block_root: [u8; 32]) {
-        self.ctx.root_requests.retire(&block_root);
+        self.ctx.root_requests.retire(&block_root, DataKind::Columns);
         self.window.columns_covered(slot);
         self.phase.note_report(DataKind::Columns, slot);
     }

@@ -508,6 +508,24 @@ pub enum SyncNeed {
     BackfillGap { kind: DataKind, floor: u64, next: u64 },
 }
 
+impl SyncNeed {
+    pub fn missing_block(root: [u8; 32], slot: u64) -> Self {
+        Self::live_missing(DataKind::Block, root, slot, 0)
+    }
+
+    pub fn missing_envelope(root: [u8; 32], slot: u64) -> Self {
+        Self::live_missing(DataKind::Envelope, root, slot, 0)
+    }
+
+    pub fn missing_columns(root: [u8; 32], slot: u64, columns: u128) -> Self {
+        Self::live_missing(DataKind::Columns, root, slot, columns)
+    }
+
+    fn live_missing(kind: DataKind, root: [u8; 32], slot: u64, columns: u128) -> Self {
+        Self::Missing { root, slot, kind, columns, origin: Origin::Live }
+    }
+}
+
 /// Sync target chosen by the peer manager.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C, u8)]

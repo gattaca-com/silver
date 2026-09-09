@@ -16,6 +16,14 @@ const COLUMN_GOSSIP_WAIT_PERIOD: Duration = Duration::from_millis(400);
 
 const ATTEMPTS_BEFORE_REPORT: u32 = 8;
 
+/// A root's block and its columns are chased independently: either may lap
+/// while the other is wanted.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct NeedKey {
+    root: [u8; 32],
+    kind: DataKind,
+}
+
 #[derive(Clone, Copy)]
 struct Need {
     kind: DataKind,
@@ -77,7 +85,7 @@ pub(super) struct OldestNeed {
 }
 
 pub(super) struct ByRootRequests {
-    needs: FxHashMap<[u8; 32], Need>,
+    needs: FxHashMap<NeedKey, Need>,
     next_due: Option<Instant>,
     cap: usize,
 }
@@ -88,7 +96,8 @@ impl ByRootRequests {
     }
 
     fn insert(&mut self, root: [u8; 32], need: Need) {
-        if self.needs.len() >= self.cap && !self.needs.contains_key(&root) {
+        let key = NeedKey { root, kind: need.kind };
+        if self.needs.len() >= self.cap && !self.needs.contains_key(&key) {
             ControlCounters::RootNeedsRefused.inc();
             tracing::warn!(
                 root = hex32(&root),
@@ -99,10 +108,10 @@ impl ByRootRequests {
             );
             return;
         }
-        match self.needs.entry(root) {
+        match self.needs.entry(key) {
             Entry::Occupied(mut e) => {
                 let held = e.get_mut();
-                (held.kind, held.origin, held.columns) = (need.kind, need.origin, need.columns);
+                (held.origin, held.columns) = (need.origin, need.columns);
                 held.wanted_at = held.wanted_at.max(need.wanted_at);
             }
             Entry::Vacant(e) => {
@@ -130,8 +139,8 @@ impl ByRootRequests {
         self.insert(root, Need::new(kind, origin, columns, wanted_at, now));
     }
 
-    pub(super) fn retire(&mut self, root: &[u8; 32]) {
-        if let Some(need) = self.needs.remove(root) {
+    pub(super) fn retire(&mut self, root: &[u8; 32], kind: DataKind) {
+        if let Some(need) = self.needs.remove(&NeedKey { root: *root, kind }) {
             tracing::debug!(
                 root = hex32(root),
                 kind = ?need.kind,
@@ -143,6 +152,13 @@ impl ByRootRequests {
         ControlCounters::RootNeedsTracked.set(self.needs.len() as u64);
     }
 
+    /// A rejected block answers nothing, so every chase for its root ends.
+    pub(super) fn retire_all(&mut self, root: &[u8; 32]) {
+        for kind in DataKind::ALL {
+            self.retire(root, kind);
+        }
+    }
+
     pub(super) fn prune_finalized(&mut self, finalized_slot: Slot) {
         self.needs.retain(|_, need| !need.dead_at(finalized_slot));
         ControlCounters::RootNeedsTracked.set(self.needs.len() as u64);
@@ -151,15 +167,14 @@ impl ByRootRequests {
     /// What the stall report reads: how many roots are outstanding, and the one
     /// wanted for the oldest slot.
     pub(super) fn outstanding(&self) -> (usize, Option<OldestNeed>) {
-        let oldest =
-            self.needs.iter().min_by_key(|(_, need)| need.wanted_at).map(|(root, need)| {
-                OldestNeed {
-                    root: *root,
-                    kind: need.kind,
-                    wanted_at: need.wanted_at,
-                    attempts: need.attempts,
-                }
-            });
+        let oldest = self.needs.iter().min_by_key(|(_, need)| need.wanted_at).map(|(key, need)| {
+            OldestNeed {
+                root: key.root,
+                kind: need.kind,
+                wanted_at: need.wanted_at,
+                attempts: need.attempts,
+            }
+        });
         (self.needs.len(), oldest)
     }
 
@@ -174,20 +189,20 @@ impl ByRootRequests {
             return;
         }
 
-        if let Some(root) = self.oldest_slot_due(now, &claim_covers) &&
-            let Some(need) = self.needs.get_mut(&root)
+        if let Some(key) = self.oldest_slot_due(now, &claim_covers) &&
+            let Some(need) = self.needs.get_mut(&key)
         {
             count_chase(need.kind);
-            let placed = emit(offer(need, root, next_id, now));
-            report_unplaced(placed, need, &root);
+            let placed = emit(offer(need, key.root, next_id, now));
+            report_unplaced(placed, need, &key.root);
         }
 
         let mut next_due = None;
-        for (root, need) in self.needs.iter_mut() {
+        for (key, need) in self.needs.iter_mut() {
             if need.due_now(now, &claim_covers) {
                 count_chase(need.kind);
-                let placed = emit(offer(need, *root, next_id, now));
-                report_unplaced(placed, need, root);
+                let placed = emit(offer(need, key.root, next_id, now));
+                report_unplaced(placed, need, &key.root);
             }
             next_due = Some(next_due.map_or(need.due, |held: Instant| held.min(need.due)));
         }
@@ -198,12 +213,12 @@ impl ByRootRequests {
         &self,
         now: Instant,
         claim_covers: &impl Fn(Slot) -> bool,
-    ) -> Option<[u8; 32]> {
+    ) -> Option<NeedKey> {
         self.needs
             .iter()
             .filter(|(_, need)| need.due_now(now, claim_covers))
             .min_by_key(|(_, need)| need.wanted_at)
-            .map(|(root, _)| *root)
+            .map(|(key, _)| *key)
     }
 }
 
@@ -369,7 +384,7 @@ mod tests {
 
         let ids = drive(&mut needs, &mut next_id, t0, true);
         assert_eq!(ids.len(), 1, "asked once");
-        needs.retire(&ROOT);
+        needs.retire(&ROOT, DataKind::Columns);
 
         assert!(
             drive(&mut needs, &mut next_id, t0 + COLUMN_RETRY * 4, true).is_empty(),
@@ -509,7 +524,7 @@ mod tests {
         needs.prune_finalized(32);
 
         assert_eq!(needs.needs.len(), 1, "only the need above the finalized slot survives");
-        assert!(needs.needs.contains_key(&[2; 32]));
+        assert!(needs.needs.contains_key(&NeedKey { root: [2; 32], kind: DataKind::Envelope }));
         assert_eq!(drive(&mut needs, &mut next_id, now, true).len(), 1);
     }
 
@@ -524,7 +539,21 @@ mod tests {
         needs.prune_finalized(u64::MAX);
         assert_eq!(drive(&mut needs, &mut next_id, now, true).len(), 1, "still wanted");
 
-        needs.retire(&ROOT);
+        needs.retire(&ROOT, DataKind::Columns);
         assert!(needs.needs.is_empty(), "storage's own `Arrived` retires it");
+    }
+
+    /// A block's bytes and its columns are wanted for different reasons; the
+    /// block arriving settles only the block.
+    #[test]
+    fn block_arrival_keeps_column_chase() {
+        let t0 = Instant::now();
+        let (mut needs, mut next_id) = (ByRootRequests::new(BY_ROOT_CAP), 0);
+        want_columns(&mut needs, t0, Origin::Live);
+        want_block(&mut needs, ROOT, 7, t0);
+
+        needs.retire(&ROOT, DataKind::Block);
+
+        assert_eq!(drive(&mut needs, &mut next_id, t0, true).len(), 1, "columns still wanted");
     }
 }
