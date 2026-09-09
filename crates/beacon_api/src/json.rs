@@ -252,11 +252,10 @@ impl Json<'_> {
         self.end_object();
     }
 
-    /// `version` names the fork in force at the head block's slot.
-    pub(crate) fn head_v2_event(&mut self, head: &HeadEvent, version: &str) {
+    pub(crate) fn head_v2_event(&mut self, head: &HeadEvent, fork_name: &str) {
         self.begin_object();
         self.key("version");
-        self.string(version);
+        self.string(fork_name);
         self.key("data");
         self.begin_object();
         self.key("slot");
