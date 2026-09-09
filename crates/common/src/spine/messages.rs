@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 
 use crate::{
     DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId, StreamProtocol,
@@ -833,18 +833,18 @@ pub enum ColumnSource {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct HeadRoots {
-    pub state_root: [u8; 32],
+    pub state_root: B256,
     /// Root at the slot before the head block's previous epoch starts,
     /// saturating to slot zero.
-    pub previous_duty_dependent_root: [u8; 32],
+    pub previous_duty_dependent_root: B256,
     /// Root at the slot before the head block's epoch starts, saturating to
     /// slot zero.
-    pub current_duty_dependent_root: [u8; 32],
+    pub current_duty_dependent_root: B256,
 }
 
 impl HeadRoots {
     pub fn is_complete(&self) -> bool {
-        self.state_root != [0u8; 32]
+        self.state_root != B256::default()
     }
 }
 
