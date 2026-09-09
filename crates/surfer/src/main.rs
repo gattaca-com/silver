@@ -18,6 +18,7 @@ use std::{
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
+    style::Print,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -47,6 +48,12 @@ const BUCKET: Duration = Duration::from_secs(sources::counters::BUCKET_SECS);
 /// How often to rescan the discovery directory for new sources.
 /// Insertion-only — existing handles never close mid-run.
 const DISCOVER: Duration = Duration::from_secs(10);
+
+/// DECSET 1000. Terminals draw an arrow pointer instead of the I-beam once any
+/// mouse-reporting mode is active. 1002/1003 stay off: motion reports would
+/// wake the draw loop on every pointer move.
+const MOUSE_REPORT_ON: &str = "\x1b[?1000h";
+const MOUSE_REPORT_OFF: &str = "\x1b[?1000l";
 
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -135,20 +142,20 @@ fn main() -> io::Result<()> {
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), Print(MOUSE_REPORT_OFF), LeaveAlternateScreen);
         default_panic(info);
     }));
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, Print(MOUSE_REPORT_ON))?;
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
     let result = run(&mut term, &mut app, &base_dir, &app_name);
 
     disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
+    execute!(term.backend_mut(), Print(MOUSE_REPORT_OFF), LeaveAlternateScreen)?;
     term.show_cursor()?;
 
     result
