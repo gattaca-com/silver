@@ -812,8 +812,16 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
 
             tile.loop_body(&mut adapter);
 
+            let published = Published::drain(&mut sink);
+            assert!(
+                matches!(published.0.as_slice(), [BeaconStateEvent::Status {
+                    following: false,
+                    ..
+                }]),
+                "the startup observation precedes a following decision"
+            );
             assert_eq!(
-                Published::drain(&mut sink).heads(),
+                published.heads(),
                 [StatusHead {
                     root,
                     slot: 0,
@@ -831,8 +839,55 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
                 }],
                 "startup at state slot {state_slot}, Gloas: {is_gloas}"
             );
+
+            sink.produce(ReplayBlock::Done);
+            tile.loop_body(&mut adapter);
+            let completed = Published::drain(&mut sink);
+            assert!(matches!(completed.0.as_slice(), [
+                BeaconStateEvent::ReplayComplete,
+                BeaconStateEvent::Status { following: false, .. }
+            ]));
+            assert_eq!(completed.heads(), published.heads(), "an empty replay keeps the anchor");
         }
     }
+}
+
+#[test]
+fn following_transitions_publish_status_without_a_head_change() {
+    let mut rig = HeadRig::new();
+    rig.sink.produce(SyncUpdate::SyncingHead { head_root: B_ROOT, head_slot: 100 });
+    let syncing = rig.crank();
+    assert!(matches!(syncing.0.as_slice(), [BeaconStateEvent::Status { following: false, .. }]));
+    assert_eq!(syncing.heads(), [head_anchor()], "syncing keeps the complete head metadata");
+
+    rig.sink.produce(SyncUpdate::SyncingFinalized { target_root: B_ROOT, target_epoch: 4 });
+    assert!(rig.crank().0.is_empty(), "changing sync targets does not change following mode");
+
+    rig.sink.produce(SyncUpdate::Following);
+    let following = rig.crank();
+    assert!(matches!(following.0.as_slice(), [BeaconStateEvent::Status { following: true, .. }]));
+    assert_eq!(following.heads(), syncing.heads(), "the unchanged head supplies a fresh baseline");
+    rig.sink.produce(SyncUpdate::Following);
+    assert!(rig.crank().0.is_empty(), "repeating the mode needs no additional observation");
+}
+
+#[test]
+fn syncing_imports_keep_status_but_head_verdicts_wait_for_following() {
+    let mut rig = HeadRig::new();
+    rig.sink.produce(SyncUpdate::SyncingHead { head_root: B_ROOT, head_slot: 100 });
+    let _ = rig.crank();
+
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    let imported = rig.drain();
+    assert!(matches!(imported.0.as_slice(), [BeaconStateEvent::Status { following: false, .. }]));
+    assert_eq!(imported.heads(), [head_a(true)]);
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert!(rig.crank().heads().is_empty(), "the end-of-loop publisher is inactive while syncing");
+
+    rig.sink.produce(SyncUpdate::Following);
+    let following = rig.crank();
+    assert_eq!(following.heads(), [head_a(false)], "entering following exposes the latest verdict");
+    assert!(matches!(following.0.as_slice(), [BeaconStateEvent::Status { following: true, .. }]));
 }
 
 #[test]
@@ -1004,6 +1059,22 @@ fn a_vote_driven_reorg_publishes_the_new_head_and_reports_the_reorg() {
     let events = rig.crank();
     assert_eq!(events.heads(), [head_b(true)]);
     assert_eq!(events.reorgs(), [70]);
+}
+
+#[test]
+fn syncing_still_reports_a_reorg_without_a_head_observation() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    let _ = rig.crank();
+    rig.sink.produce(SyncUpdate::SyncingHead { head_root: B_ROOT, head_slot: 100 });
+    let _ = rig.crank();
+
+    rig.vote_for(B_ROOT, 0..8);
+    rig.tile.recompute_head();
+    let events = rig.crank();
+    assert_eq!(events.reorgs(), [70], "the following gate does not suppress reorg detection");
+    assert!(events.heads().is_empty());
 }
 
 #[test]
@@ -1302,31 +1373,51 @@ fn an_imported_fixture_block_s_status_carries_its_own_roots() {
     }]);
 }
 
-/// Checks replay metadata and dirty marking. Status is constructed directly;
-/// this test does not exercise its end-of-loop publication.
 #[cfg(feature = "ef_tests")]
 #[test]
-fn a_replayed_fixture_block_moves_the_head_and_its_status_names_its_roots() {
+fn disk_replay_completes_before_a_following_head_observation() {
     let (pre_ssz, block_ssz, post_ssz) = sanity_fixture("attestation");
     let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let expected = attestation_fixture_head_roots(&block_ssz, &post_ssz);
     let (mut tile, _gp, _rp, mut replay) = make_tile_with_producers(34, state, fulu_from_genesis());
-    assert!(!tile.fork_choice.take_head_moved(), "nothing has moved before the replay");
+    let base = std::env::temp_dir().join(format!("silver-following-replay-{}", std::process::id()));
+    fs::create_dir_all(&base).unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    tile.loop_body(&mut adapter);
+    let startup = Published::drain(&mut sink);
+    assert!(matches!(startup.0.as_slice(), [BeaconStateEvent::Status { following: false, .. }]));
+    assert!(startup.heads()[0].roots.is_complete(), "startup does not withhold available roots");
 
     let (_, read) = publish_block_bytes(&mut replay, &block_ssz);
-    tile.replay_block(read);
+    sink.produce(ReplayBlock::Block { ssz: read });
+    tile.loop_body(&mut adapter);
+    assert_eq!(tile.last_applied_block_slot(), 33, "the production handler imported the fixture");
+    assert!(Published::drain(&mut sink).heads().is_empty(), "replay adds no end-of-loop Status");
 
-    assert!(tile.fork_choice.take_head_moved(), "the replayed block is the head to publish");
-    let BeaconStateEvent::Status { ssz, head_roots, head_optimistic, .. } =
-        tile.status_event(tile.selected_head())
-    else {
-        panic!("status_event produces Status")
-    };
-    assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
-    assert_eq!(StatusView::head_slot(&ssz), 33);
-    assert!(head_optimistic, "replay asks the execution layer nothing");
-    assert_eq!(head_roots, expected);
+    sink.produce(ReplayBlock::Done);
+    tile.loop_body(&mut adapter);
+    let completed = Published::drain(&mut sink);
+    assert!(matches!(completed.0.as_slice(), [
+        BeaconStateEvent::ReplayComplete,
+        BeaconStateEvent::Status { following: false, latest_block_slot: 33, wall_slot: 34, .. }
+    ]));
+    assert_eq!(completed.heads(), [StatusHead {
+        root: tile.head_block_root(),
+        slot: 33,
+        optimistic: true,
+        roots: expected,
+        payload: PayloadResolution::Full,
+    }]);
+
+    sink.produce(SyncUpdate::Following);
+    tile.loop_body(&mut adapter);
+    let following = Published::drain(&mut sink);
+    assert!(matches!(following.0.as_slice(), [BeaconStateEvent::Status { following: true, .. }]));
+    assert_eq!(following.heads(), completed.heads(), "following starts from the restored head");
 }
 
 #[cfg(feature = "ef_tests")]

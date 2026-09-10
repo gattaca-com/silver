@@ -188,6 +188,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
         head_optimistic,
         latest_block_slot: head_slot,
         wall_slot,
+        following: false,
         enr_fork_id: [0u8; 16],
         head_roots: HeadRoots::default(),
         head_payload: PayloadResolution::Full,
@@ -216,6 +217,7 @@ fn head_status(
         head_optimistic,
         latest_block_slot: slot,
         wall_slot: slot,
+        following: true,
         enr_fork_id: [0u8; 16],
         head_roots: head_roots(),
         head_payload,
@@ -895,6 +897,8 @@ fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
     ]);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    // A late consumer misses completion and must rely on each Status's mode.
+    inj.produce(BeaconStateEvent::ReplayComplete);
     tile.loop_body(&mut adapter);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
@@ -939,6 +943,84 @@ fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
             String::from_utf8_lossy(&expected)
         );
     }
+}
+
+#[test]
+fn head_streams_start_silently_each_time_status_enters_following() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_follow_gossip",
+        "cs_follow_rpc",
+        "cs_follow_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let fulu = SpecConfig::mainnet().fulu_fork_epoch * 32;
+    let expected = [
+        block_frame(fulu + 3, 0xac),
+        head_frame(fulu + 5, 0xae, true),
+        head_v2_frame(fulu + 5, 0xae, "fulu", "full", true),
+        head_frame(fulu + 7, 0xb0, false),
+        head_v2_frame(fulu + 7, 0xb0, "fulu", "full", false),
+        head_v2_frame(fulu + 7, 0xb0, "fulu", "empty", false),
+        head_frame(fulu + 8, 0xb1, false),
+        head_v2_frame(fulu + 8, 0xb1, "fulu", "full", false),
+    ]
+    .concat();
+    let (client, subscribed) = events_subscriber(addr, "block,head,head_v2", expected.len());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile| {
+        assert!(Instant::now() < deadline, "timeout: following-mode stream");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    while subscribed.try_recv().is_err() {
+        crank(&mut tile);
+    }
+
+    let syncing_status = |offset, root| {
+        let mut event = head_status(fulu + offset, root, true, PayloadResolution::Full);
+        let BeaconStateEvent::Status { following, .. } = &mut event else { unreachable!() };
+        *following = false;
+        event
+    };
+    // Separate queues can expose a newer target before an older observation.
+    inj.produce(SyncUpdate::Following);
+    inj.produce(syncing_status(1, 0xaa));
+    inj.produce(BeaconStateEvent::ReplayComplete);
+    inj.produce(syncing_status(2, 0xab));
+    inj.produce(syncing_status(3, 0xac));
+    inj.produce(block_received(fulu + 3, 0xac, BlockStage::Applied));
+    crank(&mut tile);
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: fulu + 3, wall_slot: fulu + 3, head_optimistic: true }),
+        "node status still follows observations produced outside following mode"
+    );
+
+    inj.produce(SyncUpdate::SyncingHead { head_root: [0xff; 32], head_slot: fulu + 100 });
+    inj.produce(head_status(fulu + 4, 0xad, true, PayloadResolution::Full));
+    inj.produce(head_status(fulu + 5, 0xae, true, PayloadResolution::Full));
+    inj.produce(syncing_status(5, 0xae));
+    inj.produce(syncing_status(6, 0xaf));
+    inj.produce(head_status(fulu + 7, 0xb0, true, PayloadResolution::Full));
+    inj.produce(head_status(fulu + 7, 0xb0, false, PayloadResolution::Full));
+    inj.produce(head_status(fulu + 7, 0xb0, false, PayloadResolution::Empty));
+    inj.produce(head_status(fulu + 8, 0xb1, false, PayloadResolution::Full));
+    while !client.is_finished() {
+        crank(&mut tile);
+    }
+    let got = client.join().unwrap();
+    assert!(
+        got == expected,
+        "\n     got: {:?}\nexpected: {:?}",
+        String::from_utf8_lossy(&got),
+        String::from_utf8_lossy(&expected)
+    );
 }
 
 /// The initial head observation emits no event but still updates node status.

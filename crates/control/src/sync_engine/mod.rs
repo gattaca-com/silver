@@ -79,7 +79,7 @@ impl ReplayGate {
         }
     }
 
-    fn blocks_requests(&self) -> bool {
+    fn is_pending(&self) -> bool {
         !matches!(self, Self::Open)
     }
 
@@ -444,6 +444,7 @@ impl SyncEngine {
     fn on_replay_complete(&mut self) {
         self.replay.open();
         self.window.restart_at_next_status();
+        self.mark_dirty();
     }
 
     pub fn on_terminator(&mut self, request_id: u64, peer: usize, delivered: bool, now: Instant) {
@@ -538,13 +539,14 @@ impl SyncEngine {
         if !chosen.is_following() {
             return Some(chosen);
         }
-        let comparable = self.ctx.local.have_status &&
+        let comparable = !self.replay.is_pending() &&
+            self.ctx.local.have_status &&
             (self.phase.target().is_some() || self.ctx.peers.received_statuses());
         comparable.then_some(SyncUpdate::Following)
     }
 
     pub fn drive_requests(&mut self, now: Instant, emit: &mut impl FnMut(SyncAction) -> bool) {
-        if self.replay.blocks_requests() {
+        if self.replay.is_pending() {
             return;
         }
 

@@ -98,13 +98,16 @@ impl ApplicationBoundaryTile {
                 latest_block_slot,
                 wall_slot,
                 head_optimistic,
+                following,
                 head_roots,
                 head_payload,
                 ..
             } => {
                 beacon.node_status_mut().slots =
                     Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
-                if let Some(HeadChange { event, legacy }) = head.observe(
+                if !following {
+                    *head = ObservedHead::default();
+                } else if let Some(HeadChange { event, legacy }) = head.observe(
                     StatusView::head_slot(&ssz),
                     *StatusView::head_root(&ssz),
                     head_optimistic,

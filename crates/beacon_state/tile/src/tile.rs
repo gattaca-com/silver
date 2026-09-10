@@ -516,6 +516,7 @@ impl BeaconStateTile {
             latest_block_slot: self.last_applied_block_slot(),
             wall_slot: self.ticker.current_slot(),
             head_optimistic: head.observation.optimistic,
+            following: self.sync_target.is_following(),
             enr_fork_id: self.enr_fork_id(),
             head_roots: self.head_roots(head),
             head_payload: head.observation.payload,
@@ -697,7 +698,7 @@ impl BeaconStateTile {
     }
 
     fn consume_shared(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
+        adapter.consume(|target: SyncUpdate, producers| self.on_sync_update(target, producers));
 
         adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
         self.rpc_consumer.free();
@@ -717,11 +718,15 @@ impl BeaconStateTile {
         self.replay_consumer.free();
     }
 
-    fn on_sync_update(&mut self, target: SyncUpdate) {
-        if target.is_following() != self.sync_target.is_following() {
+    fn on_sync_update(&mut self, target: SyncUpdate, producers: &mut Producers) {
+        let mode_changed = target.is_following() != self.sync_target.is_following();
+        if mode_changed {
             tracing::info!(from = ?self.sync_target, to = ?target, "BeaconState mode transition");
         }
         self.sync_target = target;
+        if mode_changed {
+            self.publish_status(producers);
+        }
     }
 
     fn on_rpc_inbound(&mut self, m: RpcInbound, producers: &mut Producers) {
@@ -866,7 +871,9 @@ impl Tile<SilverSpine> for BeaconStateTile {
 
         if self.fork_choice.take_head_moved() {
             self.try_detect_reorg(&mut adapter.producers);
-            self.publish_status_on_head_change(&mut adapter.producers);
+            if self.sync_target.is_following() {
+                self.publish_status_on_head_change(&mut adapter.producers);
+            }
         }
     }
 }

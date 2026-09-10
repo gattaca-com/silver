@@ -823,6 +823,9 @@ pub enum BeaconStateEvent {
         latest_block_slot: u64,
         wall_slot: u64,
         head_optimistic: bool,
+        /// The mode when this snapshot was produced, independent of later
+        /// sync-target updates on another queue.
+        following: bool,
         enr_fork_id: [u8; 16],
         head_roots: HeadRoots,
         head_payload: PayloadResolution,

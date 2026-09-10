@@ -110,3 +110,21 @@ changes, including both empty-to-full and full-to-empty transitions. Legacy
 `head` retains its root-and-optimism filter. Both topics use the same
 complete observation. The v2 `version` names the configured fork at the head
 block's slot; selected pre-Gloas blocks report `full`.
+
+Amended 2026-09-10: `head` and `head_v2` describe changes observed while
+beacon-state is following. Disk restoration and network catch-up produce no
+head notifications. Following is a sync mode, not a guarantee of zero sync
+distance or execution validation.
+
+Status carries `following`, sampled with the head metadata. The boundary uses
+that field rather than ordering observations against sync updates on another
+queue. A non-following Status clears the head baseline. The first complete
+following observation silently establishes a new baseline, including after
+the node falls behind and resumes following.
+
+Control waits for disk replay to finish or be skipped before entering
+following. Beacon-state publishes Status when entering or leaving following,
+even when the head is unchanged. The end-of-loop head-change publisher runs
+only while following. Startup, accepted imports and replay completion retain
+their Status publications and available head roots. Node-status updates and
+block notifications remain independent of the head-stream filter.

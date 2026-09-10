@@ -157,6 +157,7 @@ impl Node {
             latest_block_slot: slot - 1,
             wall_slot: slot,
             head_optimistic: false,
+            following: true,
             enr_fork_id: [0u8; 16],
             head_roots: HeadRoots::default(),
             head_payload: PayloadResolution::Full,
