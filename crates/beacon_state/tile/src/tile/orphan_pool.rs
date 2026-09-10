@@ -14,11 +14,11 @@ impl BeaconStateTile {
     #[timed]
     pub(super) fn clear_finalized_held(&mut self, finalized_slot: u64) {
         tracing::debug!(
-            orphan_parents = self.held.orphan_parents(),
+            orphan_parents = self.held.orphans.parents(),
             finalized_slot,
             "clear held blocks at finalization"
         );
-        self.held.clear_finalized(finalized_slot);
+        self.held.clear_outdated(finalized_slot);
 
         self.pending_envelopes.retain(|root, handle| {
             let held = handle.buffer().is_ok();
@@ -33,7 +33,7 @@ impl BeaconStateTile {
     }
 
     pub(super) fn replay_orphans(&mut self, parent_root: B256, producers: &mut Producers) {
-        for child in self.held.take_orphans(&parent_root) {
+        for child in self.held.orphans.take(&parent_root) {
             // First successful validation of an orphan held on a missing
             // parent: relay it now. Recursively applies chained orphans.
             // Not pre-verified — precheck bailed at parent-missing before
@@ -71,7 +71,7 @@ impl BeaconStateTile {
         }
 
         let orphan = Orphan { block_root, slot: block_slot, pending };
-        if !self.held.park_orphan(parent_root, orphan) {
+        if !self.held.orphans.park(parent_root, orphan) {
             return false;
         }
         // A staged parent is already held; its import drains this child.
@@ -99,7 +99,7 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) -> bool {
         let orphan = Orphan { block_root, slot: block_slot, pending };
-        if !self.held.park_payload_orphan(parent_root, orphan) {
+        if !self.held.payload_orphans.park(parent_root, orphan) {
             return false;
         }
         producers.produce(SyncNeed::missing_envelope(parent_root, block_slot));
@@ -111,7 +111,7 @@ impl BeaconStateTile {
         verified_root: B256,
         producers: &mut Producers,
     ) {
-        for child in self.held.take_payload_orphans(&verified_root) {
+        for child in self.held.payload_orphans.take(&verified_root) {
             self.replay_pending_block(child, false, false, producers);
         }
     }

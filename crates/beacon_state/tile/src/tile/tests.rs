@@ -922,7 +922,7 @@ fn lapped_orphan_is_re_requested_on_replay() {
         [(block_root_fulu(&child), 11)],
         "the lapped child is re-requested"
     );
-    assert!(tile.held.orphan_parents() == 0, "nothing stays parked under an imported parent");
+    assert!(tile.held.orphans.parents() == 0, "nothing stays parked under an imported parent");
 }
 
 /// Signed envelope just well-formed enough to reach the block lookup: the
@@ -967,14 +967,14 @@ fn backfill_block_response_is_not_parked() {
     for kind in [DataKind::Block, DataKind::Envelope] {
         let ssz = rpc_block(&mut rp, 11, unknown_parent);
         tile.on_rpc_inbound(response(kind, Origin::Backfill, ssz), &mut adapter.producers);
-        assert!(tile.held.orphan_parents() == 0, "backfill {kind:?} response not parked");
+        assert!(tile.held.orphans.parents() == 0, "backfill {kind:?} response not parked");
     }
 
     // Control: the live origin on the same bytes *does* park, so the
     // assertions above are about the guard and not about malformed input.
     let ssz = rpc_block(&mut rp, 11, unknown_parent);
     tile.on_rpc_inbound(response(DataKind::Block, Origin::Live, ssz), &mut adapter.producers);
-    assert_eq!(tile.held.orphan_parents(), 1, "live block parks on its missing parent");
+    assert_eq!(tile.held.orphans.parents(), 1, "live block parks on its missing parent");
 }
 
 /// Storage's historical envelopes ride the same response queue. Their block
@@ -1016,10 +1016,10 @@ fn orphan_below_cap_is_buffered() {
     for i in 0..cap as u64 - 1 {
         buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, i);
     }
-    assert_eq!(tile.held.orphan_parents(), cap - 1);
+    assert_eq!(tile.held.orphans.parents(), cap - 1);
     // A new distinct missing parent while below the cap is buffered.
     buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, u64::MAX);
-    assert_eq!(tile.held.orphan_parents(), cap, "orphan buffered below cap");
+    assert_eq!(tile.held.orphans.parents(), cap, "orphan buffered below cap");
 }
 
 #[test]
@@ -1030,10 +1030,10 @@ fn orphan_at_cap_is_refused() {
     for i in 0..cap as u64 {
         buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, i);
     }
-    assert_eq!(tile.held.orphan_parents(), cap);
+    assert_eq!(tile.held.orphans.parents(), cap);
     // At the cap, a new distinct missing parent is refused — chain capped.
     buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, u64::MAX);
-    assert_eq!(tile.held.orphan_parents(), cap, "orphan refused at cap");
+    assert_eq!(tile.held.orphans.parents(), cap, "orphan refused at cap");
 }
 
 #[test]
@@ -1052,7 +1052,7 @@ fn orphan_too_far_ahead_falls_back_to_syncing() {
         edge,
         &mut adapter.producers,
     );
-    assert_eq!(tile.held.orphan_parents(), 1, "edge orphan buffered");
+    assert_eq!(tile.held.orphans.parents(), 1, "edge orphan buffered");
 
     // One slot past the gap: refused before insert, syncing takes over.
     let beyond = head + limit + 1;
@@ -1063,7 +1063,7 @@ fn orphan_too_far_ahead_falls_back_to_syncing() {
         beyond,
         &mut adapter.producers,
     );
-    assert_eq!(tile.held.orphan_parents(), 1, "too-far orphan not buffered");
+    assert_eq!(tile.held.orphans.parents(), 1, "too-far orphan not buffered");
 }
 
 /// The gap bound is not a Following-only courtesy: syncing is when the tip is
@@ -1084,7 +1084,7 @@ fn orphan_too_far_ahead_is_refused_while_syncing_too() {
         &mut adapter.producers,
     );
 
-    assert!(tile.held.orphan_parents() == 0, "a far-ahead orphan is left to the range walk");
+    assert!(tile.held.orphans.parents() == 0, "a far-ahead orphan is left to the range walk");
 }
 
 #[test]
@@ -1098,8 +1098,8 @@ fn duplicate_orphan_not_rebuffered() {
     };
     buffer(&mut tile, &mut gp, &mut adapter.producers);
     buffer(&mut tile, &mut gp, &mut adapter.producers);
-    assert_eq!(tile.held.orphan_parents(), 1, "same parent");
-    assert_eq!(tile.held.orphans_under(&parent), 1, "duplicate block_root dropped");
+    assert_eq!(tile.held.orphans.parents(), 1, "same parent");
+    assert_eq!(tile.held.orphans.take(&parent).len(), 1, "duplicate block_root dropped");
 }
 
 /// The payload-orphan pool is the same pool under another dependency: a
@@ -1115,7 +1115,7 @@ fn duplicate_payload_orphan_not_rebuffered() {
         let pending = gossip_pending(&mut gp, slot);
         tile.buffer_awaiting_payload(parent, block_root, slot, pending, &mut adapter.producers);
     }
-    assert_eq!(tile.held.payload_orphans_under(&parent), 1, "duplicate block_root dropped");
+    assert_eq!(tile.held.payload_orphans.take(&parent).len(), 1, "duplicate block_root dropped");
 }
 
 // ── gossip handlers ──
@@ -2826,10 +2826,10 @@ fn staged_blocks_follow_finalization() {
 
     forks.tile.maybe_finalize();
 
-    let held = &forks.tile.held;
+    let held = &mut forks.tile.held;
     assert!(!held.is_staged(&S2_ROOT), "S2 dropped with F2");
     assert!(held.is_staged(&S_ROOT), "S survives");
-    let s_rebased = held.staged_state_id(&S_ROOT).unwrap();
+    let s_rebased = *held.state_ids_mut().next().expect("S is the only staged block");
     assert_ne!(s_rebased, s_id, "stale staged bundle replaced");
     assert_eq!(
         forks.block_roots(s_rebased, &[1, 2, 3]),
@@ -2927,13 +2927,13 @@ fn pruned_staged_block_takes_its_children() {
     let mut producer = TCache::producer("test_staged_children", 1 << 12);
     forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
     let child = gossip_pending(&mut producer, 3);
-    forks.tile.buffer_orphan(S2_ROOT, [0x53; 32], child, 3, &mut adapter.producers);
-    assert_eq!(forks.tile.held.orphans_under(&S2_ROOT), 1, "child parked on S2");
+    let parked = forks.tile.buffer_orphan(S2_ROOT, [0x53; 32], child, 3, &mut adapter.producers);
+    assert!(parked, "child parked on S2");
 
     forks.tile.maybe_finalize();
 
     assert!(!forks.tile.held.is_staged(&S2_ROOT), "S2 dropped with F2");
-    assert_eq!(forks.tile.held.orphans_under(&S2_ROOT), 0, "its child goes with it");
+    assert!(forks.tile.held.orphans.take(&S2_ROOT).is_empty(), "its child goes with it");
 }
 
 /// Availability is announced once, so it must outlive a release the caller

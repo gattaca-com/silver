@@ -1087,24 +1087,23 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let canon_id = self.canonical_state_id();
-        let mut votes = self.held.take_votes();
+        let slashed = &mut self.stf_scratch.active;
         let ok = {
             let view = self.state.read_view(canon_id);
             stf::validate_attester_slashing_for_gossip(
                 &view,
                 data,
-                &mut votes.slashed,
+                slashed,
                 &mut self.sig_batch,
             )
         };
         // Mark the equivocators (spec `on_attester_slashing`) so fork choice
         // excludes them. Idempotent; removes any live LMD weight next recompute.
         if ok {
-            for &idx in &votes.slashed {
+            for &idx in slashed.iter() {
                 self.fork_choice.mark_equivocating(idx as usize);
             }
         }
-        self.held.recycle_votes(votes);
         if ok { Feedback::Accept(None) } else { Feedback::Reject(None) }
     }
 

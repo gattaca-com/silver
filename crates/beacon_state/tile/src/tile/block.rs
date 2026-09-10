@@ -28,30 +28,18 @@ struct AppliedBlock {
     unrealized: (Checkpoint, Checkpoint),
     execution_block_hash: B256,
     bid_block_hash: B256,
-}
-
-/// A block whose post-state is committed but not yet in fork choice. Carries
-/// the STF's vote and slashing output: spec `on_block` implies receiving the
-/// body's attestations and slashings, so they enter fork choice with the block
-/// and never if it is dropped.
-pub(super) struct StagedBlock {
-    pub(super) parsed: ParsedBlock,
-    applied: AppliedBlock,
     votes: stf::BlockVotes,
 }
 
-impl StagedBlock {
-    #[cfg(test)]
-    pub(super) fn state_id(&self) -> StateId {
-        self.applied.id
-    }
+/// A block whose post-state is committed but not yet in fork choice.
+pub(super) struct StagedBlock {
+    pub(super) parsed: ParsedBlock,
+    applied: AppliedBlock,
+}
 
+impl StagedBlock {
     pub(super) fn state_id_mut(&mut self) -> &mut StateId {
         &mut self.applied.id
-    }
-
-    pub(super) fn into_votes(self) -> stf::BlockVotes {
-        self.votes
     }
 
     #[cfg(test)]
@@ -63,8 +51,9 @@ impl StagedBlock {
             unrealized: Default::default(),
             execution_block_hash: [0u8; 32],
             bid_block_hash: [0u8; 32],
+            votes: stf::BlockVotes::default(),
         };
-        Self { parsed, applied, votes: stf::BlockVotes::default() }
+        Self { parsed, applied }
     }
 }
 
@@ -118,7 +107,7 @@ impl BeaconStateTile {
         };
 
         let waits_for_columns = self.waits_for_columns(&parsed);
-        if waits_for_columns && !self.held.can_stage() {
+        if waits_for_columns && self.held.staged_len() >= self.pending_bounds.max_dc {
             tracing::warn!(
                 block = hex32(&parsed.block_root),
                 "too many blocks awaiting data availability; dropped"
@@ -325,9 +314,8 @@ impl BeaconStateTile {
 
     #[timed]
     fn stage_block(&mut self, parsed: ParsedBlock, data: &[u8]) -> Result<StagedBlock, Feedback> {
-        let mut votes = self.held.take_votes();
-        match self.apply_stf_and_commit(&parsed, data, &mut votes) {
-            Ok(applied) => Ok(StagedBlock { parsed, applied, votes }),
+        match self.apply_stf_and_commit(&parsed, data) {
+            Ok(applied) => Ok(StagedBlock { parsed, applied }),
             Err(e) => {
                 tracing::error!(
                     error = %e,
@@ -335,8 +323,7 @@ impl BeaconStateTile {
                     head_slot = self.head_state_slot(),
                     "block rejected"
                 );
-                self.held.recycle_votes(votes);
-                self.held.note_rejected(parsed.block_root, parsed.header.slot);
+                self.held.reject(parsed.block_root, parsed.header.slot);
                 Err(Feedback::Reject(Some(parsed.block_root)))
             }
         }
@@ -362,7 +349,7 @@ impl BeaconStateTile {
                 "block lapped in the tcache before its data columns arrived; re-requesting"
             );
             producers.produce(SyncNeed::missing_block(block_root, slot));
-            self.held.recycle_votes(staged.into_votes());
+            self.stf_scratch.votes.recycle(staged.applied.votes);
             return;
         };
 
@@ -388,7 +375,6 @@ impl BeaconStateTile {
         &mut self,
         parsed: &ParsedBlock,
         data: &[u8],
-        votes: &mut stf::BlockVotes,
     ) -> crate::Result<AppliedBlock> {
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
 
@@ -411,7 +397,8 @@ impl BeaconStateTile {
         // publish-last.
         let parent = parsed.parent_state_id;
         let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
-        let (epoch_idx, longtail_idx) = stf::apply_block(
+        let mut votes = self.stf_scratch.votes.take();
+        let transition = stf::apply_block(
             &self.spec,
             &mut view,
             epoch,
@@ -421,9 +408,16 @@ impl BeaconStateTile {
             &parsed.header,
             Some(&sref),
             &mut self.stf_scratch,
-            votes,
+            &mut votes,
             &mut self.sig_batch,
-        )?;
+        );
+        let (epoch_idx, longtail_idx) = match transition {
+            Ok(committed) => committed,
+            Err(e) => {
+                self.stf_scratch.votes.recycle(votes);
+                return Err(e);
+            }
+        };
 
         // Snapshot checkpoints while the view is live, then `commit` it so the
         // `&mut self.state` borrow ends before the fork-choice / publish work.
@@ -443,6 +437,7 @@ impl BeaconStateTile {
             unrealized,
             execution_block_hash,
             bid_block_hash,
+            votes,
         })
     }
 
@@ -450,7 +445,7 @@ impl BeaconStateTile {
     /// ends when this returns.
     #[timed]
     pub(super) fn import_staged(&mut self, staged: StagedBlock, block_data: &[u8]) {
-        let StagedBlock { parsed, applied, votes } = staged;
+        let StagedBlock { parsed, applied } = staged;
         let AppliedBlock {
             id: new_id,
             justified,
@@ -458,6 +453,7 @@ impl BeaconStateTile {
             unrealized,
             execution_block_hash,
             bid_block_hash,
+            votes,
         } = applied;
 
         let is_gloas = parsed.is_gloas;
@@ -495,7 +491,7 @@ impl BeaconStateTile {
         for &idx in &votes.slashed {
             self.fork_choice.mark_equivocating(idx as usize);
         }
-        self.held.recycle_votes(votes);
+        self.stf_scratch.votes.recycle(votes);
 
         // Proposer boost: the FIRST current-slot block that arrived before the
         // attesting deadline (first 1/3) gets a transient weight bonus, expired
