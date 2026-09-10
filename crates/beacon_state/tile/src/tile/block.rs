@@ -496,6 +496,8 @@ impl BeaconStateTile {
             self.fork_choice.record_vote(vote, n);
         }
 
+        // Spec `on_block` takes the head before the new block joins the store.
+        let head_before = self.fork_choice.find_head();
         self.fork_choice.on_block(BlockImport {
             slot: parsed.header.slot,
             block_root: parsed.block_root,
@@ -520,16 +522,24 @@ impl BeaconStateTile {
         }
         self.stf_scratch.votes.recycle(votes);
 
-        // Proposer boost: the FIRST current-slot block that arrived before the
-        // attesting deadline (first 1/3) gets a transient weight bonus, expired
-        // at the next slot boundary by the fork-choice tick. Set before
-        // `recompute_head` so `apply_score_changes` folds it in. First-block
-        // guard per spec `update_proposer_boost_root`.
+        // Spec `update_proposer_boost_root`: the FIRST current-slot block that
+        // arrived before the attesting deadline gets a transient weight bonus,
+        // expired at the next slot boundary by the fork-choice tick, and only
+        // when it shares the head's shuffling dependent root, so a block whose
+        // proposer was chosen on another branch cannot pull the head over. Set
+        // before `recompute_head` so `apply_score_changes` folds it in.
+        let current_slot = self.ticker.current_slot();
         let before_deadline = self.ticker.is_before_attesting_interval(is_gloas);
+        let same_dependent_root = || {
+            let epoch = current_slot / SLOTS_PER_EPOCH;
+            self.fork_choice.shuffling_dependent_root(&head_before, epoch) ==
+                self.fork_choice.shuffling_dependent_root(&parsed.block_root, epoch)
+        };
 
-        if parsed.header.slot == self.ticker.current_slot() &&
+        if parsed.header.slot == current_slot &&
             before_deadline &&
-            self.fork_choice.proposer_boost_root == [0u8; 32]
+            self.fork_choice.proposer_boost_root == [0u8; 32] &&
+            same_dependent_root()
         {
             self.refresh_justified_balances();
             self.fork_choice.set_proposer_boost(parsed.block_root);
