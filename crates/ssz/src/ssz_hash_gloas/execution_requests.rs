@@ -8,10 +8,20 @@ use crate::{
     ssz_view::{
         BUILDER_DEPOSIT_REQUEST_SIZE, BUILDER_EXIT_REQUEST_SIZE, BuilderDepositRequestView,
         BuilderExitRequestView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
-        DEPOSIT_REQUEST_SIZE, DepositRequestView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
+        DEPOSIT_REQUEST_SIZE, DepositRequestView, MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
         fixed_list_ok, offsets_ok, variable_field,
     },
 };
+
+/// A request list longer than its `MAX_*_REQUESTS_PER_PAYLOAD` preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestCountOutOfBounds {
+    pub kind: &'static str,
+    pub count: usize,
+    pub max: usize,
+}
 
 /// `ExecutionRequests` (five ProgressiveLists) has no wire-view type; this unit
 /// struct owns splitting the container into its list bodies and hashing them.
@@ -27,6 +37,42 @@ pub static EMPTY_EXECUTION_REQUESTS_ROOT: LazyLock<B256> =
     LazyLock::new(|| ExecutionRequestsView::hash_tree_root(&[]));
 
 impl ExecutionRequestsView {
+    /// Spec `verify_execution_requests_limits`. EIP-7688 progressive lists
+    /// carry no type-level bound, so the presets are enforced here; deposits
+    /// are unbounded per consensus-specs #5436.
+    pub fn check_counts(data: &[u8]) -> Result<(), RequestCountOutOfBounds> {
+        let [_deposits, withdrawals, consolidations, builder_deposits, builder_exits] =
+            Self::sections(data);
+        let check = |kind, bytes: &[u8], size: usize, max: usize| {
+            let count = bytes.len() / size;
+            if count > max { Err(RequestCountOutOfBounds { kind, count, max }) } else { Ok(()) }
+        };
+        check(
+            "withdrawal",
+            withdrawals,
+            WITHDRAWAL_REQUEST_SIZE,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        )?;
+        check(
+            "consolidation",
+            consolidations,
+            CONSOLIDATION_REQUEST_SIZE,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+        )?;
+        check(
+            "builder_deposit",
+            builder_deposits,
+            BUILDER_DEPOSIT_REQUEST_SIZE,
+            MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        )?;
+        check(
+            "builder_exit",
+            builder_exits,
+            BUILDER_EXIT_REQUEST_SIZE,
+            MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD,
+        )
+    }
+
     /// Split the serialized container into its five list bodies: deposits,
     /// withdrawals, consolidations, builder deposits, builder exits.
     pub fn sections(data: &[u8]) -> [&[u8]; 5] {

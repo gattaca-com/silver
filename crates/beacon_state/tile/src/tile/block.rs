@@ -1,13 +1,16 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot,
-    StateId, StateReadView,
+    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Checkpoint, Epoch,
+    SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
     SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, hex32,
-    ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
+    ssz_view::{
+        self, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView,
+        SignedBeaconBlockView,
+    },
 };
 
 use super::{
@@ -595,6 +598,12 @@ impl BeaconStateTile {
         if !canonical {
             return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
         }
+
+        let fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
+        BodyOffsets::new(body, fork)
+            .ok_or(BlockBodyError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
+            .and_then(|offsets| offsets.validate())
+            .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
 
         let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
 

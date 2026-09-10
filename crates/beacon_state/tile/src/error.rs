@@ -1,4 +1,5 @@
 use silver_beacon_state_data::{B256, BLSPubkey, BlockBodyError, Slot};
+use silver_common::ssz_hash_gloas::RequestCountOutOfBounds;
 use thiserror::Error;
 
 use crate::tile::Feedback;
@@ -23,6 +24,8 @@ pub enum PrecheckError {
     PreFinalized { block_slot: Slot, finalized_slot: Slot },
     #[error("block body is not canonical SSZ: block_slot={block_slot} body_len={body_len}")]
     NonCanonicalBody { block_slot: Slot, body_len: usize },
+    #[error("block body over its limits: block_slot={block_slot}: {kind}")]
+    BodyOverLimits { block_slot: Slot, kind: BlockBodyError },
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
     PastSlot { block_slot: Slot, parent_slot: Slot },
     #[error("block already imported: block_root=0x{}", b256_hex(block_root))]
@@ -70,7 +73,9 @@ pub enum PrecheckError {
 impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
-            Self::SizeMismatch { .. } | Self::NonCanonicalBody { .. } => Feedback::Reject(None),
+            Self::SizeMismatch { .. } |
+            Self::NonCanonicalBody { .. } |
+            Self::BodyOverLimits { .. } => Feedback::Reject(None),
             Self::ParentMissing { parent_root, block_root, .. } => {
                 Feedback::RequestParent { parent_root, block_root }
             }
@@ -204,6 +209,14 @@ pub enum EnvelopeError {
     BuilderOutOfRange { index: u64 },
     #[error("invalid builder signature")]
     BadSignature,
+    #[error("{kind} request count {count} exceeds max {max}")]
+    TooManyRequests { kind: &'static str, count: usize, max: usize },
+}
+
+impl From<RequestCountOutOfBounds> for EnvelopeError {
+    fn from(e: RequestCountOutOfBounds) -> Self {
+        Self::TooManyRequests { kind: e.kind, count: e.count, max: e.max }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -220,6 +233,12 @@ pub enum ParentExecutionPayloadError {
     RequestsRootMismatch { expected: B256, got: B256 },
     #[error("{kind} request count {count} over the per-payload limit {max}")]
     TooManyRequests { kind: &'static str, count: usize, max: usize },
+}
+
+impl From<RequestCountOutOfBounds> for ParentExecutionPayloadError {
+    fn from(e: RequestCountOutOfBounds) -> Self {
+        Self::TooManyRequests { kind: e.kind, count: e.count, max: e.max }
+    }
 }
 
 pub type Result<T, E = Error> = core::result::Result<T, E>;

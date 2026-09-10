@@ -61,6 +61,7 @@ pub fn verify_execution_payload_envelope(
     if ExecutionRequestsView::hash_tree_root(requests) != bid.execution_requests_root {
         return Err(E::BidMismatch { field: "execution_requests_root" });
     }
+    ExecutionRequestsView::check_counts(requests)?;
 
     if ExecutionPayloadView::slot_number(payload) != state.slot {
         return Err(E::PayloadMismatch { field: "slot_number" });
