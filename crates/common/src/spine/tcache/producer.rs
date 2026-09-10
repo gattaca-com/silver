@@ -1,4 +1,8 @@
-use std::{io::Write, sync::Arc};
+use std::{
+    io::{self, Write},
+    marker::PhantomData,
+    sync::Arc,
+};
 
 use flux::communication::Seqlock;
 
@@ -49,8 +53,68 @@ unsafe impl Send for Producer {}
 unsafe impl Sync for Producer {}
 
 impl Producer {
-    /// The descriptor does not pin storage. Acquire it with a strict consumer
-    /// before further allocations can reclaim it.
+    pub fn next_seq(&self) -> u64 {
+        self.seq
+    }
+
+    #[inline]
+    pub fn read_buffer(&self, read: TCacheRead) -> Result<&[u8], Error> {
+        if read.tcache.cache != self.cache.cast() {
+            return Err(Error::UnexpectedCacheRef);
+        }
+        let cache = unsafe { &*self.cache };
+        cache.read(read.seq).map(|(bytes, _, _)| bytes)
+    }
+
+    /// Borrowing the sole allocator prevents reuse without a consumer pin.
+    ///
+    /// ```compile_fail
+    /// use silver_common::TCache;
+    /// let mut producer = TCache::producer("", 1 << 16);
+    /// let mut write = producer.reserve_scoped(32).unwrap();
+    /// let other = producer.reserve_scoped(32);
+    /// write.buffer().unwrap().fill(1);
+    /// ```
+    ///
+    /// Aborting on drop also requires the allocator to remain borrowed.
+    ///
+    /// ```compile_fail
+    /// use silver_common::TCache;
+    /// let mut producer = TCache::producer("", 1 << 16);
+    /// let write = producer.reserve_scoped(32).unwrap();
+    /// let other = producer.reserve_scoped(32);
+    /// ```
+    pub fn reserve_scoped(&mut self, len: usize) -> Option<ScopedReservation<'_>> {
+        if len > self.cache_ref().capacity().saturating_sub(size_of::<Slot>()) {
+            return None;
+        }
+        let reservation = self.reserve(len, false)?;
+        Some(ScopedReservation { reservation, _producer: PhantomData })
+    }
+
+    /// A producer-side claim cannot survive an allocation, even after the view
+    /// has been consumed.
+    ///
+    /// ```compile_fail
+    /// use silver_common::{SubLayout, TCache};
+    /// let mut producer = TCache::producer("", 1 << 16);
+    /// let reference = producer.sub_reservation(
+    ///     SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"", b""
+    /// ).unwrap();
+    /// let claim = producer.view_sub_reservation(reference).unwrap().claim(0).unwrap();
+    /// let next = producer.reserve_scoped(32);
+    /// claim.write(b"cell", b"pf").unwrap();
+    /// ```
+    #[inline]
+    pub fn view_sub_reservation(
+        &self,
+        reference: SubReservationRef,
+    ) -> Result<SubReservationView<'_>, SubReservationError> {
+        SubReservationView::from_producer(self, reference)
+    }
+
+    /// The descriptor does not pin storage. Retention boundaries or acquired
+    /// owners must protect it across subsequent allocations.
     pub fn sub_reservation(
         &mut self,
         layout: SubLayout,
@@ -66,6 +130,39 @@ impl Producer {
         let reservation = self.reserve(length, false).ok_or(SubReservationError::CacheFull)?;
         Ok(SubReservationRef::new(reservation, layout, prefix, middle))
     }
+}
+
+pub struct ScopedReservation<'a> {
+    reservation: Reservation,
+    _producer: PhantomData<&'a mut Producer>,
+}
+
+impl ScopedReservation<'_> {
+    #[inline]
+    pub fn buffer(&mut self) -> io::Result<&mut [u8]> {
+        self.reservation.buffer()
+    }
+
+    #[inline]
+    pub fn read(&self) -> TCacheRead {
+        self.reservation.read()
+    }
+}
+
+impl Write for ScopedReservation<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.reservation.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.reservation.flush()
+    }
+}
+
+// Drop checking keeps the allocator borrowed until the inner reservation
+// aborts.
+impl Drop for ScopedReservation<'_> {
+    fn drop(&mut self) {}
 }
 
 impl SealedProducer for Producer {

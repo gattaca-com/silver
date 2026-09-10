@@ -4,7 +4,9 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use super::{AcquiredRange, AcquiredRead, RandomAccessConsumer, Reservation, Slot, TCacheRead};
+use super::{
+    AcquiredRange, AcquiredRead, Producer, RandomAccessConsumer, Reservation, Slot, TCacheRead,
+};
 
 pub(super) const INCOMPLETE: u8 = 2;
 const STATE_BITS: u32 = 3;
@@ -18,6 +20,7 @@ const VERIFIED: u64 = 4;
 pub enum SubReservationError {
     InvalidLayout,
     WrongConsumer,
+    WrongProducer,
     CacheFull,
     Stale,
     Closed,
@@ -153,7 +156,7 @@ impl SubReservationRef {
         }
         let pin = consumer.acquire_strict(self.read).ok_or(SubReservationError::Stale)?;
         let acquired = AcquiredSubReservation { pin, reference: self, _local: PhantomData };
-        if acquired.header().closed.load(Ordering::Acquire) {
+        if acquired.view().header().closed.load(Ordering::Acquire) {
             return Err(SubReservationError::Closed);
         }
         Ok(acquired)
@@ -183,20 +186,11 @@ impl SubReservation {
     }
 
     pub fn finish(&self) -> Result<TCacheRead, SubReservationError> {
-        let header = self.acquired.header();
-        if header.closed.load(Ordering::Acquire) {
-            return Err(SubReservationError::Closed);
-        }
-        if !header.complete() {
-            return Err(SubReservationError::Incomplete);
-        }
-        let read = self.acquired.pin.read;
-        read.tcache.slot_at(read.tcache.index(read.seq)).skip.store(0, Ordering::Release);
-        Ok(read)
+        self.acquired.view().finish()
     }
 
     pub fn close(&self) {
-        self.acquired.header().closed.store(true, Ordering::Release);
+        self.acquired.view().close();
     }
 }
 
@@ -215,19 +209,78 @@ pub struct AcquiredSubReservation {
 
 impl AcquiredSubReservation {
     #[inline]
+    fn view(&self) -> SubReservationView<'_> {
+        SubReservationView { reference: self.reference, _scope: PhantomData }
+    }
+
+    #[inline]
+    pub fn ready(&self) -> u128 {
+        self.view().ready()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.view().len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn claim(&self, part: usize) -> Result<SubWrite<'_>, SubReservationError> {
+        self.view().claim(part)
+    }
+
+    pub fn ranges(&self, part: usize) -> Option<[AcquiredRange; 2]> {
+        let header = self.view().header();
+        if part >= header.parts as usize || header.ready() & (1u128 << part) == 0 {
+            return None;
+        }
+        Some(header.ranges(part).map(|(offset, length)| AcquiredRange {
+            read: self.pin.clone(),
+            offset,
+            length,
+        }))
+    }
+}
+
+/// Borrows either the sole allocator or an acquired owner. Neither can release
+/// this record while the view or one of its write claims remains in use.
+pub struct SubReservationView<'a> {
+    reference: SubReservationRef,
+    _scope: PhantomData<&'a *const ()>,
+}
+
+impl<'a> SubReservationView<'a> {
+    #[inline]
+    pub(super) fn from_producer(
+        producer: &'a Producer,
+        reference: SubReservationRef,
+    ) -> Result<Self, SubReservationError> {
+        if reference.read.tcache.cache != producer.cache.cast() {
+            return Err(SubReservationError::WrongProducer);
+        }
+        if !reference.read.tcache.check_seq(reference.read.seq) {
+            return Err(SubReservationError::Stale);
+        }
+        Ok(Self { reference, _scope: PhantomData })
+    }
+
+    #[inline]
     fn data(&self) -> *mut u8 {
-        let read = self.pin.read;
+        let read = self.reference.read;
         let slot = read.tcache.slot_at(read.tcache.index(read.seq));
         unsafe { read.tcache.data_ptr().add(slot.data_start as usize) }
     }
 
     #[inline]
-    fn header(&self) -> &Header {
+    fn header(&self) -> &'a Header {
         unsafe { &*self.data().sub(self.reference.header_bytes).cast::<Header>() }
     }
 
     #[inline]
-    fn state(&self, part: usize) -> &AtomicU64 {
+    fn state(&self, part: usize) -> &'a AtomicU64 {
         assert!(part < self.header().parts as usize);
         // Derive this pointer from the allocation, not a reference limited to the fixed
         // header.
@@ -257,7 +310,7 @@ impl AcquiredSubReservation {
         self.len() == 0
     }
 
-    pub fn claim(&self, part: usize) -> Result<SubWrite<'_>, SubReservationError> {
+    pub fn claim(self, part: usize) -> Result<SubWrite<'a>, SubReservationError> {
         let header = self.header();
         if part >= header.parts as usize {
             return Err(SubReservationError::InvalidLayout);
@@ -279,28 +332,54 @@ impl AcquiredSubReservation {
         state
             .compare_exchange(previous, attempt | WRITING, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| SubReservationError::Claimed)?;
-        let write = SubWrite { acquired: self, part, attempt, staged: false };
+        let write = SubWrite { view: self, part, attempt, staged: false };
         if header.closed.load(Ordering::Acquire) {
             return Err(SubReservationError::Closed);
         }
         Ok(write)
     }
 
-    pub fn ranges(&self, part: usize) -> Option<[AcquiredRange; 2]> {
+    pub fn finish(&self) -> Result<TCacheRead, SubReservationError> {
         let header = self.header();
-        if part >= header.parts as usize || header.ready() & (1u128 << part) == 0 {
-            return None;
+        if header.closed.load(Ordering::Acquire) {
+            return Err(SubReservationError::Closed);
         }
-        Some(header.ranges(part).map(|(offset, length)| AcquiredRange {
-            read: self.pin.clone(),
-            offset,
-            length,
-        }))
+        if !header.complete() {
+            return Err(SubReservationError::Incomplete);
+        }
+        let read = self.reference.read;
+        read.tcache.slot_at(read.tcache.index(read.seq)).skip.store(0, Ordering::Release);
+        Ok(read)
+    }
+
+    pub fn close(&self) {
+        self.header().closed.store(true, Ordering::Release);
+    }
+
+    pub fn cancel(&self, pending: PendingSubReservation) -> Result<bool, SubReservationError> {
+        if pending.reservation.read.tcache.cache != self.reference.read.tcache.cache ||
+            pending.reservation.read.seq != self.reference.read.seq ||
+            pending.part >= self.header().parts as usize
+        {
+            return Err(SubReservationError::Stale);
+        }
+        if self.header().closed.load(Ordering::Acquire) {
+            return Err(SubReservationError::Closed);
+        }
+        Ok(self
+            .state(pending.part)
+            .compare_exchange(
+                pending.attempt | PENDING,
+                pending.attempt,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok())
     }
 }
 
 pub struct SubWrite<'a> {
-    acquired: &'a AcquiredSubReservation,
+    view: SubReservationView<'a>,
     part: usize,
     attempt: u64,
     staged: bool,
@@ -312,7 +391,7 @@ impl SubWrite<'_> {
         first: &[u8],
         second: &[u8],
     ) -> Result<PendingSubReservation, SubReservationError> {
-        let header = self.acquired.header();
+        let header = self.view.header();
         if first.len() != header.first_len as usize || second.len() != header.second_len as usize {
             return Err(SubReservationError::InvalidLayout);
         }
@@ -322,22 +401,22 @@ impl SubWrite<'_> {
         unsafe {
             ptr::copy_nonoverlapping(
                 first.as_ptr(),
-                self.acquired.data().add(first_range.0),
+                self.view.data().add(first_range.0),
                 first_range.1,
             );
             ptr::copy_nonoverlapping(
                 second.as_ptr(),
-                self.acquired.data().add(second_range.0),
+                self.view.data().add(second_range.0),
                 second_range.1,
             );
         }
         if header.closed.load(Ordering::Acquire) {
             return Err(SubReservationError::Closed);
         }
-        self.acquired.state(self.part).store(self.attempt | PENDING, Ordering::Release);
+        self.view.state(self.part).store(self.attempt | PENDING, Ordering::Release);
         self.staged = true;
         Ok(PendingSubReservation {
-            reservation: self.acquired.reference,
+            reservation: self.view.reference,
             part: self.part,
             attempt: self.attempt,
         })
@@ -347,13 +426,13 @@ impl SubWrite<'_> {
 impl Drop for SubWrite<'_> {
     fn drop(&mut self) {
         if !self.staged {
-            self.acquired.state(self.part).store(self.attempt, Ordering::Release);
+            self.view.state(self.part).store(self.attempt, Ordering::Release);
         }
     }
 }
 
-/// Copyable queue descriptor, not a pin. The reservation owner retains it until
-/// handoff or expiry.
+/// Copyable queue descriptor, not a pin. Retention boundaries or acquired
+/// owners must protect it until handoff or expiry.
 #[derive(Clone, Copy, Debug)]
 pub struct PendingSubReservation {
     reservation: SubReservationRef,
@@ -376,6 +455,7 @@ impl PendingSubReservation {
     ) -> Result<SubValidation, SubReservationError> {
         let acquired = self.reservation.acquire(consumer)?;
         acquired
+            .view()
             .state(self.part)
             .compare_exchange(
                 self.attempt | PENDING,
@@ -391,15 +471,7 @@ impl PendingSubReservation {
     /// finishes.
     pub fn cancel(self, consumer: &mut RandomAccessConsumer) -> Result<bool, SubReservationError> {
         let acquired = self.reservation.acquire(consumer)?;
-        Ok(acquired
-            .state(self.part)
-            .compare_exchange(
-                self.attempt | PENDING,
-                self.attempt,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            )
-            .is_ok())
+        acquired.view().cancel(self)
     }
 }
 
@@ -411,19 +483,19 @@ pub struct SubValidation {
 
 impl SubValidation {
     pub fn buffers(&self) -> [&[u8]; 2] {
-        self.acquired.header().ranges(self.pending.part).map(|(offset, length)| unsafe {
-            slice::from_raw_parts(self.acquired.data().add(offset), length)
+        let view = self.acquired.view();
+        view.header().ranges(self.pending.part).map(|(offset, length)| unsafe {
+            slice::from_raw_parts(view.data().add(offset), length)
         })
     }
 
     pub fn accept(mut self) -> Result<(), SubReservationError> {
-        let header = self.acquired.header();
+        let view = self.acquired.view();
+        let header = view.header();
         if header.closed.load(Ordering::Acquire) {
             return Err(SubReservationError::Closed);
         }
-        self.acquired
-            .state(self.pending.part)
-            .store(self.pending.attempt | VERIFIED, Ordering::Release);
+        view.state(self.pending.part).store(self.pending.attempt | VERIFIED, Ordering::Release);
         header.ready[self.pending.part / 64]
             .fetch_or(1u64 << (self.pending.part % 64), Ordering::Release);
         self.validated = true;
@@ -434,7 +506,10 @@ impl SubValidation {
 impl Drop for SubValidation {
     fn drop(&mut self) {
         if !self.validated {
-            self.acquired.state(self.pending.part).store(self.pending.attempt, Ordering::Release);
+            self.acquired
+                .view()
+                .state(self.pending.part)
+                .store(self.pending.attempt, Ordering::Release);
         }
     }
 }

@@ -21,10 +21,12 @@ pub use stream_protocol::{
 };
 pub use tcache::{
     AcquiredRange, AcquiredRead, AcquiredSubReservation, AcquiredWithOffset, Consumer, Error,
-    MultiProducer, PendingSubReservation, Producer, RandomAccessConsumer, Reservation, SubLayout,
-    SubReservation, SubReservationError, SubReservationRef, SubValidation, SubWrite, TCache,
-    TCacheProducer, TCacheRead, TCacheRef,
+    MultiProducer, PendingSubReservation, Producer, RandomAccessConsumer, Reservation,
+    ScopedReservation, SubLayout, SubReservation, SubReservationError, SubReservationRef,
+    SubReservationView, SubValidation, SubWrite, TCache, TCacheProducer, TCacheRead, TCacheRef,
 };
+
+use crate::cells::{CellStoreEvent, RetentionEvent};
 
 mod messages;
 mod stream_id;
@@ -62,6 +64,10 @@ pub struct SilverSpine {
     pub beacon_events: SpineQueue<BeaconStateEvent>,
     #[queue(size(2usize.pow(13)))]
     pub data_columns: SpineQueue<DataColumnsEvent>,
+    #[queue(size(2usize.pow(10)))]
+    pub retention: SpineQueue<RetentionEvent>,
+    #[queue(size(2usize.pow(13)))]
+    pub cells: SpineQueue<CellStoreEvent>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,
     #[queue(size(2usize.pow(14)))]

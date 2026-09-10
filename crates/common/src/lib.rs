@@ -32,15 +32,17 @@ pub use crate::{
         RPC_PROTOCOLS, RandomAccessConsumer as TRandomAccess, ReplayBlock,
         Reservation as TReservation, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
         RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-        SilverSpine, SilverSpineProducers, StreamProtocol, SubLayout, SubReservation,
-        SubReservationError, SubReservationRef, SubValidation, SubWrite, SyncNeed, SyncUpdate,
-        SyncingStrategy, TCache, TCacheProducer, TCacheRead, TCacheRef, WithdrawalInline,
+        ScopedReservation, SilverSpine, SilverSpineProducers, StreamProtocol, SubLayout,
+        SubReservation, SubReservationError, SubReservationRef, SubReservationView, SubValidation,
+        SubWrite, SyncNeed, SyncUpdate, SyncingStrategy, TCache, TCacheProducer, TCacheRead,
+        TCacheRef, WithdrawalInline,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
     wheel::Wheel,
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+pub mod cells;
 pub mod column_util;
 mod enr;
 mod error;

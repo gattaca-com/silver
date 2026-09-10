@@ -1,4 +1,5 @@
 use std::{
+    io::Write,
     ptr,
     time::{Duration, Instant},
 };
@@ -7,9 +8,11 @@ pub use config::CellStoreConfig;
 pub use context::{CommitmentContext, ContextData};
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
+pub use silver_common::cells::{AcquiredCell, CellKey, CellRef, ColumnRef, PendingCell};
 use silver_common::{
-    AcquiredRange, PendingSubReservation, SubReservation, SubReservationError, SubReservationRef,
-    SubValidation, TCacheProducer, TCacheRead, TProducer, TRandomAccess, TRead,
+    ScopedReservation, SubReservationError, SubReservationRef, TCacheProducer, TCacheRead,
+    TProducer,
+    cells::{CellSource, RetentionEvent},
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
 use slab::Slab;
@@ -30,7 +33,7 @@ pub enum StoreError {
     UnsupportedBlobCount(u64),
     CapacityOverflow,
     CacheTooSmall,
-    ConsumerUnavailable,
+    WrongCache,
     InvalidContext,
     ConflictingContext,
     ContextExpired,
@@ -49,114 +52,12 @@ impl From<SubReservationError> for StoreError {
                 Self::CacheFull
             }
             SubReservationError::Closed | SubReservationError::Stale => Self::ContextExpired,
-            SubReservationError::WrongConsumer => Self::ConsumerUnavailable,
+            SubReservationError::WrongConsumer | SubReservationError::WrongProducer => {
+                Self::WrongCache
+            }
             _ => Self::InvalidContext,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CellKey {
-    pub block_root: BlockRoot,
-    pub column: usize,
-    pub row: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum CellSource {
-    Full { read: TCacheRead, cell: usize, proof: usize },
-    Assembly { reservation: SubReservationRef, row: usize },
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct CellRef {
-    source: CellSource,
-    pub generation: u64,
-    pub expires: Instant,
-}
-
-impl CellRef {
-    pub fn read(self) -> TCacheRead {
-        match self.source {
-            CellSource::Full { read, .. } => read,
-            CellSource::Assembly { reservation, .. } => reservation.read(),
-        }
-    }
-
-    pub fn acquire(self, consumer: &mut TRandomAccess) -> Option<AcquiredCell> {
-        let [cell, proof] = match self.source {
-            CellSource::Assembly { reservation, row } => {
-                reservation.acquire(consumer).ok()?.ranges(row)?
-            }
-            CellSource::Full { read, cell, proof } => {
-                if !consumer.is_strict() || !ptr::eq(&*consumer.cache_ref(), &*read.cache_ref()) {
-                    return None;
-                }
-                let pin = consumer.acquire_strict(read)?;
-                [pin.with_range(cell, BYTES_PER_CELL)?, pin.with_range(proof, BYTES_PER_KZG_PROOF)?]
-            }
-        };
-        Some(AcquiredCell { cell, proof })
-    }
-}
-
-pub struct AcquiredCell {
-    pub cell: AcquiredRange,
-    pub proof: AcquiredRange,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ColumnRef {
-    pub block_root: BlockRoot,
-    pub column: usize,
-    pub reservation: SubReservationRef,
-    pub generation: u64,
-    pub expires: Instant,
-}
-
-impl ColumnRef {
-    pub fn stage(
-        self,
-        consumer: &mut TRandomAccess,
-        row: usize,
-        cell: &[u8; BYTES_PER_CELL],
-        proof: &[u8; BYTES_PER_KZG_PROOF],
-    ) -> Result<Option<PendingCell>, StoreError> {
-        let acquired = self.reservation.acquire(consumer)?;
-        let claim = match acquired.claim(row) {
-            Ok(claim) => claim,
-            Err(SubReservationError::Claimed | SubReservationError::Published) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        Ok(Some(PendingCell {
-            key: CellKey { block_root: self.block_root, column: self.column, row },
-            data: claim.write(cell, proof)?,
-        }))
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PendingCell {
-    pub key: CellKey,
-    pub data: PendingSubReservation,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct GenerationRef {
-    pub id: u64,
-    pub first: TCacheRead,
-    pub expires: Instant,
-}
-
-struct Generation {
-    reference: GenerationRef,
-    _pin: TRead,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum CellAdmission {
-    Inserted { cell: CellRef, column_completed: bool },
-    Duplicate,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -200,48 +101,47 @@ pub struct StoreCounts {
     pub bytes: usize,
     pub full_bytes: usize,
     pub contexts: usize,
-    pub generations: usize,
+    pub active_slots: usize,
     pub blocks: usize,
 }
 
 struct Block {
     context: CommitmentContext,
-    pin: Option<TRead>,
+    ssz: Option<TCacheRead>,
 }
 
 struct FullColumn {
-    pin: TRead,
+    read: TCacheRead,
     cell_offset: usize,
     proof_offset: usize,
 }
 
 #[derive(Default)]
 struct Column {
-    assembly: Option<SubReservation>,
+    assembly: Option<SubReservationRef>,
     full: Option<FullColumn>,
     admitted: CellMask,
     complete: bool,
 }
 
 impl Column {
-    fn available(&self, rows: usize) -> CellMask {
+    fn available(&self, producer: &TProducer, rows: usize) -> CellMask {
         if self.full.is_some() {
             CellMask::all(rows)
         } else {
-            CellMask(self.assembly.as_ref().map_or(0, |reservation| reservation.acquired().ready()))
+            CellMask(self.assembly.map_or(0, |reference| {
+                producer.view_sub_reservation(reference).expect("retained assembly").ready()
+            }))
         }
     }
 }
 
-/// Context admission assumes prior validation. Ingress stages cells before
-/// verification. Call `advance` before each batch; retained references require
-/// their tile's consumer to outlive them.
+/// Downstream retention boundaries protect stored descriptors between calls.
+/// Local views borrow the sole producer, preventing allocation during access.
 pub struct CellStore {
     blocks: Slab<Block>,
     columns: Box<[Column]>,
-    generation: Option<Generation>,
-    // Pins above and acquired reads held by callers must drop before this consumer.
-    consumer: Box<TRandomAccess>,
+    retention_boundary: Option<RetentionEvent>,
     producer: TProducer,
     config: CellStoreConfig,
     roots: FxHashMap<BlockRoot, usize>,
@@ -263,16 +163,14 @@ impl CellStore {
         if producer.cache_ref().capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
-        let consumer = producer
-            .cache_ref()
-            .strict_random_access("retained_columns", true)
-            .map_err(|_| StoreError::ConsumerUnavailable)?;
-        let column_entries = config.block_capacity * config.column_indices.len();
+        let column_entries = config
+            .block_capacity
+            .checked_mul(config.column_indices.len())
+            .ok_or(StoreError::CapacityOverflow)?;
         let store = Self {
             blocks: Slab::with_capacity(config.block_capacity),
             columns: std::iter::repeat_with(Column::default).take(column_entries).collect(),
-            generation: None,
-            consumer: Box::new(consumer),
+            retention_boundary: None,
             producer,
             roots: FxHashMap::with_capacity_and_hasher(
                 config.block_capacity * 2,
@@ -288,6 +186,13 @@ impl CellStore {
         };
         store.publish_gauges();
         Ok(store)
+    }
+
+    pub fn reserve_full(&mut self, len: usize) -> Result<ScopedReservation<'_>, StoreError> {
+        if len >= self.producer.cache_ref().capacity() {
+            return Err(StoreError::CacheFull);
+        }
+        self.producer.reserve_scoped(len).ok_or(StoreError::CacheFull)
     }
 
     pub fn admit_context(
@@ -316,8 +221,8 @@ impl CellStore {
             if block.context != context {
                 return Err(StoreError::ConflictingContext);
             }
-            let pin = block.pin.as_ref().ok_or(StoreError::ContextExpired)?;
-            if !data.matches(pin.buffer().expect("pinned context").0) {
+            let read = block.ssz.ok_or(StoreError::ContextExpired)?;
+            if !data.matches(self.producer.read_buffer(read).expect("retained context")) {
                 return Err(StoreError::ConflictingContext);
             }
             return Ok(false);
@@ -328,45 +233,47 @@ impl CellStore {
             DataColumnCounters::CellStoreFull.inc();
             return Err(StoreError::Full);
         }
-        let Some(mut reservation) = self.producer.reserve(data.encoded_len(), true) else {
-            DataColumnCounters::CellStoreCacheFull.inc();
-            return Err(StoreError::CacheFull);
+        let ssz = {
+            let Some(mut reservation) = self.producer.reserve_scoped(data.encoded_len()) else {
+                DataColumnCounters::CellStoreCacheFull.inc();
+                return Err(StoreError::CacheFull);
+            };
+            data.write(reservation.buffer().expect("new context reservation"));
+            reservation.flush().expect("new context reservation");
+            reservation.read()
         };
-        data.write(reservation.buffer().expect("new context reservation"));
-        reservation.increment_offset(data.encoded_len());
-        let pin = self.consumer.acquire_strict(reservation.read()).expect("new context pin");
         let index = self.blocks.vacant_key();
         let start = index * self.config.column_indices.len();
         for (position, &column) in self.config.column_indices.iter().enumerate() {
-            match data
-                .reserve_column(context, column, &mut self.producer)
-                .and_then(|reference| reference.acquire(&mut self.consumer))
-            {
-                Ok(acquired) => {
-                    let reservation = SubReservation::new(acquired);
+            match data.reserve_column(context, column, &mut self.producer) {
+                Ok(reference) => {
                     let complete = context.blob_count == 0;
                     if complete {
-                        reservation.finish().expect("empty column");
+                        self.producer
+                            .view_sub_reservation(reference)
+                            .expect("new assembly")
+                            .finish()
+                            .expect("empty column");
                     }
                     self.columns[start + position] =
-                        Column { assembly: Some(reservation), complete, ..Column::default() };
+                        Column { assembly: Some(reference), complete, ..Column::default() };
                 }
                 Err(error) => {
                     for column in &mut self.columns[start..start + self.config.column_indices.len()]
                     {
+                        if let Some(reference) = column.assembly {
+                            self.producer
+                                .view_sub_reservation(reference)
+                                .expect("new assembly")
+                                .close();
+                        }
                         *column = Column::default();
                     }
                     return Err(error.into());
                 }
             }
         }
-        if self.generation.is_none() {
-            self.generation = Some(Generation {
-                reference: GenerationRef { id: self.slot, first: pin.read, expires: self.slot_end },
-                _pin: pin.clone(),
-            });
-        }
-        assert_eq!(self.blocks.insert(Block { context, pin: Some(pin) }), index);
+        assert_eq!(self.blocks.insert(Block { context, ssz: Some(ssz) }), index);
         self.roots.insert(context.block_root, index);
         self.context_count += 1;
         self.dirty = true;
@@ -381,7 +288,8 @@ impl CellStore {
     ) -> Result<Option<PendingCell>, StoreError> {
         let (block, index) = self.index(key).ok_or(StoreError::UnknownCell)?;
         let column = &self.columns[index];
-        if (column.admitted.0 | column.available(self.blocks[block].context.blob_count).0) &
+        if (column.admitted.0 |
+            column.available(&self.producer, self.blocks[block].context.blob_count).0) &
             (1u128 << key.row) !=
             0
         {
@@ -392,10 +300,16 @@ impl CellStore {
             return Err(StoreError::BelowSlotFloor);
         }
         let reference = self.column_ref(block, key.column).ok_or(StoreError::ContextExpired)?;
-        reference.stage(&mut self.consumer, key.row, cell, proof)
+        let view = self.producer.view_sub_reservation(reference.reservation)?;
+        let claim = match view.claim(key.row) {
+            Ok(claim) => claim,
+            Err(SubReservationError::Claimed | SubReservationError::Published) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(PendingCell { key, data: claim.write(cell, proof)? }))
     }
 
-    pub fn begin_validation(&mut self, pending: PendingCell) -> Result<SubValidation, StoreError> {
+    pub fn cancel_pending(&self, pending: PendingCell) -> Result<bool, StoreError> {
         let (block, _) = self.index(pending.key).ok_or(StoreError::UnknownCell)?;
         let reference =
             self.column_ref(block, pending.key.column).ok_or(StoreError::ContextExpired)?;
@@ -406,26 +320,10 @@ impl CellStore {
         {
             return Err(StoreError::UnknownCell);
         }
-        pending.data.acquire(&mut self.consumer).map_err(Into::into)
-    }
-
-    /// Already verified input only. Network ingress uses `stage_cell` or the
-    /// broadcast `ColumnRef`.
-    pub fn admit_cell(
-        &mut self,
-        key: CellKey,
-        cell: &[u8; BYTES_PER_CELL],
-        proof: &[u8; BYTES_PER_KZG_PROOF],
-    ) -> Result<CellAdmission, StoreError> {
-        let Some(pending) = self.stage_cell(key, cell, proof)? else {
-            return Ok(CellAdmission::Duplicate);
-        };
-        self.begin_validation(pending)?.accept()?;
-        let update = self.refresh_column(&key.block_root, key.column)?;
-        Ok(CellAdmission::Inserted {
-            cell: self.cell(key).expect("published cell"),
-            column_completed: update.column_completed,
-        })
+        self.producer
+            .view_sub_reservation(reference.reservation)?
+            .cancel(pending.data)
+            .map_err(Into::into)
     }
 
     pub fn refresh_column(
@@ -435,97 +333,89 @@ impl CellStore {
     ) -> Result<ColumnUpdate, StoreError> {
         let block = *self.roots.get(root).ok_or(StoreError::UnknownCell)?;
         let position = self.config.column_position(column).ok_or(StoreError::UnknownCell)?;
-        let entry = &mut self.columns[block * self.config.column_indices.len() + position];
-        if entry.assembly.is_none() {
+        if self.columns[block * self.config.column_indices.len() + position].assembly.is_none() {
             return Err(StoreError::ContextExpired);
         }
-        let available = entry.available(self.blocks[block].context.blob_count);
+        Ok(self.refresh_column_at(block, position))
+    }
+
+    #[inline]
+    fn refresh_column_at(&mut self, block: usize, position: usize) -> ColumnUpdate {
+        let entry = &mut self.columns[block * self.config.column_indices.len() + position];
+        debug_assert!(entry.assembly.is_some());
+        let available = entry.available(&self.producer, self.blocks[block].context.blob_count);
         let new_cells = CellMask(available.0 & !entry.admitted.0);
         let complete_read = match &entry.full {
-            Some(full) => Some(full.pin.read),
-            None => entry.assembly.as_ref().and_then(|reservation| reservation.finish().ok()),
+            Some(full) => Some(full.read),
+            None => entry.assembly.and_then(|reference| {
+                self.producer
+                    .view_sub_reservation(reference)
+                    .expect("retained assembly")
+                    .finish()
+                    .ok()
+            }),
         };
         let column_completed = !entry.complete && complete_read.is_some();
         entry.admitted = available;
         entry.complete |= column_completed;
         self.dirty |= new_cells.0 != 0 || column_completed;
         DataColumnCounters::CellStoreAdmissions.add(new_cells.0.count_ones() as u64);
-        Ok(ColumnUpdate { new_cells, column_completed, complete_read })
+        ColumnUpdate { new_cells, column_completed, complete_read }
     }
 
-    /// The sidecar must already be verified. Its source consumer must be strict
-    /// and outlive this store.
+    /// The sidecar must already be verified; this checks its layout and
+    /// context.
     pub fn retain_full(
         &mut self,
         root: &BlockRoot,
         column: usize,
-        pin: TRead,
+        read: TCacheRead,
     ) -> Result<ColumnUpdate, StoreError> {
+        if !ptr::eq(&*read.cache_ref(), &*self.producer.cache_ref()) {
+            return Err(StoreError::WrongCache);
+        }
         let block = *self.roots.get(root).ok_or(StoreError::UnknownCell)?;
         let position = self.config.column_position(column).ok_or(StoreError::UnknownCell)?;
         let context = &self.blocks[block];
-        let context_bytes = context
-            .pin
-            .as_ref()
-            .ok_or(StoreError::ContextExpired)?
-            .buffer()
-            .map_err(|_| StoreError::ContextExpired)?
-            .0;
-        if !pin.is_strict() {
-            return Err(StoreError::ConsumerUnavailable);
-        }
-        let bytes = pin.buffer().map_err(|_| StoreError::ContextExpired)?.0;
+        let context_bytes = self
+            .producer
+            .read_buffer(context.ssz.ok_or(StoreError::ContextExpired)?)
+            .map_err(|_| StoreError::ContextExpired)?;
+        let bytes = self.producer.read_buffer(read).map_err(|_| StoreError::ContextExpired)?;
         let (cell_offset, proof_offset) = context
             .context
             .full_offsets(bytes, context_bytes, column)
             .ok_or(StoreError::InvalidContext)?;
         let entry = &mut self.columns[block * self.config.column_indices.len() + position];
+        if entry.assembly.is_none() {
+            return Err(StoreError::ContextExpired);
+        }
         if entry.full.is_none() {
-            entry.full = Some(FullColumn { pin, cell_offset, proof_offset });
+            entry.full = Some(FullColumn { read, cell_offset, proof_offset });
             self.dirty = true;
         }
-        self.refresh_column(root, column)
+        Ok(self.refresh_column_at(block, position))
     }
 
     #[inline]
     pub fn cell(&self, key: CellKey) -> Option<CellRef> {
         let (block, index) = self.index(key)?;
         let column = &self.columns[index];
-        if !column.available(self.blocks[block].context.blob_count).contains(key.row) {
+        if !column
+            .available(&self.producer, self.blocks[block].context.blob_count)
+            .contains(key.row)
+        {
             return None;
         }
         let source = match &column.full {
             Some(full) => CellSource::Full {
-                read: full.pin.read,
+                read: full.read,
                 cell: full.cell_offset + key.row * BYTES_PER_CELL,
                 proof: full.proof_offset + key.row * BYTES_PER_KZG_PROOF,
             },
-            None => CellSource::Assembly {
-                reservation: column.assembly.as_ref()?.reference(),
-                row: key.row,
-            },
+            None => CellSource::Assembly { reservation: column.assembly?, row: key.row },
         };
-        Some(CellRef {
-            source,
-            generation: self.blocks[block].context.slot,
-            expires: self.slot_end,
-        })
-    }
-
-    pub fn acquire_cell(&mut self, key: CellKey) -> Option<AcquiredCell> {
-        let (_, index) = self.index(key)?;
-        if let Some(full) = &self.columns[index].full {
-            return Some(AcquiredCell {
-                cell: full
-                    .pin
-                    .with_range(full.cell_offset + key.row * BYTES_PER_CELL, BYTES_PER_CELL)?,
-                proof: full.pin.with_range(
-                    full.proof_offset + key.row * BYTES_PER_KZG_PROOF,
-                    BYTES_PER_KZG_PROOF,
-                )?,
-            });
-        }
-        self.cell(key)?.acquire(&mut self.consumer)
+        Some(CellRef { source, slot: self.blocks[block].context.slot, expires: self.slot_end })
     }
 
     fn column_ref(&self, block: usize, column: usize) -> Option<ColumnRef> {
@@ -534,10 +424,8 @@ impl CellStore {
             block_root: self.blocks[block].context.block_root,
             column,
             reservation: self.columns[block * self.config.column_indices.len() + position]
-                .assembly
-                .as_ref()?
-                .reference(),
-            generation: self.blocks[block].context.slot,
+                .assembly?,
+            slot: self.blocks[block].context.slot,
             expires: self.slot_end,
         })
     }
@@ -551,16 +439,16 @@ impl CellStore {
         })
     }
 
-    pub fn context(&self, root: &BlockRoot) -> Option<(&CommitmentContext, &TRead)> {
+    pub fn context(&self, root: &BlockRoot) -> Option<(&CommitmentContext, TCacheRead)> {
         let block = &self.blocks[*self.roots.get(root)?];
-        Some((&block.context, block.pin.as_ref()?))
+        Some((&block.context, block.ssz?))
     }
 
     pub fn column(&self, root: &BlockRoot, column: usize) -> Option<ColumnStatus> {
         let block = *self.roots.get(root)?;
         let position = self.config.column_position(column)?;
         let entry = &self.columns[block * self.config.column_indices.len() + position];
-        let available = entry.available(self.blocks[block].context.blob_count);
+        let available = entry.available(&self.producer, self.blocks[block].context.blob_count);
         Some(ColumnStatus {
             admitted: CellMask(entry.admitted.0 | available.0),
             available,
@@ -570,8 +458,12 @@ impl CellStore {
         })
     }
 
-    pub fn generations(&self) -> impl Iterator<Item = GenerationRef> + '_ {
-        self.generation.iter().map(|generation| generation.reference)
+    pub fn slot_end(&self) -> Instant {
+        self.slot_end
+    }
+
+    pub fn take_retention_event(&mut self) -> Option<RetentionEvent> {
+        self.retention_boundary.take()
     }
 
     pub fn advance(&mut self, now: Instant, min_slot: u64, mut on_expired: impl FnMut(CellKey)) {
@@ -581,6 +473,11 @@ impl CellStore {
         self.min_slot = self.min_slot.max(min_slot);
         let slot_changed = now >= self.slot_end;
         if slot_changed {
+            let retain_from = self.producer.next_seq();
+            if retain_from != 0 {
+                self.retention_boundary =
+                    Some(RetentionEvent { expired_slot: self.slot, retain_from });
+            }
             let elapsed = now.duration_since(self.slot_end).as_nanos();
             let slot_nanos = self.config.slot_duration.as_nanos();
             let slots = u64::try_from(elapsed / slot_nanos + 1).expect("cell store slot overflow");
@@ -596,12 +493,15 @@ impl CellStore {
             self.blocks.retain(|index, block| {
                 let start = index * self.config.column_indices.len();
                 let columns = &mut self.columns[start..start + self.config.column_indices.len()];
-                if block.context.slot < self.slot && block.pin.take().is_some() {
+                if block.context.slot < self.slot && block.ssz.take().is_some() {
                     for (position, column) in columns.iter_mut().enumerate() {
-                        if let Some(assembly) = &column.assembly {
-                            assembly.close();
+                        if let Some(reference) = column.assembly {
+                            self.producer
+                                .view_sub_reservation(reference)
+                                .expect("retained assembly")
+                                .close();
                         }
-                        let available = column.available(block.context.blob_count);
+                        let available = column.available(&self.producer, block.context.blob_count);
                         column.admitted.0 |= available.0;
                         column.complete |= available == CellMask::all(block.context.blob_count);
                         let mut rows = available.0;
@@ -621,7 +521,7 @@ impl CellStore {
                     self.context_count -= 1;
                     self.dirty = true;
                 }
-                if block.context.slot < self.min_slot && block.pin.is_none() {
+                if block.context.slot < self.min_slot && block.ssz.is_none() {
                     self.roots.remove(&block.context.block_root);
                     for column in columns {
                         *column = Column::default();
@@ -631,9 +531,6 @@ impl CellStore {
                 }
                 true
             });
-        }
-        if slot_changed {
-            self.generation = None;
         }
         if self.dirty {
             self.publish_gauges();
@@ -647,21 +544,28 @@ impl CellStore {
             bytes: 0,
             full_bytes: 0,
             contexts: self.context_count,
-            generations: usize::from(self.generation.is_some()),
+            active_slots: usize::from(self.context_count != 0),
             blocks: self.blocks.len(),
         };
         for (index, block) in &self.blocks {
-            if block.pin.is_none() {
+            if block.ssz.is_none() {
                 continue;
             }
             let start = index * self.config.column_indices.len();
             for column in &self.columns[start..start + self.config.column_indices.len()] {
-                counts.cells += column.available(block.context.blob_count).0.count_ones() as usize;
-                if let Some(assembly) = &column.assembly {
-                    counts.bytes += assembly.acquired().len();
+                counts.cells +=
+                    column.available(&self.producer, block.context.blob_count).0.count_ones()
+                        as usize;
+                if let Some(reference) = column.assembly {
+                    counts.bytes += self
+                        .producer
+                        .view_sub_reservation(reference)
+                        .expect("retained assembly")
+                        .len();
                 }
                 if let Some(full) = &column.full {
-                    counts.full_bytes += full.pin.len().expect("pinned full column");
+                    counts.full_bytes +=
+                        self.producer.read_buffer(full.read).expect("retained full column").len();
                 }
             }
         }
@@ -686,7 +590,19 @@ impl CellStore {
         DataColumnCounters::CellStoreLiveBytes.set(counts.bytes as u64);
         DataColumnCounters::CellStoreFullBytes.set(counts.full_bytes as u64);
         DataColumnCounters::CellStoreContexts.set(counts.contexts as u64);
-        DataColumnCounters::CellStoreGenerations.set(counts.generations as u64);
+        DataColumnCounters::CellStoreActiveSlots.set(counts.active_slots as u64);
         DataColumnCounters::CellStoreBlocks.set(counts.blocks as u64);
+    }
+}
+
+impl Drop for CellStore {
+    fn drop(&mut self) {
+        for column in &self.columns {
+            if let Some(reference) = column.assembly {
+                if let Ok(view) = self.producer.view_sub_reservation(reference) {
+                    view.close();
+                }
+            }
+        }
     }
 }

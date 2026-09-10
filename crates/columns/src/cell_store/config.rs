@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
+use silver_beacon_state_data::{FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     SubLayout,
     ssz_view::{
@@ -20,7 +20,6 @@ pub struct CellStoreConfig {
     pub(super) live_blocks: usize,
     pub(super) cell_capacity: usize,
     cache_bytes: usize,
-    full_cache_bytes: usize,
 }
 
 impl CellStoreConfig {
@@ -32,7 +31,7 @@ impl CellStoreConfig {
         let max_blobs = spec
             .blob_schedule
             .iter()
-            .filter(|entry| entry.epoch != u64::MAX)
+            .filter(|entry| entry.epoch != FAR_FUTURE_EPOCH)
             .map(|entry| entry.max_blobs_per_block)
             .fold(spec.max_blobs_per_block_electra, u64::max);
         if max_blobs > u128::BITS as u64 {
@@ -80,24 +79,16 @@ impl CellStoreConfig {
             .checked_mul(column_count)
             .and_then(|n| n.checked_mul(full_column_bytes))
             .ok_or(StoreError::CapacityOverflow)?;
-        // Headroom covers reservation headers, wrap padding, and the consumer's
-        // lookback guard.
-        let [Some(cache_bytes), Some(full_cache_bytes)] =
-            [payload_bytes, full_payload_bytes].map(|bytes| {
-                bytes
-                    .checked_add(bytes / 2)
-                    .and_then(|n| n.checked_add(64 * 1024))
-                    .and_then(usize::checked_next_power_of_two)
-                    .filter(|n| u32::try_from(*n).is_ok())
-            })
-        else {
-            return Err(StoreError::CapacityOverflow);
-        };
-        block_capacity
-            .checked_mul(column_count)
-            .and_then(|n| n.checked_mul(max_blobs))
+        // Full sidecars and assemblies share one ring. Headroom covers ingress
+        // duplicates, reservation headers, wrap padding, and bucket rounding.
+        let payload_bytes =
+            payload_bytes.checked_add(full_payload_bytes).ok_or(StoreError::CapacityOverflow)?;
+        let cache_bytes = payload_bytes
+            .checked_add(payload_bytes / 2)
+            .and_then(|n| n.checked_add(64 * 1024))
+            .and_then(usize::checked_next_power_of_two)
+            .filter(|n| u32::try_from(*n).is_ok())
             .ok_or(StoreError::CapacityOverflow)?;
-
         Ok(Self {
             spec,
             columns,
@@ -110,16 +101,11 @@ impl CellStoreConfig {
             live_blocks,
             cell_capacity,
             cache_bytes,
-            full_cache_bytes,
         })
     }
 
     pub fn cache_capacity(&self) -> usize {
         self.cache_bytes
-    }
-
-    pub fn full_cache_capacity(&self) -> usize {
-        self.full_cache_bytes
     }
 
     pub fn cell_capacity(&self) -> usize {

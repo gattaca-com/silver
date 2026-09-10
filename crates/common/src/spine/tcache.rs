@@ -12,10 +12,10 @@ pub use consumer::{
     AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
 };
 use flux::{Timer, timing::Nanos, tracing};
-pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
+pub use producer::{MultiProducer, Producer, Reservation, ScopedReservation, TCacheProducer};
 pub use sub_reservation::{
     AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
-    SubReservationRef, SubValidation, SubWrite,
+    SubReservationRef, SubReservationView, SubValidation, SubWrite,
 };
 use thiserror::Error;
 
@@ -232,6 +232,15 @@ impl TCache {
         auto_free: bool,
     ) -> Result<RandomAccessConsumer, Error> {
         self.ra_consumer(name, auto_free, true)
+    }
+
+    pub fn retained_random_access(
+        &self,
+        name: &'static str,
+    ) -> Result<RandomAccessConsumer, Error> {
+        let mut consumer = self.ra_consumer(name, true, true)?;
+        consumer.retain();
+        Ok(consumer)
     }
 
     fn ra_consumer(

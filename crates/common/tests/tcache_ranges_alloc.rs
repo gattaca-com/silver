@@ -1,7 +1,9 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    array,
     cell::Cell,
     hint::black_box,
+    io::Write,
 };
 
 use silver_common::{TCache, TCacheProducer};
@@ -64,5 +66,31 @@ fn range_creation_cloning_and_dropping_allocates_nothing() {
     black_box(clone.as_ref());
     drop(clone);
 
+    assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);
+}
+
+#[test]
+fn slot_retention_acquisition_and_expiry_allocate_nothing_after_construction() {
+    let mut producer = TCache::producer("", 1 << 18);
+    let mut readers = array::from_fn::<_, 2, _>(|_| {
+        Box::new(producer.cache_ref().retained_random_access("").unwrap())
+    });
+    let before = ALLOCATION_EVENTS.with(Cell::get);
+
+    for _ in 0..512 {
+        let boundary = producer.next_seq();
+        for reader in &mut readers {
+            reader.advance_retention(boundary);
+        }
+        let mut reservation = producer.reserve(8192, false).unwrap();
+        reservation.buffer().unwrap().fill(0xab);
+        reservation.flush().unwrap();
+        for reader in &mut readers {
+            let acquired = reader.acquire_strict(reservation.read()).unwrap();
+            let range = acquired.with_range(7, 31).unwrap();
+            let clone = range.clone();
+            black_box(clone.as_ref());
+        }
+    }
     assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);
 }

@@ -1334,6 +1334,7 @@ mod tests {
 
             Self {
                 context: Context {
+                    data_columns_consumer: None,
                     gossip_producer: gossip_in_p,
                     gossip_consumer: gossip_out_c,
                     rpc_producer: rpc_in_p,

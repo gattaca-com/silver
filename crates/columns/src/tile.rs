@@ -11,10 +11,11 @@ use flux::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
-    EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
-    SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind, EngineResp,
+    GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
+    RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed,
+    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    cells::RetentionEvent,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
 };
@@ -85,6 +86,7 @@ pub struct DataColumnsTile {
     el_column_producer: TProducer,
 
     kzg_scratch: KzgScratch,
+    data_columns_consumer: Option<Box<TRandomAccess>>,
 }
 
 impl DataColumnsTile {
@@ -110,7 +112,14 @@ impl DataColumnsTile {
             el_fetcher: ElBlobFetcher::new(engine_resp_consumer),
             el_column_producer,
             kzg_scratch: KzgScratch::default(),
+            data_columns_consumer: None,
         }
+    }
+
+    pub fn with_data_columns_consumer(mut self, consumer: TRandomAccess) -> Self {
+        assert!(consumer.is_retained());
+        self.data_columns_consumer = Some(Box::new(consumer));
+        self
     }
 
     #[timed]
@@ -599,6 +608,11 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.consumers.free();
+        if let Some(consumer) = &mut self.data_columns_consumer {
+            adapter.consume(|event: RetentionEvent, _| {
+                consumer.advance_retention(event.retain_from);
+            });
+        }
 
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
             silver_common::GossipTopic::BeaconBlock if self.sync_state.is_synced() => {

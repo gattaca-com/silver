@@ -112,6 +112,15 @@ impl SlotTicker {
         self.millis_since_genesis() / self.slot_ms
     }
 
+    pub fn current_slot_start(&self) -> (u64, Instant) {
+        let now = Instant::now();
+        let since_genesis =
+            Duration::from_millis(self.anchor_genesis_ms) + now.duration_since(self.anchor);
+        let slot = (since_genesis.as_millis() / self.slot_ms as u128) as u64;
+        let into_slot = since_genesis - Duration::from_millis(slot * self.slot_ms);
+        (slot, now - into_slot)
+    }
+
     /// Whether `slot` is current after extending both ends of its wall-clock
     /// interval by `disparity`. Consensus gossip validation uses this for its
     /// permitted clock skew around slot boundaries.
@@ -218,6 +227,17 @@ mod tests {
         assert!(matches!(t.tick(), TickEvent::SlotStart(1)));
         // Next phase (PreparePayload at 8s) is in the future.
         assert!(t.tick() == TickEvent::None);
+    }
+
+    #[test]
+    fn slot_start_uses_the_same_anchor_as_the_wall_slot() {
+        let slot_duration = Duration::from_millis(1250);
+        let mut ticker =
+            SlotTicker::new(genesis_secs_ago(20), slot_duration, Duration::from_millis(500));
+        ticker.set_since_genesis_ms(10 * 1250 + 750);
+        let (slot, start) = ticker.current_slot_start();
+        assert_eq!(slot, 10);
+        assert_eq!(start, ticker.anchor - Duration::from_millis(750));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
-    RpcInbound, RpcOutbound, SilverSpine,
+    RpcInbound, RpcOutbound, SilverSpine, cells::RetentionEvent,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -102,6 +102,11 @@ impl NetworkTile {
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
+        if let Some(consumer) = &mut self.inner.context.data_columns_consumer {
+            adapter.consume(|event: RetentionEvent, _| {
+                consumer.advance_retention(event.retain_from);
+            });
+        }
         adapter.consume(|peer_control: PeerControl, _producers| {
             self.handle_peer_control(peer_control, now);
         });
@@ -312,6 +317,10 @@ where
         discovery_addr: SocketAddr,
         discovery: D,
     ) -> Result<Self, Error> {
+        assert!(
+            context.data_columns_consumer.as_ref().is_none_or(|consumer| consumer.is_retained()),
+            "data columns consumer must have a fixed retention boundary"
+        );
         let poll = Poll::new()?;
         let p2p_socket = Socket::new(p2p_addr, &poll, P2P_SOCKET_TOKEN)?;
         let disc_socket = Socket::new(discovery_addr, &poll, DISC_SOCKET_TOKEN)?;

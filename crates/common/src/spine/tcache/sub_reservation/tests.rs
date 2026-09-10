@@ -1,4 +1,7 @@
-use std::sync::{Arc, Barrier};
+use std::{
+    io::Write,
+    sync::{Arc, Barrier},
+};
 
 use super::{
     super::{Producer, TCacheProducer},
@@ -58,6 +61,75 @@ fn producer_returns_an_unpinned_descriptor() {
         drop(consumer.acquire_strict(reservation.read()).unwrap());
     }
     assert!(matches!(reference.acquire(&mut consumer), Err(SubReservationError::Stale)));
+}
+
+#[test]
+fn producer_views_stage_cancel_and_finish_without_local_pins() {
+    let mut producer = TCache::producer("", 1 << 16);
+    let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+    let reference = producer
+        .sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"prefix", b"middle")
+        .unwrap();
+    let old = producer
+        .view_sub_reservation(reference)
+        .unwrap()
+        .claim(0)
+        .unwrap()
+        .write(b"bad!", b"pf")
+        .unwrap();
+    let view = producer.view_sub_reservation(reference).unwrap();
+    assert_eq!(view.ready(), 0);
+    assert_eq!(view.len(), 18);
+    assert!(view.cancel(old).unwrap());
+    let retry = view.claim(0).unwrap().write(b"cell", b"pf").unwrap();
+    assert!(!producer.view_sub_reservation(reference).unwrap().cancel(old).unwrap());
+    let validation = retry.acquire(&mut consumer).unwrap();
+    assert!(!producer.view_sub_reservation(reference).unwrap().cancel(retry).unwrap());
+    assert_eq!(validation.buffers(), [&b"cell"[..], &b"pf"[..]]);
+    validation.accept().unwrap();
+    let view = producer.view_sub_reservation(reference).unwrap();
+    assert_eq!(view.ready(), 1);
+    let read = view.finish().unwrap();
+    assert_eq!(producer.read_buffer(read).unwrap(), b"prefixcellmiddlepf");
+    view.close();
+    assert!(matches!(reference.acquire(&mut consumer), Err(SubReservationError::Closed)));
+
+    let other = TCache::producer("", 1 << 16);
+    assert!(matches!(
+        other.view_sub_reservation(reference),
+        Err(SubReservationError::WrongProducer)
+    ));
+    assert!(matches!(other.read_buffer(read), Err(super::super::Error::UnexpectedCacheRef)));
+    consumer.advance_retention(producer.next_seq());
+    for _ in 0..32 {
+        let mut write = producer.reserve_scoped(4096).unwrap();
+        write.buffer().unwrap().fill(0xcc);
+        write.flush().unwrap();
+        drop(write);
+        consumer.advance_retention(producer.next_seq());
+    }
+    assert!(matches!(producer.view_sub_reservation(reference), Err(SubReservationError::Stale)));
+    assert!(producer.read_buffer(read).is_err());
+}
+
+#[test]
+fn scoped_reservations_commit_or_abort_before_the_next_allocation() {
+    let mut producer = TCache::producer("", 1 << 16);
+    assert!(producer.reserve_scoped(usize::MAX).is_none());
+    let read = {
+        let mut write = producer.reserve_scoped(4).unwrap();
+        write.write_all(b"cell").unwrap();
+        write.flush().unwrap();
+        write.read()
+    };
+    assert_eq!(producer.read_buffer(read).unwrap(), b"cell");
+    let aborted = {
+        let mut write = producer.reserve_scoped(4).unwrap();
+        write.buffer().unwrap().fill(0xcc);
+        write.read()
+    };
+    assert!(producer.read_buffer(aborted).unwrap().is_empty());
+    assert!(producer.reserve_scoped(4).is_some());
 }
 
 #[test]
@@ -137,7 +209,7 @@ fn cross_thread_writers_claim_once_and_validator_reads_published_input() {
     let barrier = Arc::new(Barrier::new(4));
     let results = std::thread::scope(|scope| {
         let mut threads = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..3 {
             let barrier = barrier.clone();
             threads.push(scope.spawn(move || {
                 let mut consumer = Box::new(cache.strict_random_access("", true).unwrap());
@@ -152,7 +224,17 @@ fn cross_thread_writers_claim_once_and_validator_reads_published_input() {
                 pending
             }));
         }
-        threads.into_iter().flat_map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+        barrier.wait();
+        let mut pending = Vec::new();
+        for part in 0..64 {
+            if let Ok(write) = h.producer.view_sub_reservation(reference).unwrap().claim(part) {
+                pending.push(write.write(&[part as u8; 4], &[part as u8; 2]).unwrap());
+            }
+        }
+        for thread in threads {
+            pending.extend(thread.join().unwrap());
+        }
+        pending
     });
     assert_eq!(results.len(), 64);
     assert_eq!(h.owner().acquired().ready(), 0);

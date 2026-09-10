@@ -5,12 +5,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+use silver_common::cells::GOSSIP_DELIVERY_RETENTION;
+
 /// End-to-end age after which outbound gossip delivery is stale, measured from
 /// enqueue until Quinn releases every owner after ACK or teardown. Expiry is
 /// rounded up to the next wheel tick, so detection occurs within one
 /// additional second.
 pub(crate) const GOSSIP_DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const OUTBOUND_LEASE_TICK: Duration = Duration::from_secs(1);
+const _: () = assert!(
+    GOSSIP_DELIVERY_RETENTION.as_nanos() >=
+        GOSSIP_DELIVERY_TIMEOUT.saturating_add(OUTBOUND_LEASE_TICK).as_nanos(),
+    "delivery retention must cover timeout and timer-wheel rounding"
+);
 const OUTBOUND_LEASE_BUCKETS: usize = 32;
 
 /// Per-peer timer wheel for outbound delivery leases. The allocation keeps

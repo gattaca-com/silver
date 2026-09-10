@@ -144,6 +144,29 @@ impl RandomAccessConsumer {
         self.strict
     }
 
+    pub fn is_retained(&self) -> bool {
+        matches!(self.active.guard, TailGuard::Fixed(_))
+    }
+
+    pub(super) fn retain(&mut self) {
+        assert!(self.strict);
+        self.active.guard = TailGuard::Fixed(self.active.tail_seq);
+    }
+
+    /// The producer captures `seq` before reserving the next retained region.
+    /// Live reads still stop rollup before this boundary.
+    pub fn advance_retention(&mut self, seq: u64) {
+        let TailGuard::Fixed(boundary) = &mut self.active.guard else {
+            panic!("consumer has no fixed retention boundary");
+        };
+        if seq > *boundary {
+            *boundary = seq;
+            self.active.head_seq = self.active.head_seq.max(seq);
+            self.active.rollup(self.active.head_seq);
+            self.free();
+        }
+    }
+
     pub fn acquire(&mut self, read: TCacheRead) -> AcquiredRead {
         let now = Nanos::now();
         self.last_read = now;
@@ -346,6 +369,11 @@ impl AsRef<[u8]> for AcquiredRange {
     }
 }
 
+enum TailGuard {
+    Sliding(u64),
+    Fixed(u64),
+}
+
 pub(super) struct Buckets {
     buckets: Box<[u16]>,
     tail_seq: u64,
@@ -357,11 +385,9 @@ pub(super) struct Buckets {
     // for 'strict' consumers this is set to cache length so that it never
     // triggers
     lag_threshold: u64,
-    // Out-of-order acquire lookback: the tail never advances within this
-    // many seqs of the newest acquire's bucket, so late acquires up to
-    // this far behind still land at or above the tail. 20% of capacity,
-    // rounded up to a bucket.
-    guard: u64,
+    // Sliding consumers keep 20% lookback. Retained consumers keep everything
+    // from a fixed boundary, independent of acquire order.
+    guard: TailGuard,
 }
 
 impl Buckets {
@@ -391,7 +417,9 @@ impl Buckets {
             } else {
                 lag_threshold(cache_capacity as u32)
             },
-            guard: (cache_capacity / 5).next_multiple_of(bucket_size).max(bucket_size),
+            guard: TailGuard::Sliding(
+                (cache_capacity / 5).next_multiple_of(bucket_size).max(bucket_size),
+            ),
         }
     }
 
@@ -412,7 +440,7 @@ impl Buckets {
         self.head_seq = self.head_seq.max(seq);
 
         if self.tail_seq == u64::MAX {
-            self.tail_seq = self.bucket_start_seq(seq).saturating_sub(self.guard);
+            self.tail_seq = self.rollup_limit(seq);
         }
         self.rollup(seq);
         true
@@ -429,12 +457,17 @@ impl Buckets {
         self.rollup(self.head_seq);
     }
 
+    #[inline]
+    fn rollup_limit(&self, seq: u64) -> u64 {
+        match self.guard {
+            TailGuard::Sliding(distance) => self.bucket_start_seq(seq).saturating_sub(distance),
+            TailGuard::Fixed(boundary) => self.bucket_start_seq(boundary),
+        }
+    }
+
     fn rollup(&mut self, seq: u64) {
-        // Rollup tail for completed buckets — keep `guard` seqs of slack
-        // below the newest acquire's bucket so bounded out-of-order
-        // acquires never land behind the tail.
-        let head_bucket_seq = self.bucket_start_seq(seq);
-        while head_bucket_seq > self.tail_seq.saturating_add(self.guard) {
+        let limit = self.rollup_limit(seq);
+        while self.tail_seq < limit {
             let tail_bucket = self.bucket_index(self.tail_seq);
             if self.head_seq - self.tail_seq > self.lag_threshold {
                 tracing::warn!(
@@ -647,6 +680,64 @@ mod tests {
         // All guards drop here; release() should run for each without panic.
         drop(acquired);
         consumer.free();
+    }
+
+    #[test]
+    fn retention_advance_skips_unacquired_records_without_releasing_live_reads() {
+        let mut producer = TCache::producer("", 1 << 18);
+        let mut consumer = producer.cache_ref().retained_random_access("").unwrap();
+        let read = write_marker(&mut producer, 32, 0xab);
+        let pinned = consumer.acquire_strict(read).unwrap();
+        for _ in 0..20 {
+            write_marker(&mut producer, 8192, 0xcd);
+        }
+        let boundary = producer.next_seq();
+        consumer.advance_retention(boundary);
+        assert_eq!(consumer.active.tail_seq, 0);
+        assert_eq!(pinned.buffer().unwrap().0, &[0xab; 32]);
+        drop(pinned);
+        assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
+        assert!(consumer.acquire_strict(read).is_none());
+    }
+
+    #[test]
+    fn fixed_retention_replaces_the_sliding_guard_on_acquire_and_drop() {
+        let mut producer = TCache::producer("", 1 << 18);
+        let mut consumer = producer.cache_ref().retained_random_access("").unwrap();
+        let old = write_marker(&mut producer, 32, 0xab);
+        for _ in 0..20 {
+            let newer = write_marker(&mut producer, 8192, 0xcd);
+            drop(consumer.acquire_strict(newer).unwrap());
+            consumer.free();
+        }
+        assert_eq!(consumer.active.tail_seq, 0);
+        assert_eq!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire), 0);
+        assert_eq!(consumer.acquire_strict(old).unwrap().buffer().unwrap().0, &[0xab; 32]);
+
+        let boundary = producer.next_seq();
+        consumer.advance_retention(boundary);
+        assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
+        assert!(consumer.acquire_strict(old).is_none());
+    }
+
+    #[test]
+    fn delayed_boundary_cannot_discard_next_region_or_move_backwards() {
+        let mut producer = TCache::producer("", 1 << 18);
+        let mut consumer = producer.cache_ref().retained_random_access("").unwrap();
+        for _ in 0..10 {
+            write_marker(&mut producer, 8192, 0xab);
+        }
+        let boundary = producer.next_seq();
+        assert_ne!(boundary % consumer.active.bucket_size, 0);
+        let next = write_marker(&mut producer, 32, 0xcd);
+        for _ in 0..10 {
+            let newer = write_marker(&mut producer, 8192, 0xef);
+            drop(consumer.acquire_strict(newer).unwrap());
+        }
+        consumer.advance_retention(boundary);
+        consumer.advance_retention(boundary - 8192);
+        assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
+        assert_eq!(consumer.acquire_strict(next).unwrap().buffer().unwrap().0, &[0xcd; 32]);
     }
 
     #[test]

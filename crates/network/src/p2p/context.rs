@@ -7,4 +7,5 @@ pub struct Context {
     pub rpc_consumer: TRandomAccess,
     /// Local identify record.
     pub identify: Option<ProtoIdentify>,
+    pub data_columns_consumer: Option<Box<TRandomAccess>>,
 }
