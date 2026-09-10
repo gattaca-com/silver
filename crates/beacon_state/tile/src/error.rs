@@ -68,6 +68,16 @@ pub enum PrecheckError {
     TooManyCommitments { got: usize, max: usize, block_root: B256 },
     #[error("invalid block signature: block_root=0x{}", b256_hex(block_root))]
     InvalidSignature { block_root: B256 },
+    #[error(
+        "bid parent_block_root is not the block's parent: block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    BidParentRootMismatch { block_root: B256 },
+    #[error(
+        "bid parent_block_hash is not the parent's execution head: block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    BidNotOnExecutionHead { block_root: B256 },
 }
 
 impl PrecheckError {
@@ -80,15 +90,17 @@ impl PrecheckError {
                 Feedback::RequestParent { parent_root, block_root }
             }
             Self::PreFinalized { .. } |
-            Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
-            Self::AwaitingData { .. } => Feedback::Ignore,
+            Self::AwaitingData { .. } |
+            Self::ParentInvalid { .. } => Feedback::Ignore,
+            Self::PastSlot { .. } => Feedback::Reject(None),
             Self::AlreadyKnown { block_root } => Feedback::AlreadyKnown(block_root),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
             Self::Rejected { block_root } |
-            Self::ParentInvalid { block_root, .. } |
+            Self::BidParentRootMismatch { block_root } |
+            Self::BidNotOnExecutionHead { block_root } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } |
             Self::PayloadTimestamp { block_root, .. } |
@@ -211,6 +223,8 @@ pub enum EnvelopeError {
     BadSignature,
     #[error("{kind} request count {count} exceeds max {max}")]
     TooManyRequests { kind: &'static str, count: usize, max: usize },
+    #[error("{count} withdrawals exceeds max {max}")]
+    TooManyWithdrawals { count: usize, max: usize },
 }
 
 impl From<RequestCountOutOfBounds> for EnvelopeError {

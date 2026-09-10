@@ -1172,12 +1172,12 @@ fn attestation_too_short_ignored() {
 }
 
 #[test]
-fn ve_unknown_validator_ignored() {
+fn ve_unknown_validator_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
     buf[8..16].copy_from_slice(&999u64.to_le_bytes());
-    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Ignore);
+    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Reject(None));
 }
 
 #[test]
@@ -1199,14 +1199,14 @@ fn ps_identical_headers_rejected() {
 }
 
 #[test]
-fn ps_unknown_proposer_ignored() {
+fn ps_unknown_proposer_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
     buf[8..16].copy_from_slice(&999u64.to_le_bytes());
     buf[216..224].copy_from_slice(&999u64.to_le_bytes());
     buf[208 + 80] = 0xFF; // distinct body_root in h2
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Ignore);
+    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
 }
 
 #[test]
@@ -1260,14 +1260,16 @@ fn wrap_attester_slashing(ia1: &[u8], ia2: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Spec order: "no index left to slash" is the IGNORE that precedes every
+/// validity REJECT, so an empty intersection is ignored.
 #[test]
-fn as_zero_intersection_rejected() {
+fn as_zero_intersection_ignored() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let ia1 = build_ia_with_indices(0, 0xAA, &[0]);
     let ia2 = build_ia_with_indices(0, 0xBB, &[1]);
     let buf = wrap_attester_slashing(&ia1, &ia2);
-    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
+    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Ignore);
 }
 
 #[test]
@@ -1280,23 +1282,23 @@ fn as_accept() {
 }
 
 #[test]
-fn as_zero_intersection_with_valid_sigs_rejected() {
+fn as_zero_intersection_with_valid_sigs_ignored() {
     let mut tile = make_tile();
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let ia1 = test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
     let ia2 = test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
     let buf = wrap_attester_slashing(&ia1, &ia2);
-    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
+    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Ignore);
 }
 
 #[test]
-fn bls_change_unknown_validator_ignored() {
+fn bls_change_unknown_validator_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; SIGNED_BLS_CHANGE_SIZE];
     buf[0..8].copy_from_slice(&999u64.to_le_bytes());
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Ignore);
+    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
 }
 
 #[test]
@@ -2005,10 +2007,13 @@ fn current_slot_vote_deferred_until_drain() {
         &imm,
     );
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
-    // Deferred: not yet folded into the tracker.
+    // Deferred: not yet folded into the tracker, and a drain within the same
+    // slot keeps it deferred.
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
     let n = tile.head_validator_count();
-    tile.fork_choice.drain_pending_votes(n);
+    tile.fork_choice.drain_pending_votes(n, tile.ticker.current_slot());
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
+    tile.fork_choice.drain_pending_votes(n, tile.ticker.current_slot() + 1);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
 }
 
@@ -2351,7 +2356,10 @@ fn agg_slot_too_old_ignored() {
     let mut tile = make_tile_at_wall_slot(100);
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
-    assert!(SignedAggregateAndProofView::agg_slot(&buf) < 100 - ATTESTATION_PROPAGATION_SLOT_RANGE);
+    // Older than the previous epoch: outside Deneb's attestation window.
+    assert!(
+        SignedAggregateAndProofView::agg_slot(&buf) / SLOTS_PER_EPOCH + 1 < 100 / SLOTS_PER_EPOCH
+    );
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
 }
 

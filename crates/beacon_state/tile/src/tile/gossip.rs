@@ -1,7 +1,8 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
-    SYNC_COMMITTEE_SIZE, Slot, StateId, StateReadView, ValidatorsView, gloas::PTC_SIZE,
+    B256, BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, ParsedAggregateAndProof,
+    SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, StateId, StateReadView, ValidatorsView,
+    gloas::PTC_SIZE,
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
@@ -20,13 +21,14 @@ use silver_common::{
 };
 
 use super::{
-    ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY,
-    Producers, attestation_pool::InsertOutcome, held_blocks::BlockSourceMsg,
-    seen_aggregates::Coverage, sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
+    BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
+    attestation_pool::InsertOutcome, held_blocks::BlockSourceMsg, seen_aggregates::Coverage,
+    sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
+    fork_choice::ExecutionStatus,
     merkle, ssz_hash, stf, validate,
 };
 
@@ -188,6 +190,7 @@ pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
     AwaitBlock(B256),
     Ignore,
+    Reject,
 }
 
 impl BeaconStateTile {
@@ -227,12 +230,11 @@ impl BeaconStateTile {
         let att_slot = SingleAttestationView::slot(buf);
         let committee_index = SingleAttestationView::committee_index(buf) as usize;
 
-        let wall = self.ticker.current_slot();
-        if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
+        if !self.attestation_slot_is_open(att_slot) {
             return Err(Feedback::Ignore);
         }
 
-        self.seen_attesters.rotate_to(wall / SLOTS_PER_EPOCH);
+        self.seen_attesters.rotate_to(self.seen_window_epoch());
         if self.seen_attesters.contains(target_epoch, attester_index) {
             return Err(Feedback::Ignore);
         }
@@ -564,7 +566,7 @@ impl BeaconStateTile {
         let view = self.state.read_view(canon_id);
         let count = view.validators.count();
         if aggregator as usize >= count {
-            return Feedback::Ignore;
+            return Feedback::Reject(None);
         }
         let committee = sync_subcommittee(&view, subcommittee as usize);
         if !committee.contains(aggregator as usize, &view.validators) {
@@ -689,14 +691,11 @@ impl BeaconStateTile {
         if !index_ok || parsed.agg_data.target_epoch() != parsed.att_epoch {
             return Feedback::Reject(None);
         }
-        let wall = self.ticker.current_slot();
-        if parsed.agg_slot > wall ||
-            parsed.agg_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall
-        {
+        if !self.attestation_slot_is_open(parsed.agg_slot) {
             return Feedback::Ignore;
         }
 
-        self.seen_aggregators.rotate_to(wall / SLOTS_PER_EPOCH);
+        self.seen_aggregators.rotate_to(self.seen_window_epoch());
         if self.seen_aggregators.contains(parsed.att_epoch, parsed.aggregator_index) {
             return Feedback::Ignore;
         }
@@ -735,7 +734,7 @@ impl BeaconStateTile {
         self.shuffling_cache.ensure_window(&view, parsed.att_epoch);
         let count = view.validators.count();
         if parsed.aggregator_index >= count {
-            return Feedback::Ignore;
+            return Feedback::Reject(None);
         }
 
         let Some(shuffling) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
@@ -790,22 +789,22 @@ impl BeaconStateTile {
     }
 
     pub(super) fn validate_execution_payload_envelope(&self, ssz: &[u8]) -> EnvelopeCheck {
-        if !SignedPayload::check_size(ssz) {
-            return EnvelopeCheck::Ignore;
+        if !SignedPayload::check_size(ssz) || !Envelope::check_size(SignedPayload::message(ssz)) {
+            return EnvelopeCheck::Reject;
         }
-        let msg = SignedPayload::message(ssz);
-        if !Envelope::check_size(msg) {
-            return EnvelopeCheck::Ignore;
-        }
-        let block_root = *Envelope::beacon_block_root(msg);
+        let block_root = *Envelope::beacon_block_root(SignedPayload::message(ssz));
         let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
             return EnvelopeCheck::AwaitBlock(block_root);
         };
-        let state_id = self.fork_choice.node(idx).state_id;
+        let node = self.fork_choice.node(idx);
+        if node.slot < self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH {
+            return EnvelopeCheck::Ignore;
+        }
+        let state_id = node.state_id;
         let rv = self.state.read_view(state_id);
         if let Err(e) = stf::verify_execution_payload_envelope(&rv, &self.spec, ssz) {
-            tracing::info!(error = %e, "execution_payload_envelope ignored");
-            return EnvelopeCheck::Ignore;
+            tracing::info!(error = %e, "execution_payload_envelope rejected");
+            return EnvelopeCheck::Reject;
         }
         EnvelopeCheck::Ready { block_root, state_id }
     }
@@ -840,10 +839,19 @@ impl BeaconStateTile {
                 return Feedback::Ignore;
             }
             EnvelopeCheck::Ignore => return Feedback::Ignore,
+            EnvelopeCheck::Reject => return Feedback::Reject(None),
         };
 
-        let slot_state = self.state.read_view(state_id).slot;
-        let slot = slot_state.slot_number();
+        let rv = self.state.read_view(state_id);
+        let slot = rv.slot.slot_number();
+        if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
+            tracing::error!(
+                block = hex32(&block_root),
+                "envelope withdrawals are not the expected ones"
+            );
+            return Feedback::Accept(None);
+        }
+        let slot_state = rv.slot;
 
         if self.fork_choice.is_payload_verified(&block_root) {
             Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
@@ -924,7 +932,35 @@ impl BeaconStateTile {
         if !self.fork_choice.is_payload_verified(block_root) {
             return Err(Feedback::RequestEnvelope { block_root: *block_root, att_slot });
         }
-        Ok(true)
+        // Spec `verify_attestation_payload_status`: the EL's verdict on the
+        // attested payload decides, an outstanding one defers the vote.
+        match self.fork_choice.node(idx).execution_status {
+            ExecutionStatus::Valid => Ok(true),
+            ExecutionStatus::Optimistic => Err(Feedback::Ignore),
+            ExecutionStatus::Invalid => Err(Feedback::Reject(None)),
+        }
+    }
+
+    /// Spec `is_future_slot` and Deneb's `is_current_or_previous_epoch`
+    /// (EIP-7045 widened the window from 32 slots to the whole previous
+    /// epoch), both with clock disparity.
+    fn attestation_slot_is_open(&self, slot: Slot) -> bool {
+        let epoch_open = |epoch: Epoch| {
+            self.ticker.is_within_slot_range(
+                epoch * SLOTS_PER_EPOCH,
+                SLOTS_PER_EPOCH - 1,
+                MAXIMUM_GOSSIP_CLOCK_DISPARITY,
+            )
+        };
+        let epoch = slot / SLOTS_PER_EPOCH;
+        !self.ticker.is_future_slot(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) &&
+            (epoch_open(epoch) || epoch_open(epoch + 1))
+    }
+
+    /// The epoch the per-epoch seen-caches rotate to: the newest one a vote can
+    /// legitimately carry right now, so an early next-epoch vote has a lane.
+    fn seen_window_epoch(&self) -> Epoch {
+        self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY) / SLOTS_PER_EPOCH
     }
 
     fn validate_attestation_target(&self, data: AttestationDataView<'_>) -> Result<(), Feedback> {
@@ -950,7 +986,7 @@ impl BeaconStateTile {
     }
 
     fn record_or_defer_vote(&mut self, vote: stf::AttestationVote, validator_count: usize) {
-        if vote.attestation_slot == self.ticker.current_slot() {
+        if vote.attestation_slot >= self.ticker.current_slot() {
             self.fork_choice.defer_vote(vote);
         } else {
             self.fork_choice.record_vote(&vote, validator_count);
@@ -1006,11 +1042,13 @@ impl BeaconStateTile {
         let vi_u = SignedVoluntaryExitView::validator_index(buf);
         let vi = vi_u as usize;
 
+        if self.seen_exits.contains(vi) {
+            return Feedback::Ignore;
+        }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
-        // Out-of-range index: state may be stale, defer.
         if vi >= view.validators.count() {
-            return Feedback::Ignore;
+            return Feedback::Reject(None);
         }
         let current_epoch = view.slot.current_epoch();
         if let Err(e) = validate::validate_voluntary_exit(
@@ -1039,6 +1077,7 @@ impl BeaconStateTile {
         if !bls::verify_one(view.validators.pubkey_decompressed(vi), sig, &signing_root) {
             return Feedback::Reject(None);
         }
+        self.seen_exits.mark(vi);
         Feedback::Accept(None)
     }
 
@@ -1052,12 +1091,15 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
+        let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
+        if self.seen_proposer_slashings.contains(proposer_index) {
+            return Feedback::Ignore;
+        }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
         let current_epoch = view.slot.current_epoch();
-        let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
         if proposer_index >= view.validators.count() {
-            return Feedback::Ignore;
+            return Feedback::Reject(None);
         }
         if !stf::is_slashable_validator(&view.validators, proposer_index as u32, current_epoch) {
             return Feedback::Reject(None);
@@ -1079,6 +1121,7 @@ impl BeaconStateTile {
         if !self.sig_batch.verify_all() {
             return Feedback::Reject(None);
         }
+        self.seen_proposer_slashings.mark(proposer_index);
         Feedback::Accept(None)
     }
 
@@ -1088,18 +1131,34 @@ impl BeaconStateTile {
         }
         let canon_id = self.canonical_state_id();
         let slashed = &mut self.stf_scratch.active;
-        let ok = {
+        let feedback = {
             let view = self.state.read_view(canon_id);
-            stf::validate_attester_slashing_for_gossip(&view, data, slashed, &mut self.sig_batch)
+            // Spec order: no validator left to slash is an IGNORE before any
+            // validity REJECT.
+            let seen = |vi| self.seen_attester_slashed.contains(vi);
+            match stf::attester_slashing_names_unseen(data, seen) {
+                None => Feedback::Reject(None),
+                Some(false) => Feedback::Ignore,
+                Some(true) => {
+                    let valid = stf::validate_attester_slashing_for_gossip(
+                        &view,
+                        data,
+                        slashed,
+                        &mut self.sig_batch,
+                    );
+                    if valid { Feedback::Accept(None) } else { Feedback::Reject(None) }
+                }
+            }
         };
         // Mark the equivocators (spec `on_attester_slashing`) so fork choice
         // excludes them. Idempotent; removes any live LMD weight next recompute.
-        if ok {
+        if matches!(feedback, Feedback::Accept(_)) {
             for &idx in slashed.iter() {
                 self.fork_choice.mark_equivocating(idx as usize);
+                self.seen_attester_slashed.mark(idx as usize);
             }
         }
-        if ok { Feedback::Accept(None) } else { Feedback::Reject(None) }
+        feedback
     }
 
     #[timed]
@@ -1114,8 +1173,11 @@ impl BeaconStateTile {
 
         let vi_u = SignedBlsToExecutionChangeView::validator_index(buf);
         let vi = vi_u as usize;
-        if vi >= view.validators.count() {
+        if self.seen_bls_changes.contains(vi) {
             return Feedback::Ignore;
+        }
+        if vi >= view.validators.count() {
+            return Feedback::Reject(None);
         }
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
@@ -1139,6 +1201,7 @@ impl BeaconStateTile {
         if !bls::verify_one_compressed(from_pubkey, sig, &signing_root) {
             return Feedback::Reject(None);
         }
+        self.seen_bls_changes.mark(vi);
         Feedback::Accept(None)
     }
 

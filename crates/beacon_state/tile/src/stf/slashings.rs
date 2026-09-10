@@ -293,6 +293,25 @@ pub fn process_attester_slashings(
     )
 }
 
+/// Gossip's dedup, ahead of any validity check: does the intersection of the
+/// two attestations' indices name a validator `seen` has not? Out-of-range
+/// indices count, as in the spec, so a bad index is a REJECT later rather than
+/// an IGNORE here. `None` when the slashing does not parse.
+pub fn attester_slashing_names_unseen(
+    slashing: &[u8],
+    seen: impl Fn(usize) -> bool,
+) -> Option<bool> {
+    let (off1, off2) = attester_slashing_inner_offsets(slashing).ok()?;
+    let i1 = attesting_indices_bytes(slashing, off1, off2);
+    let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+    let mut unseen = false;
+    for_each_sorted_intersection(i1, i2, |vi| {
+        unseen = !seen(vi);
+        unseen
+    });
+    Some(unseen)
+}
+
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
 /// block-body list form).
 /// On success, `equivocating_out` is filled with the in-range intersection of

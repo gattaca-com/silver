@@ -24,10 +24,14 @@ use crate::{
     fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice},
     ssz_hash, stf,
     tile::{
-        attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
-        fork_data_roots::ForkDataRoots, held_blocks::HeldBlocks,
-        precomputed_epochs::PrecomputedEpochs, seen_aggregates::SeenAggregates,
-        seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
+        attestation_pool::AttestationPool,
+        attestation_root_memo::AttestationRootMemo,
+        fork_data_roots::ForkDataRoots,
+        held_blocks::HeldBlocks,
+        precomputed_epochs::PrecomputedEpochs,
+        seen_aggregates::SeenAggregates,
+        seen_validators::{SeenIndices, SeenValidators},
+        shuffling_cache::ShufflingCache,
         sync_contribution_pool::SyncContributionPool,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
@@ -127,6 +131,10 @@ pub struct BeaconStateTile {
     sync_contribution_pool: SyncContributionPool,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
+    seen_exits: SeenIndices,
+    seen_bls_changes: SeenIndices,
+    seen_proposer_slashings: SeenIndices,
+    seen_attester_slashed: SeenIndices,
     fork_data_roots: ForkDataRoots,
 
     /// Canonical in-process state: finalized base + per-fork per-tier rings.
@@ -207,6 +215,10 @@ impl BeaconStateTile {
             sync_contribution_pool: SyncContributionPool::new(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
+            seen_exits: SeenIndices::new(val_cap),
+            seen_bls_changes: SeenIndices::new(val_cap),
+            seen_proposer_slashings: SeenIndices::new(val_cap),
+            seen_attester_slashed: SeenIndices::new(val_cap),
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
@@ -758,14 +770,24 @@ impl BeaconStateTile {
     pub fn ef_apply_execution_payload(&mut self, ssz: &[u8]) -> bool {
         // EF vectors have no execution client: validate against the committed bid
         // and mark the payload valid synchronously (production notifies the EL).
+        let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
+        self.fork_choice.mark_payload_verified(&block_root);
+        self.fork_choice.on_payload_valid(&block_root);
+        self.recompute_head();
+        true
+    }
+
+    /// The block root of an envelope that passes gossip validation and
+    /// `process_execution_payload`'s withdrawals check.
+    fn ef_processable_envelope(&self, ssz: &[u8]) -> Option<B256> {
         match self.validate_execution_payload_envelope(ssz) {
-            gossip::EnvelopeCheck::Ready { block_root, .. } => {
-                self.fork_choice.mark_payload_verified(&block_root);
-                self.fork_choice.on_payload_valid(&block_root);
-                self.recompute_head();
-                true
+            gossip::EnvelopeCheck::Ready { block_root, state_id } => {
+                let rv = self.state.read_view(state_id);
+                stf::envelope_withdrawals_match_expected(&rv, ssz).then_some(block_root)
             }
-            gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => false,
+            gossip::EnvelopeCheck::AwaitBlock(_) |
+            gossip::EnvelopeCheck::Ignore |
+            gossip::EnvelopeCheck::Reject => None,
         }
     }
 
@@ -792,14 +814,10 @@ impl BeaconStateTile {
     /// An envelope seen on gossip and verified against its bid, with the EL
     /// verdict still outstanding (`ef_payload_verdict` delivers it).
     pub fn ef_receive_execution_payload(&mut self, ssz: &[u8]) -> bool {
-        match self.validate_execution_payload_envelope(ssz) {
-            gossip::EnvelopeCheck::Ready { block_root, .. } => {
-                self.fork_choice.mark_payload_verified(&block_root);
-                self.recompute_head();
-                true
-            }
-            gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => false,
-        }
+        let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
+        self.fork_choice.mark_payload_verified(&block_root);
+        self.recompute_head();
+        true
     }
 
     pub fn ef_set_finalized_checkpoint(&mut self, cp: Checkpoint) {
@@ -852,7 +870,11 @@ impl BeaconStateTile {
     /// The gossip envelope path minus the EL round-trip and the spine.
     pub fn ef_gossip_execution_payload(&mut self, ssz: &[u8]) -> Feedback {
         match self.validate_execution_payload_envelope(ssz) {
-            gossip::EnvelopeCheck::Ready { block_root, .. } => {
+            gossip::EnvelopeCheck::Ready { block_root, state_id } => {
+                let rv = self.state.read_view(state_id);
+                if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
+                    return Feedback::Accept(None);
+                }
                 if self.fork_choice.is_payload_verified(&block_root) {
                     return Feedback::Ignore;
                 }
@@ -863,6 +885,7 @@ impl BeaconStateTile {
             gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => {
                 Feedback::Ignore
             }
+            gossip::EnvelopeCheck::Reject => Feedback::Reject(None),
         }
     }
 }
@@ -888,9 +911,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
 }
 
 /// Parsed view over a SignedAggregateAndProof gossip message.
-/// Spec gossip rule: `aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >=
-/// current_slot >= aggregate.slot`.
-const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
 
 #[cfg(test)]
 mod tests;

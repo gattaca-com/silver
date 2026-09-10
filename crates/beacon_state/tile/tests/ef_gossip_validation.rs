@@ -36,82 +36,6 @@ const HANDLED_TOPICS: &[&str] = &[
     "payload_attestation_message",
 ];
 
-/// Cases whose verdict silver does not reproduce yet, as `fork/case`. A
-/// listed case that starts passing fails the run until it is removed here.
-const KNOWN_MISMATCHES: &[&str] = &[
-    "fulu/gossip_attester_slashing__ignore_already_seen",
-    "fulu/gossip_attester_slashing__ignore_empty_attesting_indices_1",
-    "fulu/gossip_attester_slashing__ignore_empty_attesting_indices_2",
-    "fulu/gossip_beacon_aggregate_and_proof__accepts_first_slot_when_epoch_window_closes",
-    "fulu/gossip_beacon_aggregate_and_proof__accepts_first_slot_when_epoch_window_opens",
-    "fulu/gossip_beacon_aggregate_and_proof__accepts_last_slot_one_millisecond_before_slot_start",
-    "fulu/gossip_beacon_aggregate_and_proof__accepts_last_slot_when_epoch_window_closes",
-    "fulu/gossip_beacon_aggregate_and_proof__accepts_one_millisecond_before_slot_start",
-    "fulu/gossip_beacon_aggregate_and_proof__reject_aggregator_index_out_of_range",
-    "fulu/gossip_beacon_aggregate_and_proof__valid_within_clock_disparity",
-    "fulu/gossip_beacon_attestation__accepts_first_slot_when_epoch_window_closes",
-    "fulu/gossip_beacon_attestation__accepts_first_slot_when_epoch_window_opens",
-    "fulu/gossip_beacon_attestation__accepts_last_slot_one_millisecond_before_slot_start",
-    "fulu/gossip_beacon_attestation__accepts_last_slot_when_epoch_window_closes",
-    "fulu/gossip_beacon_attestation__accepts_one_millisecond_before_slot_start",
-    "fulu/gossip_beacon_attestation__valid_within_clock_disparity",
-    "fulu/gossip_beacon_block__ignore_parent_execution_verified_invalid",
-    "fulu/gossip_beacon_block__reject_slot_not_higher_than_parent",
-    "fulu/gossip_bls_to_execution_change__ignore_already_seen",
-    "fulu/gossip_bls_to_execution_change__reject_validator_index_out_of_range",
-    "fulu/gossip_proposer_slashing__ignore_already_seen",
-    "fulu/gossip_proposer_slashing__reject_proposer_index_out_of_range",
-    "fulu/gossip_sync_committee_contribution_and_proof__reject_aggregator_index_out_of_range",
-    "fulu/gossip_voluntary_exit__ignore_already_seen",
-    "fulu/gossip_voluntary_exit__reject_validator_index_out_of_range",
-    "gloas/gossip_attester_slashing__ignore_already_seen",
-    "gloas/gossip_attester_slashing__ignore_empty_attesting_indices_1",
-    "gloas/gossip_attester_slashing__ignore_empty_attesting_indices_2",
-    "gloas/gossip_beacon_aggregate_and_proof__accepts_first_slot_when_epoch_window_closes",
-    "gloas/gossip_beacon_aggregate_and_proof__accepts_first_slot_when_epoch_window_opens",
-    "gloas/gossip_beacon_aggregate_and_proof__accepts_last_slot_one_millisecond_before_slot_start",
-    "gloas/gossip_beacon_aggregate_and_proof__accepts_last_slot_when_epoch_window_closes",
-    "gloas/gossip_beacon_aggregate_and_proof__accepts_one_millisecond_before_slot_start",
-    "gloas/gossip_beacon_aggregate_and_proof__ignore_payload_pending_el_validation",
-    "gloas/gossip_beacon_aggregate_and_proof__reject_aggregator_index_out_of_range",
-    "gloas/gossip_beacon_aggregate_and_proof__reject_payload_failed_el_validation",
-    "gloas/gossip_beacon_aggregate_and_proof__valid_within_clock_disparity",
-    "gloas/gossip_beacon_attestation__accepts_first_slot_when_epoch_window_closes",
-    "gloas/gossip_beacon_attestation__accepts_first_slot_when_epoch_window_opens",
-    "gloas/gossip_beacon_attestation__accepts_last_slot_one_millisecond_before_slot_start",
-    "gloas/gossip_beacon_attestation__accepts_last_slot_when_epoch_window_closes",
-    "gloas/gossip_beacon_attestation__accepts_one_millisecond_before_slot_start",
-    "gloas/gossip_beacon_attestation__ignore_payload_pending_el_validation",
-    "gloas/gossip_beacon_attestation__reject_payload_failed_el_validation",
-    "gloas/gossip_beacon_attestation__valid_within_clock_disparity",
-    "gloas/gossip_beacon_block__reject_bid_not_on_parent_execution_head",
-    "gloas/gossip_beacon_block__reject_bid_parent_root_mismatch",
-    "gloas/gossip_beacon_block__reject_slot_not_higher_than_parent",
-    "gloas/gossip_beacon_block__reject_too_many_blob_commitments",
-    "gloas/gossip_beacon_block__reject_too_many_kzg_commitments",
-    "gloas/gossip_bls_to_execution_change__ignore_already_seen",
-    "gloas/gossip_bls_to_execution_change__reject_validator_index_out_of_range",
-    "gloas/gossip_execution_payload_envelope__ignore_pre_finalized",
-    "gloas/gossip_execution_payload_envelope__reject_block_hash_mismatch",
-    "gloas/gossip_execution_payload_envelope__reject_builder_index_mismatch",
-    "gloas/gossip_execution_payload_envelope__reject_execution_requests_root_mismatch",
-    "gloas/gossip_execution_payload_envelope__reject_invalid_signature",
-    "gloas/gossip_execution_payload_envelope__reject_slot_mismatch",
-    "gloas/gossip_execution_payload_envelope__reject_too_many_builder_deposit_requests",
-    "gloas/gossip_execution_payload_envelope__reject_too_many_builder_exit_requests",
-    "gloas/gossip_execution_payload_envelope__reject_too_many_consolidation_requests",
-    "gloas/gossip_execution_payload_envelope__reject_too_many_withdrawal_requests",
-    "gloas/gossip_execution_payload_envelope__reject_too_many_withdrawals",
-    "gloas/gossip_execution_payload_envelope__valid_max_withdrawals",
-    "gloas/gossip_payload_attestation_message__reject_validator_index_out_of_range",
-    "gloas/gossip_payload_attestation_message__reject_validator_not_in_ptc",
-    "gloas/gossip_proposer_slashing__ignore_already_seen",
-    "gloas/gossip_proposer_slashing__reject_proposer_index_out_of_range",
-    "gloas/gossip_sync_committee_contribution_and_proof__reject_aggregator_index_out_of_range",
-    "gloas/gossip_voluntary_exit__ignore_already_seen",
-    "gloas/gossip_voluntary_exit__reject_validator_index_out_of_range",
-];
-
 #[derive(Deserialize)]
 struct Meta {
     topic: String,
@@ -352,22 +276,15 @@ fn run_fork(fork: &str) {
         assert!(!cases.is_empty(), "{fork}/{handler}: no cases");
         for (name, dir) in &cases {
             let case = name.rsplit('/').next().unwrap();
-            let known = KNOWN_MISMATCHES.contains(&format!("{fork}/{case}").as_str());
             match run_case(dir, fork == "gloas") {
                 Err(why) => skipped_cases.push(format!("{handler}/{name}: {why}")),
                 Ok(mismatches) if mismatches.is_empty() => {
                     handled += 1;
-                    if known {
-                        failed.push(format!(
-                            "{fork}/{handler}/{name}\n    passes now: remove it from KNOWN_MISMATCHES"
-                        ));
-                    }
                 }
                 Ok(mismatches) => {
                     handled += 1;
                     let report =
                         format!("{fork}/{handler}/{name}\n    {}", mismatches.join("\n    "));
-                    if known { known_failed.push(report) } else { failed.push(report) }
                 }
             }
         }

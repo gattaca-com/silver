@@ -291,7 +291,12 @@ impl BeaconStateTile {
         };
 
         match self.validate_execution_payload_envelope(data) {
-            EnvelopeCheck::Ready { block_root, .. } => {
+            EnvelopeCheck::Ready { block_root, state_id } => {
+                let rv = self.state.read_view(state_id);
+                if !stf::envelope_withdrawals_match_expected(&rv, data) {
+                    tracing::warn!("replayed on-disk envelope has unexpected withdrawals");
+                    return;
+                }
                 self.fork_choice.mark_payload_verified(&block_root);
                 self.recompute_head();
             }
@@ -299,7 +304,7 @@ impl BeaconStateTile {
                 block = hex32(&block_root),
                 "replayed envelope precedes its block; replay is misordered"
             ),
-            EnvelopeCheck::Ignore => {
+            EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 tracing::warn!("replayed on-disk envelope rejected")
             }
         }
@@ -652,15 +657,15 @@ impl BeaconStateTile {
         }
 
         let parent_state_id = parent_node.state_id;
+
+        let rv = self.state.read_view(parent_state_id);
+        let parent_slot = rv.slot.slot_number();
+
         let parent_payload_status = if is_gloas {
-            Self::gloas_parent_payload_status(body, parent_node, parent_root, block_root)?
+            self.precheck_gloas_bid(body, parent_node, &rv, block_epoch, parent_root, block_root)?
         } else {
             PayloadStatus::Full
         };
-
-        // Immutable read view of the parent post-state.
-        let rv = self.state.read_view(parent_state_id);
-        let parent_slot = rv.slot.slot_number();
 
         // A block must strictly extend its parent's slot.
         if block_slot <= parent_slot {
@@ -771,9 +776,16 @@ impl BeaconStateTile {
         bls::verify_block_signature(data, proposer_pubkey, &parsed.header.body_root, &domain)
     }
 
-    fn gloas_parent_payload_status(
+    /// The Gloas gossip rules on the bid: blob count, parent root, and, for a
+    /// block declaring its parent EMPTY, that it builds on the parent's
+    /// execution head. Returns the parent payload status the bid declares.
+    #[allow(clippy::too_many_arguments)]
+    fn precheck_gloas_bid(
+        &self,
         body: &[u8],
         parent_node: &ForkChoiceNode,
+        rv: &StateReadView<'_>,
+        block_epoch: Epoch,
         parent_root: B256,
         block_root: B256,
     ) -> Result<PayloadStatus, PrecheckError> {
@@ -781,17 +793,29 @@ impl BeaconStateTile {
             ssz_view::BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
         let bid_end =
             ssz_view::BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
-        let full = body
+        let bid = body
             .get(bid_off..bid_end)
             .filter(|bid| ssz_view::SignedExecutionPayloadBidView::check_size(bid))
             .map(ssz_view::SignedExecutionPayloadBidView::message)
-            .is_some_and(|msg| {
-                *ssz_view::ExecutionPayloadBidView::parent_block_hash(msg) ==
-                    parent_node.payload.bid_block_hash
-            });
+            .ok_or(PrecheckError::NonCanonicalBody { block_slot: 0, body_len: body.len() })?;
 
+        let max = self.spec.blob_params_at(block_epoch).max_blobs_per_block as usize;
+        let got = ssz_view::ExecutionPayloadBidView::blob_kzg_commitments(bid).len() /
+            ssz_view::BYTES_PER_KZG_COMMITMENT;
+        if got > max {
+            return Err(PrecheckError::TooManyCommitments { got, max, block_root });
+        }
+        if *ssz_view::ExecutionPayloadBidView::parent_block_root(bid) != parent_root {
+            return Err(PrecheckError::BidParentRootMismatch { block_root });
+        }
+
+        let parent_block_hash = *ssz_view::ExecutionPayloadBidView::parent_block_hash(bid);
+        let full = parent_block_hash == parent_node.payload.bid_block_hash;
         if full && !parent_node.payload.verified {
             return Err(PrecheckError::UnverifiedParentPayload { parent_root, block_root });
+        }
+        if !full && parent_block_hash != rv.slot.state().latest_block_hash {
+            return Err(PrecheckError::BidNotOnExecutionHead { block_root });
         }
         if full { Ok(PayloadStatus::Full) } else { Ok(PayloadStatus::Empty) }
     }
