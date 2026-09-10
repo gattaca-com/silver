@@ -1,12 +1,12 @@
 //! One text line per display row, on a grid fitted to the rows being shown:
 //! `label │ root │ time │ start │ end │ bar on the axis │ duration [attributes]
-//! │ margin`.
+//! │ margin │ source`.
 
 use ratatui::{
     style::Style,
     text::{Line, Span as TextSpan},
 };
-use silver_common::{Nanos, PayloadValidationStatus, ssz_view::NUMBER_OF_COLUMNS};
+use silver_common::{BlockSource, Nanos, PayloadValidationStatus, ssz_view::NUMBER_OF_COLUMNS};
 use silver_stages::SlotClock;
 
 use super::{
@@ -19,8 +19,8 @@ use crate::{
     sources::events::{BlockTrace, DaSpan, Interval, Margin, Span},
 };
 
-const HEADINGS: [&str; 7] =
-    ["slot/component", "root", "time", "start", "end", "duration", "deadline"];
+const HEADINGS: [&str; 8] =
+    ["slot/component", "root", "time", "start", "end", "duration", "deadline", "source"];
 
 /// Column widths for one draw: each text column is as wide as its widest
 /// cell or heading, and the axis takes what is left.
@@ -33,6 +33,7 @@ pub struct Grid {
     pub axis: usize,
     duration: usize,
     margin: usize,
+    source: usize,
     separator: &'static str,
 }
 
@@ -45,7 +46,7 @@ impl Grid {
         let widest = |min: &str, text: fn(&RowCells) -> usize| {
             cells.clone().map(text).max().unwrap_or(0).max(min.chars().count())
         };
-        let [label, root, time, start, end, duration, margin] = HEADINGS;
+        let [label, root, time, start, end, duration, margin, source] = HEADINGS;
         let label = widest(label, |c| c.label.chars().count());
         let root = widest(root, |c| c.root.chars().count());
         let time = widest(time, |c| c.time.chars().count());
@@ -53,11 +54,12 @@ impl Grid {
         let end = widest(end, |c| c.end.chars().count());
         let duration = widest(duration, |c| c.duration.chars().count());
         let margin = widest(margin, |c| c.margin_text().chars().count());
+        let source = widest(source, |c| c.source.chars().count());
         let separator = theme.symbols.separator;
         let gaps = (HEADINGS.len()) * separator.chars().count();
         let axis = inner_width
-            .saturating_sub(label + root + time + start + end + duration + margin + gaps);
-        Self { label, root, time, start, end, axis, duration, margin, separator }
+            .saturating_sub(label + root + time + start + end + duration + margin + source + gaps);
+        Self { label, root, time, start, end, axis, duration, margin, source, separator }
     }
 
     #[cfg(test)]
@@ -70,14 +72,16 @@ impl Grid {
             self.axis +
             self.duration +
             self.margin +
+            self.source +
             HEADINGS.len() * self.separator.chars().count()
     }
 
     pub fn header(&self, axis: &Axis, theme: &Theme) -> Line<'static> {
         let style = theme.header();
-        let [label, root, time, start, end, duration, margin] = HEADINGS.map(str::to_string);
+        let [label, root, time, start, end, duration, margin, source] =
+            HEADINGS.map(str::to_string);
         self.line(
-            [label, root, time, start, end, axis.ticks(), duration, margin]
+            [label, root, time, start, end, axis.ticks(), duration, margin, source]
                 .map(|t| vec![TextSpan::styled(t, style)]),
             theme,
         )
@@ -85,7 +89,7 @@ impl Grid {
 
     /// One cell per column, padded to the column and separated by the
     /// theme's separator symbol. A cell may hold several styled pieces.
-    fn line(&self, cells: [Vec<TextSpan<'static>>; 8], theme: &Theme) -> Line<'static> {
+    fn line(&self, cells: [Vec<TextSpan<'static>>; 9], theme: &Theme) -> Line<'static> {
         let widths = [
             self.label,
             self.root,
@@ -95,6 +99,7 @@ impl Grid {
             self.axis,
             self.duration,
             self.margin,
+            self.source,
         ];
         let mut spans = Vec::with_capacity(3 * cells.len());
         for (i, (pieces, width)) in cells.into_iter().zip(widths).enumerate() {
@@ -120,6 +125,7 @@ pub struct RowCells {
     pub len: Nanos,
     pub duration: String,
     pub margin: Option<Margin>,
+    pub source: String,
     /// Into-slot offset of the gate, where a data row's bar changes colour.
     split: Option<Nanos>,
     bar: (Style, Style),
@@ -170,6 +176,10 @@ impl RowCells {
                 .collect::<Vec<_>>()
                 .join(" "),
             margin,
+            source: match node {
+                Node::Span(Span::Strip) => trace.source.map_or("", source_label).to_string(),
+                _ => String::new(),
+            },
             split,
             bar: theme.bar(trace, node),
             label_style: theme.label(trace, node),
@@ -207,6 +217,7 @@ impl RowCells {
                 vec![TextSpan::styled(before, self.bar.0), TextSpan::styled(after, self.bar.1)],
                 one(self.duration, duration_style),
                 one(margin_text, theme.margin(self.margin)),
+                one(self.source, theme.text()),
             ],
             theme,
         )
@@ -259,6 +270,13 @@ fn attributes(trace: &BlockTrace, node: Node) -> String {
     }
 }
 
+fn source_label(source: BlockSource) -> &'static str {
+    match source {
+        BlockSource::Gossip => "gossip",
+        BlockSource::Rpc => "rpc",
+    }
+}
+
 /// Spelled out next to the `el` duration: a syncing or accepted EL answers in a
 /// few ms without executing the payload, so the round-trip alone reads as a
 /// fast success.
@@ -273,7 +291,7 @@ fn status_label(status: PayloadValidationStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::ColumnSource;
+    use silver_common::{BlockSource, ColumnSource};
     use silver_stages::Stage;
 
     use super::*;
@@ -281,7 +299,9 @@ mod tests {
         render::events::tree::{Expanded, Fold, Group, display_rows},
         sources::events::{
             BlockTraces,
-            trace_tests::{APPLY, DA, GENESIS_SECS, SLOT_MS, el_sent, received, trace, valid},
+            trace_tests::{
+                APPLY, DA, GENESIS_SECS, SLOT_MS, el_sent, received, received_from, trace, valid,
+            },
         },
     };
 
@@ -438,6 +458,25 @@ mod tests {
             [Some(theme.components.custody)],
             "a column crossing the gate is one colour"
         );
+    }
+
+    /// Where the block arrived from sits on the strip row alone; its
+    /// components have no source of their own.
+    #[test]
+    fn the_strip_names_the_block_source() {
+        let theme = Theme::default();
+        let rpc = trace(&[
+            (received_from(BlockSource::Rpc), 300),
+            (el_sent(), 320),
+            (Stage::Attestable, 460),
+            (valid(), 520),
+        ]);
+        let cells = all_rows(rpc, &theme);
+        assert_eq!(cells_of(&cells, Node::Span(Span::Strip)).source, "rpc");
+        assert_eq!(cells_of(&cells, Node::Span(Span::El)).source, "");
+
+        let gossip = all_rows(block(), &theme);
+        assert_eq!(cells_of(&gossip, Node::Span(Span::Strip)).source, "gossip");
     }
 
     #[test]
