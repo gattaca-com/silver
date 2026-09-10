@@ -4,6 +4,7 @@ use flux::{
     spine::{FluxSpine, SpineAdapter, SpineProducers},
     tile::Tile,
 };
+use flux_profiler::timed;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
     B256, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch, SLOTS_PER_EPOCH,
@@ -24,7 +25,8 @@ use crate::{
     ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
-        fork_data_roots::ForkDataRoots, held_blocks::HeldBlocks, seen_aggregates::SeenAggregates,
+        fork_data_roots::ForkDataRoots, held_blocks::HeldBlocks,
+        precomputed_epochs::PrecomputedEpochs, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
         sync_contribution_pool::SyncContributionPool,
     },
@@ -32,6 +34,7 @@ use crate::{
 };
 
 mod attestation_pool;
+mod precomputed_epochs;
 // `pub` for the crate's `attestation_root_memo` criterion bench.
 pub mod attestation_root_memo;
 mod block;
@@ -134,13 +137,13 @@ pub struct BeaconStateTile {
     last_applied: StateId,
     last_applied_block_root: B256,
 
+    precomputed_epochs: PrecomputedEpochs,
+
     last_seen_head_root: B256,
 
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
 
-    /// Reusable state-transition scratch buffers, threaded into
-    /// `apply_block` / `process_slots`.
     stf_scratch: stf::StfScratch,
     /// Pre-validation pass collects every BLS sig in the block here, then
     /// runs `verify_all` once before pass 2 mutates state.
@@ -208,6 +211,7 @@ impl BeaconStateTile {
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
+            precomputed_epochs: PrecomputedEpochs::default(),
             last_seen_head_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
@@ -458,32 +462,7 @@ impl BeaconStateTile {
             return false;
         }
 
-        // Advance on an unpublished child of the head — the published head is
-        // resolved lock-free by readers and must not be mutated in place.
-        // `process_slots` runs the per-slot loop and any epoch transitions
-        // crossed; `process_epoch` rolls the child a private epoch (and
-        // longtail) entry at each boundary, returning the committed ids for
-        // the bundle assembly at `commit`.
-        // Mandatory: `process_epoch` shifts `proposer_lookahead`, and
-        // `self.last_applied` is a live fork-choice node that sibling blocks
-        // build on and the proposer precheck reads — mutating its shared epoch
-        // entry would leave that node with a next-epoch `proposer_lookahead`
-        // shifted one epoch too far.
-        let new_id;
-        {
-            let parent = self.last_applied;
-            let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
-            let (epoch_idx, longtail_idx) = stf::process_slots(
-                &self.spec,
-                &mut view,
-                epoch,
-                longtail,
-                parent,
-                target_slot,
-                &mut self.stf_scratch,
-            );
-            new_id = view.commit(epoch_idx, longtail_idx);
-        }
+        let new_id = self.state_at(self.last_applied_block_root, self.last_applied, target_slot);
         self.last_applied = new_id;
         self.state.publish_state_id(new_id);
         // Empty-slot epoch transitions can advance justified/finalized in the
@@ -491,6 +470,40 @@ impl BeaconStateTile {
         self.lift_checkpoints();
         self.maybe_finalize();
         true
+    }
+
+    fn state_at(&mut self, root: B256, from: StateId, slot: Slot) -> StateId {
+        let from = self.epoch_start_state(root, from, slot);
+        if self.slot_state_at(from).slot == slot {
+            return from;
+        }
+        Self::process_slots_advance(&mut self.state, &self.spec, &mut self.stf_scratch, from, slot)
+    }
+
+    /// `from` advanced to the first slot of `slot`'s epoch when `slot` is in a
+    /// later one, else `from`.
+    #[timed]
+    fn epoch_start_state(&mut self, root: B256, from: StateId, slot: Slot) -> StateId {
+        let from_slot = self.slot_state_at(from).slot;
+        let (state, spec, scratch) = (&mut self.state, &self.spec, &mut self.stf_scratch);
+        let epoch = slot / SLOTS_PER_EPOCH;
+        self.precomputed_epochs.get_or_advance(root, from, from_slot, epoch, |from, to| {
+            Self::process_slots_advance(state, spec, scratch, from, to)
+        })
+    }
+
+    /// Always a child fork: `process_epoch` shifts `proposer_lookahead` in the
+    /// shared epoch entry, and sibling blocks still build on `from`.
+    fn process_slots_advance(
+        state: &mut BeaconStateOwner,
+        spec: &SpecConfig,
+        scratch: &mut stf::StfScratch,
+        from: StateId,
+        to: Slot,
+    ) -> StateId {
+        let mut fork = state.apply_block_view(from);
+        stf::process_slots(spec, &mut fork, to, scratch);
+        fork.commit()
     }
 
     fn on_state_advance(&mut self, _slot: Slot) {

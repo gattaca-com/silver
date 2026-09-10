@@ -8,10 +8,7 @@ use std::{
 use flux::communication::Seqlock;
 use flux_profiler::timed;
 
-use crate::{
-    BeaconState, EpochGroup, LongtailGroup, StateId, StateReadView, StateWriterView,
-    encode::GLOAS_VAR_LEN_SECTIONS,
-};
+use crate::{BeaconState, ForkWriter, StateId, StateReadView, encode::GLOAS_VAR_LEN_SECTIONS};
 
 /// The shared `BeaconState` allocation. Lifetime rides the `Arc` (a reader
 /// can never dangle, whatever the teardown order); ACCESS rides the seqlock
@@ -76,22 +73,11 @@ impl BeaconStateOwner {
         self.state.get_mut().roll_fresh()
     }
 
-    /// Roll an unpublished child off the `parent` bundle, HOLD every tier's
-    /// writer, and hand back a `StateWriterView` over the held writers — no
-    /// separate publish, no re-open. The STF mutates the view, then `commit`
-    /// (which assembles the child bundle from the held writers) +
-    /// `publish_state_id` make it visible (publish-last).
-    ///
-    /// Epoch/longtail are NOT rolled here: their idxs stay inherited from the
-    /// parent (the caller carries them as plain data) and the block path only
-    /// reads them — `process_epoch` rolls the boundary writers itself. The
-    /// groups ride alongside the view for exactly those boundary reads and
-    /// rolls.
+    /// Roll an unpublished child off `parent` and hold every tier's writer.
+    /// The transition mutates it, then `commit` + `publish_state_id` make the
+    /// child visible (publish-last); nothing is re-opened in between.
     #[timed]
-    pub fn apply_block_view(
-        &mut self,
-        parent: StateId,
-    ) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
+    pub fn apply_block_view(&mut self, parent: StateId) -> ForkWriter<'_> {
         let s = self.state.get_mut();
         // Production state-transition path: finalized base must be populated
         // (decompose from genesis SSZ or a checkpoint). The zero-validator
@@ -100,7 +86,7 @@ impl BeaconStateOwner {
             s.validators.finalized().validator_count() > 0,
             "apply_block_view: operating on empty finalized state",
         );
-        s.roll_from(parent)
+        s.fork_writer(parent)
     }
 
     /// Read-only view over the fork named by `state_id` for the writer

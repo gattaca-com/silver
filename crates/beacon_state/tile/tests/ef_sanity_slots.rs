@@ -50,13 +50,11 @@ fn sanity_slots_fork(fork: &str, cfg: SpecConfig) {
         let mut pre = loader(&pre_path);
         let target_slot = pre.slot() + target_slots;
         let mut scratch = stf::StfScratch::new(0);
-        let sid = pre.state_id;
-        let (mut v, epoch, longtail) = pre.view();
-        let (epoch_idx, longtail_idx) =
-            stf::process_slots(&cfg, &mut v, epoch, longtail, sid, target_slot, &mut scratch);
+        let mut fork = pre.bs.fork_writer(pre.state_id);
+        stf::process_slots(&cfg, &mut fork, target_slot, &mut scratch);
         // Write the (possibly epoch/longtail-rolled) bundle back for the
         // post-state comparison.
-        pre.state_id = v.commit(epoch_idx, longtail_idx);
+        pre.state_id = fork.commit();
         let mut post = loader(&post_path);
 
         let diffs = compare_states(name, &mut pre, &mut post);

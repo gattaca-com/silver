@@ -145,11 +145,12 @@ fn fuzz_concurrent_reads_observe_consistent_state() {
             let slot = control.read_view(head).slot.slot_number() + 1;
 
             head = {
-                let (mut view, _epoch, _longtail) = control.apply_block_view(head);
-                view.slot.state_mut().slot = slot;
-                view.block_roots
+                let mut fork = control.apply_block_view(head);
+                fork.view.slot.state_mut().slot = slot;
+                fork.view
+                    .block_roots
                     .set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, slot_tag(slot));
-                view.commit(head.epoch_idx, head.longtail_idx)
+                fork.commit()
             };
             control.publish_state_id(head);
             rolls_in_window += 1;

@@ -137,25 +137,14 @@ fn build_ef_block() -> SigBatch {
     let body = SignedBeaconBlockView::body(&block);
 
     let cfg = SpecConfig::mainnet();
-    let sid = s.state_id;
-    let (mut view, epoch_group, longtail_group) = s.view();
+    let mut fork = s.bs.fork_writer(s.state_id);
 
     let mut scratch = stf::StfScratch::new(0);
-    let (epoch_idx, longtail_idx) = if block_slot > view.slot.state().slot {
-        stf::process_slots(
-            &cfg,
-            &mut view,
-            epoch_group,
-            longtail_group,
-            sid,
-            block_slot,
-            &mut scratch,
-        )
-    } else {
-        (sid.epoch_idx, sid.longtail_idx)
-    };
+    if block_slot > fork.view.slot.state().slot {
+        stf::process_slots(&cfg, &mut fork, block_slot, &mut scratch);
+    }
 
-    let rv = view.read(epoch_group.view_opt(epoch_idx), longtail_group.view_opt(longtail_idx));
+    let rv = fork.read();
     let validators = rv.validators;
 
     let curr_epoch = block_slot / SLOTS_PER_EPOCH;

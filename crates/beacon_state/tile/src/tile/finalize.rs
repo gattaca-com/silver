@@ -42,6 +42,7 @@ impl BeaconStateTile {
         self.fork_choice.prune();
         let fork_choice = &self.fork_choice;
         self.held.drop_outdated(|parent| fork_choice.find_node_idx(parent).is_some());
+        self.precomputed_epochs.drop_outdated(fork_choice);
 
         {
             // The head's rebased bundle must publish in the same seqlock
@@ -56,6 +57,7 @@ impl BeaconStateTile {
                 self.fork_choice
                     .live_state_ids_mut()
                     .chain(iter::once(&mut self.last_applied))
+                    .chain(self.precomputed_epochs.state_ids_mut())
                     .chain(self.held.state_ids_mut()),
             );
             guard.set_state_id(self.last_applied);

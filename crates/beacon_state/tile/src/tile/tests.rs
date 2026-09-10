@@ -312,6 +312,48 @@ fn slot_advance_crosses_epoch_boundary() {
     assert!(tile.last_applied.epoch_idx.is_some());
 }
 
+fn inline_tile_at(slot: Slot) -> BeaconStateTile {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 31);
+    tile.on_slot_start(slot);
+    tile
+}
+
+#[test]
+fn precomputed_epoch_matches_an_inline_advance() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 31);
+
+    tile.epoch_start_state(tile.last_applied_block_root, tile.last_applied, 32);
+    tile.on_slot_start(32);
+
+    assert_eq!(tile.head_state_root(), inline_tile_at(32).head_state_root());
+}
+
+#[test]
+fn tick_past_the_precomputed_boundary_matches_an_inline_advance() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 31);
+
+    tile.epoch_start_state(tile.last_applied_block_root, tile.last_applied, 32);
+    tile.on_slot_start(33);
+
+    assert_eq!(tile.head_state_root(), inline_tile_at(33).head_state_root());
+}
+
+#[test]
+fn precomputed_epoch_survives_finalization() {
+    let mut forks = ThreeForks::new();
+    let before = forks.tile.epoch_start_state(D_ROOT, forks.d_id, SLOTS_PER_EPOCH);
+    let before_root = ssz_hash::hash_tree_root_state(&forks.tile.state.read_view(before));
+
+    forks.tile.maybe_finalize();
+
+    let after = forks.tile.epoch_start_state(D_ROOT, forks.tile.last_applied, SLOTS_PER_EPOCH);
+    assert_ne!(after, before, "stale bundle replaced");
+    assert_eq!(ssz_hash::hash_tree_root_state(&forks.tile.state.read_view(after)), before_root);
+}
+
 /// Sustained non-finality: slot advances far past the rings' initial
 /// capacity (slot tiers past `SLOTS_RING_N` twice over, the epoch tier
 /// past `EPOCHS_RING_N`) must grow the rings instead of panicking on
