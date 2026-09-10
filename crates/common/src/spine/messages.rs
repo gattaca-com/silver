@@ -873,8 +873,10 @@ impl PayloadResolution {
 pub enum BeaconStateEvent {
     ReplayComplete,
     /// An observation that may repeat unchanged. Consumers decide which
-    /// fields require action. `latest_block_slot` tracks import progress;
-    /// the selected head's slot in `ssz` can differ.
+    /// fields require action. `latest_block_slot` follows the last imported
+    /// block; `ssz` describes the fork-choice head. Their slots can differ
+    /// after importing a competing branch or switching heads, including
+    /// after execution invalidation.
     Status {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
