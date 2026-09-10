@@ -264,6 +264,8 @@ pub enum AttestationError {
     BadOffsets { start: usize, end: usize, parent_len: usize },
     #[error("no shuffling supplied")]
     MissingShuffling,
+    #[error("gloas attestation processed without the block's parent slot")]
+    MissingParentSlot,
     #[error("empty shuffling or zero committees_per_slot")]
     EmptyShuffling,
     #[error("committee_bits == 0")]

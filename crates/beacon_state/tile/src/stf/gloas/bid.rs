@@ -2,7 +2,7 @@ use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     BuilderPendingPayment, BuilderPendingWithdrawal, BuildersView, Epoch, EpochView,
-    ExecutionPayloadBid, Immutable, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
+    ExecutionPayloadBid, Immutable, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView,
 };
 use silver_common::ssz_view::SignedExecutionPayloadBidView;
 
@@ -25,7 +25,7 @@ pub fn process_execution_payload_bid(
     epoch: &EpochView,
     cfg: &SpecConfig,
     signed_bid: &[u8],
-) -> Result<(), E> {
+) -> Result<Slot, E> {
     let bid = decode_bid(signed_bid)?;
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
 
@@ -90,8 +90,9 @@ pub fn process_execution_payload_bid(
         let idx = SLOTS_PER_EPOCH as usize + (bid.slot % SLOTS_PER_EPOCH) as usize;
         view.slot.state_mut().builder_pending_payments[idx] = payment;
     }
+    let parent_slot = view.slot.state().latest_execution_payload_bid.slot;
     view.slot.state_mut().latest_execution_payload_bid = bid;
-    Ok(())
+    Ok(parent_slot)
 }
 
 /// Push an external builder's bid signature onto `batch`
