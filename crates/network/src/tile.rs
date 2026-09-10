@@ -195,6 +195,12 @@ impl NetworkTile {
                         tracing::debug!(peer=gossip_msg_out.peer_id, "send gossip");
                         self.inner.enqueue_gossip(gossip_msg_out)
                     },
+                    P2pSend::SegmentedGossip { peer_id, frame } => {
+                        gossips += 1;
+                        self.inner.p2p_endpoint.enqueue_segmented_gossip(
+                            peer_id, frame, &mut self.inner.context,
+                        )
+                    }
                     P2pSend::Identify(peer) => {
                         self.inner.p2p_endpoint.enqueue_identify(peer)
                     }

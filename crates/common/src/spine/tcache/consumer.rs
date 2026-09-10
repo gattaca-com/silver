@@ -350,6 +350,27 @@ pub struct AcquiredRange {
 
 impl AcquiredRange {
     #[inline]
+    pub fn extend_contiguous(&mut self, next: &Self) -> bool {
+        if self.read.consumer != next.read.consumer ||
+            self.read.seq() != next.read.seq() ||
+            self.offset + self.length != next.offset
+        {
+            return false;
+        }
+        self.length += next.length;
+        true
+    }
+
+    pub fn slice(mut self, offset: usize, length: usize) -> Option<Self> {
+        if offset.checked_add(length)? > self.length {
+            return None;
+        }
+        self.offset += offset;
+        self.length = length;
+        Some(self)
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.length
     }

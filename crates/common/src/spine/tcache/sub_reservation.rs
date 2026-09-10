@@ -99,8 +99,8 @@ impl Header {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SubReservationRef {
-    read: TCacheRead,
-    header_bytes: usize,
+    pub(super) read: TCacheRead,
+    pub(super) header_bytes: usize,
 }
 
 impl SubReservationRef {

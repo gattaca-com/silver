@@ -4,9 +4,10 @@ use std::{
     cell::Cell,
     hint::black_box,
     io::Write,
+    time::{Duration, Instant},
 };
 
-use silver_common::{TCache, TCacheProducer};
+use silver_common::{GossipFrameRef, GossipSegment, TCache, TCacheProducer};
 
 thread_local! {
     static ALLOCATION_EVENTS: Cell<u64> = const { Cell::new(0) };
@@ -37,6 +38,31 @@ unsafe impl GlobalAlloc for CountingAllocator {
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+#[test]
+fn descriptor_construction_and_acquisition_allocate_nothing() {
+    let mut producer = TCache::producer("", 1 << 18);
+    let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
+    let now = Instant::now();
+    let before = ALLOCATION_EVENTS.with(Cell::get);
+    for _ in 0..128 {
+        let frame = GossipFrameRef::write(
+            &mut producer,
+            now + Duration::from_secs(1),
+            b"framing",
+            [GossipSegment::Framing { offset: 0, length: 3 }, GossipSegment::Framing {
+                offset: 3,
+                length: 4,
+            }]
+            .into_iter(),
+        )
+        .unwrap();
+        let view = frame.acquire(&mut consumer, now).unwrap();
+        black_box(view.descriptor_range());
+        black_box(view.segments().count());
+    }
+    assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);
+}
 
 #[test]
 fn range_creation_cloning_and_dropping_allocates_nothing() {

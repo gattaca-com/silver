@@ -3,7 +3,7 @@ use silver_common::{MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead};
 use crate::{
     NetworkCounters,
     p2p::{
-        quic::Leased,
+        quic::{Leased, OutboundGossip, SegmentedFrame},
         streams::{StreamError, StreamIo},
     },
 };
@@ -16,7 +16,7 @@ pub(crate) enum GossipWriteState {
         buffer: [u8; 10],
         limit: usize,
         written: usize,
-        message: Leased<TRead>,
+        message: OutboundGossip,
     },
     /// Writing body. `offset`/`length` track progress into the current
     /// message; the handler provides body bytes via `send_data`.
@@ -25,6 +25,7 @@ pub(crate) enum GossipWriteState {
         length: usize,
         message: Leased<TRead>,
     },
+    WritingSegments(SegmentedFrame),
 }
 
 enum Spin {
@@ -56,7 +57,10 @@ impl GossipWriteState {
             Self::Idle => match io.gossip_next() {
                 Some(message) => {
                     let mut buffer = [0u8; 10];
-                    let len = message.len()?;
+                    let len = match &message {
+                        OutboundGossip::Contiguous(message) => message.len()?,
+                        OutboundGossip::Segmented(frame) => frame.wire_len(),
+                    };
                     if len > MAX_GOSSIP_FRAME_SIZE {
                         return Err(StreamError::GossipFrameTooLarge);
                     }
@@ -73,10 +77,11 @@ impl GossipWriteState {
                 let n = io.write_to_stream(p2p_id.stream_id(), &buffer[written..limit])?;
                 written += n;
                 if written == limit {
-                    return Ok(Spin::Next(Self::Writing {
-                        offset: 0,
-                        length: message.len()?,
-                        message,
+                    return Ok(Spin::Next(match message {
+                        OutboundGossip::Contiguous(message) => {
+                            Self::Writing { offset: 0, length: message.len()?, message }
+                        }
+                        OutboundGossip::Segmented(frame) => Self::WritingSegments(frame),
                     }));
                 }
                 Ok(Spin::Ok(Self::WritingLength { buffer, limit, written, message }))
@@ -94,6 +99,14 @@ impl GossipWriteState {
                     return Ok(Spin::Next(Self::Idle));
                 }
                 Ok(Spin::Ok(Self::Writing { offset, length, message }))
+            }
+            Self::WritingSegments(mut frame) => {
+                let n = io.write_chunks(p2p_id.stream_id(), frame.chunks())?;
+                if frame.written(n) {
+                    Ok(Spin::Next(Self::Idle))
+                } else {
+                    Ok(Spin::Ok(Self::WritingSegments(frame)))
+                }
             }
         }
     }
@@ -155,8 +168,8 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<Leased<TRead>> {
-            self.pending.take()
+        fn gossip_next(&mut self) -> Option<OutboundGossip> {
+            self.pending.take().map(OutboundGossip::Contiguous)
         }
 
         fn remote_addr(&self) -> SocketAddr {

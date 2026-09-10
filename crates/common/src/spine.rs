@@ -21,9 +21,11 @@ pub use stream_protocol::{
 };
 pub use tcache::{
     AcquiredRange, AcquiredRead, AcquiredSubReservation, AcquiredWithOffset, Consumer, Error,
-    MultiProducer, PendingSubReservation, Producer, RandomAccessConsumer, Reservation,
-    ScopedReservation, SubLayout, SubReservation, SubReservationError, SubReservationRef,
-    SubReservationView, SubValidation, SubWrite, TCache, TCacheProducer, TCacheRead, TCacheRef,
+    GossipFrameError, GossipFrameRef, GossipFrameSegment, GossipFrameView, GossipSegment,
+    MAX_GOSSIP_SEGMENTS, MultiProducer, PendingSubReservation, Producer, RandomAccessConsumer,
+    Reservation, ScopedReservation, SubLayout, SubReservation, SubReservationError,
+    SubReservationRef, SubReservationView, SubValidation, SubWrite, TCache, TCacheProducer,
+    TCacheRead, TCacheRef,
 };
 
 use crate::cells::{CellStoreEvent, RetentionEvent};

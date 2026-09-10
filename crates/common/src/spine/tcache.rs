@@ -12,6 +12,10 @@ pub use consumer::{
     AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
 };
 use flux::{Timer, timing::Nanos, tracing};
+pub use gossip_frame::{
+    GossipFrameError, GossipFrameRef, GossipFrameSegment, GossipFrameView, GossipSegment,
+    MAX_GOSSIP_SEGMENTS,
+};
 pub use producer::{MultiProducer, Producer, Reservation, ScopedReservation, TCacheProducer};
 pub use sub_reservation::{
     AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
@@ -41,6 +45,7 @@ const fn lag_threshold(len: u32) -> u64 {
 }
 
 mod consumer;
+mod gossip_frame;
 mod metrics;
 mod producer;
 mod sub_reservation;

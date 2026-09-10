@@ -43,6 +43,10 @@ pub use crate::{
 };
 
 pub mod cells;
+pub use spine::{
+    GossipFrameError, GossipFrameRef, GossipFrameSegment, GossipFrameView, GossipSegment,
+    MAX_GOSSIP_SEGMENTS,
+};
 pub mod column_util;
 mod enr;
 mod error;

@@ -13,7 +13,8 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet,
+    GossipFrameRef, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead,
+    rpc_rate_limit::RpcRateLimitSet,
 };
 
 use crate::{
@@ -22,8 +23,7 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{
-            SendResult,
-            leased::{Leased, OutboundLeaseWheel},
+            OutboundGossip, SegmentedFramePool, SendResult, leased::OutboundLeaseWheel,
             stream::StreamIoImpl,
         },
         streams::{
@@ -165,6 +165,36 @@ impl Peer {
         if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return SendResult::ConnectionClosing;
         }
+        let msg = OutboundGossip::Contiguous(self.outbound_lease_wheel.leased(msg, now));
+        self.queue_gossip(msg)
+    }
+
+    pub(crate) fn send_segmented_gossip(
+        &mut self,
+        frame: GossipFrameRef,
+        context: &mut Context,
+        pool: &SegmentedFramePool,
+        rpc_codec_pool: &mut RpcCodecPool,
+    ) -> SendResult {
+        if self.connection.is_closed() {
+            return SendResult::ConnectionClosing;
+        }
+        let now = Instant::now();
+        if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
+            return SendResult::ConnectionClosing;
+        }
+        let acquired = frame
+            .acquire(&mut context.gossip_consumer, now)
+            .ok()
+            .and_then(|view| pool.acquire(view, context, &self.outbound_lease_wheel, now));
+        let Some(frame) = acquired else {
+            crate::NetworkCounters::GossipSegmentedRejected.inc();
+            return SendResult::MessageDropped;
+        };
+        self.queue_gossip(OutboundGossip::Segmented(frame))
+    }
+
+    fn queue_gossip(&mut self, msg: OutboundGossip) -> SendResult {
         self.dirty = true;
         let stream_id = match self.outbound_gossip {
             Some(id) => id,
@@ -176,7 +206,6 @@ impl Peer {
                 None => return SendResult::StreamCreationError,
             },
         };
-        let msg = self.outbound_lease_wheel.leased(msg, now);
         if let Some(stream) = self.streams.get_mut(&stream_id) {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
@@ -1088,7 +1117,7 @@ impl Stream {
 
 pub(super) enum OutboundBuffer {
     Unset,
-    Gossip(OutBuffer<Leased<TRead>>),
+    Gossip(OutBuffer<OutboundGossip>),
     Rpc(OutBuffer<AcquiredRpcOutbound>),
 }
 
@@ -1172,7 +1201,7 @@ mod tests {
     use std::{collections::HashMap, io::Write, net::SocketAddr, sync::Arc, time::Instant};
 
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
-    use silver_common::{Keypair, TCache, TCacheProducer, TConsumer, TProducer};
+    use silver_common::{GossipSegment, Keypair, TCache, TCacheProducer, TConsumer, TProducer};
 
     use super::*;
     use crate::p2p::quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK};
@@ -1960,6 +1989,104 @@ mod tests {
             0,
             "the sender's ACK must release its tracked tcache owner"
         );
+    }
+
+    #[test]
+    fn segmented_rpc_crosses_quinn_and_releases_owners_after_ack() {
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        client_h.context.gossip_consumer =
+            client_h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        let mut columns = TCache::producer("", 1 << 16);
+        client_h.context.data_columns_consumer =
+            Some(Box::new(columns.cache_ref().retained_random_access("").unwrap()));
+        let pool = Box::new(SegmentedFramePool::new(2));
+        let mut pair = PeerPair::new();
+        // RPC.subscriptions = [{ subscribe: true, topicID: "t" }].
+        let payload = b"\x0a\x05\x08\x01\x12\x01t";
+        let read = {
+            let mut write = columns.reserve_scoped(5).unwrap();
+            write.write_all(&payload[2..]).unwrap();
+            write.flush().unwrap();
+            write.read()
+        };
+        let frame = GossipFrameRef::write(
+            &mut client_h.gossip_out_producer,
+            Instant::now() + Duration::from_secs(1),
+            &payload[..2],
+            [
+                GossipSegment::Framing { offset: 0, length: 2 },
+                GossipSegment::DataColumns { read, offset: 0, length: 2 },
+                GossipSegment::DataColumns { read, offset: 2, length: 3 },
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            pair.client_peer.send_segmented_gossip(
+                frame,
+                &mut client_h.context,
+                &pool,
+                &mut client_h.rpc_codec_pool
+            ),
+            SendResult::Ok
+        );
+        client_h
+            .context
+            .data_columns_consumer
+            .as_deref_mut()
+            .unwrap()
+            .advance_retention(columns.next_seq());
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
+        let wire: Vec<_> = server_h.received.values().flatten().copied().collect();
+        assert_eq!(wire, payload);
+        let now = Instant::now();
+        for i in 0..200 {
+            if pair.client_peer.outbound_lease_wheel.active_count() == 0 {
+                break;
+            }
+            pair.step(
+                now + Duration::from_millis(i),
+                &mut client_h,
+                &mut server_h,
+                &mut |_| {},
+                &mut |_| {},
+            );
+        }
+        assert_eq!(pair.client_peer.outbound_lease_wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn segmented_queue_overflow_drops_only_whole_unstarted_frames() {
+        let mut h = PeerHarness::new();
+        h.context.gossip_consumer =
+            h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        let pool = Box::new(SegmentedFramePool::new(2));
+        let mut pair = PeerPair::new();
+        let frame = GossipFrameRef::write(
+            &mut h.gossip_out_producer,
+            Instant::now() + Duration::from_secs(1),
+            b"payload",
+            [GossipSegment::Framing { offset: 0, length: 7 }].into_iter(),
+        )
+        .unwrap();
+        let peer = &mut pair.client_peer;
+        assert_eq!(
+            peer.send_segmented_gossip(frame, &mut h.context, &pool, &mut h.rpc_codec_pool),
+            SendResult::Ok
+        );
+        let id = peer.outbound_gossip.unwrap();
+        peer.streams.get_mut(&id).unwrap().out_buffer = OutboundBuffer::Gossip(OutBuffer::new(1));
+        assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
+        for expected in [SendResult::Ok, SendResult::MessageDropped, SendResult::MessageDropped] {
+            assert_eq!(
+                peer.send_segmented_gossip(frame, &mut h.context, &pool, &mut h.rpc_codec_pool),
+                expected
+            );
+            assert_eq!(peer.outbound_lease_wheel.active_count(), 1);
+        }
+        peer.clear_streams(&mut h.rpc_codec_pool);
+        assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
     }
 
     #[test]
