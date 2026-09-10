@@ -342,7 +342,7 @@ impl PeerManager {
 mod tests {
     use std::time::Duration;
 
-    use silver_common::{GossipBlock, PeerEvent, TCacheProducer};
+    use silver_common::{GossipBlock, GossipMetadata, PeerEvent, TCacheProducer};
     use silver_config::ScoreParams;
 
     use super::*;
@@ -1026,7 +1026,10 @@ mod tests {
                 msg_hash: hash,
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),
-                block: Some(GossipBlock { slot: 37, block_root: [0xAB; 32] }),
+                metadata: Some(GossipMetadata::Block(GossipBlock {
+                    slot: 37,
+                    block_root: [0xAB; 32],
+                })),
             },
             now,
             &mut |c| cap.0.push(c),
@@ -1080,7 +1083,7 @@ mod tests {
                 msg_hash: silver_common::MessageId { id: [0xCD; 20] },
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),
-                block: None,
+                metadata: None,
             },
             now,
             &mut |event| cap.0.push(event),

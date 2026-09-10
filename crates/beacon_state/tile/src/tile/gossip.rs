@@ -6,8 +6,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
-    GossipBlock, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent,
-    SyncNeed, TCacheRead, TRead, hex32,
+    GossipBlock, GossipMetadata, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK,
+    NewGossipMsg, PeerEvent, SyncNeed, TCacheRead, TRead, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -1306,7 +1306,7 @@ impl BeaconStateTile {
             msg_hash: m.msg_hash,
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,
-            block,
+            metadata: block.map(GossipMetadata::Block),
         });
     }
 

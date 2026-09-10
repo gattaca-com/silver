@@ -19,9 +19,12 @@ impl Published {
         sink.consume(|event: BeaconStateEvent, _| events.push(event));
         let mut relays = Vec::new();
         sink.consume(|event: PeerEvent, _| {
-            if let PeerEvent::SendGossip { topic, block, .. } = event {
+            if let PeerEvent::SendGossip { topic, metadata, .. } = event {
                 assert_eq!(topic, GossipTopic::BeaconBlock);
-                relays.push(block.expect("every block relay carries its metadata"));
+                let Some(GossipMetadata::Block(block)) = metadata else {
+                    panic!("every block relay carries block metadata")
+                };
+                relays.push(block);
             }
         });
         Self { events, relays }

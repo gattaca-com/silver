@@ -10,9 +10,9 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipBlock, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId,
-    P2pStreamId, PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheProducer, TCacheRead,
-    TProducer,
+    BlockStage, EngineNewPayloadResp, GossipBlock, GossipMetadata, GossipTopic,
+    LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent, StreamProtocol, SyncNeed, TCache,
+    TCacheProducer, TCacheRead, TProducer,
     column_util::block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -821,15 +821,15 @@ fn block_relay_requires_a_resolved_proposer() {
 
             let mut relays = Vec::new();
             adapter.consume(|event: PeerEvent, _| {
-                if let PeerEvent::SendGossip { topic, block, .. } = event {
+                if let PeerEvent::SendGossip { topic, metadata, .. } = event {
                     assert_eq!(topic, GossipTopic::BeaconBlock);
-                    relays.push(block);
+                    relays.push(metadata);
                 }
             });
             let expected = GossipBlock { slot, block_root: block_root_fulu(&bytes) };
             assert_eq!(
                 relays,
-                if want_relay { vec![Some(expected)] } else { vec![] },
+                if want_relay { vec![Some(GossipMetadata::Block(expected))] } else { vec![] },
                 "{target:?}, slot {slot}"
             );
         }
@@ -3268,8 +3268,8 @@ mod block_relay;
 fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
     let mut topics = Vec::new();
     adapter.consume(|event: PeerEvent, _| {
-        if let PeerEvent::SendGossip { topic, block, .. } = event {
-            assert_eq!(block, None, "{topic:?} carries no block metadata");
+        if let PeerEvent::SendGossip { topic, metadata, .. } = event {
+            assert_eq!(metadata, None, "{topic:?} carries no SSE metadata");
             topics.push(topic);
         }
     });
