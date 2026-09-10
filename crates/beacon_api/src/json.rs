@@ -240,6 +240,22 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn data_column_sidecar_event(
+        &mut self,
+        block_root: &[u8; 32],
+        column_index: u64,
+        slot: u64,
+    ) {
+        self.begin_object();
+        self.key("block_root");
+        self.hex(block_root);
+        self.key("index");
+        self.quoted_u64(column_index);
+        self.key("slot");
+        self.quoted_u64(slot);
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -507,5 +523,14 @@ mod tests {
             "9a".repeat(32)
         );
         assert_eq!(out, expected.as_bytes());
+    }
+
+    #[test]
+    fn data_column_sidecar_event_carries_the_root_index_and_slot() {
+        let body = write(|json| json.data_column_sidecar_event(&[0x9a; 32], 3, 10));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["block_root"], format!("0x{}", hex::encode([0x9a; 32])));
+        assert_eq!(parsed["index"], "3");
+        assert_eq!(parsed["slot"], "10");
     }
 }

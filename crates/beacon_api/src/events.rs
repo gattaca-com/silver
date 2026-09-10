@@ -14,6 +14,7 @@ pub(crate) const KEEP_ALIVE: &[u8] = b": keep-alive\n\n";
 pub(crate) enum Channel {
     Block,
     BlockGossip,
+    DataColumnSidecar,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +71,7 @@ fn channel(topic: &str) -> Option<Channel> {
     match topic {
         "block" => Some(Channel::Block),
         "block_gossip" => Some(Channel::BlockGossip),
+        "data_column_sidecar" => Some(Channel::DataColumnSidecar),
         _ => None,
     }
 }
@@ -132,14 +134,19 @@ mod tests {
         gossip.insert(Channel::BlockGossip);
         assert_eq!(topics("topics=block_gossip"), Ok(gossip));
 
-        let mut both = gossip;
-        both.insert(Channel::Block);
+        let mut columns = ChannelSet::default();
+        columns.insert(Channel::DataColumnSidecar);
+        assert_eq!(topics("topics=data_column_sidecar"), Ok(columns));
+
+        let mut all = columns;
+        all.insert(Channel::Block);
+        all.insert(Channel::BlockGossip);
         for query in [
-            "topics=block,block_gossip",
-            "topics=block_gossip&topics=block",
-            "topics=block%2Cblock_gossip",
+            "topics=block,block_gossip,data_column_sidecar",
+            "topics=data_column_sidecar&topics=block_gossip&topics=block",
+            "topics=block%2Cdata_column_sidecar%2Cblock_gossip",
         ] {
-            assert_eq!(topics(query), Ok(both), "{query}");
+            assert_eq!(topics(query), Ok(all), "{query}");
         }
     }
 
