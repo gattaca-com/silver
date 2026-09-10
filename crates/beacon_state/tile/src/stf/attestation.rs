@@ -386,12 +386,12 @@ pub fn process_single_attestation(
 
     view.slot.epoch_balances_mut().add_target_attesters(is_current, flags.new_target_eb);
 
-    if same_slot && flags.new_flag_eb > 0 {
+    if same_slot && flags.first_participation_eb > 0 {
         accrue_builder_payment_weight(
             &mut view.slot,
             parsed.att_slot,
             is_current,
-            flags.new_flag_eb,
+            flags.first_participation_eb,
         );
     }
 
@@ -402,13 +402,13 @@ fn accrue_builder_payment_weight(
     slot: &mut SlotStateWriteView,
     att_slot: Slot,
     is_current: bool,
-    new_flag_eb: u64,
+    first_participation_eb: u64,
 ) {
     let spe = SLOTS_PER_EPOCH as usize;
     let slot_in_epoch = att_slot as usize % spe;
     let ring = if is_current { spe + slot_in_epoch } else { slot_in_epoch };
     if slot.state().builder_pending_payments[ring].withdrawal.amount > 0 {
-        slot.state_mut().builder_pending_payments[ring].weight += new_flag_eb;
+        slot.state_mut().builder_pending_payments[ring].weight += first_participation_eb;
     }
 }
 
@@ -562,8 +562,9 @@ fn collect_attestation_participants(
 
 struct AppliedFlags {
     proposer_reward_numerator: u64,
-    /// Gloas builder-payment weight: attesters that set at least one new flag.
-    new_flag_eb: u64,
+    /// Gloas builder-payment weight: effective balance of the attesters this
+    /// attestation brought from no participation to some.
+    first_participation_eb: u64,
     /// Unslashed attesters that newly earned TIMELY_TARGET.
     new_target_eb: u64,
 }
@@ -584,7 +585,7 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     // per-validator `set_*_participation` would be O(|edits|) each (quadratic
     // over an epoch's accumulated participation edits).
     let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
-    let mut new_flag_eb = 0u64;
+    let mut first_participation_eb = 0u64;
     let mut new_target_eb = 0u64;
     for &vi in active_scratch {
         let prev_p = participation.get(vi as usize);
@@ -604,12 +605,14 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
         }
         if p != prev_p {
             updates.push((vi, p));
-            new_flag_eb += effective_balance;
+            if prev_p == 0 {
+                first_participation_eb += effective_balance;
+            }
         }
     }
     updates.sort_unstable_by_key(|(idx, _)| *idx);
     participation.set_many(&updates);
-    AppliedFlags { proposer_reward_numerator, new_flag_eb, new_target_eb }
+    AppliedFlags { proposer_reward_numerator, first_participation_eb, new_target_eb }
 }
 
 #[cfg(test)]
