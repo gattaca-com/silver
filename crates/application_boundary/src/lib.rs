@@ -99,14 +99,20 @@ impl ApplicationBoundaryTile {
             } => beacon.publish_block(slot, &block_root),
             _ => {}
         });
-        adapter.consume(|event: PeerEvent, _| {
-            if let PeerEvent::SendGossip {
+        adapter.consume(|event: PeerEvent, _| match event {
+            PeerEvent::SendGossip {
                 metadata: Some(GossipMetadata::Block(GossipBlock { slot, block_root })),
                 ..
-            } = event
-            {
-                beacon.publish_block_gossip(slot, &block_root);
-            }
+            } => beacon.publish_block_gossip(slot, &block_root),
+            PeerEvent::SendGossip {
+                metadata: Some(GossipMetadata::DataColumn(column)), ..
+            } |
+            PeerEvent::PublishDataColumn { column, .. } => beacon.publish_data_column_sidecar(
+                &column.block_root,
+                column.column_index,
+                column.slot,
+            ),
+            _ => {}
         });
         let status = beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {
