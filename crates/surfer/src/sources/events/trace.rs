@@ -1,4 +1,4 @@
-use silver_common::Nanos;
+use silver_common::{BlockSource, Nanos};
 use silver_stages::{SlotClock, Stage, StageEvent};
 
 use super::{
@@ -42,6 +42,9 @@ pub enum Span {
 pub struct BlockTrace {
     pub slot: u64,
     pub block_root: [u8; 32],
+    /// Where the block itself arrived from; `None` until its first
+    /// `Received`, which a reader attaching mid-slot can miss.
+    pub source: Option<BlockSource>,
     received_at: Option<Nanos>,
     el_sent_at: Option<Nanos>,
     pub da: DataAvailability,
@@ -54,6 +57,7 @@ impl BlockTrace {
         Self {
             slot,
             block_root,
+            source: None,
             received_at: None,
             el_sent_at: None,
             da: DataAvailability::default(),
@@ -67,9 +71,10 @@ impl BlockTrace {
     pub fn apply(&mut self, event: StageEvent) {
         let ts = event.ts;
         match event.stage {
-            Stage::Received { .. } => {
+            Stage::Received { source } => {
                 if self.received_at.is_none() {
                     self.received_at = Some(ts);
+                    self.source = Some(source);
                 }
             }
             Stage::ElSent { .. } => self.el_sent_at = Some(ts),
@@ -142,7 +147,7 @@ impl BlockTrace {
 
 #[cfg(test)]
 pub mod tests {
-    use silver_common::{BlockSource, ColumnSource, PayloadValidationStatus};
+    use silver_common::{ColumnSource, PayloadValidationStatus};
 
     use super::*;
 
@@ -168,7 +173,11 @@ pub mod tests {
     }
 
     pub fn received() -> Stage {
-        Stage::Received { source: BlockSource::Gossip }
+        received_from(BlockSource::Gossip)
+    }
+
+    pub fn received_from(source: BlockSource) -> Stage {
+        Stage::Received { source }
     }
 
     pub fn el_sent() -> Stage {

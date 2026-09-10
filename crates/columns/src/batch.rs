@@ -4,7 +4,7 @@ use silver_common::{
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
 
-use crate::{BlockRoot, validate::ColumnValidator};
+use crate::{BlockRoot, availability::ColumnTracker, validate::ColumnValidator};
 
 /// Relay owed to the network once a batched sidecar verifies: forwarding for
 /// gossip-origin sidecars, publish for RPC-fetched ones. Deferred with the
@@ -59,6 +59,22 @@ impl KzgBatch {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+
+    /// Queued sidecars through the one that makes the first block available;
+    /// all of them when none does.
+    pub fn columns_until_available(&self, tracker: &ColumnTracker) -> usize {
+        let root = self.pending[0].block_root;
+        let mut held = 0;
+        for (i, p) in self.pending.iter().enumerate() {
+            if p.block_root == root {
+                held |= p.bitmask;
+            }
+            if tracker.becomes_available(&root, held) {
+                return i + 1;
+            }
+        }
+        self.pending.len()
     }
 }
 
