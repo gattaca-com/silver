@@ -54,17 +54,24 @@ impl ShufflingEntry {
         self.is_valid = true;
     }
 
-    /// One aggregate pubkey per beacon committee of the epoch. No-op once
-    /// filled, or while the entry holds no shuffling.
-    #[timed]
+    /// No-op once filled, or while the entry holds no shuffling.
     fn fill_committee_aggs(
         &mut self,
         view: &StateReadView,
         aggregator: &mut bls::PubkeyAggregator,
     ) {
-        if !self.committee_aggs.is_empty() || self.shuffled_indices.is_empty() {
-            return;
+        if self.committee_aggs.is_empty() && !self.shuffled_indices.is_empty() {
+            self.compute_committee_aggs(view, aggregator);
         }
+    }
+
+    /// One aggregate pubkey per beacon committee of the epoch.
+    #[timed]
+    fn compute_committee_aggs(
+        &mut self,
+        view: &StateReadView,
+        aggregator: &mut bls::PubkeyAggregator,
+    ) {
         let shuffling = stf::EpochShuffling::new(&self.shuffled_indices, self.built_against);
         for slot_in_epoch in 0..SLOTS_PER_EPOCH {
             for ci in 0..shuffling.committees_per_slot {
@@ -130,7 +137,6 @@ impl ShufflingCache {
 
     /// Real work at most once per cached `(epoch, mix)` — ~150ns per active
     /// validator — so every other block of the epoch is a no-op.
-    #[timed]
     pub fn try_cache_committee_aggs(&mut self, view: &StateReadView, epoch: Epoch) {
         for cached_epoch in Self::window(epoch) {
             self.try_cache_aggs_for(view, cached_epoch);

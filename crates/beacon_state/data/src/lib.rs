@@ -15,6 +15,7 @@ pub use delta_view::{StateReadView, StateWriterView};
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView, PtcWindow};
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
+pub use fork_writer::ForkWriter;
 pub use gloas::{
     Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, PtcCommittee,
     Withdrawal,
@@ -49,6 +50,7 @@ mod encode;
 mod epoch;
 mod eth1;
 mod finalize;
+mod fork_writer;
 pub mod gloas;
 mod longtail;
 mod parsed;

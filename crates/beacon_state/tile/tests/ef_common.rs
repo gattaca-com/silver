@@ -61,11 +61,10 @@ impl LoadedState {
     /// the (possibly epoch/longtail-rolled) bundle and write it back so the
     /// next block / the post-state comparison sees it.
     pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
-        let parent = self.state_id;
-        let (mut view, epoch, longtail) = self.view();
-        match stf::apply_signed_block_debug(cfg, &mut view, epoch, longtail, parent, block_ssz) {
-            Ok((epoch_idx, longtail_idx)) => {
-                self.state_id = view.commit(epoch_idx, longtail_idx);
+        let mut fork = self.bs.fork_writer(self.state_id);
+        match stf::apply_signed_block_debug(cfg, &mut fork, block_ssz) {
+            Ok(()) => {
+                self.state_id = fork.commit();
                 Ok(())
             }
             Err(e) => Err(e.to_string()),

@@ -1,10 +1,10 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochGroup, EpochId,
-    EpochView, EpochWriteView, Eth1Data, Eth1WriteView, Immutable, LongtailGroup, LongtailId,
+    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochView,
+    EpochWriteView, Eth1Data, Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId,
     LongtailView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView,
-    SlotStateWriteView, SpecConfig, StateId, StateReadView, StateWriterView, ValidatorsView,
+    SlotStateWriteView, SpecConfig, StateReadView, StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
     BEACON_BLOCK_BODY_FIXED, Eth1DataView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
@@ -33,37 +33,27 @@ use crate::{
 #[allow(clippy::too_many_arguments)]
 pub fn apply_block(
     cfg: &SpecConfig,
-    view: &mut StateWriterView,
-    epoch: &mut EpochGroup,
-    longtail: &mut LongtailGroup,
-    parent: StateId,
+    fork: &mut ForkWriter,
     block_bytes: &[u8],
     header: &BeaconBlockHeader,
     shuffling: Option<&ShufflingRef<'_>>,
     scratch: &mut StfScratch,
     out: &mut BlockVotes,
     sig_batch: &mut SigBatch,
-) -> Result<(Option<EpochId>, Option<LongtailId>)> {
+) -> Result<()> {
     let block_slot = header.slot;
     let proposer_index = header.proposer_index as u32;
     let block_state_root = header.state_root;
     let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
 
-    check_slot_after_header(&view.slot.reader(), block_slot).map_err(wrap)?;
-    let head_slot = view.slot.state().slot;
-    check_proposer_lookahead(
-        &epoch.view_opt(parent.epoch_idx),
-        block_slot,
-        head_slot,
-        proposer_index,
-    )
-    .map_err(wrap)?;
+    check_slot_after_header(&fork.view.slot.reader(), block_slot).map_err(wrap)?;
+    let head_slot = fork.view.slot.state().slot;
+    check_proposer_lookahead(&fork.epoch_view(), block_slot, head_slot, proposer_index)
+        .map_err(wrap)?;
 
-    let (epoch_idx, longtail_idx) = if block_slot > head_slot {
-        process_slots(cfg, view, epoch, longtail, parent, block_slot, scratch)
-    } else {
-        (parent.epoch_idx, parent.longtail_idx)
-    };
+    if block_slot > head_slot {
+        process_slots(cfg, fork, block_slot, scratch);
+    }
 
     let body = if block_bytes.len() > SIGNED_BEACON_BLOCK_MIN {
         SignedBeaconBlockView::body(block_bytes)
@@ -72,8 +62,9 @@ pub fn apply_block(
     };
     // Resolve the boundary tiers AFTER process_slots (it may have rolled
     // them). process_block can't change them, so the hash reuses these.
-    let epoch_view = epoch.view_opt(epoch_idx);
-    let longtail_view = longtail.view_opt(longtail_idx);
+    let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
+    let epoch_view = epoch.view_opt(*epoch_idx);
+    let longtail_view = longtail.view_opt(*longtail_idx);
     process_block_header(
         view,
         &epoch_view,
@@ -107,7 +98,7 @@ pub fn apply_block(
             got: actual,
         }));
     }
-    Ok((epoch_idx, longtail_idx))
+    Ok(())
 }
 
 /// Test-only full-block apply: decompose, shuffle, STF, then check the
@@ -115,12 +106,9 @@ pub fn apply_block(
 #[timed]
 pub fn apply_signed_block_debug(
     cfg: &SpecConfig,
-    view: &mut StateWriterView,
-    epoch: &mut EpochGroup,
-    longtail: &mut LongtailGroup,
-    parent: StateId,
+    fork: &mut ForkWriter,
     block_bytes: &[u8],
-) -> Result<(Option<EpochId>, Option<LongtailId>)> {
+) -> Result<()> {
     if block_bytes.len() < SIGNED_BEACON_BLOCK_MIN {
         return Err(Error::invalid_block([0; 32], BlockError::TooShort {
             len: block_bytes.len(),
@@ -128,7 +116,7 @@ pub fn apply_signed_block_debug(
         }));
     }
     let (head_slot, head_block_header_slot) =
-        (view.slot.state().slot, view.slot.state().latest_block_header.slot);
+        (fork.view.slot.state().slot, fork.view.slot.state().latest_block_header.slot);
     let block_slot = SignedBeaconBlockView::slot(block_bytes);
     let proposer_index = SignedBeaconBlockView::proposer_index(block_bytes) as u32;
     let parent_root: B256 = *SignedBeaconBlockView::parent_root(block_bytes);
@@ -145,27 +133,21 @@ pub fn apply_signed_block_debug(
 
     let mut scratch = StfScratch::new(0);
 
-    check_proposer_lookahead(
-        &epoch.view_opt(parent.epoch_idx),
-        block_slot,
-        head_slot,
-        proposer_index,
-    )
-    .map_err(wrap)?;
+    check_proposer_lookahead(&fork.epoch_view(), block_slot, head_slot, proposer_index)
+        .map_err(wrap)?;
 
-    let count = view.validators.count();
+    let count = fork.view.validators.count();
     if proposer_index as usize >= count {
         return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index as u64, count }));
     }
-    let (epoch_idx, longtail_idx) = if block_slot > head_slot {
-        process_slots(cfg, view, epoch, longtail, parent, block_slot, &mut scratch)
-    } else {
-        (parent.epoch_idx, parent.longtail_idx)
-    };
+    if block_slot > head_slot {
+        process_slots(cfg, fork, block_slot, &mut scratch);
+    }
     // Resolve the boundary tiers AFTER process_slots (it may have rolled
     // them). process_block can't change them, so the hash reuses these.
-    let epoch_view = epoch.view_opt(epoch_idx);
-    let longtail_view = longtail.view_opt(longtail_idx);
+    let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
+    let epoch_view = epoch.view_opt(*epoch_idx);
+    let longtail_view = longtail.view_opt(*longtail_idx);
 
     // body_root + proposer-sig read the block's fork from the post-`process_slots`
     // epoch view, so a block at the fork boundary uses the upgraded fork (Gloas
@@ -224,7 +206,7 @@ pub fn apply_signed_block_debug(
     if actual != state_root {
         return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
-    Ok((epoch_idx, longtail_idx))
+    Ok(())
 }
 
 fn check_slot_after_header(
@@ -295,46 +277,44 @@ fn verify_block_sig(
 #[timed]
 pub fn process_slots(
     cfg: &SpecConfig,
-    view: &mut StateWriterView,
-    epoch: &mut EpochGroup,
-    longtail: &mut LongtailGroup,
-    parent: StateId,
+    fork: &mut ForkWriter,
     target_slot: Slot,
     scratch: &mut StfScratch,
-) -> (Option<EpochId>, Option<LongtailId>) {
-    let (epoch_idx, mut longtail_idx) = (parent.epoch_idx, parent.longtail_idx);
+) {
+    let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
     // Pre-boundary slots: epoch tier read straight off the group.
     while view.slot.state().slot < target_slot {
-        let epoch_view = epoch.view_opt(epoch_idx);
-        process_slot(view, &epoch_view, longtail, longtail_idx);
+        let epoch_view = epoch.view_opt(*epoch_idx);
+        process_slot(view, &epoch_view, longtail, *longtail_idx);
         if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
             break;
         }
         view.slot.advance_slot();
     }
     if view.slot.state().slot >= target_slot {
-        return (epoch_idx, longtail_idx);
+        return;
     }
 
     // First boundary: roll this fork's private epoch entry, derived from the
     // inherited one (fresh off the base when no ancestor crossed a boundary).
-    let mut epoch_w = epoch.roll_inheriting(epoch_idx);
+    let mut epoch_w = epoch.roll_inheriting(*epoch_idx);
 
     // Boundary-onward slots: epoch tier read through the held writer.
     loop {
-        process_epoch(cfg, view, &mut epoch_w, longtail, &mut longtail_idx, scratch);
+        process_epoch(cfg, view, &mut epoch_w, longtail, longtail_idx, scratch);
         view.slot.advance_slot();
 
         maybe_upgrade_to_gloas(cfg, view, &mut epoch_w);
         while view.slot.state().slot < target_slot {
-            process_slot(view, &epoch_w.reader(), longtail, longtail_idx);
+            process_slot(view, &epoch_w.reader(), longtail, *longtail_idx);
             if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
                 break;
             }
             view.slot.advance_slot();
         }
         if view.slot.state().slot >= target_slot {
-            return (Some(epoch_w.commit()), longtail_idx);
+            *epoch_idx = Some(epoch_w.commit());
+            return;
         }
     }
 }

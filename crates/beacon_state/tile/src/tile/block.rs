@@ -184,8 +184,8 @@ impl BeaconStateTile {
     }
 
     /// Everything the rest of the node learns from an import, in the order it
-    /// needs it: the stage, the bytes to persist, the FCU, then the next
-    /// epoch's shuffling warmed off the new head.
+    /// needs it: the stage, the bytes to persist, the FCU, then the work the
+    /// next block would do inline, warmed off the new head.
     pub(super) fn announce_imported(
         &mut self,
         data: &[u8],
@@ -206,7 +206,14 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
+        self.precompute_for_next_block(block_slot);
+    }
+
+    /// Work the next block would otherwise do inline, run while nothing waits
+    /// on the tile.
+    fn precompute_for_next_block(&mut self, block_slot: Slot) {
         self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
+        self.epoch_start_state(self.last_applied_block_root, self.last_applied, block_slot + 1);
     }
 
     /// Warm epoch `block_epoch + 1`'s attester shuffling and committee
@@ -403,32 +410,30 @@ impl BeaconStateTile {
     ) -> crate::Result<AppliedBlock> {
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
 
-        // Per-block attester shuffling against the parent post-state (active
-        // set + seed for an epoch are fixed at its prior boundary). The child
-        // is a COW copy of the parent pre-STF, so shuffle inputs read identical
-        // off `parent_state_id` — done before the held-writer view takes the
-        // `&mut self.state` borrow. Reuse the `(epoch, mix)`-keyed cache so
-        // consecutive same-epoch blocks skip the O(rounds·n) shuffle.
+        // The parent's epoch-start state when the block crossed a boundary;
+        // `apply_block` bridges the rest.
+        let parent = self.epoch_start_state(
+            parsed.header.parent_root,
+            parsed.parent_state_id,
+            parsed.header.slot,
+        );
+
+        // Per-block attester shuffling against the pre-block state (active set
+        // + seed for an epoch are fixed at its prior boundary). Done before
+        // the held-writer view takes the `&mut self.state` borrow. Reuse the
+        // `(epoch, mix)`-keyed cache so consecutive same-epoch blocks skip the
+        // O(rounds·n) shuffle.
         let sref = {
-            let view = self.state.read_view(parsed.parent_state_id);
+            let view = self.state.read_view(parent);
             self.shuffling_cache.ensure_window(&view, block_epoch);
             self.shuffling_cache.build_ref(&view, block_epoch)
         };
 
-        // COW: an unpublished child off the parent post-state. The view HOLDS
-        // every rolled per-slot writer for the whole transition (the boundary
-        // epoch/longtail writers are rolled inside `process_epoch` and their
-        // committed ids returned); `commit` assembles the child bundle for
-        // publish-last.
-        let parent = parsed.parent_state_id;
-        let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
+        let mut fork = self.state.apply_block_view(parent);
         let mut votes = self.stf_scratch.votes.take();
         let transition = stf::apply_block(
             &self.spec,
-            &mut view,
-            epoch,
-            longtail,
-            parent,
+            &mut fork,
             data,
             &parsed.header,
             Some(&sref),
@@ -436,27 +441,25 @@ impl BeaconStateTile {
             &mut votes,
             &mut self.sig_batch,
         );
-        let (epoch_idx, longtail_idx) = match transition {
-            Ok(committed) => committed,
-            Err(e) => {
-                self.stf_scratch.votes.recycle(votes);
-                return Err(e);
-            }
-        };
+        if let Err(e) = transition {
+            self.stf_scratch.votes.recycle(votes);
+            return Err(e);
+        }
 
-        // Snapshot checkpoints while the view is live, then `commit` it so the
-        // `&mut self.state` borrow ends before the fork-choice / publish work.
-        let es = epoch.view_opt(epoch_idx).state();
+        // Snapshot checkpoints while the fork is live; `commit` ends the
+        // `&mut self.state` borrow before the fork-choice / publish work.
+        let es = fork.epoch_view().state();
         let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
         // Spec `compute_pulled_up_tip`: the j/f this post-state would realize at
         // its epoch boundary, read-only on the live view.
         let unrealized =
-            stf::unrealized_checkpoints(&view, es, parsed.header.slot / SLOTS_PER_EPOCH);
-        let execution_block_hash = view.slot.state().latest_execution_payload_header.block_hash;
-        let bid_block_hash = view.slot.state().latest_execution_payload_bid.block_hash;
+            stf::unrealized_checkpoints(&fork.view, es, parsed.header.slot / SLOTS_PER_EPOCH);
+        let execution_block_hash =
+            fork.view.slot.state().latest_execution_payload_header.block_hash;
+        let bid_block_hash = fork.view.slot.state().latest_execution_payload_bid.block_hash;
 
         Ok(AppliedBlock {
-            id: view.commit(epoch_idx, longtail_idx),
+            id: fork.commit(),
             justified: checkpoints.0,
             finalized: checkpoints.1,
             unrealized,
