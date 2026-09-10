@@ -768,8 +768,8 @@ pub enum ColumnSource {
     El,
 }
 
-/// A zero `state_root` marks all three roots unavailable. This can occur
-/// before seeding or when checkpoint history has overwritten a dependent
+/// A zero `state_root` marks all three roots unavailable, including during
+/// disk restoration or when checkpoint history has overwritten a dependent
 /// root. Consumers tracking head changes must ignore incomplete bundles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]

@@ -110,3 +110,16 @@ changes, including both empty-to-full and full-to-empty transitions. Legacy
 `head` retains its root-and-optimism filter. Both topics use the same
 complete observation. The v2 `version` names the configured fork at the head
 block's slot; selected pre-Gloas blocks report `full`.
+
+Amended 2026-09-10: `head` and `head_v2` remain silent during disk replay.
+Beacon state withholds the Status head-root bundle until configured replay
+finishes or is skipped, including the wait for a replay strategy. Internal
+Status publications and node-status updates continue throughout replay.
+The unavailable-bundle marker covers withheld metadata as well as overwritten
+history; consumers cannot distinguish these reasons from the bundle alone.
+
+The first complete observation after replay finishes or is skipped establishes
+a silent baseline for both topics. Subsequent changes publish normally,
+including during network sync. The boundary needs no replay state or
+`ReplayComplete` notification. Startup without disk replay establishes its
+baseline on the first complete observation.

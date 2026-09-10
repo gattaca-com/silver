@@ -167,6 +167,7 @@ fn finalized_state_loads() {
         rpc_c,
         engine_resp_c,
         replay_c,
+        false,
         true,
         state,
     );
@@ -324,6 +325,7 @@ fn tile_apply_block_ef_fixture() {
         rpc_c,
         engine_resp_c,
         replay_c,
+        false,
         true,
         state,
     );

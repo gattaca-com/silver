@@ -430,6 +430,7 @@ pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile 
         ep.cache_ref().random_access("ef_engine", true).unwrap(),
         yp.cache_ref().random_access("ef_replay", true).unwrap(),
         false,
+        false,
         state,
     )
 }

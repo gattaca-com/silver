@@ -166,6 +166,7 @@ pub struct BeaconStateTile {
     emitted_head: HeadObservation,
 
     initial_status_emitted: bool,
+    replay_pending: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
 
     /// Reusable state-transition scratch buffers, threaded into
@@ -219,6 +220,7 @@ impl BeaconStateTile {
         rpc_consumer: TRandomAccess,
         incoming_engine_resp_consumer: TRandomAccess,
         replay_consumer: TRandomAccess,
+        replay_from_disk: bool,
         verify_weak_subjectivity: bool,
         state: BeaconState,
     ) -> Self {
@@ -254,6 +256,7 @@ impl BeaconStateTile {
                 payload: PayloadResolution::Empty,
             },
             initial_status_emitted: false,
+            replay_pending: replay_from_disk,
             cached_fork_digest: None,
             stf_scratch: stf::StfScratch::new(val_cap),
             vote_buffers: vec![stf::BlockVotes::with_max_capacity()],
@@ -488,6 +491,9 @@ impl BeaconStateTile {
     /// Overwritten checkpoint history makes the whole root bundle unavailable;
     /// partial metadata cannot describe the head.
     fn head_roots(&self, head: SelectedHead) -> HeadRoots {
+        if self.replay_pending {
+            return HeadRoots::default();
+        }
         let node = self.fork_choice.node(head.idx);
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(node.state_id);
@@ -763,8 +769,8 @@ impl BeaconStateTile {
         }
     }
 
-    /// Replay an on-disk block stream (no EL notify / producer events), then
-    /// emit completion status on `Done`.
+    /// Replayed blocks bypass execution-layer notification. Status observations
+    /// still describe intermediate heads while replay is pending.
     fn on_replay(&mut self, m: ReplayBlock, producers: &mut Producers) {
         match m {
             ReplayBlock::Block { ssz } => {
@@ -774,6 +780,7 @@ impl BeaconStateTile {
                 self.replay_envelope(ssz);
             }
             ReplayBlock::Done => {
+                self.replay_pending = false;
                 producers.produce(BeaconStateEvent::ReplayComplete);
                 self.publish_status(producers);
             }
