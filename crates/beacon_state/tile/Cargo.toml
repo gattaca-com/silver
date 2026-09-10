@@ -32,6 +32,7 @@ rand.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_yml.workspace = true
 snap = "0.1"
+tracing-subscriber.workspace = true
 
 [[bench]]
 harness = false

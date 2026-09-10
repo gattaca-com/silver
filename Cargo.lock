@@ -4496,6 +4496,7 @@ dependencies = [
  "snap 0.1.2",
  "thiserror 1.0.69",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

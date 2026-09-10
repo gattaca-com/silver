@@ -332,7 +332,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    fn apply_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
+    pub(super) fn apply_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
         let applied = match self.apply_or_reject(&parsed, data) {
             Ok(applied) => applied,
             Err(feedback) => return feedback,

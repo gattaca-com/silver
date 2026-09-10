@@ -788,6 +788,83 @@ impl BeaconStateTile {
     ) {
         self.on_payload_verdict(&block_root, &latest_valid_hash, status);
     }
+
+    /// An envelope seen on gossip and verified against its bid, with the EL
+    /// verdict still outstanding (`ef_payload_verdict` delivers it).
+    pub fn ef_receive_execution_payload(&mut self, ssz: &[u8]) -> bool {
+        match self.validate_execution_payload_envelope(ssz) {
+            gossip::EnvelopeCheck::Ready { block_root, .. } => {
+                self.fork_choice.mark_payload_verified(&block_root);
+                self.recompute_head();
+                true
+            }
+            gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => false,
+        }
+    }
+
+    pub fn ef_set_finalized_checkpoint(&mut self, cp: Checkpoint) {
+        self.fork_choice.lift_finalized(cp);
+        self.recompute_head();
+    }
+
+    /// The `beacon_block` gossip verdict: precheck plus proposer signature,
+    /// which is what production relays on. The import still runs afterwards,
+    /// as in production, so a repeat is seen as already known.
+    pub fn ef_gossip_block(&mut self, ssz: &[u8]) -> Feedback {
+        match self.parse_and_verify_block(ssz, false) {
+            Ok(parsed) => {
+                let block_root = parsed.block_root;
+                self.apply_and_import(parsed, ssz);
+                Feedback::Accept(Some(block_root))
+            }
+            Err(err) => err.feedback(),
+        }
+    }
+
+    pub fn ef_gossip_attestation(&mut self, ssz: &[u8], subnet: u64) -> Feedback {
+        self.handle_attestation(ssz, subnet)
+    }
+
+    pub fn ef_gossip_aggregate_and_proof(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_aggregate_and_proof(ssz)
+    }
+
+    pub fn ef_gossip_voluntary_exit(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_voluntary_exit(ssz)
+    }
+
+    pub fn ef_gossip_proposer_slashing(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_proposer_slashing(ssz)
+    }
+
+    pub fn ef_gossip_attester_slashing(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_attester_slashing(ssz)
+    }
+
+    pub fn ef_gossip_bls_to_execution_change(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_bls_to_execution_change(ssz)
+    }
+
+    pub fn ef_gossip_sync_contribution(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_sync_contribution(ssz)
+    }
+
+    /// The gossip envelope path minus the EL round-trip and the spine.
+    pub fn ef_gossip_execution_payload(&mut self, ssz: &[u8]) -> Feedback {
+        match self.validate_execution_payload_envelope(ssz) {
+            gossip::EnvelopeCheck::Ready { block_root, .. } => {
+                if self.fork_choice.is_payload_verified(&block_root) {
+                    return Feedback::Ignore;
+                }
+                self.fork_choice.mark_payload_verified(&block_root);
+                self.recompute_head();
+                Feedback::Accept(Some(block_root))
+            }
+            gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => {
+                Feedback::Ignore
+            }
+        }
+    }
 }
 
 impl Tile<SilverSpine> for BeaconStateTile {

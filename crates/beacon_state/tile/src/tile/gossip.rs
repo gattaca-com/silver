@@ -1280,3 +1280,39 @@ pub(super) fn compute_subnet_for_attestation(
     let committees_since_epoch_start = committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH);
     (committees_since_epoch_start + committee_index as u64) % ATTESTATION_SUBNETS as u64
 }
+
+/// EF `gossip_validation` entry points for the batched vote topics: one
+/// message at a time, verified alone and committed, as the batch path does for
+/// each survivor.
+#[cfg(feature = "ef_tests")]
+impl BeaconStateTile {
+    pub fn ef_gossip_sync_committee_message(&mut self, ssz: &[u8], subnet: u64) -> Feedback {
+        let prepared = match self.prepare_sync_message(ssz, subnet) {
+            Ok(p) => PreparedVote::SyncMessage(p),
+            Err(feedback) => return feedback,
+        };
+        self.ef_verify_and_commit(prepared)
+    }
+
+    pub fn ef_gossip_payload_attestation(&mut self, ssz: &[u8]) -> Feedback {
+        let prepared = match self.prepare_ptc(ssz) {
+            Ok(p) => PreparedVote::Ptc(p),
+            Err(feedback) => return feedback,
+        };
+        self.ef_verify_and_commit(prepared)
+    }
+
+    fn ef_verify_and_commit(&mut self, prepared: PreparedVote) -> Feedback {
+        let (pk, sig, root) = prepared.sig_parts();
+        if !bls::verify_one_checked(pk, &sig, root) {
+            return Feedback::Reject(None);
+        }
+        match &prepared {
+            PreparedVote::Attestation(p) => self.commit_attestation(p),
+            PreparedVote::SyncMessage(p) => self.commit_sync_message(p),
+            PreparedVote::Ptc(p) => self.commit_ptc(p),
+        }
+        self.recompute_head();
+        Feedback::Accept(None)
+    }
+}
