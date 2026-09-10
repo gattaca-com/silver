@@ -424,7 +424,7 @@ impl PeerManager {
                 msg_hash,
                 recv_ts: _,
                 protobuf,
-                block: _,
+                metadata: _,
             } => {
                 // TODO recv_ts elapsed metric
                 self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf, emit);

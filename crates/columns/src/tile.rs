@@ -12,9 +12,9 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
-    EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
-    SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    EngineResp, GossipDataColumn, GossipMetadata, GossipTopic, IngestionTime, NewGossipMsg, Origin,
+    P2pStreamId, PeerEvent, RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers,
+    StreamProtocol, SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
     ticker::SlotTicker,
@@ -521,6 +521,11 @@ impl DataColumnsTile {
     }
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
+        let column = GossipDataColumn {
+            slot: p.slot,
+            block_root: p.block_root,
+            column_index: p.column_index,
+        };
         match mem::replace(&mut p.relay, RelayMeta::None) {
             RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
                 producers.produce(PeerEvent::SendGossip {
@@ -529,7 +534,7 @@ impl DataColumnsTile {
                     msg_hash,
                     recv_ts,
                     protobuf,
-                    block: None,
+                    metadata: Some(GossipMetadata::DataColumn(column)),
                 });
             }
             RelayMeta::Rpc { ssz } if self.sync_state.is_synced() => {
@@ -537,6 +542,7 @@ impl DataColumnsTile {
                     originator: p.stream_id,
                     topic: GossipTopic::DataColumnSidecar(p.column_index),
                     ssz,
+                    column,
                 });
             }
             _ => {}
@@ -774,8 +780,8 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
     use silver_common::{
-        BlockSource, BlockStage, EngineReq, P2pStreamId, StreamProtocol, TCache, TCacheProducer,
-        TCacheRead,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, MessageId, Nanos, P2pStreamId,
+        StreamProtocol, TCache, TCacheProducer, TCacheRead,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
             SIGNED_BEACON_BLOCK_MIN,
@@ -784,6 +790,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    mod publication;
 
     const CUSTODY_COLUMNS: u128 = (1u128 << 3) | (1u128 << 7);
 
@@ -795,6 +803,9 @@ mod tests {
         inj: SpineAdapter<SilverSpine>,
         conn: SpineAdapter<SilverSpine>,
         tile: DataColumnsTile,
+        gossip_p: TProducer,
+        rpc_p: TProducer,
+        engine_p: TProducer,
         _spine: Box<SilverSpine>,
         _dir: TempDir,
     }
@@ -807,31 +818,38 @@ mod tests {
 
     impl Rig {
         fn new(custody: u128) -> Self {
-            Self::with_state(
-                custody,
-                BeaconStateOwner::empty_test(0).reader(),
-                SpecConfig::mainnet(),
-            )
+            Self::with_spec(custody, SpecConfig::mainnet())
+        }
+
+        fn gloas(custody: u128) -> Self {
+            Self::with_spec(custody, SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() })
+        }
+
+        fn with_spec(custody: u128, spec: SpecConfig) -> Self {
+            let mut state = BeaconStateOwner::empty_test(0);
+            let anchor = state.roll_fresh();
+            state.publish_state_id(anchor);
+            Self::with_state(custody, state.reader(), spec)
         }
 
         fn with_state(custody: u128, beacon_state: BeaconStateReader, spec: SpecConfig) -> Self {
-            let gossip_tc = TCache::producer("gossip_blocks", 1024 * 1024);
-            let gossip_consumer = gossip_tc.cache_ref().random_access("gossip_cons", true).unwrap();
+            let gossip_p = TCache::producer("gossip_blocks", 1024 * 1024);
+            let gossip_consumer = gossip_p.cache_ref().random_access("gossip_cons", true).unwrap();
 
             let persist_gossip_tc = TCache::producer("persist_gossip_blocks", 1024 * 1024);
             let persist_gossip_consumer =
                 persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
 
-            let rpc_tc = TCache::producer("rpc_blocks", 1024 * 1024);
-            let rpc_consumer = rpc_tc.cache_ref().random_access("rpc_cons", true).unwrap();
+            let rpc_p = TCache::producer("rpc_blocks", 1024 * 1024);
+            let rpc_consumer = rpc_p.cache_ref().random_access("rpc_cons", true).unwrap();
 
             let persist_rpc_tc = TCache::producer("persist_rpc_blocks", 1024 * 1024);
             let persist_rpc_consumer =
                 persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
 
-            let engine_resp_tc = TCache::producer("engine_resp", 1024 * 1024);
+            let engine_p = TCache::producer("engine_resp", 1024 * 1024);
             let engine_resp_consumer =
-                engine_resp_tc.cache_ref().random_access("engine_resp_cons", true).unwrap();
+                engine_p.cache_ref().random_access("engine_resp_cons", true).unwrap();
 
             let tile = DataColumnsTile::new(
                 ColumnConsumers {
@@ -856,14 +874,84 @@ mod tests {
             inj.consume(|_: DataColumnsEvent, _| {});
             inj.consume(|_: SyncNeed, _| {});
             inj.consume(|_: EngineReq, _| {});
-            Self { inj, conn, tile, _spine: spine, _dir: dir }
+            inj.consume(|_: PeerEvent, _| {});
+            Self { inj, conn, tile, gossip_p, rpc_p, engine_p, _spine: spine, _dir: dir }
+        }
+
+        fn turn(&mut self) {
+            self.tile.loop_body(&mut self.conn);
+        }
+
+        fn engine_blobs(&mut self, block_root: BlockRoot, slot: u64, frame: &[u8]) {
+            let data = tcache_write(&mut self.engine_p, frame);
+            self.inj.produce(EngineResp::GetBlobs(EngineGetBlobsResp {
+                block_root,
+                slot,
+                ok: true,
+                blobs_present: 1,
+                data,
+            }));
+        }
+
+        fn follow(&mut self, head_root: BlockRoot) {
+            self.tile.sync_state.set_sync_target(SyncUpdate::Following);
+            let mut ssz = status_ssz(0);
+            ssz[44..76].copy_from_slice(&head_root);
+            self.tile.sync_state.update(ssz);
+        }
+
+        fn gossip_sidecar(&mut self, index: u64, bytes: &[u8]) {
+            let ssz = tcache_write(&mut self.gossip_p, bytes);
+            let recv_ts = Nanos::now();
+            let mut id = [0u8; 20];
+            id.copy_from_slice(&bytes[..20]);
+            let gossip = NewGossipMsg {
+                stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+                topic: GossipTopic::DataColumnSidecar(index),
+                msg_hash: MessageId { id },
+                recv_ts,
+                ssz,
+                // Fixture bypass: networking is absent, so protobuf reuses the SSZ handle.
+                protobuf: ssz,
+            };
+            self.tile.gossip_sidecar(index, gossip, &mut self.conn.producers);
+        }
+
+        fn rpc_sidecar(&mut self, bytes: &[u8]) {
+            let ssz = tcache_write(&mut self.rpc_p, bytes);
+            let sidecar = self.tile.consumers.rpc.acquire(ssz);
+            self.tile.handle_data_column_sidecar(
+                PendingColumn {
+                    stream_id: P2pStreamId::new(
+                        1,
+                        0,
+                        StreamProtocol::DataColumnSidecarsByRange,
+                        true,
+                    ),
+                    sidecar,
+                    gossip_subnet: None,
+                    recv_ts: IngestionTime::now(),
+                },
+                RelayMeta::Rpc { ssz },
+                &mut self.conn.producers,
+            );
+        }
+
+        fn block(&mut self, bytes: &[u8]) {
+            let ssz = tcache_write(&mut self.gossip_p, bytes);
+            let read = self.tile.consumers.gossip.acquire(ssz);
+            self.tile.handle_beacon_block(
+                read,
+                P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+                &mut self.conn.producers,
+            );
         }
 
         fn drain(&mut self) -> Produced {
             let mut out = Produced::default();
-            self.inj.consume(|ev: DataColumnsEvent, _| match ev {
+            self.inj.consume(|event: DataColumnsEvent, _| match event {
                 DataColumnsEvent::Available { .. } => out.available += 1,
-                DataColumnsEvent::Persist { .. } => out.persisted += 1,
+                DataColumnsEvent::Persist { .. } => out.receipts.push(event),
             });
             self.inj.consume(|need: SyncNeed, _| match need {
                 SyncNeed::Missing { .. } => out.missing.push(need),
@@ -873,17 +961,59 @@ mod tests {
                 SyncNeed::BackfillPrefill(_) => {}
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
+            self.inj.consume(|event: PeerEvent, _| match event {
+                PeerEvent::SendGossip { .. } | PeerEvent::PublishDataColumn { .. } => {
+                    out.publications.push(event)
+                }
+                _ => {}
+            });
             out
         }
+    }
+
+    fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
+        let mut reservation = producer.reserve(bytes.len(), true).expect("tcache reserve");
+        reservation.write_all(bytes).expect("tcache write");
+        reservation.flush().expect("tcache flush");
+        reservation.read()
     }
 
     #[derive(Default)]
     struct Produced {
         available: usize,
         custody_complete: usize,
-        persisted: usize,
+        receipts: Vec<DataColumnsEvent>,
+        publications: Vec<PeerEvent>,
         engine: usize,
         missing: Vec<SyncNeed>,
+    }
+
+    impl Produced {
+        fn column_publications(&self) -> Vec<(ColumnSource, GossipTopic, GossipDataColumn)> {
+            self.publications
+                .iter()
+                .map(|event| match *event {
+                    PeerEvent::SendGossip {
+                        metadata: Some(GossipMetadata::DataColumn(column)),
+                        topic,
+                        ..
+                    } => (ColumnSource::Gossip, topic, column),
+                    PeerEvent::PublishDataColumn { column, topic, .. } => {
+                        (ColumnSource::Rpc, topic, column)
+                    }
+                    _ => panic!("expected a column publication, got {event:?}"),
+                })
+                .collect()
+        }
+
+        fn persisted(&self, root: BlockRoot, index: u64) -> bool {
+            self.receipts.iter().any(|event| {
+                matches!(event,
+                    DataColumnsEvent::Persist { block_root, column_index, .. }
+                        if *block_root == root && *column_index == index
+                )
+            })
+        }
     }
 
     /// Minimal fulu `SignedBeaconBlock` carrying blob commitments: message at
@@ -934,15 +1064,30 @@ mod tests {
         SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
     }
 
-    /// Decoded EF vector, `None` when the beacon state tile crate has not
-    /// fetched them (`make` in that crate's directory).
-    fn ef_vector(case: &str, file: &str) -> Option<Vec<u8>> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu")
-            .join(case)
-            .join(file);
-        let compressed = std::fs::read(path).ok()?;
-        Some(snap::raw::Decoder::new().decompress_vec(&compressed).unwrap())
+    fn ef_sidecar(case: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu");
+        if !fixtures.try_exists().expect("check EF fixture directory") {
+            eprintln!("EF sidecar coverage unavailable: run just ef-tests-download");
+            return None;
+        }
+        let directory = fixtures.join(case);
+        let sidecars: Vec<_> = std::fs::read_dir(&directory)
+            .expect("installed EF fixtures must contain the sidecar case")
+            .map(|entry| entry.expect("read EF case entry").path())
+            .filter(|path| {
+                let name = path.file_name().unwrap().to_string_lossy();
+                name.starts_with("data_column_sidecar_") && name.ends_with(".ssz_snappy")
+            })
+            .collect();
+        let [sidecar] = sidecars.as_slice() else {
+            panic!("expected one sidecar in {}", directory.display());
+        };
+        let decode = |path: &Path| {
+            let compressed = std::fs::read(path).expect("read EF fixture");
+            snap::raw::Decoder::new().decompress_vec(&compressed).expect("decode EF fixture")
+        };
+        Some((decode(sidecar), decode(&directory.join("state.ssz_snappy"))))
     }
 
     fn reader_over(state_ssz: &[u8]) -> BeaconStateReader {
@@ -1003,50 +1148,41 @@ mod tests {
         // was built on.
         const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
                             gossip_data_column_sidecar__ignore_parent_not_seen";
-        const SIDECAR: &str = "data_column_sidecar_\
-                               0x30d93f0be7cac9f7481a5799ac6ec7c8b726e8ced6bf6aa1e5d01e794dfb741e.ssz_snappy";
-        let Some(sidecar) = ef_vector(CASE, SIDECAR) else { return };
-        let reader = reader_over(&ef_vector(CASE, "state.ssz_snappy").unwrap());
+        let Some((sidecar, state)) = ef_sidecar(CASE) else { return };
+        let reader = reader_over(&state);
+        let slot = DataColumnSidecarFuluView::slot(&sidecar);
+        let index = DataColumnSidecarFuluView::index(&sidecar);
+        let block_root = util::block_root_from_sidecar(&sidecar);
         let parent_root = *DataColumnSidecarFuluView::parent_root(&sidecar);
-        let parent_slot = DataColumnSidecarFuluView::slot(&sidecar) - 1;
-        let staged_parent = || block_received(BlockStage::AwaitData, parent_root, parent_slot);
+        let staged_parent = || block_received(BlockStage::AwaitData, parent_root, slot - 1);
 
         for parent_first in [false, true] {
-            let (mut consumer, ssz) = produce_block(&sidecar, "staged_parent_sidecar");
-            let mut rig = Rig::with_state(CUSTODY_COLUMNS | 1, reader.clone(), fulu_from_genesis());
+            let mut rig = Rig::with_state(1 << index, reader.clone(), fulu_from_genesis());
             rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
             rig.tile.sync_state.update(status_ssz(0));
-            let read = consumer.acquire(ssz);
 
             if parent_first {
                 rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
             }
-            rig.tile.data_columns(
-                PendingColumn {
-                    stream_id: P2pStreamId::new(
-                        2,
-                        2,
-                        StreamProtocol::DataColumnSidecarsByRoot,
-                        false,
-                    ),
-                    sidecar: read,
-                    gossip_subnet: None,
-                    recv_ts: IngestionTime::now(),
-                },
-                RelayMeta::None,
-                &mut rig.conn.producers,
-            );
+            rig.gossip_sidecar(index, &sidecar);
             if !parent_first {
                 rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
             }
-            if !rig.tile.kzg_batch.is_empty() {
-                rig.tile.flush_kzg_batch(&mut rig.conn.producers);
-            }
+            rig.turn();
             let out = rig.drain();
 
-            assert_eq!(
-                out.persisted, 1,
-                "parent_first={parent_first}: the sidecar is ours to keep"
+            if parent_first {
+                assert_eq!(out.column_publications(), [(
+                    ColumnSource::Gossip,
+                    GossipTopic::DataColumnSidecar(index),
+                    GossipDataColumn { slot, block_root, column_index: index }
+                )]);
+            } else {
+                assert!(out.publications.is_empty(), "a buffered copy is not relayed");
+            }
+            assert!(
+                out.persisted(block_root, index),
+                "parent_first={parent_first}: the sidecar was processed"
             );
         }
     }
@@ -1210,7 +1346,7 @@ mod tests {
             let out = rig.drain();
 
             assert_eq!(
-                out.available + out.persisted + out.engine + out.missing.len(),
+                out.available + out.receipts.len() + out.engine + out.missing.len(),
                 0,
                 "len {len}: a malformed block says nothing"
             );
@@ -1239,7 +1375,7 @@ mod tests {
         let out = rig.drain();
 
         assert!(ret.is_none(), "no column tracking below the floor");
-        assert_eq!(out.available + out.persisted + out.engine + out.missing.len(), 0);
+        assert_eq!(out.available + out.receipts.len() + out.engine + out.missing.len(), 0);
     }
 
     /// A sidecar this tile already validated is still offered to storage:
@@ -1279,7 +1415,8 @@ mod tests {
                 "{protocol:?}: a duplicate is never relayed"
             );
             assert_eq!(
-                out.persisted, 1,
+                out.receipts.len(),
+                1,
                 "{protocol:?}: storage is the one that knows whether it landed"
             );
             assert_eq!(

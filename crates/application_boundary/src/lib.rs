@@ -4,8 +4,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, Enr, GossipBlock, Identify, Keypair, PeerEvent, SilverSpine,
-    SyncUpdate, TProducer, TRandomAccess,
+    BeaconStateEvent, BlockStage, Enr, GossipBlock, GossipMetadata, Identify, Keypair, PeerEvent,
+    SilverSpine, SyncUpdate, TProducer, TRandomAccess,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -100,8 +100,10 @@ impl ApplicationBoundaryTile {
             _ => {}
         });
         adapter.consume(|event: PeerEvent, _| {
-            if let PeerEvent::SendGossip { block: Some(GossipBlock { slot, block_root }), .. } =
-                event
+            if let PeerEvent::SendGossip {
+                metadata: Some(GossipMetadata::Block(GossipBlock { slot, block_root })),
+                ..
+            } = event
             {
                 beacon.publish_block_gossip(slot, &block_root);
             }

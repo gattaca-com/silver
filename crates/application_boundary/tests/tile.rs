@@ -14,9 +14,9 @@ use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipBlock, GossipTopic, Identify, Keypair, MessageId, P2pStreamId,
-    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
-    TCacheProducer, ssz_view::STATUS_V2_SIZE,
+    Enr, GossipBlock, GossipDataColumn, GossipMetadata, GossipTopic, Identify, Keypair, MessageId,
+    P2pStreamId, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
+    TCache, TCacheProducer, ssz_view::STATUS_V2_SIZE,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
@@ -161,7 +161,7 @@ fn block_relay(slot: u64, byte: u8) -> PeerEvent {
         msg_hash: MessageId { id: [byte; 20] },
         recv_ts: Nanos::now(),
         protobuf,
-        block: Some(GossipBlock { slot, block_root: [byte; 32] }),
+        metadata: Some(GossipMetadata::Block(GossipBlock { slot, block_root: [byte; 32] })),
     }
 }
 
@@ -843,12 +843,26 @@ fn block_subscriptions_select_imports_and_preserve_repeated_relay_requests() {
     let mixed = EventsSubscriber::new(addr, "block,block_gossip", 5, &mut crank);
 
     let mut unrelated = block_relay(9, 0xaf);
-    let PeerEvent::SendGossip { topic, block: metadata, .. } = &mut unrelated else {
+    let PeerEvent::SendGossip { topic, metadata, protobuf, .. } = &mut unrelated else {
         unreachable!()
     };
     *topic = GossipTopic::BeaconAttestation(0);
     *metadata = None;
+    let ssz = *protobuf;
     inj.produce(unrelated);
+
+    let column = GossipDataColumn { slot: 13, block_root: [0xaf; 32], column_index: 5 };
+    let mut column_relay = unrelated;
+    let PeerEvent::SendGossip { topic, metadata, .. } = &mut column_relay else { unreachable!() };
+    *topic = GossipTopic::DataColumnSidecar(5);
+    *metadata = Some(GossipMetadata::DataColumn(column));
+    inj.produce(column_relay);
+    inj.produce(PeerEvent::PublishDataColumn {
+        originator: P2pStreamId::new(1, 0, StreamProtocol::DataColumnSidecarsByRange, true),
+        topic: GossipTopic::DataColumnSidecar(5),
+        ssz,
+        column,
+    });
     inj.produce(block_relay(10, 0xac));
     inj.produce(block_relay(10, 0xac));
     inj.produce(block_received(11, 0xab, BlockStage::Applied));
