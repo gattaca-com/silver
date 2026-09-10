@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     bls,
-    error::PrecheckError,
+    error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
     ssz_hash, stf,
 };
@@ -627,8 +627,8 @@ impl BeaconStateTile {
         if self.held.is_staged(&block_root) {
             return Err(PrecheckError::AwaitingData { block_root });
         }
-        if self.held.is_rejected(&block_root) {
-            return Err(PrecheckError::Rejected { block_root });
+        if let Some(reason) = self.held.rejected_reason(&block_root) {
+            return Err(PrecheckError::Rejected { block_root, reason });
         }
 
         let finalized_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
@@ -636,8 +636,8 @@ impl BeaconStateTile {
             return Err(PrecheckError::PreFinalized { block_slot, finalized_slot });
         }
 
-        if self.held.is_rejected(&parent_root) {
-            return Err(PrecheckError::ParentInvalid { parent_root, block_root });
+        if let Some(reason) = self.held.rejected_reason(&parent_root) {
+            return Err(PrecheckError::ParentRejected { parent_root, block_root, reason });
         }
         let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
             let last_applied_slot = self.head_state_slot();
@@ -653,7 +653,8 @@ impl BeaconStateTile {
         // EL declared the parent invalid — descendants are invalid by
         // definition. Reject before the COW/EL round-trip.
         if parent_node.execution_status == ExecutionStatus::Invalid {
-            return Err(PrecheckError::ParentInvalid { parent_root, block_root });
+            let reason = RejectReason::InvalidPayload;
+            return Err(PrecheckError::ParentRejected { parent_root, block_root, reason });
         }
 
         let parent_state_id = parent_node.state_id;

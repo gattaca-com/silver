@@ -29,7 +29,7 @@ use super::{
     *,
 };
 use crate::{
-    error::PrecheckError,
+    error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, PayloadStatus},
     merkle, ssz_hash,
     stf::AttestationVote,
@@ -2933,15 +2933,37 @@ fn el_invalid_staged_block_is_remembered_as_rejected() {
     });
     forks.tile.handle_engine_response(verdict, &mut adapter.producers);
 
-    assert!(forks.tile.held.is_rejected(&S_ROOT));
     let child = empty_block_at(4, S_ROOT);
-    assert!(
-        matches!(
-            forks.tile.parse_and_verify_block(&child, false),
-            Err(PrecheckError::ParentInvalid { parent_root: S_ROOT, .. })
-        ),
-        "a child of the rejected block is rejected, not parked"
-    );
+    let Err(err) = forks.tile.parse_and_verify_block(&child, false) else {
+        panic!("a child of the rejected block is not parked");
+    };
+    assert!(matches!(err, PrecheckError::ParentRejected {
+        parent_root: S_ROOT,
+        reason: RejectReason::InvalidPayload,
+        ..
+    }));
+    assert_eq!(err.feedback(), Feedback::Ignore, "spec: parent valid, its payload invalid");
+}
+
+/// Spec `beacon_block` gossip: a parent that failed its state transition never
+/// reached the EL, so its child is a REJECT; only an EL-invalid payload on a
+/// consensus-valid parent is an IGNORE.
+#[test]
+fn child_of_transition_failed_block_is_rejected() {
+    const X_ROOT: B256 = [0x06; 32];
+    let mut forks = ThreeForks::new();
+    forks.tile.held.reject(X_ROOT, 3);
+
+    let child = empty_block_at(4, X_ROOT);
+    let Err(err) = forks.tile.parse_and_verify_block(&child, false) else {
+        panic!("a child of the rejected block is not parked");
+    };
+    assert!(matches!(err, PrecheckError::ParentRejected {
+        parent_root: X_ROOT,
+        reason: RejectReason::FailedTransition,
+        ..
+    }));
+    assert_eq!(err.feedback(), Feedback::Reject(Some(block_root_fulu(&child))));
 }
 
 /// Below a finalized target nothing waits for its columns, and range sync

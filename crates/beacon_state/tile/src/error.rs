@@ -4,6 +4,16 @@ use thiserror::Error;
 
 use crate::tile::Feedback;
 
+/// Why a root is remembered as rejected. The gossip verdict on a re-delivery
+/// or a child depends on which: a failed transition never reached the EL, so
+/// the spec REJECTs; an EL-invalid payload sits on a consensus-valid block, so
+/// it IGNOREs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RejectReason {
+    FailedTransition,
+    InvalidPayload,
+}
+
 #[derive(Clone, Copy, Debug, Error)]
 pub enum PrecheckError {
     #[error("block size precheck failed: expected {expected_min}..={expected_max} got {got}")]
@@ -15,11 +25,11 @@ pub enum PrecheckError {
     )]
     ParentMissing { parent_root: B256, block_root: B256, last_applied_slot: Slot, block_slot: Slot },
     #[error(
-        "block parent invalid: parent_root=0x{} block_root=0x{}",
+        "block parent rejected: parent_root=0x{} block_root=0x{} reason={reason:?}",
         b256_hex(parent_root),
         b256_hex(block_root)
     )]
-    ParentInvalid { parent_root: B256, block_root: B256 },
+    ParentRejected { parent_root: B256, block_root: B256, reason: RejectReason },
     #[error("past block: block_slot={block_slot} finalized_slot={finalized_slot}")]
     PreFinalized { block_slot: Slot, finalized_slot: Slot },
     #[error("block body is not canonical SSZ: block_slot={block_slot} body_len={body_len}")]
@@ -32,8 +42,8 @@ pub enum PrecheckError {
     AlreadyKnown { block_root: B256 },
     #[error("block awaiting data availability: block_root=0x{}", b256_hex(block_root))]
     AwaitingData { block_root: B256 },
-    #[error("block already rejected: block_root=0x{}", b256_hex(block_root))]
-    Rejected { block_root: B256 },
+    #[error("block already rejected: block_root=0x{} reason={reason:?}", b256_hex(block_root))]
+    Rejected { block_root: B256, reason: RejectReason },
     #[error("block ticker slot precheck failed: block_slot={block_slot} wall_slot={wall_slot}")]
     FutureSlot { block_slot: Slot, wall_slot: Slot },
     #[error(
@@ -92,13 +102,15 @@ impl PrecheckError {
             Self::PreFinalized { .. } |
             Self::FutureSlot { .. } |
             Self::AwaitingData { .. } |
-            Self::ParentInvalid { .. } => Feedback::Ignore,
+            Self::Rejected { reason: RejectReason::InvalidPayload, .. } |
+            Self::ParentRejected { reason: RejectReason::InvalidPayload, .. } => Feedback::Ignore,
             Self::PastSlot { .. } => Feedback::Reject(None),
             Self::AlreadyKnown { block_root } => Feedback::AlreadyKnown(block_root),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
-            Self::Rejected { block_root } |
+            Self::Rejected { block_root, reason: RejectReason::FailedTransition } |
+            Self::ParentRejected { block_root, reason: RejectReason::FailedTransition, .. } |
             Self::BidParentRootMismatch { block_root } |
             Self::BidNotOnExecutionHead { block_root } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
