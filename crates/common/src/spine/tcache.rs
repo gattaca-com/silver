@@ -5,7 +5,7 @@ use std::{
     ops::Deref,
     ptr::addr_of,
     slice,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
 pub use consumer::{
@@ -13,6 +13,10 @@ pub use consumer::{
 };
 use flux::{Timer, timing::Nanos, tracing};
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
+pub use sub_reservation::{
+    AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
+    SubReservationRef, SubValidation, SubWrite,
+};
 use thiserror::Error;
 
 use crate::spine::tcache::consumer::Buckets;
@@ -39,6 +43,7 @@ const fn lag_threshold(len: u32) -> u64 {
 mod consumer;
 mod metrics;
 mod producer;
+mod sub_reservation;
 
 use metrics::TCacheMetrics;
 
@@ -128,6 +133,10 @@ pub enum Error {
     UnexpectedCacheRef,
     #[error("stale seq: {seq} < {tail}")]
     StaleSeq { name: &'static str, seq: u64, tail: u64 },
+    #[error("reservation is incomplete")]
+    Incomplete,
+    #[error("range exceeds reservation")]
+    InvalidRange,
 }
 
 impl TCache {
@@ -149,6 +158,11 @@ impl TCache {
 
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.len as usize
     }
 
     /// Attach to a named shmem segment as a producer, creating it if needed.
@@ -323,7 +337,11 @@ impl TCache {
         if slot_seq != seq {
             return Err(Error::WrongSeq { expected: seq, slot: slot_seq });
         }
-        if slot.skip != 0 {
+        let skip = slot.skip.load(Ordering::Acquire);
+        if skip != 0 {
+            if skip == sub_reservation::INCOMPLETE {
+                return Err(Error::Incomplete);
+            }
             return Ok((&[], slot.reservation_len as u64, slot.reserve_ns));
         }
 
@@ -337,6 +355,27 @@ impl TCache {
             slot.reservation_len as u64,
             slot.reserve_ns,
         ))
+    }
+
+    // Callers only expose ranges whose writers have permanently relinquished
+    // ownership.
+    #[inline]
+    fn read_range(&self, seq: u64, offset: usize, length: usize) -> Result<&[u8], Error> {
+        let slot = self.slot_at(self.index(seq));
+        if slot.magic != MAGIC {
+            return Err(Error::NoMagic);
+        }
+        let actual = slot.seq.load(Ordering::Acquire);
+        if actual != seq {
+            return Err(Error::WrongSeq { expected: seq, slot: actual });
+        }
+        let end = offset.checked_add(length).ok_or(Error::InvalidRange)?;
+        if end > (slot.data_end - slot.data_start) as usize {
+            return Err(Error::InvalidRange);
+        }
+        Ok(unsafe {
+            slice::from_raw_parts(self.data_ptr().add(slot.data_start as usize + offset), length)
+        })
     }
 
     fn slot_ts(&self, seq: u64) -> Result<Nanos, Error> {
@@ -407,7 +446,7 @@ impl TCache {
             slot.reserve_ns = Nanos::now();
             slot.data_start = start as u32;
             slot.data_end = end as u32;
-            slot.skip = 1;
+            slot.skip = AtomicU8::new(1);
             slot.magic = MAGIC;
 
             (reserve_seq, reserve_len)
@@ -450,7 +489,7 @@ impl TCache {
 
             // Update the slot ts - used in the consumer to measure queue latency.
             slot.reserve_ns = now;
-            slot.skip = 0;
+            slot.skip = AtomicU8::new(0);
         }
         let new_head = seq + slot.reservation_len as u64;
         slot.seq = AtomicU64::new(seq);
@@ -480,10 +519,7 @@ impl TCache {
 
     #[inline]
     fn slot_at(&self, idx: usize) -> &Slot {
-        unsafe {
-            let ptr = self.data_ptr().add(idx);
-            &*(slice::from_raw_parts(ptr, size_of::<Slot>()).as_ptr() as *const Slot)
-        }
+        unsafe { &*self.data_ptr().add(idx).cast::<Slot>() }
     }
 
     // --- allocators ---
@@ -690,7 +726,7 @@ struct Slot {
     data_start: u32,
     data_end: u32,
     reservation_len: u32,
-    skip: u8,
+    skip: AtomicU8,
     magic: [u8; 3],
 }
 
@@ -702,7 +738,7 @@ impl Default for Slot {
             data_start: 0,
             data_end: 0,
             reservation_len: 0,
-            skip: 0,
+            skip: AtomicU8::new(0),
             magic: MAGIC,
         }
     }
@@ -716,7 +752,7 @@ impl Clone for Slot {
             data_end: self.data_end,
             reserve_ns: self.reserve_ns,
             reservation_len: self.reservation_len,
-            skip: self.skip,
+            skip: AtomicU8::new(self.skip.load(Ordering::Relaxed)),
             magic: MAGIC,
         }
     }

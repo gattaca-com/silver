@@ -136,6 +136,14 @@ pub struct RandomAccessConsumer {
 }
 
 impl RandomAccessConsumer {
+    pub fn cache_ref(&self) -> TCacheRef {
+        self.cache
+    }
+
+    pub fn is_strict(&self) -> bool {
+        self.strict
+    }
+
     pub fn acquire(&mut self, read: TCacheRead) -> AcquiredRead {
         let now = Nanos::now();
         self.last_read = now;
@@ -200,6 +208,14 @@ impl RandomAccessConsumer {
     fn release(&mut self, seq: u64) {
         self.active.release(seq, self.name);
     }
+
+    #[inline]
+    fn warn_below_tail(&self, seq: u64) {
+        if seq < self.active.tail_seq {
+            let e = TCacheError::StaleSeq { name: self.name, seq, tail: self.active.tail_seq };
+            tracing::warn!("reading below current tail: {:?}", e);
+        }
+    }
 }
 
 impl std::fmt::Debug for RandomAccessConsumer {
@@ -235,16 +251,13 @@ pub struct AcquiredRead {
 }
 
 impl AcquiredRead {
+    pub fn is_strict(&self) -> bool {
+        unsafe { &*self.consumer }.strict
+    }
+
     pub fn buffer(&self) -> Result<(&[u8], Nanos), TCacheError> {
         let consumer = unsafe { &*self.consumer };
-        if self.read.seq < consumer.active.tail_seq {
-            let e = TCacheError::StaleSeq {
-                name: consumer.name,
-                seq: self.read.seq,
-                tail: consumer.active.tail_seq,
-            };
-            tracing::warn!("reading below current tail: {:?}", e);
-        }
+        consumer.warn_below_tail(self.read.seq);
         consumer.cache.read(self.read.seq).map(|(data, _, ts)| (data, ts))
     }
 
@@ -307,9 +320,9 @@ pub type AcquiredWithOffset = AcquiredRange;
 
 #[derive(Clone, Debug)]
 pub struct AcquiredRange {
-    read: AcquiredRead,
-    offset: usize,
-    length: usize,
+    pub(super) read: AcquiredRead,
+    pub(super) offset: usize,
+    pub(super) length: usize,
 }
 
 impl AcquiredRange {
@@ -327,10 +340,9 @@ impl AcquiredRange {
 impl AsRef<[u8]> for AcquiredRange {
     #[inline]
     fn as_ref(&self) -> &[u8] {
-        match self.read.buffer() {
-            Ok((buffer, _)) => &buffer[self.offset..self.offset + self.length],
-            Err(_) => &[],
-        }
+        let consumer = unsafe { &*self.read.consumer };
+        consumer.warn_below_tail(self.read.seq());
+        consumer.cache.read_range(self.read.seq(), self.offset, self.length).unwrap_or(&[])
     }
 }
 

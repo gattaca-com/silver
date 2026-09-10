@@ -48,6 +48,26 @@ pub struct Producer {
 unsafe impl Send for Producer {}
 unsafe impl Sync for Producer {}
 
+impl Producer {
+    /// The descriptor does not pin storage. Acquire it with a strict consumer
+    /// before further allocations can reclaim it.
+    pub fn sub_reservation(
+        &mut self,
+        layout: SubLayout,
+        prefix: &[u8],
+        middle: &[u8],
+    ) -> Result<SubReservationRef, SubReservationError> {
+        let length = layout
+            .reservation_bytes(prefix.len(), middle.len())
+            .ok_or(SubReservationError::InvalidLayout)?;
+        if length > self.cache_ref().capacity().saturating_sub(size_of::<Slot>()) {
+            return Err(SubReservationError::CacheFull);
+        }
+        let reservation = self.reserve(length, false).ok_or(SubReservationError::CacheFull)?;
+        Ok(SubReservationRef::new(reservation, layout, prefix, middle))
+    }
+}
+
 impl SealedProducer for Producer {
     fn tcache(&self) -> *const TCache {
         self.cache
@@ -163,7 +183,7 @@ pub struct Reservation {
     pub(super) cache: TCacheRef,
     pub(super) seq: u64,
     offset: usize,
-    committed: bool,
+    pub(super) committed: bool,
     auto_commit: bool,
 }
 

@@ -4542,6 +4542,7 @@ dependencies = [
  "silver_beacon_state_data",
  "silver_common",
  "snap 1.1.1",
+ "slab",
  "tempfile",
  "tracing",
 ]
