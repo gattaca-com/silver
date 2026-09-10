@@ -397,6 +397,13 @@ impl BeaconApi {
         self.publish(Channel::Block, "block", &data);
     }
 
+    /// Repeated roots are not deduplicated.
+    pub fn publish_block_gossip(&mut self, slot: u64, block_root: &[u8; 32]) {
+        let mut data = Vec::new();
+        Json::new(&mut data).block_gossip_event(slot, block_root);
+        self.publish(Channel::BlockGossip, "block_gossip", &data);
+    }
+
     fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
         let mut frame = Vec::new();
         events::frame(&mut frame, event, data);

@@ -4,8 +4,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, Enr, Identify, Keypair, SilverSpine, SyncUpdate, TProducer,
-    TRandomAccess,
+    BeaconStateEvent, BlockStage, Enr, GossipBlock, Identify, Keypair, PeerEvent, SilverSpine,
+    SyncUpdate, TProducer, TRandomAccess,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -83,10 +83,9 @@ impl ApplicationBoundaryTile {
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let beacon = &mut self.beacon;
 
-        // Consumed every iteration, and never behind the engine's capacity
-        // gate: a consumer's first `consume` jumps its cursor to the
-        // producer's write head, so a queue left unread while the pool is
-        // saturated loses everything published in the meantime.
+        // A consumer's first consume starts at the producer's write head.
+        // Keep both event queues active during engine saturation; delaying
+        // their first consume would discard notifications already queued.
         adapter.consume(|event: BeaconStateEvent, _| match event {
             BeaconStateEvent::Status { latest_block_slot, wall_slot, head_optimistic, .. } => {
                 beacon.node_status_mut().slots =
@@ -99,6 +98,13 @@ impl ApplicationBoundaryTile {
                 ..
             } => beacon.publish_block(slot, &block_root),
             _ => {}
+        });
+        adapter.consume(|event: PeerEvent, _| {
+            if let PeerEvent::SendGossip { block: Some(GossipBlock { slot, block_root }), .. } =
+                event
+            {
+                beacon.publish_block_gossip(slot, &block_root);
+            }
         });
         let status = beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {

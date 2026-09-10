@@ -231,6 +231,15 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn block_gossip_event(&mut self, slot: u64, block_root: &[u8; 32]) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(slot);
+        self.key("block");
+        self.hex(block_root);
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -479,6 +488,14 @@ mod tests {
         assert!(json_safe("active_ongoing"));
         assert!(!json_safe("say \"hi\""));
         assert!(!json_safe("back\\slash"));
+    }
+
+    #[test]
+    fn block_gossip_event_carries_the_slot_and_the_root() {
+        let body = write(|json| json.block_gossip_event(10, &[0x9a; 32]));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["slot"], "10");
+        assert_eq!(parsed["block"], format!("0x{}", hex::encode([0x9a; 32])));
     }
 
     #[test]
