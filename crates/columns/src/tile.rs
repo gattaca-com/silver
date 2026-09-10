@@ -11,10 +11,10 @@ use flux::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind, EngineResp,
-    GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
-    RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed,
-    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
+    EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
+    SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     cells::RetentionEvent,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
