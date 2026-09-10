@@ -1,7 +1,7 @@
 [
   { "frame": "decompose", "stat": "total", "max": "36s" },
-  { "frame": "stage_and_import<BeaconStateTile>", "stat": "p50", "max": "32ms" },
-  { "frame": "stage_and_import<BeaconStateTile>", "stat": "max", "max": "230ms" },
+  { "frame": "apply_and_import<BeaconStateTile>", "stat": "p50", "max": "32ms" },
+  { "frame": "apply_and_import<BeaconStateTile>", "stat": "max", "max": "230ms" },
   { "frame": "process_epoch", "stat": "avg", "max": "140ms" },
   { "frame": "hash_tree_root_state", "stat": "avg", "max": "50us" },
   { "frame": "finalize<BeaconStateTile>", "stat": "avg", "max": "8ms" }

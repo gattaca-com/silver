@@ -24,8 +24,8 @@ use silver_common::{
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
 use super::{
-    block::StagedBlock,
-    held_blocks::{PendingBlock, WaitingBlock},
+    block::{ParsedBlock, StagedBlock},
+    held_blocks::BlockSourceMsg,
     *,
 };
 use crate::{
@@ -152,7 +152,7 @@ fn make_tile_with_gossip(
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
 /// as a buffered gossip orphan whose slot the tile can read back.
-fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
+fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
     let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
@@ -162,7 +162,7 @@ fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
     r.increment_offset(bytes.len());
     let read = r.read();
     producer.publish_head();
-    PendingBlock::Gossip(NewGossipMsg {
+    BlockSourceMsg::Gossip(NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconBlock,
         msg_hash: MessageId { id: [0u8; 20] },
@@ -2747,7 +2747,7 @@ impl ThreeForks {
         slot: Slot,
     ) -> StateId {
         let id = self.roll(parent, slot, root);
-        let PendingBlock::Gossip(msg) = gossip_pending(producer, slot) else { unreachable!() };
+        let BlockSourceMsg::Gossip(msg) = gossip_pending(producer, slot) else { unreachable!() };
         let parsed = ParsedBlock {
             header: BeaconBlockHeader {
                 slot,
@@ -2763,11 +2763,7 @@ impl ThreeForks {
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };
-        self.tile.held.stage(WaitingBlock {
-            staged: StagedBlock::with_state_id(parsed, id),
-            read: msg.ssz,
-            source: BlockSource::Gossip,
-        });
+        self.tile.held.stage(StagedBlock::with_state_id(parsed, id, msg.ssz, BlockSource::Gossip));
         id
     }
 }

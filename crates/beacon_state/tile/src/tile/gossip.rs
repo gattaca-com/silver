@@ -21,7 +21,7 @@ use silver_common::{
 
 use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY,
-    Producers, attestation_pool::InsertOutcome, held_blocks::PendingBlock,
+    Producers, attestation_pool::InsertOutcome, held_blocks::BlockSourceMsg,
     seen_aggregates::Coverage, sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
@@ -1090,12 +1090,7 @@ impl BeaconStateTile {
         let slashed = &mut self.stf_scratch.active;
         let ok = {
             let view = self.state.read_view(canon_id);
-            stf::validate_attester_slashing_for_gossip(
-                &view,
-                data,
-                slashed,
-                &mut self.sig_batch,
-            )
+            stf::validate_attester_slashing_for_gossip(&view, data, slashed, &mut self.sig_batch)
         };
         // Mark the equivocators (spec `on_attester_slashing`) so fork choice
         // excludes them. Idempotent; removes any live LMD weight next recompute.
@@ -1220,13 +1215,13 @@ impl BeaconStateTile {
                 self.on_accept(block_root, producers);
             }
             Feedback::RequestParent { .. } => {
-                self.park_block(feedback, PendingBlock::Gossip(m), data, producers)
+                self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers)
             }
             Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.park_block(feedback, PendingBlock::Gossip(m), data, producers);
+                self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers);
             }
             Feedback::RequestEnvelope { block_root, att_slot } => {
                 producers.produce(SyncNeed::missing_envelope(block_root, att_slot))

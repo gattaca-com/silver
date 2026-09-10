@@ -7,27 +7,18 @@ use super::block::StagedBlock;
 
 const MAX_ORPHANS_PER_PARENT: usize = 4;
 
-/// A staged block waiting for its data columns. `read` is not acquired, so
-/// the ring may lap it; import re-acquires and asks for the block again on a
-/// miss.
-pub(super) struct WaitingBlock {
-    pub(super) staged: StagedBlock,
-    pub(super) read: TCacheRead,
-    pub(super) source: BlockSource,
-}
-
 pub(super) struct Orphan {
     pub(super) block_root: B256,
     pub(super) slot: Slot,
-    pub(super) pending: PendingBlock,
+    pub(super) msg: BlockSourceMsg,
 }
 
-pub(super) enum PendingBlock {
+pub(super) enum BlockSourceMsg {
     Gossip(NewGossipMsg),
     Rpc(P2pStreamId, TCacheRead),
 }
 
-impl PendingBlock {
+impl BlockSourceMsg {
     pub(super) fn source(&self) -> BlockSource {
         match self {
             Self::Gossip(_) => BlockSource::Gossip,
@@ -98,7 +89,7 @@ impl OrphanPool {
 pub(super) struct HeldBlocks {
     pub(super) orphans: OrphanPool,
     pub(super) payload_orphans: OrphanPool,
-    staged: FxHashMap<B256, WaitingBlock>,
+    staged: FxHashMap<B256, StagedBlock>,
     available: FxHashMap<B256, Slot>,
     /// Roots whose block failed the state transition or the EL, so a re-fetch
     /// or a child's parent chase does not run the same block again.
@@ -140,17 +131,17 @@ impl HeldBlocks {
         self.available.remove(block_root);
     }
 
-    pub(super) fn stage(&mut self, waiting: WaitingBlock) -> B256 {
-        let block_root = waiting.staged.parsed.block_root;
+    pub(super) fn stage(&mut self, staged: StagedBlock) -> B256 {
+        let block_root = staged.parsed.block_root;
         debug_assert!(!self.staged.contains_key(&block_root));
         debug_assert!(!self.available.contains_key(&block_root));
-        self.staged.insert(block_root, waiting);
+        self.staged.insert(block_root, staged);
         block_root
     }
 
     /// Availability is announced once, so the record outlives the release
     /// until an import consumes it.
-    pub(super) fn mark_available(&mut self, block_root: B256, slot: Slot) -> Option<WaitingBlock> {
+    pub(super) fn mark_available(&mut self, block_root: B256, slot: Slot) -> Option<StagedBlock> {
         self.available.insert(block_root, slot);
         self.staged.remove(&block_root)
     }
@@ -158,18 +149,18 @@ impl HeldBlocks {
     /// The EL declared a staged block invalid: it is remembered as rejected so
     /// neither a re-fetch nor a child's parent chase runs it again.
     pub(super) fn reject_staged(&mut self, block_root: &B256) -> Option<BlockSource> {
-        let waiting = self.staged.remove(block_root)?;
-        self.rejected.insert(*block_root, waiting.staged.parsed.header.slot);
+        let staged = self.staged.remove(block_root)?;
+        self.rejected.insert(*block_root, staged.parsed.header.slot);
         self.orphans.drop_children(block_root);
-        Some(waiting.source)
+        Some(staged.source)
     }
 
     /// Finalization pruned fork choice; staged blocks whose parent went with
     /// it, and the orphans parked on them, no longer descend from it.
     pub(super) fn drop_outdated(&mut self, parent_known: impl Fn(&B256) -> bool) {
         let Self { staged, orphans, .. } = self;
-        staged.retain(|root, waiting| {
-            if parent_known(&waiting.staged.parsed.header.parent_root) {
+        staged.retain(|root, block| {
+            if parent_known(&block.parsed.header.parent_root) {
                 return true;
             }
             tracing::warn!(
@@ -201,6 +192,6 @@ impl HeldBlocks {
     }
 
     pub(super) fn state_ids_mut(&mut self) -> impl Iterator<Item = &mut StateId> {
-        self.staged.values_mut().map(|waiting| waiting.staged.state_id_mut())
+        self.staged.values_mut().map(StagedBlock::state_id_mut)
     }
 }

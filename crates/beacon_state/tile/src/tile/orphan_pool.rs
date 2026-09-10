@@ -7,7 +7,7 @@ use silver_common::{
 
 use super::{
     BeaconStateTile, Feedback, Producers,
-    held_blocks::{Orphan, PendingBlock},
+    held_blocks::{BlockSourceMsg, Orphan},
 };
 
 impl BeaconStateTile {
@@ -46,7 +46,7 @@ impl BeaconStateTile {
         &mut self,
         parent_root: B256,
         block_root: B256,
-        pending: PendingBlock,
+        msg: BlockSourceMsg,
         block_slot: Slot,
         producers: &mut Producers,
     ) -> bool {
@@ -70,7 +70,7 @@ impl BeaconStateTile {
             return false;
         }
 
-        let orphan = Orphan { block_root, slot: block_slot, pending };
+        let orphan = Orphan { block_root, slot: block_slot, msg };
         if !self.held.orphans.park(parent_root, orphan) {
             return false;
         }
@@ -95,10 +95,10 @@ impl BeaconStateTile {
         parent_root: B256,
         block_root: B256,
         block_slot: Slot,
-        pending: PendingBlock,
+        msg: BlockSourceMsg,
         producers: &mut Producers,
     ) -> bool {
-        let orphan = Orphan { block_root, slot: block_slot, pending };
+        let orphan = Orphan { block_root, slot: block_slot, msg };
         if !self.held.payload_orphans.park(parent_root, orphan) {
             return false;
         }
@@ -123,12 +123,12 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) {
-        let Orphan { block_root, slot, pending } = orphan;
-        let replayed = match pending {
-            PendingBlock::Gossip(g) => {
+        let Orphan { block_root, slot, msg } = orphan;
+        let replayed = match msg {
+            BlockSourceMsg::Gossip(g) => {
                 self.handle_gossip(g.ssz, g, do_relay, pre_verified, producers)
             }
-            PendingBlock::Rpc(stream_id, ssz) => {
+            BlockSourceMsg::Rpc(stream_id, ssz) => {
                 self.handle_rpc_block(stream_id, ssz, pre_verified, producers)
             }
         };
@@ -153,15 +153,15 @@ impl BeaconStateTile {
     pub(super) fn park_block(
         &mut self,
         feedback: Feedback,
-        source: PendingBlock,
+        msg: BlockSourceMsg,
         data: &[u8],
         producers: &mut Producers,
     ) {
-        let block_source = source.source();
+        let block_source = msg.source();
         let admitted = match feedback {
             Feedback::RequestParent { parent_root, block_root } => {
                 let block_slot = SignedBeaconBlockView::slot(data);
-                self.buffer_orphan(parent_root, block_root, source, block_slot, producers)
+                self.buffer_orphan(parent_root, block_root, msg, block_slot, producers)
                     .then_some(block_root)
             }
             Feedback::AwaitParentPayload { parent_root, block_root } => self
@@ -169,7 +169,7 @@ impl BeaconStateTile {
                     parent_root,
                     block_root,
                     SignedBeaconBlockView::slot(data),
-                    source,
+                    msg,
                     producers,
                 )
                 .then_some(block_root),
@@ -241,7 +241,7 @@ impl BeaconStateTile {
                 severity: RpcSeverity::Fatal,
             }),
             Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
-            _ => self.park_block(feedback, PendingBlock::Rpc(sender, read), data, producers),
+            _ => self.park_block(feedback, BlockSourceMsg::Rpc(sender, read), data, producers),
         }
         true
     }

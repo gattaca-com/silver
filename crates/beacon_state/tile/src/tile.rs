@@ -6,8 +6,8 @@ use flux::{
 };
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch,
-    SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
+    B256, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch, SLOTS_PER_EPOCH,
+    Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic,
@@ -20,7 +20,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 
 use crate::{
     bls,
-    fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
+    fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice},
     ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
@@ -102,16 +102,6 @@ impl Debug for Feedback {
             Self::AlreadyKnown(r) => write!(f, "AlreadyKnown(0x{})", hex32(r)),
         }
     }
-}
-
-struct ParsedBlock {
-    header: BeaconBlockHeader,
-    block_root: B256,
-    has_data_columns: bool,
-    parent_state_id: StateId,
-    is_gloas: bool,
-    parent_payload_status: PayloadStatus,
-    relay_eligible: bool,
 }
 
 pub struct BeaconStateTile {
