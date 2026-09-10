@@ -462,28 +462,39 @@ impl DataColumnsTile {
         }
     }
 
-    /// End-of-pass KZG verification of every batched sidecar in one
-    /// `verify_cell_kzg_proof_batch` call. On a combined failure each sidecar
-    /// re-verifies alone so the reject lands on the culpable peer only —
-    /// honest traffic never pays the fallback.
+    /// Columns past a block's `Available` edge verify in a second call so the
+    /// edge does not wait on them.
     #[timed]
     fn flush_kzg_batch(&mut self, producers: &mut SilverSpineProducers) {
         debug_assert!(!self.kzg_batch.is_empty());
 
-        let pending_len = self.kzg_batch.pending.len();
+        let count = self.kzg_batch.columns_until_available(&self.tracker);
+        self.verify_kzg_batch(count, producers);
+        if !self.kzg_batch.is_empty() {
+            self.verify_kzg_batch(self.kzg_batch.pending.len(), producers);
+        }
+    }
+
+    /// One pairing check over the first `count` queued sidecars; on failure
+    /// each re-verifies alone so the reject lands on the culpable peer only.
+    fn verify_kzg_batch(&mut self, count: usize, producers: &mut SilverSpineProducers) {
         DataColumnCounters::KzgBatchesVerified.inc();
-        DataColumnCounters::KzgBatchColumns.add(pending_len as u64);
+        DataColumnCounters::KzgBatchColumns.add(count as u64);
 
         let all_ok = {
             let validator = &self.validator;
             util::kzg_verify_batch_multi(
-                self.kzg_batch.pending.iter().filter_map(|p| batch::kzg_entry(p, validator)),
+                self.kzg_batch.pending[..count]
+                    .iter()
+                    .filter_map(|p| batch::kzg_entry(p, validator)),
                 &mut self.kzg_scratch,
             )
         };
 
-        for _ in 0..pending_len {
-            let p = self.kzg_batch.pending.swap_remove(0);
+        // Back to front, so each swap pulls in an element at or past `i`, never
+        // one still to be removed.
+        for i in (0..count).rev() {
+            let p = self.kzg_batch.pending.swap_remove(i);
             if batch::kzg_entry(&p, &self.validator).is_none() {
                 tracing::error!(stream_id = ?p.stream_id, "batched sidecar inputs unavailable at flush");
                 continue;

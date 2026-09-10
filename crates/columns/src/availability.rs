@@ -25,6 +25,10 @@ impl Custody {
     fn data_available(self, validated: u128) -> bool {
         validated.count_ones() as usize >= NUMBER_OF_COLUMNS / 2 || self.is_covered_by(validated)
     }
+
+    fn becomes_available(self, validated: u128, columns: u128) -> bool {
+        !self.data_available(validated) && self.data_available(validated | columns)
+    }
 }
 
 #[derive(Default)]
@@ -57,9 +61,13 @@ impl ColumnTracker {
         let before = block.validated;
         block.validated |= columns;
         (
-            !custody.data_available(before) && custody.data_available(block.validated),
+            custody.becomes_available(before, columns),
             !custody.is_covered_by(before) && custody.is_covered_by(block.validated),
         )
+    }
+
+    pub(crate) fn becomes_available(&self, root: &BlockRoot, columns: u128) -> bool {
+        self.custody.becomes_available(self.validated(root), columns)
     }
 
     /// Custody columns not yet validated for `root` — what a chase should ask
