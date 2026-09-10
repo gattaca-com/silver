@@ -115,6 +115,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         rpc_c,
         engine_c,
         replay_c,
+        false,
         verify_weak_subjectivity,
         BeaconState::empty_test(0),
     )
@@ -127,7 +128,7 @@ fn make_tile_with_gossip(
     state: BeaconState,
 ) -> (BeaconStateTile, TProducer, TProducer) {
     let (tile, gossip, rpc, _replay) =
-        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet(), false);
     (tile, gossip, rpc)
 }
 
@@ -136,6 +137,7 @@ fn make_tile_with_producers(
     wall_slot: u64,
     state: BeaconState,
     spec: SpecConfig,
+    replay_from_disk: bool,
 ) -> (BeaconStateTile, TProducer, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -157,6 +159,7 @@ fn make_tile_with_producers(
         rpc_c,
         engine_c,
         replay_c,
+        replay_from_disk,
         true,
         state,
     );
@@ -793,7 +796,7 @@ fn head_anchor() -> StatusHead {
 #[test]
 fn startup_status_uses_the_seeded_anchor_on_both_forks() {
     for is_gloas in [false, true] {
-        for state_slot in [0, 70] {
+        for (state_slot, replay_from_disk) in [(0, false), (0, true), (70, false), (70, true)] {
             let mut epoch = EpochState::default();
             if is_gloas {
                 epoch.fork.current_version = Immutable::default().gloas_fork_version;
@@ -801,7 +804,7 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
             let state =
                 BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], state_slot);
             let (mut tile, _gp, _rp, mut spine, mut adapter) =
-                tile_with_producers_on(state_slot, state, SpecConfig::mainnet());
+                tile_with_producers_on(state_slot, state, SpecConfig::mainnet(), replay_from_disk);
             let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
             sink.consume(|_: BeaconStateEvent, _| {});
             let root = tile.head_block_root();
@@ -812,8 +815,13 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
 
             tile.loop_body(&mut adapter);
 
+            let published = Published::drain(&mut sink);
+            assert!(matches!(
+                published.0.as_slice(),
+                [BeaconStateEvent::Status { replay_pending, .. }] if *replay_pending == replay_from_disk
+            ));
             assert_eq!(
-                Published::drain(&mut sink).heads(),
+                published.heads(),
                 [StatusHead {
                     root,
                     slot: 0,
@@ -831,6 +839,21 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
                 }],
                 "startup at state slot {state_slot}, Gloas: {is_gloas}"
             );
+
+            if replay_from_disk {
+                sink.produce(ReplayBlock::Done);
+                tile.loop_body(&mut adapter);
+                let completed = Published::drain(&mut sink);
+                assert!(matches!(completed.0.as_slice(), [
+                    BeaconStateEvent::ReplayComplete,
+                    BeaconStateEvent::Status { replay_pending: false, .. }
+                ]));
+                assert_eq!(
+                    completed.heads(),
+                    published.heads(),
+                    "an empty replay keeps the anchor"
+                );
+            }
         }
     }
 }
@@ -1252,7 +1275,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let block_slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(block_slot + 1, state, SpecConfig::mainnet());
+        tile_with_producers_on(block_slot + 1, state, SpecConfig::mainnet(), false);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
@@ -1283,7 +1306,7 @@ fn an_imported_fixture_block_s_status_carries_its_own_roots() {
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let expected = attestation_fixture_head_roots(&block_ssz, &post_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(34, state, fulu_from_genesis());
+        tile_with_producers_on(34, state, fulu_from_genesis(), false);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
@@ -1302,31 +1325,50 @@ fn an_imported_fixture_block_s_status_carries_its_own_roots() {
     }]);
 }
 
-/// Checks replay metadata and dirty marking. Status is constructed directly;
-/// this test does not exercise its end-of-loop publication.
 #[cfg(feature = "ef_tests")]
 #[test]
-fn a_replayed_fixture_block_moves_the_head_and_its_status_names_its_roots() {
+fn disk_replay_publishes_head_metadata_as_pending_until_done() {
     let (pre_ssz, block_ssz, post_ssz) = sanity_fixture("attestation");
     let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let expected = attestation_fixture_head_roots(&block_ssz, &post_ssz);
-    let (mut tile, _gp, _rp, mut replay) = make_tile_with_producers(34, state, fulu_from_genesis());
-    assert!(!tile.fork_choice.take_head_moved(), "nothing has moved before the replay");
+    let (mut tile, _gp, _rp, mut replay) =
+        make_tile_with_producers(34, state, fulu_from_genesis(), true);
+    let base = std::env::temp_dir().join(format!("silver-replay-status-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    tile.loop_body(&mut adapter);
+    let startup = Published::drain(&mut sink);
+    assert!(matches!(startup.0.as_slice(), [BeaconStateEvent::Status {
+        replay_pending: true,
+        ..
+    }]));
 
     let (_, read) = publish_block_bytes(&mut replay, &block_ssz);
-    tile.replay_block(read);
-
-    assert!(tile.fork_choice.take_head_moved(), "the replayed block is the head to publish");
-    let BeaconStateEvent::Status { ssz, head_roots, head_optimistic, .. } =
-        tile.status_event(tile.selected_head())
+    sink.produce(ReplayBlock::Block { ssz: read });
+    tile.loop_body(&mut adapter);
+    let replayed = Published::drain(&mut sink);
+    let [BeaconStateEvent::Status { ssz, head_roots, head_optimistic, replay_pending: true, .. }] =
+        replayed.0.as_slice()
     else {
-        panic!("status_event produces Status")
+        panic!("the replayed block publishes a pending Status")
     };
-    assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
-    assert_eq!(StatusView::head_slot(&ssz), 33);
-    assert!(head_optimistic, "replay asks the execution layer nothing");
-    assert_eq!(head_roots, expected);
+    assert_eq!(*StatusView::head_root(ssz), tile.head_block_root());
+    assert_eq!(StatusView::head_slot(ssz), 33);
+    assert!(*head_optimistic, "replay asks the execution layer nothing");
+    assert_eq!(*head_roots, expected);
+
+    sink.produce(ReplayBlock::Done);
+    tile.loop_body(&mut adapter);
+    let completed = Published::drain(&mut sink);
+    assert!(matches!(completed.0.as_slice(), [
+        BeaconStateEvent::ReplayComplete,
+        BeaconStateEvent::Status { replay_pending: false, .. }
+    ]));
+    assert_eq!(completed.heads(), replayed.heads(), "completion keeps the restored head");
 }
 
 #[cfg(feature = "ef_tests")]
@@ -1611,17 +1653,19 @@ fn pending_admission_window_bounds() {
 fn tile_with_producers(
     wall_slot: u64,
 ) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
-    tile_with_producers_on(wall_slot, BeaconState::empty_test(0), SpecConfig::mainnet())
+    tile_with_producers_on(wall_slot, BeaconState::empty_test(0), SpecConfig::mainnet(), false)
 }
 
 fn tile_with_producers_on(
     wall_slot: u64,
     state: BeaconState,
     spec: SpecConfig,
+    replay_from_disk: bool,
 ) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec);
+    let (tile, gp, rp, _replay) =
+        make_tile_with_producers(wall_slot, state, spec, replay_from_disk);
     let base = std::env::temp_dir().join(format!(
         "silver-pending-{}-{}",
         std::process::id(),

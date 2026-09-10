@@ -188,6 +188,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
         head_optimistic,
         latest_block_slot: head_slot,
         wall_slot,
+        replay_pending: false,
         enr_fork_id: [0u8; 16],
         head_roots: HeadRoots::default(),
         head_payload: PayloadResolution::Full,
@@ -216,6 +217,7 @@ fn head_status(
         head_optimistic,
         latest_block_slot: slot,
         wall_slot: slot,
+        replay_pending: false,
         enr_fork_id: [0u8; 16],
         head_roots: head_roots(),
         head_payload,
@@ -895,6 +897,9 @@ fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
     ]);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    // Completion predates the consumer's first read; ready Status observations
+    // must suffice to start reporting head changes.
+    inj.produce(BeaconStateEvent::ReplayComplete);
     tile.loop_body(&mut adapter);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
@@ -938,6 +943,97 @@ fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
             String::from_utf8_lossy(&got),
             String::from_utf8_lossy(&expected)
         );
+    }
+}
+
+#[test]
+fn disk_replay_is_silent_and_the_restored_head_establishes_a_fresh_baseline() {
+    for completion_visible in [false, true] {
+        let base = TempDir::new().unwrap();
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+        let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+            "cs_replay_gossip",
+            "cs_replay_rpc",
+            "cs_replay_resp",
+        ]);
+        let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+        let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+        tile.loop_body(&mut adapter);
+        let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else {
+            panic!("expected one tcp bind")
+        };
+        let fulu = SpecConfig::mainnet().fulu_fork_epoch * 32;
+        let live_slot = fulu + 33;
+        let legacy_expected =
+            [head_frame(live_slot, 0xad, true), head_frame(live_slot, 0xad, false)].concat();
+        let v2_expected = [
+            head_v2_frame(live_slot, 0xad, "fulu", "empty", true),
+            head_v2_frame(live_slot, 0xad, "fulu", "full", true),
+            head_v2_frame(live_slot, 0xad, "fulu", "full", false),
+        ]
+        .concat();
+        let block_expected = [block_frame(fulu + 31, 0xd0), block_frame(live_slot, 0xd1)].concat();
+        let (legacy, legacy_subscribed) = events_subscriber(addr, "head", legacy_expected.len());
+        let (v2, v2_subscribed) = events_subscriber(addr, "head_v2", v2_expected.len());
+        let (blocks, blocks_subscribed) = events_subscriber(addr, "block", block_expected.len());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut crank = |tile: &mut ApplicationBoundaryTile| {
+            assert!(Instant::now() < deadline, "event streams did not make progress");
+            tile.loop_body(&mut adapter);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        for subscribed in [legacy_subscribed, v2_subscribed, blocks_subscribed] {
+            while subscribed.try_recv().is_err() {
+                crank(&mut tile);
+            }
+        }
+
+        inj.produce(SyncUpdate::SyncingHead { head_root: [0xff; 32], head_slot: live_slot + 100 });
+        for mut event in [
+            head_status(fulu + 1, 0xaa, true, PayloadResolution::Full),
+            head_status(fulu + 31, 0xab, true, PayloadResolution::Empty),
+            head_status(fulu + 31, 0xab, true, PayloadResolution::Full),
+            head_status(fulu + 31, 0xab, false, PayloadResolution::Full),
+        ] {
+            let BeaconStateEvent::Status { replay_pending, .. } = &mut event else {
+                unreachable!()
+            };
+            *replay_pending = true;
+            inj.produce(event);
+        }
+        inj.produce(block_received(fulu + 31, 0xd0, BlockStage::Applied));
+        crank(&mut tile);
+        assert_eq!(
+            tile.beacon.node_status_mut().slots,
+            Some(SlotStatus { head_slot: fulu + 31, wall_slot: fulu + 31, head_optimistic: false }),
+            "replay observations still update node status"
+        );
+
+        if completion_visible {
+            inj.produce(BeaconStateEvent::ReplayComplete);
+        }
+        inj.produce(status_event(fulu + 32, fulu + 32, true));
+        inj.produce(head_status(fulu + 32, 0xac, true, PayloadResolution::Empty));
+        inj.produce(head_status(fulu + 32, 0xac, true, PayloadResolution::Empty));
+        inj.produce(head_status(live_slot, 0xad, true, PayloadResolution::Empty));
+        inj.produce(head_status(live_slot, 0xad, true, PayloadResolution::Full));
+        inj.produce(head_status(live_slot, 0xad, false, PayloadResolution::Full));
+        inj.produce(block_received(live_slot, 0xd1, BlockStage::Applied));
+        while !legacy.is_finished() || !v2.is_finished() || !blocks.is_finished() {
+            crank(&mut tile);
+        }
+        for (got, expected) in [
+            (legacy.join().unwrap(), legacy_expected),
+            (v2.join().unwrap(), v2_expected),
+            (blocks.join().unwrap(), block_expected),
+        ] {
+            assert_eq!(
+                String::from_utf8(got).unwrap(),
+                String::from_utf8(expected).unwrap(),
+                "completion visible: {completion_visible}"
+            );
+        }
+        assert!(tile.beacon.node_status_mut().syncing, "network sync continues after disk replay");
     }
 }
 

@@ -828,6 +828,7 @@ mod tests {
             latest_block_slot: 7,
             wall_slot: 7,
             head_optimistic: false,
+            replay_pending: false,
             enr_fork_id: [0u8; 16],
             head_roots: HeadRoots::default(),
             head_payload: PayloadResolution::Full,

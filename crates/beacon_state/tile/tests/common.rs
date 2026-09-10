@@ -188,6 +188,7 @@ impl Harness {
                 rc,
                 ec,
                 repc,
+                false,
                 true,
                 state,
             )

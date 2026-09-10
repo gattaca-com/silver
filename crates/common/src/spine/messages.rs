@@ -823,6 +823,8 @@ pub enum BeaconStateEvent {
         latest_block_slot: u64,
         wall_slot: u64,
         head_optimistic: bool,
+        /// True until configured disk replay finishes or is skipped.
+        replay_pending: bool,
         enr_fork_id: [u8; 16],
         head_roots: HeadRoots,
         head_payload: PayloadResolution,

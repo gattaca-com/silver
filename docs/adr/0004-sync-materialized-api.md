@@ -110,3 +110,14 @@ changes, including both empty-to-full and full-to-empty transitions. Legacy
 `head` retains its root-and-optimism filter. Both topics use the same
 complete observation. The v2 `version` names the configured fork at the head
 block's slot; selected pre-Gloas blocks report `full`.
+
+Amended 2026-09-10: `head` and `head_v2` remain silent during disk replay.
+Status carries whether configured replay is pending, including the wait for
+a replay strategy. This flag survives a consumer missing the one-time
+`ReplayComplete` notification. Internal Status publications and node-status
+updates continue throughout replay.
+
+The first complete observation after replay finishes or is skipped establishes
+a silent baseline for both topics. Subsequent changes publish normally,
+including during network sync. Startup without disk replay establishes its
+baseline on the first complete observation.

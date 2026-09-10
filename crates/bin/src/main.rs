@@ -247,6 +247,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer,
         incoming_engine_resp_consumer,
         replay_blocks_consumer,
+        booting_from_local_checkpoint,
         !config.disable_weak_subjectivity_check(),
         state,
     );
