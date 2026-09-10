@@ -14,6 +14,9 @@ use crate::sync_engine::{SyncAction, SyncEngine};
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
+#[cfg(test)]
+mod tests;
+
 pub struct Controller {
     peer_manager: PeerManager,
     gossip_handler: GossipHandler,
@@ -184,6 +187,7 @@ impl Tile<SilverSpine> for Controller {
                                     msg_hash,
                                     recv_ts: Nanos::now(),
                                     protobuf,
+                                    block: None,
                                 },
                                 now,
                                 &mut |evt| {
@@ -210,6 +214,7 @@ impl Tile<SilverSpine> for Controller {
                 msg_hash,
                 recv_ts: _,
                 protobuf,
+                block: _,
             } = &event
             {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *protobuf);

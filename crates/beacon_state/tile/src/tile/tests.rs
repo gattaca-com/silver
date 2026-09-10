@@ -10,8 +10,9 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId,
-    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheProducer, TCacheRead, TProducer,
+    BlockStage, EngineNewPayloadResp, GossipBlock, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId,
+    P2pStreamId, PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheProducer, TCacheRead,
+    TProducer,
     column_util::block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -124,6 +125,16 @@ fn make_tile_with_gossip(
     wall_slot: u64,
     state: BeaconState,
 ) -> (BeaconStateTile, TProducer, TProducer) {
+    let (tile, gossip, rpc, _replay) =
+        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+    (tile, gossip, rpc)
+}
+
+fn make_tile_with_producers(
+    wall_slot: u64,
+    state: BeaconState,
+    spec: SpecConfig,
+) -> (BeaconStateTile, TProducer, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
@@ -138,7 +149,7 @@ fn make_tile_with_gossip(
     let replay_c = replay_p.cache_ref().random_access("test_replay_buf", true).unwrap();
     let tile = BeaconStateTile::new(
         ticker,
-        Arc::new(SpecConfig::mainnet()),
+        Arc::new(spec),
         &SyncingConfig::default(),
         gossip_c,
         rpc_c,
@@ -147,7 +158,7 @@ fn make_tile_with_gossip(
         true,
         state,
     );
-    (tile, gossip_p, event_p)
+    (tile, gossip_p, event_p, replay_p)
 }
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
@@ -498,7 +509,7 @@ fn short_gossip_block_rejected_before_any_field_read() {
             BlockSource::Gossip,
             false,
             &mut adapter.producers,
-            |_| panic!("a malformed block must never be relayed"),
+            |_, _| panic!("a malformed block must never be relayed"),
         );
         assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
     }
@@ -509,10 +520,14 @@ fn short_gossip_block_rejected_before_any_field_read() {
     bytes[100..108].copy_from_slice(&11u64.to_le_bytes());
     bytes[116] = 0xFF; // unknown parent_root
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
-    let feedback =
-        tile.apply_block(&data, read, BlockSource::Gossip, false, &mut adapter.producers, |_| {
-            panic!("an unimportable block must never be relayed")
-        });
+    let feedback = tile.apply_block(
+        &data,
+        read,
+        BlockSource::Gossip,
+        false,
+        &mut adapter.producers,
+        |_, _| panic!("an unimportable block must never be relayed"),
+    );
     assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
 }
 
@@ -586,7 +601,7 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
 
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_, _| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
@@ -618,13 +633,13 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     // bypasses proposer-signature verification.
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_, _| {});
     let Feedback::Accept(Some(block_root)) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_, _| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
@@ -663,7 +678,7 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
             BlockSource::Gossip,
             true, // pre_verified: the signature is not what these cases are about
             &mut adapter.producers,
-            |_| relayed = true,
+            |_, _| relayed = true,
         );
 
         // The well-formed case still fails the STF (synthetic parent root), so
@@ -743,7 +758,7 @@ fn non_canonical_body_is_rejected_before_relay() {
             BlockSource::Gossip,
             true,
             &mut adapter.producers,
-            |_| relayed = true,
+            |_, _| relayed = true,
         );
 
         assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
@@ -773,51 +788,51 @@ fn block_at_the_finalized_start_slot_is_ignored() {
             BlockSource::Gossip,
             true,
             &mut adapter.producers,
-            |_| {},
+            |_, _| {},
         );
 
         assert_eq!(matches!(feedback, Feedback::Ignore), want_ignore, "slot {slot}: {feedback:?}");
     }
 }
 
-/// `proposer_lookahead` reaches only the parent's current and next epoch. A
-/// block past a long skipped-slot run has no entry, so silver cannot check its
-/// proposer — it still imports, but must not go on the wire as if it had.
+/// Fixture bypass: signature checking is skipped to isolate proposer lookup.
 #[test]
-fn block_past_the_lookahead_window_imports_but_is_not_relayed() {
+fn block_relay_requires_a_resolved_proposer() {
     const PARENT_SLOT: u64 = 10;
-
-    // The parent sits in epoch 0, so the lookahead index is the slot itself
-    // and the window is `[0, PROPOSER_LOOKAHEAD_SIZE)`.
     let last_in_window = PROPOSER_LOOKAHEAD_SIZE as u64 - 1;
-    for (slot, want_relay) in [
-        (PARENT_SLOT + 1, true),
-        (last_in_window, true),
-        (last_in_window + 1, false),
-        (last_in_window + SLOTS_PER_EPOCH, false),
-    ] {
-        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
-        seed_tile(&mut tile, 4, PARENT_SLOT);
-        tile.sync_target = SyncUpdate::Following;
+    for target in
+        [SyncUpdate::Following, SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] }]
+    {
+        for (slot, want_relay) in [
+            (PARENT_SLOT + 1, true),
+            (last_in_window, true),
+            (last_in_window + 1, false),
+            (last_in_window + SLOTS_PER_EPOCH, false),
+        ] {
+            let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+            seed_tile(&mut tile, 4, PARENT_SLOT);
+            tile.sync_target = target;
+            adapter.consume(|_: PeerEvent, _| {});
 
-        let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
-        let bytes = fulu_block_with_payload(slot, stamp, 0);
-        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+            let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
+            let bytes = fulu_block_with_payload(slot, stamp, 0);
+            let msg = gossip_msg(&mut gp, &bytes, GossipTopic::BeaconBlock);
+            assert!(tile.handle_gossip(msg.ssz, msg, true, true, &mut adapter.producers));
 
-        let mut relayed = false;
-        let feedback = tile.apply_block(
-            &data,
-            read,
-            BlockSource::Gossip,
-            true,
-            &mut adapter.producers,
-            |_| relayed = true,
-        );
-
-        assert_eq!(relayed, want_relay, "slot {slot}: {feedback:?}");
-        // Either way the block is not thrown away: the proposer window is our
-        // limit, not grounds to refuse the block.
-        assert!(!matches!(feedback, Feedback::Ignore), "slot {slot}: {feedback:?}");
+            let mut relays = Vec::new();
+            adapter.consume(|event: PeerEvent, _| {
+                if let PeerEvent::SendGossip { topic, block, .. } = event {
+                    assert_eq!(topic, GossipTopic::BeaconBlock);
+                    relays.push(block);
+                }
+            });
+            let expected = GossipBlock { slot, block_root: block_root_fulu(&bytes) };
+            assert_eq!(
+                relays,
+                if want_relay { vec![Some(expected)] } else { vec![] },
+                "{target:?}, slot {slot}"
+            );
+        }
     }
 }
 
@@ -1187,7 +1202,7 @@ fn ve_accept() {
     seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
-    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::VoluntaryExit);
 }
 
 #[test]
@@ -1215,7 +1230,7 @@ fn ps_accept() {
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::ProposerSlashing);
 }
 
 #[test]
@@ -1278,7 +1293,7 @@ fn as_accept() {
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
-    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::AttesterSlashing);
 }
 
 #[test]
@@ -1332,7 +1347,7 @@ fn bls_change_accept() {
     let imm = seed_immutable(&tile);
     let to_addr = [0x42u8; 20];
     let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::BlsToExecutionChange);
 }
 
 #[test]
@@ -1460,6 +1475,8 @@ fn attestation_updates_vote_tracker() {
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
 }
 
+/// Fixture bypass: `protobuf` reuses the SSZ handle; beacon-state forwards it
+/// without reading its bytes.
 fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> NewGossipMsg {
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
     r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
@@ -1524,10 +1541,13 @@ fn batched_att(
 fn attestation_batch_flush_applies_all() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
     let bbr = tile.last_applied_block_root;
 
+    let mut expected_topics = Vec::new();
     for vi in [0u32, 1] {
         let (buf, subnet) = batched_att(&tile, vi as usize, vi);
+        expected_topics.push(GossipTopic::BeaconAttestation(subnet));
         let m = gossip_att_msg(&mut gp, &buf, subnet);
         tile.defer_vote(m, &mut adapter.producers);
     }
@@ -1538,6 +1558,7 @@ fn attestation_batch_flush_applies_all() {
     assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, bbr);
     assert!(tile.vote_batch.is_empty());
     assert!(tile.vote_pending.is_empty());
+    assert_eq!(non_block_relays(&mut adapter), expected_topics);
 }
 
 /// A forged signature (valid G2 point, wrong key) fails the batch verify;
@@ -1632,6 +1653,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
+    adapter.consume(|_: PeerEvent, _| {});
     let bbr = tile.last_applied_block_root;
     let wall = tile.ticker.current_slot();
 
@@ -1649,6 +1671,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     // 128 positions of each subcommittee.
     assert_eq!(SyncCommitteeContributionView::aggregation_bits(&contribution), &[0xff; 16]);
     assert!(tile.vote_batch.is_empty() && tile.vote_pending.is_empty());
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
 }
 
 #[test]
@@ -1797,7 +1820,7 @@ fn sync_contribution_accepted_then_superset_ignored() {
     let bbr = tile.last_applied_block_root;
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Accept(None)));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::SyncCommitteeContributionAndProof);
     assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Ignore));
 }
 
@@ -1881,6 +1904,7 @@ fn ptc_vote_records_every_matching_committee_position() {
     let slot = 31;
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
     seed_tile_with_keys(&mut tile, 128, slot);
+    adapter.consume(|_: PeerEvent, _| {});
     let root = tile.last_applied_block_root;
     let msg = test_signing::sign_payload_attestation_message(
         0,
@@ -1908,6 +1932,7 @@ fn ptc_vote_records_every_matching_committee_position() {
     assert!(
         tile.fork_choice.ptc_data_availability_votes(&root).iter().all(|vote| *vote == Some(true))
     );
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::PayloadAttestationMessage]);
 }
 
 /// Spec `validate_on_attestation`: a single attestation for a block we
@@ -2234,7 +2259,7 @@ fn agg_accept() {
     let buf = build_agg_for_vi0(&tile);
     let beacon_block_root = tile.last_applied_block_root;
     let slot = SignedAggregateAndProofView::agg_slot(&buf);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::BeaconAggregateAndProof);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
 }
@@ -3235,4 +3260,29 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
             "persisted checkpoint diverges from the live state at `{name}`"
         );
     }
+}
+
+#[cfg(feature = "ef_tests")]
+mod block_relay;
+
+fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
+    let mut topics = Vec::new();
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { topic, block, .. } = event {
+            assert_eq!(block, None, "{topic:?} carries no block metadata");
+            topics.push(topic);
+        }
+    });
+    topics
+}
+
+fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: GossipTopic) {
+    let mut gossip = TCache::producer("non_block_relay", 1 << 20);
+    tile.gossip_consumer = gossip.cache_ref().random_access("non_block_relay", true).unwrap();
+    let (_spine, mut adapter) = spine_adapter(tile);
+    adapter.consume(|_: PeerEvent, _| {});
+    let msg = gossip_msg(&mut gossip, bytes, topic);
+    tile.on_gossip(msg, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(non_block_relays(&mut adapter), [topic]);
 }
