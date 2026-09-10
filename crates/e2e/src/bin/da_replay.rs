@@ -34,6 +34,7 @@ use silver_common::{
     TCache, TCacheProducer, TProducer,
     profiler::InProcessReader,
     ssz_view::{DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, STATUS_V2_SIZE},
+    ticker::SlotTicker,
 };
 use silver_e2e::{
     da_capture::{ColumnFixtures, SlotCapture, order_index},
@@ -105,6 +106,11 @@ impl Node {
 
         let state =
             BeaconState::from_checkpoint(state_ssz, &spec, &[]).expect("decompose anchor state");
+        let ticker = SlotTicker::new(
+            state.immutable.genesis_time,
+            Duration::from_millis(spec.slot_duration_ms()),
+            Duration::from_secs(4),
+        );
         let mut owner = BeaconStateOwner::new(state);
         // Readers see nothing until a state id is published.
         let anchor = owner.roll_fresh();
@@ -130,6 +136,7 @@ impl Node {
             spec,
             ra(&engine_p, "dc_engine"),
             TCache::producer("el_columns", 1 << 22),
+            ticker,
         );
 
         let mut conn = SpineAdapter::connect_tile(&tile, &mut spine);

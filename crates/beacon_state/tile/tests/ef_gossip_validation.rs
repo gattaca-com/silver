@@ -3,24 +3,35 @@
 //! plus the `blocks` setup list, then feed each message through the tile's
 //! gossip handler for its topic and compare the `Feedback` with `expected`.
 //!
-//! Topics the beacon-state tile does not validate are skipped and listed:
-//! column sidecars belong to the columns tile, and silver serves neither bids
-//! nor proposer preferences.
+//! The `data_column_sidecar` topic runs through a columns tile reading the same
+//! beacon state. Topics silver does not validate are skipped and listed: it
+//! serves neither bids nor proposer preferences, and partial columns are out.
 
 mod ef_common;
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use ef_common::{
     case_file, ef_tile_with_spec, init_tracing, iter_test_cases, parse_root, snappy_decode,
     spec_tests_dir,
 };
+use flux::spine::SpineAdapter;
 use serde::Deserialize;
-use silver_beacon_state::{BeaconStateTile, Feedback, ssz_hash};
+use silver_beacon_state::{BeaconStateTile, Feedback, SlotTicker, ssz_hash};
 use silver_beacon_state_data::{
-    BeaconBlockHeader, BeaconState, BlobParameters, Checkpoint, SpecConfig,
+    BeaconBlockHeader, BeaconState, BlobParameters, Checkpoint, SLOTS_PER_EPOCH, SpecConfig,
 };
-use silver_common::{PayloadValidationStatus, ssz_view::SignedBeaconBlockView};
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile, EfVerdict};
+use silver_common::{
+    PayloadValidationStatus, SilverSpine, TCache, TCacheProducer, TCacheRead, TProducer,
+    ssz_view::SignedBeaconBlockView,
+};
+use tempfile::TempDir;
 
 const HANDLED_TOPICS: &[&str] = &[
     "beacon_block",
@@ -34,6 +45,7 @@ const HANDLED_TOPICS: &[&str] = &[
     "sync_committee_contribution_and_proof",
     "execution_payload_envelope",
     "payload_attestation_message",
+    "data_column_sidecar",
 ];
 
 #[derive(Deserialize)]
@@ -134,6 +146,77 @@ fn outcome(feedback: &Feedback) -> &'static str {
         Feedback::Accept(_) => "valid",
         Feedback::Reject(_) => "reject",
         _ => "ignore",
+    }
+}
+
+/// A columns tile on its own spine, reading the beacon tile's state. Its
+/// clock and finality follow the beacon tile before each message. Field order
+/// is drop order: adapter before spine, spine before its directory.
+struct ColumnsRig {
+    adapter: SpineAdapter<SilverSpine>,
+    tile: DataColumnsTile,
+    gossip: TProducer,
+    _spine: Box<SilverSpine>,
+    _dir: TempDir,
+}
+
+impl ColumnsRig {
+    fn new(beacon: &BeaconStateTile, spec: SpecConfig) -> Self {
+        let gossip = TCache::producer("ef_columns_gossip", 1 << 24);
+        let consumer = |name| gossip.cache_ref().random_access(name, true).unwrap();
+        let consumers = ColumnConsumers {
+            gossip: consumer("ef_columns_gossip_c"),
+            persist_gossip: consumer("ef_columns_persist_gossip_c"),
+            rpc: consumer("ef_columns_rpc_c"),
+            persist_rpc: consumer("ef_columns_persist_rpc_c"),
+        };
+        let engine = TCache::producer("ef_columns_engine", 1 << 16);
+        let ticker = SlotTicker::new(
+            0,
+            Duration::from_millis(spec.slot_duration_ms()),
+            Duration::from_secs(4),
+        );
+        let tile = DataColumnsTile::new(
+            consumers,
+            beacon.reader(),
+            u128::MAX,
+            Arc::new(spec),
+            engine.cache_ref().random_access("ef_columns_engine_c", true).unwrap(),
+            TCache::producer("ef_columns_el", 1 << 16),
+            ticker,
+        );
+        let dir = TempDir::new().unwrap();
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
+        let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
+        Self { adapter, tile, gossip, _spine: spine, _dir: dir }
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> TCacheRead {
+        let mut reservation = self.gossip.reserve(bytes.len(), true).unwrap();
+        reservation.write_all(bytes).unwrap();
+        reservation.flush().unwrap();
+        reservation.read()
+    }
+
+    fn block(&mut self, bytes: &[u8]) {
+        let ssz = self.write(bytes);
+        self.tile.ef_block(ssz, &mut self.adapter.producers);
+    }
+
+    fn sync_with(&mut self, beacon: &BeaconStateTile, since_genesis_ms: u64) {
+        let fork_choice = beacon.ef_fork_choice();
+        let finalized_slot = fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        self.tile.ef_set_status(fork_choice.find_head(), finalized_slot);
+        self.tile.ef_tick(since_genesis_ms);
+    }
+
+    fn sidecar(&mut self, bytes: &[u8], subnet: u64) -> &'static str {
+        let ssz = self.write(bytes);
+        match self.tile.ef_gossip_sidecar(ssz, subnet, &mut self.adapter.producers) {
+            EfVerdict::Valid => "valid",
+            EfVerdict::Ignore => "ignore",
+            EfVerdict::Reject => "reject",
+        }
     }
 }
 
@@ -238,16 +321,35 @@ fn run_case(dir: &Path, is_gloas: bool) -> Result<Vec<String>, &'static str> {
     let state = BeaconState::decompose(&state, &spec, None)
         .unwrap_or_else(|e| panic!("{}: decompose state: {e}", dir.display()));
     let slot_ms = spec.slot_duration_ms();
+    let columns_spec = spec.clone();
     let mut tile = ef_tile_with_spec(state, spec);
 
     let base_time_ms = meta.current_time_ms.unwrap_or(tile.head_state_slot() * slot_ms);
     import_setup(&mut tile, dir, &meta, is_gloas, base_time_ms, slot_ms)?;
 
+    // Reads the columns tile hands out point back at its consumers, so it is
+    // fed only once it sits where it will stay.
+    let mut columns =
+        (meta.topic == "data_column_sidecar").then(|| ColumnsRig::new(&tile, columns_spec));
+    if let Some(rig) = &mut columns {
+        rig.sync_with(&tile, base_time_ms);
+        for setup in meta.blocks.iter().filter(|b| !b.pending) {
+            rig.block(&case_file(dir, &setup.block));
+        }
+    }
+
     let mut mismatches = Vec::new();
     for msg in &meta.messages {
         let at = msg.current_time_ms.unwrap_or(base_time_ms + msg.offset_ms.unwrap_or(0));
         tile.ef_tick(at);
-        let got = outcome(&dispatch(&mut tile, &meta.topic, msg, &case_file(dir, &msg.message)));
+        let bytes = case_file(dir, &msg.message);
+        let got = match &mut columns {
+            Some(rig) => {
+                rig.sync_with(&tile, at);
+                rig.sidecar(&bytes, msg.subnet_id)
+            }
+            None => outcome(&dispatch(&mut tile, &meta.topic, msg, &bytes)),
+        };
         if got != msg.expected {
             let reason = msg.reason.as_deref().unwrap_or("");
             mismatches
@@ -263,7 +365,6 @@ fn run_fork(fork: &str) {
     let mut failed = Vec::new();
     let mut skipped = Vec::new();
     let mut skipped_cases = Vec::new();
-    let mut known_failed = Vec::new();
     let base = networking_dir(fork);
     for entry in std::fs::read_dir(&base).unwrap().flatten() {
         let handler = entry.file_name().to_string_lossy().into_owned();
@@ -275,34 +376,30 @@ fn run_fork(fork: &str) {
         let cases = iter_test_cases(&entry.path());
         assert!(!cases.is_empty(), "{fork}/{handler}: no cases");
         for (name, dir) in &cases {
-            let case = name.rsplit('/').next().unwrap();
             match run_case(dir, fork == "gloas") {
                 Err(why) => skipped_cases.push(format!("{handler}/{name}: {why}")),
-                Ok(mismatches) if mismatches.is_empty() => {
-                    handled += 1;
-                }
                 Ok(mismatches) => {
                     handled += 1;
-                    let report =
-                        format!("{fork}/{handler}/{name}\n    {}", mismatches.join("\n    "));
+                    if !mismatches.is_empty() {
+                        failed.push(format!(
+                            "{fork}/{handler}/{name}\n    {}",
+                            mismatches.join("\n    ")
+                        ));
+                    }
                 }
             }
         }
     }
     skipped.sort();
     eprintln!(
-        "{fork}: {} cases run, {} known mismatches, {} unexpected, {} skipped; skipped handlers: {}",
+        "{fork}: {} cases run, {} failed, {} skipped; skipped handlers: {}",
         handled,
-        known_failed.len(),
         failed.len(),
         skipped_cases.len(),
         skipped.join(", ")
     );
     for c in &skipped_cases {
         eprintln!("  skipped {c}");
-    }
-    for k in &known_failed {
-        eprintln!("  known {k}");
     }
     for f in &failed {
         eprintln!("  {f}");
