@@ -116,8 +116,7 @@ impl Debug for Feedback {
 #[derive(Clone, Copy)]
 struct SelectedHead {
     observation: HeadObservation,
-    /// `None` only before the anchor is seeded, where no node is resident.
-    idx: Option<usize>,
+    idx: usize,
 }
 
 /// Head changes that require a Status even without an import or slot tick.
@@ -437,19 +436,11 @@ impl BeaconStateTile {
         );
     }
 
-    fn status_payload(&mut self, head_root: B256, head_idx: Option<usize>) -> [u8; STATUS_V2_SIZE] {
+    fn status_payload(&mut self, head_root: B256, head_idx: usize) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
-
-        let (slot, mut finalized) = match head_idx {
-            Some(idx) => {
-                let n = self.fork_choice.node(idx);
-                (n.slot, n.checkpoints.finalized)
-            }
-            None => (
-                self.slot_state_at(self.last_applied).latest_block_header.slot,
-                self.head_finalized_checkpoint(),
-            ),
-        };
+        let node = self.fork_choice.node(head_idx);
+        let slot = node.slot;
+        let mut finalized = node.checkpoints.finalized;
 
         if finalized.root == [0u8; 32] {
             // Genesis placeholder: the head state's finalized root is zero until
@@ -480,20 +471,17 @@ impl BeaconStateTile {
 
     fn selected_head(&self) -> SelectedHead {
         let root = self.fork_choice.find_head();
-        let idx = self.fork_choice.find_node_idx(&root);
-        let optimistic = idx.is_none_or(|idx| {
-            self.fork_choice.node(idx).execution_status != ExecutionStatus::Valid
-        });
-        let payload =
-            idx.map_or(PayloadResolution::Empty, |idx| self.fork_choice.payload_resolution(idx));
+        let idx =
+            self.fork_choice.find_node_idx(&root).expect("find_head returns a node-resident root");
+        let optimistic = self.fork_choice.node(idx).execution_status != ExecutionStatus::Valid;
+        let payload = self.fork_choice.payload_resolution(idx);
         SelectedHead { observation: HeadObservation { root, optimistic, payload }, idx }
     }
 
-    /// A missing node or overwritten checkpoint history makes the whole
-    /// root bundle unavailable; partial metadata cannot describe the head.
+    /// Overwritten checkpoint history makes the whole root bundle unavailable;
+    /// partial metadata cannot describe the head.
     fn head_roots(&self, head: SelectedHead) -> HeadRoots {
-        let Some(idx) = head.idx else { return HeadRoots::default() };
-        let node = self.fork_choice.node(idx);
+        let node = self.fork_choice.node(head.idx);
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(node.state_id);
         let state_slot = view.slot.state().slot;

@@ -840,6 +840,51 @@ fn head_anchor() -> StatusHead {
 }
 
 #[test]
+fn startup_status_uses_the_seeded_anchor_on_both_forks() {
+    for is_gloas in [false, true] {
+        for state_slot in [0, 70] {
+            let mut epoch = EpochState::default();
+            if is_gloas {
+                epoch.fork.current_version = Immutable::default().gloas_fork_version;
+            }
+            let state =
+                BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], state_slot);
+            let (mut tile, _gp, _rp, mut spine, mut adapter) =
+                tile_with_producers_on(state_slot, state, SpecConfig::mainnet());
+            let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+            sink.consume(|_: BeaconStateEvent, _| {});
+            let root = tile.head_block_root();
+            let state_root =
+                ssz_hash::hash_tree_root_state(&tile.state.read_view(tile.last_applied));
+            assert_ne!(root, [0; 32], "the constructor seeded a real anchor");
+            assert_eq!(tile.fork_choice.find_node_idx(&root), Some(0));
+
+            tile.loop_body(&mut adapter);
+
+            assert_eq!(
+                Published::drain(&mut sink).heads(),
+                [StatusHead {
+                    root,
+                    slot: 0,
+                    optimistic: false,
+                    roots: HeadRoots {
+                        state_root,
+                        previous_duty_dependent_root: root,
+                        current_duty_dependent_root: root,
+                    },
+                    payload: if is_gloas {
+                        PayloadResolution::Empty
+                    } else {
+                        PayloadResolution::Full
+                    },
+                }],
+                "startup at state slot {state_slot}, Gloas: {is_gloas}"
+            );
+        }
+    }
+}
+
+#[test]
 fn an_import_publishes_one_status_and_the_end_of_loop_check_adds_none() {
     let mut rig = HeadRig::new();
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
@@ -884,6 +929,21 @@ fn an_invalid_verdict_publishes_the_snapshot_of_the_head_it_moved_to() {
     let events = rig.crank();
     assert_eq!(events.heads(), [head_b(true)]);
     assert_eq!(events.reorgs(), [70], "the head left A's branch for its sibling");
+}
+
+#[test]
+fn invalidating_the_only_branch_publishes_the_resident_anchor() {
+    let mut rig = HeadRig::new();
+    let a = rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
+    assert_eq!(rig.crank().heads().last().unwrap().root, B_ROOT);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+
+    let events = rig.crank();
+    assert_eq!(events.heads(), [head_anchor()]);
+    assert_eq!(events.reorgs(), [70]);
+    assert_eq!(rig.crank().heads(), [], "the anchor remains the published head");
 }
 
 fn head_a_empty(optimistic: bool) -> StatusHead {
@@ -3630,20 +3690,41 @@ fn multi_fork_finalize_promotes_and_rebases() {
 /// Distinct slot-zero markers identify which state bundle supplies the roots
 /// after finalization remaps the surviving head.
 #[test]
-fn head_roots_read_the_survivor_s_re_anchored_bundle_after_finalization() {
+fn status_reads_the_surviving_head_after_finalization_remaps_its_node() {
     let mut forks = ThreeForks::new();
     // Justification follows finality here, as `lift_checkpoints` would have it.
     forks.tile.fork_choice.justified_checkpoint = Checkpoint { epoch: 0, root: F_ROOT };
+    let (_, _gp, _rp, mut spine, mut adapter) = tile_with_producers(2);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    forks.tile.ticker.set_since_genesis_ms(2 * 12_000);
+    forks.tile.loop_body(&mut adapter);
+    let before = Published::drain(&mut sink).heads();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].root, D_ROOT);
+    let old_idx = forks.tile.fork_choice.find_node_idx(&D_ROOT).unwrap();
+
     forks.tile.maybe_finalize();
-    assert_eq!(forks.tile.fork_choice.find_head(), D_ROOT);
+    assert!(forks.tile.fork_choice.find_node_idx(&ANCHOR_ROOT).is_none());
+    assert!(forks.tile.fork_choice.find_node_idx(&F2_ROOT).is_none());
+    let new_idx = forks.tile.fork_choice.find_node_idx(&D_ROOT).unwrap();
+    assert_ne!(old_idx, new_idx, "pruning moved the surviving head's index");
+    forks.tile.ticker.set_since_genesis_ms(3 * 12_000);
+    forks.tile.loop_body(&mut adapter);
 
     assert_eq!(
-        forks.tile.head_roots(forks.tile.selected_head()),
-        HeadRoots {
-            state_root: state_root_of(D_ROOT),
-            previous_duty_dependent_root: D_ROOT,
-            current_duty_dependent_root: D_ROOT,
-        },
+        Published::drain(&mut sink).heads(),
+        [StatusHead {
+            root: D_ROOT,
+            slot: 2,
+            optimistic: true,
+            roots: HeadRoots {
+                state_root: state_root_of(D_ROOT),
+                previous_duty_dependent_root: D_ROOT,
+                current_duty_dependent_root: D_ROOT,
+            },
+            payload: PayloadResolution::Full,
+        }],
         "epoch 0 decides at slot 0, where each bundle carries its own root"
     );
 }
