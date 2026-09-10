@@ -5,8 +5,8 @@ use std::{
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BlockSource, BlockStage, DataKind, Origin, RequestId, Scope, SyncNeed, SyncUpdate,
-    SyncingStrategy,
+    BeaconStateEvent, BlockSource, BlockStage, DataKind, Origin, RequestId, Scope, SyncNeed,
+    SyncUpdate, SyncingStrategy,
 };
 use silver_peer::SyncingConfig;
 
@@ -674,6 +674,28 @@ fn unplaceable_parent_is_chased_by_root() {
     // Arrival of that very block retires the chase.
     e.on_block_received(39, orphan_parent, Some(38), BlockStage::Applied);
     assert!(by_root_chases(&mut e, now).is_empty(), "arrival retires the chase");
+}
+
+/// A rejected block never imports, so no chase for its root can be answered;
+/// left in place the chase would re-fetch the same block every backoff.
+#[test]
+fn a_rejected_block_retires_every_chase_for_its_root() {
+    let now = Instant::now();
+    let mut e = engine();
+    issue_one(&mut e, 200, 0, now);
+
+    let root = [9u8; 32];
+    e.on_sync_need(SyncNeed::missing_block(root, 201), now);
+    e.on_sync_need(SyncNeed::missing_columns(root, 201, 1), now);
+    assert_eq!(by_root_chases(&mut e, now), vec![root], "chased by root");
+
+    e.on_beacon_state_event(&BeaconStateEvent::BlockRejected {
+        block_root: root,
+        source: BlockSource::Rpc,
+    });
+    let emitted = actions(&mut e, now + Duration::from_secs(5), true);
+    assert!(roots(&emitted, DataKind::Block).is_empty(), "the block chase is retired");
+    assert!(roots(&emitted, DataKind::Columns).is_empty(), "so is the columns chase");
 }
 
 /// The regression this whole redesign is about: a slot whose data never

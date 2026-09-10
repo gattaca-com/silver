@@ -4,9 +4,9 @@ use silver_beacon_state_data::{
     SYNC_COMMITTEE_SIZE, Slot, StateId, StateReadView, ValidatorsView, gloas::PTC_SIZE,
 };
 use silver_common::{
-    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, DataKind, EngineNewPayloadEnvelopeReq,
-    EngineReq, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, Origin,
-    PeerEvent, SyncNeed, TCacheRead, TRead, hex32,
+    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
+    GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, SyncNeed,
+    TCacheRead, TRead, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -21,11 +21,8 @@ use silver_common::{
 
 use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY,
-    Producers,
-    attestation_pool::InsertOutcome,
-    orphan_pool::{PendingBlock, has_room},
-    seen_aggregates::Coverage,
-    sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
+    Producers, attestation_pool::InsertOutcome, held_blocks::BlockSourceMsg,
+    seen_aggregates::Coverage, sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
@@ -879,7 +876,9 @@ impl BeaconStateTile {
     }
 
     fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
-        if !has_room(&self.pending_envelopes, self.pending_bounds.max_dc, &block_root) {
+        let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
+            self.pending_envelopes.contains_key(&block_root);
+        if !has_room {
             tracing::warn!(
                 block = hex32(&block_root),
                 cap = self.pending_bounds.max_dc,
@@ -1088,24 +1087,18 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let canon_id = self.canonical_state_id();
-        let mut votes = self.vote_buffers.pop().unwrap_or_default();
+        let slashed = &mut self.stf_scratch.active;
         let ok = {
             let view = self.state.read_view(canon_id);
-            stf::validate_attester_slashing_for_gossip(
-                &view,
-                data,
-                &mut votes.slashed,
-                &mut self.sig_batch,
-            )
+            stf::validate_attester_slashing_for_gossip(&view, data, slashed, &mut self.sig_batch)
         };
         // Mark the equivocators (spec `on_attester_slashing`) so fork choice
         // excludes them. Idempotent; removes any live LMD weight next recompute.
         if ok {
-            for &idx in &votes.slashed {
+            for &idx in slashed.iter() {
                 self.fork_choice.mark_equivocating(idx as usize);
             }
         }
-        self.recycle_votes(votes);
         if ok { Feedback::Accept(None) } else { Feedback::Reject(None) }
     }
 
@@ -1149,6 +1142,7 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    /// False when the ring lapped `read` before it could be handled.
     pub(super) fn handle_gossip(
         &mut self,
         read: TCacheRead,
@@ -1156,9 +1150,9 @@ impl BeaconStateTile {
         mut do_relay: bool,
         pre_verified: bool,
         producers: &mut Producers,
-    ) {
+    ) -> bool {
         let acquired = self.gossip_consumer.acquire(read);
-        let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return };
+        let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
 
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if !self.sync_target.is_following() => {
@@ -1175,7 +1169,7 @@ impl BeaconStateTile {
                     }
                     _ => {}
                 }
-                return;
+                return true;
             }
             GossipTopic::BeaconBlock => {
                 let feedback = self.apply_block(
@@ -1206,7 +1200,7 @@ impl BeaconStateTile {
                 producers,
             ),
             GossipTopic::SyncCommitteeContributionAndProof => self.handle_sync_contribution(data),
-            _ => return,
+            _ => return true,
         };
         match feedback {
             Feedback::Reject(_) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
@@ -1221,25 +1215,20 @@ impl BeaconStateTile {
                 self.on_accept(block_root, producers);
             }
             Feedback::RequestParent { .. } => {
-                self.park_block(feedback, PendingBlock::Gossip(m), data, producers)
+                self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers)
             }
             Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.park_block(feedback, PendingBlock::Gossip(m), data, producers);
+                self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers);
             }
             Feedback::RequestEnvelope { block_root, att_slot } => {
-                producers.produce(SyncNeed::Missing {
-                    root: block_root,
-                    slot: att_slot,
-                    kind: DataKind::Envelope,
-                    columns: 0,
-                    origin: Origin::Live,
-                })
+                producers.produce(SyncNeed::missing_envelope(block_root, att_slot))
             }
             Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
         }
+        true
     }
 
     fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {

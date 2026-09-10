@@ -10,8 +10,9 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent,
-    StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
+    BlockStage, EngineNewPayloadResp, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId,
+    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheProducer, TCacheRead, TProducer,
+    column_util::block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -22,8 +23,13 @@ use silver_common::{
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
-use super::{block::StagedBlock, data_availability::WaitingBlock, *};
+use super::{
+    block::{ParsedBlock, StagedBlock},
+    held_blocks::BlockSourceMsg,
+    *,
+};
 use crate::{
+    error::PrecheckError,
     fork_choice::{BlockImport, PayloadStatus},
     merkle, ssz_hash,
     stf::AttestationVote,
@@ -31,6 +37,7 @@ use crate::{
 };
 
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
+const TEST_RING_BYTES: usize = 1 << 20;
 const ANCHOR_ROOT: B256 = [0x01u8; 32];
 
 /// Byte position of the body inside a `SignedBeaconBlock`.
@@ -122,7 +129,7 @@ fn make_tile_with_gossip(
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
     let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
     let gossip_p = TCache::producer("test_gossip_buf", 1 << 20);
-    let event_p = TCache::producer("test_event_buf", 1 << 20);
+    let event_p = TCache::producer("test_event_buf", TEST_RING_BYTES);
     let engine_p = TCache::producer("test_engine", 1 << 20);
     let replay_p = TCache::producer("test_replay_buf", 1 << 20);
     let gossip_c = gossip_p.cache_ref().random_access("test_gossip_buf", true).unwrap();
@@ -145,7 +152,7 @@ fn make_tile_with_gossip(
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
 /// as a buffered gossip orphan whose slot the tile can read back.
-fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
+fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
     let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
@@ -155,7 +162,7 @@ fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
     r.increment_offset(bytes.len());
     let read = r.read();
     producer.publish_head();
-    PendingBlock::Gossip(NewGossipMsg {
+    BlockSourceMsg::Gossip(NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconBlock,
         msg_hash: MessageId { id: [0u8; 20] },
@@ -802,9 +809,16 @@ fn tile_with_producers_on(
     wall_slot: u64,
     state: BeaconState,
 ) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+    let (tile, gp, rp) = make_tile_with_gossip(wall_slot, state);
+    let (spine, adapter) = spine_adapter(&tile);
+    (tile, gp, rp, spine, adapter)
+}
+
+/// A spine plus the tile's adapter on it, so tests can hand `adapter.producers`
+/// to methods that produce. The spine is returned to keep the adapter alive.
+fn spine_adapter(tile: &BeaconStateTile) -> (Box<SilverSpine>, SpineAdapter<SilverSpine>) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let (tile, gp, rp) = make_tile_with_gossip(wall_slot, state);
     let base = std::env::temp_dir().join(format!(
         "silver-pending-{}-{}",
         std::process::id(),
@@ -812,8 +826,8 @@ fn tile_with_producers_on(
     ));
     std::fs::create_dir_all(&base).expect("temp base");
     let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
-    let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
-    (tile, gp, rp, spine, adapter)
+    let adapter = SpineAdapter::connect_tile(tile, &mut spine);
+    (spine, adapter)
 }
 
 fn root_with(idx: u64, tag: u8) -> B256 {
@@ -840,18 +854,75 @@ fn buffer_orphan_idx(
 
 /// Signed block just well-formed enough to reach the parent lookup: the
 /// message's slot sits at [100..108) and its parent root at [116..148).
-fn rpc_block(producer: &mut TProducer, slot: u64, parent_root: B256) -> silver_common::TCacheRead {
+fn empty_block_at(slot: u64, parent_root: B256) -> Vec<u8> {
     let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     bytes[116..148].copy_from_slice(&parent_root);
-    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
-    if let Ok(buf) = r.buffer() {
-        buf[..bytes.len()].copy_from_slice(&bytes);
+    bytes
+}
+
+fn rpc_block(producer: &mut TProducer, slot: u64, parent_root: B256) -> TCacheRead {
+    publish_block_bytes(producer, &empty_block_at(slot, parent_root)).1
+}
+
+fn live_block_response(ssz: TCacheRead) -> RpcInbound {
+    RpcInbound::Response(RpcResponseInbound {
+        application_id: RequestId { kind: DataKind::Block, origin: Origin::Live, seq: 0 }.into(),
+        stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+        response: RpcResponse::BeaconBlock { fork_digest: [0u8; 4], ssz },
+    })
+}
+
+/// Stream junk responses through the tile until every slot of the RPC ring
+/// is rewritten. Each one fails the size check and is released like real
+/// traffic, so the consumer tail follows the producer and the ring wraps.
+fn lap_rpc_ring(tile: &mut BeaconStateTile, rp: &mut TProducer, producers: &mut Producers) {
+    const JUNK_BYTES: usize = 1 << 16;
+    let junk = vec![0u8; JUNK_BYTES];
+    for _ in 0..(TEST_RING_BYTES / JUNK_BYTES + 2) {
+        let (_, ssz) = publish_block_bytes(rp, &junk);
+        tile.on_rpc_inbound(live_block_response(ssz), producers);
+        tile.rpc_consumer.free();
     }
-    r.increment_offset(bytes.len());
-    let read = r.read();
-    producer.publish_head();
-    read
+}
+
+fn missing_blocks(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, u64)> {
+    let mut needs = Vec::new();
+    sink.consume(|need: SyncNeed, _| {
+        if let SyncNeed::Missing { root, slot, kind: DataKind::Block, .. } = need {
+            needs.push((root, slot));
+        }
+    });
+    needs
+}
+
+/// A parked child's bytes live only in the RPC ring. If the ring turns over
+/// before its parent imports, the replay has nothing to apply; the child must
+/// then be asked for again, or sync waits on a block nobody will re-deliver.
+#[test]
+fn lapped_orphan_is_re_requested_on_replay() {
+    let (mut tile, _gp, mut rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: SyncNeed, _| {});
+
+    let parent_root = [0xAAu8; 32];
+    let child = empty_block_at(11, parent_root);
+    let (_, ssz) = publish_block_bytes(&mut rp, &child);
+    tile.on_rpc_inbound(live_block_response(ssz), &mut adapter.producers);
+    assert_eq!(missing_blocks(&mut sink), [(parent_root, 11)], "the child chases its parent");
+
+    lap_rpc_ring(&mut tile, &mut rp, &mut adapter.producers);
+    assert!(missing_blocks(&mut sink).is_empty(), "junk asks for nothing");
+
+    tile.on_accept(Some(parent_root), &mut adapter.producers);
+
+    assert_eq!(
+        missing_blocks(&mut sink),
+        [(block_root_fulu(&child), 11)],
+        "the lapped child is re-requested"
+    );
+    assert!(tile.held.orphans.parents() == 0, "nothing stays parked under an imported parent");
 }
 
 /// Signed envelope just well-formed enough to reach the block lookup: the
@@ -896,14 +967,14 @@ fn backfill_block_response_is_not_parked() {
     for kind in [DataKind::Block, DataKind::Envelope] {
         let ssz = rpc_block(&mut rp, 11, unknown_parent);
         tile.on_rpc_inbound(response(kind, Origin::Backfill, ssz), &mut adapter.producers);
-        assert!(tile.pending_blocks.is_empty(), "backfill {kind:?} response not parked");
+        assert!(tile.held.orphans.parents() == 0, "backfill {kind:?} response not parked");
     }
 
     // Control: the live origin on the same bytes *does* park, so the
     // assertions above are about the guard and not about malformed input.
     let ssz = rpc_block(&mut rp, 11, unknown_parent);
     tile.on_rpc_inbound(response(DataKind::Block, Origin::Live, ssz), &mut adapter.producers);
-    assert_eq!(tile.pending_blocks.len(), 1, "live block parks on its missing parent");
+    assert_eq!(tile.held.orphans.parents(), 1, "live block parks on its missing parent");
 }
 
 /// Storage's historical envelopes ride the same response queue. Their block
@@ -945,10 +1016,10 @@ fn orphan_below_cap_is_buffered() {
     for i in 0..cap as u64 - 1 {
         buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, i);
     }
-    assert_eq!(tile.pending_blocks.len(), cap - 1);
+    assert_eq!(tile.held.orphans.parents(), cap - 1);
     // A new distinct missing parent while below the cap is buffered.
     buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, u64::MAX);
-    assert_eq!(tile.pending_blocks.len(), cap, "orphan buffered below cap");
+    assert_eq!(tile.held.orphans.parents(), cap, "orphan buffered below cap");
 }
 
 #[test]
@@ -959,10 +1030,10 @@ fn orphan_at_cap_is_refused() {
     for i in 0..cap as u64 {
         buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, i);
     }
-    assert_eq!(tile.pending_blocks.len(), cap);
+    assert_eq!(tile.held.orphans.parents(), cap);
     // At the cap, a new distinct missing parent is refused — chain capped.
     buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, u64::MAX);
-    assert_eq!(tile.pending_blocks.len(), cap, "orphan refused at cap");
+    assert_eq!(tile.held.orphans.parents(), cap, "orphan refused at cap");
 }
 
 #[test]
@@ -981,7 +1052,7 @@ fn orphan_too_far_ahead_falls_back_to_syncing() {
         edge,
         &mut adapter.producers,
     );
-    assert_eq!(tile.pending_blocks.len(), 1, "edge orphan buffered");
+    assert_eq!(tile.held.orphans.parents(), 1, "edge orphan buffered");
 
     // One slot past the gap: refused before insert, syncing takes over.
     let beyond = head + limit + 1;
@@ -992,7 +1063,7 @@ fn orphan_too_far_ahead_falls_back_to_syncing() {
         beyond,
         &mut adapter.producers,
     );
-    assert_eq!(tile.pending_blocks.len(), 1, "too-far orphan not buffered");
+    assert_eq!(tile.held.orphans.parents(), 1, "too-far orphan not buffered");
 }
 
 /// The gap bound is not a Following-only courtesy: syncing is when the tip is
@@ -1013,7 +1084,7 @@ fn orphan_too_far_ahead_is_refused_while_syncing_too() {
         &mut adapter.producers,
     );
 
-    assert!(tile.pending_blocks.is_empty(), "a far-ahead orphan is left to the range walk");
+    assert!(tile.held.orphans.parents() == 0, "a far-ahead orphan is left to the range walk");
 }
 
 #[test]
@@ -1027,8 +1098,24 @@ fn duplicate_orphan_not_rebuffered() {
     };
     buffer(&mut tile, &mut gp, &mut adapter.producers);
     buffer(&mut tile, &mut gp, &mut adapter.producers);
-    assert_eq!(tile.pending_blocks.len(), 1, "same parent");
-    assert_eq!(tile.pending_blocks[&parent].len(), 1, "duplicate block_root dropped");
+    assert_eq!(tile.held.orphans.parents(), 1, "same parent");
+    assert_eq!(tile.held.orphans.take(&parent).len(), 1, "duplicate block_root dropped");
+}
+
+/// The payload-orphan pool is the same pool under another dependency: a
+/// block re-delivered while its parent's envelope is pending is held once,
+/// not replayed once per copy.
+#[test]
+fn duplicate_payload_orphan_not_rebuffered() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let (parent, block_root) = (root_with(0, 0x00), root_with(0, 0xFF));
+    let slot = tile.head_state_slot() + 1;
+    for _ in 0..2 {
+        let pending = gossip_pending(&mut gp, slot);
+        tile.buffer_awaiting_payload(parent, block_root, slot, pending, &mut adapter.producers);
+    }
+    assert_eq!(tile.held.payload_orphans.take(&parent).len(), 1, "duplicate block_root dropped");
 }
 
 // ── gossip handlers ──
@@ -2660,7 +2747,7 @@ impl ThreeForks {
         slot: Slot,
     ) -> StateId {
         let id = self.roll(parent, slot, root);
-        let PendingBlock::Gossip(msg) = gossip_pending(producer, slot) else { unreachable!() };
+        let BlockSourceMsg::Gossip(msg) = gossip_pending(producer, slot) else { unreachable!() };
         let parsed = ParsedBlock {
             header: BeaconBlockHeader {
                 slot,
@@ -2676,11 +2763,7 @@ impl ThreeForks {
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };
-        self.tile.data_availability.hold(WaitingBlock {
-            staged: StagedBlock::with_state_id(parsed, id),
-            read: msg.ssz,
-            source: BlockSource::Gossip,
-        });
+        self.tile.held.stage(StagedBlock::with_state_id(parsed, id, msg.ssz, BlockSource::Gossip));
         id
     }
 }
@@ -2739,16 +2822,130 @@ fn staged_blocks_follow_finalization() {
 
     forks.tile.maybe_finalize();
 
-    let da = &forks.tile.data_availability;
-    assert!(!da.is_awaiting(&S2_ROOT), "S2 dropped with F2");
-    assert!(da.is_awaiting(&S_ROOT), "S survives");
-    let s_rebased = da.state_id(&S_ROOT).unwrap();
+    let held = &mut forks.tile.held;
+    assert!(!held.is_staged(&S2_ROOT), "S2 dropped with F2");
+    assert!(held.is_staged(&S_ROOT), "S survives");
+    let s_rebased = *held.state_ids_mut().next().expect("S is the only staged block");
     assert_ne!(s_rebased, s_id, "stale staged bundle replaced");
     assert_eq!(
         forks.block_roots(s_rebased, &[1, 2, 3]),
         [F_ROOT, D_ROOT, S_ROOT],
         "S's roots survive"
     );
+}
+
+/// The EL's verdict on a staged block arrives while the block waits for its
+/// columns, before it is in fork choice. An INVALID must still drop it, or it
+/// imports optimistic once its columns land and can become head.
+#[test]
+fn el_invalid_drops_staged_block() {
+    const S_ROOT: B256 = [0x05; 32];
+    let mut forks = ThreeForks::new();
+    let (mut spine, mut adapter) = spine_adapter(&forks.tile);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    let mut producer = TCache::producer("test_el_invalid", 1 << 12);
+    forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+
+    let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
+        block_root: S_ROOT,
+        status: PayloadValidationStatus::Invalid,
+        latest_valid_hash: [0u8; 32],
+    });
+    forks.tile.handle_engine_response(verdict, &mut adapter.producers);
+
+    assert!(!forks.tile.held.is_staged(&S_ROOT), "no longer waiting");
+    let mut rejected = Vec::new();
+    sink.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::BlockRejected { block_root, .. } = event {
+            rejected.push(block_root);
+        }
+    });
+    assert_eq!(rejected, [S_ROOT], "the peer that served it is told");
+}
+
+/// Once dropped, an EL-invalid staged block is nowhere: not in fork choice,
+/// not staged. Without a memory of the rejection its next child would chase
+/// it by root, the re-fetched copy would stage and fail the EL again, and
+/// every round would restart range sync.
+#[test]
+fn el_invalid_staged_block_is_remembered_as_rejected() {
+    const S_ROOT: B256 = [0x05; 32];
+    let mut forks = ThreeForks::new();
+    let (_spine, mut adapter) = spine_adapter(&forks.tile);
+    let mut producer = TCache::producer("test_el_invalid_memory", 1 << 12);
+    forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+
+    let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
+        block_root: S_ROOT,
+        status: PayloadValidationStatus::Invalid,
+        latest_valid_hash: [0u8; 32],
+    });
+    forks.tile.handle_engine_response(verdict, &mut adapter.producers);
+
+    assert!(forks.tile.held.is_rejected(&S_ROOT));
+    let child = empty_block_at(4, S_ROOT);
+    assert!(
+        matches!(
+            forks.tile.parse_and_verify_block(&child, false),
+            Err(PrecheckError::ParentInvalid { parent_root: S_ROOT, .. })
+        ),
+        "a child of the rejected block is rejected, not parked"
+    );
+}
+
+/// Below a finalized target nothing waits for its columns, and range sync
+/// re-delivers the staged slots; a copy left staged would answer that
+/// delivery with `AwaitingData` and the slot would never be covered.
+#[test]
+fn a_finalized_target_drops_staged_blocks() {
+    const S_ROOT: B256 = [0x05; 32];
+    let mut forks = ThreeForks::new();
+    let mut producer = TCache::producer("test_staged_finalized_target", 1 << 12);
+    forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+
+    forks.tile.on_sync_update(SyncUpdate::SyncingHead { head_root: [9; 32], head_slot: 40 });
+    assert!(forks.tile.held.is_staged(&S_ROOT), "a head target keeps the DA gate");
+
+    forks
+        .tile
+        .on_sync_update(SyncUpdate::SyncingFinalized { target_epoch: 2, target_root: [8; 32] });
+    assert!(!forks.tile.held.is_staged(&S_ROOT), "a finalized target lifts it");
+}
+
+/// A child parked on a staged block leaves with it when finalization prunes
+/// the staged block's fork: nothing would ever import that parent.
+#[test]
+fn pruned_staged_block_takes_its_children() {
+    const S2_ROOT: B256 = [0x52; 32];
+    let mut forks = ThreeForks::new();
+    let (_spine, mut adapter) = spine_adapter(&forks.tile);
+    let mut producer = TCache::producer("test_staged_children", 1 << 12);
+    forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
+    let child = gossip_pending(&mut producer, 3);
+    let parked = forks.tile.buffer_orphan(S2_ROOT, [0x53; 32], child, 3, &mut adapter.producers);
+    assert!(parked, "child parked on S2");
+
+    forks.tile.maybe_finalize();
+
+    assert!(!forks.tile.held.is_staged(&S2_ROOT), "S2 dropped with F2");
+    assert!(forks.tile.held.orphans.take(&S2_ROOT).is_empty(), "its child goes with it");
+}
+
+/// Availability is announced once, so it must outlive a release the caller
+/// could not import: the re-fetched copy still finds its columns available.
+#[test]
+fn availability_outlives_a_failed_release() {
+    const S_ROOT: B256 = [0x05; 32];
+    let mut forks = ThreeForks::new();
+    let mut producer = TCache::producer("test_da_release", 1 << 12);
+    forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+
+    let held = &mut forks.tile.held;
+    assert!(held.mark_available(S_ROOT, 3).is_some(), "the held block is released");
+    assert!(held.is_available(&S_ROOT), "availability is kept until an import consumes it");
+    held.discard_available(&S_ROOT);
+    assert!(!held.is_available(&S_ROOT), "the import consumed it");
 }
 
 /// Write a sentinel into every tier on a fork, finalize it, and require the

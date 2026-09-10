@@ -53,7 +53,6 @@ pub struct Threshold {
 }
 
 impl Threshold {
-    /// `stage_and_import<BeaconStateTile>` at p50 → `stage_and_import (p50)`.
     pub fn label(&self) -> String {
         let name = self.frame.split('<').next().unwrap_or(&self.frame);
         format!("{name} ({})", self.stat)

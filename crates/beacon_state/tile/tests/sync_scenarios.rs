@@ -35,3 +35,8 @@ fn scenario_5_data_columns_before_block_imports_on_arrival() {
 fn scenario_6_blob_block_staged_then_applied_on_data_columns() {
     common::run_scenario(&cases_dir().join("scenario_6_blob_staged_then_applied"));
 }
+
+#[test]
+fn scenario_7_lapped_staged_block_is_refetched() {
+    common::run_scenario(&cases_dir().join("scenario_7_blob_staged_lapped_then_refetched"));
+}

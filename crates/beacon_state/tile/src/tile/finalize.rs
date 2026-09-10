@@ -41,7 +41,7 @@ impl BeaconStateTile {
         // is now the finalized block) are exactly the deltas to re-base.
         self.fork_choice.prune();
         let fork_choice = &self.fork_choice;
-        self.data_availability.drop_outdated(|parent| fork_choice.find_node_idx(parent).is_some());
+        self.held.drop_outdated(|parent| fork_choice.find_node_idx(parent).is_some());
 
         {
             // The head's rebased bundle must publish in the same seqlock
@@ -56,12 +56,12 @@ impl BeaconStateTile {
                 self.fork_choice
                     .live_state_ids_mut()
                     .chain(iter::once(&mut self.last_applied))
-                    .chain(self.data_availability.state_ids_mut()),
+                    .chain(self.held.state_ids_mut()),
             );
             guard.set_state_id(self.last_applied);
         }
 
         let fin_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
-        self.clear_pending_blocks(fin_slot);
+        self.clear_finalized_held(fin_slot);
     }
 }

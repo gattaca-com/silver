@@ -39,6 +39,23 @@ impl BlockVotes {
     }
 }
 
+/// Free list of `BlockVotes` buffers. A block waiting for its data columns
+/// keeps its buffer until it imports, so the pool grows to the peak number of
+/// waiting blocks and then stops allocating.
+#[derive(Default)]
+pub struct VotePool(Vec<BlockVotes>);
+
+impl VotePool {
+    pub fn take(&mut self) -> BlockVotes {
+        self.0.pop().unwrap_or_else(BlockVotes::with_max_capacity)
+    }
+
+    pub fn recycle(&mut self, mut votes: BlockVotes) {
+        votes.clear();
+        self.0.push(votes);
+    }
+}
+
 /// Reusable scratch buffers threaded together through the state transition
 /// (`apply_block` → `process_slots` → `process_epoch`).
 pub struct StfScratch {
@@ -50,6 +67,7 @@ pub struct StfScratch {
     /// epoch-transition passes.
     pub replace_u64: Vec<(u32, u64)>,
     pub eff: Vec<u64>,
+    pub votes: VotePool,
 }
 
 impl StfScratch {
@@ -59,6 +77,7 @@ impl StfScratch {
             postponed: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             replace_u64: Vec::with_capacity(validator_cap),
             eff: Vec::with_capacity(validator_cap),
+            votes: VotePool::default(),
         }
     }
 }

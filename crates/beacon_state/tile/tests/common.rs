@@ -29,6 +29,8 @@ fn null_stream_id() -> P2pStreamId {
     P2pStreamId::new(0, 0, StreamProtocol::Unset, false)
 }
 
+const RPC_RING_BYTES: usize = 1 << 24;
+
 #[derive(Debug, Deserialize)]
 pub struct Setup {
     /// Startup checkpoint state path (required; use `null` for no
@@ -55,6 +57,8 @@ pub enum Step {
     BlocksRangeResp { from: String },
     /// Inject a `DataColumnsAvailable` for the block at `from`.
     DataColumnsAvailable { from: String },
+    /// Turn the RPC ring over, so a block held only by its ring handle is gone.
+    LapRpcRing,
     /// Inject an inbound Status from a peer.
     Status { head_slot: u64, finalized_epoch: u64, finalized_root: String },
     /// Inject a `SyncUpdate` from peer-manager. `target` is one of:
@@ -223,7 +227,7 @@ impl Harness {
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
 
         let gossip_in_producer = TCache::producer("gossip_in", 1 << 24);
-        let rpc_in_producer = TCache::producer("rpc_in", 1 << 24);
+        let rpc_in_producer = TCache::producer("rpc_in", RPC_RING_BYTES);
         let engine_resp_producer = TCache::producer("engine_resp", 1 << 24);
         let replay_in_producer = TCache::producer("replay_in", 1 << 24);
         let gossip_consumer =
@@ -335,6 +339,17 @@ impl Harness {
                 ssz: tcache,
             },
         }));
+    }
+
+    /// Each junk chunk fails the block size check and is released, so the
+    /// consumer tail follows the producer and the ring wraps.
+    pub fn lap_rpc_ring(&mut self) {
+        const JUNK_BYTES: usize = 1 << 16;
+        let junk = vec![0u8; JUNK_BYTES];
+        for _ in 0..(RPC_RING_BYTES / JUNK_BYTES + 2) {
+            self.inject_blocks_range_resp(&junk);
+            self.step();
+        }
     }
 
     pub fn inject_sync_target(&mut self, target: SyncUpdate) {
@@ -484,6 +499,7 @@ pub fn run_scenario(case_dir: &Path) {
                 let ssz = snappy_decode(&resolve(from));
                 h.inject_data_columns_available(&ssz);
             }
+            Step::LapRpcRing => h.lap_rpc_ring(),
             Step::Status { head_slot, finalized_epoch, finalized_root } => {
                 h.inject_status(*head_slot, *finalized_epoch, parse_b256(finalized_root));
             }

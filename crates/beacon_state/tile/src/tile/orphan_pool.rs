@@ -1,37 +1,24 @@
 use flux::spine::SpineProducers;
-use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, DataKind, NewGossipMsg, Origin, P2pStreamId,
-    PeerEvent, RpcSeverity, SyncNeed, TCacheRead, TRandomAccess, hex32, metrics::timed,
-    ssz_view::SignedBeaconBlockView,
+    BeaconStateEvent, BlockSource, BlockStage, P2pStreamId, PeerEvent, RpcSeverity, SyncNeed,
+    TCacheRead, hex32, metrics::timed, ssz_view::SignedBeaconBlockView,
 };
 
-use super::{BeaconStateTile, Feedback, Producers};
-
-const MAX_PENDING_PER_PARENT: usize = 4;
+use super::{
+    BeaconStateTile, Feedback, Producers,
+    held_blocks::{BlockSourceMsg, Orphan},
+};
 
 impl BeaconStateTile {
     #[timed]
-    pub(super) fn clear_pending_blocks(&mut self, finalized_slot: u64) {
+    pub(super) fn clear_finalized_held(&mut self, finalized_slot: u64) {
         tracing::debug!(
-            pending_blocks = self.pending_blocks.len(),
+            orphan_parents = self.held.orphans.parents(),
             finalized_slot,
-            "clear pending blocks at finalization"
+            "clear held blocks at finalization"
         );
-        let (gossip_consumer, rpc_consumer) = (&mut self.gossip_consumer, &mut self.rpc_consumer);
-        let mut outlives = |msg: &PendingBlock| {
-            pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
-        };
-        self.pending_blocks.retain(|_, msgs| {
-            msgs.retain(|(_, msg)| outlives(msg));
-            !msgs.is_empty()
-        });
-        self.payload_pending_blocks.retain(|_, msgs| {
-            msgs.retain(&mut outlives);
-            !msgs.is_empty()
-        });
-        self.data_availability.clear_finalized(finalized_slot);
+        self.held.clear_outdated(finalized_slot);
 
         self.pending_envelopes.retain(|root, handle| {
             let held = handle.buffer().is_ok();
@@ -45,15 +32,13 @@ impl BeaconStateTile {
         });
     }
 
-    pub(super) fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
-        if let Some(pending) = self.pending_blocks.remove(&parent_root) {
-            for (_, child) in pending {
-                // First successful validation of an orphan held on a missing
-                // parent: relay it now. Recursively applies chained orphans.
-                // Not pre-verified — precheck bailed at parent-missing before
-                // the BLS check, so the signature is still unverified.
-                self.replay_pending_block(child, true, false, producers);
-            }
+    pub(super) fn replay_orphans(&mut self, parent_root: B256, producers: &mut Producers) {
+        for child in self.held.orphans.take(&parent_root) {
+            // First successful validation of an orphan held on a missing
+            // parent: relay it now. Recursively applies chained orphans.
+            // Not pre-verified — precheck bailed at parent-missing before
+            // the BLS check, so the signature is still unverified.
+            self.replay_pending_block(child, true, false, producers);
         }
     }
 
@@ -61,7 +46,7 @@ impl BeaconStateTile {
         &mut self,
         parent_root: B256,
         block_root: B256,
-        pending: PendingBlock,
+        msg: BlockSourceMsg,
         block_slot: Slot,
         producers: &mut Producers,
     ) -> bool {
@@ -85,36 +70,13 @@ impl BeaconStateTile {
             return false;
         }
 
-        let existing = self.pending_blocks.get(&parent_root);
-        if existing.is_some_and(|v| v.iter().any(|(r, _)| *r == block_root)) {
-            return true;
-        }
-
-        let at_parent_cap = existing.is_some_and(|v| v.len() >= MAX_PENDING_PER_PARENT);
-        let new_parent = existing.is_none();
-        if at_parent_cap ||
-            (new_parent && self.pending_blocks.len() >= self.pending_bounds.max_parents)
-        {
-            tracing::warn!(
-                parent = hex32(&parent_root),
-                at_parent_cap,
-                pending_parents = self.pending_blocks.len(),
-                "pending-orphan buffer full; dropping orphan"
-            );
+        let orphan = Orphan { block_root, slot: block_slot, msg };
+        if !self.held.orphans.park(parent_root, orphan) {
             return false;
         }
-
-        self.pending_blocks.entry(parent_root).or_default().push((block_root, pending));
-        // A parent awaiting data availability is already held; its import drains this
-        // child.
-        if !self.data_availability.is_awaiting(&parent_root) {
-            producers.produce(SyncNeed::Missing {
-                root: parent_root,
-                slot: block_slot,
-                kind: DataKind::Block,
-                columns: 0,
-                origin: Origin::Live,
-            });
+        // A staged parent is already held; its import drains this child.
+        if !self.held.is_staged(&parent_root) {
+            producers.produce(SyncNeed::missing_block(parent_root, block_slot));
         }
         true
     }
@@ -131,30 +93,16 @@ impl BeaconStateTile {
     pub(super) fn buffer_awaiting_payload(
         &mut self,
         parent_root: B256,
+        block_root: B256,
         block_slot: Slot,
-        pending: PendingBlock,
+        msg: BlockSourceMsg,
         producers: &mut Producers,
     ) -> bool {
-        if !self.payload_pending_blocks.contains_key(&parent_root) &&
-            self.payload_pending_blocks.len() >= self.pending_bounds.max_dc
-        {
-            tracing::warn!(
-                parent = hex32(&parent_root),
-                block_slot,
-                cap = self.pending_bounds.max_dc,
-                "payload-pending buffer full; block awaiting parent envelope dropped"
-            );
+        let orphan = Orphan { block_root, slot: block_slot, msg };
+        if !self.held.payload_orphans.park(parent_root, orphan) {
             return false;
         }
-
-        self.payload_pending_blocks.entry(parent_root).or_default().push(pending);
-        producers.produce(SyncNeed::Missing {
-            root: parent_root,
-            slot: block_slot,
-            kind: DataKind::Envelope,
-            columns: 0,
-            origin: Origin::Live,
-        });
+        producers.produce(SyncNeed::missing_envelope(parent_root, block_slot));
         true
     }
 
@@ -163,33 +111,40 @@ impl BeaconStateTile {
         verified_root: B256,
         producers: &mut Producers,
     ) {
-        if let Some(pending) = self.payload_pending_blocks.remove(&verified_root) {
-            for child in pending {
-                self.replay_pending_block(child, false, false, producers);
-            }
+        for child in self.held.payload_orphans.take(&verified_root) {
+            self.replay_pending_block(child, false, false, producers);
         }
     }
 
     fn replay_pending_block(
         &mut self,
-        pending: PendingBlock,
+        orphan: Orphan,
         do_relay: bool,
         pre_verified: bool,
         producers: &mut Producers,
     ) {
-        match pending {
-            PendingBlock::Gossip(g) => {
-                self.handle_gossip(g.ssz, g, do_relay, pre_verified, producers);
+        let Orphan { block_root, slot, msg } = orphan;
+        let replayed = match msg {
+            BlockSourceMsg::Gossip(g) => {
+                self.handle_gossip(g.ssz, g, do_relay, pre_verified, producers)
             }
-            PendingBlock::Rpc(stream_id, ssz) => {
-                self.handle_rpc_block(stream_id, ssz, pre_verified, producers);
+            BlockSourceMsg::Rpc(stream_id, ssz) => {
+                self.handle_rpc_block(stream_id, ssz, pre_verified, producers)
             }
+        };
+        if !replayed {
+            tracing::warn!(
+                block = hex32(&block_root),
+                slot,
+                "parked block lapped in the tcache before its dependency arrived; re-requesting"
+            );
+            producers.produce(SyncNeed::missing_block(block_root, slot));
         }
     }
 
     pub(super) fn on_accept(&mut self, block_root: Option<B256>, producers: &mut Producers) {
         if let Some(root) = block_root {
-            self.apply_pending_blocks(root, producers);
+            self.replay_orphans(root, producers);
             self.drain_pending_envelope(root, producers);
         }
         producers.produce(self.status_event());
@@ -198,22 +153,23 @@ impl BeaconStateTile {
     pub(super) fn park_block(
         &mut self,
         feedback: Feedback,
-        source: PendingBlock,
+        msg: BlockSourceMsg,
         data: &[u8],
         producers: &mut Producers,
     ) {
-        let block_source = source.source();
+        let block_source = msg.source();
         let admitted = match feedback {
             Feedback::RequestParent { parent_root, block_root } => {
                 let block_slot = SignedBeaconBlockView::slot(data);
-                self.buffer_orphan(parent_root, block_root, source, block_slot, producers)
+                self.buffer_orphan(parent_root, block_root, msg, block_slot, producers)
                     .then_some(block_root)
             }
             Feedback::AwaitParentPayload { parent_root, block_root } => self
                 .buffer_awaiting_payload(
                     parent_root,
+                    block_root,
                     SignedBeaconBlockView::slot(data),
-                    source,
+                    msg,
                     producers,
                 )
                 .then_some(block_root),
@@ -255,16 +211,17 @@ impl BeaconStateTile {
         });
     }
 
+    /// False when the ring lapped `read` before it could be handled.
     pub(super) fn handle_rpc_block(
         &mut self,
         sender: P2pStreamId,
         read: TCacheRead,
         pre_verified: bool,
         producers: &mut Producers,
-    ) {
+    ) -> bool {
         let acquired = self.rpc_consumer.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
-            return;
+            return false;
         };
 
         if !SignedBeaconBlockView::check_size(data) {
@@ -272,7 +229,7 @@ impl BeaconStateTile {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::LowTolerance,
             });
-            return;
+            return true;
         }
 
         let feedback =
@@ -284,58 +241,8 @@ impl BeaconStateTile {
                 severity: RpcSeverity::Fatal,
             }),
             Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
-            _ => self.park_block(feedback, PendingBlock::Rpc(sender, read), data, producers),
+            _ => self.park_block(feedback, BlockSourceMsg::Rpc(sender, read), data, producers),
         }
-    }
-}
-
-pub(super) enum PendingBlock {
-    Gossip(NewGossipMsg),
-    Rpc(P2pStreamId, TCacheRead),
-}
-
-impl PendingBlock {
-    fn source(&self) -> BlockSource {
-        match self {
-            Self::Gossip(_) => BlockSource::Gossip,
-            Self::Rpc(..) => BlockSource::Rpc,
-        }
-    }
-}
-
-/// Resolve a pending block's slot via its source consumer. `None` if the
-/// buffer was recycled (the block's data is gone).
-fn pending_block_slot(
-    gossip_consumer: &mut TRandomAccess,
-    rpc_consumer: &mut TRandomAccess,
-    msg: &PendingBlock,
-) -> Option<Slot> {
-    let acquired = match msg {
-        PendingBlock::Gossip(g) => gossip_consumer.acquire(g.ssz),
-        PendingBlock::Rpc(_, ssz) => rpc_consumer.acquire(*ssz),
-    };
-    acquired.buffer().ok().map(|(buffer, _)| SignedBeaconBlockView::slot(buffer))
-}
-
-pub(super) fn has_room<V>(map: &FxHashMap<B256, V>, cap: usize, key: &B256) -> bool {
-    map.len() < cap || map.contains_key(key)
-}
-
-/// Keep a pending block iff its slot is above the finalized boundary.
-fn pending_block_outlives(
-    gossip_consumer: &mut TRandomAccess,
-    rpc_consumer: &mut TRandomAccess,
-    msg: &PendingBlock,
-    finalized_slot: u64,
-) -> bool {
-    match pending_block_slot(gossip_consumer, rpc_consumer, msg) {
-        Some(slot) => slot > finalized_slot,
-        None => {
-            tracing::error!(
-                "parked block lapped in the tcache before its dependency arrived; \
-                 its coverage is now false"
-            );
-            false
-        }
+        true
     }
 }

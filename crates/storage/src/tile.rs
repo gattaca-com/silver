@@ -244,13 +244,7 @@ impl StorageTile {
                             "persist block buffer acquire failed"
                         );
                         StorageCounters::PersistAcquireFailed.inc();
-                        needs(SyncNeed::Missing {
-                            root: block_root,
-                            slot,
-                            kind: DataKind::Block,
-                            columns: 0,
-                            origin: Origin::Live,
-                        });
+                        needs(SyncNeed::missing_block(block_root, slot));
                     }
                 }
             }
@@ -276,13 +270,7 @@ impl StorageTile {
                             "envelope buffer acquire failed"
                         );
                         StorageCounters::PersistAcquireFailed.inc();
-                        needs(SyncNeed::Missing {
-                            root: block_root,
-                            slot,
-                            kind: DataKind::Envelope,
-                            columns: 0,
-                            origin: Origin::Live,
-                        });
+                        needs(SyncNeed::missing_envelope(block_root, slot));
                     }
                 }
             }
@@ -389,14 +377,8 @@ impl Tile<SilverSpine> for StorageTile {
                         );
                         StorageCounters::PersistAcquireFailed.inc();
                         producers.sync_needs.produce(
-                            &SyncNeed::Missing {
-                                root: block_root,
-                                slot,
-                                kind: DataKind::Columns,
-                                columns: 1u128 << column_index,
-                                origin: Origin::Live,
-                            }
-                            .into(),
+                            &SyncNeed::missing_columns(block_root, slot, 1u128 << column_index)
+                                .into(),
                         );
                     }
                 }
