@@ -9,6 +9,7 @@ version.workspace = true
 flux.workspace = true
 raft.workspace = true
 silver_chain_spec.workspace = true
+silver_columns.workspace = true
 silver_common.workspace = true
 silver_gossip.workspace = true
 silver_peer.workspace = true
@@ -17,6 +18,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 silver_common = { workspace = true, features = ["test-util"] }
+tempfile = "3"
 
 [lints]
 workspace = true
