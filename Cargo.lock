@@ -4546,6 +4546,7 @@ dependencies = [
  "silver_engine_api",
  "silver_httpcore",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]
