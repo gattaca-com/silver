@@ -1,5 +1,6 @@
 mod availability;
 mod batch;
+pub mod cell_store;
 pub mod counters;
 mod el_blobs;
 mod sync;
