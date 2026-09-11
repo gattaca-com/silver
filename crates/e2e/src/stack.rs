@@ -230,6 +230,10 @@ impl PublisherStack {
             mcache_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         let cluster_in_producer = TCache::producer("e2e_cluster_in", 1 << 12);
+        let cluster_in_consumer = cluster_in_producer
+            .cache_ref()
+            .strict_random_access("e2e_control_cluster_in", true)
+            .expect("cluster inbound random access");
         let cluster_out_producer = TCache::producer("e2e_cluster_out", 1 << 12);
         let cluster_out_consumer = cluster_out_producer
             .cache_ref()
@@ -286,8 +290,12 @@ impl PublisherStack {
             .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
             rpc_in_ctl,
+            cluster_out_producer,
+            cluster_in_consumer,
+            None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
-        );
+        )
+        .map_err(std::io::Error::other)?;
 
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
@@ -354,6 +362,10 @@ impl EchoStack {
             rpc_out_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         let cluster_in_producer = TCache::producer("e2e_cluster_in", 1 << 12);
+        let cluster_in_consumer = cluster_in_producer
+            .cache_ref()
+            .strict_random_access("e2e_control_cluster_in", true)
+            .expect("cluster inbound random access");
         let cluster_out_producer = TCache::producer("e2e_cluster_out", 1 << 12);
         let cluster_out_consumer = cluster_out_producer
             .cache_ref()
@@ -412,8 +424,12 @@ impl EchoStack {
                 .cache_ref()
                 .random_access("ctl_e2e", true)
                 .expect("ctl rpc ra"),
+            cluster_out_producer,
+            cluster_in_consumer,
+            None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
-        );
+        )
+        .map_err(std::io::Error::other)?;
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);

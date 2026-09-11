@@ -24,11 +24,11 @@ use silver_common::{
     tracing::initialise_tracing_log,
 };
 use silver_config::Config;
-use silver_control::{Controller, sync_engine::SyncEngine};
+use silver_control::{Controller, cluster::AttestationClusterConfig, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
-use silver_network::{Context, NetworkTile, P2p};
+use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
 
@@ -104,6 +104,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_engine_resp_producer.cache_ref().random_access("ds_engine_incoming_resp", true)?;
 
     let cluster_inbound_producer = TCache::producer("cluster_inbound", CLUSTER_MESSAGE_TCACHE_SIZE);
+    let cluster_inbound_consumer = cluster_inbound_producer
+        .cache_ref()
+        .strict_random_access("control_cluster_inbound", true)?;
     let cluster_outbound_producer =
         TCache::producer("cluster_outbound", CLUSTER_MESSAGE_TCACHE_SIZE);
     let cluster_outbound_consumer = cluster_outbound_producer
@@ -138,10 +141,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Long-lived attnets: advertised from boot (peer retention exempts us
     // from excess-peer pruning); the gossip subscriptions themselves
     // activate once Following — see `Controller::pending_subnet_topics`.
-    let boot_epoch = ticker.current_slot() / SLOTS_PER_EPOCH;
+    let boot_wall_slot = ticker.current_slot();
+    let boot_epoch = boot_wall_slot / SLOTS_PER_EPOCH;
     let attnet_count = config.attestation_subnet_count();
     let subnets = local_enr.node_id().attestation_subnets(boot_epoch, attnet_count);
     local_enr.set_attnets(subnets, keypair.secret_key())?;
+
+    // Cluster configuration
+    let (cluster_config, cluster_nodes) = config
+        .cluster_config()
+        .map(|c| {
+            let voters = c.nodes.clone();
+            let node_id = match voters.iter().find(|(_, enr)| enr.node_id() == local_enr.node_id())
+            {
+                Some((id, _)) => *id,
+                None => return Err("no local node configured in cluster config"),
+            };
+            Ok((AttestationClusterConfig::new(node_id, voters.keys().copied().collect()), voters))
+        })
+        .transpose()?
+        .unzip();
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
@@ -151,6 +170,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         local_enr,
         config.fork_digest(),
     );
+
+    // Cluster peers are added as trusted peers
+    let cluster_peers = cluster_nodes
+        .as_ref()
+        .map(|m| m.values())
+        .unwrap_or_default()
+        .filter(|enr| enr.node_id() != local_enr.node_id());
+    let trusted_peers =
+        config.trusted_peers().iter().chain(cluster_peers).cloned().collect::<Vec<_>>();
+    let trusted_ips = trusted_peers
+        .iter()
+        .filter_map(|enr| enr.ip4().map(IpAddr::from).or(enr.ip6().map(IpAddr::from)))
+        .collect();
+
     let server_config = silver_network::create_server_config(&keypair)?;
     let p2p_endpoint = P2p::new(
         keypair,
@@ -161,11 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
         ),
         config.max_connections(),
-        config
-            .trusted_peers()
-            .iter()
-            .filter_map(|enr| enr.ip4().map(IpAddr::from).or(enr.ip6().map(IpAddr::from)))
-            .collect(),
+        trusted_ips,
     );
     let identify = config.identify()?;
     let p2p_context = Context {
@@ -176,7 +205,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
-        cluster_nodes: None,
+        cluster_nodes: cluster_nodes.map(ClusterNodes::new),
         cluster_inbound_producer,
         cluster_outbound_consumer,
     };
@@ -219,7 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut control_tile = Controller::new(
         PeerManager::new(
             keypair.peer_id(),
-            config.trusted_peers().to_vec(),
+            trusted_peers,
             gossip_topics,
             config.peer_score_params(),
             config.syncing_config(),
@@ -230,13 +259,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_handler,
         outgoing_rpc_producer.clone(),
         incoming_rpc_consumer_ctl,
+        cluster_outbound_producer,
+        cluster_inbound_consumer,
+        cluster_config,
         SyncEngine::new(
             config.syncing_config(),
             booting_from_local_checkpoint,
             das_custody_groups,
             spec.clone(),
         ),
-    );
+    )?;
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
             .map(silver_common::GossipTopic::BeaconAttestation)
