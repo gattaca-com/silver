@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use silver_columns::cell_store::{CellStoreConfig, StoreError};
 use silver_common::{
     BeaconApiRequest, BeaconStateEvent, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos, P2pSend,
     PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
@@ -18,6 +19,10 @@ use crate::{
 };
 
 mod attestation_cluster;
+use crate::{
+    cell_ingress::CellIngress,
+    sync_engine::{SyncAction, SyncEngine},
+};
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -52,6 +57,7 @@ pub struct Controller {
     /// meshes would earn P3 deficit at peers since nothing validates or
     /// forwards until then. Drained into the PM on the first transition.
     pending_subnet_topics: Vec<GossipTopic>,
+    cell_ingress: Option<CellIngress>,
 }
 
 impl Controller {
@@ -90,7 +96,19 @@ impl Controller {
             last_peer_persist: now,
             auto_ping: true,
             pending_subnet_topics: Vec::new(),
-        })
+            cell_ingress: None,
+        }
+    }
+
+    pub fn with_data_columns_cache(
+        mut self,
+        config: CellStoreConfig,
+        producer: TProducer,
+        slot: u64,
+        slot_start: Instant,
+    ) -> Result<Self, StoreError> {
+        self.cell_ingress = Some(CellIngress::new(config, producer, slot, slot_start)?);
+        Ok(self)
     }
 
     pub fn set_pending_subnet_topics(&mut self, topics: Vec<GossipTopic>) {
@@ -116,6 +134,9 @@ impl Controller {
 
     fn handle_latest_status(&mut self, latest_status_event: Option<([u8; 92], u64, u64)>) -> bool {
         if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
+            if let Some(ingress) = &mut self.cell_ingress {
+                ingress.set_min_slot(StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH);
+            }
             tracing::debug!(wall_slot, latest_block_slot, "new status set");
             // PM still tracks our Status (peer-Status validation) + applied head
             // (custody-peer eligibility); the wall slot is the engine's only.
@@ -158,6 +179,12 @@ impl Tile<SilverSpine> for Controller {
         let now = Instant::now();
         self.rpc_ssz_consumer.free();
         self.attestation_cluster.free();
+        if let Some(ingress) = &mut self.cell_ingress {
+            ingress.spin(now, &adapter.producers);
+            adapter.consume(|event: CellStoreEvent, producers| {
+                ingress.handle(event, now, producers);
+            });
+        }
 
         // Local status must land before the sync drive below: issuance is
         // capped against the imported head, and a one-loop-stale watermark
