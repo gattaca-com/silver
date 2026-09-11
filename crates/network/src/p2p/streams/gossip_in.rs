@@ -194,7 +194,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TRead};
+    use silver_common::{StreamProtocol, TCache};
 
     use super::*;
     use crate::p2p::streams::AcquiredRpcOutbound;
