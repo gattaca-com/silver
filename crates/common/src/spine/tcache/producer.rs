@@ -1,32 +1,34 @@
-use std::{io::Write, sync::Arc};
-
-use flux::communication::Seqlock;
+use std::io::Write;
 
 use super::*;
 
+mod multi;
+pub use multi::MultiProducer;
+
+#[cfg(test)]
+mod tests;
+
 #[allow(private_bounds)]
 pub trait TCacheProducer: SealedProducer {
+    /// May publish skipped wrap padding even when no payload space is
+    /// available.
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation>;
 
     /// Publish the head sequence for joining consumers.
-    fn publish_head(&self) {
-        let tcache = unsafe { &*self.tcache() };
-        let seq = self.seq();
-        tcache.head().seq.store(seq, Ordering::Release);
-        tcache.record_head(seq);
-    }
+    fn publish_head(&self);
 
     fn cache_ref(&self) -> TCacheRef {
         TCacheRef { cache: self.tcache() as *const c_void }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    fn reservation_buffer(&self, reservation: &mut Reservation) -> Result<&mut [u8], Error> {
+    fn reservation_buffer<'a>(
+        &self,
+        reservation: &'a mut Reservation,
+    ) -> Result<&'a mut [u8], Error> {
         if reservation.cache.cache != (self.tcache() as *const c_void) {
             return Err(Error::UnexpectedCacheRef);
         }
-        let tcache = unsafe { &*self.tcache() };
-        let buffer = tcache.write(reservation.seq)?;
+        let buffer = reservation.writable_buffer()?;
         Ok(&mut buffer[reservation.offset..])
     }
 }
@@ -34,127 +36,155 @@ pub trait TCacheProducer: SealedProducer {
 /// Private trait.
 trait SealedProducer {
     fn tcache(&self) -> *const TCache;
-    fn seq(&self) -> u64;
 }
 
 #[derive(Debug)]
 pub struct Producer {
     pub(super) cache: *const TCache,
-    pub(super) seq: u64,
-    pub(super) published_seq: u64,
-    pub(super) space: u32,
+    state: AllocationState,
 }
 
 unsafe impl Send for Producer {}
 unsafe impl Sync for Producer {}
 
+impl Producer {
+    pub(super) fn new(cache: Box<TCache>) -> Self {
+        let state =
+            AllocationState { seq: 0, min_allocation: 0, published_seq: 0, space: cache.len };
+        Self { cache: Box::into_raw(cache), state }
+    }
+
+    pub fn next_seq(&self) -> u64 {
+        self.state.seq
+    }
+
+    #[inline]
+    pub fn read_buffer(&self, read: TCacheRead) -> Result<&[u8], Error> {
+        if read.tcache.cache != self.cache.cast() {
+            return Err(Error::UnexpectedCacheRef);
+        }
+        let cache = unsafe { &*self.cache };
+        cache.read(read.seq).map(|(bytes, _, _)| bytes)
+    }
+
+    /// A producer-side claim cannot survive an allocation, even after the view
+    /// has been consumed.
+    ///
+    /// ```compile_fail
+    /// use silver_common::{SubLayout, TCache, TCacheProducer};
+    /// let mut producer = TCache::producer("", 1 << 16);
+    /// let reference = producer.sub_reservation(
+    ///     SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"", b""
+    /// ).unwrap();
+    /// let claim = producer.view_sub_reservation(reference).unwrap().claim(0).unwrap();
+    /// let next = producer.reserve(32, false);
+    /// claim.write(b"cell", b"pf").unwrap();
+    /// ```
+    #[inline]
+    pub fn view_sub_reservation(
+        &self,
+        reference: SubReservationRef,
+    ) -> Result<SubReservationView<'_>, SubReservationError> {
+        SubReservationView::from_producer(self, reference)
+    }
+
+    /// The descriptor does not pin storage. Retention boundaries or acquired
+    /// owners must protect it across subsequent allocations.
+    pub fn sub_reservation(
+        &mut self,
+        layout: SubLayout,
+        prefix: &[u8],
+        middle: &[u8],
+    ) -> Result<SubReservationRef, SubReservationError> {
+        let length = layout
+            .reservation_bytes(prefix.len(), middle.len())
+            .ok_or(SubReservationError::InvalidLayout)?;
+        let reservation = self.reserve(length, false).ok_or(SubReservationError::CacheFull)?;
+        Ok(SubReservationRef::new(reservation, layout, prefix, middle))
+    }
+}
+
 impl SealedProducer for Producer {
     fn tcache(&self) -> *const TCache {
         self.cache
     }
-
-    fn seq(&self) -> u64 {
-        self.seq
-    }
 }
 
 impl TCacheProducer for Producer {
+    fn publish_head(&self) {
+        self.state.publish_head(&self.cache_ref());
+    }
+
     /// Return requested buffer space, if available.
     /// If None is returned, caller should retry.
     /// if `auto_commit` the reservation will be commited as soon as it is
     /// filled. otherwise it must ber manually committed by calling `flush`.
+    #[inline]
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
-        let tcache = unsafe { &*self.cache };
-        if tcache.reserve_len(self.seq, len) > self.space as usize ||
-            self.seq - self.published_seq > (tcache.len >> 4) as u64
-        // for 32MB buffer, publish head for every 2MB reserved
-        {
-            // try reclaim space.
-            self.publish_head();
-            self.published_seq = self.seq;
-            self.space = tcache.space(self.seq);
-        }
-        tcache.reserve(self.seq, self.space, len as u32).map(|(seq, reservation_len)| {
-            self.seq += reservation_len as u64;
-            self.space -= reservation_len as u32;
-            Reservation { cache: self.cache_ref(), seq, offset: 0, committed: false, auto_commit }
-        })
+        let cache = self.cache_ref();
+        self.state.reserve(cache, len, auto_commit)
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct MultiProducer {
-    cache: *const TCache,
-    state: Arc<Seqlock<MultiProducerState>>,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct MultiProducerState {
+struct AllocationState {
     seq: u64,
+    // Stops reuse at the first reservation not yet observed committed or aborted.
+    min_allocation: u64,
+    published_seq: u64,
     space: u32,
 }
 
-unsafe impl Send for MultiProducer {}
-unsafe impl Sync for MultiProducer {}
-
-impl MultiProducer {
-    pub(super) fn new(cache: *const TCache, len: u32) -> Self {
-        let state = Arc::new(Seqlock::new(MultiProducerState { seq: 0, space: len }));
-        Self { cache, state }
-    }
-}
-
-impl SealedProducer for MultiProducer {
-    fn tcache(&self) -> *const TCache {
-        self.cache
+impl AllocationState {
+    fn publish_head(&self, cache: &TCache) {
+        cache.head().seq.store(self.seq, Ordering::Release);
+        cache.record_head(self.seq);
     }
 
-    fn seq(&self) -> u64 {
-        self.state.read_copy().unwrap().0.seq
-    }
-}
-
-impl TCacheProducer for MultiProducer {
-    /// Return requested buffer space, if available.
-    /// If None is returned, caller should retry.
-    /// if `auto_commit` the reservation will be commited as soon as it is
-    /// filled. otherwise it must ber manually committed by calling `flush`.
-    fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
-        let tcache = unsafe { &*self.cache };
-
-        loop {
-            let (mut state, version) = self.state.read_copy().ok()?;
-            let reservation_len = tcache.reserve_len(state.seq, len);
-            if reservation_len as u32 > state.space {
-                self.publish_head();
-                state.space = tcache.space(state.seq);
-                self.state.write_at_version(&state, version);
-            }
-            if reservation_len as u32 > state.space {
-                // failed to reclaim enough space
-                return None;
-            }
-
-            let alloc_seq = state.seq;
-            state.seq += reservation_len as u64;
-            state.space -= reservation_len as u32;
-
-            if self.state.write_at_version(&state, version) {
-                // We've claimed [alloc_seq, alloc_seq + reservation_len).
-                return tcache.reserve(alloc_seq, reservation_len as u32, len as u32).map(
-                    |(seq, res)| {
-                        assert_eq!(reservation_len, res);
-                        Reservation {
-                            cache: self.cache_ref(),
-                            seq,
-                            offset: 0,
-                            committed: false,
-                            auto_commit,
-                        }
-                    },
-                );
+    #[inline]
+    fn reserve(&mut self, cache: TCacheRef, len: usize, auto_commit: bool) -> Option<Reservation> {
+        if len > cache.capacity() - size_of::<Slot>() {
+            return None;
+        }
+        let reservation_len = cache.reserve_len(self.seq, len);
+        if reservation_len > self.space as usize ||
+            self.seq - self.published_seq > (cache.len >> 4) as u64
+        // for 32MB buffer, publish head for every 2MB reserved
+        {
+            self.reclaim(&cache);
+            if reservation_len > cache.capacity() {
+                // The payload fits, but cannot share a record with wrap padding.
+                let padding = cache.capacity() - cache.index(self.seq);
+                let (seq, reserved) =
+                    cache.reserve(self.seq, self.space, (padding - size_of::<Slot>()) as u32)?;
+                self.seq += reserved as u64;
+                self.space -= reserved as u32;
+                cache.commit(seq, false);
+                self.reclaim(&cache);
             }
         }
+        cache.reserve(self.seq, self.space, len as u32).map(|(seq, reservation_len)| {
+            self.seq += reservation_len as u64;
+            self.space -= reservation_len as u32;
+            Reservation { cache, seq, offset: 0, committed: false, auto_commit }
+        })
+    }
+
+    fn reclaim(&mut self, cache: &TCache) {
+        self.publish_head(cache);
+        self.published_seq = self.seq;
+        while self.min_allocation < self.seq {
+            let slot = cache.slot_at(cache.index(self.min_allocation));
+            if slot.seq.load(Ordering::Acquire) != self.min_allocation {
+                break;
+            }
+            debug_assert!(
+                slot.reservation_len > 0 &&
+                    slot.reservation_len as u64 <= self.seq - self.min_allocation
+            );
+            self.min_allocation += slot.reservation_len as u64;
+        }
+        self.space = cache.space(self.seq, self.min_allocation);
     }
 }
 
@@ -163,7 +193,7 @@ pub struct Reservation {
     pub(super) cache: TCacheRef,
     pub(super) seq: u64,
     offset: usize,
-    committed: bool,
+    pub(super) committed: bool,
     auto_commit: bool,
 }
 
@@ -176,30 +206,39 @@ impl Reservation {
     }
 
     pub fn remaining(&self) -> Result<usize, std::io::Error> {
-        let buffer = self.cache.write(self.seq).map_err(std::io::Error::other)?;
+        let buffer = self.buffer()?;
         Ok(buffer.len() - self.offset)
     }
 
     pub fn increment_offset(&mut self, len: usize) {
+        let Ok(buffer_len) = self.buffer().map(|buffer| buffer.len()) else {
+            return;
+        };
         self.offset += len;
-        if let Ok(len) = self.buffer().map(|b| b.len()) {
-            if self.auto_commit && self.offset == len {
-                tracing::trace!(seq = self.seq, len, "recv committed");
-                self.cache.commit(self.seq, true);
-                self.committed = true;
-            }
+        if self.auto_commit && self.offset == buffer_len {
+            tracing::trace!(seq = self.seq, len = buffer_len, "recv committed");
+            self.cache.commit(self.seq, true);
+            self.committed = true;
         }
     }
 
+    #[inline]
+    fn writable_buffer(&self) -> Result<&mut [u8], Error> {
+        if self.committed {
+            return Err(Error::Committed);
+        }
+        self.cache.write(self.seq)
+    }
+
     pub fn buffer(&self) -> Result<&mut [u8], std::io::Error> {
-        self.cache.write(self.seq).map_err(std::io::Error::other)
+        self.writable_buffer().map_err(std::io::Error::other)
     }
 
     /// Buffer slice from the current write offset to the end of the
     /// reservation. Use this when successive writes must not overwrite
     /// earlier bytes (e.g. a framed header followed by body chunks).
     pub fn remaining_buffer(&self) -> Result<&mut [u8], std::io::Error> {
-        let buf = self.cache.write(self.seq).map_err(std::io::Error::other)?;
+        let buf = self.buffer()?;
         Ok(&mut buf[self.offset..])
     }
 
@@ -215,8 +254,9 @@ impl Reservation {
 
 impl Write for Reservation {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let buffer = self.cache.write(self.seq).map_err(std::io::Error::other)?;
-        if buf.len() + self.offset > buffer.len() {
+        let buffer = self.buffer()?;
+        let buffer_len = buffer.len();
+        if buf.len() + self.offset > buffer_len {
             tracing::error!(
                 reservation_len = buffer.len(),
                 offset = self.offset,
@@ -228,7 +268,7 @@ impl Write for Reservation {
         buffer[self.offset..self.offset + buf.len()].copy_from_slice(buf);
         self.offset += buf.len();
 
-        if self.auto_commit && self.offset == buffer.len() {
+        if self.auto_commit && self.offset == buffer_len {
             self.cache.commit(self.seq, true);
             self.committed = true;
         }
@@ -237,8 +277,10 @@ impl Write for Reservation {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.cache.commit(self.seq, true);
-        self.committed = true;
+        if !self.committed {
+            self.cache.commit(self.seq, true);
+            self.committed = true;
+        }
         Ok(())
     }
 }

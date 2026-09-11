@@ -16,10 +16,10 @@ pub use crate::{
     },
     request::{DataKind, Origin, RequestId, Scope, SyncRequest},
     spine::{
-        ALL_PROTOCOLS, AcquiredRead as TRead, AcquiredWithOffset, AgentString, BeaconApiRequest,
-        BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage, ClusterIn, ClusterMsgIn,
-        ClusterMsgOut, ColumnSource, Consumer as TConsumer, DataColumnsEvent, ELSyncStatus,
-        EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+        ALL_PROTOCOLS, AcquiredRange, AcquiredRead as TRead, AcquiredSubReservation,
+        AcquiredWithOffset, AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent,
+        BlockSource, BlockStage, ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnSource, Consumer as TConsumer, DataColumnsEvent,
+        ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
         EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
         EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
         EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
@@ -32,7 +32,7 @@ pub use crate::{
         RPC_PROTOCOLS, RandomAccessConsumer as TRandomAccess, ReplayBlock,
         Reservation as TReservation, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
         RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-        SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed, SyncUpdate, SyncingStrategy,
+        SilverSpine, SilverSpineProducers, StreamProtocol, SubLayout, SyncNeed, SyncUpdate, SyncingStrategy,
         TCache, TCacheProducer, TCacheRead, TCacheRef, WithdrawalInline,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
@@ -40,6 +40,10 @@ pub use crate::{
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+pub use spine::{
+    AcquiredGossipFrame, AcquiredGossipSegment, GossipFrameError, GossipFrameRef,
+    GossipFrameSegment, GossipFrameView, GossipSegment, MAX_GOSSIP_SEGMENTS,
+};
 pub mod column_util;
 mod enr;
 mod error;
