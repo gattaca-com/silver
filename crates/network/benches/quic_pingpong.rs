@@ -62,6 +62,7 @@ pub fn broadcast(c: &mut Criterion) {
                         let p2p = P2p::new(keypair, server_endpoint, 1024, Default::default());
 
                         let context = Context {
+                            data_columns_consumer: None,
                             gossip_producer: gi_producer,
                             gossip_consumer: go_consumer,
                             rpc_producer: rpc_in,
@@ -128,6 +129,7 @@ pub fn broadcast(c: &mut Criterion) {
                     let rpc_out = rpc_in.cache_ref().random_access("bench", false).unwrap();
 
                     let context = Context {
+                        data_columns_consumer: None,
                         gossip_producer: gi_producer,
                         gossip_consumer: go_consumer,
                         rpc_producer: rpc_in,

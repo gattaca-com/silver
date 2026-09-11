@@ -194,7 +194,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TRead};
+    use silver_common::{StreamProtocol, TCache};
 
     use super::*;
     use crate::p2p::streams::AcquiredRpcOutbound;
@@ -228,7 +228,7 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+        fn gossip_next(&mut self) -> Option<crate::p2p::quic::OutboundGossip> {
             None
         }
 
@@ -355,6 +355,87 @@ mod tests {
         let header = size_of::<P2pStreamId>();
         let (frame, _) = consumer.read().expect("skips aborted slot to next frame");
         assert_eq!(&frame[header..], b"cccccc");
+    }
+
+    #[test]
+    fn unfinished_body_survives_cache_pressure_and_releases_space() {
+        for complete in [false, true] {
+            const CAPACITY: usize = 1 << 17;
+            let mut producer = TCache::producer("", CAPACITY);
+            let mut consumer = producer.cache_ref().random_access("", true).unwrap();
+            let slow_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+            let fast_id = P2pStreamId::new(1, 4, StreamProtocol::GossipSub, true);
+            let header = size_of::<P2pStreamId>();
+            let now = Instant::now();
+            let mut partial = vec![100u8];
+            partial.extend_from_slice(&[0xaa; 10]);
+            let mut slow_io = MockIo { data: partial, pos: 0 };
+            let slow = GossipReadState::default()
+                .spin(&mut slow_io, &mut producer, &slow_id, now, &mut |_| {})
+                .unwrap();
+            assert!(matches!(slow, GossipReadState::ReadingBody { remaining: 90, .. }));
+
+            let mut wire = vec![100u8];
+            wire.extend_from_slice(&[0xbb; 100]);
+            let mut fast_io = MockIo { data: wire, pos: 0 };
+            let mut fast = GossipReadState::default();
+            loop {
+                fast_io.pos = 0;
+                fast = fast
+                    .spin(&mut fast_io, &mut producer, &fast_id, now, &mut |event| {
+                        let NetEvent::Gossip { msg, .. } = event else {
+                            panic!("expected gossip");
+                        };
+                        let acquired = consumer.acquire(msg);
+                        assert_eq!(&acquired.buffer().unwrap().0[header..], &[0xbb; 100]);
+                    })
+                    .unwrap();
+                assert!(producer.next_seq() <= CAPACITY as u64);
+                if matches!(fast, GossipReadState::AllocBody { .. }) {
+                    break;
+                }
+            }
+            let blocked_head = producer.next_seq();
+            let GossipReadState::ReadingBody { reservation, .. } = &slow else {
+                panic!("expected unfinished body");
+            };
+            assert_eq!(&reservation.buffer().unwrap()[header..header + 10], &[0xaa; 10]);
+
+            let later = now + GOSSIP_BODY_STALL_TIMEOUT + Duration::from_millis(1);
+            if complete {
+                slow_io.data.extend_from_slice(&[0xcc; 90]);
+                let mut received = None;
+                slow.spin(&mut slow_io, &mut producer, &slow_id, later, &mut |event| {
+                    let NetEvent::Gossip { msg, .. } = event else {
+                        panic!("expected gossip");
+                    };
+                    received = Some(msg);
+                })
+                .unwrap();
+                let bytes = producer.read_buffer(received.unwrap()).unwrap();
+                assert_eq!(&bytes[..header], slow_id.as_ref());
+                assert_eq!(&bytes[header..header + 10], &[0xaa; 10]);
+                assert_eq!(&bytes[header + 10..], &[0xcc; 90]);
+            } else {
+                assert!(matches!(
+                    slow.spin(&mut slow_io, &mut producer, &slow_id, later, &mut |_| {}),
+                    Err(StreamError::ReadStall)
+                ));
+            }
+
+            let mut received = None;
+            let fast = fast
+                .spin(&mut fast_io, &mut producer, &fast_id, later, &mut |event| {
+                    let NetEvent::Gossip { msg, .. } = event else {
+                        panic!("expected gossip");
+                    };
+                    received = Some(msg);
+                })
+                .unwrap();
+            assert!(matches!(fast, GossipReadState::ReadingLength { read: 0, .. }));
+            assert!(producer.next_seq() > blocked_head);
+            assert_eq!(&producer.read_buffer(received.unwrap()).unwrap()[header..], &[0xbb; 100]);
+        }
     }
 
     #[test]
