@@ -8,8 +8,8 @@ use flux::timing::Nanos;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 
 use crate::{
-    DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId, StreamProtocol,
-    TCacheProducer, TCacheRead, TMultiProducer,
+    DataKind, Enr, GossipFrameRef, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId,
+    StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
     column_util::columns_of,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -646,6 +646,7 @@ pub enum RpcSeverity {
 #[allow(clippy::large_enum_variant)]
 pub enum P2pSend {
     Gossip(GossipMsgOut),
+    SegmentedGossip { peer_id: usize, frame: GossipFrameRef },
     Identify(usize),
     Rpc(RpcOutbound),
 }
@@ -654,6 +655,7 @@ impl P2pSend {
     pub fn peer_id(&self) -> usize {
         match self {
             P2pSend::Gossip(gossip_msg_out) => gossip_msg_out.peer_id,
+            P2pSend::SegmentedGossip { peer_id, .. } => *peer_id,
             P2pSend::Identify(peer) => *peer,
             P2pSend::Rpc(rpc_outbound) => rpc_outbound.peer_id(),
         }
@@ -661,7 +663,7 @@ impl P2pSend {
 
     pub fn protocol(&self) -> StreamProtocol {
         match self {
-            P2pSend::Gossip(_) => StreamProtocol::GossipSub,
+            P2pSend::Gossip(_) | P2pSend::SegmentedGossip { .. } => StreamProtocol::GossipSub,
             P2pSend::Identify(_) => StreamProtocol::Identity,
             P2pSend::Rpc(rpc_outbound) => rpc_outbound.protocol(),
         }
