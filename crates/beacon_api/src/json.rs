@@ -5,6 +5,8 @@
 
 use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
 
+use crate::events::HeadEvent;
+
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 /// Appends JSON to a buffer the caller owns — fresh or reused is the caller's
@@ -231,6 +233,51 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn head_event(&mut self, head: &HeadEvent) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(head.slot);
+        self.key("block");
+        self.hex(&head.block_root);
+        self.key("state");
+        self.hex(&head.roots.state_root);
+        self.key("epoch_transition");
+        self.bool(head.epoch_transition);
+        self.key("previous_duty_dependent_root");
+        self.hex(&head.roots.previous_duty_dependent_root);
+        self.key("current_duty_dependent_root");
+        self.hex(&head.roots.current_duty_dependent_root);
+        self.key("execution_optimistic");
+        self.bool(head.execution_optimistic);
+        self.end_object();
+    }
+
+    pub(crate) fn head_v2_event(&mut self, head: &HeadEvent, fork_name: &str) {
+        self.begin_object();
+        self.key("version");
+        self.string(fork_name);
+        self.key("data");
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(head.slot);
+        self.key("block");
+        self.hex(&head.block_root);
+        self.key("state");
+        self.hex(&head.roots.state_root);
+        self.key("payload_status");
+        self.string(head.payload.name());
+        self.key("epoch_transition");
+        self.bool(head.epoch_transition);
+        self.key("current_epoch_dependent_root");
+        self.hex(&head.roots.previous_duty_dependent_root);
+        self.key("next_epoch_dependent_root");
+        self.hex(&head.roots.current_duty_dependent_root);
+        self.key("execution_optimistic");
+        self.bool(head.execution_optimistic);
+        self.end_object();
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");
@@ -252,7 +299,9 @@ pub(crate) fn json_safe(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use silver_beacon_state_data::FAR_FUTURE_EPOCH;
+    use silver_common::{HeadRoots, PayloadResolution};
 
     use super::*;
 
@@ -479,6 +528,73 @@ mod tests {
         assert!(json_safe("active_ongoing"));
         assert!(!json_safe("say \"hi\""));
         assert!(!json_safe("back\\slash"));
+    }
+
+    #[test]
+    fn head_event_encodes_the_required_fields() {
+        let head = HeadEvent {
+            slot: 10,
+            block_root: [0x9a; 32],
+            roots: HeadRoots {
+                state_root: [0x60; 32],
+                previous_duty_dependent_root: [0x5e; 32],
+                current_duty_dependent_root: [0x91; 32],
+            },
+            payload: PayloadResolution::Full,
+            epoch_transition: true,
+            execution_optimistic: false,
+        };
+        let mut out = Vec::new();
+        Json::new(&mut out).head_event(&head);
+        let data: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(data["slot"], head.slot.to_string());
+        assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
+        assert_eq!(data["state"], format!("0x{}", hex::encode(head.roots.state_root)));
+        assert_eq!(data["epoch_transition"], true);
+        assert_eq!(data["execution_optimistic"], false);
+        assert_eq!(
+            data["previous_duty_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.previous_duty_dependent_root))
+        );
+        assert_eq!(
+            data["current_duty_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.current_duty_dependent_root))
+        );
+    }
+
+    #[test]
+    fn head_v2_event_wraps_the_versioned_data_and_maps_the_dependent_roots() {
+        let head = HeadEvent {
+            slot: 10,
+            block_root: [0x9a; 32],
+            roots: HeadRoots {
+                state_root: [0x60; 32],
+                previous_duty_dependent_root: [0x5e; 32],
+                current_duty_dependent_root: [0x91; 32],
+            },
+            payload: PayloadResolution::Empty,
+            epoch_transition: false,
+            execution_optimistic: true,
+        };
+        let mut out = Vec::new();
+        Json::new(&mut out).head_v2_event(&head, "gloas");
+        let body: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(body["version"], "gloas");
+        let data = &body["data"];
+        assert_eq!(data["slot"], head.slot.to_string());
+        assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
+        assert_eq!(data["state"], format!("0x{}", hex::encode(head.roots.state_root)));
+        assert_eq!(data["payload_status"], "empty");
+        assert_eq!(data["epoch_transition"], false);
+        assert_eq!(data["execution_optimistic"], true);
+        assert_eq!(
+            data["current_epoch_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.previous_duty_dependent_root))
+        );
+        assert_eq!(
+            data["next_epoch_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.current_duty_dependent_root))
+        );
     }
 
     #[test]

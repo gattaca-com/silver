@@ -15,7 +15,7 @@ use silver_httpcore::{
 
 use crate::{
     NodeStatus,
-    events::{self, Channel, ChannelSet},
+    events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
     router::{Router, Served},
     routes::{ApiCtx, ROUTES},
@@ -397,6 +397,19 @@ impl BeaconApi {
         self.publish(Channel::Block, "block", &data);
     }
 
+    /// Head-change detection belongs to the caller.
+    pub fn publish_head(&mut self, head: &HeadEvent) {
+        let mut data = Vec::new();
+        Json::new(&mut data).head_event(head);
+        self.publish(Channel::Head, "head", &data);
+    }
+
+    pub fn publish_head_v2(&mut self, head: &HeadEvent) {
+        let mut data = Vec::new();
+        Json::new(&mut data).head_v2_event(head, self.ctx.spec.fork_at_slot(head.slot).name());
+        self.publish(Channel::HeadV2, "head_v2", &data);
+    }
+
     fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
         let mut frame = Vec::new();
         events::frame(&mut frame, event, data);
@@ -586,6 +599,7 @@ fn interrupted(err: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::{BufRead, BufReader},
         net::{SocketAddr, TcpStream},
         os::unix::net::UnixStream,
         path::Path,
@@ -593,7 +607,9 @@ mod tests {
         time::Instant,
     };
 
-    use silver_beacon_state_data::BeaconStateOwner;
+    use serde_json::Value;
+    use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
+    use silver_common::{HeadRoots, PayloadResolution};
     use silver_httpcore::Readiness;
 
     use super::*;
@@ -1394,6 +1410,148 @@ mod tests {
         assert_eq!(subscribers(&server), 1, "delivery keeps the subscription");
     }
 
+    fn head_event(slot: u64, block_root: &[u8; 32], execution_optimistic: bool) -> HeadEvent {
+        HeadEvent {
+            slot,
+            block_root: *block_root,
+            roots: HeadRoots {
+                state_root: [0x60; 32],
+                previous_duty_dependent_root: [0x5e; 32],
+                current_duty_dependent_root: [0x91; 32],
+            },
+            payload: PayloadResolution::Full,
+            epoch_transition: false,
+            execution_optimistic,
+        }
+    }
+
+    struct SseEvent {
+        topic: String,
+        data: Value,
+    }
+
+    fn read_events_until_marker(stream: TcpStream) -> JoinHandle<Vec<SseEvent>> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.split_whitespace().nth(1), Some("200"));
+            let mut headers = HashMap::new();
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line.trim_end().split_once(':').unwrap();
+                headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
+            }
+            assert_eq!(headers["content-type"], "text/event-stream");
+            assert_eq!(headers["transfer-encoding"], "chunked");
+
+            let mut events = Vec::new();
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                let size =
+                    usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
+                assert!(size > 0, "subscription ended before the marker");
+                let mut chunk = vec![0; size];
+                reader.read_exact(&mut chunk).unwrap();
+                let mut end = [0; 2];
+                reader.read_exact(&mut end).unwrap();
+                assert_eq!(end, *b"\r\n");
+                let frame = std::str::from_utf8(&chunk).unwrap().strip_suffix("\n\n").unwrap();
+                if frame.starts_with(':') {
+                    continue;
+                }
+                let (topic, data) =
+                    frame.strip_prefix("event: ").unwrap().split_once("\ndata: ").unwrap();
+                let data = serde_json::from_str(data).unwrap();
+                if topic == "test_end" {
+                    return events;
+                }
+                events.push(SseEvent { topic: topic.to_string(), data });
+            }
+        })
+    }
+
+    // Queued after every publication, so readers can detect leaked or repeated
+    // frames without relying on a quiet socket or cross-topic ordering.
+    fn finish_events(server: &mut Server) {
+        server.api.fan_out(|_| true, b"event: test_end\ndata: {}\n\n", Instant::now());
+    }
+
+    #[test]
+    fn each_subscriber_receives_only_the_channels_it_asked_for() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let subscriptions =
+            ["block", "head", "block,head", "head_v2", "head,head_v2", "block,head,head_v2"];
+        let readers = subscriptions.map(|topics| {
+            let mut stream = connect(tcp_addr(&server));
+            subscribe(&mut stream, topics);
+            read_events_until_marker(stream)
+        });
+        pump_until(&mut server, "all subscribed", |server| {
+            subscribers(server) == subscriptions.len()
+        });
+
+        let slot = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
+        let head = head_event(slot, &[0xab; 32], true);
+        server.api.publish_block(slot, &head.block_root);
+        server.api.publish_head(&head);
+        server.api.publish_head_v2(&head);
+        finish_events(&mut server);
+        pump_until(&mut server, "every subscriber served", |_| {
+            readers.iter().all(JoinHandle::is_finished)
+        });
+
+        for (topics, reader) in subscriptions.into_iter().zip(readers) {
+            let events = reader.join().unwrap();
+            assert_eq!(events.len(), topics.split(',').count(), "{topics}");
+            for topic in topics.split(',') {
+                let matching: Vec<_> = events.iter().filter(|event| event.topic == topic).collect();
+                assert_eq!(matching.len(), 1, "{topics}: {topic}");
+                let body = &matching[0].data;
+                let data = if topic == "head_v2" {
+                    assert_eq!(body["version"], "fulu");
+                    assert_eq!(body["data"]["payload_status"], "full");
+                    &body["data"]
+                } else {
+                    body
+                };
+                assert_eq!(data["slot"], slot.to_string());
+                assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
+                assert_eq!(data["execution_optimistic"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn head_v2_names_the_fork_at_the_head_slot() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head_v2");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let fulu = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
+        let expected =
+            [(fulu - 1, "electra"), (fulu, "fulu"), (fulu + 1, "fulu"), (fulu - 1, "electra")];
+        for (slot, _) in expected {
+            server.api.publish_head_v2(&head_event(slot, &[0xab; 32], false));
+        }
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "versioned frames and marker");
+        assert_eq!(events.len(), expected.len());
+        for (event, (slot, version)) in events.iter().zip(expected) {
+            assert_eq!(event.topic, "head_v2");
+            assert_eq!(event.data["version"], version);
+            assert_eq!(event.data["data"]["slot"], slot.to_string());
+            assert_eq!(event.data["data"]["payload_status"], "full");
+        }
+    }
+
     #[test]
     fn a_topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
         let mut server = server_with(64, LONG_TIMEOUT);
@@ -1402,7 +1560,7 @@ mod tests {
             let mut stream = connect(addr);
             write!(
                 stream,
-                "GET /eth/v1/events?topics=head HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                "GET /eth/v1/events?topics=chain_reorg HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
             read_to_eof(stream)
@@ -1411,7 +1569,7 @@ mod tests {
         let got = serve(&mut server, client, "400 for an unserved topic");
         assert_same_bytes(
             &got,
-            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"head\\\"\"}",
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 54\r\n\r\n{\"code\":400,\"message\":\"unknown topic \\\"chain_reorg\\\"\"}",
         );
         assert_eq!(subscribers(&server), 0);
     }

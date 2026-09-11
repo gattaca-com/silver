@@ -1276,6 +1276,7 @@ fn import_above_the_tail_does_not_settle_the_slots_below_it() {
     // Beacon state applied a block well above the tail, with nothing
     // reported for the slots in between.
     local_status(&mut e, BATCH + 22, 200);
+    local_status(&mut e, BATCH + 22, 200);
     drive(&mut e, now);
     assert_eq!(tail(&e), 0, "an apply above the tail settles nothing below it");
 
@@ -1297,6 +1298,9 @@ fn replay_head_becomes_the_window_floor() {
     local_status(&mut e, 0, 200);
     advance(&mut e);
     assert!(drive(&mut e, now).is_none(), "the replay gate holds requests");
+
+    local_status(&mut e, 60, 200);
+    assert!(actions(&mut e, now, true).is_empty(), "intermediate Status leaves requests gated");
 
     e.on_replay_complete();
     local_status(&mut e, 100, 200);

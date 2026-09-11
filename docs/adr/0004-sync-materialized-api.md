@@ -78,3 +78,35 @@ are published.
 The tile calls `publish_block` without accessing connections. `/eth/v1/events`
 serves `block` and rejects other topics with 400. Further topics and
 silver-specific SSE routes can use the same subscription mechanism.
+
+Amended 2026-09-08: `/eth/v1/events` also serves the legacy `head` topic.
+`BeaconStateEvent::Status` carries the selected block's declared state root
+and both duty-dependent roots from its fork's history.
+
+Status describes an observation. Each consumer decides which fields require
+action. Existing publications remain, and an end-of-loop check covers changes
+to the selected head or its execution optimism since the last Status.
+The publication marker is separate from the reorg marker, so an earlier
+Status cannot hide a reorg notification. Replay can emit intermediate
+observations; completion still requires `ReplayComplete`.
+
+The application boundary publishes a head event when a complete observation
+changes the head root or optimism. The first complete observation establishes
+a baseline. Incomplete metadata, including overwritten checkpoint history,
+leaves that baseline unchanged. Node-status updates continue independently.
+
+`epoch_transition` compares consecutive complete observations and is true
+only when the head epoch advances. Same-block validation updates and backward
+reorgs report false. New subscriptions receive future changes without an
+initial snapshot.
+
+Amended 2026-09-09: `/eth/v1/events` also serves `head_v2`. Status carries
+fork choice's empty/full resolution of the selected block's own payload.
+The end-of-loop check publishes an updated Status when this resolution
+changes, even if the root and optimism stay the same.
+
+The boundary publishes `head_v2` when the root, optimism or resolution
+changes, including both empty-to-full and full-to-empty transitions. Legacy
+`head` retains its root-and-optimism filter. Both topics use the same
+complete observation. The v2 `version` names the configured fork at the head
+block's slot; selected pre-Gloas blocks report `full`.

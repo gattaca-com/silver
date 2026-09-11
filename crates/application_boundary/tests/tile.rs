@@ -1,5 +1,6 @@
 use std::{
-    io::{Read, Write},
+    collections::HashMap,
+    io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::net::UnixStream,
     sync::mpsc::{self, Receiver},
@@ -8,13 +9,14 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use serde_json::Value;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
-use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, Identify, Keypair, PayloadValidationStatus, SilverSpine, SyncUpdate, TCache,
-    TCacheProducer, ssz_view::STATUS_V2_SIZE,
+    Enr, HeadRoots, Identify, Keypair, PayloadResolution, PayloadValidationStatus, SilverSpine,
+    SyncUpdate, TCache, TCacheProducer, ssz_view::STATUS_V2_SIZE,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
@@ -31,6 +33,15 @@ fn boundary_tile(
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
 ) -> ApplicationBoundaryTile {
+    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet())
+}
+
+fn boundary_tile_with_spec(
+    bind: &Bind,
+    engine_config: EngineConfig,
+    tcache_names: [&'static str; 3],
+    spec: &SpecConfig,
+) -> ApplicationBoundaryTile {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     let gossip_p = TCache::producer(tcache_names[0], 1 << 12);
@@ -43,7 +54,7 @@ fn boundary_tile(
         &keypair,
         local_enr,
         &Identify::default(),
-        &SpecConfig::mainnet(),
+        spec,
         BeaconStateOwner::empty_test(0).reader(),
         engine_config,
         gossip_p.cache_ref().random_access("t", true).unwrap(),
@@ -160,20 +171,24 @@ fn block_frame(slot: u64, byte: u8) -> Vec<u8> {
 
 /// Signals after receiving the response head so events are not published
 /// before the subscription is active.
-fn events_subscriber(addr: SocketAddr, frame_len: usize) -> (JoinHandle<Vec<u8>>, Receiver<()>) {
+fn events_subscriber(
+    addr: SocketAddr,
+    topics: &str,
+    frame_len: usize,
+) -> (JoinHandle<Vec<u8>>, Receiver<()>) {
     let (subscribed, on_subscribed) = mpsc::channel();
+    let request = format!("GET /eth/v1/events?topics={topics} HTTP/1.1\r\nHost: localhost\r\n\r\n");
     let client = std::thread::spawn(move || {
         let mut stream = TcpStream::connect(addr).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        write!(stream, "GET /eth/v1/events?topics=block HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
         let mut head = vec![0; SSE_HEAD.len()];
         stream.read_exact(&mut head).unwrap();
         assert_eq!(head, SSE_HEAD, "{}", String::from_utf8_lossy(&head));
         subscribed.send(()).unwrap();
-        let mut frame = vec![0; frame_len];
-        stream.read_exact(&mut frame).unwrap();
-        frame
+        let mut frames = vec![0; frame_len];
+        stream.read_exact(&mut frames).unwrap();
+        frames
     });
     (client, on_subscribed)
 }
@@ -185,7 +200,96 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
         latest_block_slot: head_slot,
         wall_slot,
         enr_fork_id: [0u8; 16],
+        head_roots: HeadRoots::default(),
+        head_payload: PayloadResolution::Full,
     }
+}
+
+fn head_roots() -> HeadRoots {
+    HeadRoots {
+        state_root: [0x60; 32],
+        previous_duty_dependent_root: [0x5e; 32],
+        current_duty_dependent_root: [0x91; 32],
+    }
+}
+
+fn head_status(
+    slot: u64,
+    block_root: u8,
+    head_optimistic: bool,
+    head_payload: PayloadResolution,
+) -> BeaconStateEvent {
+    let mut ssz = [0u8; STATUS_V2_SIZE];
+    ssz[44..76].copy_from_slice(&[block_root; 32]);
+    ssz[76..84].copy_from_slice(&slot.to_le_bytes());
+    BeaconStateEvent::Status {
+        ssz,
+        head_optimistic,
+        latest_block_slot: slot,
+        wall_slot: slot,
+        enr_fork_id: [0u8; 16],
+        head_roots: head_roots(),
+        head_payload,
+    }
+}
+
+fn head_events_subscriber(
+    addr: SocketAddr,
+    topic: &str,
+    sentinel_slot: u64,
+) -> (JoinHandle<Vec<Value>>, Receiver<()>) {
+    let (subscribed, on_subscribed) = mpsc::channel();
+    let topic = topic.to_string();
+    let client = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(stream, "GET /eth/v1/events?topics={topic} HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.split_whitespace().nth(1), Some("200"));
+        let mut headers = HashMap::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            let (name, value) = line.trim_end().split_once(':').unwrap();
+            headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
+        }
+        assert_eq!(headers["content-type"], "text/event-stream");
+        assert_eq!(headers["transfer-encoding"], "chunked");
+        subscribed.send(()).unwrap();
+
+        let mut events = Vec::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let size = usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
+            assert!(size > 0, "subscription ended before the sentinel");
+            let mut chunk = vec![0; size];
+            reader.read_exact(&mut chunk).unwrap();
+            let mut end = [0; 2];
+            reader.read_exact(&mut end).unwrap();
+            assert_eq!(end, *b"\r\n");
+            let frame = std::str::from_utf8(&chunk).unwrap().strip_suffix("\n\n").unwrap();
+            if frame.starts_with(':') {
+                continue;
+            }
+            let (name, data) =
+                frame.strip_prefix("event: ").unwrap().split_once("\ndata: ").unwrap();
+            assert_eq!(name, topic);
+            let body: Value = serde_json::from_str(data).unwrap();
+            let data = if topic == "head_v2" { &body["data"] } else { &body };
+            if data["slot"] == sentinel_slot.to_string() {
+                return events;
+            }
+            events.push(body);
+        }
+    });
+    (client, on_subscribed)
 }
 
 #[test]
@@ -732,7 +836,7 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let expected = block_frame(10, 0xab);
-    let (client, on_subscribed) = events_subscriber(addr, expected.len());
+    let (client, on_subscribed) = events_subscriber(addr, "block", expected.len());
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
@@ -757,5 +861,132 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
         "\n     got: {:?}\nexpected: {:?}",
         String::from_utf8_lossy(&got),
         String::from_utf8_lossy(&expected)
+    );
+}
+
+#[test]
+fn head_subscribers_receive_changes_for_their_topics() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut spec = SpecConfig::mainnet();
+    spec.gloas_fork_epoch = spec.fulu_fork_epoch + 2;
+    let mut tile = boundary_tile_with_spec(
+        &Bind::parse("127.0.0.1:0"),
+        no_el(),
+        ["cs_head_v2_gossip", "cs_head_v2_rpc", "cs_head_v2_resp"],
+        &spec,
+    );
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let gloas = spec.gloas_fork_epoch * SLOTS_PER_EPOCH;
+    let slot = gloas + 8;
+    let sentinel_slot = slot + 1;
+    let (legacy, legacy_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+    let (v2, v2_subscribed) = head_events_subscriber(addr, "head_v2", sentinel_slot);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    for subscribed in [legacy_subscribed, v2_subscribed] {
+        while subscribed.try_recv().is_err() {
+            crank(&mut tile, "both stream heads reach their subscribers");
+        }
+    }
+
+    for status in [
+        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
+        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Empty),
+        head_status(slot, 0xab, true, PayloadResolution::Empty),
+        head_status(slot, 0xab, true, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Full),
+        head_status(slot, 0xab, false, PayloadResolution::Full),
+        head_status(slot, 0xab, false, PayloadResolution::Full),
+    ] {
+        inj.produce(status);
+    }
+    crank(&mut tile, "head observations update node status");
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: slot, wall_slot: slot, head_optimistic: false })
+    );
+
+    // A later head delimits all preceding frames, including unwanted repeats.
+    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full));
+    while !legacy.is_finished() || !v2.is_finished() {
+        crank(&mut tile, "every frame reaches its subscriber");
+    }
+    let legacy = legacy.join().unwrap();
+    let v2 = v2.join().unwrap();
+    assert_eq!(legacy.len(), 2);
+    assert_eq!(v2.len(), 3);
+    let roots = head_roots();
+    for (events, is_v2) in [(&legacy, false), (&v2, true)] {
+        for (index, body) in events.iter().enumerate() {
+            let data = if is_v2 {
+                assert_eq!(body["version"], "gloas");
+                assert_eq!(
+                    body["data"]["payload_status"],
+                    if index == 0 { "empty" } else { "full" }
+                );
+                &body["data"]
+            } else {
+                body
+            };
+            assert_eq!(data["slot"], slot.to_string());
+            assert_eq!(data["block"], format!("0x{}", hex::encode([0xab; 32])));
+            assert_eq!(data["state"], format!("0x{}", hex::encode(roots.state_root)));
+            assert_eq!(data["epoch_transition"], false);
+            assert_eq!(data["execution_optimistic"], index + 1 < events.len());
+            let (previous, current) = if is_v2 {
+                ("current_epoch_dependent_root", "next_epoch_dependent_root")
+            } else {
+                ("previous_duty_dependent_root", "current_duty_dependent_root")
+            };
+            assert_eq!(
+                data[previous],
+                format!("0x{}", hex::encode(roots.previous_duty_dependent_root))
+            );
+            assert_eq!(
+                data[current],
+                format!("0x{}", hex::encode(roots.current_duty_dependent_root))
+            );
+        }
+    }
+}
+
+/// The initial head observation emits no event but still updates node status.
+#[test]
+fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_optimism_gossip",
+        "cs_optimism_rpc",
+        "cs_optimism_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
+    tile.loop_body(&mut adapter);
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: true })
+    );
+
+    inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
+    tile.loop_body(&mut adapter);
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: false }),
+        "the verdict reaches node status whatever the head filter decides"
     );
 }

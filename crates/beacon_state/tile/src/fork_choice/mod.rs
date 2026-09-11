@@ -12,8 +12,8 @@ mod tests;
 mod vote;
 
 pub use lookup::NodeLookup;
-use node::{Branch, NodeCheckpoints, PayloadAxis, PtcVotes};
-pub use node::{ExecutionStatus, ForkChoiceNode, PayloadStatus};
+use node::{Branch, NodeCheckpoints, PtcVotes};
+pub use node::{ExecutionStatus, ForkChoiceNode, PayloadAxis, PayloadStatus};
 pub use vote::{VoteTracker, WeightDelta};
 
 /// Pre-allocation hint only — the node table and the state rings both grow
@@ -74,6 +74,7 @@ pub struct ForkChoice {
 pub struct BlockImport {
     pub slot: Slot,
     pub block_root: B256,
+    pub state_root: B256,
     pub parent_root: B256,
     pub execution_block_hash: B256,
     pub justified: Checkpoint,
@@ -94,6 +95,7 @@ impl ForkChoice {
         justified_checkpoint: Checkpoint,
         finalized_slot: Slot,
         finalized_block_root: B256,
+        finalized_state_root: B256,
         finalized_execution_block_hash: B256,
         anchor_is_gloas: bool,
         state_id: StateId,
@@ -105,6 +107,7 @@ impl ForkChoice {
         nodes.push(ForkChoiceNode {
             slot: finalized_slot,
             block_root: finalized_block_root,
+            state_root: finalized_state_root,
             execution_block_hash: finalized_execution_block_hash,
             parent_ix: NULL,
             execution_status: ExecutionStatus::Valid,
@@ -172,6 +175,7 @@ impl ForkChoice {
         self.nodes.push(ForkChoiceNode {
             slot: b.slot,
             block_root: b.block_root,
+            state_root: b.state_root,
             execution_block_hash: b.execution_block_hash,
             parent_ix: parent,
             execution_status: ExecutionStatus::Optimistic,

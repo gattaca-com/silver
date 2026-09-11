@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 
 use crate::{
     DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId, StreamProtocol,
@@ -827,17 +827,64 @@ pub enum ColumnSource {
     El,
 }
 
+/// A zero `state_root` marks all three roots unavailable. This can occur
+/// before seeding or when checkpoint history has overwritten a dependent
+/// root. Consumers tracking head changes must ignore incomplete bundles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct HeadRoots {
+    pub state_root: B256,
+    /// Root at the slot before the head block's previous epoch starts,
+    /// saturating to slot zero.
+    pub previous_duty_dependent_root: B256,
+    /// Root at the slot before the head block's epoch starts, saturating to
+    /// slot zero.
+    pub current_duty_dependent_root: B256,
+}
+
+impl HeadRoots {
+    pub fn is_complete(&self) -> bool {
+        self.state_root != B256::default()
+    }
+}
+
+/// Fork choice's selection of the block's own payload, independent of its
+/// execution validation status. Selected pre-Gloas blocks resolve `Full`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PayloadResolution {
+    Empty,
+    Full,
+}
+
+impl PayloadResolution {
+    /// The beacon-API `payload_status` spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
+    /// An observation that may repeat unchanged. Consumers decide which
+    /// fields require action. `latest_block_slot` follows the last imported
+    /// block; `ssz` describes the fork-choice head. Their slots can differ
+    /// after importing a competing branch or switching heads, including
+    /// after execution invalidation.
     Status {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
         wall_slot: u64,
         head_optimistic: bool,
         enr_fork_id: [u8; 16],
+        head_roots: HeadRoots,
+        head_payload: PayloadResolution,
     },
     EnvelopeAvailable {
         ssz: TCacheRead,

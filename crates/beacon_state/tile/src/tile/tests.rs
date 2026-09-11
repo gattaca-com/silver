@@ -11,7 +11,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId,
-    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheProducer, TCacheRead, TProducer,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed, TCache,
+    TCacheProducer, TCacheRead, TProducer,
     column_util::block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -30,7 +31,7 @@ use super::{
 };
 use crate::{
     error::{PrecheckError, RejectReason},
-    fork_choice::{BlockImport, PayloadStatus},
+    fork_choice::{BlockImport, PayloadAxis, PayloadStatus},
     merkle, ssz_hash,
     stf::AttestationVote,
     test_signing,
@@ -39,6 +40,14 @@ use crate::{
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
 const TEST_RING_BYTES: usize = 1 << 20;
 const ANCHOR_ROOT: B256 = [0x01u8; 32];
+/// Non-zero so the anchor has complete head metadata.
+const ANCHOR_STATE_ROOT: B256 = [0xA1u8; 32];
+
+fn state_root_of(block_root: B256) -> B256 {
+    let mut r = block_root;
+    r[31] = 0xFF;
+    r
+}
 
 /// Byte position of the body inside a `SignedBeaconBlock`.
 const BODY: usize = SIGNED_BEACON_BLOCK_MIN;
@@ -124,6 +133,17 @@ fn make_tile_with_gossip(
     wall_slot: u64,
     state: BeaconState,
 ) -> (BeaconStateTile, TProducer, TProducer) {
+    let (tile, gossip, rpc, _replay) =
+        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+    (tile, gossip, rpc)
+}
+
+/// Keeps the replay producer alive for tests that feed cached block bytes.
+fn make_tile_with_producers(
+    wall_slot: u64,
+    state: BeaconState,
+    spec: SpecConfig,
+) -> (BeaconStateTile, TProducer, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
@@ -138,7 +158,7 @@ fn make_tile_with_gossip(
     let replay_c = replay_p.cache_ref().random_access("test_replay_buf", true).unwrap();
     let tile = BeaconStateTile::new(
         ticker,
-        Arc::new(SpecConfig::mainnet()),
+        Arc::new(spec),
         &SyncingConfig::default(),
         gossip_c,
         rpc_c,
@@ -147,7 +167,7 @@ fn make_tile_with_gossip(
         true,
         state,
     );
-    (tile, gossip_p, event_p)
+    (tile, gossip_p, event_p, replay_p)
 }
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
@@ -261,8 +281,17 @@ fn arm_tile_state(
     tile.sync_target = SyncUpdate::Following;
 
     let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-    tile.fork_choice =
-        ForkChoice::init(cp, cp, start_slot, ANCHOR_ROOT, [0u8; 32], false, anchor, seeds.len());
+    tile.fork_choice = ForkChoice::init(
+        cp,
+        cp,
+        start_slot,
+        ANCHOR_ROOT,
+        ANCHOR_STATE_ROOT,
+        [0u8; 32],
+        false,
+        anchor,
+        seeds.len(),
+    );
 
     let view = tile.state.read_view(anchor);
     tile.shuffling_cache.ensure_window(&view, start_slot / SLOTS_PER_EPOCH);
@@ -424,7 +453,8 @@ fn slot_advance_crosses_two_epoch_boundaries() {
 fn status_event_carries_the_head_s_execution_status() {
     const CHILD_ROOT: B256 = [0x0C; 32];
 
-    let head_optimistic = |tile: &mut BeaconStateTile| match tile.status_event() {
+    let head_optimistic = |tile: &mut BeaconStateTile| match tile.status_event(tile.selected_head())
+    {
         BeaconStateEvent::Status { ssz, head_optimistic, .. } => {
             assert_eq!(*StatusView::head_root(&ssz), tile.fork_choice.find_head());
             head_optimistic
@@ -436,17 +466,26 @@ fn status_event_carries_the_head_s_execution_status() {
     seed_tile(&mut tile, 4, 10);
     assert!(!head_optimistic(&mut tile), "the trusted anchor is valid");
 
+    // The child's post-state sits at its own slot, as an import leaves it.
+    let child_state = {
+        let anchor = tile.last_applied;
+        let mut g = tile.state.write();
+        let mut sw = g.slot_states.roll_from(anchor.slot_idx);
+        sw.state_mut().slot = 11;
+        StateId { slot_idx: sw.commit(), ..anchor }
+    };
     let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
     tile.fork_choice.on_block(BlockImport {
         slot: 11,
         block_root: CHILD_ROOT,
+        state_root: state_root_of(CHILD_ROOT),
         parent_root: ANCHOR_ROOT,
         execution_block_hash: [0u8; 32],
         justified: anchor_cp,
         finalized: anchor_cp,
         unrealized_justified: anchor_cp,
         unrealized_finalized: anchor_cp,
-        state_id: tile.last_applied,
+        state_id: child_state,
         bid_block_hash: [0u8; 32],
         parent_payload_status: PayloadStatus::Full,
         payload_verified: true,
@@ -457,6 +496,567 @@ fn status_event_carries_the_head_s_execution_status() {
 
     tile.fork_choice.on_payload_valid(&CHILD_ROOT);
     assert!(!head_optimistic(&mut tile));
+}
+
+/// A wins the equal-weight root tie-break, regardless of import order.
+const A_ROOT: B256 = [0xAA; 32];
+const B_ROOT: B256 = [0x0B; 32];
+/// Decision slots for a head in epoch 2: `start(2) - 1` and `start(1) - 1`.
+const CURRENT_DECISION_SLOT: Slot = 63;
+const PREVIOUS_DECISION_SLOT: Slot = 31;
+
+#[derive(Debug, PartialEq, Eq)]
+struct StatusHead {
+    root: B256,
+    slot: Slot,
+    optimistic: bool,
+    roots: HeadRoots,
+    payload: PayloadResolution,
+}
+
+struct Published(Vec<BeaconStateEvent>);
+
+impl Published {
+    fn drain(sink: &mut SpineAdapter<SilverSpine>) -> Self {
+        let mut events = Vec::new();
+        sink.consume(|event: BeaconStateEvent, _| events.push(event));
+        Self(events)
+    }
+
+    fn heads(&self) -> Vec<StatusHead> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Status {
+                    ssz, head_optimistic, head_roots, head_payload, ..
+                } => Some(StatusHead {
+                    root: *StatusView::head_root(ssz),
+                    slot: StatusView::head_slot(ssz),
+                    optimistic: *head_optimistic,
+                    roots: *head_roots,
+                    payload: *head_payload,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reorgs(&self) -> Vec<Slot> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Reorg { lca_slot } => Some(*lca_slot),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn last_head(&self) -> StatusHead {
+        self.heads().pop().expect("expected a published head")
+    }
+}
+
+/// Synthetic fork-choice setup with spine injection and publication capture.
+/// `crank` runs the tile loop; setup helpers also call tile methods directly.
+struct HeadRig {
+    sink: SpineAdapter<SilverSpine>,
+    adapter: SpineAdapter<SilverSpine>,
+    tile: BeaconStateTile,
+    anchor: StateId,
+    _gossip: TProducer,
+    _rpc: TProducer,
+    _spine: Box<SilverSpine>,
+}
+
+impl HeadRig {
+    /// Anchored at slot 70 (epoch 2) and cranked once, so every cursor has
+    /// snapped and the startup Status is behind us.
+    fn new() -> Self {
+        const ANCHOR_SLOT: Slot = 70;
+        let (mut tile, gossip, rpc, mut spine, adapter) = tile_with_producers(ANCHOR_SLOT);
+        seed_tile(&mut tile, 8, ANCHOR_SLOT);
+        tile.sync_target = SyncUpdate::Following;
+        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+        sink.consume(|_: BeaconStateEvent, _| {});
+
+        // Distinct anchor roots expose accidental reads from a child's history.
+        let anchor = {
+            let base = tile.last_applied;
+            let mut g = tile.state.write();
+            let mut w = g.block_roots.roll_from(base.block_roots_idx);
+            w.set(PREVIOUS_DECISION_SLOT as u32, ANCHOR_PREVIOUS);
+            w.set(CURRENT_DECISION_SLOT as u32, ANCHOR_CURRENT);
+            StateId { block_roots_idx: w.commit(), ..base }
+        };
+        tile.last_applied = anchor;
+        tile.state.publish_state_id(anchor);
+        let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+        tile.fork_choice = ForkChoice::init(
+            cp,
+            cp,
+            ANCHOR_SLOT,
+            ANCHOR_ROOT,
+            ANCHOR_STATE_ROOT,
+            [0u8; 32],
+            false,
+            anchor,
+            8,
+        );
+        let mut rig =
+            Self { sink, adapter, tile, anchor, _gossip: gossip, _rpc: rpc, _spine: spine };
+        let _ = rig.crank();
+        rig
+    }
+
+    fn crank(&mut self) -> Published {
+        self.tile.loop_body(&mut self.adapter);
+        self.drain()
+    }
+
+    fn drain(&mut self) -> Published {
+        Published::drain(&mut self.sink)
+    }
+
+    /// Builds a synthetic state with distinct roots at the two decision slots.
+    fn post_state(
+        &mut self,
+        parent: StateId,
+        slot: Slot,
+        previous: B256,
+        current: B256,
+    ) -> StateId {
+        let mut g = self.tile.state.write();
+        let mut sw = g.slot_states.roll_from(parent.slot_idx);
+        sw.state_mut().slot = slot;
+        let slot_idx = sw.commit();
+        let mut w = g.block_roots.roll_from(parent.block_roots_idx);
+        w.set(PREVIOUS_DECISION_SLOT as u32, previous);
+        w.set(CURRENT_DECISION_SLOT as u32, current);
+        let block_roots_idx = w.commit();
+        StateId { slot_idx, block_roots_idx, ..parent }
+    }
+
+    /// Seeds fork choice and runs the accept notification without parsing a
+    /// block or executing its state transition.
+    fn import(&mut self, block_root: B256, slot: Slot, previous: B256, current: B256) -> StateId {
+        let anchor = self.anchor;
+        self.import_child(block_root, slot, ANCHOR_ROOT, anchor, previous, current)
+    }
+
+    fn import_child(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        parent_root: B256,
+        parent_state: StateId,
+        previous: B256,
+        current: B256,
+    ) -> StateId {
+        let payload = PayloadAxis {
+            bid_block_hash: [0u8; 32],
+            parent_status: PayloadStatus::Full,
+            verified: true,
+            is_gloas: false,
+        };
+        self.import_node(block_root, slot, parent_root, parent_state, previous, current, payload)
+    }
+
+    fn import_gloas(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        previous: B256,
+        current: B256,
+        payload_verified: bool,
+    ) -> StateId {
+        let payload = PayloadAxis {
+            bid_block_hash: block_root,
+            parent_status: PayloadStatus::Full,
+            verified: payload_verified,
+            is_gloas: true,
+        };
+        let anchor = self.anchor;
+        self.import_node(block_root, slot, ANCHOR_ROOT, anchor, previous, current, payload)
+    }
+
+    /// A verified Gloas block extending `parent_root`'s empty payload.
+    fn import_empty_child(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        parent_root: B256,
+        parent_state: StateId,
+        previous: B256,
+        current: B256,
+    ) -> StateId {
+        let payload = PayloadAxis {
+            bid_block_hash: block_root,
+            parent_status: PayloadStatus::Empty,
+            verified: true,
+            is_gloas: true,
+        };
+        self.import_node(block_root, slot, parent_root, parent_state, previous, current, payload)
+    }
+
+    fn import_node(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        parent_root: B256,
+        parent_state: StateId,
+        previous: B256,
+        current: B256,
+        payload: PayloadAxis,
+    ) -> StateId {
+        let state_id = self.post_state(parent_state, slot, previous, current);
+        let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+        self.tile.fork_choice.on_block(BlockImport {
+            slot,
+            block_root,
+            state_root: state_root_of(block_root),
+            parent_root,
+            execution_block_hash: block_root,
+            justified: anchor_cp,
+            finalized: anchor_cp,
+            unrealized_justified: anchor_cp,
+            unrealized_finalized: anchor_cp,
+            state_id,
+            bid_block_hash: payload.bid_block_hash,
+            parent_payload_status: payload.parent_status,
+            payload_verified: payload.verified,
+            is_gloas: payload.is_gloas,
+        });
+        self.tile.last_applied = state_id;
+        self.tile.last_applied_block_root = block_root;
+        self.tile.recompute_head();
+        self.tile.on_accept(Some(block_root), &mut self.adapter.producers);
+        state_id
+    }
+
+    fn verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
+        self.sink.produce(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root,
+            status,
+            latest_valid_hash: [0u8; 32],
+        }));
+    }
+
+    fn advance_to_slot(&mut self, slot: Slot) {
+        self.tile.ticker.set_since_genesis_ms(slot * 12_000);
+    }
+
+    /// Bypasses gossip validation and supplies the recomputation normally
+    /// performed after committing PTC votes.
+    fn ptc_majority(&mut self, block_root: B256) {
+        self.tile.fork_choice.record_ptc_votes(&block_root, &[u64::MAX; 8], true, true);
+        self.tile.recompute_head();
+    }
+
+    fn vote_for(&mut self, block_root: B256, validators: std::ops::Range<u32>) {
+        self.vote(block_root, validators, 71, true);
+    }
+
+    /// Slot-72 votes can distinguish the slot-71 block's empty/full payload.
+    fn vote_on_payload(
+        &mut self,
+        block_root: B256,
+        validators: std::ops::Range<u32>,
+        present: bool,
+    ) {
+        self.vote(block_root, validators, 72, present);
+    }
+
+    fn vote(
+        &mut self,
+        block_root: B256,
+        validators: std::ops::Range<u32>,
+        attestation_slot: Slot,
+        payload_present: bool,
+    ) {
+        let n = self.tile.head_validator_count();
+        for validator in validators {
+            self.tile.fork_choice.record_vote(
+                &AttestationVote {
+                    validator,
+                    block_root,
+                    target_epoch: 2,
+                    attestation_slot,
+                    payload_present,
+                },
+                n,
+            );
+        }
+    }
+}
+
+/// Distinct roots expose snapshots that mix metadata from different forks.
+const A_PREVIOUS: B256 = [0xA1; 32];
+const A_CURRENT: B256 = [0xA2; 32];
+const B_PREVIOUS: B256 = [0xB1; 32];
+const B_CURRENT: B256 = [0xB2; 32];
+const ANCHOR_PREVIOUS: B256 = [0x71; 32];
+const ANCHOR_CURRENT: B256 = [0x72; 32];
+
+fn head_a(optimistic: bool) -> StatusHead {
+    StatusHead {
+        root: A_ROOT,
+        slot: 71,
+        optimistic,
+        roots: HeadRoots {
+            state_root: state_root_of(A_ROOT),
+            previous_duty_dependent_root: A_PREVIOUS,
+            current_duty_dependent_root: A_CURRENT,
+        },
+        payload: PayloadResolution::Full,
+    }
+}
+
+fn head_b(optimistic: bool) -> StatusHead {
+    StatusHead {
+        root: B_ROOT,
+        slot: 71,
+        optimistic,
+        roots: HeadRoots {
+            state_root: state_root_of(B_ROOT),
+            previous_duty_dependent_root: B_PREVIOUS,
+            current_duty_dependent_root: B_CURRENT,
+        },
+        payload: PayloadResolution::Full,
+    }
+}
+
+fn head_anchor() -> StatusHead {
+    StatusHead {
+        root: ANCHOR_ROOT,
+        slot: 70,
+        optimistic: false,
+        roots: HeadRoots {
+            state_root: ANCHOR_STATE_ROOT,
+            previous_duty_dependent_root: ANCHOR_PREVIOUS,
+            current_duty_dependent_root: ANCHOR_CURRENT,
+        },
+        payload: PayloadResolution::Full,
+    }
+}
+
+#[test]
+fn startup_status_uses_the_seeded_anchor_on_both_forks() {
+    for is_gloas in [false, true] {
+        for state_slot in [0, 70] {
+            let mut epoch = EpochState::default();
+            if is_gloas {
+                epoch.fork.current_version = Immutable::default().gloas_fork_version;
+            }
+            let state =
+                BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], state_slot);
+            let (mut tile, _gp, _rp, mut spine, mut adapter) =
+                tile_with_producers_on(state_slot, state, SpecConfig::mainnet());
+            let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+            sink.consume(|_: BeaconStateEvent, _| {});
+            let root = tile.head_block_root();
+            let state_root =
+                ssz_hash::hash_tree_root_state(&tile.state.read_view(tile.last_applied));
+            assert_ne!(root, [0; 32], "the constructor seeded a real anchor");
+
+            tile.loop_body(&mut adapter);
+
+            assert_eq!(
+                Published::drain(&mut sink).last_head(),
+                StatusHead {
+                    root,
+                    slot: 0,
+                    optimistic: false,
+                    roots: HeadRoots {
+                        state_root,
+                        previous_duty_dependent_root: root,
+                        current_duty_dependent_root: root,
+                    },
+                    payload: if is_gloas {
+                        PayloadResolution::Empty
+                    } else {
+                        PayloadResolution::Full
+                    },
+                },
+                "startup at state slot {state_slot}, Gloas: {is_gloas}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_import_is_not_republished_by_idle_iterations() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+
+    assert_eq!(rig.crank().heads(), [head_a(true)]);
+    for _ in 0..2 {
+        assert!(rig.crank().heads().is_empty(), "an idle iteration has nothing new to report");
+    }
+}
+
+#[test]
+fn a_non_head_import_publishes_a_status_naming_the_head_it_did_not_take() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    let _ = rig.crank();
+
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    assert_eq!(rig.crank().last_head(), head_a(true));
+}
+
+#[test]
+fn a_verdict_after_an_import_observation_is_not_lost() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().last_head(), head_a(false));
+}
+
+#[test]
+fn an_invalid_verdict_publishes_the_snapshot_of_the_head_it_moved_to() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    let _ = rig.crank();
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_b(true));
+    assert_eq!(events.reorgs(), [70], "the head left A's branch for its sibling");
+}
+
+#[test]
+fn invalidating_the_only_branch_publishes_the_resident_anchor() {
+    let mut rig = HeadRig::new();
+    let a = rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
+    assert_eq!(rig.crank().last_head().root, B_ROOT);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_anchor());
+    assert_eq!(events.reorgs(), [70]);
+}
+
+fn head_a_empty(optimistic: bool) -> StatusHead {
+    StatusHead { payload: PayloadResolution::Empty, ..head_a(optimistic) }
+}
+
+/// Mark verification directly to isolate publication from envelope validation.
+#[test]
+fn payload_verification_and_execution_validation_update_the_head_independently() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    assert_eq!(rig.crank().last_head(), head_a_empty(true));
+
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_a(true));
+    assert!(events.reorgs().is_empty(), "the head block did not move");
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().last_head(), head_a(false));
+}
+
+/// An invalid Gloas payload can leave its block selected with an empty
+/// resolution.
+#[test]
+fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_reorg() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    assert_eq!(rig.crank().last_head(), head_a(true));
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_a_empty(true));
+    assert!(events.reorgs().is_empty());
+}
+
+/// Inject slot-72 votes early so their weight is already folded while the
+/// previous-slot rule still applies. This isolates the rule's expiry and
+/// Status publication; normal gossip would defer these votes until slot 73.
+#[test]
+fn the_tick_closing_the_previous_slot_window_publishes_the_vote_weighted_resolution() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    let _ = rig.crank();
+
+    rig.vote_on_payload(A_ROOT, 0..8, false);
+    rig.advance_to_slot(72);
+    assert_eq!(rig.crank().last_head(), head_a(true));
+
+    rig.advance_to_slot(73);
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_a_empty(true));
+    assert!(events.reorgs().is_empty());
+}
+
+/// The boosted empty-edge child makes the parent's resolution depend on PTC
+/// votes. Here the child is viable, so the majority also changes the head root.
+#[test]
+fn a_ptc_majority_returns_the_head_to_the_parent_with_its_full_payload() {
+    let mut rig = HeadRig::new();
+    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    rig.advance_to_slot(72);
+    let _ = rig.crank();
+
+    rig.tile.fork_choice.set_proposer_boost(B_ROOT);
+    rig.import_empty_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
+    let b = StatusHead { slot: 72, ..head_b(true) };
+    assert_eq!(rig.crank().last_head(), b, "boost on the empty child resolves A empty");
+
+    rig.ptc_majority(A_ROOT);
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_a(true));
+    assert_eq!(events.reorgs(), [71], "the head left B for its parent");
+}
+
+/// Votes take effect when the next slot tick recomputes the head.
+#[test]
+fn a_vote_driven_reorg_publishes_the_new_head_and_reports_the_reorg() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    let _ = rig.crank();
+
+    rig.vote_for(B_ROOT, 0..8);
+
+    rig.advance_to_slot(72);
+    let events = rig.crank();
+    assert_eq!(events.last_head(), head_b(true));
+    assert_eq!(events.reorgs(), [70]);
+}
+
+#[test]
+fn a_status_that_already_named_the_new_head_does_not_hide_the_reorg() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    let _ = rig.crank();
+
+    rig.vote_for(B_ROOT, 0..8);
+    rig.tile.recompute_head();
+    rig.tile.on_accept(None, &mut rig.adapter.producers);
+    let events = rig.crank();
+    assert_eq!(events.reorgs(), [70], "the reorg is reported anyway");
+    assert_eq!(events.last_head(), head_b(true));
+}
+
+#[test]
+fn validating_a_sibling_does_not_validate_the_head() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    let _ = rig.crank();
+
+    rig.verdict(B_ROOT, PayloadValidationStatus::Valid);
+    assert!(rig.crank().heads().iter().all(|head| *head == head_a(true)));
+
+    rig.vote_for(B_ROOT, 0..8);
+    rig.advance_to_slot(72);
+    assert_eq!(rig.crank().last_head(), head_b(false));
 }
 
 #[test]
@@ -550,6 +1150,7 @@ fn anchor_child(block_root: B256, state_id: StateId) -> BlockImport {
     BlockImport {
         slot: 11,
         block_root,
+        state_root: state_root_of(block_root),
         parent_root: ANCHOR_ROOT,
         execution_block_hash: [0u8; 32],
         justified: anchor_cp,
@@ -593,24 +1194,56 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
 }
 
+/// The fixtures sign under Fulu from genesis; mainnet's fork schedule would
+/// put a Phase0 domain on their signatures.
+#[cfg(feature = "ef_tests")]
+fn fulu_from_genesis() -> SpecConfig {
+    SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
+}
+
+/// `pre`, `blocks_0` and `post` of a mainnet Fulu sanity fixture, decompressed.
+#[cfg(feature = "ef_tests")]
+fn sanity_fixture(name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests")
+        .join(name);
+    let read = |file: &str| {
+        let path = dir.join(file);
+        let raw = fs::read(&path)
+            .unwrap_or_else(|e| panic!("{}: {e} (run `just ef-tests-download`)", path.display()));
+        snap::Decoder::new()
+            .decompress_vec(&raw)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    };
+    (read("pre.ssz_snappy"), read("blocks_0.ssz_snappy"), read("post.ssz_snappy"))
+}
+
+/// Read expected roots from the block header and EF post-state, independently
+/// of the duty-dependent lookup under test.
+#[cfg(feature = "ef_tests")]
+fn fixture_head_roots(block_ssz: &[u8], post_ssz: &[u8]) -> HeadRoots {
+    let epoch = SignedBeaconBlockView::slot(block_ssz) / SLOTS_PER_EPOCH;
+    let mut post = BeaconState::from_checkpoint(post_ssz, &fulu_from_genesis(), &[])
+        .unwrap_or_else(|e| panic!("decompose post: {e}"));
+    let id = post.roll_fresh();
+    let ring = post.block_roots.view(id.block_roots_idx);
+    HeadRoots {
+        state_root: *SignedBeaconBlockView::state_root(block_ssz),
+        previous_duty_dependent_root: ring
+            .at_slot((epoch.saturating_sub(1) * SLOTS_PER_EPOCH).saturating_sub(1)),
+        current_duty_dependent_root: ring.at_slot((epoch * SLOTS_PER_EPOCH).saturating_sub(1)),
+    }
+}
+
 #[cfg(feature = "ef_tests")]
 #[test]
 fn a_block_is_applied_once_and_already_known_on_repeat() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
-    let read = |name: &str| {
-        let path = fixture.join(name);
-        fs::read(&path)
-            .unwrap_or_else(|e| panic!("{}: {e} (run `just ef-tests-download`)", path.display()))
-    };
-    let (pre, block) = (read("pre.ssz_snappy"), read("blocks_0.ssz_snappy"));
-    let pre_ssz = snap::Decoder::new().decompress_vec(&pre).expect("snappy pre");
-    let block_ssz = snap::Decoder::new().decompress_vec(&block).expect("snappy block");
+    let (pre_ssz, block_ssz, _) = sanity_fixture("attestation");
     let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let block_slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(block_slot + 1, state);
+        tile_with_producers_on(block_slot + 1, state, SpecConfig::mainnet());
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
@@ -629,6 +1262,127 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn an_imported_block_publishes_its_own_head_metadata() {
+    let (pre_ssz, block_ssz, post_ssz) = sanity_fixture("attestation");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+    let expected = fixture_head_roots(&block_ssz, &post_ssz);
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let block_root = block_root_fulu(&block_ssz);
+    let (mut tile, _gp, mut rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot + 1, state, fulu_from_genesis());
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    tile.loop_body(&mut adapter);
+    let _ = Published::drain(&mut sink);
+
+    let (_, read) = publish_block_bytes(&mut rp, &block_ssz);
+    sink.produce(live_block_response(read));
+    tile.loop_body(&mut adapter);
+
+    assert_eq!(Published::drain(&mut sink).last_head(), StatusHead {
+        root: block_root,
+        slot,
+        optimistic: true,
+        roots: expected,
+        payload: PayloadResolution::Full,
+    });
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn a_replayed_block_publishes_its_own_head_metadata() {
+    let (pre_ssz, block_ssz, post_ssz) = sanity_fixture("attestation");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+    let expected = fixture_head_roots(&block_ssz, &post_ssz);
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, _gp, _rp, mut replay) =
+        make_tile_with_producers(slot + 1, state, fulu_from_genesis());
+    let (mut spine, mut adapter) = spine_adapter(&tile);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    tile.loop_body(&mut adapter);
+    let _ = Published::drain(&mut sink);
+
+    let (_, read) = publish_block_bytes(&mut replay, &block_ssz);
+    sink.produce(ReplayBlock::Block { ssz: read });
+    tile.loop_body(&mut adapter);
+
+    assert_eq!(Published::drain(&mut sink).last_head(), StatusHead {
+        root: block_root_fulu(&block_ssz),
+        slot,
+        optimistic: true,
+        roots: expected,
+        payload: PayloadResolution::Full,
+    });
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "consensus-spec-tests/tests/mainnet/fulu/sanity/slots/pyspec_tests/slots_2/post.ssz_snappy",
+    );
+    let raw = fs::read(&path)
+        .unwrap_or_else(|e| panic!("{}: {e} (run `just ef-tests-download`)", path.display()));
+    let ssz = snap::Decoder::new().decompress_vec(&raw).expect("snappy post");
+    let state = BeaconState::from_checkpoint(&ssz, &SpecConfig::mainnet(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+
+    let header = state.slot_states.finalized_view().state().latest_block_header;
+    let state_slot = state.slot_states.finalized_view().slot_number();
+    assert!(state_slot > header.slot, "fixture premise: state {state_slot}, block {}", header.slot);
+    assert_ne!(header.state_root, [0u8; 32], "fixture premise: the header names its state");
+
+    let (mut tile, _gp, _rp) = make_tile_with_gossip(state_slot, state);
+    let BeaconStateEvent::Status { ssz, head_roots, .. } = tile.status_event(tile.selected_head())
+    else {
+        panic!("status_event produces Status")
+    };
+    assert_eq!(StatusView::head_slot(&ssz), header.slot, "p2p Status names the anchor block");
+    assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
+    assert_eq!(head_roots.state_root, header.state_root, "the anchor block's declared state");
+}
+
+#[test]
+fn an_anchor_whose_state_outran_the_ring_reports_no_head_metadata() {
+    let anchor_at = |state_slot: Slot| {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, state_slot);
+        let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+        tile.fork_choice = ForkChoice::init(
+            cp,
+            cp,
+            70,
+            ANCHOR_ROOT,
+            ANCHOR_STATE_ROOT,
+            [0u8; 32],
+            false,
+            tile.last_applied,
+            4,
+        );
+        tile
+    };
+    // The previous decision slot for a head in epoch 2 is slot 31.
+    let edge = SLOTS_PER_HISTORICAL_ROOT as u64 + 31;
+
+    let tile = anchor_at(edge);
+    assert!(
+        tile.head_roots(tile.selected_head()).is_complete(),
+        "a state at {edge} still holds slot 31, the oldest slot in its ring"
+    );
+
+    let tile = anchor_at(edge + 1);
+    assert_eq!(
+        tile.head_roots(tile.selected_head()),
+        HeadRoots::default(),
+        "one slot later that root is gone, and so is the whole snapshot"
+    );
 }
 
 /// Fulu requires the execution timestamp and the active blob limit before a
@@ -844,14 +1598,15 @@ fn pending_admission_window_bounds() {
 fn tile_with_producers(
     wall_slot: u64,
 ) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
-    tile_with_producers_on(wall_slot, BeaconState::empty_test(0))
+    tile_with_producers_on(wall_slot, BeaconState::empty_test(0), SpecConfig::mainnet())
 }
 
 fn tile_with_producers_on(
     wall_slot: u64,
     state: BeaconState,
+    spec: SpecConfig,
 ) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
-    let (tile, gp, rp) = make_tile_with_gossip(wall_slot, state);
+    let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec);
     let (spine, adapter) = spine_adapter(&tile);
     (tile, gp, rp, spine, adapter)
 }
@@ -1364,8 +2119,17 @@ fn block_known_parent_bad_sig_rejected() {
     let parent_root = ssz_hash::hash_tree_root_block_header(&genesis_header);
 
     let cp = Checkpoint { epoch: 0, root: parent_root };
-    tile.fork_choice =
-        ForkChoice::init(cp, cp, 10, parent_root, [0u8; 32], false, tile.last_applied, 0);
+    tile.fork_choice = ForkChoice::init(
+        cp,
+        cp,
+        10,
+        parent_root,
+        state_root_of(parent_root),
+        [0u8; 32],
+        false,
+        tile.last_applied,
+        0,
+    );
 
     // Valid structure, zeroed BLS signature → precheck reaches and fails
     // signature verification, so no fork-choice node is added.
@@ -2722,9 +3486,11 @@ impl ThreeForks {
         let mut sw = g.slot_states.roll_from(parent.slot_idx);
         sw.state_mut().slot = slot;
         let slot_idx = sw.commit();
-        // The block-roots column, written where `process_slot` writes it.
+        // Slot zero is a synthetic marker for detecting reads from the
+        // wrong bundle after finalization.
         let mut w = g.block_roots.roll_from(parent.block_roots_idx);
         w.set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, root);
+        w.set(0, root);
         let block_roots_idx = w.commit();
         StateId { balances_idx, slot_idx, block_roots_idx, ..parent }
     }
@@ -2740,6 +3506,7 @@ impl ThreeForks {
         self.tile.fork_choice.on_block(BlockImport {
             slot,
             block_root,
+            state_root: state_root_of(block_root),
             parent_root,
             execution_block_hash: [0u8; 32],
             justified: cp,
@@ -2856,6 +3623,44 @@ fn multi_fork_finalize_promotes_and_rebases() {
     //     bundle (not the stale pre-finalize one).
     assert_eq!(tile.last_applied, d_rebased, "head bundle refreshed");
     assert_ne!(tile.last_applied, d_id, "stale head bundle replaced");
+}
+
+/// Distinct slot-zero markers identify which state bundle supplies the roots
+/// after finalization remaps the surviving head.
+#[test]
+fn status_reads_the_surviving_head_after_finalization_remaps_its_node() {
+    let mut forks = ThreeForks::new();
+    // Justification follows finality here, as `lift_checkpoints` would have it.
+    forks.tile.fork_choice.justified_checkpoint = Checkpoint { epoch: 0, root: F_ROOT };
+    let (_, _gp, _rp, mut spine, mut adapter) = tile_with_producers(2);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    forks.tile.ticker.set_since_genesis_ms(2 * 12_000);
+    forks.tile.loop_body(&mut adapter);
+    assert_eq!(Published::drain(&mut sink).last_head().root, D_ROOT);
+    let old_idx = forks.tile.fork_choice.find_node_idx(&D_ROOT).unwrap();
+
+    forks.tile.maybe_finalize();
+    let new_idx = forks.tile.fork_choice.find_node_idx(&D_ROOT).unwrap();
+    assert_ne!(old_idx, new_idx, "pruning moved the surviving head's index");
+    forks.tile.ticker.set_since_genesis_ms(3 * 12_000);
+    forks.tile.loop_body(&mut adapter);
+
+    assert_eq!(
+        Published::drain(&mut sink).last_head(),
+        StatusHead {
+            root: D_ROOT,
+            slot: 2,
+            optimistic: true,
+            roots: HeadRoots {
+                state_root: state_root_of(D_ROOT),
+                previous_duty_dependent_root: D_ROOT,
+                current_duty_dependent_root: D_ROOT,
+            },
+            payload: PayloadResolution::Full,
+        },
+        "epoch 0 decides at slot 0, where each bundle carries its own root"
+    );
 }
 
 /// A block staged on its data columns holds a committed state off a live
@@ -3123,6 +3928,7 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
     tile.fork_choice.on_block(BlockImport {
         slot: 1,
         block_root: F_ROOT,
+        state_root: state_root_of(F_ROOT),
         parent_root: ANCHOR_ROOT,
         execution_block_hash: [0u8; 32],
         justified: f_cp,
