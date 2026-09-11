@@ -5,12 +5,22 @@ use std::{
     ops::Deref,
     ptr::addr_of,
     slice,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
-pub use consumer::{AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead};
+pub use consumer::{
+    AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
+};
 use flux::{Timer, timing::Nanos, tracing};
+pub use gossip_frame::{
+    AcquiredGossipFrame, AcquiredGossipSegment, GossipFrameError, GossipFrameRef,
+    GossipFrameSegment, GossipFrameView, GossipSegment, MAX_GOSSIP_SEGMENTS,
+};
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
+pub use sub_reservation::{
+    AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
+    SubReservationRef, SubReservationView, SubValidation, SubWrite,
+};
 use thiserror::Error;
 
 use crate::spine::tcache::consumer::Buckets;
@@ -35,8 +45,10 @@ const fn lag_threshold(len: u32) -> u64 {
 }
 
 mod consumer;
+mod gossip_frame;
 mod metrics;
 mod producer;
+mod sub_reservation;
 
 use metrics::TCacheMetrics;
 
@@ -126,6 +138,12 @@ pub enum Error {
     UnexpectedCacheRef,
     #[error("stale seq: {seq} < {tail}")]
     StaleSeq { name: &'static str, seq: u64, tail: u64 },
+    #[error("reservation is incomplete")]
+    Incomplete,
+    #[error("reservation is already committed")]
+    Committed,
+    #[error("range exceeds reservation")]
+    InvalidRange,
 }
 
 impl TCache {
@@ -133,35 +151,37 @@ impl TCache {
     /// (e.g. `"gossip_in"`); the metrics layer uses it to produce
     /// `counters-tcache-{name}`.
     pub fn producer(name: &'static str, n: usize) -> Producer {
-        let tcache = Self::alloc_heap(name, n);
-        let space = tcache.len;
-        Producer { cache: Box::into_raw(tcache), seq: 0, published_seq: 0, space }
+        Producer::new(Self::alloc_heap(name, n))
     }
 
     /// Create a multi-producer t-cache.
     pub fn multi_producer(name: &'static str, n: usize) -> MultiProducer {
-        let tcache = Self::alloc_heap(name, n);
-        let len = tcache.len;
-        MultiProducer::new(Box::into_raw(tcache), len)
+        MultiProducer::new(Self::producer(name, n))
     }
 
     pub fn name(&self) -> &'static str {
         self.name
     }
 
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.len as usize
+    }
+
     /// Attach to a named shmem segment as a producer, creating it if needed.
     /// Either side (producer or consumer) may start first. `n` must be
     /// identical on both sides.
+    /// Writers must be trusted cooperating processes. Pointer-bearing payloads
+    /// are process-local, not portable between processes.
     #[cfg(unix)]
     pub fn shm_producer(name: &'static str, n: usize) -> Producer {
-        let tcache = Self::attach_shmem(name, n);
-        let space = tcache.len;
-        Producer { cache: Box::into_raw(tcache), seq: 0, published_seq: 0, space }
+        Producer::new(Self::attach_shmem(name, n))
     }
 
     /// Attach to a named shmem segment as a random-access consumer, creating
     /// it if needed. Either side (producer or consumer) may start first. `n`
     /// must be identical on both sides.
+    /// The trust and payload restrictions of [`Self::shm_producer`] also apply.
     #[cfg(unix)]
     pub fn shm_consumer(name: &str, n: usize) -> Result<RandomAccessConsumer, Error> {
         let tcache = Box::into_raw(Self::attach_shmem(name, n));
@@ -216,6 +236,15 @@ impl TCache {
         auto_free: bool,
     ) -> Result<RandomAccessConsumer, Error> {
         self.ra_consumer(name, auto_free, true)
+    }
+
+    pub fn retained_random_access(
+        &self,
+        name: &'static str,
+    ) -> Result<RandomAccessConsumer, Error> {
+        let mut consumer = self.ra_consumer(name, true, true)?;
+        consumer.retain();
+        Ok(consumer)
     }
 
     fn ra_consumer(
@@ -292,8 +321,8 @@ impl TCache {
         (seq & (self.len - 1) as u64) as usize
     }
 
-    fn space(&self, head_seq: u64) -> u32 {
-        let min_tail = self.min_tail(head_seq);
+    fn space(&self, head_seq: u64, min_allocation: u64) -> u32 {
+        let min_tail = self.min_tail(min_allocation);
         debug_assert!(
             head_seq - min_tail <= self.len as u64,
             "{head_seq} - {min_tail} > {}",
@@ -321,7 +350,11 @@ impl TCache {
         if slot_seq != seq {
             return Err(Error::WrongSeq { expected: seq, slot: slot_seq });
         }
-        if slot.skip != 0 {
+        let skip = slot.skip.load(Ordering::Acquire);
+        if skip != 0 {
+            if skip == sub_reservation::INCOMPLETE {
+                return Err(Error::Incomplete);
+            }
             return Ok((&[], slot.reservation_len as u64, slot.reserve_ns));
         }
 
@@ -335,6 +368,27 @@ impl TCache {
             slot.reservation_len as u64,
             slot.reserve_ns,
         ))
+    }
+
+    // Callers only expose ranges whose writers have permanently relinquished
+    // ownership.
+    #[inline]
+    fn read_range(&self, seq: u64, offset: usize, length: usize) -> Result<&[u8], Error> {
+        let slot = self.slot_at(self.index(seq));
+        if slot.magic != MAGIC {
+            return Err(Error::NoMagic);
+        }
+        let actual = slot.seq.load(Ordering::Acquire);
+        if actual != seq {
+            return Err(Error::WrongSeq { expected: seq, slot: actual });
+        }
+        let end = offset.checked_add(length).ok_or(Error::InvalidRange)?;
+        if end > (slot.data_end - slot.data_start) as usize {
+            return Err(Error::InvalidRange);
+        }
+        Ok(unsafe {
+            slice::from_raw_parts(self.data_ptr().add(slot.data_start as usize + offset), length)
+        })
     }
 
     fn slot_ts(&self, seq: u64) -> Result<Nanos, Error> {
@@ -405,7 +459,7 @@ impl TCache {
             slot.reserve_ns = Nanos::now();
             slot.data_start = start as u32;
             slot.data_end = end as u32;
-            slot.skip = 1;
+            slot.skip = AtomicU8::new(1);
             slot.magic = MAGIC;
 
             (reserve_seq, reserve_len)
@@ -448,16 +502,39 @@ impl TCache {
 
             // Update the slot ts - used in the consumer to measure queue latency.
             slot.reserve_ns = now;
-            slot.skip = 0;
+            slot.skip.store(0, Ordering::Relaxed);
         }
         let new_head = seq + slot.reservation_len as u64;
-        slot.seq = AtomicU64::new(seq);
+        slot.seq.store(seq, Ordering::Release);
         // Track the producer's actual progress for the metrics layer.
         // `head.seq` (visible to joining consumers) is only updated by
         // `publish_head` on out-of-space, but surfer wants the live
         // production cursor.
         self.record_head(new_head);
 
+        self.notify_readers();
+    }
+
+    fn complete_sub_reservation(&self, seq: u64, success: bool) -> Result<(), u8> {
+        let slot = self.slot_at(self.index(seq));
+        slot.skip.compare_exchange(
+            sub_reservation::INCOMPLETE,
+            u8::from(!success),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )?;
+        if success {
+            if let Some(timer) = &self.timer {
+                // Strict readers can already observe this timestamp; do not rewrite it.
+                timer.emit_latency_from_nanos_without_first(slot.reserve_ns, Nanos::now());
+            }
+        }
+        self.notify_readers();
+        Ok(())
+    }
+
+    #[inline]
+    fn notify_readers(&self) {
         #[cfg(feature = "thread_park")]
         flux::park::SIGNAL.signal();
     }
@@ -478,10 +555,7 @@ impl TCache {
 
     #[inline]
     fn slot_at(&self, idx: usize) -> &Slot {
-        unsafe {
-            let ptr = self.data_ptr().add(idx);
-            &*(slice::from_raw_parts(ptr, size_of::<Slot>()).as_ptr() as *const Slot)
-        }
+        unsafe { &*self.data_ptr().add(idx).cast::<Slot>() }
     }
 
     // --- allocators ---
@@ -688,7 +762,7 @@ struct Slot {
     data_start: u32,
     data_end: u32,
     reservation_len: u32,
-    skip: u8,
+    skip: AtomicU8,
     magic: [u8; 3],
 }
 
@@ -700,7 +774,7 @@ impl Default for Slot {
             data_start: 0,
             data_end: 0,
             reservation_len: 0,
-            skip: 0,
+            skip: AtomicU8::new(0),
             magic: MAGIC,
         }
     }
@@ -714,7 +788,7 @@ impl Clone for Slot {
             data_end: self.data_end,
             reserve_ns: self.reserve_ns,
             reservation_len: self.reservation_len,
-            skip: self.skip,
+            skip: AtomicU8::new(self.skip.load(Ordering::Relaxed)),
             magic: MAGIC,
         }
     }
@@ -1007,8 +1081,7 @@ mod tests {
             .collect();
 
         // Spawn producer threads, each with its own clone of the
-        // MultiProducer (Arc<Seqlock<...>>-backed; multiple writers
-        // coordinate seq+space).
+        // MultiProducer; allocation is shared, but payload writes are independent.
         let producer_threads: Vec<_> = (0..PRODUCERS)
             .map(|p| {
                 let mut mp_clone = mp.clone();
