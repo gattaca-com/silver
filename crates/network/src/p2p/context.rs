@@ -15,6 +15,7 @@ pub struct Context {
     pub cluster_nodes: Option<ClusterNodes>,
     pub cluster_inbound_producer: TProducer,
     pub cluster_outbound_consumer: TRandomAccess,
+    pub data_columns_consumer: Option<Box<TRandomAccess>>,
 }
 
 impl Context {

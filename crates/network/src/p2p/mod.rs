@@ -13,11 +13,12 @@ use buffa::{Message, MessageView};
 pub use context::{ClusterNodes, Context};
 use fxhash::{FxHashMap, FxHashSet};
 use mio::{Poll, net::UdpSocket};
+use quic::SegmentedGossipLimits;
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId, PeerId,
+    CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId, PeerId,
     ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
 
@@ -112,6 +113,8 @@ pub struct P2p {
     keypair: Keypair,
     endpoint: Endpoint,
     peers: FxHashMap<ConnectionHandle, Peer>,
+    // Peer queues and Quinn owners must drop before their shared budgets.
+    segmented_limits: Option<Box<SegmentedGossipLimits>>,
     rpc_codec_pool: RpcCodecPool,
     banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
@@ -134,6 +137,7 @@ impl P2p {
             keypair,
             endpoint,
             peers: FxHashMap::default(),
+            segmented_limits: None,
             rpc_codec_pool: RpcCodecPool::default(),
             banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
@@ -358,6 +362,9 @@ impl P2p {
         };
 
         NetworkCounters::P2pConnections.set(self.peers.len() as u64);
+        if let Some(limits) = &self.segmented_limits {
+            limits.publish_gauges();
+        }
         did_work
     }
 
@@ -368,6 +375,23 @@ impl P2p {
                 None => SendResult::UnknownPeer,
             },
             None => SendResult::MessageDropped,
+        }
+    }
+
+    pub fn enqueue_segmented_gossip(
+        &mut self,
+        peer_id: usize,
+        frame: GossipFrameRef,
+        context: &mut Context,
+    ) -> SendResult {
+        match self.peers.get_mut(&ConnectionHandle(peer_id)) {
+            Some(peer) => peer.send_segmented_gossip(
+                frame,
+                context,
+                self.segmented_limits.get_or_insert_with(Box::default),
+                &mut self.rpc_codec_pool,
+            ),
+            None => SendResult::UnknownPeer,
         }
     }
 

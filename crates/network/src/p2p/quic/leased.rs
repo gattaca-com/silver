@@ -1,9 +1,11 @@
 use std::{
     cell::Cell,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     ptr::NonNull,
     time::{Duration, Instant},
 };
+
+use silver_common::cells::GOSSIP_DELIVERY_RETENTION;
 
 /// End-to-end age after which outbound gossip delivery is stale, measured from
 /// enqueue until Quinn releases every owner after ACK or teardown. Expiry is
@@ -11,6 +13,11 @@ use std::{
 /// additional second.
 pub(crate) const GOSSIP_DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const OUTBOUND_LEASE_TICK: Duration = Duration::from_secs(1);
+const _: () = assert!(
+    GOSSIP_DELIVERY_RETENTION.as_nanos() >=
+        GOSSIP_DELIVERY_TIMEOUT.saturating_add(OUTBOUND_LEASE_TICK).as_nanos(),
+    "delivery retention must cover timeout and timer-wheel rounding"
+);
 const OUTBOUND_LEASE_BUCKETS: usize = 32;
 
 /// Per-peer timer wheel for outbound delivery leases. The allocation keeps
@@ -179,6 +186,12 @@ impl<T> Deref for Leased<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.value
+    }
+}
+
+impl<T> DerefMut for Leased<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
     }
 }
 

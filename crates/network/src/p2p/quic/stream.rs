@@ -5,7 +5,7 @@ use quinn_proto::{Connection, StreamId, WriteError};
 use silver_common::AcquiredWithOffset;
 
 use crate::p2p::{
-    quic::{leased::Leased, peer::OutboundBuffer},
+    quic::{OutboundGossip, leased::Leased, peer::OutboundBuffer},
     streams::{AcquiredRpcOutbound, StreamError, StreamIo},
 };
 
@@ -71,6 +71,14 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         Ok(offset)
     }
 
+    fn write_chunks(&mut self, id: StreamId, chunks: &mut [Bytes]) -> Result<usize, StreamError> {
+        match self.connection.send_stream(id).write_chunks(chunks) {
+            Ok(wrote) => Ok(wrote.bytes),
+            Err(WriteError::Blocked) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError> {
         // Finish errors Stopped and Closed are no-ops.
         let _ = self.connection.send_stream(id).finish();
@@ -84,7 +92,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
-    fn gossip_next(&mut self) -> Option<Leased<silver_common::TRead>> {
+    fn gossip_next(&mut self) -> Option<OutboundGossip> {
         match self.outbound {
             OutboundBuffer::Gossip(out_buffer) => out_buffer.pop(),
             _ => None,

@@ -147,7 +147,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TCacheProducer, TRead};
+    use silver_common::{StreamProtocol, TCache, TCacheProducer};
 
     use super::*;
     use crate::p2p::streams::{
@@ -187,7 +187,7 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+        fn gossip_next(&mut self) -> Option<crate::p2p::quic::OutboundGossip> {
             None
         }
 
