@@ -16,14 +16,15 @@ pub use crate::{
     },
     request::{DataKind, Origin, RequestId, Scope, SyncRequest},
     spine::{
-        ALL_PROTOCOLS, AcquiredRead as TRead, AcquiredWithOffset, AgentString, BeaconApiRequest,
-        BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage, ColumnSource,
-        Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineFcuResp,
-        EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
-        EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
-        EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
-        EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
-        GossipMsgIn, GossipMsgOut, IpBytes, LOCAL_GOSSIP_STREAM_ID, LocalAttestationFailure,
+        ALL_PROTOCOLS, AcquiredRange, AcquiredRead as TRead, AcquiredSubReservation,
+        AcquiredWithOffset, AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent,
+        BlockSource, BlockStage, ColumnSource, Consumer as TConsumer, DataColumnsEvent,
+        ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+        EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
+        EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
+        EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
+        EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError, GossipMsgIn,
+        GossipMsgOut, IpBytes, LOCAL_GOSSIP_STREAM_ID, LocalAttestationFailure,
         LocalAttestationResult, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1,
         MultiProducer as TMultiProducer, NewGossipMsg, P2pConnectionStats, P2pSend, P2pStreamId,
         PREFILL_SLOTS, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats,
@@ -39,6 +40,10 @@ pub use crate::{
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+pub use spine::{
+    AcquiredGossipFrame, AcquiredGossipSegment, GossipFrameError, GossipFrameRef,
+    GossipFrameSegment, GossipFrameView, GossipSegment, MAX_GOSSIP_SEGMENTS,
+};
 pub mod column_util;
 mod enr;
 mod error;
