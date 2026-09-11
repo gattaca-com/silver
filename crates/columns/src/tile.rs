@@ -140,6 +140,10 @@ impl DataColumnsTile {
         }
 
         let is_gloas = self.spec.is_gloas_at_slot(slot);
+        if is_gloas && !SignedBeaconBlockView::check_gloas_size(buffer) {
+            tracing::warn!(slot, ?stream_id, "beacon block bid out of bounds");
+            return None;
+        }
         let has_columns = SignedBeaconBlockView::has_data_columns(buffer, is_gloas);
 
         tracing::info!(slot, has_columns, "beacon block recv");
@@ -250,7 +254,6 @@ impl DataColumnsTile {
                         root: block_root,
                         slot,
                         kind: DataKind::Columns,
-                        origin: Origin::Live,
                     });
                 }
                 ColumnDisposition::Ignored
@@ -376,12 +379,7 @@ impl DataColumnsTile {
         if custody_complete {
             tracing::info!(block = hex::encode(block_root), slot, "custody set complete");
             producers.produce_with_ingestion(
-                SyncNeed::Arrived {
-                    root: block_root,
-                    slot,
-                    kind: DataKind::Columns,
-                    origin: Origin::Live,
-                },
+                SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns },
                 recv_ts,
             );
         }
@@ -868,10 +866,10 @@ mod tests {
             });
             self.inj.consume(|need: SyncNeed, _| match need {
                 SyncNeed::Missing { .. } => out.missing.push(need),
-                SyncNeed::Arrived { kind: DataKind::Columns, origin: Origin::Live, .. } => {
-                    out.custody_complete += 1
-                }
-                SyncNeed::Arrived { .. } | SyncNeed::BackfillGap { .. } => {}
+                SyncNeed::Arrived { kind: DataKind::Columns, .. } => out.custody_complete += 1,
+                SyncNeed::Arrived { .. } |
+                SyncNeed::Persisted { .. } |
+                SyncNeed::BackfillPrefill(_) => {}
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
             out

@@ -5,8 +5,9 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, Origin, P2pSend,
-    PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine, SyncNeed, SyncUpdate,
-    SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, column_util,
+    PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine, SilverSpineProducers,
+    SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer,
+    TRandomAccess, column_util,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -34,7 +35,6 @@ const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
 
 pub struct StorageTile {
     // bit set of our custody group columns.
-    custody_group_columns: u128,
     persist_gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
     persist_rpc_consumer: TRandomAccess,
@@ -83,11 +83,11 @@ impl StorageTile {
         data_store_dir: String,
         replay_from_disk: bool,
     ) -> Self {
-        let store =
-            Store::load(data_store_dir, spec.clone()).expect("failed to load storage store");
+        let store = Store::load(data_store_dir, spec.clone(), custody_group_columns)
+            .expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
         let replay_steps = if replay_from_disk {
-            let mut entries = store.replay_entries(custody_group_columns);
+            let mut entries = store.replay_entries();
             entries.sort_unstable_by_key(|e| e.slot);
             entries
                 .into_iter()
@@ -104,7 +104,6 @@ impl StorageTile {
         tracing::info!("have {} replay steps", replay_steps.len());
 
         Self {
-            custody_group_columns,
             persist_gossip_consumer,
             rpc_consumer,
             persist_rpc_consumer,
@@ -180,12 +179,20 @@ impl StorageTile {
 
             // TODO: request the missing columns instead of dropping?
             let ssz = &buf[..len];
+            let has_data_columns = if SignedBeaconBlockView::check_size(ssz) {
+                let slot = SignedBeaconBlockView::slot(ssz);
+                let is_gloas = self.spec.is_gloas_at_slot(slot);
+                if is_gloas && !SignedBeaconBlockView::check_gloas_size(ssz) {
+                    tracing::error!(?path, slot, "replay block bid out of bounds");
+                    false
+                } else {
+                    SignedBeaconBlockView::has_data_columns(ssz, is_gloas)
+                }
+            } else {
+                false
+            };
             if let ReplayStep::Block { columns_on_disk: false, .. } = step &&
-                SignedBeaconBlockView::check_size(ssz) &&
-                SignedBeaconBlockView::has_data_columns(
-                    ssz,
-                    self.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(ssz)),
-                )
+                has_data_columns
             {
                 tracing::warn!(?path, "replay skip: custody columns missing on disk");
                 self.replay_steps.pop_front();
@@ -313,9 +320,7 @@ impl Tile<SilverSpine> for StorageTile {
                             t_read,
                             rsp.stream_id.peer(),
                             Instant::now(),
-                            &mut |event| {
-                                producers.peer_events.produce(&event.into());
-                            },
+                            &mut |io| io.produce(producers),
                         );
                     }
                     silver_common::RpcResponse::ExecutionPayloadEnvelope {
@@ -323,9 +328,7 @@ impl Tile<SilverSpine> for StorageTile {
                         ssz,
                     } if id.is(DataKind::Envelope, Origin::Backfill) => {
                         let t_read = self.rpc_consumer.acquire(ssz);
-                        self.store.backfill_envelope(t_read, &mut |need| {
-                            producers.sync_needs.produce(&need.into());
-                        });
+                        self.store.backfill_envelope(t_read, &mut |io| io.produce(producers));
                     }
                     silver_common::RpcResponse::Error { error, msg, len }
                         if id.origin == Origin::Backfill =>
@@ -440,16 +443,13 @@ impl Tile<SilverSpine> for StorageTile {
             Some(gvr) => spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &gvr),
             None => [0u8; 4],
         };
-        if let Err(e) = self.store.file_io(
-            fork_digest_at,
-            self.custody_group_columns,
-            &mut self.rpc_producer,
-            &mut |io| match io {
+        if let Err(e) =
+            self.store.file_io(fork_digest_at, &mut self.rpc_producer, &mut |io| match io {
                 IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
                 IoEvent::Need(need) => adapter.produce(need),
-            },
-        ) {
+            })
+        {
             tracing::error!(
                 ?e,
                 store_dir = self.store.store_dir(),
@@ -464,6 +464,16 @@ pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
     Need(SyncNeed),
+}
+
+impl IoEvent {
+    fn produce(self, producers: &mut SilverSpineProducers) {
+        match self {
+            IoEvent::P2pSend(send) => producers.p2p_send.produce(&send.into()),
+            IoEvent::PeerEvent(event) => producers.peer_events.produce(&event.into()),
+            IoEvent::Need(need) => producers.sync_needs.produce(&need.into()),
+        };
+    }
 }
 
 #[cfg(test)]

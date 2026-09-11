@@ -3,8 +3,8 @@ use std::vec::Drain;
 use flux::{spine::SpineAdapter, timing::InternalMessage};
 use rustc_hash::FxHashMap;
 use silver_common::{
-    BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineReq, EngineResp, Origin,
-    SilverSpine, SyncNeed,
+    BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineReq, EngineResp, SilverSpine,
+    SyncNeed,
 };
 
 use crate::{Stage, StageEvent};
@@ -153,12 +153,9 @@ impl StageReader {
     }
 
     /// Custody completion is the sync engine's need closing, so it rides
-    /// `SyncNeed` rather than `DataColumnsEvent`; backfill answers are not
-    /// a live block's tail.
+    /// `SyncNeed` rather than `DataColumnsEvent`.
     fn on_sync_need(&mut self, m: &InternalMessage<SyncNeed>) {
-        let SyncNeed::Arrived { root, slot, kind: DataKind::Columns, origin: Origin::Live } =
-            *m.data()
-        else {
+        let SyncNeed::Arrived { root, slot, kind: DataKind::Columns } = *m.data() else {
             return;
         };
         self.out.push(StageEvent {
@@ -175,7 +172,7 @@ mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
         BlockSource, BlockStage, ColumnSource, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
-        Origin, PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -392,14 +389,13 @@ mod tests {
     }
 
     #[test]
-    fn custody_completion_is_the_live_columns_arrival_only() {
+    fn custody_completion_is_the_columns_arrival_only() {
         let mut reader = StageReader::default();
         let root = [9u8; 32];
-        let arrived = |kind, origin| SyncNeed::Arrived { root, slot: 3, kind, origin };
+        let arrived = |kind| SyncNeed::Arrived { root, slot: 3, kind };
 
-        reader.on_sync_need(&msg(arrived(DataKind::Columns, Origin::Backfill), at(3, 100)));
-        reader.on_sync_need(&msg(arrived(DataKind::Block, Origin::Live), at(3, 200)));
-        reader.on_sync_need(&msg(arrived(DataKind::Columns, Origin::Live), at(3, 900)));
+        reader.on_sync_need(&msg(arrived(DataKind::Block), at(3, 200)));
+        reader.on_sync_need(&msg(arrived(DataKind::Columns), at(3, 900)));
 
         assert_eq!(stages(&reader.out), ["custody_done"]);
         assert_eq!(reader.out[0].slot, Some(3));

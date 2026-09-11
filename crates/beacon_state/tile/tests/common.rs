@@ -164,9 +164,10 @@ impl OutboundKind {
         match need {
             SyncNeed::Missing { kind: DataKind::Block, .. } => Some(Self::RequestBlock),
             SyncNeed::Missing { kind: DataKind::Envelope, .. } => Some(Self::RequestEnvelope),
-            SyncNeed::Missing { .. } | SyncNeed::Arrived { .. } | SyncNeed::BackfillGap { .. } => {
-                None
-            }
+            SyncNeed::Missing { .. } |
+            SyncNeed::Arrived { .. } |
+            SyncNeed::Persisted { .. } |
+            SyncNeed::BackfillPrefill(_) => None,
         }
     }
 }

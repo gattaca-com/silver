@@ -81,49 +81,27 @@ struct Entry {
 
 pub struct SyncWindow {
     slots: [Entry; N],
-    applied_head: Slot,
     tail: Slot,
-    finalized: Slot,
-    awaiting_start: bool,
+    /// The tail is never lowered past this.
+    floor: Slot,
 }
 
 impl SyncWindow {
     pub fn new() -> Self {
-        Self {
-            slots: [Entry::default(); N],
-            applied_head: 0,
-            tail: 0,
-            finalized: 0,
-            awaiting_start: true,
-        }
+        Self { slots: [Entry::default(); N], tail: 0, floor: 0 }
     }
 
-    pub fn record_status(&mut self, slot: Slot, finalized_slot: Slot, following: bool) {
-        self.applied_head = slot;
-        self.finalized = finalized_slot;
-        let tail = if self.awaiting_start || following {
-            self.awaiting_start = false;
-            slot
-        } else {
-            self.tail
-        };
-        self.set_tail(tail);
+    pub(super) fn set_tail(&mut self, slot: Slot) {
+        self.tail = slot.max(self.floor);
     }
 
-    fn set_tail(&mut self, slot: Slot) {
-        self.tail = slot.max(self.finalized);
-    }
-
-    pub(super) fn restart_at_next_status(&mut self) {
-        self.awaiting_start = true;
+    pub(super) fn set_floor(&mut self, floor: Slot) {
+        self.floor = floor;
+        self.tail = self.tail.max(floor);
     }
 
     pub fn tail(&self) -> Slot {
         self.tail
-    }
-
-    pub(super) fn applied_head(&self) -> Slot {
-        self.applied_head
     }
 
     pub(super) fn advance_tail(&mut self, end: Slot, needs: Needs) -> bool {
@@ -228,22 +206,69 @@ impl SyncWindow {
             .count() as u64
     }
 
-    pub(super) fn reseed_for_new_target(&mut self) {
-        self.set_tail(self.tail.min(self.applied_head));
-        self.drop(self.tail);
-    }
-
-    pub fn on_reorg(&mut self, lca_slot: Slot) {
-        self.applied_head = self.applied_head.min(lca_slot);
-        self.set_tail(self.tail.min(lca_slot));
-        self.drop(lca_slot);
-    }
-
-    fn drop(&mut self, up_to: Slot) {
+    pub(super) fn drop_above(&mut self, up_to: Slot) {
         for entry in &mut self.slots {
             if entry.slot > up_to {
                 *entry = Entry::default();
             }
         }
+    }
+
+    /// Replace a slot's coverage with a fresh description of it. Emptiness
+    /// proven by a peer's silence is kept where the description knows nothing.
+    pub(super) fn reseed(&mut self, slot: Slot, coverage: Coverage) {
+        self.update(slot, |e| {
+            let silence = e.coverage.block == BlockState::Empty;
+            e.coverage = coverage;
+            if silence && coverage.block == BlockState::Unknown {
+                e.coverage.block = BlockState::Empty;
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn needs() -> Needs {
+        Needs { data_availability_floor: 0, custodies_columns: false, gloas_fork_slot: u64::MAX }
+    }
+
+    /// The ring must let the tail go wherever it is put, or the second range
+    /// would be dropped for sitting under the first.
+    #[test]
+    fn bare_window_reseeds_onto_a_lower_range() {
+        let mut window = SyncWindow::new();
+        window.set_tail(999);
+        window.block_received(1000, [1; 32], None, true);
+        assert!(window.advance_tail(1031, needs()), "its own coverage moves the tail");
+        assert_eq!(window.tail(), 1000);
+
+        window.set_tail(967);
+        window.drop_above(967);
+        window.block_received(968, [2; 32], None, true);
+        assert_eq!(
+            window.coverage(968).block,
+            BlockState::Applied,
+            "the next range down is tracked, not discarded"
+        );
+    }
+
+    #[test]
+    fn reseeding_overwrites_coverage_but_keeps_silence() {
+        let mut window = SyncWindow::new();
+        window.set_tail(9);
+        window.columns_covered(10);
+        window.mark_empty(11);
+
+        let unknown = Coverage::default();
+        window.reseed(10, unknown);
+        window.reseed(11, unknown);
+        assert!(!window.coverage(10).columns_covered, "uncovered again");
+        assert_eq!(window.coverage(11).block, BlockState::Empty, "silence survives");
+
+        window.reseed(11, Coverage { block: BlockState::Applied, ..unknown });
+        assert_eq!(window.coverage(11).block, BlockState::Applied, "a block beats silence");
     }
 }

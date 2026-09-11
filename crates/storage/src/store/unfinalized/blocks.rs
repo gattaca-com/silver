@@ -1,9 +1,11 @@
-use std::{collections::VecDeque, io::Error, path::Path};
+use std::{io::Error, path::Path};
 
 use fxhash::FxHashMap;
+use silver_beacon_state_data::SpecConfig;
+use silver_common::{merkle::B256, ssz_view::SignedBeaconBlockView};
 
 use super::{PayloadKey, read_unfinalized_dir};
-use crate::store::{PendingWrite, io};
+use crate::store::{PendingWrite, WriteQueue, backfill::PayloadFacts, io};
 
 /// One node of the unfinalized fork tree. The edge (`parent_root`) is durable
 /// in the on-disk filename; this is the in-memory index rebuilt from `readdir`
@@ -11,6 +13,7 @@ use crate::store::{PendingWrite, io};
 struct UnfinalizedBlock {
     slot: u64,
     parent_root: [u8; 32],
+    payload_facts: PayloadFacts,
 }
 
 /// Unfinalized block fork tree: block_root → (slot, parent_root).
@@ -23,12 +26,22 @@ impl UnfinalizedBlocks {
     /// few epochs. Files: `<slot>_<parent_root>_<block_root>.ssz`.
     pub(crate) const UNFINALIZED_DIR: &'static str = "unfinalized";
 
-    pub(crate) fn load(store_dir: &str) -> Result<Self, Error> {
+    pub(crate) fn load(store_dir: &str, spec: &SpecConfig) -> Result<Self, Error> {
         let mut map = FxHashMap::default();
         let dir = Path::new(store_dir).join(Self::UNFINALIZED_DIR);
         read_unfinalized_dir(&dir, |name| {
             if let Some((block_root, slot, parent_root)) = io::parse_unfinalized_name(name) {
-                map.insert(block_root, UnfinalizedBlock { slot, parent_root });
+                let facts = match std::fs::read(dir.join(name)) {
+                    Ok(ssz) if SignedBeaconBlockView::check_size(&ssz) => {
+                        PayloadFacts::of(&ssz, spec.is_gloas_at_slot(slot))
+                    }
+                    _ => PayloadFacts::default(),
+                };
+                map.insert(block_root, UnfinalizedBlock {
+                    slot,
+                    parent_root,
+                    payload_facts: facts,
+                });
             }
         })?;
         Ok(Self(map))
@@ -52,12 +65,43 @@ impl UnfinalizedBlocks {
         self.0.get(root).map(|b| (b.slot, b.parent_root))
     }
 
-    pub(crate) fn insert(&mut self, root: [u8; 32], slot: u64, parent_root: [u8; 32]) {
-        self.0.insert(root, UnfinalizedBlock { slot, parent_root });
+    pub(crate) fn insert(
+        &mut self,
+        root: [u8; 32],
+        slot: u64,
+        parent_root: [u8; 32],
+        facts: PayloadFacts,
+    ) {
+        self.0.insert(root, UnfinalizedBlock { slot, parent_root, payload_facts: facts });
     }
 
-    pub(crate) fn remove(&mut self, root: &[u8; 32]) -> Option<(u64, [u8; 32])> {
-        self.0.remove(root).map(|b| (b.slot, b.parent_root))
+    pub(crate) fn remove(&mut self, root: &[u8; 32]) -> Option<(u64, [u8; 32], PayloadFacts)> {
+        self.0.remove(root).map(|b| (b.slot, b.parent_root, b.payload_facts))
+    }
+
+    /// The bid `parent_block_hash` of the canonical child of `root`: the block
+    /// on the head's chain built on it.
+    pub(crate) fn child_payload_parent(
+        &self,
+        head_slot: u64,
+        head_root: B256,
+        root: &B256,
+    ) -> Option<B256> {
+        let mut at = head_root;
+        // Slots must strictly decrease towards the root, or a cycle from a
+        // malformed filename would spin forever.
+        let mut prev_slot = head_slot.saturating_add(1);
+        while let Some(block) = self.0.get(&at) {
+            if block.slot >= prev_slot {
+                return None;
+            }
+            if block.parent_root == *root {
+                return Some(block.payload_facts.parent_payload_hash);
+            }
+            prev_slot = block.slot;
+            at = block.parent_root;
+        }
+        None
     }
 
     /// (block_root, slot, parent_root) for each unfinalized block.
@@ -98,11 +142,7 @@ impl UnfinalizedBlocks {
 
     /// Drop entries at or below `finalized_slot` (orphaned forks), queuing a
     /// prune write for each.
-    pub(crate) fn prune_below(
-        &mut self,
-        finalized_slot: u64,
-        write_queue: &mut VecDeque<PendingWrite>,
-    ) {
+    pub(crate) fn prune_below(&mut self, finalized_slot: u64, write_queue: &mut WriteQueue) {
         self.0.retain(|root, block| {
             if block.slot <= finalized_slot {
                 write_queue.push_back(PendingWrite::Prune {

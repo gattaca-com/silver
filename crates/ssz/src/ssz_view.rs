@@ -699,28 +699,37 @@ impl SignedBeaconBlockView {
     }
 
     #[inline]
-    pub fn gloas_bid(buf: &[u8]) -> Option<&[u8]> {
+    pub fn check_gloas_size(buf: &[u8]) -> bool {
+        if !Self::check_size(buf) {
+            return false;
+        }
         let body = Self::body(buf);
         if body.len() < BEACON_BLOCK_BODY_FIXED {
-            return None;
+            return false;
         }
         let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
         let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
-        if bid_off < BEACON_BLOCK_BODY_FIXED {
-            return None;
+        if bid_off < BEACON_BLOCK_BODY_FIXED || bid_off > pa_off || pa_off > body.len() {
+            return false;
         }
-        // `get` covers an inverted range and one past the body.
-        let signed_bid = body.get(bid_off..pa_off)?;
-        if !SignedExecutionPayloadBidView::check_size(signed_bid) {
-            return None;
-        }
-        let bid = SignedExecutionPayloadBidView::message(signed_bid);
-        ExecutionPayloadBidView::check_size(bid).then_some(bid)
+        let signed_bid = &body[bid_off..pa_off];
+        SignedExecutionPayloadBidView::check_size(signed_bid) &&
+            ExecutionPayloadBidView::check_size(SignedExecutionPayloadBidView::message(
+                signed_bid,
+            ))
+    }
+
+    #[inline]
+    pub fn gloas_bid(buf: &[u8]) -> &[u8] {
+        let body = Self::body(buf);
+        let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
+        let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
+        SignedExecutionPayloadBidView::message(&body[bid_off..pa_off])
     }
 
     #[inline]
     pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
-        Self::gloas_bid(buf).map_or(&[], ExecutionPayloadBidView::blob_kzg_commitments)
+        ExecutionPayloadBidView::blob_kzg_commitments(Self::gloas_bid(buf))
     }
 
     #[inline]

@@ -1,10 +1,10 @@
-use std::{collections::VecDeque, io::Error, path::Path};
+use std::{io::Error, path::Path};
 
 use fxhash::FxHashMap;
 use silver_common::column_util::columns_of;
 
 use super::{PayloadKey, read_unfinalized_dir};
-use crate::store::{PendingWrite, io};
+use crate::store::{PendingWrite, WriteQueue, io};
 
 /// Unfinalized custodied columns: block_root → (slot, bitmask of columns on
 /// disk). Canonicity follows the owning block. Owns all custody-bitmask logic.
@@ -59,12 +59,13 @@ impl UnfinalizedColumns {
     }
 
     /// Promote every custody column of `root` to the flat store.
-    pub(crate) fn promote(&mut self, root: [u8; 32], write_queue: &mut VecDeque<PendingWrite>) {
+    pub(crate) fn promote(&mut self, root: [u8; 32], write_queue: &mut WriteQueue) {
         if let Some((slot, bitmask)) = self.0.remove(&root) {
             for column in columns_of(bitmask) {
-                write_queue.push_back(PendingWrite::Promote {
+                write_queue.push_back(PendingWrite::PromoteColumn {
                     slot,
-                    key: PayloadKey::Column { block_root: root, column },
+                    block_root: root,
+                    column,
                 });
             }
         }
@@ -72,11 +73,7 @@ impl UnfinalizedColumns {
 
     /// Drop entries at or below `finalized_slot` (orphaned forks), queuing a
     /// prune write per column.
-    pub(crate) fn prune_below(
-        &mut self,
-        finalized_slot: u64,
-        write_queue: &mut VecDeque<PendingWrite>,
-    ) {
+    pub(crate) fn prune_below(&mut self, finalized_slot: u64, write_queue: &mut WriteQueue) {
         self.0.retain(|root, &mut (slot, bitmask)| {
             if slot <= finalized_slot {
                 for column in columns_of(bitmask) {
