@@ -599,6 +599,7 @@ fn interrupted(err: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::{BufRead, BufReader},
         net::{SocketAddr, TcpStream},
         os::unix::net::UnixStream,
         path::Path,
@@ -606,6 +607,7 @@ mod tests {
         time::Instant,
     };
 
+    use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{HeadRoots, PayloadResolution};
     use silver_httpcore::Readiness;
@@ -1423,112 +1425,106 @@ mod tests {
         }
     }
 
-    fn head_v2_frame(
-        slot: u64,
-        block_root: &[u8; 32],
-        version: &str,
-        execution_optimistic: bool,
-    ) -> Vec<u8> {
-        let data = format!(
-            "event: head_v2\ndata: {{\"version\":\"{version}\",\"data\":{{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"payload_status\":\"full\",\"epoch_transition\":false,\"current_epoch_dependent_root\":\"0x{}\",\"next_epoch_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}}}\n\n",
-            hex::encode(block_root),
-            "60".repeat(32),
-            "5e".repeat(32),
-            "91".repeat(32),
-        );
-        chunk(data.as_bytes())
+    struct SseEvent {
+        topic: String,
+        data: Value,
     }
 
-    fn head_frame(slot: u64, block_root: &[u8; 32], execution_optimistic: bool) -> Vec<u8> {
-        let data = format!(
-            "event: head\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"epoch_transition\":false,\"previous_duty_dependent_root\":\"0x{}\",\"current_duty_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}\n\n",
-            hex::encode(block_root),
-            "60".repeat(32),
-            "5e".repeat(32),
-            "91".repeat(32),
-        );
-        chunk(data.as_bytes())
+    fn read_events_until_marker(stream: TcpStream) -> JoinHandle<Vec<SseEvent>> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.split_whitespace().nth(1), Some("200"));
+            let mut headers = HashMap::new();
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line.trim_end().split_once(':').unwrap();
+                headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
+            }
+            assert_eq!(headers["content-type"], "text/event-stream");
+            assert_eq!(headers["transfer-encoding"], "chunked");
+
+            let mut events = Vec::new();
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                let size =
+                    usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
+                assert!(size > 0, "subscription ended before the marker");
+                let mut chunk = vec![0; size];
+                reader.read_exact(&mut chunk).unwrap();
+                let mut end = [0; 2];
+                reader.read_exact(&mut end).unwrap();
+                assert_eq!(end, *b"\r\n");
+                let frame = std::str::from_utf8(&chunk).unwrap().strip_suffix("\n\n").unwrap();
+                if frame.starts_with(':') {
+                    continue;
+                }
+                let (topic, data) =
+                    frame.strip_prefix("event: ").unwrap().split_once("\ndata: ").unwrap();
+                let data = serde_json::from_str(data).unwrap();
+                if topic == "test_end" {
+                    return events;
+                }
+                events.push(SseEvent { topic: topic.to_string(), data });
+            }
+        })
+    }
+
+    // Queued after every publication, so readers can detect leaked or repeated
+    // frames without relying on a quiet socket or cross-topic ordering.
+    fn finish_events(server: &mut Server) {
+        server.api.fan_out(|_| true, b"event: test_end\ndata: {}\n\n", Instant::now());
     }
 
     #[test]
     fn each_subscriber_receives_only_the_channels_it_asked_for() {
         let mut server = server_with(64, LONG_TIMEOUT);
-        let addr = tcp_addr(&server);
-        let (mut blocks, mut heads, mut both) = (connect(addr), connect(addr), connect(addr));
-        subscribe(&mut blocks, "block");
-        subscribe(&mut heads, "head");
-        subscribe(&mut both, "block,head");
-        pump_until(&mut server, "three subscribed", |server| subscribers(server) == 3);
-
-        server.api.publish_block(10, &[0xab; 32]);
-        server.api.publish_head(&head_event(10, &[0xab; 32], true));
-
-        let block_only = [SSE_HEAD, &block_frame(10, &[0xab; 32])].concat();
-        let head_only = [SSE_HEAD, &head_frame(10, &[0xab; 32], true)].concat();
-        let mixed =
-            [SSE_HEAD, &block_frame(10, &[0xab; 32]), &head_frame(10, &[0xab; 32], true)].concat();
-
-        let readers = [
-            read_exactly(blocks, block_only.len()),
-            read_exactly(heads, head_only.len()),
-            read_exactly(both, mixed.len()),
-        ];
-        pump_until(&mut server, "every subscriber served", |_| {
-            readers.iter().all(JoinHandle::is_finished)
+        let subscriptions =
+            ["block", "head", "block,head", "head_v2", "head,head_v2", "block,head,head_v2"];
+        let readers = subscriptions.map(|topics| {
+            let mut stream = connect(tcp_addr(&server));
+            subscribe(&mut stream, topics);
+            read_events_until_marker(stream)
         });
-        let [got_blocks, got_heads, got_both] = readers.map(|r| r.join().unwrap());
-
-        assert_same_bytes(&got_blocks, &block_only);
-        assert_same_bytes(&got_heads, &head_only);
-        assert_same_bytes(&got_both, &mixed);
-    }
-
-    #[test]
-    fn head_and_head_v2_are_separate_channels() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let addr = tcp_addr(&server);
-        let (mut legacy, mut v2, mut heads, mut all) =
-            (connect(addr), connect(addr), connect(addr), connect(addr));
-        subscribe(&mut legacy, "head");
-        subscribe(&mut v2, "head_v2");
-        subscribe(&mut heads, "head,head_v2");
-        subscribe(&mut all, "block,head,head_v2");
-        pump_until(&mut server, "four subscribed", |server| subscribers(server) == 4);
+        pump_until(&mut server, "all subscribed", |server| {
+            subscribers(server) == subscriptions.len()
+        });
 
         let slot = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
-        let root = [0xab; 32];
-        server.api.publish_block(slot, &root);
-        server.api.publish_head(&head_event(slot, &root, true));
-        server.api.publish_head_v2(&head_event(slot, &root, true));
-
-        let legacy_frames = [SSE_HEAD, &head_frame(slot, &root, true)].concat();
-        let v2_frames = [SSE_HEAD, &head_v2_frame(slot, &root, "fulu", true)].concat();
-        let head_frames =
-            [SSE_HEAD, &head_frame(slot, &root, true), &head_v2_frame(slot, &root, "fulu", true)]
-                .concat();
-        let all_frames = [
-            SSE_HEAD,
-            &block_frame(slot, &root),
-            &head_frame(slot, &root, true),
-            &head_v2_frame(slot, &root, "fulu", true),
-        ]
-        .concat();
-
-        let readers = [
-            read_exactly(legacy, legacy_frames.len()),
-            read_exactly(v2, v2_frames.len()),
-            read_exactly(heads, head_frames.len()),
-            read_exactly(all, all_frames.len()),
-        ];
+        let head = head_event(slot, &[0xab; 32], true);
+        server.api.publish_block(slot, &head.block_root);
+        server.api.publish_head(&head);
+        server.api.publish_head_v2(&head);
+        finish_events(&mut server);
         pump_until(&mut server, "every subscriber served", |_| {
             readers.iter().all(JoinHandle::is_finished)
         });
-        let [got_legacy, got_v2, got_heads, got_all] = readers.map(|r| r.join().unwrap());
 
-        assert_same_bytes(&got_legacy, &legacy_frames);
-        assert_same_bytes(&got_v2, &v2_frames);
-        assert_same_bytes(&got_heads, &head_frames);
-        assert_same_bytes(&got_all, &all_frames);
+        for (topics, reader) in subscriptions.into_iter().zip(readers) {
+            let events = reader.join().unwrap();
+            assert_eq!(events.len(), topics.split(',').count(), "{topics}");
+            for topic in topics.split(',') {
+                let matching: Vec<_> = events.iter().filter(|event| event.topic == topic).collect();
+                assert_eq!(matching.len(), 1, "{topics}: {topic}");
+                let body = &matching[0].data;
+                let data = if topic == "head_v2" {
+                    assert_eq!(body["version"], "fulu");
+                    assert_eq!(body["data"]["payload_status"], "full");
+                    &body["data"]
+                } else {
+                    body
+                };
+                assert_eq!(data["slot"], slot.to_string());
+                assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
+                assert_eq!(data["execution_optimistic"], true);
+            }
+        }
     }
 
     #[test]
@@ -1536,24 +1532,24 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "head_v2");
+        let reader = read_events_until_marker(client);
         pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
 
         let fulu = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
-        let root = [0xab; 32];
-        for slot in [fulu - 1, fulu, fulu + 1, fulu - 1] {
-            server.api.publish_head_v2(&head_event(slot, &root, false));
+        let expected =
+            [(fulu - 1, "electra"), (fulu, "fulu"), (fulu + 1, "fulu"), (fulu - 1, "electra")];
+        for (slot, _) in expected {
+            server.api.publish_head_v2(&head_event(slot, &[0xab; 32], false));
         }
-
-        let expected = [
-            SSE_HEAD,
-            &head_v2_frame(fulu - 1, &root, "electra", false),
-            &head_v2_frame(fulu, &root, "fulu", false),
-            &head_v2_frame(fulu + 1, &root, "fulu", false),
-            &head_v2_frame(fulu - 1, &root, "electra", false),
-        ]
-        .concat();
-        let got = serve(&mut server, read_exactly(client, expected.len()), "four versioned frames");
-        assert_same_bytes(&got, &expected);
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "versioned frames and marker");
+        assert_eq!(events.len(), expected.len());
+        for (event, (slot, version)) in events.iter().zip(expected) {
+            assert_eq!(event.topic, "head_v2");
+            assert_eq!(event.data["version"], version);
+            assert_eq!(event.data["data"]["slot"], slot.to_string());
+            assert_eq!(event.data["data"]["payload_status"], "full");
+        }
     }
 
     #[test]

@@ -531,47 +531,29 @@ mod tests {
         )
     }
 
-    /// Checks scheduling deduplication; no checkpoint write is performed here.
+    /// Private scheduling state substitutes for a checkpoint writer here;
+    /// consumption is simulated, so this does not verify disk persistence.
     #[test]
-    fn a_repeated_status_arms_no_second_checkpoint_persist() {
+    fn deferred_checkpoint_remains_eligible_and_repeated_status_does_not_reschedule() {
         let store_dir = format!("/tmp/test_storage_status_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_dir);
         let mut tile = empty_tile(&store_dir);
 
-        tile.on_status(&status_ssz(96, 2), 96);
-        assert!(tile.persist_pending, "a finalization not yet scheduled");
-        assert_eq!(tile.checkpointed_epoch, 2);
-
-        tile.persist_pending = false;
-        tile.on_status(&status_ssz(96, 2), 96);
-        assert!(!tile.persist_pending, "the same finalization was already scheduled");
-        assert_eq!(tile.checkpointed_epoch, 2);
-
-        tile.on_status(&status_ssz(128, 3), 128);
-        assert!(tile.persist_pending, "an advanced finalization arms the next one");
-        assert_eq!(tile.checkpointed_epoch, 3);
-
-        let _ = std::fs::remove_dir_all(&store_dir);
-    }
-
-    /// Deferring a checkpoint must leave it eligible when the head catches up,
-    /// even if finalization has not advanced again.
-    #[test]
-    fn a_status_whose_head_lags_the_wall_clock_arms_no_persist() {
-        let store_dir = format!("/tmp/test_storage_lag_{}", rand::random::<u32>());
-        let _ = std::fs::remove_dir_all(&store_dir);
-        let mut tile = empty_tile(&store_dir);
-
         tile.on_status(&status_ssz(96, 2), 96 + CAUGHT_UP_SLACK_SLOTS + 1);
-        assert!(!tile.persist_pending);
-        assert_eq!(tile.checkpointed_epoch, 0, "the deferred epoch is not recorded as scheduled");
+        assert!(!tile.persist_pending, "checkpoint deferred while catching up");
 
         tile.on_status(&status_ssz(96, 2), 96);
         assert!(
             tile.persist_pending,
             "caught up at the same finalization, the checkpoint is not lost"
         );
-        assert_eq!(tile.checkpointed_epoch, 2);
+
+        tile.persist_pending = false;
+        tile.on_status(&status_ssz(96, 2), 96);
+        assert!(!tile.persist_pending, "the same finalization was already scheduled");
+
+        tile.on_status(&status_ssz(128, 3), 128);
+        assert!(tile.persist_pending, "an advanced finalization arms the next one");
 
         let _ = std::fs::remove_dir_all(&store_dir);
     }

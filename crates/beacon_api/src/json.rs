@@ -299,6 +299,7 @@ pub(crate) fn json_safe(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use silver_beacon_state_data::FAR_FUTURE_EPOCH;
     use silver_common::{HeadRoots, PayloadResolution};
 
@@ -530,9 +531,8 @@ mod tests {
     }
 
     #[test]
-    fn head_event_matches_the_specification_s_field_order() {
-        let mut out = Vec::new();
-        Json::new(&mut out).head_event(&HeadEvent {
+    fn head_event_encodes_the_required_fields() {
+        let head = HeadEvent {
             slot: 10,
             block_root: [0x9a; 32],
             roots: HeadRoots {
@@ -543,44 +543,58 @@ mod tests {
             payload: PayloadResolution::Full,
             epoch_transition: true,
             execution_optimistic: false,
-        });
-        let expected = format!(
-            "{{\"slot\":\"10\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"epoch_transition\":true,\"previous_duty_dependent_root\":\"0x{}\",\"current_duty_dependent_root\":\"0x{}\",\"execution_optimistic\":false}}",
-            "9a".repeat(32),
-            "60".repeat(32),
-            "5e".repeat(32),
-            "91".repeat(32),
+        };
+        let mut out = Vec::new();
+        Json::new(&mut out).head_event(&head);
+        let data: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(data["slot"], head.slot.to_string());
+        assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
+        assert_eq!(data["state"], format!("0x{}", hex::encode(head.roots.state_root)));
+        assert_eq!(data["epoch_transition"], true);
+        assert_eq!(data["execution_optimistic"], false);
+        assert_eq!(
+            data["previous_duty_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.previous_duty_dependent_root))
         );
-        assert_eq!(String::from_utf8(out).unwrap(), expected);
+        assert_eq!(
+            data["current_duty_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.current_duty_dependent_root))
+        );
     }
 
-    /// Distinct dependent roots catch a swap in the renamed fields.
     #[test]
     fn head_v2_event_wraps_the_versioned_data_and_maps_the_dependent_roots() {
-        let mut out = Vec::new();
-        Json::new(&mut out).head_v2_event(
-            &HeadEvent {
-                slot: 10,
-                block_root: [0x9a; 32],
-                roots: HeadRoots {
-                    state_root: [0x60; 32],
-                    previous_duty_dependent_root: [0x5e; 32],
-                    current_duty_dependent_root: [0x91; 32],
-                },
-                payload: PayloadResolution::Empty,
-                epoch_transition: false,
-                execution_optimistic: true,
+        let head = HeadEvent {
+            slot: 10,
+            block_root: [0x9a; 32],
+            roots: HeadRoots {
+                state_root: [0x60; 32],
+                previous_duty_dependent_root: [0x5e; 32],
+                current_duty_dependent_root: [0x91; 32],
             },
-            "gloas",
+            payload: PayloadResolution::Empty,
+            epoch_transition: false,
+            execution_optimistic: true,
+        };
+        let mut out = Vec::new();
+        Json::new(&mut out).head_v2_event(&head, "gloas");
+        let body: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(body["version"], "gloas");
+        let data = &body["data"];
+        assert_eq!(data["slot"], head.slot.to_string());
+        assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
+        assert_eq!(data["state"], format!("0x{}", hex::encode(head.roots.state_root)));
+        assert_eq!(data["payload_status"], "empty");
+        assert_eq!(data["epoch_transition"], false);
+        assert_eq!(data["execution_optimistic"], true);
+        assert_eq!(
+            data["current_epoch_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.previous_duty_dependent_root))
         );
-        let expected = format!(
-            "{{\"version\":\"gloas\",\"data\":{{\"slot\":\"10\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"payload_status\":\"empty\",\"epoch_transition\":false,\"current_epoch_dependent_root\":\"0x{}\",\"next_epoch_dependent_root\":\"0x{}\",\"execution_optimistic\":true}}}}",
-            "9a".repeat(32),
-            "60".repeat(32),
-            "5e".repeat(32),
-            "91".repeat(32),
+        assert_eq!(
+            data["next_epoch_dependent_root"],
+            format!("0x{}", hex::encode(head.roots.current_duty_dependent_root))
         );
-        assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 
     #[test]

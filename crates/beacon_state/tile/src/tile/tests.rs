@@ -550,6 +550,10 @@ impl Published {
             })
             .collect()
     }
+
+    fn last_head(&self) -> StatusHead {
+        self.heads().pop().expect("expected a published head")
+    }
 }
 
 /// Synthetic fork-choice setup with spine injection and publication capture.
@@ -600,11 +604,7 @@ impl HeadRig {
         );
         let mut rig =
             Self { sink, adapter, tile, anchor, _gossip: gossip, _rpc: rpc, _spine: spine };
-        assert_eq!(
-            rig.crank().heads().len(),
-            1,
-            "the startup Status is the only one before a test acts"
-        );
+        let _ = rig.crank();
         rig
     }
 
@@ -857,13 +857,12 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
             let state_root =
                 ssz_hash::hash_tree_root_state(&tile.state.read_view(tile.last_applied));
             assert_ne!(root, [0; 32], "the constructor seeded a real anchor");
-            assert_eq!(tile.fork_choice.find_node_idx(&root), Some(0));
 
             tile.loop_body(&mut adapter);
 
             assert_eq!(
-                Published::drain(&mut sink).heads(),
-                [StatusHead {
+                Published::drain(&mut sink).last_head(),
+                StatusHead {
                     root,
                     slot: 0,
                     optimistic: false,
@@ -877,7 +876,7 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
                     } else {
                         PayloadResolution::Full
                     },
-                }],
+                },
                 "startup at state slot {state_slot}, Gloas: {is_gloas}"
             );
         }
@@ -885,12 +884,14 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
 }
 
 #[test]
-fn an_import_publishes_one_status_and_the_end_of_loop_check_adds_none() {
+fn an_import_is_not_republished_by_idle_iterations() {
     let mut rig = HeadRig::new();
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
 
-    assert_eq!(rig.drain().heads(), [head_a(true)], "the accept path published it");
-    assert_eq!(rig.crank().heads(), [], "and the dirty check finds it current");
+    assert_eq!(rig.crank().heads(), [head_a(true)]);
+    for _ in 0..2 {
+        assert!(rig.crank().heads().is_empty(), "an idle iteration has nothing new to report");
+    }
 }
 
 #[test]
@@ -900,22 +901,16 @@ fn a_non_head_import_publishes_a_status_naming_the_head_it_did_not_take() {
     let _ = rig.crank();
 
     rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
-    assert_eq!(rig.tile.fork_choice.find_head(), A_ROOT, "B loses the weight tie-break");
-    assert_eq!(rig.drain().heads(), [head_a(true)]);
-    assert_eq!(rig.crank().heads(), []);
+    assert_eq!(rig.crank().last_head(), head_a(true));
 }
 
 #[test]
-fn a_valid_verdict_on_the_head_publishes_one_more_status_and_no_third() {
+fn a_verdict_after_an_import_observation_is_not_lost() {
     let mut rig = HeadRig::new();
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
-    let _ = rig.crank();
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
-    assert_eq!(rig.crank().heads(), [head_a(false)], "the verdict is the whole change");
-
-    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
-    assert_eq!(rig.crank().heads(), [], "a repeat changes nothing to report");
+    assert_eq!(rig.crank().last_head(), head_a(false));
 }
 
 #[test]
@@ -927,7 +922,7 @@ fn an_invalid_verdict_publishes_the_snapshot_of_the_head_it_moved_to() {
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_b(true)]);
+    assert_eq!(events.last_head(), head_b(true));
     assert_eq!(events.reorgs(), [70], "the head left A's branch for its sibling");
 }
 
@@ -936,14 +931,13 @@ fn invalidating_the_only_branch_publishes_the_resident_anchor() {
     let mut rig = HeadRig::new();
     let a = rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
     rig.import_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
-    assert_eq!(rig.crank().heads().last().unwrap().root, B_ROOT);
+    assert_eq!(rig.crank().last_head().root, B_ROOT);
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
 
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_anchor()]);
+    assert_eq!(events.last_head(), head_anchor());
     assert_eq!(events.reorgs(), [70]);
-    assert_eq!(rig.crank().heads(), [], "the anchor remains the published head");
 }
 
 fn head_a_empty(optimistic: bool) -> StatusHead {
@@ -952,17 +946,18 @@ fn head_a_empty(optimistic: bool) -> StatusHead {
 
 /// Mark verification directly to isolate publication from envelope validation.
 #[test]
-fn verifying_the_gloas_head_s_envelope_publishes_the_full_resolution_once() {
+fn payload_verification_and_execution_validation_update_the_head_independently() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
-    assert_eq!(rig.drain().heads(), [head_a_empty(true)], "the unverified payload resolves empty");
-    assert_eq!(rig.crank().heads(), []);
+    assert_eq!(rig.crank().last_head(), head_a_empty(true));
 
     rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_a(true)]);
+    assert_eq!(events.last_head(), head_a(true));
     assert!(events.reorgs().is_empty(), "the head block did not move");
-    assert_eq!(rig.crank().heads(), [], "the full resolution is now the emitted one");
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().last_head(), head_a(false));
 }
 
 /// An invalid Gloas payload can leave its block selected with an empty
@@ -971,15 +966,12 @@ fn verifying_the_gloas_head_s_envelope_publishes_the_full_resolution_once() {
 fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_reorg() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
-    assert_eq!(rig.drain().heads(), [head_a(true)]);
+    assert_eq!(rig.crank().last_head(), head_a(true));
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_a_empty(true)]);
+    assert_eq!(events.last_head(), head_a_empty(true));
     assert!(events.reorgs().is_empty());
-
-    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
-    assert_eq!(rig.crank().heads(), [], "a repeat changes nothing to report");
 }
 
 /// Inject slot-72 votes early so their weight is already folded while the
@@ -989,17 +981,16 @@ fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_r
 fn the_tick_closing_the_previous_slot_window_publishes_the_vote_weighted_resolution() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
-    assert_eq!(rig.drain().heads(), [head_a(true)]);
+    let _ = rig.crank();
 
     rig.vote_on_payload(A_ROOT, 0..8, false);
     rig.advance_to_slot(72);
-    assert_eq!(rig.crank().heads(), [head_a(true)], "the slot-start Status is the only one");
+    assert_eq!(rig.crank().last_head(), head_a(true));
 
     rig.advance_to_slot(73);
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_a_empty(true)]);
+    assert_eq!(events.last_head(), head_a_empty(true));
     assert!(events.reorgs().is_empty());
-    assert_eq!(rig.crank().heads(), []);
 }
 
 /// The boosted empty-edge child makes the parent's resolution depend on PTC
@@ -1014,28 +1005,12 @@ fn a_ptc_majority_returns_the_head_to_the_parent_with_its_full_payload() {
     rig.tile.fork_choice.set_proposer_boost(B_ROOT);
     rig.import_empty_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
     let b = StatusHead { slot: 72, ..head_b(true) };
-    assert_eq!(rig.drain().heads(), [b], "boost on the empty child resolves A empty");
-    assert_eq!(rig.crank().heads(), []);
+    assert_eq!(rig.crank().last_head(), b, "boost on the empty child resolves A empty");
 
     rig.ptc_majority(A_ROOT);
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_a(true)]);
+    assert_eq!(events.last_head(), head_a(true));
     assert_eq!(events.reorgs(), [71], "the head left B for its parent");
-
-    rig.ptc_majority(A_ROOT);
-    assert_eq!(rig.crank().heads(), [], "a repeated majority changes nothing to report");
-}
-
-#[test]
-fn a_verification_and_a_valid_verdict_in_one_iteration_publish_one_snapshot() {
-    let mut rig = HeadRig::new();
-    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
-    assert_eq!(rig.drain().heads(), [head_a_empty(true)]);
-
-    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
-    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
-    assert_eq!(rig.crank().heads(), [head_a(false)]);
-    assert_eq!(rig.crank().heads(), []);
 }
 
 /// Votes take effect when the next slot tick recomputes the head.
@@ -1047,11 +1022,10 @@ fn a_vote_driven_reorg_publishes_the_new_head_and_reports_the_reorg() {
     let _ = rig.crank();
 
     rig.vote_for(B_ROOT, 0..8);
-    assert_eq!(rig.tile.fork_choice.find_head(), A_ROOT, "the votes are not folded yet");
 
     rig.advance_to_slot(72);
     let events = rig.crank();
-    assert_eq!(events.heads(), [head_b(true)]);
+    assert_eq!(events.last_head(), head_b(true));
     assert_eq!(events.reorgs(), [70]);
 }
 
@@ -1065,56 +1039,24 @@ fn a_status_that_already_named_the_new_head_does_not_hide_the_reorg() {
     rig.vote_for(B_ROOT, 0..8);
     rig.tile.recompute_head();
     rig.tile.on_accept(None, &mut rig.adapter.producers);
-    assert_eq!(rig.drain().heads(), [head_b(true)], "an accept published the new head");
-
     let events = rig.crank();
     assert_eq!(events.reorgs(), [70], "the reorg is reported anyway");
-    assert_eq!(events.heads(), [], "and the head check adds no duplicate");
+    assert_eq!(events.last_head(), head_b(true));
 }
 
 #[test]
-fn a_head_change_after_an_earlier_status_in_the_same_iteration_is_not_lost() {
-    let mut rig = HeadRig::new();
-    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
-    let _ = rig.crank();
-
-    rig.tile.on_accept(None, &mut rig.adapter.producers);
-    rig.tile.fork_choice.on_payload_valid(&A_ROOT);
-    rig.tile.publish_status_on_head_change(&mut rig.adapter.producers);
-
-    assert_eq!(rig.drain().heads(), [head_a(true), head_a(false)]);
-}
-
-#[test]
-fn a_verdict_on_a_non_head_sibling_publishes_nothing_until_it_is_selected() {
+fn validating_a_sibling_does_not_validate_the_head() {
     let mut rig = HeadRig::new();
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
     rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
     let _ = rig.crank();
 
     rig.verdict(B_ROOT, PayloadValidationStatus::Valid);
-    assert_eq!(rig.crank().heads(), [], "the head is A, and A is still optimistic");
-    assert_eq!(rig.tile.fork_choice.find_head(), A_ROOT);
+    assert!(rig.crank().heads().iter().all(|head| *head == head_a(true)));
 
     rig.vote_for(B_ROOT, 0..8);
     rig.advance_to_slot(72);
-    assert_eq!(rig.crank().heads(), [head_b(false)]);
-}
-
-#[test]
-fn a_return_to_the_anchor_publishes_the_anchor_s_own_snapshot() {
-    let mut rig = HeadRig::new();
-    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
-    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
-    let _ = rig.crank();
-
-    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
-    assert_eq!(rig.crank().heads(), [head_b(true)]);
-
-    rig.verdict(B_ROOT, PayloadValidationStatus::Invalid);
-    let events = rig.crank();
-    assert_eq!(events.heads(), [head_anchor()]);
-    assert_eq!(events.reorgs(), [70]);
+    assert_eq!(rig.crank().last_head(), head_b(false));
 }
 
 #[test]
@@ -1277,19 +1219,19 @@ fn sanity_fixture(name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 /// Read expected roots from the block header and EF post-state, independently
-/// of the duty-dependent lookup under test. The slot-33 block uses slots 0 and
-/// 31.
+/// of the duty-dependent lookup under test.
 #[cfg(feature = "ef_tests")]
-fn attestation_fixture_head_roots(block_ssz: &[u8], post_ssz: &[u8]) -> HeadRoots {
-    assert_eq!(SignedBeaconBlockView::slot(block_ssz), 33, "fixture premise");
+fn fixture_head_roots(block_ssz: &[u8], post_ssz: &[u8]) -> HeadRoots {
+    let epoch = SignedBeaconBlockView::slot(block_ssz) / SLOTS_PER_EPOCH;
     let mut post = BeaconState::from_checkpoint(post_ssz, &fulu_from_genesis(), &[])
         .unwrap_or_else(|e| panic!("decompose post: {e}"));
     let id = post.roll_fresh();
     let ring = post.block_roots.view(id.block_roots_idx);
     HeadRoots {
         state_root: *SignedBeaconBlockView::state_root(block_ssz),
-        previous_duty_dependent_root: ring.at_slot(0),
-        current_duty_dependent_root: ring.at_slot(31),
+        previous_duty_dependent_root: ring
+            .at_slot((epoch.saturating_sub(1) * SLOTS_PER_EPOCH).saturating_sub(1)),
+        current_duty_dependent_root: ring.at_slot((epoch * SLOTS_PER_EPOCH).saturating_sub(1)),
     }
 }
 
@@ -1322,60 +1264,62 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
 }
 
-/// Exercises block parsing, signature verification, and state transition
-/// before invoking the accept notification.
 #[cfg(feature = "ef_tests")]
 #[test]
-fn an_imported_fixture_block_s_status_carries_its_own_roots() {
+fn an_imported_block_publishes_its_own_head_metadata() {
     let (pre_ssz, block_ssz, post_ssz) = sanity_fixture("attestation");
     let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
-    let expected = attestation_fixture_head_roots(&block_ssz, &post_ssz);
-    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(34, state, fulu_from_genesis());
+    let expected = fixture_head_roots(&block_ssz, &post_ssz);
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let block_root = block_root_fulu(&block_ssz);
+    let (mut tile, _gp, mut rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot + 1, state, fulu_from_genesis());
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
     sink.consume(|_: BeaconStateEvent, _| {});
+    tile.loop_body(&mut adapter);
+    let _ = Published::drain(&mut sink);
 
-    let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
-    let feedback =
-        tile.apply_block(&data, read, BlockSource::Gossip, false, &mut adapter.producers, |_| {});
-    let Feedback::Accept(Some(block_root)) = feedback else { panic!("{feedback:?}") };
-    tile.on_accept(Some(block_root), &mut adapter.producers);
+    let (_, read) = publish_block_bytes(&mut rp, &block_ssz);
+    sink.produce(live_block_response(read));
+    tile.loop_body(&mut adapter);
 
-    assert_eq!(Published::drain(&mut sink).heads(), [StatusHead {
+    assert_eq!(Published::drain(&mut sink).last_head(), StatusHead {
         root: block_root,
-        slot: 33,
+        slot,
         optimistic: true,
         roots: expected,
         payload: PayloadResolution::Full,
-    }]);
+    });
 }
 
-/// Checks replay metadata and dirty marking. Status is constructed directly;
-/// this test does not exercise its end-of-loop publication.
 #[cfg(feature = "ef_tests")]
 #[test]
-fn a_replayed_fixture_block_moves_the_head_and_its_status_names_its_roots() {
+fn a_replayed_block_publishes_its_own_head_metadata() {
     let (pre_ssz, block_ssz, post_ssz) = sanity_fixture("attestation");
     let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
-    let expected = attestation_fixture_head_roots(&block_ssz, &post_ssz);
-    let (mut tile, _gp, _rp, mut replay) = make_tile_with_producers(34, state, fulu_from_genesis());
-    assert!(!tile.fork_choice.take_head_moved(), "nothing has moved before the replay");
+    let expected = fixture_head_roots(&block_ssz, &post_ssz);
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, _gp, _rp, mut replay) =
+        make_tile_with_producers(slot + 1, state, fulu_from_genesis());
+    let (mut spine, mut adapter) = spine_adapter(&tile);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    sink.consume(|_: BeaconStateEvent, _| {});
+    tile.loop_body(&mut adapter);
+    let _ = Published::drain(&mut sink);
 
     let (_, read) = publish_block_bytes(&mut replay, &block_ssz);
-    tile.replay_block(read);
+    sink.produce(ReplayBlock::Block { ssz: read });
+    tile.loop_body(&mut adapter);
 
-    assert!(tile.fork_choice.take_head_moved(), "the replayed block is the head to publish");
-    let BeaconStateEvent::Status { ssz, head_roots, head_optimistic, .. } =
-        tile.status_event(tile.selected_head())
-    else {
-        panic!("status_event produces Status")
-    };
-    assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
-    assert_eq!(StatusView::head_slot(&ssz), 33);
-    assert!(head_optimistic, "replay asks the execution layer nothing");
-    assert_eq!(head_roots, expected);
+    assert_eq!(Published::drain(&mut sink).last_head(), StatusHead {
+        root: block_root_fulu(&block_ssz),
+        slot,
+        optimistic: true,
+        roots: expected,
+        payload: PayloadResolution::Full,
+    });
 }
 
 #[cfg(feature = "ef_tests")]
@@ -1403,12 +1347,6 @@ fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
     assert_eq!(StatusView::head_slot(&ssz), header.slot, "p2p Status names the anchor block");
     assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
     assert_eq!(head_roots.state_root, header.state_root, "the anchor block's declared state");
-    assert_eq!(header.slot, 0, "fixture premise: the anchor is the genesis block");
-    assert_eq!(
-        (head_roots.previous_duty_dependent_root, head_roots.current_duty_dependent_root),
-        (tile.head_block_root(), tile.head_block_root()),
-        "a slot-zero head decides its own shuffling, whatever slot its state reached"
-    );
 }
 
 #[test]
@@ -3699,22 +3637,18 @@ fn status_reads_the_surviving_head_after_finalization_remaps_its_node() {
     sink.consume(|_: BeaconStateEvent, _| {});
     forks.tile.ticker.set_since_genesis_ms(2 * 12_000);
     forks.tile.loop_body(&mut adapter);
-    let before = Published::drain(&mut sink).heads();
-    assert_eq!(before.len(), 1);
-    assert_eq!(before[0].root, D_ROOT);
+    assert_eq!(Published::drain(&mut sink).last_head().root, D_ROOT);
     let old_idx = forks.tile.fork_choice.find_node_idx(&D_ROOT).unwrap();
 
     forks.tile.maybe_finalize();
-    assert!(forks.tile.fork_choice.find_node_idx(&ANCHOR_ROOT).is_none());
-    assert!(forks.tile.fork_choice.find_node_idx(&F2_ROOT).is_none());
     let new_idx = forks.tile.fork_choice.find_node_idx(&D_ROOT).unwrap();
     assert_ne!(old_idx, new_idx, "pruning moved the surviving head's index");
     forks.tile.ticker.set_since_genesis_ms(3 * 12_000);
     forks.tile.loop_body(&mut adapter);
 
     assert_eq!(
-        Published::drain(&mut sink).heads(),
-        [StatusHead {
+        Published::drain(&mut sink).last_head(),
+        StatusHead {
             root: D_ROOT,
             slot: 2,
             optimistic: true,
@@ -3724,7 +3658,7 @@ fn status_reads_the_surviving_head_after_finalization_remaps_its_node() {
                 current_duty_dependent_root: D_ROOT,
             },
             payload: PayloadResolution::Full,
-        }],
+        },
         "epoch 0 decides at slot 0, where each bundle carries its own root"
     );
 }

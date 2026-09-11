@@ -1,5 +1,6 @@
 use std::{
-    io::{Read, Write},
+    collections::HashMap,
+    io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::net::UnixStream,
     sync::mpsc::{self, Receiver},
@@ -8,9 +9,10 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use serde_json::Value;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
-use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
     Enr, HeadRoots, Identify, Keypair, PayloadResolution, PayloadValidationStatus, SilverSpine,
@@ -31,6 +33,15 @@ fn boundary_tile(
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
 ) -> ApplicationBoundaryTile {
+    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet())
+}
+
+fn boundary_tile_with_spec(
+    bind: &Bind,
+    engine_config: EngineConfig,
+    tcache_names: [&'static str; 3],
+    spec: &SpecConfig,
+) -> ApplicationBoundaryTile {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     let gossip_p = TCache::producer(tcache_names[0], 1 << 12);
@@ -43,7 +54,7 @@ fn boundary_tile(
         &keypair,
         local_enr,
         &Identify::default(),
-        &SpecConfig::mainnet(),
+        spec,
         BeaconStateOwner::empty_test(0).reader(),
         engine_config,
         gossip_p.cache_ref().random_access("t", true).unwrap(),
@@ -222,39 +233,63 @@ fn head_status(
     }
 }
 
-fn chunked(data: &str) -> Vec<u8> {
-    let mut frame = format!("{:x}\r\n", data.len()).into_bytes();
-    frame.extend_from_slice(data.as_bytes());
-    frame.extend_from_slice(b"\r\n");
-    frame
-}
+fn head_events_subscriber(
+    addr: SocketAddr,
+    topic: &str,
+    sentinel_slot: u64,
+) -> (JoinHandle<Vec<Value>>, Receiver<()>) {
+    let (subscribed, on_subscribed) = mpsc::channel();
+    let topic = topic.to_string();
+    let client = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(stream, "GET /eth/v1/events?topics={topic} HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.split_whitespace().nth(1), Some("200"));
+        let mut headers = HashMap::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            let (name, value) = line.trim_end().split_once(':').unwrap();
+            headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
+        }
+        assert_eq!(headers["content-type"], "text/event-stream");
+        assert_eq!(headers["transfer-encoding"], "chunked");
+        subscribed.send(()).unwrap();
 
-fn head_frame(slot: u64, block_root: u8, execution_optimistic: bool) -> Vec<u8> {
-    let data = format!(
-        "event: head\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"epoch_transition\":false,\"previous_duty_dependent_root\":\"0x{}\",\"current_duty_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}\n\n",
-        hex::encode([block_root; 32]),
-        "60".repeat(32),
-        "5e".repeat(32),
-        "91".repeat(32),
-    );
-    chunked(&data)
-}
-
-fn head_v2_frame(
-    slot: u64,
-    block_root: u8,
-    version: &str,
-    payload_status: &str,
-    execution_optimistic: bool,
-) -> Vec<u8> {
-    let data = format!(
-        "event: head_v2\ndata: {{\"version\":\"{version}\",\"data\":{{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"state\":\"0x{}\",\"payload_status\":\"{payload_status}\",\"epoch_transition\":false,\"current_epoch_dependent_root\":\"0x{}\",\"next_epoch_dependent_root\":\"0x{}\",\"execution_optimistic\":{execution_optimistic}}}}}\n\n",
-        hex::encode([block_root; 32]),
-        "60".repeat(32),
-        "5e".repeat(32),
-        "91".repeat(32),
-    );
-    chunked(&data)
+        let mut events = Vec::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let size = usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
+            assert!(size > 0, "subscription ended before the sentinel");
+            let mut chunk = vec![0; size];
+            reader.read_exact(&mut chunk).unwrap();
+            let mut end = [0; 2];
+            reader.read_exact(&mut end).unwrap();
+            assert_eq!(end, *b"\r\n");
+            let frame = std::str::from_utf8(&chunk).unwrap().strip_suffix("\n\n").unwrap();
+            if frame.starts_with(':') {
+                continue;
+            }
+            let (name, data) =
+                frame.strip_prefix("event: ").unwrap().split_once("\ndata: ").unwrap();
+            assert_eq!(name, topic);
+            let body: Value = serde_json::from_str(data).unwrap();
+            let data = if topic == "head_v2" { &body["data"] } else { &body };
+            if data["slot"] == sentinel_slot.to_string() {
+                return events;
+            }
+            events.push(body);
+        }
+    });
+    (client, on_subscribed)
 }
 
 #[test]
@@ -830,85 +865,27 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
 }
 
 #[test]
-fn an_optimistic_then_validated_head_reaches_an_events_subscriber() {
+fn head_subscribers_receive_changes_for_their_topics() {
     let base = TempDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_head_gossip",
-        "cs_head_rpc",
-        "cs_head_resp",
-    ]);
+    let mut spec = SpecConfig::mainnet();
+    spec.gloas_fork_epoch = spec.fulu_fork_epoch + 2;
+    let mut tile = boundary_tile_with_spec(
+        &Bind::parse("127.0.0.1:0"),
+        no_el(),
+        ["cs_head_v2_gossip", "cs_head_v2_rpc", "cs_head_v2_resp"],
+        &spec,
+    );
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    let expected = [head_frame(40, 0xab, true), head_frame(40, 0xab, false)].concat();
-    let (client, on_subscribed) = events_subscriber(addr, "head", expected.len());
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
-        assert!(Instant::now() < deadline, "timeout: {msg}");
-        tile.loop_body(&mut adapter);
-        std::thread::sleep(Duration::from_millis(1));
-    };
-    while on_subscribed.try_recv().is_err() {
-        crank(&mut tile, "stream head reaches the subscriber");
-    }
-
-    // Establish a baseline, then change the head and validate it.
-    // Repeated observations between those changes produce no frames.
-    inj.produce(head_status(33, 0x0a, true, PayloadResolution::Full));
-    inj.produce(head_status(33, 0x0a, true, PayloadResolution::Full));
-    inj.produce(head_status(40, 0xab, true, PayloadResolution::Full));
-    inj.produce(head_status(40, 0xab, true, PayloadResolution::Full));
-    inj.produce(head_status(40, 0xab, false, PayloadResolution::Full));
-    while !client.is_finished() {
-        crank(&mut tile, "both head frames reach the subscriber");
-    }
-    let got = client.join().unwrap();
-    assert!(
-        got == expected,
-        "\n     got: {:?}\nexpected: {:?}",
-        String::from_utf8_lossy(&got),
-        String::from_utf8_lossy(&expected)
-    );
-
-    let status = *tile.beacon.node_status_mut();
-    assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 40, wall_slot: 40, head_optimistic: false }),
-        "node status follows every Status, including the ones the head filter drops"
-    );
-}
-
-/// A payload resolution change is visible to `head_v2` alone; the later
-/// validation reaches both topics.
-#[test]
-fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
-    let base = TempDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_head_v2_gossip",
-        "cs_head_v2_rpc",
-        "cs_head_v2_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
-    tile.loop_body(&mut adapter);
-
-    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    let fulu = SpecConfig::mainnet().fulu_fork_epoch * 32;
-    let legacy_expected =
-        [head_frame(fulu + 8, 0xab, true), head_frame(fulu + 8, 0xab, false)].concat();
-    let v2_expected = [
-        head_v2_frame(fulu + 8, 0xab, "fulu", "empty", true),
-        head_v2_frame(fulu + 8, 0xab, "fulu", "full", true),
-        head_v2_frame(fulu + 8, 0xab, "fulu", "full", false),
-    ]
-    .concat();
-    let (legacy, legacy_subscribed) = events_subscriber(addr, "head", legacy_expected.len());
-    let (v2, v2_subscribed) = events_subscriber(addr, "head_v2", v2_expected.len());
+    let gloas = spec.gloas_fork_epoch * SLOTS_PER_EPOCH;
+    let slot = gloas + 8;
+    let sentinel_slot = slot + 1;
+    let (legacy, legacy_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+    let (v2, v2_subscribed) = head_events_subscriber(addr, "head_v2", sentinel_slot);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
@@ -922,22 +899,65 @@ fn a_payload_resolution_change_reaches_head_v2_but_not_head() {
         }
     }
 
-    inj.produce(head_status(fulu + 1, 0x0a, true, PayloadResolution::Full));
-    inj.produce(head_status(fulu + 8, 0xab, true, PayloadResolution::Empty));
-    inj.produce(head_status(fulu + 8, 0xab, true, PayloadResolution::Full));
-    inj.produce(head_status(fulu + 8, 0xab, false, PayloadResolution::Full));
+    for status in [
+        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
+        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Empty),
+        head_status(slot, 0xab, true, PayloadResolution::Empty),
+        head_status(slot, 0xab, true, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Full),
+        head_status(slot, 0xab, false, PayloadResolution::Full),
+        head_status(slot, 0xab, false, PayloadResolution::Full),
+    ] {
+        inj.produce(status);
+    }
+    crank(&mut tile, "head observations update node status");
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: slot, wall_slot: slot, head_optimistic: false })
+    );
+
+    // A later head delimits all preceding frames, including unwanted repeats.
+    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full));
     while !legacy.is_finished() || !v2.is_finished() {
         crank(&mut tile, "every frame reaches its subscriber");
     }
-    for (got, expected) in
-        [(legacy.join().unwrap(), legacy_expected), (v2.join().unwrap(), v2_expected)]
-    {
-        assert!(
-            got == expected,
-            "\n     got: {:?}\nexpected: {:?}",
-            String::from_utf8_lossy(&got),
-            String::from_utf8_lossy(&expected)
-        );
+    let legacy = legacy.join().unwrap();
+    let v2 = v2.join().unwrap();
+    assert_eq!(legacy.len(), 2);
+    assert_eq!(v2.len(), 3);
+    let roots = head_roots();
+    for (events, is_v2) in [(&legacy, false), (&v2, true)] {
+        for (index, body) in events.iter().enumerate() {
+            let data = if is_v2 {
+                assert_eq!(body["version"], "gloas");
+                assert_eq!(
+                    body["data"]["payload_status"],
+                    if index == 0 { "empty" } else { "full" }
+                );
+                &body["data"]
+            } else {
+                body
+            };
+            assert_eq!(data["slot"], slot.to_string());
+            assert_eq!(data["block"], format!("0x{}", hex::encode([0xab; 32])));
+            assert_eq!(data["state"], format!("0x{}", hex::encode(roots.state_root)));
+            assert_eq!(data["epoch_transition"], false);
+            assert_eq!(data["execution_optimistic"], index + 1 < events.len());
+            let (previous, current) = if is_v2 {
+                ("current_epoch_dependent_root", "next_epoch_dependent_root")
+            } else {
+                ("previous_duty_dependent_root", "current_duty_dependent_root")
+            };
+            assert_eq!(
+                data[previous],
+                format!("0x{}", hex::encode(roots.previous_duty_dependent_root))
+            );
+            assert_eq!(
+                data[current],
+                format!("0x{}", hex::encode(roots.current_duty_dependent_root))
+            );
+        }
     }
 }
 

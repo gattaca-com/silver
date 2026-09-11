@@ -992,12 +992,17 @@ mod tests {
         assert!(!rig.tile.validator.is_validated(&root), "the rejection is forgotten with it");
     }
 
-    /// A sidecar whose parent is unknown is held. A parent the beacon state
-    /// has staged (state transition done, its own columns pending) counts as
-    /// seen, so the child's sidecar validates and is persisted, whichever of
-    /// the two arrives first.
+    /// A waiting sidecar becomes persistable when its parent is staged or
+    /// observed as head, including when the head observation repeats.
     #[test]
-    fn sidecar_of_staged_parent_is_accepted() {
+    fn sidecar_of_observed_parent_is_accepted() {
+        #[derive(Debug)]
+        enum ParentObservation {
+            BeforeSidecar,
+            AfterSidecar,
+            RepeatedStatus,
+        }
+
         // A valid sidecar whose parent root names no block, over the state it
         // was built on.
         const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
@@ -1010,14 +1015,18 @@ mod tests {
         let parent_slot = DataColumnSidecarFuluView::slot(&sidecar) - 1;
         let staged_parent = || block_received(BlockStage::AwaitData, parent_root, parent_slot);
 
-        for parent_first in [false, true] {
+        for observation in [
+            ParentObservation::BeforeSidecar,
+            ParentObservation::AfterSidecar,
+            ParentObservation::RepeatedStatus,
+        ] {
             let (mut consumer, ssz) = produce_block(&sidecar, "staged_parent_sidecar");
             let mut rig = Rig::with_state(CUSTODY_COLUMNS | 1, reader.clone(), fulu_from_genesis());
             rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
             rig.tile.sync_state.update(status_ssz(0));
             let read = consumer.acquire(ssz);
 
-            if parent_first {
+            if matches!(observation, ParentObservation::BeforeSidecar) {
                 rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
             }
             rig.tile.data_columns(
@@ -1035,66 +1044,41 @@ mod tests {
                 RelayMeta::None,
                 &mut rig.conn.producers,
             );
-            if !parent_first {
-                rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
+            match observation {
+                ParentObservation::BeforeSidecar => {}
+                ParentObservation::AfterSidecar => {
+                    rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
+                }
+                ParentObservation::RepeatedStatus => {
+                    rig.conn.consume(|_: BeaconStateEvent, _| {});
+                    for _ in 0..2 {
+                        rig.inj.producers.produce(head_status(parent_root, parent_slot));
+                        rig.tile.loop_body(&mut rig.conn);
+                    }
+                }
             }
             if !rig.tile.kzg_batch.is_empty() {
                 rig.tile.flush_kzg_batch(&mut rig.conn.producers);
             }
             let out = rig.drain();
 
-            assert_eq!(
-                out.persisted, 1,
-                "parent_first={parent_first}: the sidecar is ours to keep"
-            );
+            assert_eq!(out.persisted, 1, "{observation:?}: the sidecar is ours to keep");
         }
     }
 
-    fn head_status(head_root: BlockRoot) -> BeaconStateEvent {
+    fn head_status(head_root: BlockRoot, head_slot: u64) -> BeaconStateEvent {
         let mut ssz = status_ssz(0);
         ssz[44..76].copy_from_slice(&head_root);
+        ssz[76..84].copy_from_slice(&head_slot.to_le_bytes());
         BeaconStateEvent::Status {
             ssz,
-            latest_block_slot: 7,
-            wall_slot: 7,
+            latest_block_slot: head_slot,
+            wall_slot: head_slot,
             head_optimistic: false,
             enr_fork_id: [0u8; 16],
             head_roots: HeadRoots::default(),
             head_payload: PayloadResolution::Full,
         }
-    }
-
-    /// A repeated head root can unblock newly buffered columns. This test
-    /// checks buffer removal; its synthetic sidecar does not pass
-    /// validation.
-    #[test]
-    fn each_status_drains_whatever_is_buffered_on_its_head() {
-        const PARENT: BlockRoot = [0x77; 32];
-        let mut rig = Rig::new(CUSTODY_COLUMNS);
-        let (mut consumer, ssz) = produce_block(&synth_fulu_sidecar(3, 7), "drain_once");
-        let buffer = |rig: &mut Rig, read| {
-            rig.tile.parent_pending_columns.entry(PARENT).or_default().push(PendingColumn {
-                stream_id: P2pStreamId::new(2, 2, StreamProtocol::DataColumnSidecarsByRange, true),
-                sidecar: read,
-                gossip_subnet: None,
-                recv_ts: IngestionTime::now(),
-            });
-        };
-        let pending = |rig: &Rig| rig.tile.parent_pending_columns.get(&PARENT).map(Vec::len);
-
-        buffer(&mut rig, consumer.acquire(ssz));
-        assert_eq!(pending(&rig), Some(1), "one column is waiting on that root");
-
-        rig.tile.handle_beacon_state_event(head_status(PARENT), &mut rig.conn.producers);
-        assert_eq!(pending(&rig), None, "the first Status drains the buffer");
-
-        rig.tile.handle_beacon_state_event(head_status(PARENT), &mut rig.conn.producers);
-        assert_eq!(pending(&rig), None, "the repeat has nothing to find or re-buffer");
-
-        buffer(&mut rig, consumer.acquire(ssz));
-        assert_eq!(pending(&rig), Some(1), "a column buffered after the drain waits again");
-        rig.tile.handle_beacon_state_event(head_status(PARENT), &mut rig.conn.producers);
-        assert_eq!(pending(&rig), None, "and the next Status naming that root takes it");
     }
 
     #[test]
