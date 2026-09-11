@@ -18,5 +18,17 @@ silver_common::declare_counters! {
         KzgBatchesVerified,
         KzgBatchColumns,
         KzgBatchRejects,
+        CellStoreCapacity,
+        CellStoreLiveCells,
+        CellStoreLiveBytes,
+        CellStoreFullBytes,
+        CellStoreContexts,
+        CellStoreActiveSlots,
+        CellStoreBlocks,
+        CellStoreAdmissions,
+        CellStoreDuplicates,
+        CellStoreExpired,
+        CellStoreFull,
+        CellStoreCacheFull,
     }
 }
