@@ -17,6 +17,10 @@ silver_common.workspace = true
 rand.workspace = true
 tracing.workspace = true
 
+[features]
+# EF `gossip_validation` harness entry points.
+ef_tests = ["silver_common/test-util"]
+
 [lints]
 workspace = true
 

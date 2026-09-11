@@ -38,8 +38,9 @@ pub use epoch_shuffling::{EpochShuffling, ShufflingRef};
 pub use fork_transition::upgrade_to_gloas;
 pub use gloas::{
     collect_sigs_execution_payload_bid, collect_sigs_payload_attestations,
-    get_builder_payment_quorum_threshold, process_builder_deposit_request,
-    process_builder_exit_request, process_builder_pending_payments, process_execution_payload_bid,
+    envelope_withdrawals_match_expected, get_builder_payment_quorum_threshold,
+    process_builder_deposit_request, process_builder_exit_request,
+    process_builder_pending_payments, process_execution_payload_bid,
     process_parent_execution_payload, process_payload_attestations, process_ptc_window,
     process_withdrawals_gloas, verify_execution_payload_envelope,
 };
@@ -52,8 +53,9 @@ pub use operations::{
 };
 pub(crate) use slashings::signing_root_for_block_header;
 pub use slashings::{
-    collect_sigs_attester_slashings, collect_sigs_proposer_slashings, process_attester_slashings,
-    process_proposer_slashings, validate_attester_slashing_for_gossip,
+    attester_slashing_names_unseen, collect_sigs_attester_slashings,
+    collect_sigs_proposer_slashings, process_attester_slashings, process_proposer_slashings,
+    validate_attester_slashing_for_gossip,
 };
 pub use sync_aggregate::{collect_sigs_sync_aggregate, process_sync_aggregate};
 pub(crate) use validator::{

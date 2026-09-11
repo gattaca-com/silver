@@ -4,12 +4,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     ssz_hash_gloas::{EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView},
-    ssz_view::{
-        BeaconBlockBodyGloasView, CONSOLIDATION_REQUEST_SIZE, ExecutionPayloadBidView,
-        MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD,
-        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
-        SignedExecutionPayloadBidView, WITHDRAWAL_REQUEST_SIZE,
-    },
+    ssz_view::{BeaconBlockBodyGloasView, ExecutionPayloadBidView, SignedExecutionPayloadBidView},
 };
 
 use super::builders::{
@@ -53,34 +48,9 @@ pub fn process_parent_execution_payload(
     if got != expected {
         return Err(E::RequestsRootMismatch { expected, got });
     }
-    check_request_counts(requests)?;
+    ExecutionRequestsView::check_counts(requests)?;
     apply_parent_execution_payload(view, epoch, cfg, requests);
     Ok(())
-}
-
-/// Per-type request-count limits — runtime checks since EIP-7688 removed them
-/// from the type layer (deposits are unbounded per #5436).
-fn check_request_counts(requests: &[u8]) -> Result<(), E> {
-    let [_deposits, withdrawals, consolidations, builder_deposits, builder_exits] =
-        ExecutionRequestsView::sections(requests);
-    let check = |kind, bytes: &[u8], size: usize, max: usize| {
-        let count = bytes.len() / size;
-        if count > max { Err(E::TooManyRequests { kind, count, max }) } else { Ok(()) }
-    };
-    check("withdrawal", withdrawals, WITHDRAWAL_REQUEST_SIZE, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD)?;
-    check(
-        "consolidation",
-        consolidations,
-        CONSOLIDATION_REQUEST_SIZE,
-        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
-    )?;
-    check(
-        "builder_deposit",
-        builder_deposits,
-        BUILDER_DEPOSIT_SSZ,
-        MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD,
-    )?;
-    check("builder_exit", builder_exits, BUILDER_EXIT_SSZ, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD)
 }
 
 fn apply_parent_execution_payload(

@@ -11,6 +11,7 @@ use silver_common::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS, SidecarLayout,
         SignedBeaconBlockView,
     },
+    ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker},
 };
 
 use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
@@ -76,14 +77,20 @@ impl ParentCheck {
     }
 }
 
+struct GloasBlockCommitments {
+    slot: u64,
+    commitments: Box<[u8]>,
+}
+
 /// Per-sidecar validation, i.e. everything except the KZG cell proofs —
 /// those are deferred to the end-of-pass batch, so `Record` means "passed
 /// every check but KZG". Owns the caches only validation consults.
 pub(crate) struct ColumnValidator {
     beacon_state: BeaconStateReader,
     spec: Arc<SpecConfig>,
+    ticker: SlotTicker,
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
-    gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
+    gloas_commitments: Wheel<BlockRoot, GloasBlockCommitments, 4>,
     // Blocks past validation (imported, or staged on their columns) and the
     // slot each sits at — parent-seen and parent-slot checks beyond the head
     // fork.
@@ -95,10 +102,12 @@ impl ColumnValidator {
         beacon_state: BeaconStateReader,
         spec: Arc<SpecConfig>,
         epoch_duration: Duration,
+        ticker: SlotTicker,
     ) -> Self {
         Self {
             beacon_state,
             spec,
+            ticker,
             gloas_commitments: Wheel::new(epoch_duration),
             validated_block_roots: Wheel::new(epoch_duration),
         }
@@ -126,7 +135,7 @@ impl ColumnValidator {
     }
 
     pub fn gloas_commitments(&self, block_root: &BlockRoot) -> Option<&[u8]> {
-        self.gloas_commitments.get(block_root).map(|c| c.as_ref())
+        self.gloas_commitments.get(block_root).map(|c| c.commitments.as_ref())
     }
 
     pub fn cache_gloas_commitments(&mut self, block_root: BlockRoot, buffer: &[u8]) {
@@ -135,8 +144,22 @@ impl ColumnValidator {
         }
         let commitments = SignedBeaconBlockView::gloas_block_commitments(buffer);
         if !commitments.is_empty() {
-            self.gloas_commitments.insert(block_root, commitments.to_vec().into_boxed_slice());
+            self.gloas_commitments.insert(block_root, GloasBlockCommitments {
+                slot: SignedBeaconBlockView::slot(buffer),
+                commitments: commitments.to_vec().into_boxed_slice(),
+            });
         }
+    }
+
+    /// Spec `is_future_slot` for a synced node; during sync every sidecar is
+    /// behind the wall clock and the gate must stay out of the way.
+    fn is_future(&self, slot: u64, sync_state: &SyncStatus) -> bool {
+        sync_state.is_synced() && self.ticker.is_future_slot(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY)
+    }
+
+    #[cfg(feature = "ef_tests")]
+    pub(crate) fn ef_tick(&mut self, since_genesis_ms: u64) {
+        self.ticker.set_since_genesis_ms(since_genesis_ms);
     }
 
     pub fn rotate(&mut self, now: Instant) {
@@ -188,12 +211,12 @@ impl ColumnValidator {
             );
         }
 
-        if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {
+        if self.is_future(slot, sync_state) {
             tracing::debug!(
                 ?stream_id,
                 slot,
-                wall_slot = sync_state.wall_slot(),
-                "post-wall sidecar"
+                wall_slot = self.ticker.current_slot(),
+                "future sidecar"
             );
             return ColumnOutcome::Skip;
         }
@@ -344,12 +367,12 @@ impl ColumnValidator {
         let PendingColumn { stream_id, gossip_subnet, .. } = *column;
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
-        if sync_state.is_synced() && slot > sync_state.wall_slot().saturating_add(1) {
+        if self.is_future(slot, sync_state) {
             tracing::debug!(
                 ?stream_id,
                 slot,
-                wall_slot = sync_state.wall_slot(),
-                "post-wall sidecar"
+                wall_slot = self.ticker.current_slot(),
+                "future sidecar"
             );
             return ColumnOutcome::Skip;
         }
@@ -375,11 +398,24 @@ impl ColumnValidator {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
-        let Some(commitments) = self.gloas_commitments.get(&block_root) else {
+        let Some(block) = self.gloas_commitments.get(&block_root) else {
             return ColumnOutcome::Buffer { block_root };
         };
+        if block.slot != slot {
+            tracing::warn!(
+                ?stream_id,
+                slot,
+                block_slot = block.slot,
+                "sidecar slot is not its block's"
+            );
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+        }
 
-        if !util::verify_data_column_sidecar_gloas(buffer, commitments, self.max_blobs_at(slot)) {
+        if !util::verify_data_column_sidecar_gloas(
+            buffer,
+            &block.commitments,
+            self.max_blobs_at(slot),
+        ) {
             tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }

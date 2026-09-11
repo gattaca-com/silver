@@ -4,6 +4,7 @@ use silver_common::{BlockSource, NewGossipMsg, P2pStreamId, TCacheRead, hex32};
 use silver_config::PendingBounds;
 
 use super::block::StagedBlock;
+use crate::error::RejectReason;
 
 const MAX_ORPHANS_PER_PARENT: usize = 4;
 
@@ -83,6 +84,11 @@ impl OrphanPool {
     }
 }
 
+struct Rejected {
+    slot: Slot,
+    reason: RejectReason,
+}
+
 /// Every block held for a dependency, and what travels with it. Orphans wait on
 /// a parent (or its payload envelope); staged blocks wait on their data
 /// columns. A staged root is in at most one of `staged` / `available` at rest.
@@ -93,7 +99,7 @@ pub(super) struct HeldBlocks {
     available: FxHashMap<B256, Slot>,
     /// Roots whose block failed the state transition or the EL, so a re-fetch
     /// or a child's parent chase does not run the same block again.
-    rejected: FxHashMap<B256, Slot>,
+    rejected: FxHashMap<B256, Rejected>,
 }
 
 impl HeldBlocks {
@@ -119,12 +125,13 @@ impl HeldBlocks {
         self.available.contains_key(block_root)
     }
 
-    pub(super) fn is_rejected(&self, block_root: &B256) -> bool {
-        self.rejected.contains_key(block_root)
+    pub(super) fn rejected_reason(&self, block_root: &B256) -> Option<RejectReason> {
+        self.rejected.get(block_root).map(|r| r.reason)
     }
 
     pub(super) fn reject(&mut self, block_root: B256, slot: Slot) {
-        self.rejected.insert(block_root, slot);
+        let reason = RejectReason::FailedTransition;
+        self.rejected.insert(block_root, Rejected { slot, reason });
     }
 
     pub(super) fn discard_available(&mut self, block_root: &B256) {
@@ -150,7 +157,9 @@ impl HeldBlocks {
     /// neither a re-fetch nor a child's parent chase runs it again.
     pub(super) fn reject_staged(&mut self, block_root: &B256) -> Option<BlockSource> {
         let staged = self.staged.remove(block_root)?;
-        self.rejected.insert(*block_root, staged.parsed.header.slot);
+        let slot = staged.parsed.header.slot;
+        let reason = RejectReason::InvalidPayload;
+        self.rejected.insert(*block_root, Rejected { slot, reason });
         self.orphans.drop_children(block_root);
         Some(staged.source)
     }
@@ -186,7 +195,7 @@ impl HeldBlocks {
 
     pub(super) fn clear_outdated(&mut self, finalized_slot: Slot) {
         self.available.retain(|_, slot| *slot > finalized_slot);
-        self.rejected.retain(|_, slot| *slot > finalized_slot);
+        self.rejected.retain(|_, r| r.slot > finalized_slot);
         self.orphans.clear_outdated(finalized_slot);
         self.payload_orphans.clear_outdated(finalized_slot);
     }

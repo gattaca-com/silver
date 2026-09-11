@@ -503,16 +503,18 @@ fn apply_block_body(
     let body = offsets.body();
     let payload = offsets.payload();
 
-    if is_gloas {
+    let parent_slot = if is_gloas {
         process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
         process_withdrawals_gloas(&mut *view);
-        if let Some(bid) = offsets.signed_bid() {
-            process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?;
+        match offsets.signed_bid() {
+            Some(bid) => Some(process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?),
+            None => None,
         }
     } else {
         process_withdrawals_fulu(&mut *view, payload)?;
         process_execution_payload(&mut *view, cfg, payload, block_slot)?;
-    }
+        None
+    };
 
     process_randao(view, body, block_slot / SLOTS_PER_EPOCH);
     process_eth1_data(&mut view.slot, &mut view.eth1, body);
@@ -529,6 +531,7 @@ fn apply_block_body(
             epoch,
             section,
             block_slot,
+            parent_slot,
             proposer_index,
             shuffling,
             attestation_votes,

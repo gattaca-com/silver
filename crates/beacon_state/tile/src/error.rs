@@ -1,7 +1,18 @@
 use silver_beacon_state_data::{B256, BLSPubkey, BlockBodyError, Slot};
+use silver_common::ssz_hash_gloas::RequestCountOutOfBounds;
 use thiserror::Error;
 
 use crate::tile::Feedback;
+
+/// Why a root is remembered as rejected. The gossip verdict on a re-delivery
+/// or a child depends on which: a failed transition never reached the EL, so
+/// the spec REJECTs; an EL-invalid payload sits on a consensus-valid block, so
+/// it IGNOREs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RejectReason {
+    FailedTransition,
+    InvalidPayload,
+}
 
 #[derive(Clone, Copy, Debug, Error)]
 pub enum PrecheckError {
@@ -14,23 +25,25 @@ pub enum PrecheckError {
     )]
     ParentMissing { parent_root: B256, block_root: B256, last_applied_slot: Slot, block_slot: Slot },
     #[error(
-        "block parent invalid: parent_root=0x{} block_root=0x{}",
+        "block parent rejected: parent_root=0x{} block_root=0x{} reason={reason:?}",
         b256_hex(parent_root),
         b256_hex(block_root)
     )]
-    ParentInvalid { parent_root: B256, block_root: B256 },
+    ParentRejected { parent_root: B256, block_root: B256, reason: RejectReason },
     #[error("past block: block_slot={block_slot} finalized_slot={finalized_slot}")]
     PreFinalized { block_slot: Slot, finalized_slot: Slot },
     #[error("block body is not canonical SSZ: block_slot={block_slot} body_len={body_len}")]
     NonCanonicalBody { block_slot: Slot, body_len: usize },
+    #[error("block body over its limits: block_slot={block_slot}: {kind}")]
+    BodyOverLimits { block_slot: Slot, kind: BlockBodyError },
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
     PastSlot { block_slot: Slot, parent_slot: Slot },
     #[error("block already imported: block_root=0x{}", b256_hex(block_root))]
     AlreadyKnown { block_root: B256 },
     #[error("block awaiting data availability: block_root=0x{}", b256_hex(block_root))]
     AwaitingData { block_root: B256 },
-    #[error("block already rejected: block_root=0x{}", b256_hex(block_root))]
-    Rejected { block_root: B256 },
+    #[error("block already rejected: block_root=0x{} reason={reason:?}", b256_hex(block_root))]
+    Rejected { block_root: B256, reason: RejectReason },
     #[error("block ticker slot precheck failed: block_slot={block_slot} wall_slot={wall_slot}")]
     FutureSlot { block_slot: Slot, wall_slot: Slot },
     #[error(
@@ -65,25 +78,41 @@ pub enum PrecheckError {
     TooManyCommitments { got: usize, max: usize, block_root: B256 },
     #[error("invalid block signature: block_root=0x{}", b256_hex(block_root))]
     InvalidSignature { block_root: B256 },
+    #[error(
+        "bid parent_block_root is not the block's parent: block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    BidParentRootMismatch { block_root: B256 },
+    #[error(
+        "bid parent_block_hash is not the parent's execution head: block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    BidNotOnExecutionHead { block_root: B256 },
 }
 
 impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
-            Self::SizeMismatch { .. } | Self::NonCanonicalBody { .. } => Feedback::Reject(None),
+            Self::SizeMismatch { .. } |
+            Self::NonCanonicalBody { .. } |
+            Self::BodyOverLimits { .. } => Feedback::Reject(None),
             Self::ParentMissing { parent_root, block_root, .. } => {
                 Feedback::RequestParent { parent_root, block_root }
             }
             Self::PreFinalized { .. } |
-            Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
-            Self::AwaitingData { .. } => Feedback::Ignore,
+            Self::AwaitingData { .. } |
+            Self::Rejected { reason: RejectReason::InvalidPayload, .. } |
+            Self::ParentRejected { reason: RejectReason::InvalidPayload, .. } => Feedback::Ignore,
+            Self::PastSlot { .. } => Feedback::Reject(None),
             Self::AlreadyKnown { block_root } => Feedback::AlreadyKnown(block_root),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
-            Self::Rejected { block_root } |
-            Self::ParentInvalid { block_root, .. } |
+            Self::Rejected { block_root, reason: RejectReason::FailedTransition } |
+            Self::ParentRejected { block_root, reason: RejectReason::FailedTransition, .. } |
+            Self::BidParentRootMismatch { block_root } |
+            Self::BidNotOnExecutionHead { block_root } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } |
             Self::PayloadTimestamp { block_root, .. } |
@@ -204,6 +233,16 @@ pub enum EnvelopeError {
     BuilderOutOfRange { index: u64 },
     #[error("invalid builder signature")]
     BadSignature,
+    #[error("{kind} request count {count} exceeds max {max}")]
+    TooManyRequests { kind: &'static str, count: usize, max: usize },
+    #[error("{count} withdrawals exceeds max {max}")]
+    TooManyWithdrawals { count: usize, max: usize },
+}
+
+impl From<RequestCountOutOfBounds> for EnvelopeError {
+    fn from(e: RequestCountOutOfBounds) -> Self {
+        Self::TooManyRequests { kind: e.kind, count: e.count, max: e.max }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -220,6 +259,12 @@ pub enum ParentExecutionPayloadError {
     RequestsRootMismatch { expected: B256, got: B256 },
     #[error("{kind} request count {count} over the per-payload limit {max}")]
     TooManyRequests { kind: &'static str, count: usize, max: usize },
+}
+
+impl From<RequestCountOutOfBounds> for ParentExecutionPayloadError {
+    fn from(e: RequestCountOutOfBounds) -> Self {
+        Self::TooManyRequests { kind: e.kind, count: e.count, max: e.max }
+    }
 }
 
 pub type Result<T, E = Error> = core::result::Result<T, E>;
@@ -264,6 +309,8 @@ pub enum AttestationError {
     BadOffsets { start: usize, end: usize, parent_len: usize },
     #[error("no shuffling supplied")]
     MissingShuffling,
+    #[error("gloas attestation processed without the block's parent slot")]
+    MissingParentSlot,
     #[error("empty shuffling or zero committees_per_slot")]
     EmptyShuffling,
     #[error("committee_bits == 0")]

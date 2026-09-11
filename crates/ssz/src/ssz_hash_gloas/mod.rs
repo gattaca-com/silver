@@ -12,4 +12,6 @@ mod execution_payload_bid;
 mod execution_requests;
 mod payload_attestation;
 
-pub use execution_requests::{EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView};
+pub use execution_requests::{
+    EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView, RequestCountOutOfBounds,
+};

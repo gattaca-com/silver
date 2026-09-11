@@ -123,6 +123,22 @@ impl SlotTicker {
         now.saturating_add(disparity_ms) >= start && now <= end.saturating_add(disparity_ms)
     }
 
+    /// Spec `is_future_slot`: `slot` starts more than `disparity` from now.
+    pub fn is_future_slot(&self, slot: Slot, disparity: Duration) -> bool {
+        let disparity_ms = u64::try_from(disparity.as_millis()).unwrap_or(u64::MAX);
+        self.millis_since_genesis().saturating_add(disparity_ms) < slot.saturating_mul(self.slot_ms)
+    }
+
+    /// Spec `is_within_slot_range`: now lies in `[slot, slot + range]`, each
+    /// end stretched by `disparity`.
+    pub fn is_within_slot_range(&self, slot: Slot, range: u64, disparity: Duration) -> bool {
+        let now = self.millis_since_genesis();
+        let disparity_ms = u64::try_from(disparity.as_millis()).unwrap_or(u64::MAX);
+        let start = slot.saturating_mul(self.slot_ms);
+        let end = slot.saturating_add(range + 1).saturating_mul(self.slot_ms);
+        now.saturating_add(disparity_ms) >= start && end.saturating_add(disparity_ms) >= now
+    }
+
     /// The newest slot admitted by [`Self::is_current_slot_with_disparity`].
     /// A two-slot seen-cache can rotate to this value and retain every slot
     /// that is valid at the current instant, including across the boundary.

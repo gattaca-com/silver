@@ -9,7 +9,7 @@ use silver_common::ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS_ROOT;
 
 use super::{
     epoch::is_valid_deposit_signature,
-    gloas::{PAYLOAD_BUILDER_VERSION, fill_epoch_ptc},
+    gloas::{BUILDER_INDEX_SELF_BUILD, PAYLOAD_BUILDER_VERSION, fill_epoch_ptc},
 };
 
 /// Initialise the Gloas-only state on a fork view that has just advanced to the
@@ -23,22 +23,31 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
         epoch: current_epoch,
     };
 
-    // `latest_block_hash` and the placeholder bid derive from the Fulu
-    // execution payload header (kept on the slot tier for Fulu hashing).
-    let (block_hash, gas_limit) = {
-        let eph = &view.slot.state().latest_execution_payload_header;
-        (eph.block_hash, eph.gas_limit)
+    // The placeholder bid is a self-build over the last Fulu payload, so the
+    // first Gloas bid's parent checks and `parent_slot` resolve against it.
+    let placeholder_bid = {
+        let s = view.slot.state();
+        let eph = &s.latest_execution_payload_header;
+        ExecutionPayloadBid {
+            parent_block_hash: eph.parent_hash,
+            parent_block_root: s.latest_block_header.parent_root,
+            block_hash: eph.block_hash,
+            prev_randao: eph.prev_randao,
+            fee_recipient: [0; 20],
+            gas_limit: eph.gas_limit,
+            builder_index: BUILDER_INDEX_SELF_BUILD,
+            slot: s.latest_block_header.slot,
+            value: 0,
+            execution_payment: 0,
+            blob_kzg_commitments: Vec::new(),
+            execution_requests_root: *EMPTY_EXECUTION_REQUESTS_ROOT,
+        }
     };
     {
         let s = view.slot.state_mut();
-        s.latest_block_hash = block_hash;
+        s.latest_block_hash = placeholder_bid.block_hash;
         s.execution_payload_availability = [0xFF; EXECUTION_PAYLOAD_AVAILABILITY_BYTES];
-        s.latest_execution_payload_bid = ExecutionPayloadBid {
-            block_hash,
-            gas_limit,
-            execution_requests_root: *EMPTY_EXECUTION_REQUESTS_ROOT,
-            ..Default::default()
-        };
+        s.latest_execution_payload_bid = placeholder_bid;
         // The remaining Gloas slot fields (`next_withdrawal_builder_index`,
         // `builder_pending_payments`, `builder_pending_withdrawals`,
         // `payload_expected_withdrawals`) match the spec's empty/zero init,

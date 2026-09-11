@@ -1,13 +1,16 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot,
-    StateId, StateReadView,
+    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Checkpoint, Epoch,
+    SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
     SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, hex32,
-    ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
+    ssz_view::{
+        self, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView,
+        SignedBeaconBlockView,
+    },
 };
 
 use super::{
@@ -15,7 +18,7 @@ use super::{
 };
 use crate::{
     bls,
-    error::PrecheckError,
+    error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
     ssz_hash, stf,
 };
@@ -288,7 +291,12 @@ impl BeaconStateTile {
         };
 
         match self.validate_execution_payload_envelope(data) {
-            EnvelopeCheck::Ready { block_root, .. } => {
+            EnvelopeCheck::Ready { block_root, state_id } => {
+                let rv = self.state.read_view(state_id);
+                if !stf::envelope_withdrawals_match_expected(&rv, data) {
+                    tracing::warn!("replayed on-disk envelope has unexpected withdrawals");
+                    return;
+                }
                 self.fork_choice.mark_payload_verified(&block_root);
                 self.recompute_head();
             }
@@ -296,7 +304,7 @@ impl BeaconStateTile {
                 block = hex32(&block_root),
                 "replayed envelope precedes its block; replay is misordered"
             ),
-            EnvelopeCheck::Ignore => {
+            EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 tracing::warn!("replayed on-disk envelope rejected")
             }
         }
@@ -329,7 +337,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    fn apply_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
+    pub(super) fn apply_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
         let applied = match self.apply_or_reject(&parsed, data) {
             Ok(applied) => applied,
             Err(feedback) => return feedback,
@@ -496,6 +504,8 @@ impl BeaconStateTile {
             self.fork_choice.record_vote(vote, n);
         }
 
+        // Spec `on_block` takes the head before the new block joins the store.
+        let head_before = self.fork_choice.find_head();
         self.fork_choice.on_block(BlockImport {
             slot: parsed.header.slot,
             block_root: parsed.block_root,
@@ -520,16 +530,24 @@ impl BeaconStateTile {
         }
         self.stf_scratch.votes.recycle(votes);
 
-        // Proposer boost: the FIRST current-slot block that arrived before the
-        // attesting deadline (first 1/3) gets a transient weight bonus, expired
-        // at the next slot boundary by the fork-choice tick. Set before
-        // `recompute_head` so `apply_score_changes` folds it in. First-block
-        // guard per spec `update_proposer_boost_root`.
+        // Spec `update_proposer_boost_root`: the FIRST current-slot block that
+        // arrived before the attesting deadline gets a transient weight bonus,
+        // expired at the next slot boundary by the fork-choice tick, and only
+        // when it shares the head's shuffling dependent root, so a block whose
+        // proposer was chosen on another branch cannot pull the head over. Set
+        // before `recompute_head` so `apply_score_changes` folds it in.
+        let current_slot = self.ticker.current_slot();
         let before_deadline = self.ticker.is_before_attesting_interval(is_gloas);
+        let same_dependent_root = || {
+            let epoch = current_slot / SLOTS_PER_EPOCH;
+            self.fork_choice.shuffling_dependent_root(&head_before, epoch) ==
+                self.fork_choice.shuffling_dependent_root(&parsed.block_root, epoch)
+        };
 
-        if parsed.header.slot == self.ticker.current_slot() &&
+        if parsed.header.slot == current_slot &&
             before_deadline &&
-            self.fork_choice.proposer_boost_root == [0u8; 32]
+            self.fork_choice.proposer_boost_root == [0u8; 32] &&
+            same_dependent_root()
         {
             self.refresh_justified_balances();
             self.fork_choice.set_proposer_boost(parsed.block_root);
@@ -586,6 +604,12 @@ impl BeaconStateTile {
             return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
         }
 
+        let fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
+        BodyOffsets::new(body, fork)
+            .ok_or(BlockBodyError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
+            .and_then(|offsets| offsets.validate())
+            .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
+
         let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
 
         let block_header = BeaconBlockHeader {
@@ -603,8 +627,8 @@ impl BeaconStateTile {
         if self.held.is_staged(&block_root) {
             return Err(PrecheckError::AwaitingData { block_root });
         }
-        if self.held.is_rejected(&block_root) {
-            return Err(PrecheckError::Rejected { block_root });
+        if let Some(reason) = self.held.rejected_reason(&block_root) {
+            return Err(PrecheckError::Rejected { block_root, reason });
         }
 
         let finalized_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
@@ -612,8 +636,8 @@ impl BeaconStateTile {
             return Err(PrecheckError::PreFinalized { block_slot, finalized_slot });
         }
 
-        if self.held.is_rejected(&parent_root) {
-            return Err(PrecheckError::ParentInvalid { parent_root, block_root });
+        if let Some(reason) = self.held.rejected_reason(&parent_root) {
+            return Err(PrecheckError::ParentRejected { parent_root, block_root, reason });
         }
         let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
             let last_applied_slot = self.head_state_slot();
@@ -629,19 +653,20 @@ impl BeaconStateTile {
         // EL declared the parent invalid — descendants are invalid by
         // definition. Reject before the COW/EL round-trip.
         if parent_node.execution_status == ExecutionStatus::Invalid {
-            return Err(PrecheckError::ParentInvalid { parent_root, block_root });
+            let reason = RejectReason::InvalidPayload;
+            return Err(PrecheckError::ParentRejected { parent_root, block_root, reason });
         }
 
         let parent_state_id = parent_node.state_id;
+
+        let rv = self.state.read_view(parent_state_id);
+        let parent_slot = rv.slot.slot_number();
+
         let parent_payload_status = if is_gloas {
-            Self::gloas_parent_payload_status(body, parent_node, parent_root, block_root)?
+            self.precheck_gloas_bid(body, parent_node, &rv, block_epoch, parent_root, block_root)?
         } else {
             PayloadStatus::Full
         };
-
-        // Immutable read view of the parent post-state.
-        let rv = self.state.read_view(parent_state_id);
-        let parent_slot = rv.slot.slot_number();
 
         // A block must strictly extend its parent's slot.
         if block_slot <= parent_slot {
@@ -752,9 +777,16 @@ impl BeaconStateTile {
         bls::verify_block_signature(data, proposer_pubkey, &parsed.header.body_root, &domain)
     }
 
-    fn gloas_parent_payload_status(
+    /// The Gloas gossip rules on the bid: blob count, parent root, and, for a
+    /// block declaring its parent EMPTY, that it builds on the parent's
+    /// execution head. Returns the parent payload status the bid declares.
+    #[allow(clippy::too_many_arguments)]
+    fn precheck_gloas_bid(
+        &self,
         body: &[u8],
         parent_node: &ForkChoiceNode,
+        rv: &StateReadView<'_>,
+        block_epoch: Epoch,
         parent_root: B256,
         block_root: B256,
     ) -> Result<PayloadStatus, PrecheckError> {
@@ -762,17 +794,29 @@ impl BeaconStateTile {
             ssz_view::BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
         let bid_end =
             ssz_view::BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
-        let full = body
+        let bid = body
             .get(bid_off..bid_end)
             .filter(|bid| ssz_view::SignedExecutionPayloadBidView::check_size(bid))
             .map(ssz_view::SignedExecutionPayloadBidView::message)
-            .is_some_and(|msg| {
-                *ssz_view::ExecutionPayloadBidView::parent_block_hash(msg) ==
-                    parent_node.payload.bid_block_hash
-            });
+            .ok_or(PrecheckError::NonCanonicalBody { block_slot: 0, body_len: body.len() })?;
 
+        let max = self.spec.blob_params_at(block_epoch).max_blobs_per_block as usize;
+        let got = ssz_view::ExecutionPayloadBidView::blob_kzg_commitments(bid).len() /
+            ssz_view::BYTES_PER_KZG_COMMITMENT;
+        if got > max {
+            return Err(PrecheckError::TooManyCommitments { got, max, block_root });
+        }
+        if *ssz_view::ExecutionPayloadBidView::parent_block_root(bid) != parent_root {
+            return Err(PrecheckError::BidParentRootMismatch { block_root });
+        }
+
+        let parent_block_hash = *ssz_view::ExecutionPayloadBidView::parent_block_hash(bid);
+        let full = parent_block_hash == parent_node.payload.bid_block_hash;
         if full && !parent_node.payload.verified {
             return Err(PrecheckError::UnverifiedParentPayload { parent_root, block_root });
+        }
+        if !full && parent_block_hash != rv.slot.state().latest_block_hash {
+            return Err(PrecheckError::BidNotOnExecutionHead { block_root });
         }
         if full { Ok(PayloadStatus::Full) } else { Ok(PayloadStatus::Empty) }
     }

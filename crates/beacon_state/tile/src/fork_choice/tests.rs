@@ -1,3 +1,5 @@
+use silver_beacon_state_data::MIN_SEED_LOOKAHEAD;
+
 use super::{
     vote::{Vote, branch_voted_for},
     *,
@@ -650,6 +652,39 @@ fn gloas_tie_broken_by_should_extend_payload() {
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
+}
+
+/// Spec `get_shuffling_dependent_root`: the ancestor at the last slot of the
+/// epoch before `epoch - MIN_SEED_LOOKAHEAD`, walking past skipped slots; the
+/// first two epochs resolve to genesis.
+#[test]
+fn shuffling_dependent_root_is_ancestor_at_dependent_slot() {
+    let fin = cp(0, 1);
+    let jus = cp(0, 1);
+    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let last_of_epoch0 = SLOTS_PER_EPOCH - 1;
+    // Branch A: genesis → 2 (slot 31) → 3 (slot 33) and 6 (slot 34).
+    fc.on_block(block(last_of_epoch0, root(2), root(1), jus, fin));
+    fc.on_block(block(SLOTS_PER_EPOCH + 1, root(3), root(2), jus, fin));
+    fc.on_block(block(SLOTS_PER_EPOCH + 2, root(6), root(2), jus, fin));
+    // Branch B: genesis → 4 (slot 30, slot 31 skipped) → 5 (slot 33).
+    fc.on_block(block(last_of_epoch0 - 1, root(4), root(1), jus, fin));
+    fc.on_block(block(SLOTS_PER_EPOCH + 1, root(5), root(4), jus, fin));
+
+    let epoch = 2;
+    assert_eq!(fc.shuffling_dependent_root(&root(3), epoch), Some(root(2)));
+    assert_eq!(fc.shuffling_dependent_root(&root(6), epoch), Some(root(2)));
+    assert_eq!(fc.shuffling_dependent_root(&root(5), epoch), Some(root(4)));
+    assert_ne!(
+        fc.shuffling_dependent_root(&root(3), epoch),
+        fc.shuffling_dependent_root(&root(5), epoch)
+    );
+
+    for early in [0, MIN_SEED_LOOKAHEAD] {
+        assert_eq!(fc.shuffling_dependent_root(&root(3), early), Some(root(1)));
+        assert_eq!(fc.shuffling_dependent_root(&root(5), early), Some(root(1)));
+    }
+    assert_eq!(fc.shuffling_dependent_root(&root(9), epoch), None);
 }
 
 /// An unverified payload (envelope not yet delivered) is never selectable

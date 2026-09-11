@@ -17,6 +17,7 @@ use silver_common::{
     SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
+    ticker::SlotTicker,
 };
 
 use crate::{
@@ -62,8 +63,6 @@ impl ColumnConsumers {
 }
 
 pub struct DataColumnsTile {
-    consumers: ColumnConsumers,
-
     spec: Arc<SpecConfig>,
 
     validator: ColumnValidator,
@@ -85,6 +84,10 @@ pub struct DataColumnsTile {
     el_column_producer: TProducer,
 
     kzg_scratch: KzgScratch,
+
+    // Declared last so it drops last: a parked column's read releases through
+    // the consumer it was acquired from.
+    consumers: ColumnConsumers,
 }
 
 impl DataColumnsTile {
@@ -95,12 +98,13 @@ impl DataColumnsTile {
         spec: Arc<SpecConfig>,
         engine_resp_consumer: TRandomAccess,
         el_column_producer: TProducer,
+        ticker: SlotTicker,
     ) -> Self {
         let epoch_duration =
             Duration::from_millis(spec.slot_duration_ms()) * SLOTS_PER_EPOCH as u32;
         Self {
             consumers,
-            validator: ColumnValidator::new(beacon_state, spec.clone(), epoch_duration),
+            validator: ColumnValidator::new(beacon_state, spec.clone(), epoch_duration, ticker),
             spec,
             kzg_batch: KzgBatch::new(),
             tracker: ColumnTracker::new(custody_group_columns, epoch_duration),
@@ -552,21 +556,84 @@ impl DataColumnsTile {
     }
 }
 
+/// EF `gossip_validation` verdict for one sidecar.
+#[cfg(feature = "ef_tests")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EfVerdict {
+    Valid,
+    Ignore,
+    Reject,
+}
+
+/// EF `gossip_validation` harness API: the spine-fed inputs (clock, blocks)
+/// set directly, and one sidecar carried through validation and its KZG batch.
+#[cfg(feature = "ef_tests")]
+impl DataColumnsTile {
+    pub fn ef_set_status(&mut self, head_root: B256, finalized_slot: u64) {
+        self.sync_state.ef_set(head_root, finalized_slot);
+    }
+
+    pub fn ef_tick(&mut self, since_genesis_ms: u64) {
+        self.validator.ef_tick(since_genesis_ms);
+    }
+
+    /// A block the store holds, as both the gossip block and its persistence
+    /// would have delivered it.
+    pub fn ef_block(&mut self, ssz: TCacheRead, producers: &mut SilverSpineProducers) {
+        let block = self.consumers.gossip.acquire(ssz);
+        if let Ok((buf, _)) = block.buffer() {
+            let slot = SignedBeaconBlockView::slot(buf);
+            let root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
+            self.validator.note_validated(root, slot);
+        }
+        let stream_id = P2pStreamId::new(0, 0, StreamProtocol::GossipSub, true);
+        self.handle_beacon_block(block, stream_id, producers);
+    }
+
+    pub fn ef_gossip_sidecar(
+        &mut self,
+        ssz: TCacheRead,
+        subnet: u64,
+        producers: &mut SilverSpineProducers,
+    ) -> EfVerdict {
+        let column = PendingColumn {
+            stream_id: P2pStreamId::new(1, 1, StreamProtocol::GossipSub, true),
+            sidecar: self.consumers.gossip.acquire(ssz),
+            gossip_subnet: Some(subnet),
+            recv_ts: IngestionTime::now(),
+        };
+        match self.data_columns(column, RelayMeta::None, producers) {
+            ColumnDisposition::Rejected { .. } => EfVerdict::Reject,
+            ColumnDisposition::Ignored => EfVerdict::Ignore,
+            ColumnDisposition::Batched => {
+                let queued = self.kzg_batch.pending.last().expect("batched sidecar is pending");
+                let (block_root, bitmask) = (queued.block_root, queued.bitmask);
+                self.flush_kzg_batch(producers);
+                if self.tracker.has_any(&block_root, bitmask) {
+                    EfVerdict::Valid
+                } else {
+                    EfVerdict::Reject
+                }
+            }
+        }
+    }
+}
+
 impl DataColumnsTile {
     #[timed]
     fn handle_beacon_state_event(
         &mut self,
         event: BeaconStateEvent,
         producers: &mut SilverSpineProducers,
-    ) -> Option<([u8; 92], u64)> {
-        let mut latest_status_event: Option<([u8; 92], u64)> = None;
+    ) -> Option<[u8; 92]> {
+        let mut latest_status_event: Option<[u8; 92]> = None;
         match event {
-            BeaconStateEvent::Status { ssz, wall_slot, .. } => {
+            BeaconStateEvent::Status { ssz, .. } => {
                 // Per-event (not latest-only): BS emits one Status per accepted
                 // block, and each newly validated root may unblock buffered
                 // children.
                 self.drain_parent_pending_columns(*StatusView::head_root(&ssz), producers);
-                latest_status_event = Some((ssz, wall_slot));
+                latest_status_event = Some(ssz);
             }
             BeaconStateEvent::BlockReceived {
                 stage: BlockStage::AwaitData,
@@ -662,9 +729,8 @@ impl Tile<SilverSpine> for DataColumnsTile {
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, producers| {
-            if let Some((ssz, wall_slot)) = self.handle_beacon_state_event(beacon_event, producers)
-            {
-                self.sync_state.update(ssz, wall_slot);
+            if let Some(ssz) = self.handle_beacon_state_event(beacon_event, producers) {
+                self.sync_state.update(ssz);
             }
         });
 
@@ -780,6 +846,7 @@ mod tests {
                 Arc::new(spec),
                 engine_resp_consumer,
                 TCache::producer("el_columns", 1024 * 1024),
+                SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
             );
 
             let dir = tempfile::tempdir().unwrap();
@@ -938,7 +1005,7 @@ mod tests {
         const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
                             gossip_data_column_sidecar__ignore_parent_not_seen";
         const SIDECAR: &str = "data_column_sidecar_\
-                               0xb3dc72a861576b8fbdf96f82507c6f07112884f4443f9e2ea229eb95ef86a992.ssz_snappy";
+                               0x30d93f0be7cac9f7481a5799ac6ec7c8b726e8ced6bf6aa1e5d01e794dfb741e.ssz_snappy";
         let Some(sidecar) = ef_vector(CASE, SIDECAR) else { return };
         let reader = reader_over(&ef_vector(CASE, "state.ssz_snappy").unwrap());
         let parent_root = *DataColumnSidecarFuluView::parent_root(&sidecar);
@@ -949,7 +1016,7 @@ mod tests {
             let (mut consumer, ssz) = produce_block(&sidecar, "staged_parent_sidecar");
             let mut rig = Rig::with_state(CUSTODY_COLUMNS | 1, reader.clone(), fulu_from_genesis());
             rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
-            rig.tile.sync_state.update(status_ssz(0), 1);
+            rig.tile.sync_state.update(status_ssz(0));
             let read = consumer.acquire(ssz);
 
             if parent_first {
@@ -1159,7 +1226,7 @@ mod tests {
         let mut rig = Rig::new(CUSTODY_COLUMNS);
         rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
         // floor = 2 * 32 = 64, above the block's slot.
-        rig.tile.sync_state.update(status_ssz(2), 100);
+        rig.tile.sync_state.update(status_ssz(2));
 
         let block_bytes = blob_block_bytes(42);
         let (mut consumer, ssz) = produce_block(&block_bytes, "floor_block_prod");

@@ -7,14 +7,14 @@ mod payload_attestation;
 mod withdrawals;
 
 pub use bid::{collect_sigs_execution_payload_bid, process_execution_payload_bid};
-pub(crate) use builders::PAYLOAD_BUILDER_VERSION;
+pub(crate) use builders::{BUILDER_INDEX_SELF_BUILD, PAYLOAD_BUILDER_VERSION};
 pub use builders::{
     get_builder_payment_quorum_threshold, process_builder_deposit_request,
     process_builder_exit_request, process_builder_pending_payments,
 };
 pub use committee::process_ptc_window;
 pub(crate) use committee::{fill_epoch_ptc, get_ptc};
-pub use envelope::verify_execution_payload_envelope;
+pub use envelope::{envelope_withdrawals_match_expected, verify_execution_payload_envelope};
 pub use parent_payload::process_parent_execution_payload;
 pub(crate) use payload_attestation::hash_payload_attestation_data;
 pub use payload_attestation::{collect_sigs_payload_attestations, process_payload_attestations};

@@ -7,7 +7,8 @@ use silver_common::{
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
         EXECUTION_PAYLOAD_FIXED_GLOAS, ExecutionPayloadEnvelopeView, ExecutionPayloadView,
-        SignedExecutionPayloadEnvelopeView, WITHDRAWAL_SIZE, WithdrawalView,
+        MAX_WITHDRAWALS_PER_PAYLOAD, SignedExecutionPayloadEnvelopeView, WITHDRAWAL_SIZE,
+        WithdrawalView,
     },
 };
 
@@ -24,14 +25,7 @@ pub fn verify_execution_payload_envelope(
 ) -> Result<(), E> {
     let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
     let payload = ExecutionPayloadEnvelopeView::payload(envelope);
-    if payload.len() < EXECUTION_PAYLOAD_FIXED_GLOAS {
-        return Err(E::Malformed);
-    }
-    let wd_off = ExecutionPayloadView::withdrawals_offset(payload) as usize;
-    let bal_off = ExecutionPayloadView::block_access_list_offset(payload) as usize;
-    if wd_off < EXECUTION_PAYLOAD_FIXED_GLOAS || bal_off < wd_off || payload.len() < bal_off {
-        return Err(E::Malformed);
-    }
+    let (wd_off, bal_off) = withdrawal_bounds(payload)?;
 
     let state = rv.slot.state();
 
@@ -61,6 +55,7 @@ pub fn verify_execution_payload_envelope(
     if ExecutionRequestsView::hash_tree_root(requests) != bid.execution_requests_root {
         return Err(E::BidMismatch { field: "execution_requests_root" });
     }
+    ExecutionRequestsView::check_counts(requests)?;
 
     if ExecutionPayloadView::slot_number(payload) != state.slot {
         return Err(E::PayloadMismatch { field: "slot_number" });
@@ -73,23 +68,43 @@ pub fn verify_execution_payload_envelope(
         return Err(E::PayloadMismatch { field: "timestamp" });
     }
 
-    let withdrawals = &payload[wd_off..bal_off];
-    let expected = &state.payload_expected_withdrawals;
-    if withdrawals.len() != expected.len() * WITHDRAWAL_SIZE {
-        return Err(E::PayloadMismatch { field: "withdrawals" });
-    }
-    for (w, e) in withdrawals.chunks_exact(WITHDRAWAL_SIZE).zip(expected) {
-        let w: &[u8; WITHDRAWAL_SIZE] = w.try_into().unwrap();
-        let matches = WithdrawalView::index(w) == e.index &&
-            WithdrawalView::validator_index(w) == e.validator_index &&
-            *WithdrawalView::address(w) == e.address &&
-            WithdrawalView::amount(w) == e.amount;
-        if !matches {
-            return Err(E::PayloadMismatch { field: "withdrawals" });
-        }
+    let count = (bal_off - wd_off) / WITHDRAWAL_SIZE;
+    if count > MAX_WITHDRAWALS_PER_PAYLOAD {
+        return Err(E::TooManyWithdrawals { count, max: MAX_WITHDRAWALS_PER_PAYLOAD });
     }
 
     verify_envelope_signature(rv, envelope, signed, builder_index)
+}
+
+/// `process_execution_payload`'s `payload.withdrawals ==
+/// state.payload_expected_withdrawals`: a gossip-valid envelope that fails it
+/// is relayed but never becomes this node's verified payload.
+pub fn envelope_withdrawals_match_expected(rv: &StateReadView, signed: &[u8]) -> bool {
+    let payload =
+        ExecutionPayloadEnvelopeView::payload(SignedExecutionPayloadEnvelopeView::message(signed));
+    let Ok((wd_off, bal_off)) = withdrawal_bounds(payload) else { return false };
+    let withdrawals = &payload[wd_off..bal_off];
+    let expected = &rv.slot.state().payload_expected_withdrawals;
+    withdrawals.len() == expected.len() * WITHDRAWAL_SIZE &&
+        withdrawals.chunks_exact(WITHDRAWAL_SIZE).zip(expected).all(|(w, e)| {
+            let w: &[u8; WITHDRAWAL_SIZE] = w.try_into().unwrap();
+            WithdrawalView::index(w) == e.index &&
+                WithdrawalView::validator_index(w) == e.validator_index &&
+                *WithdrawalView::address(w) == e.address &&
+                WithdrawalView::amount(w) == e.amount
+        })
+}
+
+fn withdrawal_bounds(payload: &[u8]) -> Result<(usize, usize), E> {
+    if payload.len() < EXECUTION_PAYLOAD_FIXED_GLOAS {
+        return Err(E::Malformed);
+    }
+    let wd_off = ExecutionPayloadView::withdrawals_offset(payload) as usize;
+    let bal_off = ExecutionPayloadView::block_access_list_offset(payload) as usize;
+    if wd_off < EXECUTION_PAYLOAD_FIXED_GLOAS || bal_off < wd_off || payload.len() < bal_off {
+        return Err(E::Malformed);
+    }
+    Ok((wd_off, bal_off))
 }
 
 #[timed]

@@ -185,12 +185,19 @@ impl ForkChoice {
         self.pending_votes.push(vote);
     }
 
-    pub fn drain_pending_votes(&mut self, validator_count: usize) {
-        for i in 0..self.pending_votes.len() {
+    /// Spec `on_attestation` folds a vote only once `current_slot >= slot + 1`;
+    /// a vote for `current_slot` or later (clock disparity) stays deferred.
+    pub fn drain_pending_votes(&mut self, validator_count: usize, current_slot: Slot) {
+        let mut i = 0;
+        while i < self.pending_votes.len() {
             let v = self.pending_votes[i];
+            if v.attestation_slot >= current_slot {
+                i += 1;
+                continue;
+            }
+            self.pending_votes.swap_remove(i);
             self.record_vote(&v, validator_count);
         }
-        self.pending_votes.clear();
     }
 
     pub fn is_equivocating(&self, idx: usize) -> bool {

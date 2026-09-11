@@ -1,5 +1,5 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
+use silver_beacon_state_data::{B256, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot};
 
 use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, node::PTC_SIZE};
 
@@ -120,6 +120,10 @@ impl ForkChoice {
     /// `root` with `slot <= epoch_start_slot`.
     pub fn get_checkpoint_block(&self, root: &B256, epoch_start_slot: Slot) -> Option<B256> {
         self.checkpoint_block_of(self.find_node_idx(root)?, epoch_start_slot)
+    }
+
+    pub fn shuffling_dependent_root(&self, root: &B256, epoch: Epoch) -> Option<B256> {
+        self.get_checkpoint_block(root, compute_shuffling_dependent_slot(epoch))
     }
 
     pub fn checkpoint_block_of(&self, mut idx: usize, epoch_start_slot: Slot) -> Option<B256> {
@@ -260,4 +264,14 @@ impl ForkChoice {
         let nb = &self.nodes[b];
         (na.weight, na.block_root) >= (nb.weight, nb.block_root)
     }
+}
+
+/// Spec `compute_shuffling_dependent_slot`: the last slot whose block can
+/// still change `epoch`'s shuffling.
+fn compute_shuffling_dependent_slot(epoch: Epoch) -> Slot {
+    const GENESIS_SLOT: Slot = 0;
+    if epoch <= MIN_SEED_LOOKAHEAD {
+        return GENESIS_SLOT;
+    }
+    (epoch - MIN_SEED_LOOKAHEAD) * SLOTS_PER_EPOCH - 1
 }

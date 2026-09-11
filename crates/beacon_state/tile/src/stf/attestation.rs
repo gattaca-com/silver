@@ -252,6 +252,7 @@ pub fn process_attestations(
     epoch: EpochView,
     attestation_data: &[u8],
     block_slot: Slot,
+    parent_slot: Option<Slot>,
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
     votes_sink: &mut Vec<AttestationVote>,
@@ -278,6 +279,7 @@ pub fn process_attestations(
                 att,
                 current_epoch,
                 previous_epoch,
+                parent_slot,
                 total_active,
                 shuffling,
                 votes_sink,
@@ -297,7 +299,9 @@ pub fn process_attestations(
 
 /// Pass 2 single-attestation worker — full data + state-dep validation +
 /// participation flag updates. Returns the proposer reward numerator on
-/// success.
+/// success. `parent_slot` is required from Gloas on: the payload-availability
+/// bit lives at the parent block's slot, not at `data.slot`, and the two differ
+/// across skipped slots.
 #[allow(clippy::too_many_arguments)]
 pub fn process_single_attestation(
     view: &mut StateWriterView,
@@ -305,6 +309,7 @@ pub fn process_single_attestation(
     att: &[u8],
     current_epoch: Epoch,
     previous_epoch: Epoch,
+    parent_slot: Option<Slot>,
     total_active: u64,
     shuffling: Option<&ShufflingRef<'_>>,
     votes_sink: &mut Vec<AttestationVote>,
@@ -328,8 +333,9 @@ pub fn process_single_attestation(
     let mut flag_weights = compute_attestation_flags(&view.block_roots, &parsed, current_slot);
 
     let (same_slot, payload_present) = if is_gloas {
+        let parent_slot = parent_slot.ok_or(AttestationError::MissingParentSlot)?;
         (
-            gloas_payload_vote_is_same_slot(view, att, &parsed, &mut flag_weights)?,
+            gloas_payload_vote_is_same_slot(view, att, &parsed, parent_slot, &mut flag_weights)?,
             gloas_payload_is_present(att),
         )
     } else {
@@ -380,12 +386,12 @@ pub fn process_single_attestation(
 
     view.slot.epoch_balances_mut().add_target_attesters(is_current, flags.new_target_eb);
 
-    if same_slot && flags.new_flag_eb > 0 {
+    if same_slot && flags.first_participation_eb > 0 {
         accrue_builder_payment_weight(
             &mut view.slot,
             parsed.att_slot,
             is_current,
-            flags.new_flag_eb,
+            flags.first_participation_eb,
         );
     }
 
@@ -396,13 +402,13 @@ fn accrue_builder_payment_weight(
     slot: &mut SlotStateWriteView,
     att_slot: Slot,
     is_current: bool,
-    new_flag_eb: u64,
+    first_participation_eb: u64,
 ) {
     let spe = SLOTS_PER_EPOCH as usize;
     let slot_in_epoch = att_slot as usize % spe;
     let ring = if is_current { spe + slot_in_epoch } else { slot_in_epoch };
     if slot.state().builder_pending_payments[ring].withdrawal.amount > 0 {
-        slot.state_mut().builder_pending_payments[ring].weight += new_flag_eb;
+        slot.state_mut().builder_pending_payments[ring].weight += first_participation_eb;
     }
 }
 
@@ -410,6 +416,7 @@ fn gloas_payload_vote_is_same_slot(
     view: &StateWriterView,
     att: &[u8],
     parsed: &ParsedAttestationData,
+    parent_slot: Slot,
     flag_weights: &mut [bool; 3],
 ) -> Result<bool, AttestationError> {
     let index = AttestationView::data(att).index();
@@ -425,7 +432,7 @@ fn gloas_payload_vote_is_same_slot(
         }
         true
     } else {
-        index == payload_availability_bit(&view.slot, parsed.att_slot)
+        index == payload_availability_bit(&view.slot, parent_slot)
     };
     flag_weights[TIMELY_HEAD_FLAG_INDEX] &= payload_matches;
     Ok(same_slot)
@@ -446,8 +453,8 @@ fn is_attestation_same_slot(
     root == block_roots.at_slot(parsed.att_slot) && root != block_roots.at_slot(parsed.att_slot - 1)
 }
 
-fn payload_availability_bit(slot: &SlotStateWriteView, att_slot: Slot) -> u64 {
-    let i = (att_slot % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
+fn payload_availability_bit(slot: &SlotStateWriteView, parent_slot: Slot) -> u64 {
+    let i = (parent_slot % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
     (slot.state().execution_payload_availability[i / 8] >> (i % 8) & 1) as u64
 }
 
@@ -555,8 +562,9 @@ fn collect_attestation_participants(
 
 struct AppliedFlags {
     proposer_reward_numerator: u64,
-    /// Gloas builder-payment weight: attesters that set at least one new flag.
-    new_flag_eb: u64,
+    /// Gloas builder-payment weight: effective balance of the attesters this
+    /// attestation brought from no participation to some.
+    first_participation_eb: u64,
     /// Unslashed attesters that newly earned TIMELY_TARGET.
     new_target_eb: u64,
 }
@@ -577,7 +585,7 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     // per-validator `set_*_participation` would be O(|edits|) each (quadratic
     // over an epoch's accumulated participation edits).
     let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
-    let mut new_flag_eb = 0u64;
+    let mut first_participation_eb = 0u64;
     let mut new_target_eb = 0u64;
     for &vi in active_scratch {
         let prev_p = participation.get(vi as usize);
@@ -597,12 +605,14 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
         }
         if p != prev_p {
             updates.push((vi, p));
-            new_flag_eb += effective_balance;
+            if prev_p == 0 {
+                first_participation_eb += effective_balance;
+            }
         }
     }
     updates.sort_unstable_by_key(|(idx, _)| *idx);
     participation.set_many(&updates);
-    AppliedFlags { proposer_reward_numerator, new_flag_eb, new_target_eb }
+    AppliedFlags { proposer_reward_numerator, first_participation_eb, new_target_eb }
 }
 
 #[cfg(test)]

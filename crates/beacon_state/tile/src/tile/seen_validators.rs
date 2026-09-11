@@ -32,7 +32,6 @@ impl SeenValidators {
 
     pub(super) fn mark(&mut self, target_epoch: Epoch, validator: usize) {
         let lane = (target_epoch % 2) as usize;
-        debug_assert!(self.epochs[lane] == target_epoch);
         if self.epochs[lane] != target_epoch {
             return;
         }
@@ -44,9 +43,40 @@ impl SeenValidators {
     }
 }
 
+pub(super) struct SeenIndices {
+    bits: Vec<u64>,
+}
+
+impl SeenIndices {
+    pub(super) fn new(validator_capacity: usize) -> Self {
+        Self { bits: vec![0; validator_capacity.div_ceil(64)] }
+    }
+
+    pub(super) fn contains(&self, validator: usize) -> bool {
+        self.bits.get(validator / 64).is_some_and(|w| w & (1 << (validator % 64)) != 0)
+    }
+
+    pub(super) fn mark(&mut self, validator: usize) {
+        if validator / 64 >= self.bits.len() {
+            self.bits.resize(validator / 64 + 1, 0);
+        }
+        self.bits[validator / 64] |= 1 << (validator % 64);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seen_indices_never_expire_and_grow() {
+        let mut seen = SeenIndices::new(0);
+        assert!(!seen.contains(70));
+        seen.mark(70);
+        assert!(seen.contains(70));
+        assert!(!seen.contains(6));
+        assert!(!seen.contains(10_000));
+    }
 
     #[test]
     fn fresh_lanes_contain_nothing() {

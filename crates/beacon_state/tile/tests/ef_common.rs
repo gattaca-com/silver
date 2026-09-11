@@ -374,6 +374,19 @@ fn hex(b: &[u8; 32]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// `RUST_LOG`-filtered tracing for a harness run, so the tile's warn/error
+/// lines explain a rejection. Idempotent across tests in one binary.
+pub fn init_tracing() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
+    });
+}
+
 pub fn spec_tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
 }
@@ -398,6 +411,22 @@ pub fn case_file(dir: &Path, stem: &str) -> Vec<u8> {
 /// harness via `ef_tick`; weak-subjectivity is skipped (the anchor is the test
 /// genesis).
 pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile {
+    // Fixtures are generated with the fork under test active from genesis,
+    // and they sit in the first epochs: a block signature is verified against
+    // the fork version the config says is active at the block's epoch.
+    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() };
+    if state.is_finalized_post_gloas() {
+        spec.gloas_fork_epoch = 0;
+    }
+    ef_tile_with_spec(state, spec)
+}
+
+/// `ef_tile` under a vector's own `config.yaml`, for cases that override the
+/// network config (blob schedules, fork epochs).
+pub fn ef_tile_with_spec(
+    state: silver_beacon_state_data::BeaconState,
+    spec: SpecConfig,
+) -> BeaconStateTile {
     use silver_beacon_state::{BeaconStateTile, SlotTicker};
     use silver_common::{TCache, TCacheProducer};
     use silver_config::SyncingConfig;
@@ -413,13 +442,6 @@ pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile 
         TCache::producer("ef_replay", 1 << 16),
     );
 
-    // Fixtures are generated with the fork under test active from genesis,
-    // and they sit in the first epochs: a block signature is verified against
-    // the fork version the config says is active at the block's epoch.
-    let mut spec = SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() };
-    if state.is_finalized_post_gloas() {
-        spec.gloas_fork_epoch = 0;
-    }
     BeaconStateTile::new(
         ticker,
         Arc::new(spec),

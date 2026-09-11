@@ -1,9 +1,12 @@
-use silver_ssz::ssz_view::{
-    BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE,
-    MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTER_SLASHINGS_ELECTRA, MAX_BLS_TO_EXECUTION_CHANGES,
-    MAX_DEPOSITS, MAX_PAYLOAD_ATTESTATIONS, MAX_PROPOSER_SLASHINGS, MAX_VOLUNTARY_EXITS,
-    PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE,
-    SIGNED_VOLUNTARY_EXIT_SIZE,
+use silver_ssz::{
+    ssz_hash_gloas::{ExecutionRequestsView, RequestCountOutOfBounds},
+    ssz_view::{
+        BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE,
+        MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTER_SLASHINGS_ELECTRA, MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_DEPOSITS, MAX_PAYLOAD_ATTESTATIONS, MAX_PROPOSER_SLASHINGS, MAX_VOLUNTARY_EXITS,
+        PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,12 +35,14 @@ impl core::fmt::Display for OperationKind {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum BlockBodyError {
     #[error("block body too short: len={len} min={min}")]
     BodyTooShort { len: usize, min: usize },
     #[error("{op} count {count} exceeds max {max}")]
     OperationCountOutOfBounds { op: OperationKind, count: usize, max: usize },
+    #[error("parent {kind} request count {count} exceeds max {max}")]
+    RequestCountOutOfBounds { kind: &'static str, count: usize, max: usize },
     #[error(
         "body offset malformed: {field} off={off} body_len={body_len} \
          (next_field_off={next_off:?})"
@@ -54,6 +59,12 @@ pub enum BlockBodyError {
 pub enum BodyFork {
     Fulu,
     Gloas,
+}
+
+impl From<RequestCountOutOfBounds> for BlockBodyError {
+    fn from(e: RequestCountOutOfBounds) -> Self {
+        Self::RequestCountOutOfBounds { kind: e.kind, count: e.count, max: e.max }
+    }
 }
 
 pub struct BodyOffsets<'a> {
@@ -175,6 +186,15 @@ impl<'a> BodyOffsets<'a> {
             BeaconBlockBodyGloasView::payload_attestations_offset(self.body),
             BeaconBlockBodyGloasView::parent_execution_requests_offset(self.body),
         )
+    }
+
+    #[inline]
+    pub fn parent_execution_requests(&self) -> &'a [u8] {
+        self.slice(
+            BeaconBlockBodyGloasView::parent_execution_requests_offset(self.body),
+            self.body.len() as u32,
+        )
+        .unwrap_or(&[])
     }
 
     /// `(field_name, offset)` of every variable field, in serialization order.
@@ -305,6 +325,7 @@ impl<'a> BodyOffsets<'a> {
                     fixed_count(self.payload_attestations(), PAYLOAD_ATTESTATION_SIZE),
                     MAX_PAYLOAD_ATTESTATIONS,
                 )?;
+                ExecutionRequestsView::check_counts(self.parent_execution_requests())?;
             }
         }
 

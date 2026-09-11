@@ -279,6 +279,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         spec.clone(),
         incoming_engine_resp_consumer_ds,
         el_producer,
+        SlotTicker::new(
+            chain_config.genesis_unix_secs,
+            chain_config.slot_duration(),
+            chain_config.playload_lookahead(),
+        ),
     );
 
     let beacon_api_binds =

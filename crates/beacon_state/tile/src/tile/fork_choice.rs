@@ -106,7 +106,7 @@ impl BeaconStateTile {
         let new_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
         self.fork_choice.expire_proposer_boost();
         let n = self.head_validator_count();
-        self.fork_choice.drain_pending_votes(n);
+        self.fork_choice.drain_pending_votes(n, self.ticker.current_slot());
         self.recompute_head();
         if new_epoch > prev_epoch {
             self.lift_unrealized_checkpoints();
@@ -194,7 +194,7 @@ impl BeaconStateTile {
             }
         }
         if ptc_positions.iter().all(|&word| word == 0) {
-            return Err(Feedback::Ignore);
+            return Err(Feedback::Reject(None));
         };
         if validator_index as usize >= rv.validators.count() {
             return Err(Feedback::Reject(None));
