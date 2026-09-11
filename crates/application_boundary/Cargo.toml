@@ -15,10 +15,10 @@ silver_engine_api.workspace = true
 silver_httpcore.workspace = true
 
 [dev-dependencies]
+silver_common = { workspace = true, features = ["test-util"] }
 hex.workspace = true
 serde_json.workspace = true
 silver_engine_api = { workspace = true, features = ["test-el"] }
-tempfile = "3"
 ureq.workspace = true
 
 [lints]

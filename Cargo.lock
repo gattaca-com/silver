@@ -4545,7 +4545,6 @@ dependencies = [
  "silver_config",
  "silver_engine_api",
  "silver_httpcore",
- "tempfile",
  "ureq",
 ]
 
@@ -4585,7 +4584,6 @@ dependencies = [
  "silver_ssz",
  "silver_storage",
  "snap 0.1.2",
- "tempfile",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
@@ -4635,7 +4633,6 @@ dependencies = [
  "silver_beacon_state_data",
  "silver_common",
  "snap 1.1.1",
- "tempfile",
  "tracing",
 ]
 
@@ -4667,11 +4664,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
+ "shared_memory",
  "silver_beacon_state_data",
  "silver_chain_spec",
  "silver_metrics",
  "silver_ssz",
  "snap 1.1.1",
+ "tempfile",
  "thiserror 1.0.69",
  "toml",
  "tracing",
@@ -4689,6 +4688,7 @@ dependencies = [
  "serde_yml",
  "silver_chain_spec",
  "silver_common",
+ "tempfile",
  "toml",
  "tracing",
 ]
@@ -4759,7 +4759,6 @@ dependencies = [
  "silver_network",
  "silver_peer",
  "snap 1.1.1",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4829,6 +4828,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -4913,6 +4913,7 @@ dependencies = [
  "rand 0.8.6",
  "silver_beacon_state_data",
  "silver_common",
+ "tempfile",
  "tracing",
 ]
 
@@ -4935,6 +4936,7 @@ dependencies = [
  "silver_peer",
  "silver_stages",
  "silver_storage",
+ "tempfile",
 ]
 
 [[package]]
@@ -4954,6 +4956,7 @@ dependencies = [
  "silver_common",
  "silver_config",
  "silver_stages",
+ "tempfile",
  "toml",
  "tracing",
  "ureq",

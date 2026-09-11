@@ -786,8 +786,8 @@ mod tests {
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
             SIGNED_BEACON_BLOCK_MIN,
         },
+        test_util::ShmemDir,
     };
-    use tempfile::TempDir;
 
     use super::*;
 
@@ -807,7 +807,7 @@ mod tests {
         rpc_p: TProducer,
         engine_p: TProducer,
         _spine: Box<SilverSpine>,
-        _dir: TempDir,
+        _dir: ShmemDir,
     }
 
     struct Injector;
@@ -866,7 +866,7 @@ mod tests {
                 SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
             );
 
-            let dir = tempfile::tempdir().unwrap();
+            let dir = ShmemDir::new().unwrap();
             let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
             let conn = SpineAdapter::connect_tile(&tile, &mut spine);
             let mut inj = SpineAdapter::connect_tile(&Injector, &mut spine);

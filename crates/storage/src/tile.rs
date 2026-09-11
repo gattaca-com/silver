@@ -479,7 +479,8 @@ impl IoEvent {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::BeaconStateOwner;
-    use silver_common::{DataColumnsEvent, TCache, TCacheProducer};
+    use silver_common::{DataColumnsEvent, TCache, TCacheProducer, test_util::ShmemDir};
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -509,34 +510,33 @@ mod tests {
         // Only the unavailable block is dropped; replay continues past it and
         // ends with Done so the peer manager resyncs the gap.
         let custody = (1u128 << 3) | (1u128 << 7);
-        let store_dir = format!("/tmp/test_storage_replay_da_{}", rand::random::<u32>());
-        let _ = std::fs::remove_dir_all(&store_dir);
+        let store_dir = TempDir::new().unwrap();
 
         // Committed-checkpoint marker → last_persisted_finalized_slot = 32.
-        let ckpt = format!("{store_dir}/finalized_checkpoints/32");
+        let ckpt = store_dir.path().join("finalized_checkpoints/32");
         std::fs::create_dir_all(&ckpt).unwrap();
-        std::fs::write(format!("{ckpt}/32.ssz"), b"x").unwrap();
+        std::fs::write(ckpt.join("32.ssz"), b"x").unwrap();
 
         // Unfinalized blocks: `<slot>_<parent>_<root>.ssz`. The root in the
         // name keys the column bitmask; needs-columns is parsed from the bytes.
-        let unfin = format!("{store_dir}/unfinalized");
+        let unfin = store_dir.path().join("unfinalized");
         std::fs::create_dir_all(&unfin).unwrap();
         let (root_a, root_b, root_c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
         for (slot, root, dc) in [(33, &root_a, true), (34, &root_b, true), (35, &root_c, false)] {
             std::fs::write(
-                format!("{unfin}/{slot}_{}_{}.ssz", "0".repeat(64), root),
+                unfin.join(format!("{slot}_{}_{}.ssz", "0".repeat(64), root)),
                 make_block(slot, dc),
             )
             .unwrap();
         }
 
         // Custody columns on disk: `<slot>_<root>_<column>.ssz`.
-        let cols = format!("{store_dir}/unfinalized_columns");
+        let cols = store_dir.path().join("unfinalized_columns");
         std::fs::create_dir_all(&cols).unwrap();
         for col in [3, 7] {
-            std::fs::write(format!("{cols}/33_{root_a}_{col}.ssz"), b"c").unwrap();
+            std::fs::write(cols.join(format!("33_{root_a}_{col}.ssz")), b"c").unwrap();
         }
-        std::fs::write(format!("{cols}/34_{root_b}_3.ssz"), b"c").unwrap(); // partial
+        std::fs::write(cols.join(format!("34_{root_b}_3.ssz")), b"c").unwrap(); // partial
 
         let pg_tc = TCache::producer("pg", 1 << 20);
         let rpc_tc = TCache::producer("r", 1 << 20);
@@ -553,15 +553,14 @@ mod tests {
             BeaconStateOwner::empty_test(0).reader(),
             custody,
             Arc::new(SpecConfig::mainnet()),
-            store_dir.clone(),
+            store_dir.path().to_str().unwrap().to_owned(),
             true,
         );
         assert_eq!(tile.replay_steps.len(), 3, "skip decided at replay, not load");
 
         // Spine + injector: the tile produces, the injector drains.
-        let base = std::env::temp_dir().join(format!("silver-replay-da-{}", rand::random::<u64>()));
-        std::fs::create_dir_all(&base).unwrap();
-        let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+        let base = ShmemDir::new().unwrap();
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
         let mut tile_adapter = SpineAdapter::connect_tile(&tile, &mut spine);
         let inj = Injector;
         let mut inj_adapter = SpineAdapter::connect_tile(&inj, &mut spine);
@@ -585,9 +584,6 @@ mod tests {
         assert_eq!(blocks, 2, "slots 33 and 35 replayed; 34 skipped");
         assert_eq!(done, 1, "replay terminated with Done");
         assert!(tile.replay_done);
-
-        let _ = std::fs::remove_dir_all(&store_dir);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     struct Injector;

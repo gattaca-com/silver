@@ -129,6 +129,7 @@ mod tests {
         tile::metrics::TileMetrics,
         timing::{IngestionTime, Nanos},
     };
+    use silver_common::test_util::ShmemDir;
 
     use super::*;
     use crate::discovery::TileMetricsFile;
@@ -146,12 +147,9 @@ mod tests {
     /// Stand up a real shmem queue + consumer at a unique path. Open the
     /// consumer BEFORE producing: broadcast cursors start at head, so a late
     /// join skips earlier messages.
-    fn rig(tag: &str) -> (Producer<TileSample>, TileMetricsSet, std::path::PathBuf) {
-        let tmp =
-            std::env::temp_dir().join(format!("surfer_tileutil_{tag}_{}", std::process::id()));
-        std::fs::remove_dir_all(&tmp).ok();
-        std::fs::create_dir_all(&tmp).unwrap();
-        let path = tmp.join(format!("tilemetrics-{tag}"));
+    fn rig(tag: &str) -> (ShmemDir, Producer<TileSample>, TileMetricsSet) {
+        let tmp = ShmemDir::new().unwrap();
+        let path = tmp.path().join(format!("tilemetrics-{tag}"));
         let queue: Queue<TileSample> = Queue::create_or_open_shared(&path, 4096, QueueType::SPMC);
         let producer = Producer::from(queue);
         let file = TileMetricsFile { name: tag.into(), path: path.clone() };
@@ -160,14 +158,14 @@ mod tests {
         // anchors on first consume, so a pre-produce drain avoids skipping the
         // backlog (mirrors main.rs's startup drain).
         set.drain();
-        (producer, set, tmp)
+        (tmp, producer, set)
     }
 
     /// Drives drain → roll_bucket → util_avg/util_peak end-to-end through the
     /// queue, isolating the surfer arithmetic from the flux producer path.
     #[test]
     fn util_calculation_over_buckets() {
-        let (mut producer, mut set, tmp) = rig("calc");
+        let (_tmp, mut producer, mut set) = rig("calc");
 
         // No buckets rolled yet.
         assert_eq!(set.util_avg(), 0.0);
@@ -190,15 +188,13 @@ mod tests {
         assert_eq!(set.total_busy, 900);
         assert_eq!(set.total_ticks, 3000);
         assert_eq!(set.samples_seen, 3);
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// A nonzero-busy sample MUST produce nonzero util. If the live TUI shows
     /// zeros, busy_ticks is zero upstream (flux/did_work), not here.
     #[test]
     fn nonzero_busy_yields_nonzero_util() {
-        let (mut producer, mut set, tmp) = rig("nz");
+        let (_tmp, mut producer, mut set) = rig("nz");
 
         producer.produce(&mk(1, 1_000_000));
         set.drain();
@@ -207,8 +203,6 @@ mod tests {
         assert!(set.util_avg() > 0.0, "avg={}", set.util_avg());
         assert!(set.util_peak() > 0.0, "peak={}", set.util_peak());
         assert_eq!(set.total_busy, 1);
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// Producer-side bracket: drive the real flux
@@ -218,15 +212,13 @@ mod tests {
     /// the flux timing attribution itself works.
     #[test]
     fn flux_producer_attributes_busy() {
-        let tmp = std::env::temp_dir().join(format!("surfer_fluxprod_{}", std::process::id()));
-        std::fs::remove_dir_all(&tmp).ok();
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = ShmemDir::new().unwrap();
 
         // TileMetrics::new creates the queue under the app's shmem dir.
-        let mut tm = TileMetrics::new(&tmp, "fluxprodapp", "fluxprod");
+        let mut tm = TileMetrics::new(tmp.path(), "fluxprodapp", "fluxprod");
 
         // Attach the consumer before producing (prime cursor at head).
-        let sources = crate::discovery::discover(&tmp, "fluxprodapp").unwrap();
+        let sources = crate::discovery::discover(tmp.path(), "fluxprodapp").unwrap();
         let file = sources.tilemetrics.iter().find(|f| f.name == "fluxprod").unwrap();
         let mut set = TileMetricsSet::open(file).unwrap();
         set.drain();
@@ -248,7 +240,5 @@ mod tests {
         assert!(set.samples_seen >= 1, "no sample emitted");
         assert!(set.total_busy > 0, "flux attributed zero busy despite did_work=true");
         assert!(set.util_avg() > 0.0, "avg={}", set.util_avg());
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 }
