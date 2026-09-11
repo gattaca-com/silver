@@ -19,15 +19,24 @@ pub(crate) struct HeadChange {
     pub(crate) legacy: bool,
 }
 
-/// Tracks complete head observations even when no subscribers are connected.
+/// Tracks complete head observations in every sync mode, even when no
+/// subscribers are connected, and reports changes only while following.
 #[derive(Default)]
 pub(crate) struct ObservedHead {
     reported: Option<Reported>,
+    following: bool,
 }
 
 impl ObservedHead {
-    /// Incomplete snapshots leave the baseline unchanged. The first complete
-    /// observation establishes it without producing an event.
+    /// The mode starts as not following, so nothing is reported before
+    /// Control has concluded.
+    pub(crate) fn set_following(&mut self, following: bool) {
+        self.following = following;
+    }
+
+    /// Incomplete snapshots leave the baseline unchanged. Every complete
+    /// observation becomes the baseline; only a change observed while
+    /// following produces an event.
     pub(crate) fn observe(
         &mut self,
         slot: u64,
@@ -41,6 +50,9 @@ impl ObservedHead {
         }
         let epoch = slot / SLOTS_PER_EPOCH;
         let previous = self.reported.replace(Reported { root, optimistic, payload, epoch })?;
+        if !self.following {
+            return None;
+        }
         let legacy = previous.root != root || previous.optimistic != optimistic;
         if !legacy && previous.payload == payload {
             return None;
@@ -100,13 +112,19 @@ mod tests {
         Some(HeadChange { event, legacy: false })
     }
 
+    fn following() -> ObservedHead {
+        let mut head = ObservedHead::default();
+        head.set_following(true);
+        head
+    }
+
     fn observed_at(
         slot: u64,
         root: B256,
         optimistic: bool,
         payload: PayloadResolution,
     ) -> ObservedHead {
-        let mut head = ObservedHead::default();
+        let mut head = following();
         assert!(
             head.observe(slot, root, optimistic, payload, roots(0x30)).is_none(),
             "baseline only"
@@ -122,7 +140,7 @@ mod tests {
     /// to advance from epoch zero.
     #[test]
     fn an_incomplete_status_neither_reports_nor_baselines() {
-        let mut head = ObservedHead::default();
+        let mut head = following();
         assert!(head.observe(0, [0u8; 32], true, Empty, HeadRoots::default()).is_none());
         assert!(head.observe(0, [0u8; 32], true, Empty, HeadRoots::default()).is_none(), "repeat");
 
@@ -131,6 +149,34 @@ mod tests {
             head.observe(72, OTHER, true, Full, roots(0x40)),
             both_topics(event(72, OTHER, 0x40, Full, true, true)),
             "epoch 2 against the epoch-1 baseline, not against epoch 0"
+        );
+    }
+
+    /// Every complete observation moves the baseline; only a change observed
+    /// while following is reported, so a following period starts from the
+    /// head the node already has.
+    #[test]
+    fn changes_are_reported_only_while_following() {
+        let mut head = ObservedHead::default();
+        assert!(head.observe(40, HEAD, true, Full, roots(0x30)).is_none(), "not following yet");
+        assert!(head.observe(41, OTHER, true, Full, roots(0x40)).is_none(), "a silent change");
+
+        head.set_following(true);
+        assert!(head.observe(41, OTHER, true, Full, roots(0x40)).is_none(), "the baseline repeats");
+        assert_eq!(
+            head.observe(41, OTHER, false, Full, roots(0x40)),
+            both_topics(event(41, OTHER, 0x40, Full, false, false))
+        );
+
+        head.set_following(false);
+        assert!(head.observe(64, HEAD, true, Full, roots(0x30)).is_none(), "silent while syncing");
+
+        head.set_following(true);
+        assert!(head.observe(64, HEAD, true, Full, roots(0x30)).is_none(), "the baseline moved");
+        assert_eq!(
+            head.observe(65, OTHER, true, Full, roots(0x40)),
+            both_topics(event(65, OTHER, 0x40, Full, false, true)),
+            "the epoch transition was observed while syncing, not now"
         );
     }
 
