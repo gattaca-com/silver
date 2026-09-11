@@ -15,6 +15,7 @@ pub use control::{
     copy_subscribes_to_protobuf_output, copy_unsubscribes_to_protobuf_output,
 };
 pub use handler::GossipHandler;
+pub use partial::{PartialFrame, PartsMetadata};
 use silver_common::{GossipMsgOut, NewGossipMsg, PeerEvent};
 
 /// Events emitted by the GossipHandler.
