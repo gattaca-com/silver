@@ -9,9 +9,14 @@ message RPC {
 	message SubOpts {
 		optional bool subscribe = 1; // subscribe or unsubscribe
 		optional string topic_id = 2;
+		// Partial Messages extension: requesting partials implies
+		// supports_sending_partial, even when that flag is absent or false.
+		optional bool requests_partial = 3;
+		optional bool supports_sending_partial = 4;
 	}
 
 	optional ControlMessage control = 3;
+	optional PartialMessagesExtension partial = 10;
 }
 
 message Message {
@@ -29,6 +34,20 @@ message ControlMessage {
 	repeated ControlGraft graft = 3;
 	repeated ControlPrune prune = 4;
 	repeated ControlIDontWant idontwant = 5;
+	optional ControlExtensions extensions = 6;
+}
+
+message ControlExtensions {
+	optional bool partial_messages = 10;
+}
+
+// One (topic_id, group_id) pair per RPC frame; partial_message and
+// parts_metadata are raw SSZ, not Snappy.
+message PartialMessagesExtension {
+	optional bytes topic_id = 1;
+	optional bytes group_id = 2;
+	optional bytes partial_message = 3;
+	optional bytes parts_metadata = 4;
 }
 
 message ControlIHave {
