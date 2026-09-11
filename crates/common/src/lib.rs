@@ -1,5 +1,10 @@
 extern crate self as silver_common;
 
+pub use spine::{
+    AcquiredGossipFrame, AcquiredGossipSegment, GossipFrameError, GossipFrameRef,
+    GossipFrameSegment, GossipFrameView, GossipSegment, MAX_GOSSIP_SEGMENTS,
+};
+
 pub use crate::{
     error::Error,
     gossip::{
@@ -38,11 +43,6 @@ pub use crate::{
     util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
     wheel::Wheel,
     wither::{CountingWitherFilter, WitherFilter},
-};
-
-pub use spine::{
-    AcquiredGossipFrame, AcquiredGossipSegment, GossipFrameError, GossipFrameRef,
-    GossipFrameSegment, GossipFrameView, GossipSegment, MAX_GOSSIP_SEGMENTS,
 };
 pub mod column_util;
 mod enr;
