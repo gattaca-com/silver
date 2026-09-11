@@ -1,15 +1,10 @@
-use std::{
-    io::Write,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{io::Write, sync::Arc};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
     GossipBlock, GossipDataColumn, GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId,
     P2pStreamId, PeerId, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
+    test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -24,6 +19,7 @@ struct GossipPublications {
     payload: TCacheRead,
     outbound: TRandomAccess,
     _spine: Box<SilverSpine>,
+    _dir: ShmemDir,
 }
 
 struct Observer;
@@ -60,19 +56,22 @@ impl GossipPublications {
             rpc.cache_ref().random_access("publication_rpc", true).unwrap(),
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
         );
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "silver-publications-{}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&base).unwrap();
-        let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+        let dir = ShmemDir::new().unwrap();
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
         let adapter = SpineAdapter::connect_tile(&controller, &mut spine);
         let mut observer = SpineAdapter::connect_tile(&Observer, &mut spine);
         observer.consume(|_: P2pSend, _| {});
-        let mut capture =
-            Self { controller, adapter, observer, incoming, rpc, payload, outbound, _spine: spine };
+        let mut capture = Self {
+            controller,
+            adapter,
+            observer,
+            incoming,
+            rpc,
+            payload,
+            outbound,
+            _spine: spine,
+            _dir: dir,
+        };
         capture.crank();
         for peer in 1..=2u8 {
             capture.observer.produce(PeerEvent::P2pNewConnection {

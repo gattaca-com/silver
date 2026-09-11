@@ -16,12 +16,11 @@ use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
     Enr, GossipBlock, GossipDataColumn, GossipMetadata, GossipTopic, Identify, Keypair, MessageId,
     P2pStreamId, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
-    TCache, TCacheProducer, TCacheRead, ssz_view::STATUS_V2_SIZE,
+    TCache, TCacheProducer, TCacheRead, ssz_view::STATUS_V2_SIZE, test_util::ShmemDir,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
 use silver_httpcore::Bind;
-use tempfile::TempDir;
 
 struct Injector;
 impl Tile<SilverSpine> for Injector {
@@ -325,7 +324,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
 
 #[test]
 fn serves_identity_over_tcp() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_tcp_gossip",
@@ -350,7 +349,7 @@ fn serves_identity_over_tcp() {
 
 #[test]
 fn serves_identity_over_uds() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let socket = base.path().join("beacon_api.sock");
     let mut tile = boundary_tile(&Bind::Unix(socket.clone()), no_el(), [
@@ -382,7 +381,7 @@ fn serves_identity_over_uds() {
 /// once the response arrives.
 #[test]
 fn serves_beacon_api_while_engine_call_in_flight() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -458,7 +457,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
 /// connection, and completions must correlate out of order.
 #[test]
 fn pool_cap_gates_spine_intake() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -539,7 +538,7 @@ fn pool_cap_gates_spine_intake() {
 /// not the one after.
 #[test]
 fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -617,7 +616,7 @@ fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
 /// first iteration on.
 #[test]
 fn node_status_tracks_the_spine_once_the_cursor_snaps() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_status_gossip",
@@ -663,7 +662,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
 /// loses its whole backlog.
 #[test]
 fn node_status_updates_while_the_engine_pool_is_at_cap() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -735,7 +734,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 /// at the same time.
 #[test]
 fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -827,7 +826,7 @@ fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
 /// had one to itself.
 #[test]
 fn serves_concurrent_clients_with_no_engine_registered() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_noel_gossip",
@@ -852,7 +851,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 
 #[test]
 fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_sse_gossip",
@@ -884,7 +883,7 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
 
 #[test]
 fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_subscriptions_gossip",
@@ -981,7 +980,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
 
 #[test]
 fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_late_gossip",
@@ -1035,7 +1034,7 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 
 #[test]
 fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());

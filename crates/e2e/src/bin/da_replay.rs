@@ -34,6 +34,7 @@ use silver_common::{
     TCache, TCacheProducer, TProducer,
     profiler::InProcessReader,
     ssz_view::{DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, STATUS_V2_SIZE},
+    test_util::ShmemDir,
     ticker::SlotTicker,
 };
 use silver_e2e::{
@@ -44,7 +45,6 @@ use silver_metrics::{
     fold_stats,
     table::{Column, Table},
 };
-use tempfile::TempDir;
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -78,7 +78,7 @@ struct Node {
     gossip_p: TProducer,
     _state: BeaconStateOwner,
     _spine: Box<SilverSpine>,
-    _base: TempDir,
+    _base: ShmemDir,
 }
 
 #[derive(Default)]
@@ -100,7 +100,7 @@ impl ReplayCost {
 
 impl Node {
     fn boot(state_ssz: &[u8], custody: u128) -> Self {
-        let base = TempDir::new().expect("tempdir");
+        let base = ShmemDir::new().expect("tempdir");
         let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
         let spec = Arc::new(SpecConfig::mainnet());
 

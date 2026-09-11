@@ -20,4 +20,6 @@ tracing.workspace = true
 workspace = true
 
 [dev-dependencies]
+silver_common = { workspace = true, features = ["test-util"] }
 rand.workspace = true
+tempfile = "3"

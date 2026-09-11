@@ -21,6 +21,7 @@ use silver_common::{
         SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
         SignedAggregateAndProofView, SignedBeaconBlockView, SingleAttestationView, StatusView,
     },
+    test_util::ShmemDir,
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
@@ -583,7 +584,7 @@ fn anchor_child(block_root: B256, state_id: StateId) -> BlockImport {
 fn a_block_already_in_fork_choice_is_reported_already_known() {
     let (mut tile, mut gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
     let mut bytes = empty_block();
@@ -626,7 +627,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     let block_slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
         tile_with_producers_on(block_slot + 1, state);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
     // The checkpoint was loaded without decompressed pubkeys, so this import
@@ -853,19 +854,24 @@ fn pending_admission_window_bounds() {
     assert!(!tile.within_pending_window(50 + tol + 1));
 }
 
+struct TestSpine {
+    spine: Box<SilverSpine>,
+    _dir: ShmemDir,
+}
+
 /// Tile (seed separately) plus a spine + adapter, so tests can drive
 /// `buffer_orphan`, which produces into `adapter.producers`. The spine is
 /// returned to keep it alive for the adapter.
 fn tile_with_producers(
     wall_slot: u64,
-) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+) -> (BeaconStateTile, TProducer, TProducer, TestSpine, SpineAdapter<SilverSpine>) {
     tile_with_producers_on(wall_slot, BeaconState::empty_test(0))
 }
 
 fn tile_with_producers_on(
     wall_slot: u64,
     state: BeaconState,
-) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+) -> (BeaconStateTile, TProducer, TProducer, TestSpine, SpineAdapter<SilverSpine>) {
     let (tile, gp, rp) = make_tile_with_gossip(wall_slot, state);
     let (spine, adapter) = spine_adapter(&tile);
     (tile, gp, rp, spine, adapter)
@@ -873,18 +879,11 @@ fn tile_with_producers_on(
 
 /// A spine plus the tile's adapter on it, so tests can hand `adapter.producers`
 /// to methods that produce. The spine is returned to keep the adapter alive.
-fn spine_adapter(tile: &BeaconStateTile) -> (Box<SilverSpine>, SpineAdapter<SilverSpine>) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = std::env::temp_dir().join(format!(
-        "silver-pending-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&base).expect("temp base");
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+fn spine_adapter(tile: &BeaconStateTile) -> (TestSpine, SpineAdapter<SilverSpine>) {
+    let dir = ShmemDir::new().expect("temp base");
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
     let adapter = SpineAdapter::connect_tile(tile, &mut spine);
-    (spine, adapter)
+    (TestSpine { spine, _dir: dir }, adapter)
 }
 
 fn root_with(idx: u64, tag: u8) -> B256 {
@@ -960,7 +959,7 @@ fn missing_blocks(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, u64)> {
 fn lapped_orphan_is_re_requested_on_replay() {
     let (mut tile, _gp, mut rp, mut spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: SyncNeed, _| {});
 
     let parent_root = [0xAAu8; 32];
@@ -2917,7 +2916,7 @@ fn el_invalid_drops_staged_block() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
     let (mut spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
     let mut producer = TCache::producer("test_el_invalid", 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);

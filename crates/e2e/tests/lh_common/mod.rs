@@ -13,9 +13,9 @@ use flux::tile::Tile;
 use silver_common::{
     Identify, P2pSend, PeerEvent, PeerId, RpcOutbound, RpcRequestOutbound,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
+    test_util::ShmemDir,
 };
 use silver_e2e::{LhClient, PublisherStack, keypair_from_seed};
-use tempfile::TempDir;
 
 pub fn pick_free_port() -> u16 {
     let s = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("bind");
@@ -26,8 +26,8 @@ pub fn pick_free_port() -> u16 {
 /// kept-alive tempdir. Disables the controller's heartbeat-driven
 /// outbound Ping fan-out so tests assert against deterministic RPC
 /// traffic only.
-pub fn build_silver_listener(seed: u8) -> (PublisherStack, TempDir) {
-    let tempdir = TempDir::new().expect("tempdir");
+pub fn build_silver_listener(seed: u8) -> (PublisherStack, ShmemDir) {
+    let tempdir = ShmemDir::new().expect("tempdir");
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
     let disc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
     let kp = keypair_from_seed(seed);

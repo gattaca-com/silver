@@ -68,7 +68,7 @@ struct BlockPublications {
     replay: TProducer,
     adapter: SpineAdapter<SilverSpine>,
     sink: SpineAdapter<SilverSpine>,
-    _spine: Box<SilverSpine>,
+    _spine: TestSpine,
 }
 
 impl BlockPublications {
@@ -80,7 +80,7 @@ impl BlockPublications {
             make_tile_with_producers(block_slot + 1, state, fulu_from_genesis());
         tile.sync_target = target;
         let (mut spine, adapter) = spine_adapter(&tile);
-        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
         sink.consume(|_: BeaconStateEvent, _| {});
         sink.consume(|_: PeerEvent, _| {});
         Self { tile, gossip, rpc, replay, adapter, sink, _spine: spine }

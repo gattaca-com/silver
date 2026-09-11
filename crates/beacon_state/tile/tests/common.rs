@@ -1,11 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +17,7 @@ use silver_common::{
     P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncNeed,
     SyncUpdate, TCache, TCacheProducer, TProducer, TRandomAccess, hex32,
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
+    test_util::ShmemDir,
     ticker::SlotTicker,
 };
 use silver_config::SyncingConfig;
@@ -88,7 +85,6 @@ impl Tile<SilverSpine> for Injector {
 }
 
 pub struct Harness {
-    _spine: Box<SilverSpine>,
     tile: BeaconStateTile,
     tile_adapter: SpineAdapter<SilverSpine>,
     inj_adapter: SpineAdapter<SilverSpine>,
@@ -97,7 +93,8 @@ pub struct Harness {
     // Kept alive to back the tile's replay consumer; unused by these tests.
     _replay_in_producer: TProducer,
     outbound_log: Vec<OutboundKind>,
-    _base_dir: PathBuf, // owned to keep temp files around for the run
+    _spine: Box<SilverSpine>,
+    _base_dir: ShmemDir,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,17 +206,8 @@ impl Harness {
             TRandomAccess,
         ) -> BeaconStateTile,
     {
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!(
-            "silver-ef-{}-{}-{}",
-            process::id(),
-            seq,
-            rand::random::<u64>()
-        ));
-        fs::create_dir_all(&base).expect("create temp base");
-
-        let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+        let base = ShmemDir::new().expect("create temp base");
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
 
         // Ticker: genesis positioned so `current_slot()` == wall_slot at
         // construction.
@@ -262,7 +250,6 @@ impl Harness {
         inj_adapter.consume(|_: SyncNeed, _| {});
 
         Self {
-            _spine: spine,
             tile,
             tile_adapter,
             inj_adapter,
@@ -270,6 +257,7 @@ impl Harness {
             rpc_in_producer,
             _replay_in_producer: replay_in_producer,
             outbound_log: Vec::new(),
+            _spine: spine,
             _base_dir: base,
         }
     }

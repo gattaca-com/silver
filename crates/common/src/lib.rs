@@ -56,6 +56,8 @@ mod identity;
 mod spine;
 pub use silver_beacon_state_data::SLOTS_PER_EPOCH;
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
+#[cfg(feature = "test-util")]
+pub mod test_util;
 pub mod ticker;
 pub mod tracing;
 mod util;

@@ -11,8 +11,9 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent};
-use tempfile::TempDir;
+use silver_common::{
+    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, test_util::ShmemDir,
+};
 
 use crate::{
     inject::{InjectError, build_publish_frame, snappy_compress},
@@ -37,7 +38,7 @@ pub struct TwoStackHarness {
     last_msg: Option<GossipMsgOut>,
 
     /// Kept alive so tempdir is retained.
-    _tempdir: TempDir,
+    _tempdir: ShmemDir,
 }
 
 impl TwoStackHarness {
@@ -45,7 +46,7 @@ impl TwoStackHarness {
     /// keypairs from seeds 1 (publisher) and 2 (echo).
     pub fn new(fork_digest_hex: impl Into<String>) -> io::Result<Self> {
         let fork_digest_hex: String = fork_digest_hex.into();
-        let tempdir = TempDir::new()?;
+        let tempdir = ShmemDir::new()?;
 
         let publisher_kp = keypair_from_seed(1);
         let echo_kp = keypair_from_seed(2);
