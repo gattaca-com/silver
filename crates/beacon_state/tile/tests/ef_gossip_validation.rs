@@ -29,9 +29,8 @@ use silver_beacon_state_data::{
 use silver_columns::tile::{ColumnConsumers, DataColumnsTile, EfVerdict};
 use silver_common::{
     PayloadValidationStatus, SilverSpine, TCache, TCacheProducer, TCacheRead, TProducer,
-    ssz_view::SignedBeaconBlockView,
+    ssz_view::SignedBeaconBlockView, test_util::ShmemDir,
 };
-use tempfile::TempDir;
 
 const HANDLED_TOPICS: &[&str] = &[
     "beacon_block",
@@ -157,7 +156,7 @@ struct ColumnsRig {
     tile: DataColumnsTile,
     gossip: TProducer,
     _spine: Box<SilverSpine>,
-    _dir: TempDir,
+    _dir: ShmemDir,
 }
 
 impl ColumnsRig {
@@ -185,7 +184,7 @@ impl ColumnsRig {
             TCache::producer("ef_columns_el", 1 << 16),
             ticker,
         );
-        let dir = TempDir::new().unwrap();
+        let dir = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
         let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
         Self { adapter, tile, gossip, _spine: spine, _dir: dir }

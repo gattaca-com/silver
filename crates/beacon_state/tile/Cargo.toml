@@ -34,7 +34,6 @@ serde_yml.workspace = true
 # EF gossip_validation: the data_column_sidecar topic is the columns tile's.
 silver_columns = { workspace = true, features = ["ef_tests"] }
 snap = "0.1"
-tempfile = "3"
 tracing-subscriber.workspace = true
 
 [[bench]]

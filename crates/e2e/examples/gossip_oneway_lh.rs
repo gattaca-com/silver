@@ -31,13 +31,12 @@ use flux::{tile::Tile, timing::Nanos};
 use rand::{Rng, RngCore};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
-use silver_common::{GossipMsgOut, GossipTopic, P2pSend, PeerEvent, PeerId};
+use silver_common::{GossipMsgOut, GossipTopic, P2pSend, PeerEvent, PeerId, test_util::ShmemDir};
 use silver_e2e::{
     LhGossipClient, PublisherStack, Stats,
     inject::{build_publish_frame, snappy_compress},
     keypair_from_seed,
 };
-use tempfile::TempDir;
 
 const DEFAULT_DURATION_S: u64 = 3;
 const DEFAULT_RATE_HZ: u64 = 500;
@@ -195,8 +194,8 @@ fn subscriber_thread(
     stats_tx.send(sub.stats).expect("send stats");
 }
 
-fn build_silver_publisher() -> io::Result<(PublisherStack, TempDir)> {
-    let tempdir = TempDir::new()?;
+fn build_silver_publisher() -> io::Result<(PublisherStack, ShmemDir)> {
+    let tempdir = ShmemDir::new()?;
     let addr = loopback_ephemeral()?;
     let disc_addr = loopback_ephemeral()?;
     let kp = keypair_from_seed(11);

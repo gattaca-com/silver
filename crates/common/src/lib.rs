@@ -23,17 +23,17 @@ pub use crate::{
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
         EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
         EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
-        GossipBlock, GossipMsgIn, GossipMsgOut, IpBytes, LOCAL_GOSSIP_STREAM_ID,
-        LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
-        MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg,
-        P2pConnectionStats, P2pSend, P2pStreamId, PREFILL_SLOTS, PayloadValidationStatus,
-        PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus, PeerTopicScores, Prefill,
-        Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
-        RandomAccessConsumer as TRandomAccess, ReplayBlock, Reservation as TReservation,
-        RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
-        RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers,
-        StreamProtocol, SyncNeed, SyncUpdate, SyncingStrategy, TCache, TCacheProducer, TCacheRead,
-        TCacheRef, WithdrawalInline,
+        GossipBlock, GossipDataColumn, GossipMetadata, GossipMsgIn, GossipMsgOut, IpBytes,
+        LOCAL_GOSSIP_STREAM_ID, LocalAttestationFailure, LocalAttestationResult,
+        MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1,
+        MultiProducer as TMultiProducer, NewGossipMsg, P2pConnectionStats, P2pSend, P2pStreamId,
+        PREFILL_SLOTS, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats,
+        PeerStatus, PeerTopicScores, Prefill, Producer as TProducer, REJECT_RESPONSE,
+        RPC_PROTOCOLS, RandomAccessConsumer as TRandomAccess, ReplayBlock,
+        Reservation as TReservation, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
+        RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
+        SilverSpine, SilverSpineProducers, StreamProtocol, SyncNeed, SyncUpdate, SyncingStrategy,
+        TCache, TCacheProducer, TCacheRead, TCacheRef, WithdrawalInline,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
     wheel::Wheel,
@@ -56,6 +56,8 @@ mod identity;
 mod spine;
 pub use silver_beacon_state_data::SLOTS_PER_EPOCH;
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
+#[cfg(feature = "test-util")]
+pub mod test_util;
 pub mod ticker;
 pub mod tracing;
 mod util;

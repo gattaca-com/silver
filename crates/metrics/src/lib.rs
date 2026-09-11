@@ -250,6 +250,7 @@ macro_rules! declare_counters {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
     crate::declare_counters! {
         TestCounters => "test_metrics" {
             Alpha,
@@ -260,8 +261,8 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let tmp = std::env::temp_dir().join(format!("silver_metrics_test_{}", std::process::id()));
-        TestCounters::init_with_base(&tmp, "round_trip").unwrap();
+        let tmp = TempDir::new().unwrap();
+        TestCounters::init_with_base(tmp.path(), "round_trip").unwrap();
 
         TestCounters::Alpha.set(0);
         TestCounters::Beta.set(0);
@@ -277,7 +278,5 @@ mod tests {
 
         assert_eq!(TestCounters::NAMES, &["Alpha", "Beta", "Gamma"]);
         assert_eq!(TestCounters::COUNT, 3);
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 }

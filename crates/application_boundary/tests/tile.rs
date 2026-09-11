@@ -8,20 +8,19 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
-use serde_json::Value;
+use serde_json::{Value, json};
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipBlock, GossipTopic, Identify, Keypair, MessageId, P2pStreamId,
-    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
-    TCacheProducer, ssz_view::STATUS_V2_SIZE,
+    Enr, GossipBlock, GossipDataColumn, GossipMetadata, GossipTopic, Identify, Keypair, MessageId,
+    P2pStreamId, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
+    TCache, TCacheProducer, TCacheRead, ssz_view::STATUS_V2_SIZE, test_util::ShmemDir,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
 use silver_httpcore::Bind;
-use tempfile::TempDir;
 
 struct Injector;
 impl Tile<SilverSpine> for Injector {
@@ -147,22 +146,46 @@ fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
     }
 }
 
-fn block_relay(slot: u64, byte: u8) -> PeerEvent {
+fn publication_payload() -> TCacheRead {
     // SSE uses the metadata, so the fixture needs no encoded gossip object.
     let payload = b"opaque relay payload";
     let mut producer = TCache::producer("cs_relay_metadata", 1 << 12);
     let mut reservation = producer.reserve(payload.len(), false).unwrap();
     reservation.write_all(payload).unwrap();
     reservation.flush().unwrap();
-    let protobuf = reservation.read();
+    reservation.read()
+}
+
+fn block_relay(slot: u64, byte: u8) -> PeerEvent {
     PeerEvent::SendGossip {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
         topic: GossipTopic::BeaconBlock,
         msg_hash: MessageId { id: [byte; 20] },
         recv_ts: Nanos::now(),
-        protobuf,
-        block: Some(GossipBlock { slot, block_root: [byte; 32] }),
+        protobuf: publication_payload(),
+        metadata: Some(GossipMetadata::Block(GossipBlock { slot, block_root: [byte; 32] })),
     }
+}
+
+fn column_publications(slot: u64, byte: u8, column_index: u64) -> [PeerEvent; 2] {
+    let column = GossipDataColumn { slot, block_root: [byte; 32], column_index };
+    let topic = GossipTopic::DataColumnSidecar(column_index);
+    [
+        PeerEvent::SendGossip {
+            originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+            topic,
+            msg_hash: MessageId { id: [byte; 20] },
+            recv_ts: Nanos::now(),
+            protobuf: publication_payload(),
+            metadata: Some(GossipMetadata::DataColumn(column)),
+        },
+        PeerEvent::PublishDataColumn {
+            originator: P2pStreamId::new(2, 0, StreamProtocol::DataColumnSidecarsByRange, true),
+            topic,
+            ssz: publication_payload(),
+            column,
+        },
+    ]
 }
 
 #[derive(Debug)]
@@ -172,6 +195,34 @@ struct SseEvent {
 }
 
 impl SseEvent {
+    fn block(slot: u64, byte: u8) -> Self {
+        Self {
+            name: "block".to_owned(),
+            data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode([byte; 32]))}),
+        }
+    }
+
+    fn block_gossip(slot: u64, byte: u8) -> Self {
+        Self {
+            name: "block_gossip".to_owned(),
+            data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode([byte; 32]))}),
+        }
+    }
+
+    fn column(slot: u64, byte: u8, index: u64) -> Self {
+        Self {
+            name: "data_column_sidecar".to_owned(),
+            data: json!({"block_root": format!("0x{}", hex::encode([byte; 32])), "index": index.to_string(), "slot": slot.to_string()}),
+        }
+    }
+
+    fn assert_matches(&self, expected: &Self) {
+        assert_eq!(self.name, expected.name);
+        for (key, value) in expected.data.as_object().unwrap() {
+            assert_eq!(self.data.get(key), Some(value), "field {key} in {}", self.name);
+        }
+    }
+
     fn assert_block(&self, name: &str, slot: u64, byte: u8) {
         assert_eq!(self.name, name);
         assert_eq!(self.data["slot"], slot.to_string());
@@ -235,6 +286,18 @@ impl EventsSubscriber {
     fn next(&self, pump: impl FnMut()) -> SseEvent {
         receive_while_pumping(&self.events, pump)
     }
+
+    fn assert_topic_sequences(&self, expected: &[SseEvent], mut pump: impl FnMut()) {
+        let mut actual = (0..expected.len()).map(|_| self.next(&mut pump)).collect::<Vec<_>>();
+        let mut expected = expected.iter().collect::<Vec<_>>();
+        // Stable sorting preserves each topic's sequence without fixing their
+        // interleaving.
+        actual.sort_by(|a, b| a.name.cmp(&b.name));
+        expected.sort_by(|a, b| a.name.cmp(&b.name));
+        for (actual, expected) in actual.iter().zip(expected) {
+            actual.assert_matches(expected);
+        }
+    }
 }
 
 fn receive_while_pumping<T>(receiver: &Receiver<T>, mut pump: impl FnMut()) -> T {
@@ -261,7 +324,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
 
 #[test]
 fn serves_identity_over_tcp() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_tcp_gossip",
@@ -286,7 +349,7 @@ fn serves_identity_over_tcp() {
 
 #[test]
 fn serves_identity_over_uds() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let socket = base.path().join("beacon_api.sock");
     let mut tile = boundary_tile(&Bind::Unix(socket.clone()), no_el(), [
@@ -318,7 +381,7 @@ fn serves_identity_over_uds() {
 /// once the response arrives.
 #[test]
 fn serves_beacon_api_while_engine_call_in_flight() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -394,7 +457,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
 /// connection, and completions must correlate out of order.
 #[test]
 fn pool_cap_gates_spine_intake() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -475,7 +538,7 @@ fn pool_cap_gates_spine_intake() {
 /// not the one after.
 #[test]
 fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -553,7 +616,7 @@ fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
 /// first iteration on.
 #[test]
 fn node_status_tracks_the_spine_once_the_cursor_snaps() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_status_gossip",
@@ -599,7 +662,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
 /// loses its whole backlog.
 #[test]
 fn node_status_updates_while_the_engine_pool_is_at_cap() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -671,7 +734,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 /// at the same time.
 #[test]
 fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -763,7 +826,7 @@ fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
 /// had one to itself.
 #[test]
 fn serves_concurrent_clients_with_no_engine_registered() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_noel_gossip",
@@ -788,7 +851,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 
 #[test]
 fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_sse_gossip",
@@ -819,13 +882,13 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
 }
 
 #[test]
-fn block_subscriptions_select_imports_and_preserve_repeated_relay_requests() {
-    let base = TempDir::new().unwrap();
+fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_two_streams_gossip",
-        "cs_two_streams_rpc",
-        "cs_two_streams_resp",
+        "cs_subscriptions_gossip",
+        "cs_subscriptions_rpc",
+        "cs_subscriptions_resp",
     ]);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
@@ -834,52 +897,90 @@ fn block_subscriptions_select_imports_and_preserve_repeated_relay_requests() {
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut crank = || {
-        assert!(Instant::now() < deadline, "timeout: block subscription routing");
+        assert!(Instant::now() < deadline, "timeout: subscription routing");
         tile.loop_body(&mut adapter);
         std::thread::sleep(Duration::from_millis(1));
     };
     let block = EventsSubscriber::new(addr, "block", 2, &mut crank);
     let gossip = EventsSubscriber::new(addr, "block_gossip", 3, &mut crank);
-    let mixed = EventsSubscriber::new(addr, "block,block_gossip", 5, &mut crank);
+    let column = EventsSubscriber::new(addr, "data_column_sidecar", 5, &mut crank);
+    let mixed =
+        EventsSubscriber::new(addr, "block,block_gossip,data_column_sidecar", 10, &mut crank);
 
     let mut unrelated = block_relay(9, 0xaf);
-    let PeerEvent::SendGossip { topic, block: metadata, .. } = &mut unrelated else {
-        unreachable!()
-    };
+    let PeerEvent::SendGossip { topic, metadata, .. } = &mut unrelated else { unreachable!() };
     *topic = GossipTopic::BeaconAttestation(0);
     *metadata = None;
     inj.produce(unrelated);
-    inj.produce(block_relay(10, 0xac));
-    inj.produce(block_relay(10, 0xac));
-    inj.produce(block_received(11, 0xab, BlockStage::Applied));
+    inj.produce(PeerEvent::EarliestSlot(99));
 
-    // Observe both topics before sending sentinels, keeping leaks inside the events
-    // read. The two queues promise no ordering relative to each other.
-    let mut initial = (0..3).map(|_| mixed.next(&mut crank)).collect::<Vec<_>>();
-    initial.sort_by(|a, b| a.name.cmp(&b.name));
-    initial[0].assert_block("block", 11, 0xab);
-    initial[1].assert_block("block_gossip", 10, 0xac);
-    initial[2].assert_block("block_gossip", 10, 0xac);
+    let [relay, _] = column_publications(10, 0xac, 3);
+    let [_, rpc] = column_publications(11, 0xad, 5);
+    inj.produce(relay);
+    inj.produce(relay);
+    inj.produce(rpc);
     inj.produce(block_relay(12, 0xae));
-    inj.produce(block_received(14, 0xb0, BlockStage::Applied));
+    inj.produce(block_relay(12, 0xae));
+    inj.produce(block_received(13, 0xab, BlockStage::Applied));
 
-    block.next(&mut crank).assert_block("block", 11, 0xab);
-    block.next(&mut crank).assert_block("block", 14, 0xb0);
-    gossip.next(&mut crank).assert_block("block_gossip", 10, 0xac);
-    gossip.next(&mut crank).assert_block("block_gossip", 10, 0xac);
-    gossip.next(&mut crank).assert_block("block_gossip", 12, 0xae);
-    let mut trailing = [mixed.next(&mut crank), mixed.next(&mut crank)];
-    trailing.sort_by(|a, b| a.name.cmp(&b.name));
-    trailing[0].assert_block("block", 14, 0xb0);
-    trailing[1].assert_block("block_gossip", 12, 0xae);
-    for subscriber in [block, gossip, mixed] {
+    // Observe every topic before sending sentinels, so leaks remain inside the
+    // events read.
+    mixed.assert_topic_sequences(
+        &[
+            SseEvent::block(13, 0xab),
+            SseEvent::block_gossip(12, 0xae),
+            SseEvent::block_gossip(12, 0xae),
+            SseEvent::column(10, 0xac, 3),
+            SseEvent::column(10, 0xac, 3),
+            SseEvent::column(11, 0xad, 5),
+        ],
+        &mut crank,
+    );
+    inj.produce(relay);
+    let [_, sentinel] = column_publications(14, 0xaf, 7);
+    inj.produce(sentinel);
+    inj.produce(block_relay(15, 0xb0));
+    inj.produce(block_received(16, 0xb1, BlockStage::Applied));
+
+    block.assert_topic_sequences(
+        &[SseEvent::block(13, 0xab), SseEvent::block(16, 0xb1)],
+        &mut crank,
+    );
+    gossip.assert_topic_sequences(
+        &[
+            SseEvent::block_gossip(12, 0xae),
+            SseEvent::block_gossip(12, 0xae),
+            SseEvent::block_gossip(15, 0xb0),
+        ],
+        &mut crank,
+    );
+    column.assert_topic_sequences(
+        &[
+            SseEvent::column(10, 0xac, 3),
+            SseEvent::column(10, 0xac, 3),
+            SseEvent::column(11, 0xad, 5),
+            SseEvent::column(10, 0xac, 3),
+            SseEvent::column(14, 0xaf, 7),
+        ],
+        &mut crank,
+    );
+    mixed.assert_topic_sequences(
+        &[
+            SseEvent::block(16, 0xb1),
+            SseEvent::block_gossip(15, 0xb0),
+            SseEvent::column(10, 0xac, 3),
+            SseEvent::column(14, 0xaf, 7),
+        ],
+        &mut crank,
+    );
+    for subscriber in [block, gossip, column, mixed] {
         subscriber.client.join().unwrap();
     }
 }
 
 #[test]
 fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_late_gossip",
@@ -897,20 +998,43 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
         tile.loop_body(&mut adapter);
         std::thread::sleep(Duration::from_millis(1));
     };
-    let early = EventsSubscriber::new(addr, "block_gossip", 1, &mut crank);
+    let topics = "block_gossip,data_column_sidecar";
+    let early = EventsSubscriber::new(addr, topics, 3, &mut crank);
     inj.produce(block_relay(20, 0x11));
-    early.next(&mut crank).assert_block("block_gossip", 20, 0x11);
+    let [relay, _] = column_publications(20, 0x11, 3);
+    let [_, rpc] = column_publications(21, 0x12, 5);
+    inj.produce(relay);
+    inj.produce(rpc);
+    early.assert_topic_sequences(
+        &[
+            SseEvent::block_gossip(20, 0x11),
+            SseEvent::column(20, 0x11, 3),
+            SseEvent::column(21, 0x12, 5),
+        ],
+        &mut crank,
+    );
     early.client.join().unwrap();
 
-    let late = EventsSubscriber::new(addr, "block_gossip", 1, &mut crank);
-    inj.produce(block_relay(21, 0x22));
-    late.next(&mut crank).assert_block("block_gossip", 21, 0x22);
+    let late = EventsSubscriber::new(addr, topics, 3, &mut crank);
+    inj.produce(block_relay(22, 0x22));
+    let [relay, _] = column_publications(22, 0x22, 7);
+    let [_, rpc] = column_publications(23, 0x23, 9);
+    inj.produce(relay);
+    inj.produce(rpc);
+    late.assert_topic_sequences(
+        &[
+            SseEvent::block_gossip(22, 0x22),
+            SseEvent::column(22, 0x22, 7),
+            SseEvent::column(23, 0x23, 9),
+        ],
+        &mut crank,
+    );
     late.client.join().unwrap();
 }
 
 #[test]
-fn a_gossip_event_is_served_while_the_engine_pool_is_saturated() {
-    let base = TempDir::new().unwrap();
+fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -959,9 +1083,20 @@ fn a_gossip_event_is_served_while_the_engine_pool_is_saturated() {
     let mut pump = || {
         crank(&mut tile, &mut el);
     };
-    let client = EventsSubscriber::new(addr, "block_gossip", 1, &mut pump);
+    let client = EventsSubscriber::new(addr, "block_gossip,data_column_sidecar", 3, &mut pump);
     inj.produce(block_relay(30, 0x33));
-    client.next(&mut pump).assert_block("block_gossip", 30, 0x33);
+    let [relay, _] = column_publications(31, 0x34, 7);
+    let [_, rpc] = column_publications(32, 0x35, 9);
+    inj.produce(relay);
+    inj.produce(rpc);
+    client.assert_topic_sequences(
+        &[
+            SseEvent::block_gossip(30, 0x33),
+            SseEvent::column(31, 0x34, 7),
+            SseEvent::column(32, 0x35, 9),
+        ],
+        &mut pump,
+    );
     client.client.join().unwrap();
     assert_eq!(pending, capacity, "the additional FCU stays queued while SSE is served");
 }

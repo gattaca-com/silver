@@ -2,9 +2,10 @@ use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{
-    BeaconStateEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound,
-    RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TRandomAccess,
+    BeaconStateEvent, GossipMetadata, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent,
+    PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer,
+    TRandomAccess,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -173,7 +174,7 @@ impl Tile<SilverSpine> for Controller {
         }
 
         adapter.consume(|event: PeerEvent, producers| {
-            if let PeerEvent::PublishDataColumn { originator, topic, ssz } = event {
+            if let PeerEvent::PublishDataColumn { originator, topic, ssz, column } = event {
                 let read = self.rpc_ssz_consumer.acquire(ssz);
                 match read.buffer() {
                     Ok((bytes, _)) => {
@@ -187,7 +188,7 @@ impl Tile<SilverSpine> for Controller {
                                     msg_hash,
                                     recv_ts: Nanos::now(),
                                     protobuf,
-                                    block: None,
+                                    metadata: Some(GossipMetadata::DataColumn(column)),
                                 },
                                 now,
                                 &mut |evt| {
@@ -214,7 +215,7 @@ impl Tile<SilverSpine> for Controller {
                 msg_hash,
                 recv_ts: _,
                 protobuf,
-                block: _,
+                metadata: _,
             } = &event
             {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *protobuf);

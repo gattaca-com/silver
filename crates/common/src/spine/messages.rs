@@ -325,6 +325,21 @@ pub struct GossipBlock {
     pub block_root: B256,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct GossipDataColumn {
+    pub slot: u64,
+    pub block_root: B256,
+    pub column_index: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, u8)]
+pub enum GossipMetadata {
+    Block(GossipBlock),
+    DataColumn(GossipDataColumn),
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
@@ -455,15 +470,12 @@ pub enum PeerEvent {
         p2p_peer: usize,
         iwant: TCacheRead,
     },
-    /// A data column sidecar validated from a non-gossip source (RPC
-    /// by-root / EL blobs). Control re-publishes it on its subnet: the
-    /// gossip handler wraps the SSZ (a ref into `incoming_rpc`) as
-    /// protobuf and PM fans it out to the topic mesh, excluding
-    /// `originator` (the peer that served it to us).
+    /// The SSZ handle refers to incoming RPC bytes, before gossip encoding.
     PublishDataColumn {
         originator: P2pStreamId,
         topic: GossipTopic,
         ssz: TCacheRead,
+        column: GossipDataColumn,
     },
     /// Emitted in order to trigger sending of a gossip message.
     /// Peer manager will generate select peers to send to.
@@ -473,7 +485,7 @@ pub enum PeerEvent {
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
-        block: Option<GossipBlock>,
+        metadata: Option<GossipMetadata>,
     },
     /// Misbehaviour observed on the RPC (req/resp) sub-protocol. The peer
     /// manager translates `severity` into a P5 application-score delta;

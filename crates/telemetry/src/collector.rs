@@ -273,6 +273,7 @@ mod tests {
 
     use flate2::read::MultiGzDecoder;
     use flux_profiler::{enable_profiler, test_shmem::ShmemGuard, timed};
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -328,10 +329,8 @@ mod tests {
         let mut reader = CrossProcessReader::attach(guard.app()).expect("pid published");
         while reader.poll() {}
 
-        let dir = std::env::temp_dir().join(format!("segments-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut collector = collector(reader, dir.clone());
+        let dir = TempDir::new().unwrap();
+        let mut collector = collector(reader, dir.path().to_owned());
 
         let started_at = Nanos::from_secs(STARTED_AT);
         collector.append(started_at);
@@ -340,15 +339,13 @@ mod tests {
 
         let pid = collector.reader.pid();
         assert_eq!(
-            names(&dir),
+            names(dir.path()),
             [
                 format!("{APP_NAME}_2001-09-09_01-00-00_pid{pid}.fxt.gz"),
                 format!("{APP_NAME}_2001-09-09_02-00-00_pid{pid}.fxt.gz"),
             ],
             "both mid-hour appends share 01-00-00; the one an hour on opens 02-00-00"
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -357,13 +354,11 @@ mod tests {
         enable_profiler(guard.app());
 
         let mut reader = CrossProcessReader::attach(guard.app()).expect("pid published");
-        let dir = std::env::temp_dir().join(format!("appends-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new().unwrap();
 
         traced_work();
         while reader.poll() {}
-        let mut collector = collector(reader, dir.clone());
+        let mut collector = collector(reader, dir.path().to_owned());
 
         let at = Nanos::from_secs(STARTED_AT);
         collector.append(at);
@@ -373,7 +368,7 @@ mod tests {
         traced_work();
         while collector.reader.poll() {}
         collector.append(at);
-        assert_eq!(names(&dir).len(), 1, "both appends went to the interval's own file");
+        assert_eq!(names(dir.path()).len(), 1, "both appends went to the interval's own file");
         assert!(
             std::fs::metadata(&path).unwrap().len() > after_first,
             "the second append extended the file"
@@ -388,8 +383,6 @@ mod tests {
             2,
             "one self-contained trace per append"
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn segment(hour: u64) -> String {
@@ -398,43 +391,39 @@ mod tests {
 
     /// Three equal segments, oldest first, and an older file that is not ours:
     /// counting or dropping `notes.txt` changes what the budget leaves behind.
-    fn segment_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn segment_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
 
-        backdate(&dir.join("notes.txt"), 100, 5);
+        backdate(&dir.path().join("notes.txt"), 100, 5);
         for hour in 1..=3 {
-            backdate(&dir.join(segment(hour)), 100, 4 - hour);
+            backdate(&dir.path().join(segment(hour)), 100, 4 - hour);
         }
         dir
     }
 
     #[test]
     fn prunes_oldest_first_to_the_budget() {
-        let dir = segment_dir("prune-budget");
+        let dir = segment_dir();
 
-        TraceCollector::prune(&dir, 250);
+        TraceCollector::prune(dir.path(), 250);
 
         assert_eq!(
-            names(&dir),
+            names(dir.path()),
             ["notes.txt".to_owned(), segment(2), segment(3)],
             "300 bytes against a 250 budget drops the oldest, then stops once it fits"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn keeps_the_newest_and_what_is_not_ours() {
-        let dir = segment_dir("prune-floor");
+        let dir = segment_dir();
 
-        TraceCollector::prune(&dir, 0);
+        TraceCollector::prune(dir.path(), 0);
 
         assert_eq!(
-            names(&dir),
+            names(dir.path()),
             ["notes.txt".to_owned(), segment(3)],
             "a budget under one segment still keeps the last cut"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

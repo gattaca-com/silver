@@ -16,6 +16,7 @@ use lh_common::{
 use silver_common::{
     RpcRequest,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
+    test_util::ShmemDir,
 };
 use silver_e2e::{LhClient, lh_client};
 
@@ -124,9 +125,7 @@ fn silver_responds_to_metadata() {
 // silver's stream completes — silver's reception of that response is
 // covered separately by controller unit tests.
 
-fn drive_silver_dialer(
-    seed: u8,
-) -> (silver_e2e::PublisherStack, LhClient, usize, tempfile::TempDir) {
+fn drive_silver_dialer(seed: u8) -> (silver_e2e::PublisherStack, LhClient, usize, ShmemDir) {
     let (mut silver, td) = build_silver_listener(seed);
     let mut client = LhClient::new_listener();
     client.set_auto_response(PING_PROTOCOL, vec![0u8; 8]);

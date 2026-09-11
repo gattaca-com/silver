@@ -92,3 +92,19 @@ its payload; producers own topic consistency. The `block` topic still follows
 Repeated requests for one root are not deduplicated, and late subscribers
 receive no replay. Subscribers to both topics can reach the existing send
 cap sooner.
+
+Amended 2026-09-10: `/eth/v1/events` also serves `data_column_sidecar` for
+column publication requests following silver's gossip checks, including KZG.
+This deliberately narrows the Beacon API's validation contract: validation
+without a publication request produces no event. The boundary selects
+column metadata on `SendGossip` or `PublishDataColumn`, without reading
+payload bytes or filtering by custody. Producers own topic consistency.
+Control's converted request stays off the spine, avoiding a second
+notification. These events acknowledge requests, including RPC requests
+that can fail before encoding; they do not guarantee delivery to peers.
+Buffered copies, RPC columns processed while syncing, held copies, and EL
+reconstruction remain silent under the existing publication policy.
+`Persist` and `Available` retain their existing meaning and selection.
+Repeated requests are not deduplicated, and late subscribers receive no
+replay. The `beacon_events` and `peer_events` queues establish no shared
+ordering. Additional subscriptions can reach the existing send cap sooner.
