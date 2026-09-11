@@ -230,6 +230,7 @@ impl PublisherStack {
             mcache_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         let context = Context {
+            data_columns_consumer: None,
             gossip_producer: gossip_in_producer,
             gossip_consumer: gossip_out_ra_for_network,
             rpc_producer: rpc_in_producer,
@@ -344,6 +345,7 @@ impl EchoStack {
             rpc_out_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         let context = Context {
+            data_columns_consumer: None,
             gossip_producer: gossip_in_producer,
             gossip_consumer: protobuf_ra_for_network,
             rpc_producer: rpc_in_producer,

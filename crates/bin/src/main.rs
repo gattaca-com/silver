@@ -159,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let identify = config.identify()?;
     let p2p_context = Context {
+        data_columns_consumer: None,
         gossip_producer: incoming_gossip_producer,
         gossip_consumer: outgoing_gossip_producer
             .cache_ref()
