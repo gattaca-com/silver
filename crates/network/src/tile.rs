@@ -10,8 +10,8 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
-    RpcInbound, RpcOutbound, SilverSpine,
+    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
+    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -112,6 +112,18 @@ impl NetworkTile {
             }
         });
 
+        adapter.consume(|cluster_event: ClusterMsgOut, producers| {
+            match self.inner.enqueue_cluster_out(cluster_event) {
+                SendResult::Ok => {}
+                other => {
+                    tracing::warn!(?other, "cluster node unreachable");
+                    producers
+                        .cluster_inbound
+                        .produce(&ClusterIn::NodeUnreachable(cluster_event.to).into());
+                }
+            }
+        });
+
         if now.duration_since(self.last_peer_stats) >= PEER_STATS_INTERVAL {
             self.last_peer_stats = now;
             self.inner.p2p_endpoint.sample_stats(now, PEER_STATS_BATCH, &mut |stats| {
@@ -159,6 +171,9 @@ impl NetworkTile {
                 }
                 NetEvent::Gossip { stream, msg } => {
                     adapter.produce(GossipMsgIn { p2p_id: stream, tcache: msg });
+                }
+                NetEvent::Cluster { stream: _, raft_id, msg } => {
+                    adapter.produce(ClusterIn::Msg(ClusterMsgIn { from: raft_id, data: msg }));
                 }
             },
             Event::Discovery(disc_event) => match disc_event {
@@ -346,6 +361,10 @@ where
         self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
     }
 
+    pub fn enqueue_cluster_out(&mut self, msg: ClusterMsgOut) -> SendResult {
+        self.p2p_endpoint.enqueue_cluster_out(msg, &mut self.context)
+    }
+
     pub fn goodbye_all(&mut self) {
         self.p2p_endpoint.goodbye_all(&mut self.context);
     }
@@ -429,6 +448,7 @@ where
 
         self.context.gossip_consumer.free();
         self.context.rpc_consumer.free();
+        self.context.cluster_outbound_consumer.free();
         did_work
     }
 }

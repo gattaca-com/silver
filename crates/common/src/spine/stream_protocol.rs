@@ -22,6 +22,7 @@ pub enum StreamProtocol {
     DataColumnSidecarsByRoot,
     ExecutionPayloadEnvelopesByRange,
     ExecutionPayloadEnvelopesByRoot,
+    Cluster,
     Unset,
 }
 
@@ -39,6 +40,7 @@ pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::DataColumnSidecarsByRoot,
     StreamProtocol::ExecutionPayloadEnvelopesByRange,
     StreamProtocol::ExecutionPayloadEnvelopesByRoot,
+    StreamProtocol::Cluster,
 ];
 
 pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
@@ -57,7 +59,7 @@ pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
 
 impl StreamProtocol {
     pub const fn is_request_response(&self) -> bool {
-        !matches!(self, Self::GossipSub | Self::Identity)
+        !matches!(self, Self::GossipSub | Self::Identity | Self::Cluster)
     }
 
     pub const fn has_multipart_response(&self) -> bool {
@@ -76,7 +78,7 @@ impl StreamProtocol {
     /// mirror Lighthouse's default RPC limiter quotas.
     pub const fn inbound_rpc_quota(self) -> Option<RpcQuota> {
         match self {
-            Self::GossipSub | Self::Identity | Self::Unset => None,
+            Self::GossipSub | Self::Identity | Self::Cluster | Self::Unset => None,
             Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
             Self::Ping => Some(RpcQuota::n_every(2, 10)),
             Self::Goodbye => Some(RpcQuota::one_every(10)),
@@ -99,7 +101,7 @@ impl StreamProtocol {
     /// burst.
     pub const fn outbound_rpc_quota(self) -> Option<RpcQuota> {
         match self {
-            Self::GossipSub | Self::Identity | Self::Unset => None,
+            Self::GossipSub | Self::Identity | Self::Cluster | Self::Unset => None,
             Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
             Self::Ping => Some(RpcQuota::n_every(2, 10)),
             Self::Goodbye => Some(RpcQuota::one_every(10)),
@@ -153,6 +155,7 @@ impl StreamProtocol {
             StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
                 b"\x48/eth2/beacon_chain/req/execution_payload_envelopes_by_root/1/ssz_snappy\n"
             }
+            StreamProtocol::Cluster => b"\x0f/cluster/1.0.0\n",
         }
     }
 

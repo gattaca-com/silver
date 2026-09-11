@@ -202,6 +202,10 @@ mod tests {
         ) -> Result<usize, StreamError> {
             Ok(data.as_ref().len())
         }
+
+        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+            None
+        }
     }
 
     /// Regression: a by-root request body flows through `ReadingBody` into a
