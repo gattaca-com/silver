@@ -6,6 +6,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+buffa.workspace = true
+bytes.workspace = true
 flux.workspace = true
 raft.workspace = true
 silver_chain_spec.workspace = true
@@ -14,6 +16,9 @@ silver_gossip.workspace = true
 silver_peer.workspace = true
 fxhash.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+buffa-build = "0.2.0"
 
 [dev-dependencies]
 silver_common = { workspace = true, features = ["test-util"] }
