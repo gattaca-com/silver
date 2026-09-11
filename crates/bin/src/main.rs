@@ -16,12 +16,15 @@ use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
+use silver_columns::{
+    cell_store::CellStoreConfig,
+    tile::{ColumnConsumers, DataColumnsTile},
+};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer, profiler::enable_profiler,
-    tracing::initialise_tracing_log,
+    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer,
+    cells::GOSSIP_DELIVERY_RETENTION, profiler::enable_profiler, tracing::initialise_tracing_log,
 };
 use silver_config::Config;
 use silver_control::{Controller, sync_engine::SyncEngine};
@@ -118,6 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
     let chain_config = config.chain_config();
+    let spec = Arc::new(chain_config.spec.clone());
     sleep_until_genesis(chain_config.genesis_unix_secs);
     let ticker = SlotTicker::new(
         chain_config.genesis_unix_secs,
@@ -158,8 +162,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .collect(),
     );
     let identify = config.identify()?;
-    let p2p_context = Context {
-        data_columns_consumer: None,
+    let mut p2p_context = Context {
         gossip_producer: incoming_gossip_producer,
         gossip_consumer: outgoing_gossip_producer
             .cache_ref()
@@ -167,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
+        data_columns_consumer: None,
     };
 
     let now = Instant::now();
@@ -188,14 +192,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let cell_config =
+        CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
+            .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let data_columns_producer = TCache::producer("data_columns", cell_config.cache_capacity());
+    let columns_consumer =
+        data_columns_producer.cache_ref().retained_random_access("columns_cells")?;
+    p2p_context.data_columns_consumer =
+        Some(Box::new(data_columns_producer.cache_ref().retained_random_access("network_cells")?));
+    let (cell_slot, cell_slot_start) = ticker.current_slot_start();
+
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
     let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
     let booting_from_local_checkpoint = !checkpoint.is_empty();
 
     tracing::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
-
-    let spec = Arc::new(chain_config.spec.clone());
 
     let gossip_handler = GossipHandler::new(
         incoming_gossip_consumer,
@@ -225,6 +237,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             spec.clone(),
         ),
     );
+    control_tile = control_tile
+        .with_data_columns_cache(cell_config, data_columns_producer, cell_slot, cell_slot_start)
+        .map_err(|error| format!("cell store construction: {error:?}"))?;
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
             .map(silver_common::GossipTopic::BeaconAttestation)
@@ -285,7 +300,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),
-    );
+    )
+    .with_data_columns_consumer(columns_consumer);
 
     let beacon_api_binds =
         config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
