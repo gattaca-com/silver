@@ -21,6 +21,10 @@ use crate::{
 };
 
 mod attestation_cluster;
+use crate::{
+    cell_ingress::CellIngress,
+    sync_engine::{SyncAction, SyncEngine},
+};
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
