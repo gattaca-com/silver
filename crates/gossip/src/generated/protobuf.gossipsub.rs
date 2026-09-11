@@ -9,6 +9,8 @@ pub struct RPC {
     pub publish: ::buffa::alloc::vec::Vec<Message>,
     ///Field 3: `control`
     pub control: ::buffa::MessageField<ControlMessage>,
+    ///Field 10: `partial`
+    pub partial: ::buffa::MessageField<PartialMessagesExtension>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
@@ -20,6 +22,7 @@ impl ::core::fmt::Debug for RPC {
             .field("subscriptions", &self.subscriptions)
             .field("publish", &self.publish)
             .field("control", &self.control)
+            .field("partial", &self.partial)
             .finish()
     }
 }
@@ -52,6 +55,12 @@ impl ::buffa::Message for RPC {
                 += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
                     + inner_size;
         }
+        if self.partial.is_set() {
+            let inner_size = self.partial.compute_size();
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         for v in &self.subscriptions {
             let inner_size = v.compute_size();
             size
@@ -79,6 +88,15 @@ impl ::buffa::Message for RPC {
                 .encode(buf);
             ::buffa::encoding::encode_varint(self.control.cached_size() as u64, buf);
             self.control.write_to(buf);
+        }
+        if self.partial.is_set() {
+            ::buffa::encoding::Tag::new(
+                    10u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(self.partial.cached_size() as u64, buf);
+            self.partial.write_to(buf);
         }
         for v in &self.subscriptions {
             ::buffa::encoding::Tag::new(
@@ -125,6 +143,20 @@ impl ::buffa::Message for RPC {
                     depth,
                 )?;
             }
+            10u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 10u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.partial.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
             1u32 => {
                 if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
                     return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
@@ -161,6 +193,7 @@ impl ::buffa::Message for RPC {
     }
     fn clear(&mut self) {
         self.control = ::buffa::MessageField::none();
+        self.partial = ::buffa::MessageField::none();
         self.subscriptions.clear();
         self.publish.clear();
         self.__buffa_unknown_fields.clear();
@@ -175,6 +208,8 @@ pub struct RPCView<'a> {
     pub publish: ::buffa::RepeatedView<'a, MessageView<'a>>,
     ///Field 3: `control`
     pub control: ::buffa::MessageFieldView<ControlMessageView<'a>>,
+    ///Field 10: `partial`
+    pub partial: ::buffa::MessageFieldView<PartialMessagesExtensionView<'a>>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> RPCView<'a> {
@@ -232,6 +267,27 @@ impl<'a> RPCView<'a> {
                         None => {
                             view.control = ::buffa::MessageFieldView::set(
                                 ControlMessageView::_decode_depth(sub, depth - 1)?,
+                            );
+                        }
+                    }
+                }
+                10u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 10u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    if depth == 0 {
+                        return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                    }
+                    let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                    match view.partial.as_mut() {
+                        Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                        None => {
+                            view.partial = ::buffa::MessageFieldView::set(
+                                PartialMessagesExtensionView::_decode_depth(sub, depth - 1)?,
                             );
                         }
                     }
@@ -304,6 +360,14 @@ impl<'a> ::buffa::MessageView<'a> for RPCView<'a> {
                 }
                 None => ::buffa::MessageField::none(),
             },
+            partial: match self.partial.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        PartialMessagesExtension,
+                    >::some(v.to_owned_message())
+                }
+                None => ::buffa::MessageField::none(),
+            },
             __buffa_unknown_fields: self
                 .__buffa_unknown_fields
                 .to_owned()
@@ -330,6 +394,10 @@ pub mod rpc {
         pub subscribe: Option<bool>,
         ///Field 2: `topic_id`
         pub topic_id: Option<::buffa::alloc::string::String>,
+        ///Field 3: `requests_partial`
+        pub requests_partial: Option<bool>,
+        ///Field 4: `supports_sending_partial`
+        pub supports_sending_partial: Option<bool>,
         #[doc(hidden)]
         pub __buffa_unknown_fields: ::buffa::UnknownFields,
         #[doc(hidden)]
@@ -340,6 +408,8 @@ pub mod rpc {
             f.debug_struct("SubOpts")
                 .field("subscribe", &self.subscribe)
                 .field("topic_id", &self.topic_id)
+                .field("requests_partial", &self.requests_partial)
+                .field("supports_sending_partial", &self.supports_sending_partial)
                 .finish()
         }
     }
@@ -372,6 +442,12 @@ pub mod rpc {
             if let Some(ref v) = self.topic_id {
                 size += 1u32 + ::buffa::types::string_encoded_len(v) as u32;
             }
+            if self.requests_partial.is_some() {
+                size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+            }
+            if self.supports_sending_partial.is_some() {
+                size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+            }
             size += self.__buffa_unknown_fields.encoded_len() as u32;
             self.__buffa_cached_size.set(size);
             size
@@ -391,6 +467,16 @@ pub mod rpc {
                     )
                     .encode(buf);
                 ::buffa::types::encode_string(v, buf);
+            }
+            if let Some(v) = self.requests_partial {
+                ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_bool(v, buf);
+            }
+            if let Some(v) = self.supports_sending_partial {
+                ::buffa::encoding::Tag::new(4u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_bool(v, buf);
             }
             self.__buffa_unknown_fields.write_to(buf);
         }
@@ -432,6 +518,30 @@ pub mod rpc {
                         buf,
                     )?;
                 }
+                3u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 3u32,
+                            expected: 0u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    self.requests_partial = ::core::option::Option::Some(
+                        ::buffa::types::decode_bool(buf)?,
+                    );
+                }
+                4u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 4u32,
+                            expected: 0u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    self.supports_sending_partial = ::core::option::Option::Some(
+                        ::buffa::types::decode_bool(buf)?,
+                    );
+                }
                 _ => {
                     self.__buffa_unknown_fields
                         .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
@@ -445,6 +555,8 @@ pub mod rpc {
         fn clear(&mut self) {
             self.subscribe = ::core::option::Option::None;
             self.topic_id = ::core::option::Option::None;
+            self.requests_partial = ::core::option::Option::None;
+            self.supports_sending_partial = ::core::option::Option::None;
             self.__buffa_unknown_fields.clear();
             self.__buffa_cached_size.set(0);
         }
@@ -455,6 +567,10 @@ pub mod rpc {
         pub subscribe: ::core::option::Option<bool>,
         ///Field 2: `topic_id`
         pub topic_id: ::core::option::Option<&'a str>,
+        ///Field 3: `requests_partial`
+        pub requests_partial: ::core::option::Option<bool>,
+        ///Field 4: `supports_sending_partial`
+        pub supports_sending_partial: ::core::option::Option<bool>,
         pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
     }
     impl<'a> SubOptsView<'a> {
@@ -517,6 +633,30 @@ pub mod rpc {
                         }
                         view.topic_id = Some(::buffa::types::borrow_str(&mut cur)?);
                     }
+                    3u32 => {
+                        if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                            return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                field_number: 3u32,
+                                expected: 0u8,
+                                actual: tag.wire_type() as u8,
+                            });
+                        }
+                        view.requests_partial = Some(
+                            ::buffa::types::decode_bool(&mut cur)?,
+                        );
+                    }
+                    4u32 => {
+                        if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                            return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                field_number: 4u32,
+                                expected: 0u8,
+                                actual: tag.wire_type() as u8,
+                            });
+                        }
+                        view.supports_sending_partial = Some(
+                            ::buffa::types::decode_bool(&mut cur)?,
+                        );
+                    }
                     _ => {
                         ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
                         let span_len = before_tag.len() - cur.len();
@@ -548,6 +688,8 @@ pub mod rpc {
             SubOpts {
                 subscribe: self.subscribe,
                 topic_id: self.topic_id.map(|s| s.to_string()),
+                requests_partial: self.requests_partial,
+                supports_sending_partial: self.supports_sending_partial,
                 __buffa_unknown_fields: self
                     .__buffa_unknown_fields
                     .to_owned()
@@ -971,6 +1113,8 @@ pub struct ControlMessage {
     pub prune: ::buffa::alloc::vec::Vec<ControlPrune>,
     ///Field 5: `idontwant`
     pub idontwant: ::buffa::alloc::vec::Vec<ControlIDontWant>,
+    ///Field 6: `extensions`
+    pub extensions: ::buffa::MessageField<ControlExtensions>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
@@ -984,6 +1128,7 @@ impl ::core::fmt::Debug for ControlMessage {
             .field("graft", &self.graft)
             .field("prune", &self.prune)
             .field("idontwant", &self.idontwant)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -1010,6 +1155,12 @@ impl ::buffa::Message for ControlMessage {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
+        if self.extensions.is_set() {
+            let inner_size = self.extensions.compute_size();
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         for v in &self.ihave {
             let inner_size = v.compute_size();
             size
@@ -1047,6 +1198,15 @@ impl ::buffa::Message for ControlMessage {
     fn write_to(&self, buf: &mut impl ::buffa::bytes::BufMut) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
+        if self.extensions.is_set() {
+            ::buffa::encoding::Tag::new(
+                    6u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(self.extensions.cached_size() as u64, buf);
+            self.extensions.write_to(buf);
+        }
         for v in &self.ihave {
             ::buffa::encoding::Tag::new(
                     1u32,
@@ -1105,6 +1265,20 @@ impl ::buffa::Message for ControlMessage {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         match tag.field_number() {
+            6u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 6u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.extensions.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
             1u32 => {
                 if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
                     return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
@@ -1176,6 +1350,7 @@ impl ::buffa::Message for ControlMessage {
         self.__buffa_cached_size.get()
     }
     fn clear(&mut self) {
+        self.extensions = ::buffa::MessageField::none();
         self.ihave.clear();
         self.iwant.clear();
         self.graft.clear();
@@ -1197,6 +1372,8 @@ pub struct ControlMessageView<'a> {
     pub prune: ::buffa::RepeatedView<'a, ControlPruneView<'a>>,
     ///Field 5: `idontwant`
     pub idontwant: ::buffa::RepeatedView<'a, ControlIDontWantView<'a>>,
+    ///Field 6: `extensions`
+    pub extensions: ::buffa::MessageFieldView<ControlExtensionsView<'a>>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ControlMessageView<'a> {
@@ -1237,6 +1414,27 @@ impl<'a> ControlMessageView<'a> {
             let before_tag = cur;
             let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
             match tag.field_number() {
+                6u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 6u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    if depth == 0 {
+                        return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                    }
+                    let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                    match view.extensions.as_mut() {
+                        Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                        None => {
+                            view.extensions = ::buffa::MessageFieldView::set(
+                                ControlExtensionsView::_decode_depth(sub, depth - 1)?,
+                            );
+                        }
+                    }
+                }
                 1u32 => {
                     if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
                         return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
@@ -1340,6 +1538,14 @@ impl<'a> ::buffa::MessageView<'a> for ControlMessageView<'a> {
             graft: self.graft.iter().map(|v| v.to_owned_message()).collect(),
             prune: self.prune.iter().map(|v| v.to_owned_message()).collect(),
             idontwant: self.idontwant.iter().map(|v| v.to_owned_message()).collect(),
+            extensions: match self.extensions.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        ControlExtensions,
+                    >::some(v.to_owned_message())
+                }
+                None => ::buffa::MessageField::none(),
+            },
             __buffa_unknown_fields: self
                 .__buffa_unknown_fields
                 .to_owned()
@@ -1359,6 +1565,539 @@ unsafe impl ::buffa::DefaultViewInstance for ControlMessageView<'static> {
 }
 unsafe impl<'a> ::buffa::HasDefaultViewInstance for ControlMessageView<'a> {
     type Static = ControlMessageView<'static>;
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct ControlExtensions {
+    ///Field 10: `partial_messages`
+    pub partial_messages: Option<bool>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+    #[doc(hidden)]
+    pub __buffa_cached_size: ::buffa::__private::CachedSize,
+}
+impl ::core::fmt::Debug for ControlExtensions {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ControlExtensions")
+            .field("partial_messages", &self.partial_messages)
+            .finish()
+    }
+}
+impl ControlExtensions {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/gossipsub.ControlExtensions";
+}
+unsafe impl ::buffa::DefaultInstance for ControlExtensions {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ControlExtensions> = ::buffa::__private::OnceBox::new();
+        VALUE
+            .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                ControlExtensions::default(),
+            ))
+    }
+}
+impl ::buffa::Message for ControlExtensions {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    fn compute_size(&self) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.partial_messages.is_some() {
+            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        self.__buffa_cached_size.set(size);
+        size
+    }
+    fn write_to(&self, buf: &mut impl ::buffa::bytes::BufMut) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if let Some(v) = self.partial_messages {
+            ::buffa::encoding::Tag::new(10u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_bool(v, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            10u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 10u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.partial_messages = ::core::option::Option::Some(
+                    ::buffa::types::decode_bool(buf)?,
+                );
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn cached_size(&self) -> u32 {
+        self.__buffa_cached_size.get()
+    }
+    fn clear(&mut self) {
+        self.partial_messages = ::core::option::Option::None;
+        self.__buffa_unknown_fields.clear();
+        self.__buffa_cached_size.set(0);
+    }
+}
+#[derive(Clone, Debug, Default)]
+pub struct ControlExtensionsView<'a> {
+    ///Field 10: `partial_messages`
+    pub partial_messages: ::core::option::Option<bool>,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
+}
+impl<'a> ControlExtensionsView<'a> {
+    /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+    ///
+    /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+    /// and by generated sub-message decode arms with `depth - 1`.
+    ///
+    /// **Not part of the public API.** Named with a leading underscore to
+    /// signal that it is for generated-code use only.
+    #[doc(hidden)]
+    pub fn _decode_depth(
+        buf: &'a [u8],
+        depth: u32,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        let mut view = Self::default();
+        view._merge_into_view(buf, depth)?;
+        ::core::result::Result::Ok(view)
+    }
+    /// Merge fields from `buf` into this view (proto merge semantics).
+    ///
+    /// Repeated fields append; singular fields last-wins; singular
+    /// MESSAGE fields merge recursively. Used by sub-message decode
+    /// arms when the same field appears multiple times on the wire.
+    ///
+    /// **Not part of the public API.**
+    #[doc(hidden)]
+    pub fn _merge_into_view(
+        &mut self,
+        buf: &'a [u8],
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        let _ = depth;
+        #[allow(unused_variables)]
+        let view = self;
+        let mut cur: &'a [u8] = buf;
+        while !cur.is_empty() {
+            let before_tag = cur;
+            let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+            match tag.field_number() {
+                10u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 10u32,
+                            expected: 0u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.partial_messages = Some(::buffa::types::decode_bool(&mut cur)?);
+                }
+                _ => {
+                    ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
+                }
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+}
+impl<'a> ::buffa::MessageView<'a> for ControlExtensionsView<'a> {
+    type Owned = ControlExtensions;
+    fn decode_view(buf: &'a [u8]) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+    }
+    fn decode_view_with_limit(
+        buf: &'a [u8],
+        depth: u32,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        Self::_decode_depth(buf, depth)
+    }
+    /// Convert this view to the owned message type.
+    #[allow(clippy::redundant_closure)]
+    fn to_owned_message(&self) -> ControlExtensions {
+        #[allow(unused_imports)]
+        use ::buffa::alloc::string::ToString as _;
+        ControlExtensions {
+            partial_messages: self.partial_messages,
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
+            ..::core::default::Default::default()
+        }
+    }
+}
+unsafe impl ::buffa::DefaultViewInstance for ControlExtensionsView<'static> {
+    fn default_view_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ControlExtensionsView<'static>> = ::buffa::__private::OnceBox::new();
+        VALUE
+            .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                ControlExtensionsView::default(),
+            ))
+    }
+}
+unsafe impl<'a> ::buffa::HasDefaultViewInstance for ControlExtensionsView<'a> {
+    type Static = ControlExtensionsView<'static>;
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct PartialMessagesExtension {
+    ///Field 1: `topic_id`
+    pub topic_id: Option<::buffa::alloc::vec::Vec<u8>>,
+    ///Field 2: `group_id`
+    pub group_id: Option<::buffa::alloc::vec::Vec<u8>>,
+    ///Field 3: `partial_message`
+    pub partial_message: Option<::buffa::alloc::vec::Vec<u8>>,
+    ///Field 4: `parts_metadata`
+    pub parts_metadata: Option<::buffa::alloc::vec::Vec<u8>>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+    #[doc(hidden)]
+    pub __buffa_cached_size: ::buffa::__private::CachedSize,
+}
+impl ::core::fmt::Debug for PartialMessagesExtension {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("PartialMessagesExtension")
+            .field("topic_id", &self.topic_id)
+            .field("group_id", &self.group_id)
+            .field("partial_message", &self.partial_message)
+            .field("parts_metadata", &self.parts_metadata)
+            .finish()
+    }
+}
+impl PartialMessagesExtension {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/gossipsub.PartialMessagesExtension";
+}
+unsafe impl ::buffa::DefaultInstance for PartialMessagesExtension {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<PartialMessagesExtension> = ::buffa::__private::OnceBox::new();
+        VALUE
+            .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                PartialMessagesExtension::default(),
+            ))
+    }
+}
+impl ::buffa::Message for PartialMessagesExtension {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    fn compute_size(&self) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if let Some(ref v) = self.topic_id {
+            size += 1u32 + ::buffa::types::bytes_encoded_len(v) as u32;
+        }
+        if let Some(ref v) = self.group_id {
+            size += 1u32 + ::buffa::types::bytes_encoded_len(v) as u32;
+        }
+        if let Some(ref v) = self.partial_message {
+            size += 1u32 + ::buffa::types::bytes_encoded_len(v) as u32;
+        }
+        if let Some(ref v) = self.parts_metadata {
+            size += 1u32 + ::buffa::types::bytes_encoded_len(v) as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        self.__buffa_cached_size.set(size);
+        size
+    }
+    fn write_to(&self, buf: &mut impl ::buffa::bytes::BufMut) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if let Some(ref v) = self.topic_id {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_bytes(v, buf);
+        }
+        if let Some(ref v) = self.group_id {
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_bytes(v, buf);
+        }
+        if let Some(ref v) = self.partial_message {
+            ::buffa::encoding::Tag::new(
+                    3u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_bytes(v, buf);
+        }
+        if let Some(ref v) = self.parts_metadata {
+            ::buffa::encoding::Tag::new(
+                    4u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_bytes(v, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_bytes(
+                    self.topic_id.get_or_insert_with(::buffa::alloc::vec::Vec::new),
+                    buf,
+                )?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_bytes(
+                    self.group_id.get_or_insert_with(::buffa::alloc::vec::Vec::new),
+                    buf,
+                )?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_bytes(
+                    self
+                        .partial_message
+                        .get_or_insert_with(::buffa::alloc::vec::Vec::new),
+                    buf,
+                )?;
+            }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_bytes(
+                    self
+                        .parts_metadata
+                        .get_or_insert_with(::buffa::alloc::vec::Vec::new),
+                    buf,
+                )?;
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn cached_size(&self) -> u32 {
+        self.__buffa_cached_size.get()
+    }
+    fn clear(&mut self) {
+        self.topic_id = ::core::option::Option::None;
+        self.group_id = ::core::option::Option::None;
+        self.partial_message = ::core::option::Option::None;
+        self.parts_metadata = ::core::option::Option::None;
+        self.__buffa_unknown_fields.clear();
+        self.__buffa_cached_size.set(0);
+    }
+}
+#[derive(Clone, Debug, Default)]
+pub struct PartialMessagesExtensionView<'a> {
+    ///Field 1: `topic_id`
+    pub topic_id: ::core::option::Option<&'a [u8]>,
+    ///Field 2: `group_id`
+    pub group_id: ::core::option::Option<&'a [u8]>,
+    ///Field 3: `partial_message`
+    pub partial_message: ::core::option::Option<&'a [u8]>,
+    ///Field 4: `parts_metadata`
+    pub parts_metadata: ::core::option::Option<&'a [u8]>,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
+}
+impl<'a> PartialMessagesExtensionView<'a> {
+    /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+    ///
+    /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+    /// and by generated sub-message decode arms with `depth - 1`.
+    ///
+    /// **Not part of the public API.** Named with a leading underscore to
+    /// signal that it is for generated-code use only.
+    #[doc(hidden)]
+    pub fn _decode_depth(
+        buf: &'a [u8],
+        depth: u32,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        let mut view = Self::default();
+        view._merge_into_view(buf, depth)?;
+        ::core::result::Result::Ok(view)
+    }
+    /// Merge fields from `buf` into this view (proto merge semantics).
+    ///
+    /// Repeated fields append; singular fields last-wins; singular
+    /// MESSAGE fields merge recursively. Used by sub-message decode
+    /// arms when the same field appears multiple times on the wire.
+    ///
+    /// **Not part of the public API.**
+    #[doc(hidden)]
+    pub fn _merge_into_view(
+        &mut self,
+        buf: &'a [u8],
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        let _ = depth;
+        #[allow(unused_variables)]
+        let view = self;
+        let mut cur: &'a [u8] = buf;
+        while !cur.is_empty() {
+            let before_tag = cur;
+            let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+            match tag.field_number() {
+                1u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 1u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.topic_id = Some(::buffa::types::borrow_bytes(&mut cur)?);
+                }
+                2u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 2u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.group_id = Some(::buffa::types::borrow_bytes(&mut cur)?);
+                }
+                3u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 3u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.partial_message = Some(::buffa::types::borrow_bytes(&mut cur)?);
+                }
+                4u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 4u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.parts_metadata = Some(::buffa::types::borrow_bytes(&mut cur)?);
+                }
+                _ => {
+                    ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
+                }
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+}
+impl<'a> ::buffa::MessageView<'a> for PartialMessagesExtensionView<'a> {
+    type Owned = PartialMessagesExtension;
+    fn decode_view(buf: &'a [u8]) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+    }
+    fn decode_view_with_limit(
+        buf: &'a [u8],
+        depth: u32,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        Self::_decode_depth(buf, depth)
+    }
+    /// Convert this view to the owned message type.
+    #[allow(clippy::redundant_closure)]
+    fn to_owned_message(&self) -> PartialMessagesExtension {
+        #[allow(unused_imports)]
+        use ::buffa::alloc::string::ToString as _;
+        PartialMessagesExtension {
+            topic_id: self.topic_id.map(|b| (b).to_vec()),
+            group_id: self.group_id.map(|b| (b).to_vec()),
+            partial_message: self.partial_message.map(|b| (b).to_vec()),
+            parts_metadata: self.parts_metadata.map(|b| (b).to_vec()),
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
+            ..::core::default::Default::default()
+        }
+    }
+}
+unsafe impl ::buffa::DefaultViewInstance for PartialMessagesExtensionView<'static> {
+    fn default_view_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<
+            PartialMessagesExtensionView<'static>,
+        > = ::buffa::__private::OnceBox::new();
+        VALUE
+            .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                PartialMessagesExtensionView::default(),
+            ))
+    }
+}
+unsafe impl<'a> ::buffa::HasDefaultViewInstance for PartialMessagesExtensionView<'a> {
+    type Static = PartialMessagesExtensionView<'static>;
 }
 #[derive(Clone, PartialEq, Default)]
 pub struct ControlIHave {
