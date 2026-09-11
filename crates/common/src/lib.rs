@@ -46,6 +46,8 @@ pub use crate::{
     wheel::Wheel,
     wither::{CountingWitherFilter, WitherFilter},
 };
+
+pub mod cells;
 pub mod column_util;
 mod enr;
 mod error;
