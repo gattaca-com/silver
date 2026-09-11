@@ -775,12 +775,40 @@ fn peers_finalized_ahead_skip_the_disk_replay_without_waiting() {
     peer_finalized(&mut e, PEER, (HEAD_ROOT, 400), 10);
     local_status(&mut e, 0, 400);
 
+    assert!(
+        matches!(e.advance(), Some(SyncUpdate::SyncingFinalized { target_epoch: 10, .. })),
+        "a syncing target is announced while replay is pending"
+    );
     assert_eq!(
         e.maybe_choose_syncing_strategy(t0),
         Some(SyncingStrategy::SyncFromPeers),
         "decided on the first status, with no window spent"
     );
     assert_eq!(e.maybe_choose_syncing_strategy(t0), None, "and storage is told once");
+}
+
+#[test]
+fn a_caught_up_node_waits_for_replay_completion_before_following() {
+    let t0 = Instant::now();
+    let mut e = engine_awaiting_replay();
+    local_status(&mut e, 40, 40);
+    peer_status(&mut e, PEER, HEAD_ROOT, 40);
+
+    assert_eq!(e.advance(), None, "matching the peer does not complete disk restoration");
+    assert!(!e.take_just_synced(), "following side effects must wait too");
+    assert_eq!(e.maybe_choose_syncing_strategy(t0), None);
+    assert_eq!(
+        e.maybe_choose_syncing_strategy(t0 + SYNCING_STRATEGY_TIMEOUT_WINDOW),
+        Some(SyncingStrategy::ReplayDisk),
+        "deferring following still allows the replay decision"
+    );
+    local_status(&mut e, 40, 40);
+    assert_eq!(e.advance(), None, "selecting replay does not mean it has finished");
+
+    e.on_beacon_state_event(&BeaconStateEvent::ReplayComplete);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following), "completion re-evaluates the target");
+    assert!(e.take_just_synced());
+    assert_eq!(e.advance(), None, "the following transition is published once");
 }
 
 /// With nobody ahead, the disk is the best chain we have — but only after

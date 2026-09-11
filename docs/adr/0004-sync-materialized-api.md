@@ -110,3 +110,24 @@ changes, including both empty-to-full and full-to-empty transitions. Legacy
 `head` retains its root-and-optimism filter. Both topics use the same
 complete observation. The v2 `version` names the configured fork at the head
 block's slot; selected pre-Gloas blocks report `full`.
+
+Amended 2026-09-11: `head` and `head_v2` describe changes observed while
+Control reports following. Disk restoration, the wait for a replay strategy
+and network catch-up produce no head notifications. Following is a sync
+mode, not a guarantee of zero sync distance or execution validation.
+
+The boundary keeps every complete observation as its baseline in every mode
+and reports a change only while following. A following period therefore
+starts from the head the node already has, and its first change is reported.
+Status and sync updates travel on separate queues; the boundary reads the
+mode once per iteration after draining beacon events, so an observation
+drained in the same iteration as a mode change follows the earlier mode, and
+one queued between the two drains is reported in the next iteration. The
+imprecision is bounded by one iteration. Node-status updates and block
+notifications remain independent of the mode.
+
+Control waits for disk replay to finish or be skipped before reporting
+following; previously the gate held only network requests, and disk replay
+is chosen exactly when peers look comparable, so following could be announced
+during replay. Completion re-evaluates the target. Beacon-state's Status
+publications are unchanged.

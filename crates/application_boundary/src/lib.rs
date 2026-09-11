@@ -127,7 +127,9 @@ impl ApplicationBoundaryTile {
         });
         let status = self.beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {
-            status.syncing = !matches!(update, SyncUpdate::Following);
+            let following = matches!(update, SyncUpdate::Following);
+            status.syncing = !following;
+            head.set_following(following);
         });
 
         status.el = self.engine.sync_status();

@@ -898,6 +898,8 @@ fn head_subscribers_receive_changes_for_their_topics() {
             crank(&mut tile, "both stream heads reach their subscribers");
         }
     }
+    inj.produce(SyncUpdate::Following);
+    crank(&mut tile, "the node is following");
 
     for status in [
         head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
@@ -958,6 +960,76 @@ fn head_subscribers_receive_changes_for_their_topics() {
                 format!("0x{}", hex::encode(roots.current_duty_dependent_root))
             );
         }
+    }
+}
+
+/// Head events describe changes observed while following. Observations in
+/// any other mode move the baseline and node status silently.
+#[test]
+fn head_events_describe_changes_observed_while_following() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_follow_gossip",
+        "cs_follow_rpc",
+        "cs_follow_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let sentinel_slot = 40;
+    let (client, on_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    while on_subscribed.try_recv().is_err() {
+        crank(&mut tile, "stream head reaches the subscriber");
+    }
+
+    // Restoration and catch-up: Control has not concluded, so heads move silently.
+    inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full));
+    inj.produce(head_status(34, 0xab, true, PayloadResolution::Full));
+    crank(&mut tile, "observations outside following update node status");
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: 34, wall_slot: 34, head_optimistic: true })
+    );
+
+    // Following: the latest observation is already the baseline, so the next
+    // change is reported at once.
+    inj.produce(SyncUpdate::Following);
+    crank(&mut tile, "the mode change is consumed");
+    inj.produce(head_status(35, 0xac, true, PayloadResolution::Full));
+    inj.produce(head_status(35, 0xac, false, PayloadResolution::Full));
+    crank(&mut tile, "changes while following are reported");
+
+    // Falling behind silences the stream while the head keeps moving.
+    inj.produce(SyncUpdate::SyncingHead { head_root: [0xff; 32], head_slot: 100 });
+    crank(&mut tile, "the mode change is consumed");
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
+    crank(&mut tile, "changes while syncing are silent");
+
+    // Following again: a repeat of the head reached while syncing is no change.
+    inj.produce(SyncUpdate::Following);
+    crank(&mut tile, "the mode change is consumed");
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
+    inj.produce(head_status(37, 0xae, true, PayloadResolution::Full));
+    inj.produce(head_status(sentinel_slot, 0xcd, true, PayloadResolution::Full));
+    while !client.is_finished() {
+        crank(&mut tile, "every frame reaches the subscriber");
+    }
+
+    let events = client.join().unwrap();
+    assert_eq!(events.len(), 3);
+    for (event, (slot, optimistic)) in events.iter().zip([(35, true), (35, false), (37, true)]) {
+        assert_eq!(event["slot"], slot.to_string());
+        assert_eq!(event["execution_optimistic"], optimistic);
     }
 }
 
