@@ -29,6 +29,7 @@ impl Tile<SilverSpine> for Observer {
 impl GossipPublications {
     fn new(topic: GossipTopic, bytes: &[u8]) -> Self {
         let incoming = TCache::producer("publication_in", 1 << 16);
+        let cluster_in = TCache::producer("publication_cluster_in", 1 << 16);
         let rpc = TCache::producer("publication_rpc", 1 << 16);
         let mut protobuf = TCache::producer("publication_out", 1 << 16);
         let payload = write_bytes(&mut protobuf, bytes);
@@ -53,12 +54,16 @@ impl GossipPublications {
             .unwrap(),
             TCache::multi_producer("publication_rpc_out", 1 << 16),
             rpc.cache_ref().random_access("publication_rpc", true).unwrap(),
+            TCache::producer("publication_cluster_out", 1 << 16),
+            cluster_in.cache_ref().random_access("publication_cluster", true).unwrap(),
+            None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
-        );
+        )
+        .unwrap();
         let dir = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
-        let adapter = SpineAdapter::connect_tile(&controller, &mut spine);
-        let mut observer = SpineAdapter::connect_tile(&Observer, &mut spine);
+        let adapter = SpineAdapter::connect_tile(&controller, &mut *spine);
+        let mut observer = SpineAdapter::connect_tile(&Observer, &mut *spine);
         observer.consume(|_: P2pSend, _| {});
         let mut capture = Self {
             controller,
