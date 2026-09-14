@@ -182,3 +182,13 @@ each push, including the response head and chunk framing. A push that exceeds
 the cap closes the connection before another write is attempted. Successful
 writes reset the send deadline while output remains pending; draining it
 clears the deadline. Progress means kernel acceptance, not peer consumption.
+
+Amended 2026-09-14: the send cap is 512 KiB. This accommodates one block's
+128 `data_column_sidecar` events with 21 commitments each, estimated at
+290 KiB, even when the socket accepts no bytes. Earlier pending events or
+repeated publications can still exhaust the allowance.
+
+At 64 subscriptions, the pending-output allowance totals 32 MiB. Each
+subscription reserves its buffer at construction and retains the allocation
+until it closes. A full drain reuses the buffer from its beginning without
+releasing it. Partial drains can advance through the entire allocation.

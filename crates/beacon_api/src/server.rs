@@ -1613,7 +1613,9 @@ mod tests {
 
     /// The burst fits in the application buffer even if the socket initially
     /// accepts no bytes. Delivery therefore does not require a particular
-    /// kernel send-buffer capacity.
+    /// kernel send-buffer capacity. The frames approximate one block's column
+    /// events with commitments; any unsent remainder drains through the
+    /// readiness loop.
     #[test]
     fn burst_reaches_a_reading_subscriber_in_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -1625,7 +1627,7 @@ mod tests {
             subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
         });
 
-        let frames: Vec<_> = (0..24).map(|index| burst_frame(index, 2300)).collect();
+        let frames: Vec<_> = (0..128).map(|index| burst_frame(index, 2300)).collect();
         let mut expected = SSE_HEAD.to_vec();
         frames.iter().for_each(|frame| expected.extend(chunk(frame)));
         let now = Instant::now();
@@ -1636,6 +1638,27 @@ mod tests {
 
         let got = serve(&mut server, read_exactly(client, expected.len()), "the burst");
         assert_same_bytes(&got, &expected);
+    }
+
+    /// Checks that publication attempts delivery before the readiness loop,
+    /// independently of whether a larger burst fits the application buffer.
+    #[test]
+    fn a_publish_to_a_reading_subscriber_leaves_nothing_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        let mut client = connect_uds(&socket);
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed and head sent", |server| {
+            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
+        });
+
+        for slot in 1..=3 {
+            server.api.publish_block(slot, &[0x33; 32]);
+        }
+        assert_eq!(bytes_waiting_for_subscribers(&server), 0);
+        assert_eq!(subscribers(&server), 1);
+        drop(client);
     }
 
     /// On Linux, registering `WRITABLE` on a writable socket queues an epoll

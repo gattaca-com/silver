@@ -7,7 +7,9 @@ use mio::Interest;
 
 // Reserve the full output allowance at construction so accepted pushes do
 // not reallocate. The response head and chunk framing count against it.
-const PENDING_MAX: usize = 64 << 10;
+// Allows one block's 128 column events with 21 commitments each, about
+// 290 KiB in total, even when the writer accepts no bytes.
+const PENDING_MAX: usize = 512 << 10;
 const DISCARD_LEN: usize = 4096;
 
 /// Does not emit a terminal chunk; the caller ends the stream by closing
@@ -269,7 +271,8 @@ mod tests {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let mut socket = ScriptedSocket::taking_everything();
-        let frames: Vec<_> = (0..40).map(|index| burst_frame(index, 2300)).collect();
+        let past_the_cap = PENDING_MAX / framed(&burst_frame(0, 2300)).len() + 1;
+        let frames: Vec<_> = (0..past_the_cap).map(|index| burst_frame(index, 2300)).collect();
         let mut expected = HEAD.to_vec();
         frames.iter().for_each(|frame| expected.extend(framed(frame)));
         assert!(expected.len() - HEAD.len() > PENDING_MAX, "the burst passes the cap");
@@ -331,6 +334,23 @@ mod tests {
         assert!(stream.drain_into(&mut socket, t1).unwrap());
         assert_eq!(socket.taken, expected);
         assert!(!stream.stalled(t1 + DEADLINE * 100, DEADLINE));
+    }
+
+    /// Synthetic frames approximate column events with 21 commitments.
+    /// The queued response head also counts against the allowance.
+    #[test]
+    fn one_blocks_column_events_fit_the_cap_with_the_socket_taking_nothing() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = ScriptedSocket::refusing_everything();
+        let frames: Vec<_> = (0..128).map(|index| burst_frame(index, 2300)).collect();
+
+        for frame in &frames {
+            assert_eq!(stream.deliver(&mut socket, frame, t0).unwrap(), Some(BOTH));
+        }
+        let mut expected = HEAD.to_vec();
+        frames.iter().for_each(|frame| expected.extend(framed(frame)));
+        assert_eq!(stream.pending_write(), expected);
     }
 
     /// The cap error reports bytes already pending, including the response
