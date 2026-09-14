@@ -1301,6 +1301,7 @@ impl BeaconStateTile {
             msg_hash: m.msg_hash,
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,
+            ssz: m.ssz,
         });
     }
 

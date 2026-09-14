@@ -20,10 +20,9 @@ use flux::tile::Tile;
 use silver_common::{
     P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
     RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, StreamProtocol,
-    TCacheProducer, ssz_view::BLOCKS_BY_RANGE_REQ_SIZE,
+    TCacheProducer, ssz_view::BLOCKS_BY_RANGE_REQ_SIZE, test_util::ShmemDir,
 };
 use silver_e2e::{PublisherStack, keypair_from_seed};
-use tempfile::TempDir;
 
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const CHUNK_COUNT: usize = 3;
@@ -37,7 +36,7 @@ fn pick_free_port() -> u16 {
         .port()
 }
 
-fn build_stack(td: &TempDir, suffix: &str, seed: u8) -> PublisherStack {
+fn build_stack(td: &ShmemDir, suffix: &str, seed: u8) -> PublisherStack {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
     let disc = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
     let kp = keypair_from_seed(seed);
@@ -130,7 +129,7 @@ fn synth_block_bytes(chunk_index: u8, len: usize) -> Vec<u8> {
 fn silver_receives_multipart_blocks_by_range_response() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
 
-    let td = TempDir::new().expect("tempdir");
+    let td = ShmemDir::new().expect("tempdir");
     let mut requester = build_stack(&td, "_req", 21);
     let mut responder = build_stack(&td, "_resp", 22);
 

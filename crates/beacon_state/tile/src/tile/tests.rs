@@ -21,6 +21,7 @@ use silver_common::{
         SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
         SignedAggregateAndProofView, SignedBeaconBlockView, SingleAttestationView, StatusView,
     },
+    test_util::ShmemDir,
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
@@ -565,7 +566,7 @@ struct HeadRig {
     anchor: StateId,
     _gossip: TProducer,
     _rpc: TProducer,
-    _spine: Box<SilverSpine>,
+    _spine: TestSpine,
 }
 
 impl HeadRig {
@@ -576,7 +577,7 @@ impl HeadRig {
         let (mut tile, gossip, rpc, mut spine, adapter) = tile_with_producers(ANCHOR_SLOT);
         seed_tile(&mut tile, 8, ANCHOR_SLOT);
         tile.sync_target = SyncUpdate::Following;
-        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
         sink.consume(|_: BeaconStateEvent, _| {});
 
         // Distinct anchor roots expose accidental reads from a child's history.
@@ -851,7 +852,7 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
                 BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], state_slot);
             let (mut tile, _gp, _rp, mut spine, mut adapter) =
                 tile_with_producers_on(state_slot, state, SpecConfig::mainnet());
-            let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+            let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
             sink.consume(|_: BeaconStateEvent, _| {});
             let root = tile.head_block_root();
             let state_root =
@@ -1169,7 +1170,7 @@ fn anchor_child(block_root: B256, state_id: StateId) -> BlockImport {
 fn a_block_already_in_fork_choice_is_reported_already_known() {
     let (mut tile, mut gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
     let mut bytes = empty_block();
@@ -1244,7 +1245,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     let block_slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
         tile_with_producers_on(block_slot + 1, state, SpecConfig::mainnet());
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
     // The checkpoint was loaded without decompressed pubkeys, so this import
@@ -1275,7 +1276,7 @@ fn an_imported_block_publishes_its_own_head_metadata() {
     let block_root = block_root_fulu(&block_ssz);
     let (mut tile, _gp, mut rp, mut spine, mut adapter) =
         tile_with_producers_on(slot + 1, state, fulu_from_genesis());
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
     tile.loop_body(&mut adapter);
     let _ = Published::drain(&mut sink);
@@ -1304,7 +1305,7 @@ fn a_replayed_block_publishes_its_own_head_metadata() {
     let (mut tile, _gp, _rp, mut replay) =
         make_tile_with_producers(slot + 1, state, fulu_from_genesis());
     let (mut spine, mut adapter) = spine_adapter(&tile);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
     tile.loop_body(&mut adapter);
     let _ = Published::drain(&mut sink);
@@ -1534,44 +1535,44 @@ fn block_at_the_finalized_start_slot_is_ignored() {
     }
 }
 
-/// `proposer_lookahead` reaches only the parent's current and next epoch. A
-/// block past a long skipped-slot run has no entry, so silver cannot check its
-/// proposer — it still imports, but must not go on the wire as if it had.
+/// Fixture bypass: signature checking is skipped to isolate proposer lookup.
 #[test]
-fn block_past_the_lookahead_window_imports_but_is_not_relayed() {
+fn block_relay_requires_a_resolved_proposer() {
     const PARENT_SLOT: u64 = 10;
-
-    // The parent sits in epoch 0, so the lookahead index is the slot itself
-    // and the window is `[0, PROPOSER_LOOKAHEAD_SIZE)`.
     let last_in_window = PROPOSER_LOOKAHEAD_SIZE as u64 - 1;
-    for (slot, want_relay) in [
-        (PARENT_SLOT + 1, true),
-        (last_in_window, true),
-        (last_in_window + 1, false),
-        (last_in_window + SLOTS_PER_EPOCH, false),
-    ] {
-        let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
-        seed_tile(&mut tile, 4, PARENT_SLOT);
-        tile.sync_target = SyncUpdate::Following;
+    for target in
+        [SyncUpdate::Following, SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] }]
+    {
+        for (slot, want_relay) in [
+            (PARENT_SLOT + 1, true),
+            (last_in_window, true),
+            (last_in_window + 1, false),
+            (last_in_window + SLOTS_PER_EPOCH, false),
+        ] {
+            let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+            seed_tile(&mut tile, 4, PARENT_SLOT);
+            tile.sync_target = target;
+            adapter.consume(|_: PeerEvent, _| {});
 
-        let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
-        let bytes = fulu_block_with_payload(slot, stamp, 0);
-        let (data, read) = publish_block_bytes(&mut gp, &bytes);
+            let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
+            let bytes = fulu_block_with_payload(slot, stamp, 0);
+            let msg = gossip_msg(&mut gp, &bytes, GossipTopic::BeaconBlock);
+            let msg_seq = msg.ssz.seq();
+            assert!(tile.handle_gossip(msg.ssz, msg, true, true, &mut adapter.producers));
 
-        let mut relayed = false;
-        let feedback = tile.apply_block(
-            &data,
-            read,
-            BlockSource::Gossip,
-            true,
-            &mut adapter.producers,
-            |_| relayed = true,
-        );
-
-        assert_eq!(relayed, want_relay, "slot {slot}: {feedback:?}");
-        // Either way the block is not thrown away: the proposer window is our
-        // limit, not grounds to refuse the block.
-        assert!(!matches!(feedback, Feedback::Ignore), "slot {slot}: {feedback:?}");
+            let mut relays = Vec::new();
+            adapter.consume(|event: PeerEvent, _| {
+                if let PeerEvent::SendGossip { topic, ssz, .. } = event {
+                    assert_eq!(topic, GossipTopic::BeaconBlock);
+                    relays.push(ssz.seq());
+                }
+            });
+            assert_eq!(
+                relays,
+                if want_relay { vec![msg_seq] } else { vec![] },
+                "{target:?}, slot {slot}"
+            );
+        }
     }
 }
 
@@ -1592,12 +1593,17 @@ fn pending_admission_window_bounds() {
     assert!(!tile.within_pending_window(50 + tol + 1));
 }
 
+struct TestSpine {
+    spine: Box<SilverSpine>,
+    _dir: ShmemDir,
+}
+
 /// Tile (seed separately) plus a spine + adapter, so tests can drive
 /// `buffer_orphan`, which produces into `adapter.producers`. The spine is
 /// returned to keep it alive for the adapter.
 fn tile_with_producers(
     wall_slot: u64,
-) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+) -> (BeaconStateTile, TProducer, TProducer, TestSpine, SpineAdapter<SilverSpine>) {
     tile_with_producers_on(wall_slot, BeaconState::empty_test(0), SpecConfig::mainnet())
 }
 
@@ -1605,7 +1611,7 @@ fn tile_with_producers_on(
     wall_slot: u64,
     state: BeaconState,
     spec: SpecConfig,
-) -> (BeaconStateTile, TProducer, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+) -> (BeaconStateTile, TProducer, TProducer, TestSpine, SpineAdapter<SilverSpine>) {
     let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec);
     let (spine, adapter) = spine_adapter(&tile);
     (tile, gp, rp, spine, adapter)
@@ -1613,18 +1619,11 @@ fn tile_with_producers_on(
 
 /// A spine plus the tile's adapter on it, so tests can hand `adapter.producers`
 /// to methods that produce. The spine is returned to keep the adapter alive.
-fn spine_adapter(tile: &BeaconStateTile) -> (Box<SilverSpine>, SpineAdapter<SilverSpine>) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = std::env::temp_dir().join(format!(
-        "silver-pending-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&base).expect("temp base");
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+fn spine_adapter(tile: &BeaconStateTile) -> (TestSpine, SpineAdapter<SilverSpine>) {
+    let dir = ShmemDir::new().expect("temp base");
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
     let adapter = SpineAdapter::connect_tile(tile, &mut spine);
-    (spine, adapter)
+    (TestSpine { spine, _dir: dir }, adapter)
 }
 
 fn root_with(idx: u64, tag: u8) -> B256 {
@@ -1700,7 +1699,7 @@ fn missing_blocks(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, u64)> {
 fn lapped_orphan_is_re_requested_on_replay() {
     let (mut tile, _gp, mut rp, mut spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: SyncNeed, _| {});
 
     let parent_root = [0xAAu8; 32];
@@ -1942,7 +1941,7 @@ fn ve_accept() {
     seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
-    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::VoluntaryExit);
 }
 
 #[test]
@@ -1970,7 +1969,7 @@ fn ps_accept() {
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::ProposerSlashing);
 }
 
 #[test]
@@ -2033,7 +2032,7 @@ fn as_accept() {
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
-    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::AttesterSlashing);
 }
 
 #[test]
@@ -2087,7 +2086,7 @@ fn bls_change_accept() {
     let imm = seed_immutable(&tile);
     let to_addr = [0x42u8; 20];
     let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::BlsToExecutionChange);
 }
 
 #[test]
@@ -2224,20 +2223,29 @@ fn attestation_updates_vote_tracker() {
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
 }
 
+/// Distinct payloads expose relays that substitute the protobuf handle for SSZ.
+/// The protobuf bytes are a placeholder; beacon-state forwards them without
+/// decoding.
 fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> NewGossipMsg {
-    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
-    r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
-    r.increment_offset(bytes.len());
-    let read = r.read();
-    producer.publish_head();
+    let ssz = tcache_write(producer, bytes);
+    let protobuf = tcache_write(producer, b"encoded frame");
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic,
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
-        ssz: read,
-        protobuf: read,
+        ssz,
+        protobuf,
     }
+}
+
+fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
+    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
+    r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    read
 }
 
 fn gossip_att_msg(
@@ -2288,10 +2296,13 @@ fn batched_att(
 fn attestation_batch_flush_applies_all() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
     let bbr = tile.last_applied_block_root;
 
+    let mut expected_topics = Vec::new();
     for vi in [0u32, 1] {
         let (buf, subnet) = batched_att(&tile, vi as usize, vi);
+        expected_topics.push(GossipTopic::BeaconAttestation(subnet));
         let m = gossip_att_msg(&mut gp, &buf, subnet);
         tile.defer_vote(m, &mut adapter.producers);
     }
@@ -2302,6 +2313,7 @@ fn attestation_batch_flush_applies_all() {
     assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, bbr);
     assert!(tile.vote_batch.is_empty());
     assert!(tile.vote_pending.is_empty());
+    assert_eq!(non_block_relays(&mut adapter), expected_topics);
 }
 
 /// A forged signature (valid G2 point, wrong key) fails the batch verify;
@@ -2396,6 +2408,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
+    adapter.consume(|_: PeerEvent, _| {});
     let bbr = tile.last_applied_block_root;
     let wall = tile.ticker.current_slot();
 
@@ -2413,6 +2426,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     // 128 positions of each subcommittee.
     assert_eq!(SyncCommitteeContributionView::aggregation_bits(&contribution), &[0xff; 16]);
     assert!(tile.vote_batch.is_empty() && tile.vote_pending.is_empty());
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
 }
 
 #[test]
@@ -2561,7 +2575,7 @@ fn sync_contribution_accepted_then_superset_ignored() {
     let bbr = tile.last_applied_block_root;
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Accept(None)));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::SyncCommitteeContributionAndProof);
     assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Ignore));
 }
 
@@ -2645,6 +2659,7 @@ fn ptc_vote_records_every_matching_committee_position() {
     let slot = 31;
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
     seed_tile_with_keys(&mut tile, 128, slot);
+    adapter.consume(|_: PeerEvent, _| {});
     let root = tile.last_applied_block_root;
     let msg = test_signing::sign_payload_attestation_message(
         0,
@@ -2672,6 +2687,7 @@ fn ptc_vote_records_every_matching_committee_position() {
     assert!(
         tile.fork_choice.ptc_data_availability_votes(&root).iter().all(|vote| *vote == Some(true))
     );
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::PayloadAttestationMessage]);
 }
 
 /// Spec `validate_on_attestation`: a single attestation for a block we
@@ -2998,7 +3014,7 @@ fn agg_accept() {
     let buf = build_agg_for_vi0(&tile);
     let beacon_block_root = tile.last_applied_block_root;
     let slot = SignedAggregateAndProofView::agg_slot(&buf);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+    assert_non_block_relay(&mut tile, &buf, GossipTopic::BeaconAggregateAndProof);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
 }
@@ -3633,7 +3649,7 @@ fn status_reads_the_surviving_head_after_finalization_remaps_its_node() {
     // Justification follows finality here, as `lift_checkpoints` would have it.
     forks.tile.fork_choice.justified_checkpoint = Checkpoint { epoch: 0, root: F_ROOT };
     let (_, _gp, _rp, mut spine, mut adapter) = tile_with_producers(2);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
     forks.tile.ticker.set_since_genesis_ms(2 * 12_000);
     forks.tile.loop_body(&mut adapter);
@@ -3697,7 +3713,7 @@ fn el_invalid_drops_staged_block() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
     let (mut spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
     let mut producer = TCache::producer("test_el_invalid", 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
@@ -4041,4 +4057,35 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
             "persisted checkpoint diverges from the live state at `{name}`"
         );
     }
+}
+
+#[cfg(feature = "ef_tests")]
+mod block_relay;
+
+fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
+    let mut topics = Vec::new();
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { topic, .. } = event {
+            topics.push(topic);
+        }
+    });
+    topics
+}
+
+fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: GossipTopic) {
+    let mut gossip = TCache::producer("non_block_relay", 1 << 20);
+    tile.gossip_consumer = gossip.cache_ref().random_access("non_block_relay", true).unwrap();
+    let (_spine, mut adapter) = spine_adapter(tile);
+    adapter.consume(|_: PeerEvent, _| {});
+    let msg = gossip_msg(&mut gossip, bytes, topic);
+    let msg_seq = msg.ssz.seq();
+    tile.on_gossip(msg, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+    let mut relays = Vec::new();
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { topic, ssz, .. } = event {
+            relays.push((topic, ssz.seq()));
+        }
+    });
+    assert_eq!(relays, [(topic, msg_seq)], "the relay names the message's own decompressed bytes");
 }

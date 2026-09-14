@@ -17,6 +17,8 @@ pub(crate) enum Channel {
     Block,
     Head,
     HeadV2,
+    BlockGossip,
+    DataColumnSidecar,
 }
 
 /// `epoch_transition` compares this head with the publisher's previous
@@ -86,6 +88,8 @@ fn channel(topic: &str) -> Option<Channel> {
         "block" => Some(Channel::Block),
         "head" => Some(Channel::Head),
         "head_v2" => Some(Channel::HeadV2),
+        "block_gossip" => Some(Channel::BlockGossip),
+        "data_column_sidecar" => Some(Channel::DataColumnSidecar),
         _ => None,
     }
 }
@@ -151,6 +155,38 @@ mod tests {
         assert_eq!(topics("topics=block,block"), Ok(block_only()));
         assert_eq!(topics("topics=block&topics=block"), Ok(block_only()));
         assert_eq!(topics("topics=block%2Cblock"), Ok(block_only()), "percent-encoded comma");
+        let mut gossip = ChannelSet::default();
+        gossip.insert(Channel::BlockGossip);
+        assert_eq!(topics("topics=block_gossip"), Ok(gossip));
+
+        let mut columns = ChannelSet::default();
+        columns.insert(Channel::DataColumnSidecar);
+        assert_eq!(topics("topics=data_column_sidecar"), Ok(columns));
+
+        let mut all = columns;
+        all.insert(Channel::Block);
+        all.insert(Channel::BlockGossip);
+        for query in [
+            "topics=block,block_gossip,data_column_sidecar",
+            "topics=data_column_sidecar&topics=block_gossip&topics=block",
+            "topics=block%2Cdata_column_sidecar%2Cblock_gossip",
+        ] {
+            assert_eq!(topics(query), Ok(all), "{query}");
+        }
+
+        let every_topic = set(&[
+            Channel::Block,
+            Channel::Head,
+            Channel::HeadV2,
+            Channel::BlockGossip,
+            Channel::DataColumnSidecar,
+        ]);
+        for query in [
+            "topics=block,head,head_v2,block_gossip,data_column_sidecar",
+            "topics=data_column_sidecar&topics=block_gossip&topics=head_v2&topics=head&topics=block",
+        ] {
+            assert_eq!(topics(query), Ok(every_topic), "{query}");
+        }
     }
 
     #[test]

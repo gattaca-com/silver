@@ -110,3 +110,46 @@ changes, including both empty-to-full and full-to-empty transitions. Legacy
 `head` retains its root-and-optimism filter. Both topics use the same
 complete observation. The v2 `version` names the configured fork at the head
 block's slot; selected pre-Gloas blocks report `full`.
+
+Amended 2026-09-10: `/eth/v1/events` also serves `block_gossip` for block
+publication requests following silver's gossip checks. A request precedes
+payload notification, state transition, and import; it does not guarantee
+delivery to peers. This deliberately narrows the Beacon API's validation
+contract: RPC block imports remain silent because they do not request relay.
+The topic follows silver's relay policy, keeping its promise tied to gossip
+publication without duplicating an observation on the spine. The boundary
+selects `SendGossip` requests on the block topic. It reads the slot and
+computes the block root from the relayed block's SSZ bytes. The `block` topic
+still follows `Applied` import receipts. These queues establish no shared ordering.
+Repeated requests for one root are not deduplicated, and late subscribers
+receive no replay. Subscribers to both topics can reach the existing send
+cap sooner.
+
+Amended 2026-09-10: `/eth/v1/events` also serves `data_column_sidecar` for
+column publication requests following silver's gossip checks, including KZG.
+This deliberately narrows the Beacon API's validation contract: validation
+without a publication request produces no event. The boundary selects
+`SendGossip` requests on column topics and every `PublishDataColumn`. It
+derives the slot, block root and column index from Fulu or Gloas sidecar
+bytes, without filtering by custody. Control's converted request stays off the
+spine, avoiding a second notification. These events acknowledge requests,
+including RPC requests that can fail before encoding; they do not guarantee
+delivery to peers.
+Buffered copies, RPC columns processed while syncing, held copies, and EL
+reconstruction remain silent under the existing publication policy.
+`Persist` and `Available` retain their existing meaning and selection.
+Repeated requests are not deduplicated, and late subscribers receive no
+replay. The `beacon_events` and `peer_events` queues establish no shared
+ordering. Additional subscriptions can reach the existing send cap sooner.
+
+Amended 2026-09-14: publication requests carry handles to decompressed SSZ
+bytes so API consumers can derive event fields without adding API-specific
+metadata to those requests. The boundary reads `SendGossip` objects from
+the gossip cache and `PublishDataColumn` objects from the RPC cache.
+It computes each block root, including the body hash, even when no clients
+subscribe to `block_gossip`. For Fulu sidecars, it computes the block root
+from the five header fields. Gloas sidecars contain the block root directly.
+If the cache has overwritten an object's bytes, the boundary logs a warning
+and emits no event for that request. It also skips sidecars whose length
+and column offset identify neither supported layout. These failures do not
+cancel the publication request.

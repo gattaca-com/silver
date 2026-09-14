@@ -3,25 +3,31 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::net::UnixStream,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
-use serde_json::Value;
+use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
+use serde_json::{Value, json};
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, HeadRoots, Identify, Keypair, PayloadResolution, PayloadValidationStatus, SilverSpine,
-    SyncUpdate, TCache, TCacheProducer, ssz_view::STATUS_V2_SIZE,
+    Enr, GossipTopic, HeadRoots, Identify, Keypair, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
+    TCacheProducer, TCacheRead, TProducer,
+    column_util::{block_root_from_sidecar, block_root_fulu},
+    ssz_view::{
+        BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
+        SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
+    },
+    test_util::ShmemDir,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::test_el::{FCU_VALID_RESULT, FakeEl, write_jwt};
 use silver_httpcore::Bind;
-use tempfile::TempDir;
 
 struct Injector;
 impl Tile<SilverSpine> for Injector {
@@ -33,6 +39,14 @@ fn boundary_tile(
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
 ) -> ApplicationBoundaryTile {
+    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet()).0
+}
+
+fn boundary_tile_with_objects(
+    bind: &Bind,
+    engine_config: EngineConfig,
+    tcache_names: [&'static str; 3],
+) -> (ApplicationBoundaryTile, TProducer, TProducer) {
     boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet())
 }
 
@@ -41,13 +55,13 @@ fn boundary_tile_with_spec(
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
     spec: &SpecConfig,
-) -> ApplicationBoundaryTile {
+) -> (ApplicationBoundaryTile, TProducer, TProducer) {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-    let gossip_p = TCache::producer(tcache_names[0], 1 << 12);
-    let rpc_p = TCache::producer(tcache_names[1], 1 << 12);
+    let gossip_p = TCache::producer(tcache_names[0], 1 << 16);
+    let rpc_p = TCache::producer(tcache_names[1], 1 << 16);
     let resp_p = TCache::producer(tcache_names[2], 1 << 12);
-    ApplicationBoundaryTile::new(
+    let tile = ApplicationBoundaryTile::new(
         std::slice::from_ref(bind),
         64,
         Duration::from_secs(75),
@@ -60,7 +74,10 @@ fn boundary_tile_with_spec(
         gossip_p.cache_ref().random_access("t", true).unwrap(),
         rpc_p.cache_ref().random_access("t", true).unwrap(),
         resp_p,
-    )
+        gossip_p.cache_ref().random_access("t_events", true).unwrap(),
+        rpc_p.cache_ref().random_access("t_events", true).unwrap(),
+    );
+    (tile, gossip_p, rpc_p)
 }
 
 fn identity_client(addr: SocketAddr) -> JoinHandle<String> {
@@ -146,8 +163,6 @@ fn drain_fcu_completions(
     });
 }
 
-const SSE_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
-
 fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
     BeaconStateEvent::BlockReceived {
         slot,
@@ -158,39 +173,219 @@ fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
     }
 }
 
-fn block_frame(slot: u64, byte: u8) -> Vec<u8> {
-    let data = format!(
-        "event: block\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"execution_optimistic\":true}}\n\n",
-        hex::encode([byte; 32])
-    );
-    let mut frame = format!("{:x}\r\n", data.len()).into_bytes();
-    frame.extend_from_slice(data.as_bytes());
-    frame.extend_from_slice(b"\r\n");
-    frame
+fn write_object(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
+    let mut reservation = producer.reserve(bytes.len(), false).unwrap();
+    reservation.write_all(bytes).unwrap();
+    reservation.flush().unwrap();
+    reservation.read()
 }
 
-/// Signals after receiving the response head so events are not published
-/// before the subscription is active.
-fn events_subscriber(
-    addr: SocketAddr,
-    topics: &str,
-    frame_len: usize,
-) -> (JoinHandle<Vec<u8>>, Receiver<()>) {
-    let (subscribed, on_subscribed) = mpsc::channel();
-    let request = format!("GET /eth/v1/events?topics={topics} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    let client = std::thread::spawn(move || {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
-        let mut head = vec![0; SSE_HEAD.len()];
-        stream.read_exact(&mut head).unwrap();
-        assert_eq!(head, SSE_HEAD, "{}", String::from_utf8_lossy(&head));
-        subscribed.send(()).unwrap();
-        let mut frames = vec![0; frame_len];
-        stream.read_exact(&mut frames).unwrap();
-        frames
-    });
-    (client, on_subscribed)
+/// Synthetic block for field extraction, not consensus validation. The fixed
+/// body prefix exercises fork-specific hashing instead of the short-body
+/// fallback. Varying the state root gives fixtures distinct block roots.
+fn block_bytes(slot: u64, byte: u8) -> Vec<u8> {
+    let mut body = vec![0u8; BEACON_BLOCK_BODY_FIXED];
+    for offset in [200, 204, 208, 212, 216, 380, 384, 388, 392] {
+        body[offset..offset + 4].copy_from_slice(&(BEACON_BLOCK_BODY_FIXED as u32).to_le_bytes());
+    }
+    let mut block = vec![0u8; SIGNED_BEACON_BLOCK_MIN];
+    block[0..4].copy_from_slice(&100u32.to_le_bytes());
+    block[100..108].copy_from_slice(&slot.to_le_bytes());
+    block[148..180].copy_from_slice(&[byte; 32]);
+    block[180..184].copy_from_slice(&84u32.to_le_bytes());
+    block.extend_from_slice(&body);
+    block
+}
+
+/// Empty Fulu sidecar for field extraction; consensus validation is outside
+/// this fixture.
+fn fulu_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
+    let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_MIN];
+    sidecar[0..8].copy_from_slice(&index.to_le_bytes());
+    for offset in [8, 12, 16] {
+        sidecar[offset..offset + 4]
+            .copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
+    }
+    sidecar[20..28].copy_from_slice(&slot.to_le_bytes());
+    sidecar[68..100].copy_from_slice(&[byte; 32]);
+    sidecar
+}
+
+/// Empty Gloas sidecar for field extraction; consensus validation is outside
+/// this fixture.
+fn gloas_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
+    let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_GLOAS_MIN];
+    sidecar[0..8].copy_from_slice(&index.to_le_bytes());
+    for offset in [8, 12] {
+        sidecar[offset..offset + 4]
+            .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
+    }
+    sidecar[16..24].copy_from_slice(&slot.to_le_bytes());
+    sidecar[24..56].copy_from_slice(&[byte; 32]);
+    sidecar
+}
+
+fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
+    PeerEvent::SendGossip {
+        originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
+        topic,
+        msg_hash: MessageId { id: [byte; 20] },
+        recv_ts: Nanos::now(),
+        // The boundary does not read protobuf, so no encoded payload is needed.
+        protobuf: ssz,
+        ssz,
+    }
+}
+
+fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEvent) {
+    let block = block_bytes(slot, byte);
+    let event = send_gossip(GossipTopic::BeaconBlock, byte, write_object(gossip, &block));
+    (event, SseEvent::block_gossip(slot, &block_root_fulu(&block)))
+}
+
+fn column_relay(gossip: &mut TProducer, slot: u64, byte: u8, index: u64) -> (PeerEvent, SseEvent) {
+    let sidecar = fulu_sidecar_bytes(slot, byte, index);
+    let topic = GossipTopic::DataColumnSidecar(index);
+    let event = send_gossip(topic, byte, write_object(gossip, &sidecar));
+    (event, SseEvent::column(slot, &block_root_from_sidecar(&sidecar), index))
+}
+
+fn column_publication(
+    rpc: &mut TProducer,
+    slot: u64,
+    byte: u8,
+    index: u64,
+) -> (PeerEvent, SseEvent) {
+    let event = PeerEvent::PublishDataColumn {
+        originator: P2pStreamId::new(2, 0, StreamProtocol::DataColumnSidecarsByRange, true),
+        topic: GossipTopic::DataColumnSidecar(index),
+        ssz: write_object(rpc, &gloas_sidecar_bytes(slot, byte, index)),
+    };
+    (event, SseEvent::column(slot, &[byte; 32], index))
+}
+
+#[derive(Clone, Debug)]
+struct SseEvent {
+    name: String,
+    data: Value,
+}
+
+impl SseEvent {
+    fn block(slot: u64, byte: u8) -> Self {
+        Self {
+            name: "block".to_owned(),
+            data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode([byte; 32]))}),
+        }
+    }
+
+    fn block_gossip(slot: u64, block_root: &[u8; 32]) -> Self {
+        Self {
+            name: "block_gossip".to_owned(),
+            data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode(block_root))}),
+        }
+    }
+
+    fn column(slot: u64, block_root: &[u8; 32], index: u64) -> Self {
+        Self {
+            name: "data_column_sidecar".to_owned(),
+            data: json!({"block_root": format!("0x{}", hex::encode(block_root)), "index": index.to_string(), "slot": slot.to_string()}),
+        }
+    }
+
+    fn assert_matches(&self, expected: &Self) {
+        assert_eq!(self.name, expected.name);
+        for (key, value) in expected.data.as_object().unwrap() {
+            assert_eq!(self.data.get(key), Some(value), "field {key} in {}", self.name);
+        }
+    }
+
+    fn assert_block(&self, name: &str, slot: u64, byte: u8) {
+        assert_eq!(self.name, name);
+        assert_eq!(self.data["slot"], slot.to_string());
+        assert_eq!(self.data["block"], format!("0x{}", hex::encode([byte; 32])));
+    }
+}
+
+struct EventsSubscriber {
+    client: JoinHandle<()>,
+    events: Receiver<SseEvent>,
+}
+
+impl EventsSubscriber {
+    fn new(addr: SocketAddr, topics: &str, count: usize, pump: impl FnMut()) -> Self {
+        let (subscribed, on_subscribed) = mpsc::channel();
+        let (send, events) = mpsc::channel();
+        let url = format!("http://{addr}/eth/v1/events?topics={topics}");
+        let client = std::thread::spawn(move || {
+            let response = ureq::get(&url).timeout(Duration::from_secs(10)).call().unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.content_type(), "text/event-stream");
+            subscribed.send(()).unwrap();
+
+            let mut name = String::new();
+            let mut data = String::new();
+            let mut received = 0;
+            for line in BufReader::new(response.into_reader()).lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    if !data.is_empty() {
+                        send.send(SseEvent {
+                            name: if name.is_empty() { "message".to_owned() } else { name.clone() },
+                            data: serde_json::from_str(&data).expect("event data is JSON"),
+                        })
+                        .unwrap();
+                        received += 1;
+                        if received == count {
+                            return;
+                        }
+                    }
+                    name.clear();
+                    data.clear();
+                } else if let Some((field, value)) = line.split_once(':') {
+                    let value = value.strip_prefix(' ').unwrap_or(value);
+                    match field {
+                        "event" => name = value.to_owned(),
+                        "data" => {
+                            data.push_str(value);
+                            data.push('\n');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            panic!("event stream closed before {count} events arrived");
+        });
+        receive_while_pumping(&on_subscribed, pump);
+        Self { client, events }
+    }
+
+    fn next(&self, pump: impl FnMut()) -> SseEvent {
+        receive_while_pumping(&self.events, pump)
+    }
+
+    fn assert_topic_sequences(&self, expected: &[SseEvent], mut pump: impl FnMut()) {
+        let mut actual = (0..expected.len()).map(|_| self.next(&mut pump)).collect::<Vec<_>>();
+        let mut expected = expected.iter().collect::<Vec<_>>();
+        // Stable sorting preserves each topic's sequence without fixing their
+        // interleaving.
+        actual.sort_by(|a, b| a.name.cmp(&b.name));
+        expected.sort_by(|a, b| a.name.cmp(&b.name));
+        for (actual, expected) in actual.iter().zip(expected) {
+            actual.assert_matches(expected);
+        }
+    }
+}
+
+fn receive_while_pumping<T>(receiver: &Receiver<T>, mut pump: impl FnMut()) -> T {
+    loop {
+        match receiver.try_recv() {
+            Ok(value) => return value,
+            Err(TryRecvError::Empty) => pump(),
+            Err(TryRecvError::Disconnected) => {
+                panic!("subscriber stopped before sending its result")
+            }
+        }
+    }
 }
 
 fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> BeaconStateEvent {
@@ -294,7 +489,7 @@ fn head_events_subscriber(
 
 #[test]
 fn serves_identity_over_tcp() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_tcp_gossip",
@@ -319,7 +514,7 @@ fn serves_identity_over_tcp() {
 
 #[test]
 fn serves_identity_over_uds() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let socket = base.path().join("beacon_api.sock");
     let mut tile = boundary_tile(&Bind::Unix(socket.clone()), no_el(), [
@@ -351,7 +546,7 @@ fn serves_identity_over_uds() {
 /// once the response arrives.
 #[test]
 fn serves_beacon_api_while_engine_call_in_flight() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -427,7 +622,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
 /// connection, and completions must correlate out of order.
 #[test]
 fn pool_cap_gates_spine_intake() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -508,7 +703,7 @@ fn pool_cap_gates_spine_intake() {
 /// not the one after.
 #[test]
 fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -586,7 +781,7 @@ fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
 /// first iteration on.
 #[test]
 fn node_status_tracks_the_spine_once_the_cursor_snaps() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_status_gossip",
@@ -632,7 +827,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
 /// loses its whole backlog.
 #[test]
 fn node_status_updates_while_the_engine_pool_is_at_cap() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -704,7 +899,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 /// at the same time.
 #[test]
 fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
     let jwt_path = write_jwt(base.path());
@@ -796,7 +991,7 @@ fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
 /// had one to itself.
 #[test]
 fn serves_concurrent_clients_with_no_engine_registered() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_noel_gossip",
@@ -821,7 +1016,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 
 #[test]
 fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_sse_gossip",
@@ -830,47 +1025,265 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
     ]);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
-    // Initialize the consumer before publishing: its first consume skips
-    // events already on the spine.
     tile.loop_body(&mut adapter);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    let expected = block_frame(10, 0xab);
-    let (client, on_subscribed) = events_subscriber(addr, "block", expected.len());
-
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
-        assert!(Instant::now() < deadline, "timeout: {msg}");
+    let mut crank = || {
+        assert!(Instant::now() < deadline, "timeout: block subscription");
         tile.loop_body(&mut adapter);
         std::thread::sleep(Duration::from_millis(1));
     };
-    while on_subscribed.try_recv().is_err() {
-        crank(&mut tile, "stream head reaches the subscriber");
-    }
+    let client = EventsSubscriber::new(addr, "block", 1, &mut crank);
 
     inj.produce(block_received(7, 0x07, BlockStage::AlreadyKnown));
     inj.produce(block_received(8, 0x08, BlockStage::AwaitParent));
     inj.produce(block_received(9, 0x09, BlockStage::AwaitData));
     inj.produce(block_received(10, 0xab, BlockStage::Applied));
-    while !client.is_finished() {
-        crank(&mut tile, "block frame reaches the subscriber");
-    }
-    let got = client.join().unwrap();
-    assert!(
-        got == expected,
-        "\n     got: {:?}\nexpected: {:?}",
-        String::from_utf8_lossy(&got),
-        String::from_utf8_lossy(&expected)
+    let event = client.next(&mut crank);
+    event.assert_block("block", 10, 0xab);
+    assert_eq!(event.data["execution_optimistic"], true);
+    client.client.join().unwrap();
+}
+
+#[test]
+fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut tile, mut gossip, mut rpc) =
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
+            "cs_subscriptions_gossip",
+            "cs_subscriptions_rpc",
+            "cs_subscriptions_resp",
+        ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = || {
+        assert!(Instant::now() < deadline, "timeout: subscription routing");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let block = EventsSubscriber::new(addr, "block", 2, &mut crank);
+    let block_gossip = EventsSubscriber::new(addr, "block_gossip", 3, &mut crank);
+    let column = EventsSubscriber::new(addr, "data_column_sidecar", 5, &mut crank);
+    let mixed =
+        EventsSubscriber::new(addr, "block,block_gossip,data_column_sidecar", 10, &mut crank);
+
+    // Topic selection must exclude this request even though its bytes resemble a
+    // block.
+    let unrelated = write_object(&mut gossip, &block_bytes(9, 0xaf));
+    inj.produce(send_gossip(GossipTopic::BeaconAttestation(0), 0xaf, unrelated));
+    inj.produce(PeerEvent::EarliestSlot(99));
+
+    let (relay, relayed) = column_relay(&mut gossip, 10, 0xac, 3);
+    let (published, publication) = column_publication(&mut rpc, 11, 0xad, 5);
+    let (block_relayed, relayed_block) = block_relay(&mut gossip, 12, 0xae);
+    inj.produce(relay);
+    inj.produce(relay);
+    inj.produce(published);
+    inj.produce(block_relayed);
+    inj.produce(block_relayed);
+    inj.produce(block_received(13, 0xab, BlockStage::Applied));
+
+    // Observe every topic before sending sentinels, so leaks remain inside the
+    // events read.
+    mixed.assert_topic_sequences(
+        &[
+            SseEvent::block(13, 0xab),
+            relayed_block.clone(),
+            relayed_block.clone(),
+            relayed.clone(),
+            relayed.clone(),
+            publication.clone(),
+        ],
+        &mut crank,
     );
+    inj.produce(relay);
+    let (sentinel, sentinel_publication) = column_publication(&mut rpc, 14, 0xaf, 7);
+    inj.produce(sentinel);
+    let (last_block, last_relayed_block) = block_relay(&mut gossip, 15, 0xb0);
+    inj.produce(last_block);
+    inj.produce(block_received(16, 0xb1, BlockStage::Applied));
+
+    block.assert_topic_sequences(
+        &[SseEvent::block(13, 0xab), SseEvent::block(16, 0xb1)],
+        &mut crank,
+    );
+    block_gossip.assert_topic_sequences(
+        &[relayed_block.clone(), relayed_block.clone(), last_relayed_block.clone()],
+        &mut crank,
+    );
+    column.assert_topic_sequences(
+        &[
+            relayed.clone(),
+            relayed.clone(),
+            publication.clone(),
+            relayed.clone(),
+            sentinel_publication.clone(),
+        ],
+        &mut crank,
+    );
+    mixed.assert_topic_sequences(
+        &[SseEvent::block(16, 0xb1), last_relayed_block, relayed, sentinel_publication],
+        &mut crank,
+    );
+    for subscriber in [block, block_gossip, column, mixed] {
+        subscriber.client.join().unwrap();
+    }
+}
+
+#[test]
+fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut tile, mut gossip, mut rpc) =
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
+            "cs_late_gossip",
+            "cs_late_rpc",
+            "cs_late_resp",
+        ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = || {
+        assert!(Instant::now() < deadline, "timeout: late subscription");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let topics = "block_gossip,data_column_sidecar";
+    let early = EventsSubscriber::new(addr, topics, 3, &mut crank);
+    let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
+    let (relay, relayed) = column_relay(&mut gossip, 20, 0x11, 3);
+    let (published, publication) = column_publication(&mut rpc, 21, 0x12, 5);
+    inj.produce(block);
+    inj.produce(relay);
+    inj.produce(published);
+    early.assert_topic_sequences(&[relayed_block, relayed, publication], &mut crank);
+    early.client.join().unwrap();
+
+    let late = EventsSubscriber::new(addr, topics, 3, &mut crank);
+    let (block, relayed_block) = block_relay(&mut gossip, 22, 0x22);
+    let (relay, relayed) = column_relay(&mut gossip, 22, 0x22, 7);
+    let (published, publication) = column_publication(&mut rpc, 23, 0x23, 9);
+    inj.produce(block);
+    inj.produce(relay);
+    inj.produce(published);
+    late.assert_topic_sequences(&[relayed_block, relayed, publication], &mut crank);
+    late.client.join().unwrap();
+}
+
+#[test]
+fn an_idle_boundary_lets_the_object_rings_evict_its_consumers() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut tile, mut gossip, mut rpc) =
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
+            "cs_idle_gossip",
+            "cs_idle_rpc",
+            "cs_idle_resp",
+        ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let chunk = [0u8; 1 << 10];
+    let fill = |producer: &mut TProducer| {
+        let mut written = 0;
+        while let Some(mut reservation) = producer.reserve(chunk.len(), false) {
+            reservation.write_all(&chunk).unwrap();
+            reservation.flush().unwrap();
+            written += 1;
+            assert!(written < 1_000, "the ring never filled");
+        }
+    };
+    fill(&mut gossip);
+    fill(&mut rpc);
+
+    // Tail advancement requires inactivity beyond the cache's five-second idle
+    // interval.
+    std::thread::sleep(Duration::from_millis(5_100));
+    tile.loop_body(&mut adapter);
+    assert!(gossip.reserve(chunk.len(), false).is_some(), "the gossip ring is held by the tile");
+    assert!(rpc.reserve(chunk.len(), false).is_some(), "the RPC ring is held by the tile");
+}
+
+#[test]
+fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut el, endpoint) = FakeEl::tcp();
+    let jwt_path = write_jwt(base.path());
+    let capacity = 8;
+    let config = EngineConfig {
+        execution_endpoint: endpoint,
+        jwt_secret: jwt_path.to_str().unwrap().to_string(),
+        max_connections: capacity,
+        ..EngineConfig::default()
+    };
+    let (mut tile, mut gossip, mut rpc) =
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), config, [
+            "cs_gsat_gossip",
+            "cs_gsat_rpc",
+            "cs_gsat_resp",
+        ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+    for byte in 0..capacity {
+        inj.produce(fcu_req(byte as u8));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut handled = 0;
+    let mut pending = 0;
+    let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl| {
+        assert!(Instant::now() < deadline, "timeout: saturated engine pool");
+        tile.loop_body(&mut adapter);
+        el.pump();
+        for i in handled..el.requests.len() {
+            let method = el.requests[i].method.as_str();
+            if method.starts_with("engine_forkchoiceUpdated") {
+                pending += 1;
+            } else {
+                el.respond(i, if method == "eth_syncing" { "false" } else { "[]" });
+            }
+        }
+        handled = el.requests.len();
+        std::thread::sleep(Duration::from_millis(1));
+        pending
+    };
+    while crank(&mut tile, &mut el) < capacity {}
+    inj.produce(fcu_req(0xff));
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let mut pump = || {
+        crank(&mut tile, &mut el);
+    };
+    let client = EventsSubscriber::new(addr, "block_gossip,data_column_sidecar", 3, &mut pump);
+    let (block, relayed_block) = block_relay(&mut gossip, 30, 0x33);
+    let (relay, relayed) = column_relay(&mut gossip, 31, 0x34, 7);
+    let (published, publication) = column_publication(&mut rpc, 32, 0x35, 9);
+    inj.produce(block);
+    inj.produce(relay);
+    inj.produce(published);
+    client.assert_topic_sequences(&[relayed_block, relayed, publication], &mut pump);
+    client.client.join().unwrap();
+    assert_eq!(pending, capacity, "the additional FCU stays queued while SSE is served");
 }
 
 #[test]
 fn head_subscribers_receive_changes_for_their_topics() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut spec = SpecConfig::mainnet();
     spec.gloas_fork_epoch = spec.fulu_fork_epoch + 2;
-    let mut tile = boundary_tile_with_spec(
+    let (mut tile, _gossip, _rpc) = boundary_tile_with_spec(
         &Bind::parse("127.0.0.1:0"),
         no_el(),
         ["cs_head_v2_gossip", "cs_head_v2_rpc", "cs_head_v2_resp"],
@@ -964,7 +1377,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
 /// The initial head observation emits no event but still updates node status.
 #[test]
 fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_optimism_gossip",

@@ -9,6 +9,7 @@ use std::{
 };
 
 use silver_common::{Prefill, SyncNeed, SyncUpdate};
+use tempfile::TempDir;
 
 use super::{column_path, envelope_path, slot_dir};
 
@@ -36,8 +37,8 @@ use crate::tile::IoEvent;
 
 #[test]
 fn concurrent_read_write() {
-    let path = format!("/tmp/silver_storage_rw_{}.txt", rand::random::<u32>());
-    let _ = std::fs::remove_file(&path);
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("storage.txt").to_str().unwrap().to_owned();
     let mut file = super::io::open_file_write(&path, false).unwrap();
 
     let mut handles = vec![];
@@ -93,8 +94,8 @@ fn fork_tree_persist_serve_promote() {
         RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
     };
 
-    let store_path = format!("/tmp/test_store_fork_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
 
     // Two competing blocks at slot 42 sharing parent CC: A canonical, B fork.
@@ -248,8 +249,6 @@ fn fork_tree_persist_serve_promote() {
     let reloaded = load_fulu(store_path.clone());
     assert_eq!(reloaded.finalized.slot_of(&root_a), Some(slot));
     assert!(reloaded.unfinalized.is_empty());
-
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 // Envelopes: persist unfinalized, promote the canonical one to the flat
@@ -258,8 +257,8 @@ fn fork_tree_persist_serve_promote() {
 fn envelope_persist_promote_prune() {
     use silver_common::{TCache, TCacheProducer};
 
-    let store_path = format!("/tmp/test_store_env_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_gloas(store_path.clone());
 
     // Canonical block A + fork block B at slot 42, shared parent CC; each
@@ -350,8 +349,6 @@ fn envelope_persist_promote_prune() {
     // Reload rebuilds the (now empty) unfinalized envelope index.
     let reloaded = load_gloas(store_path.clone());
     assert!(reloaded.unfinalized_envelopes.is_empty());
-
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 // A self-parenting block (cycle) must not hang the canonical walk.
@@ -361,8 +358,8 @@ fn range_query_terminates_on_cycle() {
         P2pStreamId, RpcRequest, RpcRequestInbound, StreamProtocol, TCache, TCacheProducer,
     };
 
-    let store_path = format!("/tmp/test_store_cycle_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
 
     // parent_root == block_root: a self-loop in the fork tree.
@@ -397,8 +394,6 @@ fn range_query_terminates_on_cycle() {
     });
     // Reaching here proves the walk terminated.
     assert!(!store.query_queue.is_empty());
-
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 #[test]
@@ -409,8 +404,8 @@ fn envelope_range_request_served_empty() {
         ssz_view::EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
     };
 
-    let store_path = format!("/tmp/test_store_env_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
 
     // We don't persist envelopes, but an inbound range request must still get
@@ -455,8 +450,8 @@ fn column_fork_persist_serve_promote() {
         RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer, ssz_view::DC_BY_RANGE_REQ_MAX,
     };
 
-    let store_path = format!("/tmp/test_store_colfork_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
     let ucol_dir = store.unfinalized_dir(super::Payload::Column);
     let flat_dir = store.finalized_slot_dir(super::Payload::Column, 42);
@@ -636,14 +631,12 @@ fn column_fork_persist_serve_promote() {
     let reloaded = load_fulu(store_path.clone());
     assert!(reloaded.unfinalized_columns.is_empty());
     assert_eq!(reloaded.finalized.slot_of(&root_a), Some(slot));
-
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 #[test]
 fn backfill_block_persists_its_index_record() {
-    let store_path = format!("/tmp/test_store_backfill_index_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let temp = TempDir::new().unwrap();
+    let store_path = temp.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
 
     let slot = 64u64;
@@ -670,14 +663,12 @@ fn backfill_block_persists_its_index_record() {
 
     let dir = store.finalized_slot_dir(super::Payload::Block, slot);
     assert_eq!(index_records(&dir), vec![super::block_index::Record { block_root, slot }]);
-
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 #[test]
 fn column_already_on_disk_is_not_written_again() {
-    let store_path = format!("/tmp/test_store_col_dedupe_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
 
     let (slot, block_root) = (9u64, [3u8; 32]);
@@ -690,7 +681,6 @@ fn column_already_on_disk_is_not_written_again() {
     assert_eq!(store.write_queue.len(), 1, "the second is already on disk");
 
     drain(&mut store).unwrap();
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 /// A failing write is dropped, not retried. The coverage and the report
@@ -747,8 +737,8 @@ fn failed_write_is_neither_held_nor_reported() {
 /// store can drop the second copy.
 #[test]
 fn envelope_already_on_disk_is_not_written_again() {
-    let store_path = format!("/tmp/test_store_env_dedupe_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_gloas(store_path.clone());
 
     let (slot, block_root, parent_root) = (9u64, [3u8; 32], [0u8; 32]);
@@ -767,7 +757,6 @@ fn envelope_already_on_disk_is_not_written_again() {
     assert_eq!(store.write_queue.len(), 2, "the second is already on disk");
 
     drain(&mut store).unwrap();
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 /// Synthetic fulu `SignedBeaconBlock` carrying blob commitments, so the
@@ -1121,8 +1110,8 @@ fn range_queries_interleave_fairly() {
         RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
     };
 
-    let store_path = format!("/tmp/test_store_fair_{}", rand::random::<u32>());
-    let _ = std::fs::remove_dir_all(&store_path);
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
     let mut store = load_fulu(store_path.clone());
 
     // Chain of two unfinalized blocks: slot 10 (parent CC) ← slot 11.
@@ -1195,8 +1184,6 @@ fn range_queries_interleave_fairly() {
         };
         assert!(matches!(response, RpcResponse::Complete));
     }
-
-    let _ = std::fs::remove_dir_all(&store_path);
 }
 
 /// An unfinalized file that vanished before finality is not promoted. The

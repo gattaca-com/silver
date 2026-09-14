@@ -39,11 +39,12 @@ use std::{
 
 use flux::{tile::Tile, timing::Nanos};
 use rand::RngCore;
-use silver_common::{GossipTopic, NewGossipMsg, PeerControl, PeerEvent, PeerId, TRandomAccess};
+use silver_common::{
+    GossipTopic, NewGossipMsg, PeerControl, PeerEvent, PeerId, TRandomAccess, test_util::ShmemDir,
+};
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, LhGossipClient, Stats, keypair_from_seed,
 };
-use tempfile::TempDir;
 
 const DEFAULT_DURATION_S: u64 = 3;
 const DEFAULT_RATE_HZ: u64 = 500;
@@ -57,7 +58,7 @@ fn main() {
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
 
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = ShmemDir::new().expect("tempdir");
     let echo_addr = loopback_ephemeral().expect("port");
     let echo_disc_addr = loopback_ephemeral().expect("port");
     let echo_kp = keypair_from_seed(12);
