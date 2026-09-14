@@ -578,6 +578,7 @@ mod tests {
                 msg_hash: message.msg_hash,
                 recv_ts: message.recv_ts,
                 protobuf: message.protobuf,
+                ssz: message.ssz,
             },
             &mut standalone.adapter.producers,
         );
