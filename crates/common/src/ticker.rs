@@ -48,6 +48,7 @@ impl Phase {
 pub struct SlotTicker {
     anchor: Instant,
     anchor_genesis_ms: u64,
+    frozen: bool,
     slot_ms: u64,
     /// (offset_ms_from_slot_start, phase), sorted by offset.
     phases: [(u64, Phase); NUM_PHASES],
@@ -94,6 +95,7 @@ impl SlotTicker {
         Self {
             anchor: Instant::now(),
             anchor_genesis_ms: now_unix_ms.saturating_sub(genesis_ms),
+            frozen: false,
             slot_ms,
             phases,
             last: None,
@@ -101,6 +103,9 @@ impl SlotTicker {
     }
 
     pub fn millis_since_genesis(&self) -> u64 {
+        if self.frozen {
+            return self.anchor_genesis_ms;
+        }
         self.anchor_genesis_ms + self.anchor.elapsed().as_millis() as u64
     }
 
@@ -155,20 +160,16 @@ impl SlotTicker {
 
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_current_slot(&mut self, slot: u64) {
-        self.anchor = Instant::now();
-        self.anchor_genesis_ms = slot * self.slot_ms;
-        self.last = None;
+        self.set_since_genesis_ms(slot * self.slot_ms);
     }
 
-    /// Force `since_genesis_ms()` to `ms` at this moment, fixing both the slot
-    /// and the sub-slot offset (so `is_before_attesting_interval` reflects a
-    /// precise within-slot time). For EF fork-choice vectors that pin proposer
-    /// boost to a `tick`. Reads drift by the elapsed call latency (negligible
-    /// vs the 12s slot / 4s deadline).
+    /// Pin `millis_since_genesis()` to `ms` and hold it there. EF vectors put
+    /// messages exactly on the 1 ms edge of a disparity window, so a clock that
+    /// kept running between the tick and the check would drift across it.
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_since_genesis_ms(&mut self, ms: u64) {
-        self.anchor = Instant::now();
         self.anchor_genesis_ms = ms;
+        self.frozen = true;
         self.last = None;
     }
 

@@ -1380,7 +1380,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
 /// any other mode move the baseline and node status silently.
 #[test]
 fn head_events_describe_changes_observed_while_following() {
-    let base = TempDir::new().unwrap();
+    let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
         "cs_follow_gossip",

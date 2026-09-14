@@ -339,6 +339,7 @@ impl BeaconStateTile {
         // `latest_block_header.state_root` stays `[0;32]` — the first
         // post-bootstrap `process_slot` hashes that canonical state and a
         // patched value would shift the result.
+        let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
         let (header, block_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
             let state_root = ssz_hash::hash_tree_root_state(&rv);
@@ -346,18 +347,18 @@ impl BeaconStateTile {
             if header.state_root == [0u8; 32] {
                 header.state_root = state_root;
             }
-            (
-                header,
-                ssz_hash::hash_tree_root_block_header(&header),
-                rv.slot.state().latest_execution_payload_header.block_hash,
-            )
+            let execution_block_hash = if anchor_is_gloas {
+                rv.slot.state().latest_execution_payload_bid.block_hash
+            } else {
+                rv.slot.state().latest_execution_payload_header.block_hash
+            };
+            (header, ssz_hash::hash_tree_root_block_header(&header), execution_block_hash)
         };
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_applied_block_root = block_root;
         self.last_seen_head_root = block_root;
 
-        let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
         // A checkpoint state can be ahead of its latest block. Peers need
         // the block's slot in Status.
         self.fork_choice = ForkChoice::init(

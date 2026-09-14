@@ -20,7 +20,7 @@ mod collector;
 mod config;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let _tracing = initialise_tracing_log("telemetry", 10, None, false);
+    let _tracing = initialise_tracing_log("telemetry", 10, None, false, None);
     let collector = TraceCollector::attach_to_node(Args::parse())?;
 
     let spine = SilverSpine::new(None);
