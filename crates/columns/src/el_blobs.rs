@@ -242,6 +242,7 @@ impl ElBlobFetcher {
                             column_index: j,
                             slot: pending.slot,
                         });
+                        built |= bit;
                     }
                     Err(e) => tracing::error!(?e, "failed to write el sidecar to tcache"),
                 },
@@ -249,8 +250,6 @@ impl ElBlobFetcher {
                     tracing::error!("failed to allocation cache space for el data column");
                 }
             }
-
-            built |= bit;
         }
 
         if built == 0 {
