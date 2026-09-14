@@ -354,6 +354,24 @@ fn precomputed_epoch_survives_finalization() {
     assert_eq!(ssz_hash::hash_tree_root_state(&forks.tile.state.read_view(after)), before_root);
 }
 
+/// A multi-epoch advance in one fork matches stepping one epoch at a time.
+#[test]
+fn long_gap_advance_matches_stepping_epoch_by_epoch() {
+    let mut stepped = make_tile();
+    seed_tile(&mut stepped, 4, 31);
+    let mut id = stepped.last_applied;
+    for epoch in 1..=5 {
+        id = stepped.epoch_start_state(ANCHOR_ROOT, id, epoch * SLOTS_PER_EPOCH);
+    }
+    let stepped_root = ssz_hash::hash_tree_root_state(&stepped.state.read_view(id));
+
+    let mut jumped = make_tile();
+    seed_tile(&mut jumped, 4, 31);
+    let id = jumped.epoch_start_state(ANCHOR_ROOT, jumped.last_applied, 5 * SLOTS_PER_EPOCH);
+
+    assert_eq!(ssz_hash::hash_tree_root_state(&jumped.state.read_view(id)), stepped_root);
+}
+
 /// Sustained non-finality: slot advances far past the rings' initial
 /// capacity (slot tiers past `SLOTS_RING_N` twice over, the epoch tier
 /// past `EPOCHS_RING_N`) must grow the rings instead of panicking on

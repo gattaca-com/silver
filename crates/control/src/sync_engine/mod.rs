@@ -547,9 +547,12 @@ impl SyncEngine {
         if !chosen.is_following() {
             return Some(chosen);
         }
-        let comparable = self.ctx.local.have_status &&
+        let local = &self.ctx.local;
+        let comparable = local.have_status &&
             (self.phase.target().is_some() || self.ctx.peers.received_statuses());
-        comparable.then_some(SyncUpdate::Following)
+        let peers_are_ahead =
+            self.ctx.peers.any_peer_ahead_of(local.head_imported_slot, &self.ctx.cfg);
+        (comparable && !peers_are_ahead).then_some(SyncUpdate::Following)
     }
 
     pub fn drive_requests(&mut self, now: Instant, emit: &mut impl FnMut(SyncAction) -> bool) {

@@ -496,11 +496,13 @@ impl BeaconStateTile {
     /// later one, else `from`.
     #[timed]
     fn epoch_start_state(&mut self, root: B256, from: StateId, slot: Slot) -> StateId {
-        let from_slot = self.slot_state_at(from).slot;
-        let (state, spec, scratch) = (&mut self.state, &self.spec, &mut self.stf_scratch);
         let epoch = slot / SLOTS_PER_EPOCH;
-        self.precomputed_epochs.get_or_advance(root, from, from_slot, epoch, |from, to| {
-            Self::process_slots_advance(state, spec, scratch, from, to)
+        if epoch <= self.slot_state_at(from).slot / SLOTS_PER_EPOCH {
+            return from;
+        }
+        let (state, spec, scratch) = (&mut self.state, &self.spec, &mut self.stf_scratch);
+        self.precomputed_epochs.get_or_insert(root, epoch, || {
+            Self::process_slots_advance(state, spec, scratch, from, epoch * SLOTS_PER_EPOCH)
         })
     }
 
