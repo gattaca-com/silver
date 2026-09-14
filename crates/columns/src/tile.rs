@@ -529,6 +529,7 @@ impl DataColumnsTile {
                     msg_hash,
                     recv_ts,
                     protobuf,
+                    block: None,
                 });
             }
             RelayMeta::Rpc { ssz } if self.sync_state.is_synced() => {

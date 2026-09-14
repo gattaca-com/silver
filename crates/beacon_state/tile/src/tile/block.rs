@@ -6,7 +6,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
-    SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, hex32,
+    GossipBlock, SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, hex32,
     ssz_view::{
         self, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView,
         SignedBeaconBlockView,
@@ -96,7 +96,7 @@ impl BeaconStateTile {
         source: BlockSource,
         pre_verified: bool,
         producers: &mut Producers,
-        mut send_gossip: impl FnMut(&mut Producers),
+        mut send_gossip: impl FnMut(&mut Producers, GossipBlock),
     ) -> Feedback {
         if let Err(e) = Self::check_block_size(data) {
             tracing::warn!(?source, "{e}");
@@ -107,7 +107,10 @@ impl BeaconStateTile {
         let parsed = match self.parse_and_verify_block(data, pre_verified) {
             Ok(parsed) => {
                 if parsed.relay_eligible {
-                    send_gossip(producers);
+                    send_gossip(producers, GossipBlock {
+                        slot: block_slot,
+                        block_root: parsed.block_root,
+                    });
                 }
                 parsed
             }

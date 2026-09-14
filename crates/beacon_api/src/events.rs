@@ -13,6 +13,7 @@ pub(crate) const KEEP_ALIVE: &[u8] = b": keep-alive\n\n";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Channel {
     Block,
+    BlockGossip,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,6 +69,7 @@ fn topics(query: &str) -> Result<ChannelSet, Refused> {
 fn channel(topic: &str) -> Option<Channel> {
     match topic {
         "block" => Some(Channel::Block),
+        "block_gossip" => Some(Channel::BlockGossip),
         _ => None,
     }
 }
@@ -126,7 +128,19 @@ mod tests {
         assert_eq!(topics("topics=block"), Ok(block_only()));
         assert_eq!(topics("topics=block,block"), Ok(block_only()));
         assert_eq!(topics("topics=block&topics=block"), Ok(block_only()));
-        assert_eq!(topics("topics=block%2Cblock"), Ok(block_only()), "percent-encoded comma");
+        let mut gossip = ChannelSet::default();
+        gossip.insert(Channel::BlockGossip);
+        assert_eq!(topics("topics=block_gossip"), Ok(gossip));
+
+        let mut both = gossip;
+        both.insert(Channel::Block);
+        for query in [
+            "topics=block,block_gossip",
+            "topics=block_gossip&topics=block",
+            "topics=block%2Cblock_gossip",
+        ] {
+            assert_eq!(topics(query), Ok(both), "{query}");
+        }
     }
 
     #[test]

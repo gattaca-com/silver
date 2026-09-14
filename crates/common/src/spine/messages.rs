@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 
 use crate::{
     DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId, StreamProtocol,
@@ -318,6 +318,13 @@ impl RpcOutbound {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct GossipBlock {
+    pub slot: u64,
+    pub block_root: B256,
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
@@ -466,6 +473,7 @@ pub enum PeerEvent {
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
+        block: Option<GossipBlock>,
     },
     /// Misbehaviour observed on the RPC (req/resp) sub-protocol. The peer
     /// manager translates `severity` into a P5 application-score delta;

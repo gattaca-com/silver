@@ -1,19 +1,21 @@
 use std::{
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::net::UnixStream,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
+use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
+use serde_json::Value;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, Identify, Keypair, PayloadValidationStatus, SilverSpine, SyncUpdate, TCache,
+    Enr, GossipBlock, GossipTopic, Identify, Keypair, MessageId, P2pStreamId,
+    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
     TCacheProducer, ssz_view::STATUS_V2_SIZE,
 };
 use silver_config::EngineConfig;
@@ -135,8 +137,6 @@ fn drain_fcu_completions(
     });
 }
 
-const SSE_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
-
 fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
     BeaconStateEvent::BlockReceived {
         slot,
@@ -147,35 +147,106 @@ fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
     }
 }
 
-fn block_frame(slot: u64, byte: u8) -> Vec<u8> {
-    let data = format!(
-        "event: block\ndata: {{\"slot\":\"{slot}\",\"block\":\"0x{}\",\"execution_optimistic\":true}}\n\n",
-        hex::encode([byte; 32])
-    );
-    let mut frame = format!("{:x}\r\n", data.len()).into_bytes();
-    frame.extend_from_slice(data.as_bytes());
-    frame.extend_from_slice(b"\r\n");
-    frame
+fn block_relay(slot: u64, byte: u8) -> PeerEvent {
+    // SSE uses the metadata, so the fixture needs no encoded gossip object.
+    let payload = b"opaque relay payload";
+    let mut producer = TCache::producer("cs_relay_metadata", 1 << 12);
+    let mut reservation = producer.reserve(payload.len(), false).unwrap();
+    reservation.write_all(payload).unwrap();
+    reservation.flush().unwrap();
+    let protobuf = reservation.read();
+    PeerEvent::SendGossip {
+        originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
+        topic: GossipTopic::BeaconBlock,
+        msg_hash: MessageId { id: [byte; 20] },
+        recv_ts: Nanos::now(),
+        protobuf,
+        block: Some(GossipBlock { slot, block_root: [byte; 32] }),
+    }
 }
 
-/// Signals after receiving the response head so events are not published
-/// before the subscription is active.
-fn events_subscriber(addr: SocketAddr, frame_len: usize) -> (JoinHandle<Vec<u8>>, Receiver<()>) {
-    let (subscribed, on_subscribed) = mpsc::channel();
-    let client = std::thread::spawn(move || {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        write!(stream, "GET /eth/v1/events?topics=block HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            .unwrap();
-        let mut head = vec![0; SSE_HEAD.len()];
-        stream.read_exact(&mut head).unwrap();
-        assert_eq!(head, SSE_HEAD, "{}", String::from_utf8_lossy(&head));
-        subscribed.send(()).unwrap();
-        let mut frame = vec![0; frame_len];
-        stream.read_exact(&mut frame).unwrap();
-        frame
-    });
-    (client, on_subscribed)
+#[derive(Debug)]
+struct SseEvent {
+    name: String,
+    data: Value,
+}
+
+impl SseEvent {
+    fn assert_block(&self, name: &str, slot: u64, byte: u8) {
+        assert_eq!(self.name, name);
+        assert_eq!(self.data["slot"], slot.to_string());
+        assert_eq!(self.data["block"], format!("0x{}", hex::encode([byte; 32])));
+    }
+}
+
+struct EventsSubscriber {
+    client: JoinHandle<()>,
+    events: Receiver<SseEvent>,
+}
+
+impl EventsSubscriber {
+    fn new(addr: SocketAddr, topics: &str, count: usize, pump: impl FnMut()) -> Self {
+        let (subscribed, on_subscribed) = mpsc::channel();
+        let (send, events) = mpsc::channel();
+        let url = format!("http://{addr}/eth/v1/events?topics={topics}");
+        let client = std::thread::spawn(move || {
+            let response = ureq::get(&url).timeout(Duration::from_secs(10)).call().unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.content_type(), "text/event-stream");
+            subscribed.send(()).unwrap();
+
+            let mut name = String::new();
+            let mut data = String::new();
+            let mut received = 0;
+            for line in BufReader::new(response.into_reader()).lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    if !data.is_empty() {
+                        send.send(SseEvent {
+                            name: if name.is_empty() { "message".to_owned() } else { name.clone() },
+                            data: serde_json::from_str(&data).expect("event data is JSON"),
+                        })
+                        .unwrap();
+                        received += 1;
+                        if received == count {
+                            return;
+                        }
+                    }
+                    name.clear();
+                    data.clear();
+                } else if let Some((field, value)) = line.split_once(':') {
+                    let value = value.strip_prefix(' ').unwrap_or(value);
+                    match field {
+                        "event" => name = value.to_owned(),
+                        "data" => {
+                            data.push_str(value);
+                            data.push('\n');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            panic!("event stream closed before {count} events arrived");
+        });
+        receive_while_pumping(&on_subscribed, pump);
+        Self { client, events }
+    }
+
+    fn next(&self, pump: impl FnMut()) -> SseEvent {
+        receive_while_pumping(&self.events, pump)
+    }
+}
+
+fn receive_while_pumping<T>(receiver: &Receiver<T>, mut pump: impl FnMut()) -> T {
+    loop {
+        match receiver.try_recv() {
+            Ok(value) => return value,
+            Err(TryRecvError::Empty) => pump(),
+            Err(TryRecvError::Disconnected) => {
+                panic!("subscriber stopped before sending its result")
+            }
+        }
+    }
 }
 
 fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> BeaconStateEvent {
@@ -726,36 +797,171 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
     ]);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
-    // Initialize the consumer before publishing: its first consume skips
-    // events already on the spine.
     tile.loop_body(&mut adapter);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    let expected = block_frame(10, 0xab);
-    let (client, on_subscribed) = events_subscriber(addr, expected.len());
-
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
-        assert!(Instant::now() < deadline, "timeout: {msg}");
+    let mut crank = || {
+        assert!(Instant::now() < deadline, "timeout: block subscription");
         tile.loop_body(&mut adapter);
         std::thread::sleep(Duration::from_millis(1));
     };
-    while on_subscribed.try_recv().is_err() {
-        crank(&mut tile, "stream head reaches the subscriber");
-    }
+    let client = EventsSubscriber::new(addr, "block", 1, &mut crank);
 
     inj.produce(block_received(7, 0x07, BlockStage::AlreadyKnown));
     inj.produce(block_received(8, 0x08, BlockStage::AwaitParent));
     inj.produce(block_received(9, 0x09, BlockStage::AwaitData));
     inj.produce(block_received(10, 0xab, BlockStage::Applied));
-    while !client.is_finished() {
-        crank(&mut tile, "block frame reaches the subscriber");
+    let event = client.next(&mut crank);
+    event.assert_block("block", 10, 0xab);
+    assert_eq!(event.data["execution_optimistic"], true);
+    client.client.join().unwrap();
+}
+
+#[test]
+fn block_subscriptions_select_imports_and_preserve_repeated_relay_requests() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_two_streams_gossip",
+        "cs_two_streams_rpc",
+        "cs_two_streams_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = || {
+        assert!(Instant::now() < deadline, "timeout: block subscription routing");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let block = EventsSubscriber::new(addr, "block", 2, &mut crank);
+    let gossip = EventsSubscriber::new(addr, "block_gossip", 3, &mut crank);
+    let mixed = EventsSubscriber::new(addr, "block,block_gossip", 5, &mut crank);
+
+    let mut unrelated = block_relay(9, 0xaf);
+    let PeerEvent::SendGossip { topic, block: metadata, .. } = &mut unrelated else {
+        unreachable!()
+    };
+    *topic = GossipTopic::BeaconAttestation(0);
+    *metadata = None;
+    inj.produce(unrelated);
+    inj.produce(block_relay(10, 0xac));
+    inj.produce(block_relay(10, 0xac));
+    inj.produce(block_received(11, 0xab, BlockStage::Applied));
+
+    // Observe both topics before sending sentinels, keeping leaks inside the events
+    // read. The two queues promise no ordering relative to each other.
+    let mut initial = (0..3).map(|_| mixed.next(&mut crank)).collect::<Vec<_>>();
+    initial.sort_by(|a, b| a.name.cmp(&b.name));
+    initial[0].assert_block("block", 11, 0xab);
+    initial[1].assert_block("block_gossip", 10, 0xac);
+    initial[2].assert_block("block_gossip", 10, 0xac);
+    inj.produce(block_relay(12, 0xae));
+    inj.produce(block_received(14, 0xb0, BlockStage::Applied));
+
+    block.next(&mut crank).assert_block("block", 11, 0xab);
+    block.next(&mut crank).assert_block("block", 14, 0xb0);
+    gossip.next(&mut crank).assert_block("block_gossip", 10, 0xac);
+    gossip.next(&mut crank).assert_block("block_gossip", 10, 0xac);
+    gossip.next(&mut crank).assert_block("block_gossip", 12, 0xae);
+    let mut trailing = [mixed.next(&mut crank), mixed.next(&mut crank)];
+    trailing.sort_by(|a, b| a.name.cmp(&b.name));
+    trailing[0].assert_block("block", 14, 0xb0);
+    trailing[1].assert_block("block_gossip", 12, 0xae);
+    for subscriber in [block, gossip, mixed] {
+        subscriber.client.join().unwrap();
     }
-    let got = client.join().unwrap();
-    assert!(
-        got == expected,
-        "\n     got: {:?}\nexpected: {:?}",
-        String::from_utf8_lossy(&got),
-        String::from_utf8_lossy(&expected)
-    );
+}
+
+#[test]
+fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_late_gossip",
+        "cs_late_rpc",
+        "cs_late_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = || {
+        assert!(Instant::now() < deadline, "timeout: late subscription");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let early = EventsSubscriber::new(addr, "block_gossip", 1, &mut crank);
+    inj.produce(block_relay(20, 0x11));
+    early.next(&mut crank).assert_block("block_gossip", 20, 0x11);
+    early.client.join().unwrap();
+
+    let late = EventsSubscriber::new(addr, "block_gossip", 1, &mut crank);
+    inj.produce(block_relay(21, 0x22));
+    late.next(&mut crank).assert_block("block_gossip", 21, 0x22);
+    late.client.join().unwrap();
+}
+
+#[test]
+fn a_gossip_event_is_served_while_the_engine_pool_is_saturated() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut el, endpoint) = FakeEl::tcp();
+    let jwt_path = write_jwt(base.path());
+    let capacity = 8;
+    let config = EngineConfig {
+        execution_endpoint: endpoint,
+        jwt_secret: jwt_path.to_str().unwrap().to_string(),
+        max_connections: capacity,
+        ..EngineConfig::default()
+    };
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config, [
+        "cs_gsat_gossip",
+        "cs_gsat_rpc",
+        "cs_gsat_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+    for byte in 0..capacity {
+        inj.produce(fcu_req(byte as u8));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut handled = 0;
+    let mut pending = 0;
+    let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl| {
+        assert!(Instant::now() < deadline, "timeout: saturated engine pool");
+        tile.loop_body(&mut adapter);
+        el.pump();
+        for i in handled..el.requests.len() {
+            let method = el.requests[i].method.as_str();
+            if method.starts_with("engine_forkchoiceUpdated") {
+                pending += 1;
+            } else {
+                el.respond(i, if method == "eth_syncing" { "false" } else { "[]" });
+            }
+        }
+        handled = el.requests.len();
+        std::thread::sleep(Duration::from_millis(1));
+        pending
+    };
+    while crank(&mut tile, &mut el) < capacity {}
+    inj.produce(fcu_req(0xff));
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let mut pump = || {
+        crank(&mut tile, &mut el);
+    };
+    let client = EventsSubscriber::new(addr, "block_gossip", 1, &mut pump);
+    inj.produce(block_relay(30, 0x33));
+    client.next(&mut pump).assert_block("block_gossip", 30, 0x33);
+    client.client.join().unwrap();
+    assert_eq!(pending, capacity, "the additional FCU stays queued while SSE is served");
 }

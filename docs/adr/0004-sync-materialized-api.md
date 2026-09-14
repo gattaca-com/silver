@@ -78,3 +78,17 @@ are published.
 The tile calls `publish_block` without accessing connections. `/eth/v1/events`
 serves `block` and rejects other topics with 400. Further topics and
 silver-specific SSE routes can use the same subscription mechanism.
+
+Amended 2026-09-10: `/eth/v1/events` also serves `block_gossip` for block
+publication requests following silver's gossip checks. A request precedes
+payload notification, state transition, and import; it does not guarantee
+delivery to peers. This deliberately narrows the Beacon API's validation
+contract: RPC block imports remain silent because they do not request relay.
+The topic follows silver's relay policy, keeping its promise tied to gossip
+publication without duplicating an observation on the spine. The boundary
+selects block metadata on the existing `SendGossip` request, without reading
+its payload; producers own topic consistency. The `block` topic still follows
+`Applied` import receipts. These queues establish no shared ordering.
+Repeated requests for one root are not deduplicated, and late subscribers
+receive no replay. Subscribers to both topics can reach the existing send
+cap sooner.

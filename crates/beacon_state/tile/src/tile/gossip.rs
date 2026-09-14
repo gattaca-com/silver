@@ -6,8 +6,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
-    GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, SyncNeed,
-    TCacheRead, TRead, hex32,
+    GossipBlock, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent,
+    SyncNeed, TCacheRead, TRead, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -428,7 +428,7 @@ impl BeaconStateTile {
                         committed_ptc = true;
                     }
                 }
-                Self::relay_gossip(&m, producers);
+                Self::relay_gossip(&m, None, producers);
                 accepted = true;
             } else {
                 Self::reject_gossip(&m, producers);
@@ -1220,9 +1220,14 @@ impl BeaconStateTile {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if !self.sync_target.is_following() => {
                 match self.parse_and_verify_block(data, pre_verified) {
-                    Ok(parsed) if do_relay && parsed.relay_eligible => {
-                        Self::relay_gossip(&m, producers)
-                    }
+                    Ok(parsed) if do_relay && parsed.relay_eligible => Self::relay_gossip(
+                        &m,
+                        Some(GossipBlock {
+                            slot: parsed.header.slot,
+                            block_root: parsed.block_root,
+                        }),
+                        producers,
+                    ),
                     Err(err) if matches!(err.feedback(), Feedback::Reject(_)) => {
                         producers.produce(PeerEvent::P2pGossipInvalidMsg {
                             p2p_peer: m.stream_id.peer(),
@@ -1241,9 +1246,9 @@ impl BeaconStateTile {
                     BlockSource::Gossip,
                     pre_verified,
                     producers,
-                    |p| {
+                    |p, block| {
                         if do_relay {
-                            Self::relay_gossip(&m, p);
+                            Self::relay_gossip(&m, Some(block), p);
                         }
                     },
                 );
@@ -1273,7 +1278,7 @@ impl BeaconStateTile {
             }),
             Feedback::Accept(block_root) => {
                 if do_relay {
-                    Self::relay_gossip(&m, producers);
+                    Self::relay_gossip(&m, None, producers);
                 }
                 self.on_accept(block_root, producers);
             }
@@ -1282,7 +1287,7 @@ impl BeaconStateTile {
             }
             Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
-                    Self::relay_gossip(&m, producers);
+                    Self::relay_gossip(&m, None, producers);
                 }
                 self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers);
             }
@@ -1294,13 +1299,14 @@ impl BeaconStateTile {
         true
     }
 
-    fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+    fn relay_gossip(m: &NewGossipMsg, block: Option<GossipBlock>, producers: &mut Producers) {
         producers.produce(PeerEvent::SendGossip {
             originator_stream_id: m.stream_id,
             topic: m.topic,
             msg_hash: m.msg_hash,
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,
+            block,
         });
     }
 
