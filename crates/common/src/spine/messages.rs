@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::SLOTS_PER_EPOCH;
 
 use crate::{
     DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId, StreamProtocol,
@@ -318,28 +318,6 @@ impl RpcOutbound {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
-pub struct GossipBlock {
-    pub slot: u64,
-    pub block_root: B256,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C)]
-pub struct GossipDataColumn {
-    pub slot: u64,
-    pub block_root: B256,
-    pub column_index: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C, u8)]
-pub enum GossipMetadata {
-    Block(GossipBlock),
-    DataColumn(GossipDataColumn),
-}
-
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
@@ -475,7 +453,6 @@ pub enum PeerEvent {
         originator: P2pStreamId,
         topic: GossipTopic,
         ssz: TCacheRead,
-        column: GossipDataColumn,
     },
     /// Emitted in order to trigger sending of a gossip message.
     /// Peer manager will generate select peers to send to.
@@ -485,7 +462,8 @@ pub enum PeerEvent {
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
-        metadata: Option<GossipMetadata>,
+        /// Handle to the relayed object's decompressed SSZ bytes.
+        ssz: TCacheRead,
     },
     /// Misbehaviour observed on the RPC (req/resp) sub-protocol. The peer
     /// manager translates `severity` into a P5 application-score delta;

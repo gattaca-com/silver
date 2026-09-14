@@ -12,9 +12,9 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
-    EngineResp, GossipDataColumn, GossipMetadata, GossipTopic, IngestionTime, NewGossipMsg, Origin,
-    P2pStreamId, PeerEvent, RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers,
-    StreamProtocol, SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
+    SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
     ticker::SlotTicker,
@@ -521,11 +521,6 @@ impl DataColumnsTile {
     }
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
-        let column = GossipDataColumn {
-            slot: p.slot,
-            block_root: p.block_root,
-            column_index: p.column_index,
-        };
         match mem::replace(&mut p.relay, RelayMeta::None) {
             RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
                 producers.produce(PeerEvent::SendGossip {
@@ -534,7 +529,7 @@ impl DataColumnsTile {
                     msg_hash,
                     recv_ts,
                     protobuf,
-                    metadata: Some(GossipMetadata::DataColumn(column)),
+                    ssz: p.sidecar.read,
                 });
             }
             RelayMeta::Rpc { ssz } if self.sync_state.is_synced() => {
@@ -542,7 +537,6 @@ impl DataColumnsTile {
                     originator: p.stream_id,
                     topic: GossipTopic::DataColumnSidecar(p.column_index),
                     ssz,
-                    column,
                 });
             }
             _ => {}
@@ -782,6 +776,7 @@ mod tests {
     use silver_common::{
         BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, MessageId, Nanos, P2pStreamId,
         StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
             SIGNED_BEACON_BLOCK_MIN,
@@ -900,8 +895,11 @@ mod tests {
             self.tile.sync_state.update(ssz);
         }
 
+        /// The protobuf placeholder cannot decode as a sidecar, exposing relays
+        /// that substitute its handle for SSZ.
         fn gossip_sidecar(&mut self, index: u64, bytes: &[u8]) {
             let ssz = tcache_write(&mut self.gossip_p, bytes);
+            let protobuf = tcache_write(&mut self.gossip_p, b"encoded frame");
             let recv_ts = Nanos::now();
             let mut id = [0u8; 20];
             id.copy_from_slice(&bytes[..20]);
@@ -911,8 +909,7 @@ mod tests {
                 msg_hash: MessageId { id },
                 recv_ts,
                 ssz,
-                // Fixture bypass: networking is absent, so protobuf reuses the SSZ handle.
-                protobuf: ssz,
+                protobuf,
             };
             self.tile.gossip_sidecar(index, gossip, &mut self.conn.producers);
         }
@@ -961,11 +958,20 @@ mod tests {
                 SyncNeed::BackfillPrefill(_) => {}
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
-            self.inj.consume(|event: PeerEvent, _| match event {
-                PeerEvent::SendGossip { .. } | PeerEvent::PublishDataColumn { .. } => {
-                    out.publications.push(event)
-                }
-                _ => {}
+            let consumers = &mut self.tile.consumers;
+            self.inj.consume(|event: PeerEvent, _| {
+                let (source, topic, sidecar) = match event {
+                    PeerEvent::SendGossip { topic, ssz, .. } => {
+                        (ColumnSource::Gossip, topic, consumers.gossip.acquire(ssz))
+                    }
+                    PeerEvent::PublishDataColumn { topic, ssz, .. } => {
+                        (ColumnSource::Rpc, topic, consumers.rpc.acquire(ssz))
+                    }
+                    _ => return,
+                };
+                let (bytes, _) = sidecar.buffer().expect("published bytes readable");
+                let column = SidecarIdentity::of(bytes).expect("a published sidecar has a layout");
+                out.publications.push((source, topic, column));
             });
             out
         }
@@ -983,29 +989,12 @@ mod tests {
         available: usize,
         custody_complete: usize,
         receipts: Vec<DataColumnsEvent>,
-        publications: Vec<PeerEvent>,
+        publications: Vec<(ColumnSource, GossipTopic, SidecarIdentity)>,
         engine: usize,
         missing: Vec<SyncNeed>,
     }
 
     impl Produced {
-        fn column_publications(&self) -> Vec<(ColumnSource, GossipTopic, GossipDataColumn)> {
-            self.publications
-                .iter()
-                .map(|event| match *event {
-                    PeerEvent::SendGossip {
-                        metadata: Some(GossipMetadata::DataColumn(column)),
-                        topic,
-                        ..
-                    } => (ColumnSource::Gossip, topic, column),
-                    PeerEvent::PublishDataColumn { column, topic, .. } => {
-                        (ColumnSource::Rpc, topic, column)
-                    }
-                    _ => panic!("expected a column publication, got {event:?}"),
-                })
-                .collect()
-        }
-
         fn persisted(&self, root: BlockRoot, index: u64) -> bool {
             self.receipts.iter().any(|event| {
                 matches!(event,
@@ -1172,10 +1161,10 @@ mod tests {
             let out = rig.drain();
 
             if parent_first {
-                assert_eq!(out.column_publications(), [(
+                assert_eq!(out.publications, [(
                     ColumnSource::Gossip,
                     GossipTopic::DataColumnSidecar(index),
-                    GossipDataColumn { slot, block_root, column_index: index }
+                    SidecarIdentity { slot, block_root, column_index: index }
                 )]);
             } else {
                 assert!(out.publications.is_empty(), "a buffered copy is not relayed");

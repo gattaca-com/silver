@@ -144,7 +144,7 @@ impl Rig {
 }
 
 #[test]
-fn column_publications_carry_metadata_for_gossip_and_following_rpc() {
+fn column_publications_name_the_sidecar_for_gossip_and_following_rpc() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
@@ -166,12 +166,8 @@ fn column_publications_carry_metadata_for_gossip_and_following_rpc() {
         rig.turn();
         let out = rig.drain();
         if following {
-            let column = GossipDataColumn { slot: SLOT, block_root, column_index: index };
-            assert_eq!(out.column_publications(), [(
-                source,
-                GossipTopic::DataColumnSidecar(index),
-                column
-            )]);
+            let column = SidecarIdentity { slot: SLOT, block_root, column_index: index };
+            assert_eq!(out.publications, [(source, GossipTopic::DataColumnSidecar(index), column)]);
         } else {
             assert!(out.persisted(block_root, index), "syncing still processes the column");
             assert!(out.publications.is_empty(), "syncing RPC columns do not request publication");
@@ -198,8 +194,8 @@ fn fulu_column_publication_requires_a_resolved_proposer() {
         rig.turn();
         let out = rig.drain();
         if relay_eligible {
-            let column = GossipDataColumn { slot, block_root, column_index: 3 };
-            assert_eq!(out.column_publications(), [(
+            let column = SidecarIdentity { slot, block_root, column_index: 3 };
+            assert_eq!(out.publications, [(
                 ColumnSource::Gossip,
                 GossipTopic::DataColumnSidecar(3),
                 column
@@ -227,8 +223,8 @@ fn held_columns_do_not_request_publication_again() {
     let sidecar = blob.gloas_sidecar(3, SLOT, &block_root);
     rig.gossip_sidecar(3, &sidecar);
     rig.turn();
-    let column = GossipDataColumn { slot: SLOT, block_root, column_index: 3 };
-    assert_eq!(rig.drain().column_publications(), [(
+    let column = SidecarIdentity { slot: SLOT, block_root, column_index: 3 };
+    assert_eq!(rig.drain().publications, [(
         ColumnSource::Gossip,
         GossipTopic::DataColumnSidecar(3),
         column
@@ -255,8 +251,8 @@ fn only_columns_with_valid_kzg_proofs_request_publication() {
     // Column 7 carries column 6's proofs: structural checks pass, KZG fails.
     rig.gossip_sidecar(7, &blob.gloas_sidecar_with_proofs(7, SLOT, &block_root, 6));
     rig.turn();
-    let column = GossipDataColumn { slot: SLOT, block_root, column_index: 3 };
-    assert_eq!(rig.drain().column_publications(), [(
+    let column = SidecarIdentity { slot: SLOT, block_root, column_index: 3 };
+    assert_eq!(rig.drain().publications, [(
         ColumnSource::Gossip,
         GossipTopic::DataColumnSidecar(3),
         column

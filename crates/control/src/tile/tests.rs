@@ -2,9 +2,8 @@ use std::{io::Write, sync::Arc};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    GossipBlock, GossipDataColumn, GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId,
-    P2pStreamId, PeerId, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
-    test_util::ShmemDir,
+    GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId, P2pStreamId, PeerId, StreamProtocol,
+    TCache, TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -126,33 +125,21 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
 }
 
 #[test]
-fn relay_metadata_preserves_routing_and_iwant_service() {
-    // Forwarding and IWANT service treat the payload as opaque bytes.
+fn relay_requests_preserve_routing_and_iwant_service() {
+    // Distinct payloads expose confusion between the encoded and decompressed
+    // handles.
     let bytes = b"relay payload";
     let hash = MessageId { id: [0xCD; 20] };
-    for (topic, metadata) in [
-        (GossipTopic::BeaconBlock, None),
-        (
-            GossipTopic::BeaconBlock,
-            Some(GossipMetadata::Block(GossipBlock { slot: 37, block_root: [0xAB; 32] })),
-        ),
-        (
-            GossipTopic::DataColumnSidecar(5),
-            Some(GossipMetadata::DataColumn(GossipDataColumn {
-                slot: 38,
-                block_root: [0xCD; 32],
-                column_index: 5,
-            })),
-        ),
-    ] {
+    for topic in [GossipTopic::BeaconBlock, GossipTopic::DataColumnSidecar(5)] {
         let mut capture = GossipPublications::new(topic, bytes);
+        let ssz = write_bytes(&mut capture.rpc, b"decompressed object");
         capture.observer.produce(PeerEvent::SendGossip {
             originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic,
             msg_hash: hash,
             recv_ts: Nanos::now(),
             protobuf: capture.payload,
-            metadata,
+            ssz,
         });
         capture.crank();
         assert_eq!(capture.sent(), [(2, bytes.to_vec())], "the sender is excluded");
@@ -169,7 +156,6 @@ fn relay_metadata_preserves_routing_and_iwant_service() {
 #[test]
 fn column_publication_encodes_and_routes_without_another_spine_request() {
     let topic = GossipTopic::DataColumnSidecar(5);
-    let column = GossipDataColumn { slot: 38, block_root: [0xCD; 32], column_index: 5 };
     // Transport decoding checks payload size; consensus validation is outside this
     // fixture.
     let bytes = vec![0x42; topic.min_uncompressed_size()];
@@ -180,7 +166,6 @@ fn column_publication_encodes_and_routes_without_another_spine_request() {
         originator: P2pStreamId::new(1, 0, StreamProtocol::DataColumnSidecarsByRoot, true),
         topic,
         ssz,
-        column,
     });
     capture.crank();
     let sent = capture.sent();

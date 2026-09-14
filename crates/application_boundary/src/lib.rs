@@ -4,8 +4,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, Enr, GossipBlock, GossipMetadata, Identify, Keypair, PeerEvent,
-    SilverSpine, SyncUpdate, TProducer, TRandomAccess,
+    BeaconStateEvent, BlockStage, Enr, GossipTopic, Identify, Keypair, PeerEvent, SilverSpine,
+    SyncUpdate, TProducer, TRandomAccess, TRead,
+    column_util::{SidecarIdentity, block_root},
+    ssz_view::SignedBeaconBlockView,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -21,6 +23,9 @@ pub struct ApplicationBoundaryTile {
     readiness: Readiness,
     pub beacon: BeaconApi,
     engine: EngineApi,
+    spec: SpecConfig,
+    relayed_gossip: TRandomAccess,
+    relayed_rpc: TRandomAccess,
 }
 
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
@@ -50,6 +55,8 @@ impl ApplicationBoundaryTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         resp_producer: TProducer,
+        relayed_gossip: TRandomAccess,
+        relayed_rpc: TRandomAccess,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -77,11 +84,14 @@ impl ApplicationBoundaryTile {
             rpc_consumer,
             resp_producer,
         );
-        Self { readiness, beacon, engine }
+        Self { readiness, beacon, engine, spec: spec.clone(), relayed_gossip, relayed_rpc }
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let beacon = &mut self.beacon;
+        let Self { beacon, spec, relayed_gossip, relayed_rpc, .. } = self;
+        // Publish tails even without reads so idle consumers can release cache space.
+        relayed_gossip.free();
+        relayed_rpc.free();
 
         // A consumer's first consume starts at the producer's write head.
         // Keep both event queues active during engine saturation; delaying
@@ -100,18 +110,22 @@ impl ApplicationBoundaryTile {
             _ => {}
         });
         adapter.consume(|event: PeerEvent, _| match event {
-            PeerEvent::SendGossip {
-                metadata: Some(GossipMetadata::Block(GossipBlock { slot, block_root })),
-                ..
-            } => beacon.publish_block_gossip(slot, &block_root),
-            PeerEvent::SendGossip {
-                metadata: Some(GossipMetadata::DataColumn(column)), ..
-            } |
-            PeerEvent::PublishDataColumn { column, .. } => beacon.publish_data_column_sidecar(
-                &column.block_root,
-                column.column_index,
-                column.slot,
-            ),
+            PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
+                match relayed_gossip.acquire(ssz).buffer() {
+                    Ok((block, _)) => {
+                        let slot = SignedBeaconBlockView::slot(block);
+                        let block_root = block_root(block, spec.is_gloas_at_slot(slot));
+                        beacon.publish_block_gossip(slot, &block_root);
+                    }
+                    Err(e) => tracing::warn!(?e, "relayed block unavailable to block_gossip"),
+                }
+            }
+            PeerEvent::SendGossip { topic: GossipTopic::DataColumnSidecar(_), ssz, .. } => {
+                publish_data_column_sidecar(beacon, relayed_gossip.acquire(ssz))
+            }
+            PeerEvent::PublishDataColumn { ssz, .. } => {
+                publish_data_column_sidecar(beacon, relayed_rpc.acquire(ssz))
+            }
             _ => {}
         });
         let status = beacon.node_status_mut();
@@ -120,5 +134,15 @@ impl ApplicationBoundaryTile {
         });
 
         status.el = self.engine.sync_status();
+    }
+}
+
+fn publish_data_column_sidecar(beacon: &mut BeaconApi, sidecar: TRead) {
+    match sidecar.buffer().map(|(bytes, _)| SidecarIdentity::of(bytes)) {
+        Ok(Some(column)) => {
+            beacon.publish_data_column_sidecar(&column.block_root, column.column_index, column.slot)
+        }
+        Ok(None) => tracing::warn!("published sidecar fits no layout data_column_sidecar reads"),
+        Err(e) => tracing::warn!(?e, "published sidecar unavailable to data_column_sidecar"),
     }
 }

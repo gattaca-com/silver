@@ -4545,6 +4545,7 @@ dependencies = [
  "silver_config",
  "silver_engine_api",
  "silver_httpcore",
+ "tracing",
  "ureq",
 ]
 

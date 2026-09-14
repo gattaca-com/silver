@@ -10,9 +10,8 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipBlock, GossipMetadata, GossipTopic,
-    LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId, PeerEvent, StreamProtocol, SyncNeed, TCache,
-    TCacheProducer, TCacheRead, TProducer,
+    BlockStage, EngineNewPayloadResp, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId,
+    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -510,7 +509,7 @@ fn short_gossip_block_rejected_before_any_field_read() {
             BlockSource::Gossip,
             false,
             &mut adapter.producers,
-            |_, _| panic!("a malformed block must never be relayed"),
+            |_| panic!("a malformed block must never be relayed"),
         );
         assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
     }
@@ -521,14 +520,10 @@ fn short_gossip_block_rejected_before_any_field_read() {
     bytes[100..108].copy_from_slice(&11u64.to_le_bytes());
     bytes[116] = 0xFF; // unknown parent_root
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
-    let feedback = tile.apply_block(
-        &data,
-        read,
-        BlockSource::Gossip,
-        false,
-        &mut adapter.producers,
-        |_, _| panic!("an unimportable block must never be relayed"),
-    );
+    let feedback =
+        tile.apply_block(&data, read, BlockSource::Gossip, false, &mut adapter.producers, |_| {
+            panic!("an unimportable block must never be relayed")
+        });
     assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
 }
 
@@ -602,7 +597,7 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
 
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_, _| {
+        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
@@ -634,13 +629,13 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     // bypasses proposer-signature verification.
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_, _| {});
+        tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
     let Feedback::Accept(Some(block_root)) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_, _| {
+        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
@@ -679,7 +674,7 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
             BlockSource::Gossip,
             true, // pre_verified: the signature is not what these cases are about
             &mut adapter.producers,
-            |_, _| relayed = true,
+            |_| relayed = true,
         );
 
         // The well-formed case still fails the STF (synthetic parent root), so
@@ -759,7 +754,7 @@ fn non_canonical_body_is_rejected_before_relay() {
             BlockSource::Gossip,
             true,
             &mut adapter.producers,
-            |_, _| relayed = true,
+            |_| relayed = true,
         );
 
         assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
@@ -789,7 +784,7 @@ fn block_at_the_finalized_start_slot_is_ignored() {
             BlockSource::Gossip,
             true,
             &mut adapter.producers,
-            |_, _| {},
+            |_| {},
         );
 
         assert_eq!(matches!(feedback, Feedback::Ignore), want_ignore, "slot {slot}: {feedback:?}");
@@ -818,19 +813,19 @@ fn block_relay_requires_a_resolved_proposer() {
             let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
             let bytes = fulu_block_with_payload(slot, stamp, 0);
             let msg = gossip_msg(&mut gp, &bytes, GossipTopic::BeaconBlock);
+            let msg_seq = msg.ssz.seq();
             assert!(tile.handle_gossip(msg.ssz, msg, true, true, &mut adapter.producers));
 
             let mut relays = Vec::new();
             adapter.consume(|event: PeerEvent, _| {
-                if let PeerEvent::SendGossip { topic, metadata, .. } = event {
+                if let PeerEvent::SendGossip { topic, ssz, .. } = event {
                     assert_eq!(topic, GossipTopic::BeaconBlock);
-                    relays.push(metadata);
+                    relays.push(ssz.seq());
                 }
             });
-            let expected = GossipBlock { slot, block_root: block_root_fulu(&bytes) };
             assert_eq!(
                 relays,
-                if want_relay { vec![Some(GossipMetadata::Block(expected))] } else { vec![] },
+                if want_relay { vec![msg_seq] } else { vec![] },
                 "{target:?}, slot {slot}"
             );
         }
@@ -1474,22 +1469,29 @@ fn attestation_updates_vote_tracker() {
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
 }
 
-/// Fixture bypass: `protobuf` reuses the SSZ handle; beacon-state forwards it
-/// without reading its bytes.
+/// Distinct payloads expose relays that substitute the protobuf handle for SSZ.
+/// The protobuf bytes are a placeholder; beacon-state forwards them without
+/// decoding.
 fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> NewGossipMsg {
-    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
-    r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
-    r.increment_offset(bytes.len());
-    let read = r.read();
-    producer.publish_head();
+    let ssz = tcache_write(producer, bytes);
+    let protobuf = tcache_write(producer, b"encoded frame");
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic,
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
-        ssz: read,
-        protobuf: read,
+        ssz,
+        protobuf,
     }
+}
+
+fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
+    let mut r = producer.reserve(bytes.len(), true).expect("reserve");
+    r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
+    r.increment_offset(bytes.len());
+    let read = r.read();
+    producer.publish_head();
+    read
 }
 
 fn gossip_att_msg(
@@ -3267,8 +3269,7 @@ mod block_relay;
 fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
     let mut topics = Vec::new();
     adapter.consume(|event: PeerEvent, _| {
-        if let PeerEvent::SendGossip { topic, metadata, .. } = event {
-            assert_eq!(metadata, None, "{topic:?} carries no SSE metadata");
+        if let PeerEvent::SendGossip { topic, .. } = event {
             topics.push(topic);
         }
     });
@@ -3281,7 +3282,14 @@ fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: Gossi
     let (_spine, mut adapter) = spine_adapter(tile);
     adapter.consume(|_: PeerEvent, _| {});
     let msg = gossip_msg(&mut gossip, bytes, topic);
+    let msg_seq = msg.ssz.seq();
     tile.on_gossip(msg, &mut adapter.producers);
     tile.flush_votes(&mut adapter.producers);
-    assert_eq!(non_block_relays(&mut adapter), [topic]);
+    let mut relays = Vec::new();
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { topic, ssz, .. } = event {
+            relays.push((topic, ssz.seq()));
+        }
+    });
+    assert_eq!(relays, [(topic, msg_seq)], "the relay names the message's own decompressed bytes");
 }
