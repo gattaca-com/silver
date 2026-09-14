@@ -61,6 +61,19 @@ impl Pane {
             Pane::Flamegraph => Pane::Counters,
         }
     }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Pane::Counters => Pane::Flamegraph,
+            Pane::TCaches => Pane::Counters,
+            Pane::Timings => Pane::TCaches,
+            Pane::Tiles => Pane::Timings,
+            Pane::Peers => Pane::Tiles,
+            Pane::Gossip => Pane::Peers,
+            Pane::Events => Pane::Gossip,
+            Pane::Flamegraph => Pane::Events,
+        }
+    }
 }
 
 pub struct App {

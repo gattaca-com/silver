@@ -10,7 +10,7 @@ pub mod timings_pane;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -57,6 +57,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled("TAB", bold),
+        Span::raw("/"),
+        Span::styled("S-TAB", bold),
         Span::raw(" pane  "),
         Span::styled("↑/↓", bold),
         Span::raw(" select  "),
@@ -78,8 +80,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     }
     spans.push(Span::styled("q", bold));
     spans.push(Span::raw(" quit"));
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray)),
-        area,
-    );
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let build_info = Line::from(BUILD_INFO);
+    let [keys, build] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(build_info.width() as u16 + 1)])
+            .areas(area);
+    f.render_widget(Paragraph::new(Line::from(spans)).style(dim), keys);
+    f.render_widget(Paragraph::new(build_info).style(dim).alignment(Alignment::Right), build);
 }
+
+const BUILD_INFO: &str = build_info::format!(
+    "{} · {}",
+    $.version_control?.git()?.commit_short_id,
+    $.timestamp
+);

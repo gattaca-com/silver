@@ -216,6 +216,10 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
             app.pane = app.pane.next();
             app.drilled_in = false;
         }
+        KeyCode::BackTab => {
+            app.pane = app.pane.prev();
+            app.drilled_in = false;
+        }
         KeyCode::Down => app.move_selection(1),
         KeyCode::Up => app.move_selection(-1),
         KeyCode::Left if app.pane == app::Pane::Peers => app.adjust_peers_sort(-1),
