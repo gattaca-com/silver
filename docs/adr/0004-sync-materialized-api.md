@@ -198,3 +198,10 @@ At 64 subscriptions, the pending-output allowance totals 32 MiB. Each
 subscription reserves its buffer at construction and retains the allocation
 until it closes. A full drain reuses the buffer from its beginning without
 releasing it. Partial drains can advance through the entire allocation.
+
+Amended 2026-09-14: Fulu `data_column_sidecar` events include the sidecar's
+ordered commitment list as `kzg_commitments`. Each 48-byte commitment is
+encoded as a 0x-prefixed string of 96 hexadecimal digits. This follows the
+[beacon-APIs v4.0.0 event format](https://github.com/ethereum/beacon-APIs/blob/v4.0.0/apis/eventstream/index.yaml).
+Gloas sidecars carry no commitments, so their events omit the field, matching
+[v5.0.0-alpha.2](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/eventstream/index.yaml).

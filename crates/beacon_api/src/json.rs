@@ -4,6 +4,7 @@
 //! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
 
 use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
+use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
 use crate::events::HeadEvent;
 
@@ -287,11 +288,13 @@ impl Json<'_> {
         self.end_object();
     }
 
+    /// `None` omits `kzg_commitments` rather than emitting an empty array.
     pub(crate) fn data_column_sidecar_event(
         &mut self,
         block_root: &[u8; 32],
         column_index: u64,
         slot: u64,
+        kzg_commitments: Option<&[u8]>,
     ) {
         self.begin_object();
         self.key("block_root");
@@ -300,6 +303,15 @@ impl Json<'_> {
         self.quoted_u64(column_index);
         self.key("slot");
         self.quoted_u64(slot);
+        if let Some(commitments) = kzg_commitments {
+            debug_assert!(commitments.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT));
+            self.key("kzg_commitments");
+            self.begin_array();
+            for commitment in commitments.chunks_exact(BYTES_PER_KZG_COMMITMENT) {
+                self.hex(commitment);
+            }
+            self.end_array();
+        }
         self.end_object();
     }
 
@@ -642,11 +654,25 @@ mod tests {
     }
 
     #[test]
-    fn data_column_sidecar_event_carries_the_root_index_and_slot() {
-        let body = write(|json| json.data_column_sidecar_event(&[0x9a; 32], 3, 10));
+    fn data_column_sidecar_event_carries_the_root_index_slot_and_commitments() {
+        let commitments =
+            [[0x11; BYTES_PER_KZG_COMMITMENT], [0x22; BYTES_PER_KZG_COMMITMENT]].concat();
+        let body = write(|json| {
+            json.data_column_sidecar_event(&[0x9a; 32], 3, 10, Some(&commitments));
+        });
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["block_root"], format!("0x{}", hex::encode([0x9a; 32])));
         assert_eq!(parsed["index"], "3");
         assert_eq!(parsed["slot"], "10");
+        let expected = [format!("0x{}", "11".repeat(48)), format!("0x{}", "22".repeat(48))];
+        assert_eq!(parsed["kzg_commitments"], serde_json::json!(expected));
+    }
+
+    #[test]
+    fn a_column_event_without_commitments_omits_the_field() {
+        let body = write(|json| json.data_column_sidecar_event(&[0x9a; 32], 3, 10, None));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["slot"], "10");
+        assert!(parsed.get("kzg_commitments").is_none());
     }
 }

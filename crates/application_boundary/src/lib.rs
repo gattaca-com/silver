@@ -173,11 +173,16 @@ impl ApplicationBoundaryTile {
 }
 
 fn publish_data_column_sidecar(beacon: &mut BeaconApi, sidecar: TRead) {
-    match sidecar.buffer().map(|(bytes, _)| SidecarIdentity::of(bytes)) {
-        Ok(Some(column)) => {
-            beacon.publish_data_column_sidecar(&column.block_root, column.column_index, column.slot)
-        }
-        Ok(None) => tracing::warn!("published sidecar fits no layout data_column_sidecar reads"),
+    match sidecar.buffer() {
+        Ok((bytes, _)) => match SidecarIdentity::of(bytes) {
+            Some(column) => beacon.publish_data_column_sidecar(
+                &column.block_root,
+                column.column_index,
+                column.slot,
+                column.kzg_commitments(bytes),
+            ),
+            None => tracing::warn!("published sidecar fits no layout data_column_sidecar reads"),
+        },
         Err(e) => tracing::warn!(?e, "published sidecar unavailable to data_column_sidecar"),
     }
 }
