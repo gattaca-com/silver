@@ -4736,6 +4736,8 @@ dependencies = [
 name = "silver"
 version = "0.0.1"
 dependencies = [
+ "build-info",
+ "build-info-build",
  "clap",
  "flux",
  "hex",
@@ -5145,8 +5147,6 @@ dependencies = [
 name = "silver_surfer"
 version = "0.0.1"
 dependencies = [
- "build-info",
- "build-info-build",
  "crossterm",
  "flux",
  "hdrhistogram",

@@ -10,6 +10,7 @@
 //! - `timing-{name}` — the same Timer's processing side (consume handler
 //!   duration). Created eagerly for every Timer; only spine consumers emit.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
+//! - `build-info` — the producer's build stamp, plain text.
 
 use std::{collections::HashMap, fs, io, path::PathBuf};
 
@@ -18,6 +19,7 @@ pub struct DiscoveredSources {
     pub tcaches: Vec<CounterFile>,
     pub timings: Vec<TimingFile>,
     pub tilemetrics: Vec<TileMetricsFile>,
+    pub build_info: Option<String>,
 }
 
 pub struct CounterFile {
@@ -49,6 +51,7 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
     let mut timings: Vec<TimingFile> = Vec::new();
     let mut processing: HashMap<String, PathBuf> = HashMap::new();
     let mut tilemetrics = Vec::new();
+    let mut build_info = None;
 
     let dir = flux::utils::directories::shmem_dir_queues_with_base(base_dir, app_name);
     if let Ok(entries) = fs::read_dir(&dir) {
@@ -69,6 +72,8 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
                 processing.insert(name.to_string(), path);
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
                 tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
+            } else if fname == "build-info" {
+                build_info = fs::read_to_string(&path).ok();
             }
         }
     }
@@ -82,5 +87,5 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
     tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));
     tilemetrics.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(DiscoveredSources { counters, tcaches, timings, tilemetrics })
+    Ok(DiscoveredSources { counters, tcaches, timings, tilemetrics, build_info })
 }

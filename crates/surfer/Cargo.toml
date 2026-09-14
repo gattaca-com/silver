@@ -6,7 +6,6 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-build-info.workspace = true
 crossterm.workspace = true
 flux.workspace = true
 hdrhistogram.workspace = true
@@ -22,9 +21,6 @@ silver_network.workspace = true
 silver_peer.workspace = true
 silver_stages.workspace = true
 silver_storage.workspace = true
-
-[build-dependencies]
-build-info-build.workspace = true
 
 [lints]
 workspace = true

@@ -119,6 +119,7 @@ pub struct App {
     pub peers_table_state: TableState,
     pub gossip_table_state: TableState,
     pub flamegraph: Flamegraph,
+    pub build_info: Option<String>,
     pub quit: bool,
 }
 
@@ -164,6 +165,7 @@ impl App {
             peers_table_state: TableState::default(),
             gossip_table_state: TableState::default(),
             flamegraph,
+            build_info: None,
             quit: false,
         }
     }
@@ -197,6 +199,10 @@ impl App {
     /// rings. Selections are restored by name across the sort so a
     /// newly-inserted source doesn't shift the user's highlight.
     pub fn merge_new_sources(&mut self, sources: DiscoveredSources) {
+        if sources.build_info.is_some() {
+            self.build_info = sources.build_info;
+        }
+
         // Counters.
         let sel_name = self.counters.get(self.counters_selection.0).map(|c| c.name.clone());
         let existing: HashSet<String> = self.counters.iter().map(|c| c.name.clone()).collect();

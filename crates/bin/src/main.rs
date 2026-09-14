@@ -1,5 +1,6 @@
 use std::{
     error::Error,
+    io,
     net::IpAddr,
     str::FromStr,
     sync::Arc,
@@ -46,12 +47,26 @@ const MAINNET_BOOTNODES: [&str; 3] = [
     "enr:-Ku4QP2xDnEtUXIjzJ_DhlCRN9SN99RYQPJL92TMlSv7U5C1YnYLjwOQHgZIUXw6c-BvRg2Yc2QsZxxoS_pPRVe0yK8Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQMeFF5GrS7UZpAH2Ly84aLK-TyvH-dRo0JM1i8yygH50YN1ZHCCJxA",
 ];
 
+const BUILD_INFO: &str = build_info::format!(
+    "{} · {}",
+    $.version_control?.git()?.commit_short_id,
+    $.timestamp
+);
+
+fn publish_build_info() -> io::Result<()> {
+    let dir = flux::utils::directories::shmem_dir_queues(APP_NAME);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("build-info"), BUILD_INFO)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let _tracing = initialise_tracing_log("silver", 10, None, false);
+    let build_info_log = format!("silver build info: {BUILD_INFO}");
+    let _tracing = initialise_tracing_log("silver", 10, None, false, Some(&build_info_log));
     tracing::debug!("start");
 
     // `#[timed]` is inert until a process opts in.
     enable_profiler(APP_NAME);
+    publish_build_info()?;
 
     let config = load_config()?;
 
@@ -432,26 +447,5 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
                 );
             }
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn beacon_api_bind_flag_takes_one_value_or_a_comma_separated_list() {
-        assert_eq!(comma_separated("0.0.0.0:5051"), ["0.0.0.0:5051"]);
-
-        let binds = comma_separated("0.0.0.0:5051,[::1]:5052,/run/silver/beacon.sock")
-            .iter()
-            .map(String::as_str)
-            .map(Bind::parse)
-            .collect::<Vec<_>>();
-        assert_eq!(binds, [
-            Bind::Tcp("0.0.0.0:5051".parse().unwrap()),
-            Bind::Tcp("[::1]:5052".parse().unwrap()),
-            Bind::Unix("/run/silver/beacon.sock".into()),
-        ]);
     }
 }

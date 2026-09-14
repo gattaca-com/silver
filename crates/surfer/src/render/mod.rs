@@ -82,16 +82,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     spans.push(Span::raw(" quit"));
 
     let dim = Style::default().fg(Color::DarkGray);
-    let build_info = Line::from(BUILD_INFO);
+    let build_info = Line::from(app.build_info.as_deref().unwrap_or_default());
     let [keys, build] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(build_info.width() as u16 + 1)])
             .areas(area);
     f.render_widget(Paragraph::new(Line::from(spans)).style(dim), keys);
     f.render_widget(Paragraph::new(build_info).style(dim).alignment(Alignment::Right), build);
 }
-
-const BUILD_INFO: &str = build_info::format!(
-    "{} · {}",
-    $.version_control?.git()?.commit_short_id,
-    $.timestamp
-);
