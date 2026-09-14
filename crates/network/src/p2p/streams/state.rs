@@ -17,6 +17,8 @@ use crate::{
         context::Context,
         streams::{
             AcquiredRpcOutbound, StreamError, StreamIo,
+            cluster_in::{BODY_STALL_TIMEOUT, ClusterRead},
+            cluster_out::ClusterWrite,
             identify_in::WriteIdentifyResponse,
             identify_out::ReadIdentifyResponse,
             negotiate::NegotiateState,
@@ -35,6 +37,10 @@ pub enum StreamState {
     Gossip {
         read: GossipReadState,
         write: GossipWriteState,
+    },
+    Cluster {
+        read: ClusterRead,
+        write: ClusterWrite,
     },
     IncomingRpc {
         rpc: RpcIn,
@@ -91,6 +97,7 @@ impl StreamState {
         match self {
             StreamState::Negotiate(_) => "Negotiate",
             StreamState::Gossip { .. } => "Gossip",
+            StreamState::Cluster { .. } => "Cluster",
             StreamState::IncomingRpc { .. } => "IncomingRpc",
             StreamState::OutgoingRpc { .. } => "OutgoingRpc",
             StreamState::IncomingIdentify(_) => "IncomingIdentify",
@@ -113,6 +120,9 @@ impl StreamState {
             }
             StreamState::IncomingIdentify(write) => matches!(write, WriteIdentifyResponse::Done),
             StreamState::OutgoingIdentify(_) => false,
+            StreamState::Cluster { read, write } => {
+                matches!(read, ClusterRead::Closed) && matches!(write, ClusterWrite::Idle)
+            }
             StreamState::Finished => true,
         }
     }
@@ -130,7 +140,8 @@ impl StreamState {
                 StreamState::OutgoingRpc {
                     rpc: RpcOut::ReadResponse(RpcReadResponse::AllocBody { .. }),
                     ..
-                }
+                } |
+                StreamState::Cluster { read: ClusterRead::AllocBody { .. }, .. }
         )
     }
 
@@ -160,6 +171,9 @@ impl StreamState {
             StreamState::Gossip {
                 read: GossipReadState::ReadingBody { last_read, .. }, ..
             } => Some(*last_read + GOSSIP_BODY_STALL_TIMEOUT),
+            StreamState::Cluster { read: ClusterRead::ReadingBody { last_read, .. }, .. } => {
+                Some(*last_read + BODY_STALL_TIMEOUT)
+            }
             _ => None,
         }
     }
@@ -186,6 +200,7 @@ impl StreamState {
             }
             StreamState::IncomingIdentify(_) => false,
             StreamState::OutgoingIdentify(_) => true,
+            StreamState::Cluster { .. } => false,
             StreamState::Finished => true,
         }
     }
@@ -242,6 +257,13 @@ impl StreamState {
                                 read: GossipReadState::default(),
                                 write: GossipWriteState::Idle,
                             }),
+                            StreamProtocol::Cluster => match context.raft_id(id.peer()) {
+                                Some(raft_id) => Ok(Self::Cluster {
+                                    read: ClusterRead::new(raft_id),
+                                    write: ClusterWrite::Idle,
+                                }),
+                                None => Err(StreamError::StreamRejected),
+                            },
                             StreamProtocol::Identity => {
                                 if id.is_incoming() {
                                     // TODO identify should always be present post-startup.
@@ -333,6 +355,16 @@ impl StreamState {
                     Ok(Self::Finished)
                 } else {
                     Ok(Self::Gossip { read, write })
+                }
+            }
+            StreamState::Cluster { mut read, mut write } => {
+                read = read.spin(io, &mut context.cluster_inbound_producer, id, now, emit)?;
+                write = write.spin(io, id)?;
+
+                if matches!(read, ClusterRead::Closed) {
+                    Ok(Self::Finished)
+                } else {
+                    Ok(Self::Cluster { read, write })
                 }
             }
             StreamState::IncomingRpc { rpc } => {

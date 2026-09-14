@@ -36,6 +36,32 @@ pub struct GossipMsgIn {
     pub tcache: TCacheRead,
 }
 
+/// Serialized Raft message to be sent to another cluster node. Produced by
+/// the control tile and consumed by the network tile.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ClusterMsgOut {
+    pub to: u64,
+    pub data: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub enum ClusterIn {
+    Msg(ClusterMsgIn),
+    NodeUnreachable(u64),
+}
+
+/// Serialized Raft message received from another cluster node. Produced by
+/// the network tile and consumed by the control tile. `from` is the node ID
+/// authenticated by the cluster transport, not one decoded from `data`.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ClusterMsgIn {
+    pub from: u64,
+    pub data: TCacheRead,
+}
+
 /// Work submitted by the Beacon API to tile-owned state machines.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]

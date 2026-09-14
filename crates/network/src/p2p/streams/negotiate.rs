@@ -296,6 +296,9 @@ mod tests {
         fn gossip_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
             None
         }
+        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
+            None
+        }
         fn remote_addr(&self) -> std::net::SocketAddr {
             "127.0.0.1:12345".parse().unwrap()
         }

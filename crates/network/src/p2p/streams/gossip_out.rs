@@ -153,6 +153,10 @@ mod tests {
         fn remote_addr(&self) -> SocketAddr {
             "127.0.0.1:0".parse().unwrap()
         }
+
+        fn cluster_next(&mut self) -> Option<Leased<TRead>> {
+            None
+        }
     }
 
     /// The read holds a raw pointer to its consumer, and the consumer one to
