@@ -174,3 +174,11 @@ following; previously the gate held only network requests, and disk replay
 is chosen exactly when peers look comparable, so following could be announced
 during replay. Completion re-evaluates the target. Beacon-state's Status
 publications are unchanged.
+
+Amended 2026-09-14: each accepted push immediately attempts to write the
+subscription's pending output. A burst can therefore drain into the socket
+without waiting for the next readiness event. The 64 KiB cap applies before
+each push, including the response head and chunk framing. A push that exceeds
+the cap closes the connection before another write is attempted. Successful
+writes reset the send deadline while output remains pending; draining it
+clears the deadline. Progress means kernel acceptance, not peer consumption.
