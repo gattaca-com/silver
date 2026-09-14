@@ -90,6 +90,14 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
             _ => None,
         }
     }
+
+    fn cluster_next(&mut self) -> Option<Leased<silver_common::TRead>> {
+        match self.outbound {
+            OutboundBuffer::Cluster(out_buffer) => out_buffer.pop(),
+            _ => None,
+        }
+    }
+
     fn remote_addr(&self) -> std::net::SocketAddr {
         self.connection.remote_address()
     }

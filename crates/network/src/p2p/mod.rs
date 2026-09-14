@@ -10,15 +10,15 @@ use std::{
 };
 
 use buffa::{Message, MessageView};
-pub use context::Context;
+pub use context::{ClusterNodes, Context};
 use fxhash::{FxHashMap, FxHashSet};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId, PeerId, ProtoIdentify,
-    ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
+    ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId, PeerId,
+    ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
 
 use crate::{
@@ -99,6 +99,11 @@ pub enum NetEvent {
     },
     Gossip {
         stream: P2pStreamId,
+        msg: TCacheRead,
+    },
+    Cluster {
+        stream: P2pStreamId,
+        raft_id: u64,
         msg: TCacheRead,
     },
 }
@@ -319,6 +324,14 @@ impl P2p {
             did_work |= drain_transmits(peer, socket, poll, now);
             peer.settle(socket.is_blocked());
 
+            // Local closes emit no ConnectionLost event; clear identities before handle
+            // reuse.
+            if peer.is_closed() &&
+                let Some(nodes) = context.cluster_nodes.as_mut()
+            {
+                nodes.disconnected(peer.id().connection);
+            }
+
             if peer.due(now) {
                 any_dirty = true;
             } else {
@@ -365,6 +378,19 @@ impl P2p {
                 let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.rpc_consumer));
                 peer.send_rpc(acquired_msg)
             }
+            None => SendResult::UnknownPeer,
+        }
+    }
+
+    pub fn enqueue_cluster_out(&mut self, msg: ClusterMsgOut, context: &mut Context) -> SendResult {
+        match context
+            .cluster_peer(msg.to)
+            .and_then(|conn| self.peers.get_mut(&ConnectionHandle(conn)))
+        {
+            Some(peer) => match context.cluster_outbound_consumer.acquire_strict(msg.data) {
+                Some(acquired) => peer.send_cluster(acquired, &mut self.rpc_codec_pool),
+                None => SendResult::MessageDropped,
+            },
             None => SendResult::UnknownPeer,
         }
     }
