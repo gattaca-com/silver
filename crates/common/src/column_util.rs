@@ -12,7 +12,7 @@ use silver_common::{
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockBodyGloasView,
         DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SidecarLayout, SignedBeaconBlockView,
     },
 };
 
@@ -84,6 +84,32 @@ pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
         *DataColumnSidecarFuluView::state_root(sidecar),
         *DataColumnSidecarFuluView::body_root(sidecar),
     ])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SidecarIdentity {
+    pub slot: u64,
+    pub block_root: B256,
+    pub column_index: u64,
+}
+
+impl SidecarIdentity {
+    /// Returns `None` if the length and column offset identify neither Fulu nor
+    /// Gloas. This does not validate the remaining sidecar fields.
+    pub fn of(sidecar: &[u8]) -> Option<Self> {
+        Some(match SidecarLayout::of(sidecar)? {
+            SidecarLayout::Fulu => Self {
+                slot: DataColumnSidecarFuluView::slot(sidecar),
+                block_root: block_root_from_sidecar(sidecar),
+                column_index: DataColumnSidecarFuluView::index(sidecar),
+            },
+            SidecarLayout::Gloas => Self {
+                slot: DataColumnSidecarGloasView::slot(sidecar),
+                block_root: *DataColumnSidecarGloasView::beacon_block_root(sidecar),
+                column_index: DataColumnSidecarGloasView::index(sidecar),
+            },
+        })
+    }
 }
 
 fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8], max_blobs: usize) -> bool {

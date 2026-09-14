@@ -74,6 +74,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_producer.cache_ref().random_access("dc_persist_ssz_gossip", true)?;
     let ssz_gossip_consumer_eng =
         ssz_gossip_producer.cache_ref().random_access("eng_ssz_gossip", true)?;
+    let ssz_gossip_consumer_api =
+        ssz_gossip_producer.cache_ref().random_access("api_ssz_gossip", true)?;
     let outgoing_gossip_producer =
         TCache::producer("outgoing_gossip", config.outgoing_gossip_tcache_size());
     let incoming_rpc_producer = TCache::producer("incoming_rpc", config.incoming_rpc_tcache_size());
@@ -89,6 +91,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("dc_persist_incoming_rpc", true)?;
     let incoming_rpc_consumer_eng =
         incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
+    let incoming_rpc_consumer_api =
+        incoming_rpc_producer.cache_ref().random_access("api_incoming_rpc", true)?;
     let incoming_rpc_consumer_ctl =
         incoming_rpc_producer.cache_ref().random_access("ctl_incoming_rpc", true)?;
     let incoming_engine_resp_producer = TCache::producer(
@@ -301,6 +305,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
+        ssz_gossip_consumer_api,
+        incoming_rpc_consumer_api,
     );
 
     // Spine

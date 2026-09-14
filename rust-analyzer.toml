@@ -1,0 +1,3 @@
+# Match the feature selection used by `just clippy`.
+[cargo]
+features = "all"

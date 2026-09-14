@@ -16,13 +16,13 @@ use silver_common::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
     },
+    test_util::ShmemDir,
     ticker::SlotTicker,
 };
 use silver_config::{ScoreParams, SyncingConfig};
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_gossip::GossipHandler;
 use silver_peer::PeerManager;
-use tempfile::TempDir;
 
 use crate::perf::BlockFixtures;
 
@@ -108,7 +108,7 @@ pub struct PmBsHarness {
     rpc_p: TProducer,
     _gossip_p: TProducer,
     _spine: Box<SilverSpine>,
-    _base: TempDir,
+    _base: ShmemDir,
     local: StatusBytes,
     fork_digest: [u8; 4],
 }
@@ -117,7 +117,7 @@ impl PmBsHarness {
     /// The rpc-inbound cache is sized to hold `n_blocks` mainnet blocks
     /// (~300 KB each).
     pub fn new(checkpoint: &[u8], n_blocks: usize) -> Self {
-        let base = TempDir::new().expect("tempdir");
+        let base = ShmemDir::new().expect("tempdir");
         let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
 
         // Position genesis so `current_slot() ≈ checkpoint slot`; otherwise

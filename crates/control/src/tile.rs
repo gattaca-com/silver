@@ -187,7 +187,7 @@ impl Tile<SilverSpine> for Controller {
                                     msg_hash,
                                     recv_ts: Nanos::now(),
                                     protobuf,
-                                    block: None,
+                                    ssz,
                                 },
                                 now,
                                 &mut |evt| {
@@ -214,7 +214,7 @@ impl Tile<SilverSpine> for Controller {
                 msg_hash,
                 recv_ts: _,
                 protobuf,
-                block: _,
+                ssz: _,
             } = &event
             {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *protobuf);

@@ -8,20 +8,28 @@ struct Receipt {
     source: BlockSource,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Relayed {
+    slot: Slot,
+    block_root: B256,
+}
+
 struct Published {
     events: Vec<BeaconStateEvent>,
-    relays: Vec<GossipBlock>,
+    relays: Vec<Relayed>,
 }
 
 impl Published {
-    fn drain(sink: &mut SpineAdapter<SilverSpine>) -> Self {
+    fn drain(sink: &mut SpineAdapter<SilverSpine>, gossip: &mut TRandomAccess) -> Self {
         let mut events = Vec::new();
         sink.consume(|event: BeaconStateEvent, _| events.push(event));
         let mut relays = Vec::new();
         sink.consume(|event: PeerEvent, _| {
-            if let PeerEvent::SendGossip { topic, block, .. } = event {
+            if let PeerEvent::SendGossip { topic, ssz, .. } = event {
                 assert_eq!(topic, GossipTopic::BeaconBlock);
-                relays.push(block.expect("every block relay carries its metadata"));
+                let relayed = gossip.acquire(ssz);
+                let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
+                relays.push(fulu_relayed(bytes));
             }
         });
         Self { events, relays }
@@ -65,7 +73,7 @@ struct BlockPublications {
     replay: TProducer,
     adapter: SpineAdapter<SilverSpine>,
     sink: SpineAdapter<SilverSpine>,
-    _spine: Box<SilverSpine>,
+    _spine: TestSpine,
 }
 
 impl BlockPublications {
@@ -77,7 +85,7 @@ impl BlockPublications {
             make_tile_with_producers(block_slot + 1, state, fulu_from_genesis());
         tile.sync_target = target;
         let (mut spine, adapter) = spine_adapter(&tile);
-        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine);
+        let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
         sink.consume(|_: BeaconStateEvent, _| {});
         sink.consume(|_: PeerEvent, _| {});
         Self { tile, gossip, rpc, replay, adapter, sink, _spine: spine }
@@ -104,7 +112,7 @@ impl BlockPublications {
     }
 
     fn drain(&mut self) -> Published {
-        Published::drain(&mut self.sink)
+        Published::drain(&mut self.sink, &mut self.tile.gossip_consumer)
     }
 }
 
@@ -112,14 +120,14 @@ fn stages_of(receipts: &[Receipt]) -> Vec<BlockStage> {
     receipts.iter().map(|r| r.stage).collect()
 }
 
-fn fulu_gossip_block(bytes: &[u8]) -> GossipBlock {
-    GossipBlock { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
+fn fulu_relayed(bytes: &[u8]) -> Relayed {
+    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
 }
 
 #[test]
-fn gossip_relay_carries_block_metadata_in_either_sync_mode() {
+fn a_gossip_relay_names_the_block_in_either_sync_mode() {
     let (pre_ssz, block_ssz) = sanity_fixture("attestation");
-    let expected = fulu_gossip_block(&block_ssz);
+    let expected = fulu_relayed(&block_ssz);
     for target in
         [SyncUpdate::Following, SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] }]
     {
@@ -142,7 +150,7 @@ fn gossip_relay_carries_block_metadata_in_either_sync_mode() {
 #[test]
 fn an_rpc_block_is_imported_without_a_gossip_notification() {
     let (pre_ssz, block_ssz) = sanity_fixture("attestation");
-    let expected = fulu_gossip_block(&block_ssz);
+    let expected = fulu_relayed(&block_ssz);
     for target in
         [SyncUpdate::Following, SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] }]
     {
@@ -165,7 +173,7 @@ fn an_rpc_block_is_imported_without_a_gossip_notification() {
 fn a_blob_block_is_relayed_once_across_staging_and_import() {
     let (pre_ssz, block_ssz) = sanity_fixture("one_blob");
     let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
-    let expected = fulu_gossip_block(&block_ssz);
+    let expected = fulu_relayed(&block_ssz);
 
     rig.on_gossip(&block_ssz);
     let published = rig.drain();
@@ -191,7 +199,7 @@ fn a_blob_block_is_relayed_once_across_staging_and_import() {
 #[test]
 fn disabling_relay_suppresses_the_gossip_notification() {
     let (pre_ssz, block_ssz) = sanity_fixture("attestation");
-    let expected = fulu_gossip_block(&block_ssz);
+    let expected = fulu_relayed(&block_ssz);
     for target in
         [SyncUpdate::Following, SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] }]
     {
@@ -227,7 +235,7 @@ fn a_parked_block_is_relayed_by_the_retry_that_admits_it() {
 
     rig.on_gossip(&first);
     let released = rig.drain();
-    assert_eq!(released.relays, [fulu_gossip_block(&first), fulu_gossip_block(&second)]);
+    assert_eq!(released.relays, [fulu_relayed(&first), fulu_relayed(&second)]);
     let of_child =
         released.receipts().into_iter().filter(|r| r.block_root == child).collect::<Vec<_>>();
     assert_eq!(stages_of(&of_child), [BlockStage::Applied]);
@@ -241,7 +249,7 @@ fn a_relay_request_does_not_imply_successful_import() {
 
     rig.on_gossip(&block_ssz);
     let published = rig.drain();
-    let expected = fulu_gossip_block(&block_ssz);
+    let expected = fulu_relayed(&block_ssz);
     assert_eq!(published.relays, [expected]);
     assert!(published.receipts().is_empty());
     assert!(

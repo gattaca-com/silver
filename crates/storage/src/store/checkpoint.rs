@@ -350,6 +350,7 @@ mod tests {
     };
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
+    use tempfile::TempDir;
 
     use super::{FINALIZED_CHECKPOINTS_DIR, Store};
     use crate::tile::IoEvent;
@@ -426,9 +427,9 @@ mod tests {
         // the idempotency guard (the slot stays fixed — same per-slot dir,
         // overwritten in place). Unique subdir under SILVER_BENCH_DIR (default
         // `/tmp`; point it at the data-store disk — tmpfs understates fsync).
-        // Removed at the end.
         let base = std::env::var("SILVER_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        let dir = format!("{base}/silver_bench_persist_{}", rand::random::<u32>());
+        let temp = TempDir::new_in(base).unwrap();
+        let dir = temp.path().to_str().unwrap().to_owned();
         let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
 
         const ITERS: u64 = 23;
@@ -504,8 +505,6 @@ mod tests {
         for (idx, total) in per_section.iter().enumerate() {
             println!("    {}: {:?}", SECTION_NAMES[idx], *total / counted);
         }
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn report(name: &str, samples: &mut [Duration], bytes: usize) {
@@ -523,8 +522,8 @@ mod tests {
 
     #[test]
     fn checkpoint_persist_retention_and_load() {
-        let dir = format!("/tmp/silver_storage_cp_{}", rand::random::<u32>());
-        let _ = std::fs::remove_dir_all(&dir);
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_str().unwrap().to_owned();
 
         let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
         assert_eq!(store.last_persisted_finalized_slot(), 0);
@@ -556,8 +555,6 @@ mod tests {
         assert_eq!(reloaded.last_persisted_finalized_slot(), 13);
         assert!(!cp.join("99").exists(), "incomplete checkpoint dropped on load");
         assert!(cp.join("13").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// End-to-end streamed persist: `begin_checkpoint` arms a job, `file_io`
@@ -573,8 +570,8 @@ mod tests {
         let owner = published_owner(silver_beacon_state_data::BeaconState::empty_test(64));
         let reader = owner.reader();
 
-        let dir = format!("/tmp/silver_storage_streamcp_{}", rand::random::<u32>());
-        let _ = std::fs::remove_dir_all(&dir);
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_str().unwrap().to_owned();
         let mut store = Store::load(dir.clone(), crate::store::test_spec(u64::MAX), 0).unwrap();
 
         assert!(!store.checkpoint_in_flight());
@@ -608,7 +605,5 @@ mod tests {
         // Sidecar committed alongside; zero validators => empty pubkey vec.
         let pk = std::fs::read(slot_dir.join("64.pubkeys")).unwrap();
         assert!(decode_checkpoint_pubkeys(&pk).unwrap().is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

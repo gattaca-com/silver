@@ -25,6 +25,6 @@ ef_tests = ["silver_common/test-util"]
 workspace = true
 
 [dev-dependencies]
+silver_common = { workspace = true, features = ["test-util"] }
 rand.workspace = true
 snap.workspace = true
-tempfile = "3"

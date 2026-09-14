@@ -278,6 +278,7 @@ fn mmap_readonly_bytes(path: &Path, bytes: usize) -> io::Result<*const u8> {
 #[cfg(test)]
 mod tests {
     use silver_common::declare_counters;
+    use tempfile::TempDir;
 
     declare_counters! {
         SurferTestCounters => "surfer_smoke" {
@@ -289,8 +290,8 @@ mod tests {
 
     #[test]
     fn discover_open_sample() {
-        let tmp = std::env::temp_dir().join(format!("surfer_smoke_{}", std::process::id()));
-        SurferTestCounters::init_with_base(&tmp, "surfer_test").unwrap();
+        let tmp = TempDir::new().unwrap();
+        SurferTestCounters::init_with_base(tmp.path(), "surfer_test").unwrap();
 
         SurferTestCounters::Alpha.set(0);
         SurferTestCounters::Beta.set(0);
@@ -298,7 +299,7 @@ mod tests {
         SurferTestCounters::Alpha.add(11);
         SurferTestCounters::Beta.set(42);
 
-        let sources = crate::discovery::discover(&tmp, "surfer_test").unwrap();
+        let sources = crate::discovery::discover(tmp.path(), "surfer_test").unwrap();
         let file = sources.counters.iter().find(|f| f.name == "surfer_smoke").unwrap();
 
         let mut set = super::CounterSet::open(file).unwrap();
@@ -315,8 +316,6 @@ mod tests {
         set.sample();
         assert_eq!(set.current[0], 16);
         assert_eq!(set.previous[0], 11);
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 }
 

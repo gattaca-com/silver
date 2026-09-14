@@ -42,13 +42,14 @@ use mimalloc::MiMalloc;
 use rand::{Rng, RngCore};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
-use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess};
+use silver_common::{
+    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess, test_util::ShmemDir,
+};
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
     inject::{build_publish_frame, snappy_compress},
     keypair_from_seed,
 };
-use tempfile::TempDir;
 
 const DEFAULT_DURATION_S: u64 = 3;
 const DEFAULT_RATE_HZ: u64 = 500;
@@ -71,7 +72,7 @@ fn main() {
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
 
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = ShmemDir::new().expect("tempdir");
     let echo_addr = loopback_ephemeral();
     let echo_disc_addr = loopback_ephemeral();
     let pub_addr = loopback_ephemeral();

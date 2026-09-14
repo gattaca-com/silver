@@ -533,6 +533,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -566,8 +568,8 @@ mod tests {
     /// only the operator can say which half is the typo.
     #[test]
     fn a_config_name_contradicting_its_fork_version_still_loads() {
-        let path =
-            std::env::temp_dir().join(format!("silver_misnamed_{}.toml", std::process::id()));
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("misnamed.toml");
         std::fs::write(
             &path,
             r#"
@@ -583,7 +585,6 @@ mod tests {
         .unwrap();
 
         let cfg = Config::from_file(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
 
         assert_eq!(cfg.chain_config.spec.misnamed_network(), Some("hoodi"));
         assert_eq!(cfg.chain_config.spec.network_name(), "mainnet");
@@ -671,24 +672,17 @@ mod tests {
         path.to_str().unwrap().to_owned()
     }
 
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("silver-config-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     /// The whole in-enclave contract: a config naming only the two files a
     /// network publishes resolves to the same digest a hand-written one
     /// spells out.
     #[test]
     fn spec_file_and_anchor_resolve_the_digest_and_genesis() {
-        let dir = temp_dir("spec-file");
+        let dir = TempDir::new().unwrap();
         let gvr = [7u8; 32];
         let genesis = 1_600_000_000;
-        let anchor = write_anchor(&dir, genesis, gvr);
+        let anchor = write_anchor(dir.path(), genesis, gvr);
         let spec_file = write_file(
-            &dir,
+            dir.path(),
             "config.yaml",
             "CONFIG_NAME: kurtosis\n\
              GENESIS_FORK_VERSION: 0x10000038\n\
@@ -700,7 +694,7 @@ mod tests {
              GLOAS_FORK_EPOCH: 18446744073709551615\n",
         );
         let config_file = write_file(
-            &dir,
+            dir.path(),
             "silver.toml",
             &format!(
                 "secret_key = \"{}\"\n\
@@ -728,17 +722,17 @@ mod tests {
     /// assert a digest or a genesis that contradicts the state it boots on.
     #[test]
     fn the_anchor_outranks_the_files_literals() {
-        let dir = temp_dir("anchor-wins");
+        let dir = TempDir::new().unwrap();
         let genesis = 1_600_000_000;
         let gvr = [7u8; 32];
-        let anchor = write_anchor(&dir, genesis, gvr);
+        let anchor = write_anchor(dir.path(), genesis, gvr);
         let spec_file = write_file(
-            &dir,
+            dir.path(),
             "config.yaml",
             "FULU_FORK_VERSION: 0x70000038\nFULU_FORK_EPOCH: 0\nELECTRA_FORK_EPOCH: 0\n",
         );
         let config_file = write_file(
-            &dir,
+            dir.path(),
             "silver.toml",
             &format!(
                 "secret_key = \"{}\"\n\
@@ -767,18 +761,18 @@ mod tests {
     /// gossips on.
     #[test]
     fn spec_reading_earlier_than_fulu_is_refused() {
-        let dir = temp_dir("pre-fulu");
+        let dir = TempDir::new().unwrap();
         // A genesis an hour ago, like a devnet's: the wall epoch is then far
         // below mainnet's fulu_fork_epoch, which is the default in force here.
         let recent = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 3600;
-        let anchor = write_anchor(&dir, recent, [7u8; 32]);
+        let anchor = write_anchor(dir.path(), recent, [7u8; 32]);
         let spec_file = write_file(
-            &dir,
+            dir.path(),
             "config.yaml",
             "FULU_FORK_VERSION: 0x70000038\nELECTRA_FORK_EPOCH: 0\n",
         );
         let config_file = write_file(
-            &dir,
+            dir.path(),
             "silver.toml",
             &format!(
                 "secret_key = \"{}\"\n\
@@ -798,9 +792,9 @@ mod tests {
     /// literals stand — this is the default mainnet run.
     #[test]
     fn without_an_anchor_the_files_literals_stand() {
-        let dir = temp_dir("no-anchor");
+        let dir = TempDir::new().unwrap();
         let config_file = write_file(
-            &dir,
+            dir.path(),
             "silver.toml",
             &format!("secret_key = \"{}\"\nfork_digest = \"8c9f62fe\"\n", "11".repeat(32)),
         );
