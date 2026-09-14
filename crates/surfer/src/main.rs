@@ -136,6 +136,7 @@ fn main() -> io::Result<()> {
     let flamegraph = Flamegraph::attach(&app_name);
     let mut app =
         App::new(counter_sets, tcache_sets, timing_sets, tile_sets, peers, events, flamegraph);
+    app.build_info = sources.build_info;
 
     // Restore the terminal before the panic message prints, else it lands
     // on top of the raw-mode alternate screen and leaves the shell broken.
@@ -214,6 +215,10 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
         KeyCode::Enter => app.drilled_in = !app.drilled_in,
         KeyCode::Tab => {
             app.pane = app.pane.next();
+            app.drilled_in = false;
+        }
+        KeyCode::BackTab => {
+            app.pane = app.pane.prev();
             app.drilled_in = false;
         }
         KeyCode::Down => app.move_selection(1),

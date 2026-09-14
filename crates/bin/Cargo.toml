@@ -20,6 +20,7 @@ silver_peer.workspace = true
 silver_storage.workspace = true
 silver_httpcore.workspace = true
 
+build-info.workspace = true
 clap.workspace = true
 flux.workspace = true
 hex.workspace = true
@@ -27,6 +28,9 @@ mimalloc.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+build-info-build.workspace = true
 
 [lints]
 workspace = true

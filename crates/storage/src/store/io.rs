@@ -59,7 +59,6 @@ impl Store {
                     let path = column_path(&self.store_dir, slot, column);
                     std::fs::create_dir_all(path.parent().expect("a slot directory"))?;
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    tracing::info!(?path, len = buffer.len(), "writing data column");
                     open_file_write(path, false)?.write_all(buffer)?;
                     self.finalized.column_landed(slot, column);
                     StorageCounters::BackfillColumnsWritten.inc();
