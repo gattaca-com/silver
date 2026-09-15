@@ -735,7 +735,7 @@ fn pool_cap_gates_spine_intake() {
 /// after that intake: a request reaches the EL in the iteration that took it,
 /// not the one after.
 #[test]
-fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
+fn engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
@@ -1048,7 +1048,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 }
 
 #[test]
-fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
+fn applied_block_on_the_spine_reaches_an_events_subscriber() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
@@ -1170,7 +1170,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
 }
 
 #[test]
-fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
+fn late_subscriber_receives_only_relay_requests_published_after_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
@@ -1213,7 +1213,7 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 }
 
 #[test]
-fn an_idle_boundary_lets_the_object_rings_evict_its_consumers() {
+fn idle_boundary_lets_the_object_rings_evict_its_consumers() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
