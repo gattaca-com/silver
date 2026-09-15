@@ -246,7 +246,7 @@ impl DataColumnsTile {
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::AlreadyHeld { block_root, column_index, slot } => {
-                let is_gossip = column.stream_id.protocol() == StreamProtocol::GossipSub;
+                let is_gossip = column.stream_id.protocol().is_gossip();
                 producers.produce_with_ingestion(
                     DataColumnsEvent::Persist {
                         ssz: column.sidecar.read,
@@ -350,7 +350,7 @@ impl DataColumnsTile {
         self.record_columns(block_root, slot, bitmask, recv_ts, producers);
 
         if self.tracker.wants(bitmask) {
-            let source = if stream_id.protocol() == StreamProtocol::GossipSub {
+            let source = if stream_id.protocol().is_gossip() {
                 ColumnSource::Gossip
             } else {
                 ColumnSource::Rpc

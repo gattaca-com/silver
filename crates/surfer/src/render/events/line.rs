@@ -242,6 +242,20 @@ fn label(trace: &BlockTrace, display: &DisplayRow, theme: &Theme) -> String {
     format!("{indent}{marker}{text}")
 }
 
+/// What a `/` search matches on a row: its label, plus the root and source
+/// on a block's strip.
+pub fn search_text(trace: &BlockTrace, display: &DisplayRow, theme: &Theme) -> String {
+    let label = label(trace, display, theme);
+    match display.node {
+        Node::Span(Span::Strip) => format!(
+            "{label} {} {}",
+            root_prefix(&trace.block_root),
+            trace.source.map_or("", source_label)
+        ),
+        _ => label,
+    }
+}
+
 fn attributes(trace: &BlockTrace, node: Node) -> String {
     match node {
         // The gate open with no sidecars ever seen: a block without

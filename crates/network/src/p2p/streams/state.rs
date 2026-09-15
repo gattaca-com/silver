@@ -248,15 +248,26 @@ impl StreamState {
                 match negotiate_state.spin(id.stream_id(), io)? {
                     NegotiateState::Done(stream_protocol) => {
                         // Pin the negotiated protocol onto the stream id
-                        // so downstream RPC reservation / out-buffer logic
-                        // can dispatch on it.
+                        // so downstream dispatch — and the gossip handler's
+                        // per-stream extension tracking — sees the version.
                         id.set_protocol(stream_protocol);
                         match stream_protocol {
                             StreamProtocol::Unset => unreachable!(),
-                            StreamProtocol::GossipSub => Ok(Self::Gossip {
-                                read: GossipReadState::default(),
-                                write: GossipWriteState::Idle,
-                            }),
+                            StreamProtocol::GossipSub | StreamProtocol::GossipSubV13 => {
+                                // 1.3 requires the extensions announcement in
+                                // the first RPC of each stream we write on;
+                                // starting here covers stream recreation.
+                                let announce = stream_protocol == StreamProtocol::GossipSubV13 &&
+                                    !id.is_incoming();
+                                Ok(Self::Gossip {
+                                    read: GossipReadState::default(),
+                                    write: if announce {
+                                        GossipWriteState::Announcing { written: 0 }
+                                    } else {
+                                        GossipWriteState::Idle
+                                    },
+                                })
+                            }
                             StreamProtocol::Cluster => match context.raft_id(id.peer()) {
                                 Some(raft_id) => Ok(Self::Cluster {
                                     read: ClusterRead::new(raft_id),

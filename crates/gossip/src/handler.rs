@@ -5,8 +5,8 @@ use flux::spine::SpineAdapter;
 use silver_common::{
     Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
-    SilverSpine, TCacheProducer, TCacheRead, TProducer, TRandomAccess, msg_id_valid_snappy,
-    ssz_view::StatusView,
+    SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer, TRandomAccess,
+    msg_id_valid_snappy, ssz_view::StatusView,
 };
 
 use crate::{
@@ -47,6 +47,8 @@ pub struct GossipHandler {
     snap_encoder: snap::raw::Encoder,
     snap_scratch: Vec<u8>,
 
+    extensions: ExtensionTracker,
+
     events: VecDeque<GossipHandlerEvent>,
 }
 
@@ -68,6 +70,7 @@ impl GossipHandler {
             dedup_cache: DedupCache::default(),
             mcache_publish: protobuf_gossip_publish,
             mcache,
+            extensions: ExtensionTracker::default(),
             iwant_buffer: Vec::with_capacity(256),
             snap_encoder: snap::raw::Encoder::new(),
             snap_scratch: Vec::new(),
@@ -328,6 +331,20 @@ impl GossipHandler {
                 }
             };
             if let Some(gossip_proto) = gossip_proto {
+                let announced = || {
+                    gossip_proto
+                        .control
+                        .as_option()
+                        .and_then(|control| control.extensions.as_option())
+                        .and_then(|extensions| extensions.partial_messages)
+                        .unwrap_or(false)
+                };
+                if let Some(partial_messages) = self.extensions.first_rpc(stream_id, announced) {
+                    emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipExtensions {
+                        p2p_peer: stream_id.peer(),
+                        partial_messages,
+                    }));
+                }
                 handle_subscriptions(
                     stream_id,
                     gossip_proto.subscriptions,
@@ -395,11 +412,69 @@ impl GossipHandler {
     }
 }
 
+/// Latest inbound gossip stream per peer. Gossipsub 1.3 extensions count
+/// only in the first RPC of a meshsub 1.3 stream; any replacement stream
+/// resets the peer's capability, so a 1.2 or announcement-less stream
+/// turns it off. Keys are connection-slab indices, so the map is bounded
+/// by the connection limit and slots are reused.
+#[derive(Default)]
+struct ExtensionTracker {
+    streams: fxhash::FxHashMap<usize, P2pStreamId>,
+}
+
+impl ExtensionTracker {
+    /// `Some(capability)` when this frame is the first on its stream;
+    /// `None` when the announcement state is unchanged.
+    fn first_rpc(
+        &mut self,
+        stream_id: &P2pStreamId,
+        announced: impl FnOnce() -> bool,
+    ) -> Option<bool> {
+        match self.streams.get(&stream_id.peer()) {
+            Some(seen) if seen == stream_id => None,
+            _ => {
+                self.streams.insert(stream_id.peer(), *stream_id);
+                Some(stream_id.protocol() == StreamProtocol::GossipSubV13 && announced())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use silver_common::{TCache, TCacheProducer, ssz_view::SINGLE_ATT_SIZE};
 
     use super::*;
+
+    fn v13_stream(peer: usize, stream: u64) -> P2pStreamId {
+        P2pStreamId::new(peer, stream, StreamProtocol::GossipSubV13, true)
+    }
+
+    /// Extensions are stream-scoped: only the first RPC counts, a
+    /// replacement stream resets the capability, and a 1.2 stream can
+    /// never set it.
+    #[test]
+    fn extension_tracker_scopes_announcements_to_streams() {
+        let mut tracker = ExtensionTracker::default();
+        let first = v13_stream(1, 4);
+
+        assert_eq!(tracker.first_rpc(&first, || true), Some(true));
+        // Repeated or late announcements on the same stream are ignored.
+        assert_eq!(tracker.first_rpc(&first, || false), None);
+        assert_eq!(tracker.first_rpc(&first, || true), None);
+
+        // Replacement stream without an announcement resets to off.
+        let reopened = v13_stream(1, 8);
+        assert_eq!(tracker.first_rpc(&reopened, || false), Some(false));
+        assert_eq!(tracker.first_rpc(&reopened, || true), None);
+
+        // A renegotiated 1.2 stream cannot announce extensions.
+        let downgraded = P2pStreamId::new(1, 12, StreamProtocol::GossipSub, true);
+        assert_eq!(tracker.first_rpc(&downgraded, || true), Some(false));
+
+        // Peers are tracked independently.
+        assert_eq!(tracker.first_rpc(&v13_stream(2, 4), || true), Some(true));
+    }
 
     #[test]
     fn local_injection_uses_inbound_tcaches_without_precaching() {

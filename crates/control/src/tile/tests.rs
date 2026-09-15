@@ -195,6 +195,14 @@ fn column_publication_encodes_and_routes_without_another_spine_request() {
     let tcache = write_bytes(&mut capture.incoming, &packet);
     capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
     receiver.spin(&mut receiver_adapter);
+    // The first RPC on a peer stream reports its (absent) extension state.
+    let Some(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipExtensions {
+        partial_messages: false,
+        ..
+    })) = receiver.pop_event()
+    else {
+        panic!("first RPC must report extension state")
+    };
     let Some(GossipHandlerEvent::NewGossip(message)) = receiver.pop_event() else {
         panic!("publication must decode as a gossip message")
     };

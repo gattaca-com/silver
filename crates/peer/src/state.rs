@@ -42,6 +42,12 @@ pub(crate) struct PeerState {
     // Subscriptions observed from the peer's SUBSCRIBE frames.
     pub topics: HashSet<GossipTopic>,
 
+    // Gossipsub 1.3 partial-column capabilities. Bit i covers column
+    // subnet i; subscription updates replace, unsubscribe clears.
+    pub partial_extensions: bool,
+    pub partial_requests: u128,
+    pub partial_supports_sending: u128,
+
     // Per-topic scoring. Sparse — entry created on first meshed activity.
     pub topic_stats: HashMap<GossipTopic, TopicScore>,
 
@@ -99,6 +105,9 @@ impl PeerState {
             local_dialler: false,
             user_agent: AgentString::default(),
             topics: HashSet::with_capacity(TOPICS_PER_PEER_CAP),
+            partial_extensions: false,
+            partial_requests: 0,
+            partial_supports_sending: 0,
             topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
             msg_cache: CountingWitherFilter::default(),
             application_score: 0.0,
