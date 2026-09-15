@@ -423,7 +423,7 @@ impl PeerManager {
         }
     }
 
-    /// Test-only: the first (current) sub-mesh's peers for a topic.
+    /// the first (current) sub-mesh's peers for a topic.
     #[cfg(test)]
     pub(crate) fn test_mesh(&self, topic: GossipTopic) -> &[usize] {
         self.mesh

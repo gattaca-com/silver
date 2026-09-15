@@ -83,7 +83,7 @@ impl GossipHandler {
             let mut seen = [[false; GOSSIP_TOPIC_COUNTER_SLOTS]; 2];
             for &(topic, domain) in self.mcache.topics() {
                 // A drained domain's leftover entries advertise nothing.
-                let Some((lane, hex)) = self.domains.lane_hex(domain) else {
+                let Some((lane, hex)) = self.domains.index_hex(domain) else {
                     continue;
                 };
                 if seen[lane][topic.counter_slot()] {
@@ -485,7 +485,7 @@ impl ActiveDomains {
         self.current.as_ref().map(|s| s.domain)
     }
 
-    fn lane_hex(&self, domain: GossipDomain) -> Option<(usize, &str)> {
+    fn index_hex(&self, domain: GossipDomain) -> Option<(usize, &str)> {
         if let Some(s) = &self.current &&
             s.domain == domain
         {
