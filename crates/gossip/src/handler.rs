@@ -5,15 +5,15 @@ use flux::spine::SpineAdapter;
 use silver_common::{
     Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
-    SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer, TRandomAccess,
+    Published, SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer, TRandomAccess,
     msg_id_valid_snappy,
 };
 
 use crate::{
     GossipHandlerEvent,
     control::{
-        self, copy_ihaves_to_protobuf_output, handle_grafts, handle_idontwants, handle_ihaves,
-        handle_iwants, handle_prunes, handle_subscriptions,
+        self, copy_idontwants_to_protobuf_output, copy_ihaves_to_protobuf_output, handle_grafts,
+        handle_idontwants, handle_ihaves, handle_iwants, handle_prunes, handle_subscriptions,
     },
     dedup::DedupCache,
     generated::RPCView,
@@ -115,7 +115,7 @@ impl GossipHandler {
     /// dedup + mcache (so gossip copies dedupe and IWANTs can be served).
     /// Returns `None` when the message was already seen via gossip, or
     /// pre-Status (no fork digest yet).
-    pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<(MessageId, TCacheRead)> {
+    pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<Published> {
         let (domain, wire) = self.domains.current_wire(topic)?;
         if ssz.len() > topic.max_uncompressed_size() {
             tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
@@ -142,7 +142,11 @@ impl GossipHandler {
         .inspect_err(|e| tracing::error!(?e, ?topic, "publish protobuf write failed"))
         .ok()?;
         self.mcache.insert(msg_id, topic, domain, read);
-        Some((msg_id, read))
+        let idontwant =
+            copy_idontwants_to_protobuf_output(&mut self.mcache_publish, std::iter::once(&msg_id))
+                .inspect_err(|e| tracing::error!(?e, ?topic, "publish idontwant write failed"))
+                .ok()?;
+        Some(Published { msg_id, domain, protobuf: read, idontwant })
     }
 
     /// Inject a locally-originated, not-yet-validated SSZ message at the same

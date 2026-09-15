@@ -144,7 +144,7 @@ impl Rig {
 }
 
 #[test]
-fn column_publications_name_the_sidecar_for_gossip_and_following_rpc() {
+fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
@@ -165,12 +165,19 @@ fn column_publications_name_the_sidecar_for_gossip_and_following_rpc() {
         rig.receive_column(source, index, &blob.gloas_sidecar(index, SLOT, &block_root));
         rig.turn();
         let out = rig.drain();
-        if following {
+        if source == ColumnSource::Gossip {
             let column = SidecarIdentity { slot: SLOT, block_root, column_index: index };
             assert_eq!(out.publications, [(source, GossipTopic::DataColumnSidecar(index), column)]);
         } else {
-            assert!(out.persisted(block_root, index), "syncing still processes the column");
-            assert!(out.publications.is_empty(), "syncing RPC columns do not request publication");
+            assert_eq!(
+                out.persisted(block_root, index),
+                CUSTODY_COLUMNS & (1 << index) != 0,
+                "following={following}: custody columns persist"
+            );
+            assert!(
+                out.publications.is_empty(),
+                "following={following}: RPC columns are republished off `Persist`, not here"
+            );
         }
     }
 }
