@@ -61,23 +61,31 @@ impl ChunkedResponse {
         true
     }
 
-    /// Attempts to drain pending output after accepting a chunk within the cap.
+    /// Attempts to drain existing output before checking whether the framed
+    /// chunk fits under the pending-byte cap. If it fits, queues it and
+    /// attempts to drain again. Socket write progress can therefore free
+    /// room for the new chunk.
+    ///
     /// Returns replacement readiness interests for the caller to register.
-    /// `None` leaves an already-empty response's `READABLE` registration
-    /// unchanged. Errors require the caller to close the connection.
+    /// `None` means no output was pending on entry and the new chunk
+    /// drained completely, so the caller can retain its `READABLE`
+    /// registration. Errors require the caller to close the connection.
     pub fn deliver(
         &mut self,
         stream: &mut impl Write,
         chunk: &[u8],
         now: Instant,
     ) -> Result<Option<Interest>, Closed> {
-        let backlog = !self.pending_write().is_empty();
+        let had_backlog = !self.pending_write().is_empty();
+        if had_backlog {
+            self.drain_into(stream, now).map_err(Closed::Lost)?;
+        }
         if !self.push(chunk, now) {
             return Err(Closed::AtCap { pending: self.pending_write().len() });
         }
         // An empty buffer already has READABLE alone. A backlog may retain
         // WRITABLE from the response head or an earlier blocked write.
-        Ok(match (self.drain_into(stream, now).map_err(Closed::Lost)?, backlog) {
+        Ok(match (self.drain_into(stream, now).map_err(Closed::Lost)?, had_backlog) {
             (true, false) => None,
             (true, true) => Some(Interest::READABLE),
             (false, _) => Some(Interest::READABLE | Interest::WRITABLE),
@@ -216,7 +224,6 @@ mod tests {
     enum Step {
         Take(usize),
         WouldBlock,
-        Interrupted,
         Zero,
         Broken,
     }
@@ -251,7 +258,6 @@ mod tests {
                     Ok(n)
                 }
                 Step::WouldBlock => Err(ErrorKind::WouldBlock.into()),
-                Step::Interrupted => Err(ErrorKind::Interrupted.into()),
                 Step::Zero => Ok(0),
                 Step::Broken => Err(ErrorKind::BrokenPipe.into()),
             }
@@ -263,6 +269,32 @@ mod tests {
     }
 
     const BOTH: Interest = Interest::READABLE.add(Interest::WRITABLE);
+
+    #[derive(Default)]
+    struct BudgetSocket {
+        remaining: usize,
+        taken: Vec<u8>,
+        interrupt_once: bool,
+    }
+
+    impl Write for BudgetSocket {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if std::mem::take(&mut self.interrupt_once) {
+                return Err(ErrorKind::Interrupted.into());
+            }
+            if self.remaining == 0 {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            let n = buf.len().min(self.remaining);
+            self.taken.extend_from_slice(&buf[..n]);
+            self.remaining -= n;
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     /// The queued head supplies the initial backlog. Once drained, later
     /// deliveries need no registration change while the writer accepts output.
@@ -318,19 +350,24 @@ mod tests {
     fn partial_writes_continue_until_the_socket_refuses() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
-        let mut socket = ScriptedSocket::taking_everything();
+        let mut socket = BudgetSocket { remaining: usize::MAX, ..BudgetSocket::default() };
         let frame = burst_frame(0, 1000);
         let expected = [HEAD, &framed(&frame)].concat();
 
-        socket.script([Step::Take(100), Step::Take(100), Step::WouldBlock]);
+        assert!(stream.drain_into(&mut socket, t0).unwrap());
+        let already_sent = socket.taken.len();
+        let allowance = 200;
+        socket.remaining = allowance;
         let t1 = t0 + Duration::from_secs(1);
         assert_eq!(stream.deliver(&mut socket, &frame, t1).unwrap(), Some(BOTH));
-        assert_eq!(socket.taken, expected[..200]);
-        assert_eq!(stream.pending_write(), &expected[200..]);
+        let sent = already_sent + allowance;
+        assert_eq!(socket.taken, expected[..sent]);
+        assert_eq!(stream.pending_write(), &expected[sent..]);
         assert!(!stream.stalled(t1 + DEADLINE, DEADLINE));
         assert!(stream.stalled(t1 + DEADLINE + Duration::from_millis(1), DEADLINE));
 
-        socket.script([Step::Interrupted, Step::Take(50)]);
+        socket.interrupt_once = true;
+        socket.remaining = usize::MAX;
         assert!(stream.drain_into(&mut socket, t1).unwrap());
         assert_eq!(socket.taken, expected);
         assert!(!stream.stalled(t1 + DEADLINE * 100, DEADLINE));
@@ -373,6 +410,49 @@ mod tests {
             matches!(closed, Closed::AtCap { pending } if pending == HEAD.len() + fit * chunk);
         assert!(at_cap, "{closed:?}");
         assert!(socket.taken.is_empty());
+    }
+
+    #[test]
+    fn draining_a_full_backlog_makes_room_for_the_next_frame() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = BudgetSocket::default();
+        let first = payload_framed_to(PENDING_MAX - HEAD.len());
+        stream.deliver(&mut socket, &first, t0).unwrap();
+        assert_eq!(stream.pending_write().len(), PENDING_MAX);
+
+        let next = burst_frame(1, 300);
+        socket.remaining = framed(&next).len();
+        let t1 = t0 + Duration::from_secs(1);
+        stream.deliver(&mut socket, &next, t1).unwrap();
+        assert!(stream.pending_write().len() <= PENDING_MAX);
+
+        socket.remaining = usize::MAX;
+        assert!(stream.drain_into(&mut socket, t1).unwrap());
+        assert_eq!(socket.taken, [HEAD, &framed(&first), &framed(&next)].concat());
+    }
+
+    #[test]
+    fn draining_too_little_still_refuses_the_next_frame() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = BudgetSocket::default();
+        let first = payload_framed_to(PENDING_MAX - HEAD.len());
+        stream.deliver(&mut socket, &first, t0).unwrap();
+        assert_eq!(stream.pending_write().len(), PENDING_MAX);
+
+        let next = burst_frame(1, 300);
+        socket.remaining = framed(&next).len() - 1;
+        let t1 = t0 + Duration::from_secs(1);
+        let Err(Closed::AtCap { pending }) = stream.deliver(&mut socket, &next, t1) else {
+            panic!("insufficient room after draining must still end delivery")
+        };
+
+        let expected = [HEAD, &framed(&first)].concat();
+        let sent = socket.taken.len();
+        assert!(sent > 0, "delivery must try draining before refusing the frame");
+        assert_eq!(pending, expected.len() - sent);
+        assert_eq!(socket.taken, expected[..sent]);
     }
 
     /// Both zero-length writes and write errors require the caller to close.
