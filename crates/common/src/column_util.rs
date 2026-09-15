@@ -91,38 +91,33 @@ pub struct SidecarIdentity {
     pub slot: u64,
     pub block_root: B256,
     pub column_index: u64,
-    pub layout: SidecarLayout,
 }
 
 impl SidecarIdentity {
     /// Returns `None` if the length and column offset identify neither Fulu nor
     /// Gloas. This does not validate the remaining sidecar fields.
     pub fn of(sidecar: &[u8]) -> Option<Self> {
-        let layout = SidecarLayout::of(sidecar)?;
-        Some(match layout {
+        Some(match SidecarLayout::of(sidecar)? {
             SidecarLayout::Fulu => Self {
                 slot: DataColumnSidecarFuluView::slot(sidecar),
                 block_root: block_root_from_sidecar(sidecar),
                 column_index: DataColumnSidecarFuluView::index(sidecar),
-                layout,
             },
             SidecarLayout::Gloas => Self {
                 slot: DataColumnSidecarGloasView::slot(sidecar),
                 block_root: *DataColumnSidecarGloasView::beacon_block_root(sidecar),
                 column_index: DataColumnSidecarGloasView::index(sidecar),
-                layout,
             },
         })
     }
+}
 
-    /// Borrows the Fulu commitment list; returns `None` for Gloas.
-    /// Debug builds check the layout, but this does not validate SSZ offsets.
-    pub fn kzg_commitments<'a>(&self, sidecar: &'a [u8]) -> Option<&'a [u8]> {
-        debug_assert_eq!(SidecarLayout::of(sidecar), Some(self.layout), "bytes of another layout");
-        match self.layout {
-            SidecarLayout::Fulu => Some(DataColumnSidecarFuluView::kzg_commitments(sidecar)),
-            SidecarLayout::Gloas => None,
-        }
+/// Returns `None` unless the length and column offset identify Fulu.
+/// Borrows the commitment bytes without validating the remaining SSZ offsets.
+pub fn kzg_commitments_from_sidecar(sidecar: &[u8]) -> Option<&[u8]> {
+    match SidecarLayout::of(sidecar)? {
+        SidecarLayout::Fulu => Some(DataColumnSidecarFuluView::kzg_commitments(sidecar)),
+        SidecarLayout::Gloas => None,
     }
 }
 
@@ -487,6 +482,22 @@ mod tests {
         buf[12..16].copy_from_slice(&com_off.to_le_bytes());
         buf[16..20].copy_from_slice(&proof_off.to_le_bytes());
         buf
+    }
+
+    #[test]
+    fn kzg_commitments_from_sidecar_reads_fulu_and_returns_none_for_other_layouts() {
+        let commitments =
+            [[0x42; BYTES_PER_KZG_COMMITMENT], [0xa7; BYTES_PER_KZG_COMMITMENT]].concat();
+        let mut sidecar = synth_sidecar(3, 2, 2, 2);
+        let start = DATA_COLUMN_SIDECAR_MIN + 2 * BYTES_PER_CELL;
+        sidecar[start..start + commitments.len()].copy_from_slice(&commitments);
+
+        assert_eq!(kzg_commitments_from_sidecar(&sidecar), Some(commitments.as_slice()));
+        assert_eq!(kzg_commitments_from_sidecar(&synth_gloas_sidecar(3, 2, 2)), None);
+        assert_eq!(kzg_commitments_from_sidecar(&sidecar[..DATA_COLUMN_SIDECAR_MIN - 1]), None);
+
+        sidecar[8..12].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(kzg_commitments_from_sidecar(&sidecar), None);
     }
 
     /// Every sidecar carries at least one blob; the active schedule is the

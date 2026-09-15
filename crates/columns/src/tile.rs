@@ -793,7 +793,7 @@ mod tests {
         column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
-            SIGNED_BEACON_BLOCK_MIN, SidecarLayout,
+            SIGNED_BEACON_BLOCK_MIN,
         },
         test_util::ShmemDir,
     };
@@ -1197,12 +1197,7 @@ mod tests {
                 assert_eq!(out.publications, [(
                     ColumnSource::Gossip,
                     GossipTopic::DataColumnSidecar(index),
-                    SidecarIdentity {
-                        slot,
-                        block_root,
-                        column_index: index,
-                        layout: SidecarLayout::Fulu
-                    }
+                    SidecarIdentity { slot, block_root, column_index: index }
                 )]);
             } else {
                 assert!(out.publications.is_empty(), "a buffered copy is not relayed");

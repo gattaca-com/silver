@@ -6,7 +6,7 @@ use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockStage, Enr, GossipTopic, Identify, Keypair, PeerEvent, SilverSpine,
     SyncUpdate, TProducer, TRandomAccess, TRead,
-    column_util::{SidecarIdentity, block_root},
+    column_util::{SidecarIdentity, block_root, kzg_commitments_from_sidecar},
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_config::EngineConfig;
@@ -179,7 +179,7 @@ fn publish_data_column_sidecar(beacon: &mut BeaconApi, sidecar: TRead) {
                 &column.block_root,
                 column.column_index,
                 column.slot,
-                column.kzg_commitments(bytes),
+                kzg_commitments_from_sidecar(bytes),
             ),
             None => tracing::warn!("published sidecar fits no layout data_column_sidecar reads"),
         },
