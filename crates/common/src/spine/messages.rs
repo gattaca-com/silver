@@ -8,7 +8,7 @@ use flux::timing::Nanos;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 
 use crate::{
-    DataKind, Enr, GossipFrameRef, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId,
+    CacheFrameRef, DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId,
     StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
     column_util::columns_of,
     ssz_view::{
@@ -711,7 +711,7 @@ pub enum RpcSeverity {
 #[allow(clippy::large_enum_variant)]
 pub enum P2pSend {
     Gossip(GossipMsgOut),
-    SegmentedGossip { peer_id: usize, frame: GossipFrameRef },
+    SegmentedGossip { peer_id: usize, frame: CacheFrameRef },
     Identify(usize),
     Rpc(RpcOutbound),
 }

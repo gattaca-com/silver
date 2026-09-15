@@ -8,7 +8,7 @@ use std::{
 
 use quinn_proto::StreamId;
 use silver_common::{
-    AcquiredWithOffset, GossipFrameRef, GossipSegment, P2pStreamId, StreamProtocol, SubLayout,
+    AcquiredWithOffset, CacheFrameRef, CacheSegment, P2pStreamId, StreamProtocol, SubLayout,
     SubReservationRef, TCache, TCacheProducer, TProducer,
 };
 
@@ -55,9 +55,13 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        // Counter files initialise lazily on first touch; warm them so the
+        // zero-allocation baselines below measure only the frame path.
+        NetworkCounters::CacheSegmentedAdmitted.inc();
         let gossip = TCache::producer("", 1 << 18);
         let columns = TCache::producer("", 1 << 18);
         let rpc = TCache::producer("", 1 << 16);
+        let cluster = TCache::producer("", 1 << 16);
         let now = Instant::now();
         Self {
             context: Box::new(Context {
@@ -69,6 +73,12 @@ impl Harness {
                 rpc_consumer: rpc.cache_ref().random_access("", true).unwrap(),
                 rpc_producer: rpc,
                 identify: None,
+                cluster_nodes: None,
+                cluster_inbound_producer: TCache::producer("", 1 << 16),
+                cluster_outbound_consumer: cluster
+                    .cache_ref()
+                    .strict_random_access("", true)
+                    .unwrap(),
             }),
             limits: Box::new(SegmentedGossipLimits::new(2)),
             wheel: Box::new(OutboundLeaseWheel::new(now)),
@@ -78,7 +88,7 @@ impl Harness {
         }
     }
 
-    fn assembly(&mut self, accept: bool) -> (GossipFrameRef, SubReservationRef) {
+    fn assembly(&mut self, accept: bool) -> (CacheFrameRef, SubReservationRef) {
         let reference = self
             .columns
             .sub_reservation(SubLayout { parts: 2, first_len: 64, second_len: 8 }, b"", b"")
@@ -98,20 +108,20 @@ impl Harness {
                 .accept()
                 .unwrap();
         }
-        let frame = GossipFrameRef::write(
+        let frame = CacheFrameRef::write(
             &mut self.gossip,
             self.now + Duration::from_secs(1),
             b"head",
             [
-                GossipSegment::Framing { offset: 0, length: 4 },
-                GossipSegment::Shared {
+                CacheSegment::Framing { offset: 0, length: 4 },
+                CacheSegment::Shared {
                     reservation: reference,
                     part: 0,
                     second: false,
                     offset: 0,
                     length: 64,
                 },
-                GossipSegment::Shared {
+                CacheSegment::Shared {
                     reservation: reference,
                     part: 0,
                     second: true,
@@ -125,7 +135,7 @@ impl Harness {
         (frame, reference)
     }
 
-    fn acquire(&mut self, frame: GossipFrameRef) -> Option<SegmentedFrame> {
+    fn acquire(&mut self, frame: CacheFrameRef) -> Option<SegmentedFrame> {
         let view = frame.acquire(&mut self.context.gossip_consumer, self.now).ok()?;
         self.limits.acquire(view, &mut self.context, &self.wheel, self.now)
     }
@@ -160,6 +170,10 @@ impl MockIo {
 }
 
 impl StreamIo for MockIo {
+    fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
+        None
+    }
+
     fn write_to_stream(&mut self, _: StreamId, data: &[u8]) -> Result<usize, StreamError> {
         let n = self.budget.min(data.len());
         self.written.extend_from_slice(&data[..n]);
@@ -371,11 +385,11 @@ fn adjacent_ranges_share_one_owner_without_gathering() {
     let mut reservation = h.gossip.reserve(64, true).unwrap();
     reservation.write_all(&[0xab; 64]).unwrap();
     let read = reservation.read();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut h.gossip,
         h.now + Duration::from_secs(1),
         b"",
-        [GossipSegment::Gossip { read, offset: 2, length: 4 }, GossipSegment::Gossip {
+        [CacheSegment::Gossip { read, offset: 2, length: 4 }, CacheSegment::Gossip {
             read,
             offset: 6,
             length: 8,
@@ -399,18 +413,19 @@ fn adjacent_ranges_share_one_owner_without_gathering() {
 #[test]
 fn framing_fragments_share_one_lazy_owner_until_the_last_ack() {
     let mut h = Harness::new();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut h.gossip,
         h.now + Duration::from_secs(1),
         b"abcdef",
         [
-            GossipSegment::Framing { offset: 0, length: 2 },
-            GossipSegment::Framing { offset: 4, length: 2 },
-            GossipSegment::Framing { offset: 2, length: 2 },
+            CacheSegment::Framing { offset: 0, length: 2 },
+            CacheSegment::Framing { offset: 4, length: 2 },
+            CacheSegment::Framing { offset: 2, length: 2 },
         ]
         .into_iter(),
     )
     .unwrap();
+    let before = ALLOCATIONS.with(Cell::get);
     let before = ALLOCATIONS.with(Cell::get);
     let mut writer = h.acquire(reference).unwrap().into_writer();
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
@@ -457,11 +472,11 @@ fn dropping_before_the_prefix_allocates_no_owners_and_releases_the_lease() {
 #[test]
 fn partial_length_prefix_and_mixed_frames_preserve_boundaries() {
     let mut h = Harness::new();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut h.gossip,
         h.now + Duration::from_secs(1),
         &[0xab; 300],
-        [GossipSegment::Framing { offset: 0, length: 300 }].into_iter(),
+        [CacheSegment::Framing { offset: 0, length: 300 }].into_iter(),
     )
     .unwrap();
     let frame = h.acquire(reference).unwrap();

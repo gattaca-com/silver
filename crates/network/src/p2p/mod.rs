@@ -18,8 +18,8 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId, PeerId,
-    ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
+    CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId,
+    PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
 
 use crate::{
@@ -381,7 +381,7 @@ impl P2p {
     pub fn enqueue_segmented_gossip(
         &mut self,
         peer_id: usize,
-        frame: GossipFrameRef,
+        frame: CacheFrameRef,
         context: &mut Context,
     ) -> SendResult {
         match self.peers.get_mut(&ConnectionHandle(peer_id)) {

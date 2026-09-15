@@ -203,7 +203,7 @@ mod tests {
             Ok(data.as_ref().len())
         }
 
-        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
             None
         }
     }

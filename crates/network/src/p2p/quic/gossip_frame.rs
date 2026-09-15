@@ -2,7 +2,7 @@ use std::{cell::Cell, ptr::NonNull, time::Instant};
 
 use bytes::Bytes;
 use silver_common::{
-    AcquiredGossipFrame, AcquiredGossipSegment, AcquiredRange, GossipFrameView, TRead,
+    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, TRead,
 };
 
 use super::{Leased, leased::OutboundLeaseWheel};
@@ -46,7 +46,7 @@ impl SegmentedGossipLimits {
 
     pub(crate) fn acquire(
         &self,
-        view: GossipFrameView,
+        view: CacheFrameView,
         context: &mut Context,
         wheel: &OutboundLeaseWheel,
         now: Instant,
@@ -57,7 +57,7 @@ impl SegmentedGossipLimits {
             owners > self.max_owners.saturating_sub(self.owners.get()) ||
             self.frames.get() >= self.max_frames
         {
-            NetworkCounters::GossipSegmentedCapacity.inc();
+            NetworkCounters::CacheSegmentedCapacity.inc();
             return None;
         }
         self.frames.set(self.frames.get() + 1);
@@ -68,15 +68,15 @@ impl SegmentedGossipLimits {
             &mut context.gossip_consumer,
             context.data_columns_consumer.as_deref_mut(),
         )?;
-        NetworkCounters::GossipSegmentedAdmitted.inc();
-        NetworkCounters::GossipSegmentedSegments.add(frame.segment_count() as u64);
+        NetworkCounters::CacheSegmentedAdmitted.inc();
+        NetworkCounters::CacheSegmentedSegments.add(frame.segment_count() as u64);
         Some(SegmentedFrame { segments: wheel.leased(frame, now), budget })
     }
 
     pub(crate) fn publish_gauges(&self) {
-        NetworkCounters::GossipSegmentedFrames.set(self.frames.get() as u64);
-        NetworkCounters::GossipSegmentedOwners.set(self.owners.get() as u64);
-        NetworkCounters::GossipSegmentedRetainedBytes.set(self.retained_bytes.get() as u64);
+        NetworkCounters::CacheSegmentedFrames.set(self.frames.get() as u64);
+        NetworkCounters::CacheSegmentedOwners.set(self.owners.get() as u64);
+        NetworkCounters::CacheSegmentedRetainedBytes.set(self.retained_bytes.get() as u64);
     }
 }
 
@@ -90,7 +90,7 @@ impl Drop for SegmentedGossipLimits {
 
 #[derive(Debug)]
 pub(crate) struct SegmentedFrame {
-    segments: Leased<AcquiredGossipFrame>,
+    segments: Leased<AcquiredCacheFrame>,
     budget: FrameBudget,
 }
 
@@ -118,13 +118,13 @@ impl SegmentedWriter {
         if self.current.is_empty() {
             let SegmentedFrame { segments, budget } = &mut self.frame;
             self.current = match segments.take_next()? {
-                AcquiredGossipSegment::Framing(range) => {
+                AcquiredCacheSegment::Framing(range) => {
                     if self.descriptor.is_empty() {
                         self.descriptor = budget.owner(segments.child(segments.descriptor_range()));
                     }
                     self.descriptor.slice(range)
                 }
-                AcquiredGossipSegment::Data(range) => budget.owner(segments.child(range)),
+                AcquiredCacheSegment::Data(range) => budget.owner(segments.child(range)),
             };
         }
         Some(&mut self.current)
@@ -154,7 +154,7 @@ impl FrameBudget {
         self.owners -= 1;
         self.bytes -= data.len();
         let owner = SegmentOwner { data, limits: self.limits };
-        NetworkCounters::GossipSegmentedOwnerAllocations.inc();
+        NetworkCounters::CacheSegmentedOwnerAllocations.inc();
         Bytes::from_owner(owner)
     }
 }

@@ -13,7 +13,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    GossipFrameRef, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead,
+    CacheFrameRef, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead,
     rpc_rate_limit::RpcRateLimitSet,
 };
 
@@ -23,7 +23,7 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{
-            OutboundGossip, SegmentedGossipLimits, SendResult, leased::OutboundLeaseWheel,
+            Leased, OutboundGossip, SegmentedGossipLimits, SendResult, leased::OutboundLeaseWheel,
             stream::StreamIoImpl,
         },
         streams::{
@@ -177,7 +177,7 @@ impl Peer {
 
     pub(crate) fn send_segmented_gossip(
         &mut self,
-        frame: GossipFrameRef,
+        frame: CacheFrameRef,
         context: &mut Context,
         limits: &SegmentedGossipLimits,
         rpc_codec_pool: &mut RpcCodecPool,
@@ -194,7 +194,7 @@ impl Peer {
             .ok()
             .and_then(|view| limits.acquire(view, context, &self.outbound_lease_wheel, now));
         let Some(frame) = acquired else {
-            crate::NetworkCounters::GossipSegmentedRejected.inc();
+            crate::NetworkCounters::CacheSegmentedRejected.inc();
             return SendResult::MessageDropped;
         };
         self.queue_gossip(OutboundGossip::Segmented(frame))
@@ -2182,14 +2182,14 @@ mod tests {
             write.flush().unwrap();
             write.read()
         };
-        let frame = GossipFrameRef::write(
+        let frame = CacheFrameRef::write(
             &mut client_h.gossip_out_producer,
             Instant::now() + Duration::from_secs(1),
             &payload[..2],
             [
-                GossipSegment::Framing { offset: 0, length: 2 },
-                GossipSegment::DataColumns { read, offset: 0, length: 2 },
-                GossipSegment::DataColumns { read, offset: 2, length: 3 },
+                CacheSegment::Framing { offset: 0, length: 2 },
+                CacheSegment::DataColumns { read, offset: 0, length: 2 },
+                CacheSegment::DataColumns { read, offset: 2, length: 3 },
             ]
             .into_iter(),
         )
@@ -2235,11 +2235,11 @@ mod tests {
             h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
         let limits = Box::new(SegmentedGossipLimits::new(2));
         let mut pair = PeerPair::new();
-        let frame = GossipFrameRef::write(
+        let frame = CacheFrameRef::write(
             &mut h.gossip_out_producer,
             Instant::now() + Duration::from_secs(1),
             b"payload",
-            [GossipSegment::Framing { offset: 0, length: 7 }].into_iter(),
+            [CacheSegment::Framing { offset: 0, length: 7 }].into_iter(),
         )
         .unwrap();
         let peer = &mut pair.client_peer;

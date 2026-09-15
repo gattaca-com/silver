@@ -41,16 +41,16 @@ silver_common::declare_counters! {
         GossipStallDisconnect,
         // RPC codecs currently retained in the network-tile-wide free list.
         RpcCodecPoolIdle,
-        GossipSegmentedAdmitted,
-        GossipSegmentedRejected,
-        GossipSegmentedCapacity,
-        GossipSegmentedSegments,
-        GossipSegmentedOwnerAllocations,
-        GossipSegmentedFrames,
+        CacheSegmentedAdmitted,
+        CacheSegmentedRejected,
+        CacheSegmentedCapacity,
+        CacheSegmentedSegments,
+        CacheSegmentedOwnerAllocations,
+        CacheSegmentedFrames,
         // Reserved owner slots, including owners already held by Quinn.
-        GossipSegmentedOwners,
+        CacheSegmentedOwners,
         // Reserved ranges per recipient, including descriptors; not unique cache backing bytes.
-        GossipSegmentedRetainedBytes,
+        CacheSegmentedRetainedBytes,
     }
 }
 
