@@ -248,8 +248,8 @@ impl GossipHandler {
         emit: &mut impl FnMut(GossipHandlerEvent),
     ) {
         match peer_control {
-            PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic } => {
-                let Some((_, wire)) = self.domains.current_wire(topic) else { return };
+            PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic, digest } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) =
                     control::copy_subscribes_to_protobuf_output(&mut self.mcache_publish, &[&wire])
                 {
@@ -260,8 +260,8 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipUnsubscribe { p2p: _, p2p_connection, topic } => {
-                let Some((_, wire)) = self.domains.current_wire(topic) else { return };
+            PeerControl::P2pGossipUnsubscribe { p2p: _, p2p_connection, topic, digest } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) =
                     control::copy_unsubscribes_to_protobuf_output(&mut self.mcache_publish, &[
                         &wire,
@@ -274,8 +274,8 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipGraft { p2p: _, p2p_connection, topic } => {
-                let Some((_, wire)) = self.domains.current_wire(topic) else { return };
+            PeerControl::P2pGossipGraft { p2p: _, p2p_connection, topic, digest } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) =
                     control::copy_grafts_to_protobuf_output(&mut self.mcache_publish, &[&wire])
                 {
@@ -286,8 +286,14 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipPrune { p2p: _, p2p_connection, topic, backoff_seconds } => {
-                let Some((_, wire)) = self.domains.current_wire(topic) else { return };
+            PeerControl::P2pGossipPrune {
+                p2p: _,
+                p2p_connection,
+                topic,
+                digest,
+                backoff_seconds,
+            } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) = control::copy_prunes_to_protobuf_output(
                     &mut self.mcache_publish,
                     &[&wire],

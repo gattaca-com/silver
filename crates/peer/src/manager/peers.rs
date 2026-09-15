@@ -145,8 +145,14 @@ impl PeerManager {
         }
 
         // Announce our own topic subscriptions to this peer.
+        let digest = self.current_digest();
         for &topic in &self.our_topics {
-            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
+            emit(PeerControl::P2pGossipSubscribe {
+                p2p: peer_id,
+                p2p_connection: conn,
+                topic,
+                digest,
+            });
         }
     }
 
@@ -171,6 +177,7 @@ impl PeerManager {
                 p2p: peer_id,
                 p2p_connection: conn,
                 topic,
+                digest: self.current_digest(),
                 backoff_seconds: None,
             });
         }
@@ -317,11 +324,13 @@ impl PeerManager {
             }
             self.our_topics.push(topic);
             self.mesh.insert(topic, Vec::with_capacity(self.params.d_high as usize));
+            let digest = self.current_digest();
             for (&conn, peer) in &self.peers {
                 emit(PeerControl::P2pGossipSubscribe {
                     p2p: peer.peer_id,
                     p2p_connection: conn,
                     topic,
+                    digest,
                 });
             }
         }
@@ -331,12 +340,14 @@ impl PeerManager {
     }
 
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
+        let digest = self.current_digest();
         for (&conn, peer) in &self.peers {
             for &topic in &self.our_topics {
                 emit(PeerControl::P2pGossipSubscribe {
                     p2p: peer.peer_id,
                     p2p_connection: conn,
                     topic,
+                    digest,
                 });
             }
         }
@@ -408,6 +419,7 @@ impl PeerManager {
                 p2p: peer_id,
                 p2p_connection: conn,
                 topic,
+                digest: self.current_digest(),
                 backoff_seconds: None,
             });
         }
@@ -589,7 +601,12 @@ impl PeerManager {
             t.opportunistic = opportunistic;
         }
         tracing::debug!(?topic, conn, "GRAFT peer");
-        emit(PeerControl::P2pGossipGraft { p2p: peer_id, p2p_connection: conn, topic });
+        emit(PeerControl::P2pGossipGraft {
+            p2p: peer_id,
+            p2p_connection: conn,
+            topic,
+            digest: self.current_digest(),
+        });
     }
 
     fn do_prune(
@@ -633,6 +650,7 @@ impl PeerManager {
             p2p: peer_id,
             p2p_connection: conn,
             topic,
+            digest: self.current_digest(),
             backoff_seconds,
         });
     }

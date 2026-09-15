@@ -772,21 +772,26 @@ pub enum PeerControl {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        /// Fork domain digest this subscription targets.
+        digest: [u8; 4],
     },
     P2pGossipUnsubscribe {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipGraft {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipPrune {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         /// How long we will refuse a re-GRAFT on this topic, advertised so
         /// the remote's own default doesn't diverge from what we enforce.
         /// `None` on unsubscribe, where we record no backoff.
