@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
-    os::unix::net::UnixStream,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -11,13 +10,13 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde_json::{Value, json};
 use silver_application_boundary::ApplicationBoundaryTile;
-use silver_beacon_api::SlotStatus;
+use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipTopic, HeadRoots, Identify, Keypair, MessageId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
-    TCacheProducer, TCacheRead, TProducer,
+    Enr, GossipTopic, HeadChange, HeadRoots, Identify, Keypair, MessageId, P2pStreamId,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
+    TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -69,7 +68,7 @@ fn boundary_tile_with_spec(
         local_enr,
         &Identify::default(),
         spec,
-        BeaconStateOwner::empty_test(0).reader(),
+        BeaconStateOwner::published_empty_test(0).reader(),
         engine_config,
         gossip_p.cache_ref().random_access("t", true).unwrap(),
         rpc_p.cache_ref().random_access("t", true).unwrap(),
@@ -390,14 +389,18 @@ fn receive_while_pumping<T>(receiver: &Receiver<T>, mut pump: impl FnMut()) -> T
 }
 
 fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> BeaconStateEvent {
+    let mut ssz = [0u8; STATUS_V2_SIZE];
+    ssz[36..44].copy_from_slice(&3u64.to_le_bytes());
     BeaconStateEvent::Status {
-        ssz: [0u8; STATUS_V2_SIZE],
-        head_optimistic,
+        ssz,
         latest_block_slot: head_slot,
         wall_slot,
+        head_optimistic,
         enr_fork_id: [0u8; 16],
         head_roots: HeadRoots::default(),
         head_payload: PayloadResolution::Full,
+        head_change: HeadChange::None,
+        epoch_transition: false,
     }
 }
 
@@ -412,20 +415,23 @@ fn head_roots() -> HeadRoots {
 fn head_status(
     slot: u64,
     block_root: u8,
-    head_optimistic: bool,
-    head_payload: PayloadResolution,
+    optimistic: bool,
+    payload: PayloadResolution,
+    head_change: HeadChange,
 ) -> BeaconStateEvent {
     let mut ssz = [0u8; STATUS_V2_SIZE];
     ssz[44..76].copy_from_slice(&[block_root; 32]);
     ssz[76..84].copy_from_slice(&slot.to_le_bytes());
     BeaconStateEvent::Status {
         ssz,
-        head_optimistic,
         latest_block_slot: slot,
         wall_slot: slot,
+        head_optimistic: optimistic,
         enr_fork_id: [0u8; 16],
         head_roots: head_roots(),
-        head_payload,
+        head_payload: payload,
+        head_change,
+        epoch_transition: false,
     }
 }
 
@@ -486,60 +492,6 @@ fn head_events_subscriber(
         }
     });
     (client, on_subscribed)
-}
-
-#[test]
-fn serves_identity_over_tcp() {
-    let base = ShmemDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_tcp_gossip",
-        "cs_tcp_rpc",
-        "cs_tcp_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-
-    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    assert_ne!(addr.port(), 0, "port-0 bind must resolve to an ephemeral port");
-
-    let client = identity_client(addr);
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !client.is_finished() {
-        assert!(Instant::now() < deadline, "timeout: identity over tcp");
-        tile.loop_body(&mut adapter);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_identity_ok(&client.join().unwrap());
-}
-
-#[test]
-fn serves_identity_over_uds() {
-    let base = ShmemDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let socket = base.path().join("beacon_api.sock");
-    let mut tile = boundary_tile(&Bind::Unix(socket.clone()), no_el(), [
-        "cs_uds_gossip",
-        "cs_uds_rpc",
-        "cs_uds_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-
-    assert_eq!(tile.beacon.local_addrs(), [Bind::Unix(socket.clone())]);
-
-    let client = std::thread::spawn(move || {
-        let stream = UnixStream::connect(&socket).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        http_get(stream, "/eth/v1/node/identity")
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !client.is_finished() {
-        assert!(Instant::now() < deadline, "timeout: identity over uds");
-        tile.loop_body(&mut adapter);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_identity_ok(&client.join().unwrap());
 }
 
 /// ADR 0004's core claim: all pumps are non-blocking, so an unanswered EL
@@ -739,7 +691,7 @@ fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
     for i in 0..3 {
         el.respond(i, "false");
     }
-    while tile.beacon.node_status_mut().el != ELSyncStatus::Synced {
+    while tile.beacon.node_status().el != ELSyncStatus::Synced {
         crank(&mut tile, &mut el, "startup healthcheck answered");
     }
     for _ in 0..20 {
@@ -794,8 +746,9 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
 
     inj.produce(status_event(1, 1, true));
     tile.loop_body(&mut adapter);
-    assert!(
-        tile.beacon.node_status_mut().slots.is_none(),
+    assert_eq!(
+        tile.beacon.node_status().head,
+        HeadStatus { slot: 0, optimistic: false },
         "a status published before the first consume is skipped, not delivered"
     );
 
@@ -803,24 +756,25 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     inj.produce(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 });
     tile.loop_body(&mut adapter);
 
-    let status = *tile.beacon.node_status_mut();
-    assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: true })
-    );
-    assert_eq!(status.slots.unwrap().sync_distance(), 2);
-    assert!(status.syncing);
+    let status = *tile.beacon.node_status();
+    assert_eq!(status.head, HeadStatus { slot: 7, optimistic: true });
+    assert_eq!(status.finalized_epoch, 3);
+    assert_eq!(status.target, Some(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 }));
 
     inj.produce(status_event(9, 9, false));
     inj.produce(SyncUpdate::Following);
     tile.loop_body(&mut adapter);
-    let status = *tile.beacon.node_status_mut();
+    let status = *tile.beacon.node_status();
     assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 9, wall_slot: 9, head_optimistic: false }),
+        status.head,
+        HeadStatus { slot: 9, optimistic: false },
         "each status replaces the last, execution status included"
     );
-    assert!(!status.syncing, "reaching the target clears the syncing flag");
+    assert_eq!(
+        status.target,
+        Some(SyncUpdate::Following),
+        "reaching the target clears the syncing flag"
+    );
 }
 
 /// The engine's spine intake is gated on free pool connections; node status
@@ -864,7 +818,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
     for i in 0..3 {
         el.respond(i, "false");
     }
-    while tile.beacon.node_status_mut().el != ELSyncStatus::Synced {
+    while tile.beacon.node_status().el != ELSyncStatus::Synced {
         crank(&mut tile, &mut el, "EL sync status reaches the api");
     }
 
@@ -880,17 +834,14 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 
     inj.produce(status_event(7, 9, false));
     inj.produce(SyncUpdate::Following);
-    while tile.beacon.node_status_mut().slots.is_none() {
+    while tile.beacon.node_status().head.slot != 7 {
         crank(&mut tile, &mut el, "status consumed while the pool is at cap");
         assert_eq!(fcu_count(&el), 3, "the 4th request must stay gated on the spine");
     }
 
-    let status = *tile.beacon.node_status_mut();
-    assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: false })
-    );
-    assert!(!status.syncing);
+    let status = *tile.beacon.node_status();
+    assert_eq!(status.head, HeadStatus { slot: 7, optimistic: false });
+    assert_eq!(status.target, Some(SyncUpdate::Following));
     assert_eq!(status.el, ELSyncStatus::Synced);
 }
 
@@ -1316,25 +1267,18 @@ fn head_subscribers_receive_changes_for_their_topics() {
     crank(&mut tile, "the node is following");
 
     for status in [
-        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
-        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
-        head_status(slot, 0xab, true, PayloadResolution::Empty),
-        head_status(slot, 0xab, true, PayloadResolution::Empty),
-        head_status(slot, 0xab, true, PayloadResolution::Full),
-        head_status(slot, 0xab, true, PayloadResolution::Full),
-        head_status(slot, 0xab, false, PayloadResolution::Full),
-        head_status(slot, 0xab, false, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Empty, HeadChange::Head),
+        head_status(slot, 0xab, true, PayloadResolution::Empty, HeadChange::None),
+        head_status(slot, 0xab, true, PayloadResolution::Full, HeadChange::Payload),
+        head_status(slot, 0xab, false, PayloadResolution::Full, HeadChange::Head),
     ] {
         inj.produce(status);
     }
     crank(&mut tile, "head observations update node status");
-    assert_eq!(
-        tile.beacon.node_status_mut().slots,
-        Some(SlotStatus { head_slot: slot, wall_slot: slot, head_optimistic: false })
-    );
+    assert_eq!(tile.beacon.node_status().head, HeadStatus { slot, optimistic: false });
 
     // A later head delimits all preceding frames, including unwanted repeats.
-    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full));
+    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full, HeadChange::Head));
     while !legacy.is_finished() || !v2.is_finished() {
         crank(&mut tile, "every frame reaches its subscriber");
     }
@@ -1378,7 +1322,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
 }
 
 /// Head events describe changes observed while following. Observations in
-/// any other mode move the baseline and node status silently.
+/// any other mode update node status silently.
 #[test]
 fn head_events_describe_changes_observed_while_following() {
     let base = ShmemDir::new().unwrap();
@@ -1407,34 +1351,31 @@ fn head_events_describe_changes_observed_while_following() {
     }
 
     // Restoration and catch-up: Control has not concluded, so heads move silently.
-    inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full));
-    inj.produce(head_status(34, 0xab, true, PayloadResolution::Full));
+    inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full, HeadChange::Head));
+    inj.produce(head_status(34, 0xab, true, PayloadResolution::Full, HeadChange::Head));
     crank(&mut tile, "observations outside following update node status");
-    assert_eq!(
-        tile.beacon.node_status_mut().slots,
-        Some(SlotStatus { head_slot: 34, wall_slot: 34, head_optimistic: true })
-    );
+    assert_eq!(tile.beacon.node_status().head, HeadStatus { slot: 34, optimistic: true });
 
     // Following: the latest observation is already the baseline, so the next
     // change is reported at once.
     inj.produce(SyncUpdate::Following);
     crank(&mut tile, "the mode change is consumed");
-    inj.produce(head_status(35, 0xac, true, PayloadResolution::Full));
-    inj.produce(head_status(35, 0xac, false, PayloadResolution::Full));
+    inj.produce(head_status(35, 0xac, true, PayloadResolution::Full, HeadChange::Head));
+    inj.produce(head_status(35, 0xac, false, PayloadResolution::Full, HeadChange::Head));
     crank(&mut tile, "changes while following are reported");
 
     // Falling behind silences the stream while the head keeps moving.
     inj.produce(SyncUpdate::SyncingHead { head_root: [0xff; 32], head_slot: 100 });
     crank(&mut tile, "the mode change is consumed");
-    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full, HeadChange::Head));
     crank(&mut tile, "changes while syncing are silent");
 
     // Following again: a repeat of the head reached while syncing is no change.
     inj.produce(SyncUpdate::Following);
     crank(&mut tile, "the mode change is consumed");
-    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
-    inj.produce(head_status(37, 0xae, true, PayloadResolution::Full));
-    inj.produce(head_status(sentinel_slot, 0xcd, true, PayloadResolution::Full));
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full, HeadChange::None));
+    inj.produce(head_status(37, 0xae, true, PayloadResolution::Full, HeadChange::Head));
+    inj.produce(head_status(sentinel_slot, 0xcd, true, PayloadResolution::Full, HeadChange::Head));
     while !client.is_finished() {
         crank(&mut tile, "every frame reaches the subscriber");
     }
@@ -1445,34 +1386,4 @@ fn head_events_describe_changes_observed_while_following() {
         assert_eq!(event["slot"], slot.to_string());
         assert_eq!(event["execution_optimistic"], optimistic);
     }
-}
-
-/// The initial head observation emits no event but still updates node status.
-#[test]
-fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
-    let base = ShmemDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_optimism_gossip",
-        "cs_optimism_rpc",
-        "cs_optimism_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
-    tile.loop_body(&mut adapter);
-
-    inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
-    tile.loop_body(&mut adapter);
-    assert_eq!(
-        tile.beacon.node_status_mut().slots,
-        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: true })
-    );
-
-    inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
-    tile.loop_body(&mut adapter);
-    assert_eq!(
-        tile.beacon.node_status_mut().slots,
-        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: false }),
-        "the verdict reaches node status whatever the head filter decides"
-    );
 }

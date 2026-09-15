@@ -11,6 +11,5 @@ mod routes;
 mod server;
 mod statics;
 
-pub use events::HeadEvent;
-pub use node_status::{NodeStatus, SlotStatus};
-pub use server::BeaconApi;
+pub use node_status::{HeadStatus, NodeStatus};
+pub use server::{ApiConsumers, BeaconApi};

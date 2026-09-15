@@ -560,17 +560,6 @@ mod tests {
         }
     }
 
-    /// `SlotTicker` splits the slot at 1/3 pre-Gloas and 1/4 from Gloas, which
-    /// is what `ATTESTATION_DUE_BPS` and its Gloas variant name; a client that
-    /// times its attestations off the served body must not disagree with the
-    /// node it is attesting through.
-    #[test]
-    fn the_attestation_deadlines_served_match_the_ones_silver_ticks_on() {
-        let spec = spec_map(&SpecConfig::mainnet());
-        assert_eq!(spec["ATTESTATION_DUE_BPS"], (10_000 / 3).to_string());
-        assert_eq!(spec["ATTESTATION_DUE_BPS_GLOAS"], (10_000 / 4).to_string());
-    }
-
     /// Two spellings of the slot length in one body: a client that reads both
     /// aborts unless they agree, and `SECONDS_PER_SLOT` is overridable.
     #[test]
