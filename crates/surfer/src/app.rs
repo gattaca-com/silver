@@ -7,6 +7,7 @@ use crate::{
     discovery::DiscoveredSources,
     flamegraph::Flamegraph,
     render::events::EventsPane,
+    search::Search,
     sources::{
         counters::CounterSet, peers::Peers, tilemetrics::TileMetricsSet, timings::TimingSet,
     },
@@ -120,6 +121,7 @@ pub struct App {
     pub gossip_table_state: TableState,
     pub flamegraph: Flamegraph,
     pub build_info: Option<String>,
+    pub search: Search,
     pub quit: bool,
 }
 
@@ -166,6 +168,7 @@ impl App {
             gossip_table_state: TableState::default(),
             flamegraph,
             build_info: None,
+            search: Search::default(),
             quit: false,
         }
     }
@@ -326,6 +329,92 @@ impl App {
             Pane::Events => self.events.move_selection(dir),
             Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
+    }
+
+    /// Jump to the next (`dir = 1`) or previous (`-1`) row matching the
+    /// search pattern.
+    pub fn search_step(&mut self, dir: i32) {
+        let rows = self.rows_text();
+        if let Some(pos) = self.search.find(&rows, self.selected_row(), dir) {
+            self.select_row(pos);
+        }
+    }
+
+    /// The active pane's rows as searchable text, in display order.
+    fn rows_text(&self) -> Vec<String> {
+        match self.pane {
+            Pane::Counters => self
+                .counters_visible()
+                .into_iter()
+                .map(|(set, slot)| {
+                    format!("{} {}", self.counters[set].name, self.counters[set].slot_names[slot])
+                })
+                .collect(),
+            Pane::TCaches => self.tcaches.iter().map(|c| c.name.clone()).collect(),
+            Pane::Timings => {
+                self.visible_timings().into_iter().map(|i| self.timings[i].name.clone()).collect()
+            }
+            Pane::Tiles => self.tilemetrics.iter().map(|t| t.name.clone()).collect(),
+            Pane::Peers => self
+                .peers_display_order
+                .iter()
+                .map(|id| self.peers.get(id).map_or_else(String::new, |row| row.search_text(id)))
+                .collect(),
+            Pane::Gossip => self.gossip_display_order.iter().map(ToString::to_string).collect(),
+            Pane::Events => self.events.rows_text(),
+            Pane::Flamegraph => self.flamegraph.tree().lines().map(str::to_string).collect(),
+        }
+    }
+
+    fn selected_row(&self) -> usize {
+        match self.pane {
+            Pane::Counters => self
+                .counters_visible()
+                .iter()
+                .position(|&s| s == self.counters_selection)
+                .unwrap_or(0),
+            Pane::TCaches => self.tcaches_selection,
+            Pane::Timings => self
+                .visible_timings()
+                .iter()
+                .position(|&i| i == self.timings_selection)
+                .unwrap_or(0),
+            Pane::Tiles => self.tiles_selection,
+            Pane::Peers => self
+                .peers_selected
+                .and_then(|id| self.peers_display_order.iter().position(|p| *p == id))
+                .unwrap_or(0),
+            Pane::Gossip => self
+                .gossip_selected
+                .and_then(|t| self.gossip_display_order.iter().position(|x| *x == t))
+                .unwrap_or(0),
+            Pane::Events => self.events.selected_row(),
+            Pane::Flamegraph => self.flamegraph.scroll() as usize,
+        }
+    }
+
+    fn select_row(&mut self, pos: usize) {
+        match self.pane {
+            Pane::Counters => self.counters_selection = self.counters_visible()[pos],
+            Pane::TCaches => self.tcaches_selection = pos,
+            Pane::Timings => self.timings_selection = self.visible_timings()[pos],
+            Pane::Tiles => self.tiles_selection = pos,
+            Pane::Peers => self.peers_selected = Some(self.peers_display_order[pos]),
+            Pane::Gossip => self.gossip_selected = Some(self.gossip_display_order[pos]),
+            Pane::Events => self.events.select_row(pos),
+            Pane::Flamegraph => self.flamegraph.scroll_to(pos),
+        }
+    }
+
+    /// Every (set, slot) the counters table draws, in row order.
+    fn counters_visible(&self) -> Vec<(usize, usize)> {
+        self.counters
+            .iter()
+            .enumerate()
+            .flat_map(|(set_idx, set)| {
+                (0..set.slot_count()).filter(|&s| set.slot_visible(s)).map(move |s| (set_idx, s))
+            })
+            .collect()
     }
 
     fn move_peer_selection(&mut self, dir: i32) {

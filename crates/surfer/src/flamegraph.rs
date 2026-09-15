@@ -59,6 +59,10 @@ impl Flamegraph {
         self.scroll = self.scroll.saturating_add_signed(dir as i16);
     }
 
+    pub fn scroll_to(&mut self, line: usize) {
+        self.scroll = line.try_into().unwrap_or(u16::MAX);
+    }
+
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
     }

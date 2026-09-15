@@ -10,7 +10,7 @@ pub mod timings_pane;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -54,6 +54,13 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(input) = app.search.input() {
+        let prompt = format!("/{input}");
+        f.set_cursor_position(Position::new(area.x + prompt.chars().count() as u16, area.y));
+        f.render_widget(Paragraph::new(prompt), area);
+        return;
+    }
+
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled("TAB", bold),
@@ -78,8 +85,20 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("[/]", bold));
         spans.push(Span::raw(" resize  "));
     }
+    spans.push(Span::styled("/", bold));
+    spans.push(Span::raw(" search  "));
+    if !app.search.pattern().is_empty() {
+        spans.push(Span::styled("n/N", bold));
+        spans.push(Span::raw(" next/prev  "));
+    }
     spans.push(Span::styled("q", bold));
     spans.push(Span::raw(" quit"));
+    if app.search.not_found {
+        spans.push(Span::styled(
+            format!("   /{} not found", app.search.pattern()),
+            Style::default().fg(Color::Red),
+        ));
+    }
 
     let dim = Style::default().fg(Color::DarkGray);
     let build_info = Line::from(app.build_info.as_deref().unwrap_or_default());

@@ -18,7 +18,7 @@ use silver_stages::SlotClock;
 pub use self::theme::Theme;
 use self::{
     axis::Axis,
-    line::{Grid, RowCells},
+    line::{Grid, RowCells, search_text},
     tree::{DisplayRow, Expanded, display_rows},
 };
 use crate::{
@@ -64,6 +64,24 @@ impl EventsPane {
 
     fn selected(&self, display: &[DisplayRow]) -> Option<DisplayRow> {
         self.list.selected().and_then(|i| display.get(i)).copied()
+    }
+
+    pub fn rows_text(&self) -> Vec<String> {
+        self.display()
+            .iter()
+            .map(|d| {
+                let trace = self.trace(d.root).expect("display rows come from the ring");
+                search_text(trace, d, &self.theme)
+            })
+            .collect()
+    }
+
+    pub fn selected_row(&self) -> usize {
+        self.list.selected().unwrap_or(0)
+    }
+
+    pub fn select_row(&mut self, pos: usize) {
+        self.list.select(Some(pos));
     }
 
     pub fn move_selection(&mut self, dir: i32) {

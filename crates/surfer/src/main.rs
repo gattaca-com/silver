@@ -29,6 +29,7 @@ mod discovery;
 mod flamegraph;
 mod render;
 mod schema;
+mod search;
 mod sources;
 
 use crate::{
@@ -208,8 +209,18 @@ fn run<B: ratatui::backend::Backend>(
 }
 
 fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
+    if app.search.is_open() {
+        if app.search.type_key(code) {
+            app.search_step(1);
+        }
+        return;
+    }
+    app.search.not_found = false;
     match code {
         KeyCode::Char('q') => app.quit = true,
+        KeyCode::Char('/') => app.search.open(),
+        KeyCode::Char('n') => app.search_step(1),
+        KeyCode::Char('N') => app.search_step(-1),
         KeyCode::Esc | KeyCode::Backspace if app.drilled_in => app.drilled_in = false,
         KeyCode::Enter if app.pane == app::Pane::Events => app.events.toggle_expand(),
         KeyCode::Enter => app.drilled_in = !app.drilled_in,
