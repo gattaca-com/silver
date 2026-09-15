@@ -147,7 +147,7 @@ impl BeaconStateTile {
             self.replay_orphans(root, producers);
             self.drain_pending_envelope(root, producers);
         }
-        producers.produce(self.status_event());
+        self.publish_status(producers);
     }
 
     pub(super) fn park_block(

@@ -8,12 +8,12 @@ pub use messages::{
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
     EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
-    GossipMsgIn, GossipMsgOut, IpBytes, LocalAttestationFailure, LocalAttestationResult,
+    GossipMsgIn, GossipMsgOut, HeadRoots, IpBytes, LocalAttestationFailure, LocalAttestationResult,
     MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend,
-    PREFILL_SLOTS, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats,
-    PeerStatus, PeerTopicScores, Prefill, ReplayBlock, RpcInbound, RpcOutbound, RpcRequest,
-    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
+    PREFILL_SLOTS, PayloadResolution, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores,
+    PeerStats, PeerStatus, PeerTopicScores, Prefill, ReplayBlock, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+    RpcResponseOutbound, RpcSeverity, SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
 };
 pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
 pub use stream_protocol::{

@@ -788,8 +788,8 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, MessageId, Nanos, P2pStreamId,
-        StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadRoots, MessageId, Nanos,
+        P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer, TCacheRead,
         column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
@@ -1141,12 +1141,17 @@ mod tests {
         assert!(!rig.tile.validator.is_validated(&root), "the rejection is forgotten with it");
     }
 
-    /// A sidecar whose parent is unknown is held. A parent the beacon state
-    /// has staged (state transition done, its own columns pending) counts as
-    /// seen, so the child's sidecar validates and is persisted, whichever of
-    /// the two arrives first.
+    /// A waiting sidecar becomes persistable when its parent is staged or
+    /// observed as head, including when the head observation repeats.
     #[test]
-    fn sidecar_of_staged_parent_is_accepted() {
+    fn sidecar_of_observed_parent_is_accepted() {
+        #[derive(Debug)]
+        enum ParentObservation {
+            BeforeSidecar,
+            AfterSidecar,
+            RepeatedStatus,
+        }
+
         // A valid sidecar whose parent root names no block, over the state it
         // was built on.
         const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
@@ -1159,22 +1164,36 @@ mod tests {
         let parent_root = *DataColumnSidecarFuluView::parent_root(&sidecar);
         let staged_parent = || block_received(BlockStage::AwaitData, parent_root, slot - 1);
 
-        for parent_first in [false, true] {
+        for observation in [
+            ParentObservation::BeforeSidecar,
+            ParentObservation::AfterSidecar,
+            ParentObservation::RepeatedStatus,
+        ] {
             let mut rig = Rig::with_state(1 << index, reader.clone(), fulu_from_genesis());
             rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
             rig.tile.sync_state.update(status_ssz(0));
 
-            if parent_first {
+            if matches!(observation, ParentObservation::BeforeSidecar) {
                 rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
             }
             rig.gossip_sidecar(index, &sidecar);
-            if !parent_first {
-                rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
+            match observation {
+                ParentObservation::BeforeSidecar => {}
+                ParentObservation::AfterSidecar => {
+                    rig.tile.handle_beacon_state_event(staged_parent(), &mut rig.conn.producers);
+                }
+                ParentObservation::RepeatedStatus => {
+                    rig.conn.consume(|_: BeaconStateEvent, _| {});
+                    for _ in 0..2 {
+                        rig.inj.producers.produce(head_status(parent_root, slot - 1));
+                        rig.tile.loop_body(&mut rig.conn);
+                    }
+                }
             }
             rig.turn();
             let out = rig.drain();
 
-            if parent_first {
+            if matches!(observation, ParentObservation::BeforeSidecar) {
                 assert_eq!(out.publications, [(
                     ColumnSource::Gossip,
                     GossipTopic::DataColumnSidecar(index),
@@ -1183,10 +1202,22 @@ mod tests {
             } else {
                 assert!(out.publications.is_empty(), "a buffered copy is not relayed");
             }
-            assert!(
-                out.persisted(block_root, index),
-                "parent_first={parent_first}: the sidecar was processed"
-            );
+            assert!(out.persisted(block_root, index), "{observation:?}: the sidecar was processed");
+        }
+    }
+
+    fn head_status(head_root: BlockRoot, head_slot: u64) -> BeaconStateEvent {
+        let mut ssz = status_ssz(0);
+        ssz[44..76].copy_from_slice(&head_root);
+        ssz[76..84].copy_from_slice(&head_slot.to_le_bytes());
+        BeaconStateEvent::Status {
+            ssz,
+            latest_block_slot: head_slot,
+            wall_slot: head_slot,
+            head_optimistic: false,
+            enr_fork_id: [0u8; 16],
+            head_roots: HeadRoots::default(),
+            head_payload: PayloadResolution::Full,
         }
     }
 

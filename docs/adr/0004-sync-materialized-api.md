@@ -79,6 +79,38 @@ The tile calls `publish_block` without accessing connections. `/eth/v1/events`
 serves `block` and rejects other topics with 400. Further topics and
 silver-specific SSE routes can use the same subscription mechanism.
 
+Amended 2026-09-08: `/eth/v1/events` also serves the legacy `head` topic.
+`BeaconStateEvent::Status` carries the selected block's declared state root
+and both duty-dependent roots from its fork's history.
+
+Status describes an observation. Each consumer decides which fields require
+action. Existing publications remain, and an end-of-loop check covers changes
+to the selected head or its execution optimism since the last Status.
+The publication marker is separate from the reorg marker, so an earlier
+Status cannot hide a reorg notification. Replay can emit intermediate
+observations; completion still requires `ReplayComplete`.
+
+The application boundary publishes a head event when a complete observation
+changes the head root or optimism. The first complete observation establishes
+a baseline. Incomplete metadata, including overwritten checkpoint history,
+leaves that baseline unchanged. Node-status updates continue independently.
+
+`epoch_transition` compares consecutive complete observations and is true
+only when the head epoch advances. Same-block validation updates and backward
+reorgs report false. New subscriptions receive future changes without an
+initial snapshot.
+
+Amended 2026-09-09: `/eth/v1/events` also serves `head_v2`. Status carries
+fork choice's empty/full resolution of the selected block's own payload.
+The end-of-loop check publishes an updated Status when this resolution
+changes, even if the root and optimism stay the same.
+
+The boundary publishes `head_v2` when the root, optimism or resolution
+changes, including both empty-to-full and full-to-empty transitions. Legacy
+`head` retains its root-and-optimism filter. Both topics use the same
+complete observation. The v2 `version` names the configured fork at the head
+block's slot; selected pre-Gloas blocks report `full`.
+
 Amended 2026-09-10: `/eth/v1/events` also serves `block_gossip` for block
 publication requests following silver's gossip checks. A request precedes
 payload notification, state transition, and import; it does not guarantee
@@ -121,3 +153,24 @@ If the cache has overwritten an object's bytes, the boundary logs a warning
 and emits no event for that request. It also skips sidecars whose length
 and column offset identify neither supported layout. These failures do not
 cancel the publication request.
+
+Amended 2026-09-11: `head` and `head_v2` describe changes observed while
+Control reports following. Disk restoration, the wait for a replay strategy
+and network catch-up produce no head notifications. Following is a sync
+mode, not a guarantee of zero sync distance or execution validation.
+
+The boundary keeps every complete observation as its baseline in every mode
+and reports a change only while following. A following period therefore
+starts from the head the node already has, and its first change is reported.
+Status and sync updates travel on separate queues; the boundary reads the
+mode once per iteration after draining beacon events, so an observation
+drained in the same iteration as a mode change follows the earlier mode, and
+one queued between the two drains is reported in the next iteration. The
+imprecision is bounded by one iteration. Node-status updates and block
+notifications remain independent of the mode.
+
+Control waits for disk replay to finish or be skipped before reporting
+following; previously the gate held only network requests, and disk replay
+is chosen exactly when peers look comparable, so following could be announced
+during replay. Completion re-evaluates the target. Beacon-state's Status
+publications are unchanged.

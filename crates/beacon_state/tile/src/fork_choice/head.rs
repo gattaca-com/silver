@@ -1,5 +1,6 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot};
+use silver_common::PayloadResolution;
 
 use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, node::PTC_SIZE};
 
@@ -105,6 +106,11 @@ impl ForkChoice {
             }
             idx = self.nodes[idx].parent_ix;
         }
+    }
+
+    /// Resolves the node's own payload using the same rule as head selection.
+    pub fn payload_resolution(&self, idx: usize) -> PayloadResolution {
+        if self.resolves_to_full(idx) { PayloadResolution::Full } else { PayloadResolution::Empty }
     }
 
     #[cfg(any(test, feature = "ef_tests"))]

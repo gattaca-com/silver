@@ -7,11 +7,15 @@ use silver_common::{
     BeaconStateEvent, BlockStage, Enr, GossipTopic, Identify, Keypair, PeerEvent, SilverSpine,
     SyncUpdate, TProducer, TRandomAccess, TRead,
     column_util::{SidecarIdentity, block_root},
-    ssz_view::SignedBeaconBlockView,
+    ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
+
+use crate::observed_head::{HeadChange, ObservedHead};
+
+mod observed_head;
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
@@ -23,6 +27,7 @@ pub struct ApplicationBoundaryTile {
     readiness: Readiness,
     pub beacon: BeaconApi,
     engine: EngineApi,
+    head: ObservedHead,
     spec: SpecConfig,
     relayed_gossip: TRandomAccess,
     relayed_rpc: TRandomAccess,
@@ -84,11 +89,19 @@ impl ApplicationBoundaryTile {
             rpc_consumer,
             resp_producer,
         );
-        Self { readiness, beacon, engine, spec: spec.clone(), relayed_gossip, relayed_rpc }
+        Self {
+            readiness,
+            beacon,
+            engine,
+            head: ObservedHead::default(),
+            spec: spec.clone(),
+            relayed_gossip,
+            relayed_rpc,
+        }
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let Self { beacon, spec, relayed_gossip, relayed_rpc, .. } = self;
+        let Self { beacon, head, spec, relayed_gossip, relayed_rpc, .. } = self;
         // Publish tails even without reads so idle consumers can release cache space.
         relayed_gossip.free();
         relayed_rpc.free();
@@ -97,9 +110,29 @@ impl ApplicationBoundaryTile {
         // Keep both event queues active during engine saturation; delaying
         // their first consume would discard notifications already queued.
         adapter.consume(|event: BeaconStateEvent, _| match event {
-            BeaconStateEvent::Status { latest_block_slot, wall_slot, head_optimistic, .. } => {
+            BeaconStateEvent::Status {
+                ssz,
+                latest_block_slot,
+                wall_slot,
+                head_optimistic,
+                head_roots,
+                head_payload,
+                ..
+            } => {
                 beacon.node_status_mut().slots =
                     Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
+                if let Some(HeadChange { event, legacy }) = head.observe(
+                    StatusView::head_slot(&ssz),
+                    *StatusView::head_root(&ssz),
+                    head_optimistic,
+                    head_payload,
+                    head_roots,
+                ) {
+                    if legacy {
+                        beacon.publish_head(&event);
+                    }
+                    beacon.publish_head_v2(&event);
+                }
             }
             BeaconStateEvent::BlockReceived {
                 slot,
@@ -130,7 +163,9 @@ impl ApplicationBoundaryTile {
         });
         let status = beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {
-            status.syncing = !matches!(update, SyncUpdate::Following);
+            let following = matches!(update, SyncUpdate::Following);
+            status.syncing = !following;
+            head.set_following(following);
         });
 
         status.el = self.engine.sync_status();

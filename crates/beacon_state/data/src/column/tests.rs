@@ -458,6 +458,105 @@ fn block_roots_slot_of_scans_back_from_the_given_slot() {
     assert_eq!(reader.slot_of(&[0xCC; 32], 103), None);
 }
 
+/// A head in epoch 2 uses decision slots 63 and 31.
+#[test]
+fn duty_dependent_roots_read_the_slots_below_the_two_epoch_starts() {
+    const HEAD: B256 = [0x46; 32];
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = {
+        let mut wv = g.roll_fresh();
+        wv.set(31, [0x1F; 32]);
+        wv.set(60, [0x3C; 32]);
+        // Empty slots 61..=63 carry slot 60's block root forward.
+        for slot in 61..=63 {
+            wv.set(slot, [0x3C; 32]);
+        }
+        wv.set(70, HEAD);
+        wv.commit()
+    };
+    let reader = g.view(id);
+
+    assert_eq!(
+        reader.duty_dependent_root(2, 70, HEAD, 70),
+        Some([0x3C; 32]),
+        "epoch 2 decides at slot 63, an empty slot holding slot 60's block"
+    );
+    assert_eq!(
+        reader.duty_dependent_root(1, 70, HEAD, 70),
+        Some([0x1F; 32]),
+        "epoch 1 decides at slot 31"
+    );
+}
+
+/// Both lookups use slot zero in epoch 0; the previous lookup also does so
+/// in epoch 1.
+#[test]
+fn early_epochs_saturate_the_decision_slot_to_genesis() {
+    const GENESIS: B256 = [0x6E; 32];
+    const HEAD: B256 = [0x05; 32];
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = {
+        let mut wv = g.roll_fresh();
+        wv.set(0, GENESIS);
+        wv.set(31, [0x1F; 32]);
+        wv.commit()
+    };
+    let reader = g.view(id);
+
+    let at = |epoch, head_slot| reader.duty_dependent_root(epoch, head_slot, HEAD, head_slot);
+    assert_eq!(at(0, 5), Some(GENESIS), "epoch 0 decides at slot 0");
+    assert_eq!(at(1, 40), Some([0x1F; 32]), "epoch 1 decides at slot 31");
+    assert_eq!(at(0, 40), Some(GENESIS), "epoch 0 stays at slot 0");
+}
+
+#[test]
+fn a_head_at_slot_zero_decides_its_own_shuffling() {
+    const HEAD: B256 = [0x11; 32];
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = g.roll_fresh().commit();
+    let reader = g.view(id);
+
+    assert_eq!(reader.duty_dependent_root(0, 0, HEAD, 0), Some(HEAD));
+    assert_ne!(HEAD, reader.at_slot(0), "the ring holds nothing at slot 0 yet");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "past the head")]
+fn a_decision_slot_above_the_head_is_a_bug() {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = g.roll_fresh().commit();
+    g.view(id).duty_dependent_root(3, 70, [0x46; 32], 70);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "behind its head")]
+fn a_state_behind_its_head_is_a_bug() {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = g.roll_fresh().commit();
+    g.view(id).duty_dependent_root(2, 70, [0x46; 32], 69);
+}
+
+/// At state slot S, the oldest retained slot is S − 8192, inclusive.
+#[test]
+fn a_decision_slot_is_available_until_the_state_moves_a_ring_past_it() {
+    const HEAD: B256 = [0x46; 32];
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = {
+        let mut wv = g.roll_fresh();
+        wv.set(31, [0x1F; 32]);
+        wv.commit()
+    };
+    let reader = g.view(id);
+    // Epoch 1 decides at slot 31; a state at 8223 still holds it as its
+    // oldest slot.
+    let edge = SLOTS_PER_HISTORICAL_ROOT as u64 + 31;
+
+    assert_eq!(reader.duty_dependent_root(1, 70, HEAD, edge), Some([0x1F; 32]));
+    assert_eq!(reader.duty_dependent_root(1, 70, HEAD, edge + 1), None, "overwritten a slot later");
+}
+
 /// A block's reveal accumulates into the current epoch's bucket; the boundary
 /// copy seeds the next epoch from it, and the next epoch's reveals accumulate
 /// on top without disturbing the finished epoch.

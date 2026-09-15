@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use silver_beacon_state_data::B256;
+use silver_common::{HeadRoots, PayloadResolution};
 use silver_httpcore::Query;
 
 use crate::{response::Response, router::Request, routes::ApiCtx};
@@ -13,8 +15,22 @@ pub(crate) const KEEP_ALIVE: &[u8] = b": keep-alive\n\n";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Channel {
     Block,
+    Head,
+    HeadV2,
     BlockGossip,
     DataColumnSidecar,
+}
+
+/// `epoch_transition` compares this head with the publisher's previous
+/// complete observation. Only `head_v2` renders `payload`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeadEvent {
+    pub slot: u64,
+    pub block_root: B256,
+    pub roots: HeadRoots,
+    pub payload: PayloadResolution,
+    pub epoch_transition: bool,
+    pub execution_optimistic: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +86,8 @@ fn topics(query: &str) -> Result<ChannelSet, Refused> {
 fn channel(topic: &str) -> Option<Channel> {
     match topic {
         "block" => Some(Channel::Block),
+        "head" => Some(Channel::Head),
+        "head_v2" => Some(Channel::HeadV2),
         "block_gossip" => Some(Channel::BlockGossip),
         "data_column_sidecar" => Some(Channel::DataColumnSidecar),
         _ => None,
@@ -93,10 +111,16 @@ mod tests {
         routes::{ROUTES, preboot_ctx},
     };
 
-    fn block_only() -> ChannelSet {
+    fn set(of: &[Channel]) -> ChannelSet {
         let mut channels = ChannelSet::default();
-        channels.insert(Channel::Block);
+        for &channel in of {
+            channels.insert(channel);
+        }
         channels
+    }
+
+    fn block_only() -> ChannelSet {
+        set(&[Channel::Block])
     }
 
     fn dispatch(query: &str) -> (Served, Vec<u8>) {
@@ -130,6 +154,7 @@ mod tests {
         assert_eq!(topics("topics=block"), Ok(block_only()));
         assert_eq!(topics("topics=block,block"), Ok(block_only()));
         assert_eq!(topics("topics=block&topics=block"), Ok(block_only()));
+        assert_eq!(topics("topics=block%2Cblock"), Ok(block_only()), "percent-encoded comma");
         let mut gossip = ChannelSet::default();
         gossip.insert(Channel::BlockGossip);
         assert_eq!(topics("topics=block_gossip"), Ok(gossip));
@@ -148,14 +173,46 @@ mod tests {
         ] {
             assert_eq!(topics(query), Ok(all), "{query}");
         }
+
+        let every_topic = set(&[
+            Channel::Block,
+            Channel::Head,
+            Channel::HeadV2,
+            Channel::BlockGossip,
+            Channel::DataColumnSidecar,
+        ]);
+        for query in [
+            "topics=block,head,head_v2,block_gossip,data_column_sidecar",
+            "topics=data_column_sidecar&topics=block_gossip&topics=head_v2&topics=head&topics=block",
+        ] {
+            assert_eq!(topics(query), Ok(every_topic), "{query}");
+        }
+    }
+
+    #[test]
+    fn head_is_served_alone_and_alongside_block() {
+        assert_eq!(topics("topics=head"), Ok(set(&[Channel::Head])));
+        assert_eq!(topics("topics=block,head"), Ok(set(&[Channel::Block, Channel::Head])));
+        assert_eq!(topics("topics=head,block"), Ok(set(&[Channel::Block, Channel::Head])));
+        assert_eq!(topics("topics=head&topics=block"), Ok(set(&[Channel::Block, Channel::Head])));
+    }
+
+    #[test]
+    fn head_v2_is_served_alone_and_alongside_the_other_topics() {
+        let all = set(&[Channel::Block, Channel::Head, Channel::HeadV2]);
+        assert_eq!(topics("topics=head_v2"), Ok(set(&[Channel::HeadV2])));
+        assert_eq!(topics("topics=head_v2,head_v2"), Ok(set(&[Channel::HeadV2])));
+        assert_eq!(topics("topics=head,head_v2"), Ok(set(&[Channel::Head, Channel::HeadV2])));
+        assert_eq!(topics("topics=block,head,head_v2"), Ok(all));
+        assert_eq!(topics("topics=head_v2&topics=block&topics=head"), Ok(all));
     }
 
     #[test]
     fn a_topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
         let unknown = |topic: &str| Err(Refused::Unknown(topic.to_string()));
-        assert_eq!(topics("topics=head"), unknown("head"));
-        assert_eq!(topics("topics=block,head"), unknown("head"));
-        assert_eq!(topics("topics=block&topics=chain_reorg"), unknown("chain_reorg"));
+        assert_eq!(topics("topics=finalized_checkpoint"), unknown("finalized_checkpoint"));
+        assert_eq!(topics("topics=block,finalized_checkpoint"), unknown("finalized_checkpoint"));
+        assert_eq!(topics("topics=head_v2&topics=chain_reorg"), unknown("chain_reorg"));
     }
 
     #[test]
@@ -194,9 +251,9 @@ mod tests {
 
     #[test]
     fn an_unserved_topic_is_a_400_naming_it_on_an_ordinary_connection() {
-        let (served, out) = dispatch("topics=block,head");
+        let (served, out) = dispatch("topics=block,chain_reorg");
         assert_eq!(served, Served::Response);
-        assert_eq!(out, bad_request(r#"unknown topic \"head\""#));
+        assert_eq!(out, bad_request(r#"unknown topic \"chain_reorg\""#));
     }
 
     #[test]

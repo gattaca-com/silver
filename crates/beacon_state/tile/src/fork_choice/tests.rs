@@ -1,4 +1,5 @@
 use silver_beacon_state_data::MIN_SEED_LOOKAHEAD;
+use silver_common::PayloadResolution;
 
 use super::{
     vote::{Vote, branch_voted_for},
@@ -33,6 +34,13 @@ fn root(b: u8) -> B256 {
     r
 }
 
+/// Use a non-zero state root distinct from the block root.
+fn state_root_of(block_root: B256) -> B256 {
+    let mut r = block_root;
+    r[31] = 0xFF;
+    r
+}
+
 fn cp(epoch: Epoch, b: u8) -> Checkpoint {
     Checkpoint { epoch, root: root(b) }
 }
@@ -49,6 +57,7 @@ fn block(
     BlockImport {
         slot,
         block_root,
+        state_root: state_root_of(block_root),
         parent_root,
         execution_block_hash: [0u8; 32],
         justified: jus,
@@ -104,7 +113,17 @@ fn compute_deltas(
 fn single_chain_head() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     fc.on_block(block(1, root(2), root(1), jus, fin));
     fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -116,7 +135,17 @@ fn single_chain_head() {
 fn fork_heavier_wins() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     fc.on_block(block(1, root(2), root(1), jus, fin));
     fc.on_block(block(1, root(3), root(1), jus, fin));
@@ -136,7 +165,17 @@ fn two_pass_weight_correctness() {
     // sibling loses weight.
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     // root(1) → root(2) [idx 1] and root(3) [idx 2]
     fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -162,7 +201,17 @@ fn two_pass_weight_correctness() {
 fn prune_below_finalized() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     fc.on_block(block(1, root(2), root(1), jus, fin));
     fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -184,7 +233,17 @@ fn prune_drops_later_imported_siblings() {
     // the promoted delta.
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     fc.on_block(block(1, root(2), root(1), jus, fin)); // finalized-to-be
     fc.on_block(block(1, root(3), root(1), jus, fin)); // sibling, imported after
@@ -207,7 +266,17 @@ fn prune_drops_later_imported_siblings() {
 fn deltas_moving_votes() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     fc.on_block(block(1, root(2), root(1), jus, fin));
 
     let mut votes = vec![Vote::default(); 16];
@@ -240,7 +309,17 @@ fn deltas_different_votes() {
     // Each validator votes for a different block.
     let fin = cp(0, 100);
     let jus = cp(0, 100);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(100), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(100),
+        state_root_of(root(100)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     for i in 1..=16u8 {
         fc.on_block(block(i as u64, root(i), root(100), jus, fin));
@@ -271,7 +350,17 @@ fn deltas_different_votes() {
 fn deltas_move_out_of_tree() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     let mut votes = vec![Vote::default(); 16];
     let mut balances = vec![0u64; 16];
@@ -304,7 +393,17 @@ fn deltas_move_out_of_tree() {
 fn deltas_changing_balances() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     fc.on_block(block(1, root(2), root(1), jus, fin));
 
     let mut votes = vec![Vote::default(); 16];
@@ -335,7 +434,17 @@ fn deltas_balance_change_no_vote_change() {
     // Balances change but votes don't — still need deltas.
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     let mut votes = vec![Vote::default(); 16];
     let mut old_bal = vec![0u64; 16];
@@ -358,7 +467,17 @@ fn deltas_balance_change_no_vote_change() {
 fn split_tie_breaker_no_attestations() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     // Two blocks at slot 1 forking from genesis. root(2) < root(3).
     fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -373,7 +492,17 @@ fn split_tie_breaker_no_attestations() {
 fn shorter_chain_but_heavier_weight() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     // Long chain: root(1) → root(2) → root(3) → root(4).
     fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -398,7 +527,17 @@ fn shorter_chain_but_heavier_weight() {
 fn on_block_duplicate() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     fc.on_block(block(1, root(2), root(1), jus, fin));
     assert_eq!(fc.nodes.len(), 2);
@@ -412,7 +551,17 @@ fn on_block_duplicate() {
 fn on_block_unknown_parent() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
 
     // root(99) is not known.
     fc.on_block(block(1, root(2), root(99), jus, fin));
@@ -426,7 +575,17 @@ fn on_block_unknown_parent() {
 fn node_lookup_equivalence_and_prune() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     for i in 2..=20u8 {
         fc.on_block(block(i as u64, root(i), root(i - 1), jus, fin));
     }
@@ -451,7 +610,17 @@ fn node_lookup_equivalence_and_prune() {
 fn proposer_boost_flips_then_expires() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     fc.on_block(block(1, root(2), root(1), jus, fin)); // idx 1
     fc.on_block(block(1, root(3), root(1), jus, fin)); // idx 2
 
@@ -484,7 +653,17 @@ fn proposer_boost_flips_then_expires() {
 fn compute_deltas_dirty_matches_full() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     for i in 2..=5u8 {
         fc.on_block(block(1, root(i), root(1), jus, fin));
     }
@@ -527,7 +706,17 @@ fn compute_deltas_dirty_matches_full() {
 #[test]
 fn viability_genesis_exception() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     // Prior-epoch node with a stale (epoch 1) voting source.
     fc.on_block(block(64, root(2), root(1), cp(1, 9), g));
     let a = fc.find_node_idx(&root(2)).unwrap();
@@ -546,7 +735,17 @@ fn viability_unrealized_justified_and_plus_two() {
     // Genesis finalized isolates the justified rule; store justified
     // promoted to epoch 2 (node root(2) at slot 64).
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     fc.on_block(block(64, root(2), root(1), cp(2, 2), g)); // A @ epoch 2
     fc.justified_checkpoint = cp(2, 2);
     // C @ epoch 2, child of A, realized justified stale (epoch 1).
@@ -583,7 +782,17 @@ fn viability_unrealized_justified_and_plus_two() {
 #[test]
 fn gloas_vote_branch_classification() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 8);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
     fc.on_block(gloas_block(5, root(2), root(1), g, g, PayloadStatus::Full, true));
     let gl = fc.node(fc.find_node_idx(&root(2)).unwrap());
     assert_eq!(branch_voted_for(gl, 6, true), PayloadStatus::Full);
@@ -601,7 +810,17 @@ fn gloas_vote_branch_classification() {
 #[test]
 fn gloas_resolves_heavier_payload_branch() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 8);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
     // A (idx1), then a FULL-edge child C_f (idx2) and EMPTY-edge child C_e (idx3).
     fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, true));
     fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, true));
@@ -621,6 +840,13 @@ fn gloas_resolves_heavier_payload_branch() {
     fc.weight_deltas = d;
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
+    let parent = fc.find_node_idx(&root(2)).unwrap();
+    assert_eq!(fc.payload_resolution(parent), PayloadResolution::Empty);
+    assert_eq!(
+        fc.payload_resolution(head_idx(&fc)),
+        PayloadResolution::Full,
+        "the selected child's own payload is full despite its empty parent edge"
+    );
 }
 
 /// On an exactly-tied payload split, `should_extend_payload` decides: with
@@ -629,7 +855,17 @@ fn gloas_resolves_heavier_payload_branch() {
 #[test]
 fn gloas_tie_broken_by_should_extend_payload() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 8);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
     fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, true));
     fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, true)); // C_f
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true)); // C_e
@@ -661,7 +897,17 @@ fn gloas_tie_broken_by_should_extend_payload() {
 fn shuffling_dependent_root_is_ancestor_at_dependent_slot() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        fin,
+        jus,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     let last_of_epoch0 = SLOTS_PER_EPOCH - 1;
     // Branch A: genesis → 2 (slot 31) → 3 (slot 33) and 6 (slot 34).
     fc.on_block(block(last_of_epoch0, root(2), root(1), jus, fin));
@@ -693,7 +939,17 @@ fn shuffling_dependent_root_is_ancestor_at_dependent_slot() {
 #[test]
 fn gloas_unverified_payload_forces_empty() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 8);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
     fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, false));
     fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, true)); // C_f
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true)); // C_e
@@ -719,7 +975,17 @@ fn gloas_unverified_payload_forces_empty() {
 #[test]
 fn gloas_empty_survives_full_invalid() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 8);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
     fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, true));
     fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, true)); // C_f
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true)); // C_e
@@ -748,7 +1014,17 @@ fn gloas_empty_survives_full_invalid() {
 #[test]
 fn gloas_boost_is_pending_not_empty() {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 8);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
     // Boosted current-slot block, envelope not yet revealed.
     fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, false));
     fc.proposer_boost_root = root(2);
@@ -767,6 +1043,59 @@ fn gloas_boost_is_pending_not_empty() {
     assert!(fc.head_payload_present());
 }
 
+fn head_idx(fc: &ForkChoice) -> usize {
+    fc.find_node_idx(&fc.find_head()).unwrap()
+}
+
+#[test]
+fn payload_resolution_follows_the_selected_node() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full, "pre-Gloas anchor");
+
+    fc.on_block(block(1, root(2), root(1), g, g));
+    assert_eq!(fc.find_head(), root(2));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full, "pre-Gloas block");
+
+    fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, false));
+    assert_eq!(fc.find_head(), root(3));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty, "no envelope yet");
+
+    fc.mark_payload_verified(&root(3));
+    assert_eq!(fc.find_head(), root(3));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
+}
+
+#[test]
+fn a_gloas_anchor_resolves_empty_until_its_envelope_is_verified() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        true,
+        test_state_id(),
+        8,
+    );
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty);
+
+    fc.mark_payload_verified(&root(1));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
+}
+
 /// Two branches meeting at 2@slot 2, with heads level at slot 10 but at
 /// *different depths* — the left one skips slots 3..9 outright:
 ///
@@ -776,7 +1105,17 @@ fn gloas_boost_is_pending_not_empty() {
 /// ```
 fn skipped_slot_forks() -> ForkChoice {
     let g = cp(0, 1);
-    let mut fc = ForkChoice::init(g, g, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
     fc.on_block(block(2, root(2), root(1), g, g));
     fc.on_block(block(10, root(4), root(2), g, g));
     fc.on_block(block(9, root(5), root(2), g, g));
@@ -812,4 +1151,34 @@ fn lca_of_a_pruned_head_falls_back_to_finalized() {
     fc.finalized_checkpoint = cp(1, 2);
     assert_eq!(fc.lca_slot(root(99), root(6)), Some(SLOTS_PER_EPOCH), "unknown old head");
     assert_eq!(fc.lca_slot(root(4), root(99)), None, "unknown new head says nothing");
+}
+
+#[test]
+fn a_valid_payload_validates_its_ancestors_and_no_sibling() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        8,
+    );
+    fc.on_block(block(1, root(2), root(1), g, g)); // A
+    fc.on_block(block(2, root(3), root(2), g, g)); // C, A's child
+    fc.on_block(block(1, root(4), root(1), g, g)); // B, A's sibling
+    let valid = |fc: &ForkChoice, b: u8| {
+        fc.nodes[fc.find_node_idx(&root(b)).unwrap()].execution_status == ExecutionStatus::Valid
+    };
+    assert!(!valid(&fc, 2) && !valid(&fc, 3) && !valid(&fc, 4), "imports start optimistic");
+
+    fc.on_payload_valid(&root(3));
+
+    assert!(valid(&fc, 3));
+    assert!(valid(&fc, 2), "A is validated through its child");
+    assert!(!valid(&fc, 4), "a sibling is not on the walk");
+    assert!(valid(&fc, 1), "the anchor was valid from init");
 }

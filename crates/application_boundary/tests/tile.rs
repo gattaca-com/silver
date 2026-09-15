@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::net::UnixStream,
@@ -11,12 +12,12 @@ use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde_json::{Value, json};
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::SlotStatus;
-use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipTopic, Identify, Keypair, MessageId, P2pStreamId, PayloadValidationStatus,
-    PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead,
-    TProducer,
+    Enr, GossipTopic, HeadRoots, Identify, Keypair, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
+    TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -38,13 +39,22 @@ fn boundary_tile(
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
 ) -> ApplicationBoundaryTile {
-    boundary_tile_with_objects(bind, engine_config, tcache_names).0
+    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet()).0
 }
 
 fn boundary_tile_with_objects(
     bind: &Bind,
     engine_config: EngineConfig,
     tcache_names: [&'static str; 3],
+) -> (ApplicationBoundaryTile, TProducer, TProducer) {
+    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet())
+}
+
+fn boundary_tile_with_spec(
+    bind: &Bind,
+    engine_config: EngineConfig,
+    tcache_names: [&'static str; 3],
+    spec: &SpecConfig,
 ) -> (ApplicationBoundaryTile, TProducer, TProducer) {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
@@ -58,7 +68,7 @@ fn boundary_tile_with_objects(
         &keypair,
         local_enr,
         &Identify::default(),
-        &SpecConfig::mainnet(),
+        spec,
         BeaconStateOwner::empty_test(0).reader(),
         engine_config,
         gossip_p.cache_ref().random_access("t", true).unwrap(),
@@ -385,7 +395,96 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
         latest_block_slot: head_slot,
         wall_slot,
         enr_fork_id: [0u8; 16],
+        head_roots: HeadRoots::default(),
+        head_payload: PayloadResolution::Full,
     }
+}
+
+fn head_roots() -> HeadRoots {
+    HeadRoots {
+        state_root: [0x60; 32],
+        previous_duty_dependent_root: [0x5e; 32],
+        current_duty_dependent_root: [0x91; 32],
+    }
+}
+
+fn head_status(
+    slot: u64,
+    block_root: u8,
+    head_optimistic: bool,
+    head_payload: PayloadResolution,
+) -> BeaconStateEvent {
+    let mut ssz = [0u8; STATUS_V2_SIZE];
+    ssz[44..76].copy_from_slice(&[block_root; 32]);
+    ssz[76..84].copy_from_slice(&slot.to_le_bytes());
+    BeaconStateEvent::Status {
+        ssz,
+        head_optimistic,
+        latest_block_slot: slot,
+        wall_slot: slot,
+        enr_fork_id: [0u8; 16],
+        head_roots: head_roots(),
+        head_payload,
+    }
+}
+
+fn head_events_subscriber(
+    addr: SocketAddr,
+    topic: &str,
+    sentinel_slot: u64,
+) -> (JoinHandle<Vec<Value>>, Receiver<()>) {
+    let (subscribed, on_subscribed) = mpsc::channel();
+    let topic = topic.to_string();
+    let client = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(stream, "GET /eth/v1/events?topics={topic} HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.split_whitespace().nth(1), Some("200"));
+        let mut headers = HashMap::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            let (name, value) = line.trim_end().split_once(':').unwrap();
+            headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
+        }
+        assert_eq!(headers["content-type"], "text/event-stream");
+        assert_eq!(headers["transfer-encoding"], "chunked");
+        subscribed.send(()).unwrap();
+
+        let mut events = Vec::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let size = usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
+            assert!(size > 0, "subscription ended before the sentinel");
+            let mut chunk = vec![0; size];
+            reader.read_exact(&mut chunk).unwrap();
+            let mut end = [0; 2];
+            reader.read_exact(&mut end).unwrap();
+            assert_eq!(end, *b"\r\n");
+            let frame = std::str::from_utf8(&chunk).unwrap().strip_suffix("\n\n").unwrap();
+            if frame.starts_with(':') {
+                continue;
+            }
+            let (name, data) =
+                frame.strip_prefix("event: ").unwrap().split_once("\ndata: ").unwrap();
+            assert_eq!(name, topic);
+            let body: Value = serde_json::from_str(data).unwrap();
+            let data = if topic == "head_v2" { &body["data"] } else { &body };
+            if data["slot"] == sentinel_slot.to_string() {
+                return events;
+            }
+            events.push(body);
+        }
+    });
+    (client, on_subscribed)
 }
 
 #[test]
@@ -1176,4 +1275,203 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
     client.assert_topic_sequences(&[relayed_block, relayed, publication], &mut pump);
     client.client.join().unwrap();
     assert_eq!(pending, capacity, "the additional FCU stays queued while SSE is served");
+}
+
+#[test]
+fn head_subscribers_receive_changes_for_their_topics() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut spec = SpecConfig::mainnet();
+    spec.gloas_fork_epoch = spec.fulu_fork_epoch + 2;
+    let (mut tile, _gossip, _rpc) = boundary_tile_with_spec(
+        &Bind::parse("127.0.0.1:0"),
+        no_el(),
+        ["cs_head_v2_gossip", "cs_head_v2_rpc", "cs_head_v2_resp"],
+        &spec,
+    );
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let gloas = spec.gloas_fork_epoch * SLOTS_PER_EPOCH;
+    let slot = gloas + 8;
+    let sentinel_slot = slot + 1;
+    let (legacy, legacy_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+    let (v2, v2_subscribed) = head_events_subscriber(addr, "head_v2", sentinel_slot);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    for subscribed in [legacy_subscribed, v2_subscribed] {
+        while subscribed.try_recv().is_err() {
+            crank(&mut tile, "both stream heads reach their subscribers");
+        }
+    }
+    inj.produce(SyncUpdate::Following);
+    crank(&mut tile, "the node is following");
+
+    for status in [
+        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
+        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Empty),
+        head_status(slot, 0xab, true, PayloadResolution::Empty),
+        head_status(slot, 0xab, true, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Full),
+        head_status(slot, 0xab, false, PayloadResolution::Full),
+        head_status(slot, 0xab, false, PayloadResolution::Full),
+    ] {
+        inj.produce(status);
+    }
+    crank(&mut tile, "head observations update node status");
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: slot, wall_slot: slot, head_optimistic: false })
+    );
+
+    // A later head delimits all preceding frames, including unwanted repeats.
+    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full));
+    while !legacy.is_finished() || !v2.is_finished() {
+        crank(&mut tile, "every frame reaches its subscriber");
+    }
+    let legacy = legacy.join().unwrap();
+    let v2 = v2.join().unwrap();
+    assert_eq!(legacy.len(), 2);
+    assert_eq!(v2.len(), 3);
+    let roots = head_roots();
+    for (events, is_v2) in [(&legacy, false), (&v2, true)] {
+        for (index, body) in events.iter().enumerate() {
+            let data = if is_v2 {
+                assert_eq!(body["version"], "gloas");
+                assert_eq!(
+                    body["data"]["payload_status"],
+                    if index == 0 { "empty" } else { "full" }
+                );
+                &body["data"]
+            } else {
+                body
+            };
+            assert_eq!(data["slot"], slot.to_string());
+            assert_eq!(data["block"], format!("0x{}", hex::encode([0xab; 32])));
+            assert_eq!(data["state"], format!("0x{}", hex::encode(roots.state_root)));
+            assert_eq!(data["epoch_transition"], false);
+            assert_eq!(data["execution_optimistic"], index + 1 < events.len());
+            let (previous, current) = if is_v2 {
+                ("current_epoch_dependent_root", "next_epoch_dependent_root")
+            } else {
+                ("previous_duty_dependent_root", "current_duty_dependent_root")
+            };
+            assert_eq!(
+                data[previous],
+                format!("0x{}", hex::encode(roots.previous_duty_dependent_root))
+            );
+            assert_eq!(
+                data[current],
+                format!("0x{}", hex::encode(roots.current_duty_dependent_root))
+            );
+        }
+    }
+}
+
+/// Head events describe changes observed while following. Observations in
+/// any other mode move the baseline and node status silently.
+#[test]
+fn head_events_describe_changes_observed_while_following() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_follow_gossip",
+        "cs_follow_rpc",
+        "cs_follow_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let sentinel_slot = 40;
+    let (client, on_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    while on_subscribed.try_recv().is_err() {
+        crank(&mut tile, "stream head reaches the subscriber");
+    }
+
+    // Restoration and catch-up: Control has not concluded, so heads move silently.
+    inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full));
+    inj.produce(head_status(34, 0xab, true, PayloadResolution::Full));
+    crank(&mut tile, "observations outside following update node status");
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: 34, wall_slot: 34, head_optimistic: true })
+    );
+
+    // Following: the latest observation is already the baseline, so the next
+    // change is reported at once.
+    inj.produce(SyncUpdate::Following);
+    crank(&mut tile, "the mode change is consumed");
+    inj.produce(head_status(35, 0xac, true, PayloadResolution::Full));
+    inj.produce(head_status(35, 0xac, false, PayloadResolution::Full));
+    crank(&mut tile, "changes while following are reported");
+
+    // Falling behind silences the stream while the head keeps moving.
+    inj.produce(SyncUpdate::SyncingHead { head_root: [0xff; 32], head_slot: 100 });
+    crank(&mut tile, "the mode change is consumed");
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
+    crank(&mut tile, "changes while syncing are silent");
+
+    // Following again: a repeat of the head reached while syncing is no change.
+    inj.produce(SyncUpdate::Following);
+    crank(&mut tile, "the mode change is consumed");
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
+    inj.produce(head_status(37, 0xae, true, PayloadResolution::Full));
+    inj.produce(head_status(sentinel_slot, 0xcd, true, PayloadResolution::Full));
+    while !client.is_finished() {
+        crank(&mut tile, "every frame reaches the subscriber");
+    }
+
+    let events = client.join().unwrap();
+    assert_eq!(events.len(), 3);
+    for (event, (slot, optimistic)) in events.iter().zip([(35, true), (35, false), (37, true)]) {
+        assert_eq!(event["slot"], slot.to_string());
+        assert_eq!(event["execution_optimistic"], optimistic);
+    }
+}
+
+/// The initial head observation emits no event but still updates node status.
+#[test]
+fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_optimism_gossip",
+        "cs_optimism_rpc",
+        "cs_optimism_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
+    tile.loop_body(&mut adapter);
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: true })
+    );
+
+    inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
+    tile.loop_body(&mut adapter);
+    assert_eq!(
+        tile.beacon.node_status_mut().slots,
+        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: false }),
+        "the verdict reaches node status whatever the head filter decides"
+    );
 }
