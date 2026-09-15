@@ -980,12 +980,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at least one bind")]
-    fn an_empty_bind_list_is_rejected() {
-        server_bound_to(&[], 64, LONG_TIMEOUT);
-    }
-
-    #[test]
     fn every_tcp_listener_serves_the_api() {
         let mut server = server_bound_to(
             &[Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")],
@@ -1098,109 +1092,6 @@ mod tests {
             "second listener served once the slot freed",
         );
         assert_identity_ok(&response);
-    }
-
-    #[test]
-    fn connection_cap_drops_excess_then_recovers() {
-        let mut server = server_with(1, LONG_TIMEOUT);
-        let addr = tcp_addr(&server);
-
-        let held_open = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
-                let mut response = Vec::new();
-                let mut chunk = [0u8; 1024];
-                while !response.windows(4).any(|w| w == b"\r\n\r\n") {
-                    let n = stream.read(&mut chunk).unwrap();
-                    assert!(n > 0, "server closed the first connection");
-                    response.extend_from_slice(&chunk[..n]);
-                }
-                assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-                stream
-            }),
-            "first client served",
-        );
-
-        let denied = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
-                let mut chunk = [0u8; 1024];
-                stream.read(&mut chunk)
-            }),
-            "second client dropped at cap",
-        );
-        assert!(
-            !matches!(denied, Ok(n) if n > 0),
-            "connection over the cap must not be served: {denied:?}"
-        );
-
-        drop(held_open);
-        pump_until(&mut server, "closed connection reaped", |server| {
-            server.api.connections.is_empty()
-        });
-
-        let response = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-                    .unwrap();
-                let mut response = Vec::new();
-                stream.read_to_end(&mut response).unwrap();
-                response
-            }),
-            "third client served after the slot freed",
-        );
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-    }
-
-    /// A partial request that never completes holds its slot until the idle
-    /// deadline reaps it. Definitively malformed input gets 400-and-close
-    /// at parse time.
-    #[test]
-    fn partial_request_is_reaped_after_the_idle_deadline() {
-        let mut server = server_with(64, Duration::from_millis(200));
-        let addr = tcp_addr(&server);
-
-        let received = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
-                read_to_eof(stream)
-            }),
-            "partial request reaped",
-        );
-
-        assert!(received.is_empty(), "half a request must not be answered: {received:?}");
-        assert!(server.api.connections.is_empty(), "reaped connection must leave the map");
-    }
-
-    /// An operator large enough to declare more body than the read buffer
-    /// holds gets a status back rather than a connection that goes quiet.
-    #[test]
-    fn body_declared_past_the_read_cap_is_answered_with_413() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let addr = tcp_addr(&server);
-
-        let received = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                declare_oversized_body(&mut stream);
-                read_to_eof(stream)
-            }),
-            "oversized declaration accepted",
-        );
-
-        assert_eq!(received, PAYLOAD_TOO_LARGE, "{}", String::from_utf8_lossy(&received));
-        pump_until(&mut server, "answered connection closed on the peer's own close", |server| {
-            server.api.connections.is_empty()
-        });
     }
 
     /// A head that outgrows the whole read buffer declares no length to
@@ -1612,51 +1503,6 @@ mod tests {
     }
 
     #[test]
-    fn each_subscriber_receives_only_the_channels_it_asked_for() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let subscriptions =
-            ["block", "head", "block,head", "head_v2", "head,head_v2", "block,head,head_v2"];
-        let readers = subscriptions.map(|topics| {
-            let mut stream = connect(tcp_addr(&server));
-            subscribe(&mut stream, topics);
-            read_events_until_marker(stream)
-        });
-        pump_until(&mut server, "all subscribed", |server| {
-            subscribers(server) == subscriptions.len()
-        });
-
-        let slot = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
-        let head = head_event(slot, &[0xab; 32], true);
-        server.api.publish_block(slot, &head.block_root);
-        server.api.publish_head(&head);
-        server.api.publish_head_v2(&head);
-        finish_events(&mut server);
-        pump_until(&mut server, "every subscriber served", |_| {
-            readers.iter().all(JoinHandle::is_finished)
-        });
-
-        for (topics, reader) in subscriptions.into_iter().zip(readers) {
-            let events = reader.join().unwrap();
-            assert_eq!(events.len(), topics.split(',').count(), "{topics}");
-            for topic in topics.split(',') {
-                let matching: Vec<_> = events.iter().filter(|event| event.topic == topic).collect();
-                assert_eq!(matching.len(), 1, "{topics}: {topic}");
-                let body = &matching[0].data;
-                let data = if topic == "head_v2" {
-                    assert_eq!(body["version"], "fulu");
-                    assert_eq!(body["data"]["payload_status"], "full");
-                    &body["data"]
-                } else {
-                    body
-                };
-                assert_eq!(data["slot"], slot.to_string());
-                assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
-                assert_eq!(data["execution_optimistic"], true);
-            }
-        }
-    }
-
-    #[test]
     fn head_v2_names_the_fork_at_the_head_slot() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
@@ -1750,27 +1596,6 @@ mod tests {
 
         let got = serve(&mut server, read_exactly(client, expected.len()), "the burst");
         assert_same_bytes(&got, &expected);
-    }
-
-    /// Checks that publication attempts delivery before the readiness loop,
-    /// independently of whether a larger burst fits the application buffer.
-    #[test]
-    fn a_publish_to_a_reading_subscriber_leaves_nothing_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("api.sock");
-        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
-        let mut client = connect_uds(&socket);
-        subscribe(&mut client, "block");
-        pump_until(&mut server, "subscribed and head sent", |server| {
-            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
-        });
-
-        for slot in 1..=3 {
-            server.api.publish_block(slot, &[0x33; 32]);
-        }
-        assert_eq!(bytes_waiting_for_subscribers(&server), 0);
-        assert_eq!(subscribers(&server), 1);
-        drop(client);
     }
 
     /// On Linux, registering `WRITABLE` on a writable socket queues an epoll

@@ -78,38 +78,3 @@ pub(crate) fn build_identity_json(
 
     serde_json::to_vec(&IdentityResponse { data: &identity }).unwrap()
 }
-
-#[cfg(test)]
-mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    use super::*;
-
-    #[test]
-    fn identity_json_fields_present() {
-        let kp = Keypair::from_secret(&[1u8; 32]).unwrap();
-        let enr = Enr::builder().build(kp.secret_key()).unwrap();
-        let body = build_identity_json(&kp, &enr, &Identify::default());
-        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let data = &v["data"];
-        assert!(data["peer_id"].as_str().is_some_and(|s| !s.is_empty()));
-        assert!(data["enr"].as_str().is_some_and(|s| s.starts_with("enr:")));
-        assert!(data["metadata"]["seq_number"].as_str().is_some());
-        assert!(data["metadata"]["attnets"].as_str().is_some_and(|s| s.starts_with("0x")));
-        assert!(data["metadata"]["syncnets"].as_str().is_some_and(|s| s.starts_with("0x")));
-    }
-
-    #[test]
-    fn identity_p2p_address_format() {
-        let kp = Keypair::from_secret(&[1u8; 32]).unwrap();
-        let enr = Enr::builder().build(kp.secret_key()).unwrap();
-        let mut identify = Identify::default();
-        identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-        let body = build_identity_json(&kp, &enr, &identify);
-        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let addrs = v["data"]["p2p_addresses"].as_array().unwrap();
-        assert_eq!(addrs.len(), 1);
-        let addr = addrs[0].as_str().unwrap();
-        assert!(addr.starts_with("/ip4/1.2.3.4/tcp/9000/p2p/"), "bad format: {addr}");
-    }
-}

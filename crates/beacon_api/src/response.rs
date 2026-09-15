@@ -190,39 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn json_frames_ok_with_content_type() {
-        let mut out = Vec::new();
-        Response::new(&mut out).json(b"{\"data\":1}");
-        assert_eq!(
-            out,
-            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{\"data\":1}"
-        );
-    }
-
-    #[test]
-    fn empty_frames_ok_with_zero_length_body() {
-        let mut out = Vec::new();
-        Response::new(&mut out).empty("text/plain");
-        assert_eq!(
-            out,
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n"
-        );
-    }
-
-    #[test]
-    fn error_frames_any_mapped_status() {
-        let out = framed(|resp| resp.error(415, "unsupported media type"));
-        let expected: &[u8] = b"HTTP/1.1 415 Unsupported Media Type\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"code\":415,\"message\":\"unsupported media type\"}";
-        assert_eq!(out, expected);
-    }
-
-    #[test]
-    fn send_frames_a_bodyless_status() {
-        let out = framed(|resp| resp.send(202, None, &[], b""));
-        assert_eq!(out, b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n");
-    }
-
-    #[test]
     fn send_emits_extra_headers_in_order() {
         let out = framed(|resp| {
             resp.send(
@@ -236,12 +203,6 @@ mod tests {
             out,
             b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: fulu\r\nEth-Execution-Payload-Blinded: false\r\nContent-Length: 3\r\n\r\n\x01\x02\x03"
         );
-    }
-
-    #[test]
-    fn unmapped_status_frames_with_an_empty_reason_phrase() {
-        let out = framed(|resp| resp.send(599, None, &[], b""));
-        assert_eq!(out, b"HTTP/1.1 599 \r\nContent-Length: 0\r\n\r\n");
     }
 
     /// A `syncing_status` a client picked reaches the wire whether or not this

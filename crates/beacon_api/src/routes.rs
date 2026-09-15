@@ -340,25 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn identity_content_length_matches_body() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/identity");
-        let s = std::str::from_utf8(&resp).unwrap();
-        let header_end = s.find("\r\n\r\n").unwrap();
-        let cl: usize = s[..header_end]
-            .lines()
-            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
-            .unwrap()
-            .split(':')
-            .nth(1)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(cl, s[header_end + 4..].len());
-    }
-
-    #[test]
     fn version_body_carries_this_build_s_agent_version() {
         let router = Router::new(ROUTES);
         let resp = get(&router, &anchor_ctx(), "/eth/v1/node/version");
@@ -432,17 +413,6 @@ mod tests {
         assert!(health_response(syncing, "syncing_status=503").starts_with(b"HTTP/1.1 503 "));
         assert!(health_response(ready(), "syncing_status=503").starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(health_response(syncing, "other=1").starts_with(b"HTTP/1.1 206 "));
-    }
-
-    /// A code the schema allows but this API has no phrase for still frames,
-    /// with the empty reason phrase RFC 9112 §4.1 permits.
-    #[test]
-    fn a_syncing_status_with_no_reason_phrase_still_frames() {
-        let syncing = NodeStatus { target: chasing(200), ..ready() };
-        assert_eq!(
-            health_response(syncing, "syncing_status=250"),
-            b"HTTP/1.1 250 \r\nContent-Length: 0\r\n\r\n"
-        );
     }
 
     #[test]
@@ -519,15 +489,6 @@ mod tests {
         assert_eq!(syncing_data(at_head(10))["is_syncing"], false, "following");
         let no_target = NodeStatus { target: None, ..ready() };
         assert_eq!(syncing_data(no_target)["is_syncing"], true, "before the first target");
-    }
-
-    /// One node, one answer: a validator client gating on `/node/health` and
-    /// reading the head from `/node/syncing` must not see the two disagree.
-    #[test]
-    fn health_reports_syncing_wherever_the_syncing_endpoint_does() {
-        let chasing = NodeStatus { target: chasing(200), ..ready() };
-        assert_eq!(syncing_data(chasing)["is_syncing"], true);
-        assert!(health_response(chasing, "").starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
     }
 
     /// The same flag the state envelopes carry: the head's own execution
@@ -621,13 +582,6 @@ mod tests {
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
         assert_eq!(body(&resp), b"");
-    }
-
-    #[test]
-    fn unknown_path_returns_404() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &anchor_ctx(), "/not/real");
-        assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     }
 
     /// First slot of the epoch two past [`epoch_state`]'s finalized

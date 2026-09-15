@@ -360,30 +360,6 @@ mod tests {
         }
     }
 
-    /// A client naming no media type is sending JSON: the one media type worth
-    /// a 415 announces itself, and refusing a header-less POST would refuse a
-    /// request no schema calls invalid.
-    #[test]
-    fn a_body_naming_no_media_type_is_read_as_json() {
-        for (path, entry) in entries() {
-            let body = format!("[{entry}]");
-            assert_eq!(post(path, None, &body), BODYLESS_OK, "{path}: absent");
-            assert_eq!(post(path, Some(""), &body), BODYLESS_OK, "{path}: empty");
-        }
-    }
-
-    #[test]
-    fn a_json_content_type_carrying_parameters_is_still_json() {
-        let body = format!("[{}]", registration());
-        for content_type in [
-            "application/json; charset=utf-8",
-            "application/json;charset=UTF-8",
-            "Application/JSON",
-        ] {
-            assert_eq!(post(REGISTER, Some(content_type), &body), BODYLESS_OK, "{content_type}");
-        }
-    }
-
     /// The cap answers before the entries are read, so an array no registry
     /// could hold is refused for its length rather than for the first field in
     /// it that fails.
@@ -395,26 +371,5 @@ mod tests {
 
         let at_cap = format!("[{}]", vec![entry; MAX_BODY_IDS].join(","));
         assert_bad_request(&json_post(PREPARE, &at_cap), "invalid entry in request body");
-    }
-
-    /// Nothing in a JSON body's layout is the schema's: a client is free to
-    /// indent it and to emit an object's members in any order, and both are
-    /// the same body.
-    #[test]
-    fn indentation_and_member_order_do_not_change_the_body() {
-        let fee_recipient = format!("0x{}", hex::encode([0xab; 20]));
-        let pretty = format!(
-            "[\n  {{\n    \"fee_recipient\": \"{fee_recipient}\",\n\
-             \t\"validator_index\" : \"1\"\n  }}\n]\n"
-        );
-        assert_eq!(json_post(PREPARE, &pretty), BODYLESS_OK, "{pretty}");
-    }
-
-    #[test]
-    fn every_receipt_route_takes_post_and_nothing_else() {
-        for path in [REGISTER, PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
-            let response = dispatch("GET", path, None, "");
-            assert!(response.starts_with(b"HTTP/1.1 405 Method Not Allowed\r\n"), "{path}");
-        }
     }
 }

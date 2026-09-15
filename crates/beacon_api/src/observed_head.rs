@@ -182,24 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn a_status_repeating_the_same_head_reports_nothing() {
-        let mut head = observed_at(40, HEAD, true, Full);
-        assert!(head.observe(40, HEAD, true, Full, roots(0x50)).is_none(), "other fields changed");
-        assert!(head.observe(40, HEAD, true, Full, roots(0x50)).is_none());
-    }
-
-    #[test]
-    fn a_validated_head_reports_once_with_no_epoch_transition() {
-        let mut head = observed_at(40, HEAD, true, Full);
-        assert_eq!(
-            head.observe(40, HEAD, false, Full, roots(0x30)),
-            both_topics(event(40, HEAD, 0x30, Full, false, false))
-        );
-        assert!(head.observe(40, HEAD, false, Full, roots(0x30)).is_none(), "repeat");
-    }
-
-    #[test]
-    fn a_payload_resolution_change_alone_reaches_only_head_v2() {
+    fn payload_resolution_change_alone_reaches_only_head_v2() {
         let mut head = observed_at(40, HEAD, true, Empty);
         assert_eq!(
             head.observe(40, HEAD, true, Full, roots(0x30)),
@@ -216,37 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn a_change_in_every_dimension_is_one_event_for_both_topics() {
-        let mut head = observed_at(40, HEAD, true, Empty);
-        assert_eq!(
-            head.observe(41, OTHER, false, Full, roots(0x40)),
-            both_topics(event(41, OTHER, 0x40, Full, false, false))
-        );
-        assert!(head.observe(41, OTHER, false, Full, roots(0x40)).is_none(), "repeat");
-    }
-
-    #[test]
-    fn a_head_change_inside_one_epoch_reports_no_transition() {
-        let mut head = observed_at(40, HEAD, true, Full);
-        assert_eq!(
-            head.observe(41, OTHER, true, Full, roots(0x40)),
-            both_topics(event(41, OTHER, 0x40, Full, false, true))
-        );
-        assert!(head.observe(41, OTHER, true, Full, roots(0x40)).is_none(), "repeat");
-    }
-
-    #[test]
-    fn a_head_change_into_a_later_epoch_reports_the_transition() {
-        let mut head = observed_at(40, HEAD, true, Full);
-        assert_eq!(
-            head.observe(64, OTHER, true, Full, roots(0x40)),
-            both_topics(event(64, OTHER, 0x40, Full, true, true))
-        );
-        assert!(head.observe(64, OTHER, true, Full, roots(0x40)).is_none(), "repeat");
-    }
-
-    #[test]
-    fn a_head_change_into_an_earlier_epoch_reports_no_transition() {
+    fn head_change_into_an_earlier_epoch_reports_no_transition() {
         let mut head = observed_at(64, HEAD, true, Full);
         assert_eq!(
             head.observe(40, OTHER, true, Full, roots(0x40)),

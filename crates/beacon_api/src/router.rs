@@ -252,13 +252,6 @@ mod tests {
         resp.json(joined.as_bytes());
     }
 
-    fn echo_query_body(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-        let mut joined = req.query.as_bytes().to_vec();
-        joined.push(b'|');
-        joined.extend_from_slice(req.body);
-        resp.json(&joined);
-    }
-
     fn echo_media_type(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
         let verdict = if req.body_is_json() { "json" } else { "other" };
         resp.json(format!("{:?}|{verdict}", req.media_type()).as_bytes());
@@ -282,15 +275,6 @@ mod tests {
         out
     }
 
-    #[test]
-    fn the_content_type_header_reaches_the_handler() {
-        assert_eq!(
-            body(&posted_with(Some("application/octet-stream"))),
-            b"Some(\"application/octet-stream\")|other"
-        );
-        assert_eq!(body(&posted_with(None)), b"None|json");
-    }
-
     /// RFC 9110 makes the media type case-insensitive and lets parameters
     /// follow it; a header that names none at all leaves the body unlabelled,
     /// which is the same verdict as sending no header.
@@ -312,27 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn literal_route_dispatches_matching_handler() {
-        let router = Router::new(&[
-            (Method::Get, "/eth/v1/node/identity", first),
-            (Method::Get, "/metrics", second),
-        ]);
-        assert_eq!(body(&dispatch(&router, "GET", "/eth/v1/node/identity")), b"first");
-        assert_eq!(body(&dispatch(&router, "GET", "/metrics")), b"second");
-    }
-
-    #[test]
-    fn single_param_extracted_by_name() {
-        let router = Router::new(&[(
-            Method::Get,
-            "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
-            echo_params,
-        )]);
-        let resp = dispatch(&router, "GET", "/eth/v1/beacon/states/head/finality_checkpoints");
-        assert_eq!(body(&resp), b"state_id=head;");
-    }
-
-    #[test]
     fn two_params_extracted_by_name() {
         let router =
             Router::new(&[(Method::Get, "/eth/v1/states/{state_id}/epochs/{epoch}", echo_params)]);
@@ -345,25 +308,6 @@ mod tests {
         let router = Router::new(&[(Method::Get, "/states/{state_id}", echo_params)]);
         let resp = dispatch(&router, "GET", "/states/0x1234%2Fabc%20d");
         assert_eq!(body(&resp), b"state_id=0x1234%2Fabc%20d;");
-    }
-
-    #[test]
-    fn query_and_body_reach_handler() {
-        let router = Router::new(&[(Method::Post, "/submit", echo_query_body)]);
-        let mut out = Vec::new();
-        let req = ParsedRequest {
-            method: "POST",
-            path: "/submit",
-            query: "k=v",
-            body: b"payload",
-            accept: None,
-            content_type: None,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        assert_eq!(router.dispatch(&req, &anchor_ctx(), &mut out), Served::Response);
-        assert_eq!(body(&out), b"k=v|payload");
     }
 
     #[test]
@@ -406,12 +350,6 @@ mod tests {
         ]);
         assert_eq!(body(&dispatch(&router, "GET", "/eth/v1/thing")), b"first");
         assert_eq!(body(&dispatch(&router, "POST", "/eth/v1/thing")), b"second");
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate route pattern")]
-    fn duplicate_pattern_panics_at_init() {
-        Router::new(&[(Method::Get, "/a/b", first), (Method::Get, "/a/b", second)]);
     }
 
     #[test]

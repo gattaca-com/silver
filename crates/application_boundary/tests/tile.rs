@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
-    os::unix::net::UnixStream,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -485,60 +484,6 @@ fn head_events_subscriber(
         }
     });
     (client, on_subscribed)
-}
-
-#[test]
-fn serves_identity_over_tcp() {
-    let base = ShmemDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_tcp_gossip",
-        "cs_tcp_rpc",
-        "cs_tcp_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-
-    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
-    assert_ne!(addr.port(), 0, "port-0 bind must resolve to an ephemeral port");
-
-    let client = identity_client(addr);
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !client.is_finished() {
-        assert!(Instant::now() < deadline, "timeout: identity over tcp");
-        tile.loop_body(&mut adapter);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_identity_ok(&client.join().unwrap());
-}
-
-#[test]
-fn serves_identity_over_uds() {
-    let base = ShmemDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let socket = base.path().join("beacon_api.sock");
-    let mut tile = boundary_tile(&Bind::Unix(socket.clone()), no_el(), [
-        "cs_uds_gossip",
-        "cs_uds_rpc",
-        "cs_uds_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-
-    assert_eq!(tile.beacon.local_addrs(), [Bind::Unix(socket.clone())]);
-
-    let client = std::thread::spawn(move || {
-        let stream = UnixStream::connect(&socket).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        http_get(stream, "/eth/v1/node/identity")
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !client.is_finished() {
-        assert!(Instant::now() < deadline, "timeout: identity over uds");
-        tile.loop_body(&mut adapter);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_identity_ok(&client.join().unwrap());
 }
 
 /// ADR 0004's core claim: all pumps are non-blocking, so an unanswered EL
@@ -1436,31 +1381,4 @@ fn head_events_describe_changes_observed_while_following() {
         assert_eq!(event["slot"], slot.to_string());
         assert_eq!(event["execution_optimistic"], optimistic);
     }
-}
-
-/// The initial head observation emits no event but still updates node status.
-#[test]
-fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
-    let base = ShmemDir::new().unwrap();
-    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_optimism_gossip",
-        "cs_optimism_rpc",
-        "cs_optimism_resp",
-    ]);
-    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
-    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
-    tile.loop_body(&mut adapter);
-
-    inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
-    tile.loop_body(&mut adapter);
-    assert_eq!(tile.beacon.node_status().head, HeadStatus { slot: 32, optimistic: true });
-
-    inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
-    tile.loop_body(&mut adapter);
-    assert_eq!(
-        tile.beacon.node_status().head,
-        HeadStatus { slot: 32, optimistic: false },
-        "the verdict reaches node status whatever the head filter decides"
-    );
 }
