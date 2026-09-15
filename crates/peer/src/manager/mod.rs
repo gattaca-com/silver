@@ -369,6 +369,28 @@ impl PeerManager {
             PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer, topic } => {
                 self.on_unsubscribe(p2p_peer, topic, now, emit);
             }
+            PeerEvent::P2pGossipExtensions { p2p_peer, partial_messages } => {
+                if let Some(peer) = self.peers.get_mut(&p2p_peer) {
+                    peer.partial_extensions = partial_messages;
+                }
+            }
+            PeerEvent::P2pGossipPartialCaps { p2p_peer, subnet, requests, supports_sending } => {
+                if let Some(peer) = self.peers.get_mut(&p2p_peer) &&
+                    subnet < 128
+                {
+                    let bit = 1u128 << subnet;
+                    peer.partial_requests = if requests {
+                        peer.partial_requests | bit
+                    } else {
+                        peer.partial_requests & !bit
+                    };
+                    peer.partial_supports_sending = if supports_sending {
+                        peer.partial_supports_sending | bit
+                    } else {
+                        peer.partial_supports_sending & !bit
+                    };
+                }
+            }
             PeerEvent::P2pGossipTopicGraft { p2p_peer, topic } => {
                 self.on_remote_graft(p2p_peer, topic, now, emit);
             }

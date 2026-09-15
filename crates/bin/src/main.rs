@@ -253,6 +253,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // Validation only: a non-Off mode fails startup rather than being ignored.
+    let _partial_columns =
+        config.partial_columns().map_err(|error| format!("partial columns config: {error:?}"))?;
+
     let cell_config =
         CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
             .map_err(|error| format!("cell store configuration: {error:?}"))?;
