@@ -1,6 +1,7 @@
-use silver_beacon_api::HeadEvent;
 use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH};
 use silver_common::{HeadRoots, PayloadResolution};
+
+use crate::events::HeadEvent;
 
 /// The last complete observation, including the initial unpublished baseline.
 #[derive(Clone, Copy)]

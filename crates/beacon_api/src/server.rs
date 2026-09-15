@@ -7,16 +7,22 @@ use std::{
 
 use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
-use silver_common::{Enr, Identify, Keypair};
+use silver_common::{
+    BeaconStateEvent, BlockStage, ELSyncStatus, Enr, GossipTopic, Identify, Keypair, PeerEvent,
+    SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    column_util::{SidecarIdentity, block_root},
+    ssz_view::{SignedBeaconBlockView, StatusView},
+};
 use silver_httpcore::{
     AfterResponse, Bind, ChunkedResponse, Closed, Listener, ParsedRequest, ServerConnection,
     Stream, TokenRange,
 };
 
 use crate::{
-    NodeStatus,
+    NodeStatus, SlotStatus,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
+    observed_head::{HeadChange, ObservedHead},
     router::{Router, Served},
     routes::{ApiCtx, ROUTES},
 };
@@ -301,6 +307,18 @@ impl IdleSweep {
     }
 }
 
+pub struct ApiConsumers {
+    pub gossip: TRandomAccess,
+    pub rpc: TRandomAccess,
+}
+
+impl ApiConsumers {
+    fn free(&mut self) {
+        self.gossip.free();
+        self.rpc.free();
+    }
+}
+
 pub struct BeaconApi {
     registry: Registry,
     tokens: TokenRange,
@@ -314,6 +332,8 @@ pub struct BeaconApi {
     connections: HashMap<Token, Connection>,
     router: Router,
     ctx: ApiCtx,
+    consumers: ApiConsumers,
+    head: ObservedHead,
 }
 
 impl BeaconApi {
@@ -329,6 +349,7 @@ impl BeaconApi {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        consumers: ApiConsumers,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let tokens_needed = binds.len().checked_add(max_connections);
@@ -365,6 +386,8 @@ impl BeaconApi {
             connections: HashMap::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
+            consumers,
+            head: ObservedHead::default(),
         }
     }
 
@@ -372,9 +395,97 @@ impl BeaconApi {
         self.listeners.iter().map(Listener::local_addr).collect()
     }
 
-    /// In-place update seam for the status's single writer.
-    pub fn node_status_mut(&mut self) -> &mut NodeStatus {
-        &mut self.ctx.node_status
+    pub fn node_status(&self) -> &NodeStatus {
+        &self.ctx.node_status
+    }
+
+    pub fn handle_beacon_state_event(&mut self, event: BeaconStateEvent) {
+        match event {
+            BeaconStateEvent::Status {
+                ssz,
+                latest_block_slot,
+                wall_slot,
+                head_optimistic,
+                head_roots,
+                head_payload,
+                ..
+            } => {
+                self.ctx.node_status.slots =
+                    Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
+                if let Some(HeadChange { event, legacy }) = self.head.observe(
+                    StatusView::head_slot(&ssz),
+                    *StatusView::head_root(&ssz),
+                    head_optimistic,
+                    head_payload,
+                    head_roots,
+                ) {
+                    if legacy {
+                        self.publish_head(&event);
+                    }
+                    self.publish_head_v2(&event);
+                }
+            }
+            BeaconStateEvent::BlockReceived {
+                slot,
+                block_root,
+                stage: BlockStage::Applied,
+                ..
+            } => self.publish_block(slot, &block_root),
+            _ => {}
+        }
+    }
+
+    pub fn handle_sync_update(&mut self, update: SyncUpdate) {
+        let following = matches!(update, SyncUpdate::Following);
+        self.ctx.node_status.syncing = !following;
+        self.head.set_following(following);
+    }
+
+    pub fn set_el_sync_status(&mut self, el: ELSyncStatus) {
+        self.ctx.node_status.el = el;
+    }
+
+    pub fn handle_peer_event(&mut self, event: PeerEvent) {
+        match event {
+            PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
+                self.publish_relayed_block(ssz)
+            }
+            PeerEvent::SendGossip { topic: GossipTopic::DataColumnSidecar(_), ssz, .. } => {
+                let sidecar = self.consumers.gossip.acquire(ssz);
+                self.publish_sidecar(sidecar)
+            }
+            PeerEvent::PublishDataColumn { ssz, .. } => {
+                let sidecar = self.consumers.rpc.acquire(ssz);
+                self.publish_sidecar(sidecar)
+            }
+            _ => {}
+        }
+    }
+
+    fn publish_relayed_block(&mut self, ssz: TCacheRead) {
+        let block = self.consumers.gossip.acquire(ssz);
+        match block.buffer() {
+            Ok((buf, _)) => {
+                let slot = SignedBeaconBlockView::slot(buf);
+                let root = block_root(buf, self.ctx.spec.is_gloas_at_slot(slot));
+                self.publish_block_gossip(slot, &root);
+            }
+            Err(e) => tracing::warn!(?e, "relayed block unavailable to block_gossip"),
+        }
+    }
+
+    fn publish_sidecar(&mut self, sidecar: TRead) {
+        match sidecar.buffer().map(|(bytes, _)| SidecarIdentity::of(bytes)) {
+            Ok(Some(column)) => self.publish_data_column_sidecar(
+                &column.block_root,
+                column.column_index,
+                column.slot,
+            ),
+            Ok(None) => {
+                tracing::warn!("published sidecar fits no layout data_column_sidecar reads")
+            }
+            Err(e) => tracing::warn!(?e, "published sidecar unavailable to data_column_sidecar"),
+        }
     }
 
     /// Import notifications can precede payload validation, so events are
@@ -386,14 +497,13 @@ impl BeaconApi {
         self.publish(Channel::Block, "block", &data);
     }
 
-    /// Head-change detection belongs to the caller.
-    pub fn publish_head(&mut self, head: &HeadEvent) {
+    fn publish_head(&mut self, head: &HeadEvent) {
         let mut data = Vec::new();
         Json::new(&mut data).head_event(head);
         self.publish(Channel::Head, "head", &data);
     }
 
-    pub fn publish_head_v2(&mut self, head: &HeadEvent) {
+    fn publish_head_v2(&mut self, head: &HeadEvent) {
         let mut data = Vec::new();
         Json::new(&mut data).head_v2_event(head, self.ctx.spec.fork_at_slot(head.slot).name());
         self.publish(Channel::HeadV2, "head_v2", &data);
@@ -472,6 +582,7 @@ impl BeaconApi {
     }
 
     pub fn pump(&mut self, events: &Events) -> bool {
+        self.consumers.free();
         let now = Instant::now();
 
         let mut did_work = false;
@@ -626,7 +737,7 @@ mod tests {
 
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
-    use silver_common::{HeadRoots, PayloadResolution};
+    use silver_common::{HeadRoots, PayloadResolution, TCache, TCacheProducer};
     use silver_httpcore::Readiness;
 
     use super::*;
@@ -651,6 +762,8 @@ mod tests {
             let readiness = Readiness::new(1024);
             let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
             let local_enr = Enr::empty(keypair.secret_key()).unwrap();
+            let cache = TCache::producer("beacon_api_test", 1 << 12);
+            let consumer = || cache.cache_ref().random_access("beacon_api_test", true).unwrap();
             let api = BeaconApi::new(
                 readiness.registry(),
                 tokens,
@@ -662,6 +775,7 @@ mod tests {
                 &Identify::default(),
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::empty_test(0).reader(),
+                ApiConsumers { gossip: consumer(), rpc: consumer() },
             );
             Self { readiness, api }
         }

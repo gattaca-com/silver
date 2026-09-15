@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use silver_beacon_api::BeaconApi;
+use silver_beacon_api::{ApiConsumers, BeaconApi};
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
-use silver_common::{Enr, Identify, Keypair};
+use silver_common::{Enr, Identify, Keypair, TCache, TCacheProducer};
 use silver_httpcore::{Bind, Readiness, TokenRange};
 
 fn main() {
@@ -12,6 +12,9 @@ fn main() {
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     // Never-published reader: state endpoints answer 503, as pre-bootstrap.
     let state = BeaconStateOwner::empty_test(0).reader();
+
+    let cache = TCache::producer("srv", 1 << 12);
+    let consumer = || cache.cache_ref().random_access("srv", true).unwrap();
 
     let mut readiness = Readiness::new(1024);
     let mut api = BeaconApi::new(
@@ -25,6 +28,7 @@ fn main() {
         &Identify::default(),
         &SpecConfig::mainnet(),
         state,
+        ApiConsumers { gossip: consumer(), rpc: consumer() },
     );
     println!("serving on {:?}", api.local_addrs());
     loop {

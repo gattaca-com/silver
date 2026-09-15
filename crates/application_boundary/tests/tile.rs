@@ -738,7 +738,7 @@ fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
     for i in 0..3 {
         el.respond(i, "false");
     }
-    while tile.beacon.node_status_mut().el != ELSyncStatus::Synced {
+    while tile.beacon.node_status().el != ELSyncStatus::Synced {
         crank(&mut tile, &mut el, "startup healthcheck answered");
     }
     for _ in 0..20 {
@@ -794,7 +794,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     inj.produce(status_event(1, 1, true));
     tile.loop_body(&mut adapter);
     assert!(
-        tile.beacon.node_status_mut().slots.is_none(),
+        tile.beacon.node_status().slots.is_none(),
         "a status published before the first consume is skipped, not delivered"
     );
 
@@ -802,7 +802,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     inj.produce(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 });
     tile.loop_body(&mut adapter);
 
-    let status = *tile.beacon.node_status_mut();
+    let status = *tile.beacon.node_status();
     assert_eq!(
         status.slots,
         Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: true })
@@ -813,7 +813,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     inj.produce(status_event(9, 9, false));
     inj.produce(SyncUpdate::Following);
     tile.loop_body(&mut adapter);
-    let status = *tile.beacon.node_status_mut();
+    let status = *tile.beacon.node_status();
     assert_eq!(
         status.slots,
         Some(SlotStatus { head_slot: 9, wall_slot: 9, head_optimistic: false }),
@@ -863,7 +863,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
     for i in 0..3 {
         el.respond(i, "false");
     }
-    while tile.beacon.node_status_mut().el != ELSyncStatus::Synced {
+    while tile.beacon.node_status().el != ELSyncStatus::Synced {
         crank(&mut tile, &mut el, "EL sync status reaches the api");
     }
 
@@ -879,12 +879,12 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 
     inj.produce(status_event(7, 9, false));
     inj.produce(SyncUpdate::Following);
-    while tile.beacon.node_status_mut().slots.is_none() {
+    while tile.beacon.node_status().slots.is_none() {
         crank(&mut tile, &mut el, "status consumed while the pool is at cap");
         assert_eq!(fcu_count(&el), 3, "the 4th request must stay gated on the spine");
     }
 
-    let status = *tile.beacon.node_status_mut();
+    let status = *tile.beacon.node_status();
     assert_eq!(
         status.slots,
         Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: false })
@@ -1328,7 +1328,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
     }
     crank(&mut tile, "head observations update node status");
     assert_eq!(
-        tile.beacon.node_status_mut().slots,
+        tile.beacon.node_status().slots,
         Some(SlotStatus { head_slot: slot, wall_slot: slot, head_optimistic: false })
     );
 
@@ -1410,7 +1410,7 @@ fn head_events_describe_changes_observed_while_following() {
     inj.produce(head_status(34, 0xab, true, PayloadResolution::Full));
     crank(&mut tile, "observations outside following update node status");
     assert_eq!(
-        tile.beacon.node_status_mut().slots,
+        tile.beacon.node_status().slots,
         Some(SlotStatus { head_slot: 34, wall_slot: 34, head_optimistic: true })
     );
 
@@ -1463,14 +1463,14 @@ fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
     inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
     tile.loop_body(&mut adapter);
     assert_eq!(
-        tile.beacon.node_status_mut().slots,
+        tile.beacon.node_status().slots,
         Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: true })
     );
 
     inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
     tile.loop_body(&mut adapter);
     assert_eq!(
-        tile.beacon.node_status_mut().slots,
+        tile.beacon.node_status().slots,
         Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: false }),
         "the verdict reaches node status whatever the head filter decides"
     );

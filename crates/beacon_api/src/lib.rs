@@ -4,6 +4,7 @@ mod identity;
 mod ids;
 mod json;
 mod node_status;
+mod observed_head;
 mod receipts;
 mod response;
 mod router;
@@ -13,4 +14,4 @@ mod statics;
 
 pub use events::HeadEvent;
 pub use node_status::{NodeStatus, SlotStatus};
-pub use server::BeaconApi;
+pub use server::{ApiConsumers, BeaconApi};
