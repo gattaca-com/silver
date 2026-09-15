@@ -20,8 +20,12 @@ pub use stream_protocol::{
     ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, RPC_PROTOCOLS, StreamProtocol,
 };
 pub use tcache::{
-    AcquiredRead, AcquiredWithOffset, Consumer, Error, MultiProducer, Producer,
-    RandomAccessConsumer, Reservation, TCache, TCacheProducer, TCacheRead, TCacheRef,
+    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, AcquiredRead, AcquiredSubReservation,
+    AcquiredWithOffset, CacheFrameError, CacheFrameRef, CacheFrameSegment, CacheFrameView,
+    CacheSegment, Consumer, Error, MAX_CACHE_SEGMENTS, MultiProducer, PendingSubReservation,
+    Producer, RandomAccessConsumer, Reservation, SubLayout, SubReservation, SubReservationError,
+    SubReservationRef, SubReservationView, SubValidation, SubWrite, TCache, TCacheProducer,
+    TCacheRead, TCacheRef,
 };
 
 mod messages;
