@@ -10,6 +10,9 @@ const MAX_BLOCK_RATE_LIMIT_TOKENS: u64 = 128;
 #[repr(u8)]
 pub enum StreamProtocol {
     GossipSub,
+    /// Gossipsub 1.3 (extensions). Negotiation-only: once a stream is
+    /// established, ids and attribution normalize to `GossipSub`.
+    GossipSubV13,
     Identity,
     StatusV1,
     StatusV2,
@@ -28,6 +31,7 @@ pub enum StreamProtocol {
 
 pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::GossipSub,
+    StreamProtocol::GossipSubV13,
     StreamProtocol::Identity,
     StreamProtocol::StatusV1,
     StreamProtocol::StatusV2,
@@ -58,8 +62,14 @@ pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
 ];
 
 impl StreamProtocol {
+    /// Both meshsub versions classify as gossip for stream handling,
+    /// attribution, and timeouts.
+    pub const fn is_gossip(&self) -> bool {
+        matches!(self, Self::GossipSub | Self::GossipSubV13)
+    }
+
     pub const fn is_request_response(&self) -> bool {
-        !matches!(self, Self::GossipSub | Self::Identity | Self::Cluster)
+        !matches!(self, Self::GossipSub | Self::GossipSubV13 | Self::Identity | Self::Cluster)
     }
 
     pub const fn has_multipart_response(&self) -> bool {
@@ -78,7 +88,9 @@ impl StreamProtocol {
     /// mirror Lighthouse's default RPC limiter quotas.
     pub const fn inbound_rpc_quota(self) -> Option<RpcQuota> {
         match self {
-            Self::GossipSub | Self::Identity | Self::Cluster | Self::Unset => None,
+            Self::GossipSub | Self::GossipSubV13 | Self::Identity | Self::Cluster | Self::Unset => {
+                None
+            }
             Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
             Self::Ping => Some(RpcQuota::n_every(2, 10)),
             Self::Goodbye => Some(RpcQuota::one_every(10)),
@@ -101,7 +113,9 @@ impl StreamProtocol {
     /// burst.
     pub const fn outbound_rpc_quota(self) -> Option<RpcQuota> {
         match self {
-            Self::GossipSub | Self::Identity | Self::Cluster | Self::Unset => None,
+            Self::GossipSub | Self::GossipSubV13 | Self::Identity | Self::Cluster | Self::Unset => {
+                None
+            }
             Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
             Self::Ping => Some(RpcQuota::n_every(2, 10)),
             Self::Goodbye => Some(RpcQuota::one_every(10)),
@@ -122,6 +136,7 @@ impl StreamProtocol {
     pub const fn next(&self) -> Option<Self> {
         match self {
             Self::StatusV2 => Some(Self::StatusV1),
+            Self::GossipSubV13 => Some(Self::GossipSub),
             _ => None,
         }
     }
@@ -131,6 +146,7 @@ impl StreamProtocol {
         match self {
             StreamProtocol::Unset => panic!("should never call multiselect on negotiating stream"),
             StreamProtocol::GossipSub => b"\x0f/meshsub/1.2.0\n",
+            StreamProtocol::GossipSubV13 => b"\x0f/meshsub/1.3.0\n",
             StreamProtocol::Identity => b"\x0f/ipfs/id/1.0.0\n",
             StreamProtocol::StatusV1 => b"\x2b/eth2/beacon_chain/req/status/1/ssz_snappy\n",
             StreamProtocol::StatusV2 => b"\x2b/eth2/beacon_chain/req/status/2/ssz_snappy\n",
@@ -193,6 +209,10 @@ mod tests {
         assert_eq!(
             StreamProtocol::GossipSub.multiselect().len(),
             (StreamProtocol::GossipSub.multiselect()[0] + 1) as usize
+        );
+        assert_eq!(
+            StreamProtocol::GossipSubV13.multiselect().len(),
+            (StreamProtocol::GossipSubV13.multiselect()[0] + 1) as usize
         );
         assert_eq!(
             StreamProtocol::Identity.multiselect().len(),

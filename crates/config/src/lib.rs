@@ -68,6 +68,7 @@ fn default_supported_protocols() -> Vec<String> {
     vec![
         StreamProtocol::Identity.multiselect_string(),
         StreamProtocol::GossipSub.multiselect_string(),
+        StreamProtocol::GossipSubV13.multiselect_string(),
         StreamProtocol::StatusV1.multiselect_string(),
         StreamProtocol::StatusV2.multiselect_string(),
         StreamProtocol::Ping.multiselect_string(),
@@ -565,7 +566,8 @@ mod tests {
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
-        assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
+        assert_eq!(cfg.supported_protocols().unwrap().len(), 12);
+        assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 9);
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);

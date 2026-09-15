@@ -109,12 +109,15 @@ impl NegotiateState {
                 // the protocol-specific state to read.
                 read += io.read_from_stream(id, &mut buf[read..total])?;
 
-                // check for reject
-                if read >= hdr_len + REJECT_RESPONSE.len() {
+                // Check for reject: a bare `na` line after the once-only
+                // header. Every protocol line is longer than `na`, so the
+                // length prefix disambiguates before the full echo arrives.
+                let na = &REJECT_RESPONSE[MULTISTREAM_V1.len()..];
+                if read >= hdr_len + na.len() {
                     if header && &buf[..hdr_len] != MULTISTREAM_V1 {
                         return Err(StreamError::InvalidMultiStreamHeader);
                     }
-                    if &buf[hdr_len..hdr_len + REJECT_RESPONSE.len()] == REJECT_RESPONSE {
+                    if &buf[hdr_len..hdr_len + na.len()] == na {
                         match protocol.next() {
                             Some(next_protocol) => {
                                 return Ok(Spin::Next(Self::OutWriting {
@@ -374,6 +377,19 @@ mod tests {
         assert_eq!(io.out_buf, echo_for(proto));
     }
 
+    /// Outbound 1.3 proposal rejected by the peer falls back to 1.2 via
+    /// the standard multistream retry.
+    #[test]
+    fn outbound_v13_falls_back_to_v12() {
+        let mut io = MockIo::with_input(REJECT_RESPONSE);
+        let state = drive(NegotiateState::new_outbound(StreamProtocol::GossipSubV13), &mut io)
+            .unwrap_or_else(|_| panic!("expected fallback path, not error"));
+        // The 1.2 echo arrives only after our retry proposal.
+        io.in_buf.extend_from_slice(StreamProtocol::GossipSub.multiselect());
+        let neg = drive(state, &mut io).unwrap();
+        assert!(matches!(neg, NegotiateState::Done(StreamProtocol::GossipSub)));
+    }
+
     fn expect_err(result: Result<NegotiateState, StreamError>) -> StreamError {
         match result {
             Ok(_) => panic!("expected error, got Ok"),
@@ -406,9 +422,9 @@ mod tests {
     #[test]
     fn outbound_status_v2_falls_back_to_v1() {
         // Server rejects StatusV2 → state machine retries with StatusV1.
-        let mut input = Vec::new();
-        input.extend_from_slice(MULTISTREAM_V1);
-        input.extend_from_slice(REJECT_RESPONSE);
+        // A first reject is header + na, exactly what our own responder
+        // writes (REJECT_RESPONSE); the header is sent once per stream.
+        let input = REJECT_RESPONSE.to_vec();
         let mut io = MockIo::with_input(&input);
         let mut state = drive(NegotiateState::new_outbound(StreamProtocol::StatusV2), &mut io)
             .unwrap_or_else(|_| panic!("expected fallback path, not error"));
@@ -422,15 +438,13 @@ mod tests {
 
     #[test]
     fn outbound_reject_on_retry_fails() {
-        let mut input = Vec::new();
-        input.extend_from_slice(MULTISTREAM_V1);
-        input.extend_from_slice(REJECT_RESPONSE);
+        let input = REJECT_RESPONSE.to_vec();
         let mut io = MockIo::with_input(&input);
         let state = drive(NegotiateState::new_outbound(StreamProtocol::StatusV2), &mut io)
             .unwrap_or_else(|_| panic!("expected fallback path, not error"));
 
         // Second reject is a bare na — no header, no protocols left.
-        io.in_buf.extend_from_slice(REJECT_RESPONSE);
+        io.in_buf.extend_from_slice(&REJECT_RESPONSE[MULTISTREAM_V1.len()..]);
         let err = expect_err(drive(state, &mut io));
         assert!(matches!(err, StreamError::StreamRejected));
     }
@@ -500,7 +514,7 @@ mod tests {
     fn inbound_unknown_then_known_negotiates() {
         let proto = StreamProtocol::GossipSub;
         let mut input = MULTISTREAM_V1.to_vec();
-        input.extend_from_slice(b"\x0f/meshsub/1.3.0\n");
+        input.extend_from_slice(b"\x0f/meshsub/9.9.9\n");
         input.extend_from_slice(proto.multiselect());
         let mut io = MockIo::with_input(&input);
         let neg = drive(NegotiateState::new_inbound(), &mut io).unwrap();
