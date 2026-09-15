@@ -188,6 +188,27 @@ mod tests {
         ControlExtensions, ControlMessage, PartialMessagesExtension, RPC, RPCView, rpc::SubOpts,
     };
 
+    /// The constant announcement frame is a canonical encoding of
+    /// `RPC { control { extensions {} } }` with its length prefix.
+    #[test]
+    fn extensions_announcement_frame_decodes() {
+        use silver_common::GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME as FRAME;
+        assert_eq!(FRAME[0] as usize, FRAME.len() - 1);
+        let reference = RPC {
+            control: MessageField::some(ControlMessage {
+                extensions: MessageField::some(ControlExtensions::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert_eq!(&FRAME[1..], reference);
+        let view = RPCView::decode_view(&FRAME[1..]).unwrap();
+        let control = view.control.as_option().unwrap();
+        assert!(control.extensions.is_set());
+        assert_eq!(control.extensions.as_option().unwrap().partial_messages, None);
+    }
+
     /// Registry wire numbers: SubOpts.requestsPartial=3,
     /// supportsSendingPartial=4, ControlMessage.extensions=6,
     /// ControlExtensions.partialMessages=10, RPC.partial=10.

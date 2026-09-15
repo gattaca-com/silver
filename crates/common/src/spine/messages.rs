@@ -361,6 +361,20 @@ pub enum PeerEvent {
         p2p_peer: usize,
         peer_id: PeerId,
     },
+    /// Gossipsub 1.3 extensions announcement received from the peer.
+    P2pGossipExtensions {
+        p2p_peer: usize,
+        partial_messages: bool,
+    },
+    /// Partial-column capability flags from a data-column subscription.
+    /// `supports_sending` already applies the registry implication
+    /// (requestsPartial implies sending support).
+    P2pGossipPartialCaps {
+        p2p_peer: usize,
+        subnet: u64,
+        requests: bool,
+        supports_sending: bool,
+    },
     P2pCannotCreateStream {
         p2p_peer: usize,
         protocol: StreamProtocol,

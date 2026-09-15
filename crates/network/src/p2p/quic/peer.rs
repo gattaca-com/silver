@@ -204,7 +204,7 @@ impl Peer {
         self.dirty = true;
         let stream_id = match self.outbound_gossip {
             Some(id) => id,
-            None => match self.open_stream(StreamProtocol::GossipSub) {
+            None => match self.open_stream(StreamProtocol::GossipSubV13) {
                 Some(id) => {
                     self.outbound_gossip.replace(id);
                     id
@@ -425,7 +425,7 @@ impl Peer {
     fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
         // All streams are Bi — multistream-select requires bidirectional I/O
         // even for request-response protocols.
-        if protocol == StreamProtocol::GossipSub && self.outbound_gossip.is_some() {
+        if protocol.is_gossip() && self.outbound_gossip.is_some() {
             tracing::warn!(id=?self.id, "open stream: already have outbound gossip stream");
             return None;
         } else if protocol == StreamProtocol::Cluster && self.cluster_stream.is_some() {
@@ -665,7 +665,7 @@ impl Peer {
 
         if let SpinResult::Protocol(protocol) = result {
             tracing::debug!(?id, ?protocol, "incoming stream negotiated");
-            if protocol == StreamProtocol::GossipSub {
+            if protocol.is_gossip() {
                 self.inbound_gossip.replace(id);
             }
         }
@@ -862,7 +862,7 @@ where
 
         if let SpinResult::Protocol(protocol) = result {
             tracing::debug!(?id, ?protocol, "incoming stream negotiated");
-            if protocol == StreamProtocol::GossipSub {
+            if protocol.is_gossip() {
                 inbound_gossip.replace(*id);
             }
         }
@@ -905,7 +905,9 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
 
 fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
     match id.protocol() {
-        StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(8 * 1024)),
+        StreamProtocol::GossipSub | StreamProtocol::GossipSubV13 => {
+            OutboundBuffer::Gossip(OutBuffer::new(8 * 1024))
+        }
         StreamProtocol::Cluster => OutboundBuffer::Cluster(OutBuffer::new(128)),
         StreamProtocol::BeaconBlocksByRange |
         StreamProtocol::BeaconBlocksByRoot |
@@ -1258,7 +1260,10 @@ mod tests {
 
     use mio::{Poll, Token};
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
-    use silver_common::{CacheSegment, Enr, Keypair, TCache, TCacheProducer, TConsumer, TProducer};
+    use silver_common::{
+        CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, Keypair, TCache, TCacheProducer,
+        TConsumer, TProducer,
+    };
 
     use super::*;
     use crate::{
@@ -1678,6 +1683,12 @@ mod tests {
         }
     }
 
+    /// Gossip streams always negotiate meshsub 1.3, so the extensions
+    /// announcement precedes the first payload on every stream.
+    fn announced(payload: &[u8]) -> Vec<u8> {
+        [&GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME[1..], payload].concat()
+    }
+
     fn wait_for<F: FnMut(&PeerHarness, &PeerHarness) -> bool>(
         pair: &mut PeerPair,
         client_h: &mut PeerHarness,
@@ -1883,6 +1894,24 @@ mod tests {
             assert_eq!(p2p.peers[&handle].id().peer_id, non_member);
             assert_eq!(client_h.context.raft_id(handle.0), None);
         }
+    }
+
+    /// Both sides enable meshsub 1.3: the stream negotiates 1.3 and the
+    /// extensions announcement is the first RPC, ahead of queued gossip.
+    #[test]
+    fn meshsub_13_announces_before_first_gossip() {
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+
+        let stream_id = P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false);
+        client_h.send_gossip(stream_id, b"ping", &mut pair.client_peer);
+        let want = [&GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME[1..], b"ping"].concat();
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| {
+            s.received.values().any(|bytes| bytes.len() >= want.len())
+        });
+        let received = server_h.received.values().next().expect("gossip stream bytes");
+        assert_eq!(received, &want);
     }
 
     /// Closing drops stream state (and the queued acquires in its buffers)
@@ -2137,7 +2166,7 @@ mod tests {
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
 
         let data: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
-        assert_eq!(data, payload);
+        assert_eq!(data, announced(&payload));
         // The release rides the server's ACK, which can land any number of
         // steps after the data itself: keep pumping until quinn frees its
         // clone of the payload.
@@ -2211,7 +2240,7 @@ mod tests {
             .advance_retention(columns.next_seq());
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         let wire: Vec<_> = server_h.received.values().flatten().copied().collect();
-        assert_eq!(wire, payload);
+        assert_eq!(wire, announced(payload));
         let now = Instant::now();
         for i in 0..200 {
             if pair.client_peer.outbound_lease_wheel.active_count() == 0 {
@@ -2292,8 +2321,8 @@ mod tests {
 
         let server_got: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
         let client_got: Vec<u8> = client_h.received.values().flat_map(|v| v.clone()).collect();
-        assert_eq!(server_got, c2s);
-        assert_eq!(client_got, s2c);
+        assert_eq!(server_got, announced(&c2s));
+        assert_eq!(client_got, announced(&s2c));
     }
 
     #[test]
@@ -2393,11 +2422,14 @@ mod tests {
         // Free the tcache (drain reads + frees) and pump — the retry must
         // deliver frame 2 with no further client writes.
         server_h.drain_inbound();
+        let announce = GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME.len() - 1;
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| {
-            s.received.values().map(|v| v.len()).sum::<usize>() == msg1.len() + msg2.len()
+            s.received.values().map(|v| v.len()).sum::<usize>() ==
+                announce + msg1.len() + msg2.len()
         });
 
         let all: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
+        let all = &all[announce..];
         assert_eq!(all.len(), msg1.len() + msg2.len());
         assert_eq!(&all[..msg1.len()], &msg1[..]);
         assert_eq!(&all[msg1.len()..], &msg2[..]);

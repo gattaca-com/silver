@@ -391,6 +391,12 @@ impl PeerManager {
         let peer_id = match self.peers.get_mut(&conn) {
             Some(p) => {
                 p.topics.remove(&topic);
+                if let GossipTopic::DataColumnSidecar(subnet) = topic &&
+                    subnet < 128
+                {
+                    p.partial_requests &= !(1u128 << subnet);
+                    p.partial_supports_sending &= !(1u128 << subnet);
+                }
                 p.peer_id
             }
             None => return,
@@ -962,6 +968,72 @@ mod tests {
         for e in &subs {
             assert!(matches!(e, PeerControl::P2pGossipSubscribe { .. }));
         }
+    }
+
+    /// Partial capability masks follow the subscription lifecycle:
+    /// updates replace earlier flags and unsubscribe clears them.
+    #[test]
+    fn partial_caps_follow_subscription_lifecycle() {
+        let now = Instant::now();
+        let topic = GossipTopic::DataColumnSidecar(3);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let mut emit = |c| cap.0.push(c);
+
+        mgr.handle_event(
+            PeerEvent::P2pGossipExtensions { p2p_peer: 1, partial_messages: true },
+            now,
+            &mut emit,
+        );
+        mgr.handle_event(
+            PeerEvent::P2pGossipPartialCaps {
+                p2p_peer: 1,
+                subnet: 3,
+                requests: true,
+                supports_sending: true,
+            },
+            now,
+            &mut emit,
+        );
+        let peer = mgr.peers.get(&1).unwrap();
+        assert!(peer.partial_extensions);
+        assert_eq!(peer.partial_requests, 1 << 3);
+        assert_eq!(peer.partial_supports_sending, 1 << 3);
+
+        // A later subscription update without flags replaces them.
+        mgr.handle_event(
+            PeerEvent::P2pGossipPartialCaps {
+                p2p_peer: 1,
+                subnet: 3,
+                requests: false,
+                supports_sending: false,
+            },
+            now,
+            &mut emit,
+        );
+        let peer = mgr.peers.get(&1).unwrap();
+        assert_eq!(peer.partial_requests, 0);
+        assert_eq!(peer.partial_supports_sending, 0);
+
+        // Unsubscribe clears whatever the last update set.
+        mgr.handle_event(
+            PeerEvent::P2pGossipPartialCaps {
+                p2p_peer: 1,
+                subnet: 3,
+                requests: true,
+                supports_sending: true,
+            },
+            now,
+            &mut emit,
+        );
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer: 1, topic },
+            now,
+            &mut emit,
+        );
+        let peer = mgr.peers.get(&1).unwrap();
+        assert_eq!(peer.partial_requests, 0);
+        assert_eq!(peer.partial_supports_sending, 0);
     }
 
     #[test]

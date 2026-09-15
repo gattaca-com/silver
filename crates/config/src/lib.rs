@@ -68,6 +68,7 @@ fn default_supported_protocols() -> Vec<String> {
     vec![
         StreamProtocol::Identity.multiselect_string(),
         StreamProtocol::GossipSub.multiselect_string(),
+        StreamProtocol::GossipSubV13.multiselect_string(),
         StreamProtocol::StatusV1.multiselect_string(),
         StreamProtocol::StatusV2.multiselect_string(),
         StreamProtocol::Ping.multiselect_string(),
@@ -106,6 +107,17 @@ fn anchor_genesis(path: &str) -> Result<(u64, [u8; 32]), Error> {
     Ok((genesis_unix_secs, head[8..].try_into().unwrap()))
 }
 
+/// Partial data-column exchange mode. `SendOnly` advertises and serves
+/// partials while requesting full sidecars; `Enabled` also requests them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartialColumnsMode {
+    #[default]
+    Off,
+    SendOnly,
+    Enabled,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(with = "hex::serde")]
@@ -135,6 +147,8 @@ pub struct Config {
     data_column_custody_group_count: u8,
     #[serde(default = "default_u8::<2>")]
     attestation_subnet_count: u8,
+    #[serde(default)]
+    partial_columns: PartialColumnsMode,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
     supported_protocols: Vec<String>,
@@ -209,6 +223,7 @@ impl Config {
             quic_port: None,
             data_column_custody_group_count: SAMPLES_PER_SLOT,
             attestation_subnet_count: SUBNETS_PER_NODE as u8,
+            partial_columns: PartialColumnsMode::Off,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
@@ -531,6 +546,15 @@ impl Config {
         self.attestation_subnet_count
     }
 
+    /// Validated partial-columns mode. Non-Off modes are unsupported
+    /// and rejected rather than silently ignored.
+    pub fn partial_columns(&self) -> Result<PartialColumnsMode, Error> {
+        match self.partial_columns {
+            PartialColumnsMode::Off => Ok(PartialColumnsMode::Off),
+            mode => Err(Error::ConfigError(format!("partial_columns {mode:?} is not supported"))),
+        }
+    }
+
     pub fn trusted_peers(&self) -> &[Enr] {
         &self.trusted_peers
     }
@@ -565,11 +589,27 @@ mod tests {
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
-        assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
+        assert_eq!(cfg.supported_protocols().unwrap().len(), 12);
+        assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 9);
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
+        assert_eq!(cfg.partial_columns().unwrap(), PartialColumnsMode::Off);
+    }
+
+    /// Non-Off partial modes are unsupported.
+    #[test]
+    fn partial_columns_modes_are_validated() {
+        let base = r#"
+            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
+            fork_digest = "8c9f62fe"
+            next_fork_version = "06000000"
+        "#;
+        let cfg: Config =
+            toml::from_str(&format!("{base}partial_columns = \"send_only\"")).unwrap();
+        let err = format!("{:?}", cfg.partial_columns().unwrap_err());
+        assert!(err.contains("not supported"), "{err}");
     }
 
     /// A devnet copying mainnet's `CONFIG_NAME` still runs — `from_file`

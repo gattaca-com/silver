@@ -36,6 +36,17 @@ pub(super) fn handle_subscriptions<'a>(
                     p2p_peer: stream_id.peer(),
                     topic,
                 }));
+                if let GossipTopic::DataColumnSidecar(subnet) = topic {
+                    // Replacement semantics: absent flags clear earlier bits.
+                    let requests = subscription.requests_partial.unwrap_or(false);
+                    let advertised = subscription.supports_sending_partial.unwrap_or(false);
+                    emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipPartialCaps {
+                        p2p_peer: stream_id.peer(),
+                        subnet,
+                        requests,
+                        supports_sending: requests || advertised,
+                    }));
+                }
             } else {
                 emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicUnsubscribe {
                     p2p_peer: stream_id.peer(),
@@ -484,6 +495,57 @@ mod tests {
         let read = consumer.acquire(tc);
         let (bytes, _) = read.buffer().unwrap();
         bytes.to_vec()
+    }
+
+    /// Data-column subscriptions carry partial capability flags with the
+    /// registry implication applied; other topics emit no caps event.
+    #[test]
+    fn data_column_subscription_emits_partial_caps() {
+        use buffa::Message;
+
+        use crate::generated::{RPC, rpc::SubOpts};
+
+        let digest = "8c9f62fe";
+        let column_topic = format!("/eth2/{digest}/data_column_sidecar_3/ssz_snappy");
+        let block_topic = format!("/eth2/{digest}/beacon_block/ssz_snappy");
+        let rpc = RPC {
+            subscriptions: vec![
+                SubOpts {
+                    subscribe: Some(true),
+                    topic_id: Some(column_topic),
+                    requests_partial: Some(true),
+                    supports_sending_partial: None,
+                    ..Default::default()
+                },
+                SubOpts {
+                    subscribe: Some(true),
+                    topic_id: Some(block_topic),
+                    requests_partial: Some(true),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let view = RPCView::decode_view(&rpc).unwrap();
+        let stream_id = P2pStreamId::new(7, 0, silver_common::StreamProtocol::GossipSub, true);
+
+        let mut caps = Vec::new();
+        let mut subscribes = 0;
+        handle_subscriptions(&stream_id, view.subscriptions, digest, &mut |event| match event {
+            GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipPartialCaps {
+                p2p_peer,
+                subnet,
+                requests,
+                supports_sending,
+            }) => caps.push((p2p_peer, subnet, requests, supports_sending)),
+            GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicSubscribe { .. }) => {
+                subscribes += 1;
+            }
+            _ => panic!("unexpected event"),
+        });
+        assert_eq!(subscribes, 2);
+        assert_eq!(caps, [(7, 3, true, true)]);
     }
 
     #[test]

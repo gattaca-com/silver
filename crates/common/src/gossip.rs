@@ -32,6 +32,12 @@ pub const MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE: usize =
     32 + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE / 6;
 pub const MAX_GOSSIP_FRAME_SIZE: usize = MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 1024;
 
+/// Gossipsub 1.3 extensions announcement, sent as the first RPC on
+/// every stream we write to after negotiating meshsub 1.3. Length
+/// prefix 4, then `RPC { control(3) { extensions(6) {} } }` — empty
+/// because no extension is enabled yet.
+pub const GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME: &[u8] = &[4, 0x1A, 2, 0x32, 0];
+
 /// Eth2 gossipsub topic name. Wire topic is
 /// `/eth2/{fork_digest_hex}/{name}/ssz_snappy`; this enum covers the `{name}`
 /// portion. Subnet ids travel inline.
