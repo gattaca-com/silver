@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use silver_beacon_state_data::B256;
 use silver_common::{HeadRoots, PayloadResolution};
 use silver_httpcore::Query;
@@ -92,13 +90,6 @@ fn channel(topic: &str) -> Option<Channel> {
         "data_column_sidecar" => Some(Channel::DataColumnSidecar),
         _ => None,
     }
-}
-
-pub(crate) fn frame(out: &mut Vec<u8>, event: &str, data: &[u8]) {
-    debug_assert!(!data.contains(&b'\n'), "a multi-line body needs one data: line per line");
-    write!(out, "event: {event}\ndata: ").unwrap();
-    out.extend_from_slice(data);
-    out.extend_from_slice(b"\n\n");
 }
 
 #[cfg(test)]

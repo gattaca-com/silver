@@ -2,6 +2,7 @@ use std::{
     cell::Cell,
     collections::HashMap,
     io::{self, Read, Write},
+    mem,
     time::{Duration, Instant},
 };
 
@@ -329,6 +330,7 @@ pub struct BeaconApi {
     last_keep_alive: Instant,
     next_connection_offset: usize,
     connections: HashMap<Token, Connection>,
+    frame: Vec<u8>,
     router: Router,
     ctx: ApiCtx,
     consumers: ApiConsumers,
@@ -382,6 +384,7 @@ impl BeaconApi {
             next_connection_offset: listeners.len(),
             listeners,
             connections: HashMap::new(),
+            frame: Vec::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
             consumers,
@@ -494,28 +497,23 @@ impl BeaconApi {
     /// marked optimistic without consulting the current verdict. Repeated
     /// notifications are not deduplicated.
     pub fn publish_block(&mut self, slot: u64, block_root: &[u8; 32]) {
-        let mut data = Vec::new();
-        Json::new(&mut data).block_event(slot, block_root, true);
-        self.publish(Channel::Block, "block", &data);
+        self.publish(Channel::Block, "block", |json| json.block_event(slot, block_root, true));
     }
 
     fn publish_head(&mut self, head: &HeadEvent) {
-        let mut data = Vec::new();
-        Json::new(&mut data).head_event(head);
-        self.publish(Channel::Head, "head", &data);
+        self.publish(Channel::Head, "head", |json| json.head_event(head));
     }
 
     fn publish_head_v2(&mut self, head: &HeadEvent) {
-        let mut data = Vec::new();
-        Json::new(&mut data).head_v2_event(head, self.ctx.spec.fork_at_slot(head.slot).name());
-        self.publish(Channel::HeadV2, "head_v2", &data);
+        let fork_name = self.ctx.spec.fork_at_slot(head.slot).name();
+        self.publish(Channel::HeadV2, "head_v2", |json| json.head_v2_event(head, fork_name));
     }
 
     /// Repeated roots are not deduplicated.
     pub fn publish_block_gossip(&mut self, slot: u64, block_root: &[u8; 32]) {
-        let mut data = Vec::new();
-        Json::new(&mut data).block_gossip_event(slot, block_root);
-        self.publish(Channel::BlockGossip, "block_gossip", &data);
+        self.publish(Channel::BlockGossip, "block_gossip", |json| {
+            json.block_gossip_event(slot, block_root)
+        });
     }
 
     pub fn publish_data_column_sidecar(
@@ -524,15 +522,24 @@ impl BeaconApi {
         column_index: u64,
         slot: u64,
     ) {
-        let mut data = Vec::new();
-        Json::new(&mut data).data_column_sidecar_event(block_root, column_index, slot);
-        self.publish(Channel::DataColumnSidecar, "data_column_sidecar", &data);
+        self.publish(Channel::DataColumnSidecar, "data_column_sidecar", |json| {
+            json.data_column_sidecar_event(block_root, column_index, slot)
+        });
     }
 
-    fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
-        let mut frame = Vec::new();
-        events::frame(&mut frame, event, data);
+    fn publish(&mut self, channel: Channel, event: &str, render: impl FnOnce(&mut Json<'_>)) {
+        let mut frame = mem::take(&mut self.frame);
+        frame.clear();
+        write!(frame, "event: {event}\ndata: ").unwrap();
+        let data_start = frame.len();
+        render(&mut Json::new(&mut frame));
+        debug_assert!(
+            !frame[data_start..].contains(&b'\n'),
+            "a multi-line body needs one data: line per line"
+        );
+        frame.extend_from_slice(b"\n\n");
         self.fan_out(Some(channel), &frame, Instant::now());
+        self.frame = frame;
     }
 
     /// Returns whether any output was queued, so the pump can report work.
