@@ -2,9 +2,11 @@
 //! decimal string and every byte array as lowercase `0x`-hex, and the
 //! SSZ-backed containers have no Rust struct to hang `Serialize` on.
 
+use std::io::Write;
+
 use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
 
-use crate::events::HeadEvent;
+use crate::{events::HeadEvent, peers::Peer};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -64,6 +66,16 @@ impl<'a> Json<'a> {
         self.out.push(b'"');
         self.out.extend_from_slice(&digits[20 - written..]);
         self.out.push(b'"');
+    }
+
+    pub(crate) fn u64(&mut self, value: u64) {
+        self.separate();
+        let _ = write!(self.out, "{value}");
+    }
+
+    pub(crate) fn null(&mut self) {
+        self.separate();
+        self.out.extend_from_slice(b"null");
     }
 
     pub(crate) fn hex(&mut self, bytes: &[u8]) {
@@ -152,6 +164,47 @@ pub(crate) struct ReadFlags {
 
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
+    pub(crate) fn peers<'p>(&mut self, peers: impl Iterator<Item = &'p Peer>) {
+        self.begin_object();
+        self.key("data");
+        self.begin_array();
+        let mut count = 0;
+        for peer in peers {
+            self.begin_object();
+            self.key("peer_id");
+            self.string(&peer.id_string());
+            // xatu doesn't read enr so we skip it - updating it properly requires more work
+            self.key("enr");
+            self.null();
+            self.key("last_seen_p2p_address");
+            self.string(&peer.multiaddr());
+            self.key("state");
+            self.string("connected");
+            self.key("direction");
+            self.string(peer.direction());
+            self.end_object();
+            count += 1;
+        }
+        self.end_array();
+        self.key("meta");
+        self.begin_object();
+        self.key("count");
+        self.u64(count);
+        self.end_object();
+        self.end_object();
+    }
+
+    pub(crate) fn peer_count(&mut self, connected: u64) {
+        self.begin_object();
+        for (state, count) in
+            [("disconnected", 0), ("connecting", 0), ("connected", connected), ("disconnecting", 0)]
+        {
+            self.key(state);
+            self.quoted_u64(count);
+        }
+        self.end_object();
+    }
+
     pub(crate) fn data_envelope(&mut self, data: impl FnOnce(&mut Self)) {
         self.begin_object();
         self.key("data");

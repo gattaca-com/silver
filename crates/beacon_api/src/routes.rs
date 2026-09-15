@@ -13,6 +13,7 @@ use crate::{
     ids::{parse_root, parse_uint64},
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
+    peers::{PeerFilter, PeerTable},
     receipts::{
         post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
         post_sync_committee_subscriptions,
@@ -46,7 +47,8 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/events", events),
     (Method::Get, "/eth/v1/node/health", health),
     (Method::Get, "/eth/v1/node/identity", identity),
-    (Method::Get, "/eth/v1/node/peer_count", not_implemented),
+    (Method::Get, "/eth/v1/node/peer_count", peer_count),
+    (Method::Get, "/eth/v1/node/peers", peers),
     (Method::Get, "/eth/v1/node/syncing", syncing),
     (Method::Get, "/eth/v1/node/version", version),
     (
@@ -73,6 +75,7 @@ pub(crate) struct ApiCtx {
     pub(crate) spec: SpecConfig,
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
+    pub(crate) peers: PeerTable,
 }
 
 impl ApiCtx {
@@ -94,6 +97,7 @@ impl ApiCtx {
             spec: spec.clone(),
             state,
             node_status: NodeStatus::at_anchor(head_slot, anchor_epoch),
+            peers: PeerTable::new(),
         }
     }
 
@@ -169,7 +173,7 @@ fn is_recognized_state_id(state_id: &str) -> bool {
 
 /// The surface a request can name ahead of what silver serves: each of these
 /// routes needs data the node does not yet keep (a block store, the validator
-/// registry, duty shuffling, liveness tracking, in-process peer counts), so
+/// registry, duty shuffling, liveness tracking), so
 /// the honest answer is the 501 that tells the client to look elsewhere,
 /// rather than a partial answer assembled from the wrong data.
 fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -256,6 +260,18 @@ fn syncing_status(query: &str) -> Option<u16> {
     }
 }
 
+fn peers(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    match PeerFilter::parse(req.query) {
+        Some(filter) => resp.json_body(|json| json.peers(ctx.peers.matching(&filter))),
+        None => resp.error(400, "invalid state or direction"),
+    }
+}
+
+fn peer_count(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let connected = ctx.peers.len() as u64;
+    resp.json_body(|json| json.data_envelope(|json| json.peer_count(connected)));
+}
+
 fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
     resp.empty(METRICS_CONTENT_TYPE);
 }
@@ -281,12 +297,13 @@ mod tests {
         BeaconBlockHeader, BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork,
         SlotState, SlotStateFinalized, SlotStateGroup,
     };
-    use silver_common::{AGENT_VERSION, ELSyncStatus, SyncUpdate};
+    use silver_common::{AGENT_VERSION, ELSyncStatus, IpBytes, SyncUpdate};
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
         HeadStatus,
+        peers::Peer,
         router::{Router, Served},
     };
 
@@ -535,7 +552,6 @@ mod tests {
             ("GET", "/eth/v1/beacon/states/head/validators"),
             ("POST", "/eth/v1/beacon/states/head/validators"),
             ("GET", "/eth/v1/beacon/states/head/validators/0"),
-            ("GET", "/eth/v1/node/peer_count"),
             ("GET", "/eth/v1/validator/duties/proposer/0"),
             ("POST", "/eth/v1/validator/duties/sync/0"),
             ("POST", "/eth/v1/validator/liveness/0"),
@@ -561,6 +577,56 @@ mod tests {
                 "{method} {path}"
             );
         }
+    }
+
+    fn two_peer_ctx() -> ApiCtx {
+        let mut ctx = anchor_ctx();
+        for (connection, inbound) in [(1, true), (2, false)] {
+            ctx.peers.insert(connection, Peer {
+                id: Keypair::from_secret(&[connection as u8; 32]).unwrap().peer_id(),
+                ip: IpBytes::V4([10, 0, 0, connection as u8]),
+                port: 9000,
+                inbound,
+            });
+        }
+        ctx
+    }
+
+    fn peers_json(query: &str) -> serde_json::Value {
+        let resp = query_get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peers", query);
+        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
+        serde_json::from_slice(body(&resp)).unwrap()
+    }
+
+    #[test]
+    fn peers_list_every_connection_and_honour_the_filters() {
+        let all = peers_json("");
+        assert_eq!(all["meta"]["count"], 2);
+        let inbound = peers_json("direction=inbound&state=connected&state=connecting");
+        assert_eq!(inbound["meta"]["count"], 1);
+        let peer = &inbound["data"][0];
+        let id = peer["peer_id"].as_str().unwrap();
+        assert!(peer["enr"].is_null());
+        assert_eq!(
+            peer["last_seen_p2p_address"],
+            format!("/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{id}")
+        );
+        assert_eq!(peer["state"], "connected");
+        assert_eq!(peer["direction"], "inbound");
+        assert_eq!(peers_json("state=disconnected")["meta"]["count"], 0);
+
+        let resp =
+            query_get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peers", "state=x");
+        assert_eq!(body(&resp), br#"{"code":400,"message":"invalid state or direction"}"#);
+    }
+
+    #[test]
+    fn peer_count_reports_connected_peers_only() {
+        let resp = get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peer_count");
+        assert_eq!(
+            body(&resp),
+            br#"{"data":{"disconnected":"0","connecting":"0","connected":"2","disconnecting":"0"}}"#
+        );
     }
 
     #[test]

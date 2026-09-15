@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 hex.workspace = true
 mio.workspace = true
+rustc-hash.workspace = true
 silver_beacon_state_data.workspace = true
 silver_common.workspace = true
 silver_httpcore.workspace = true

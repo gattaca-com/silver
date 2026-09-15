@@ -23,6 +23,7 @@ use crate::{
     HeadStatus, NodeStatus,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
+    peers::Peer,
     router::{Router, Served},
     routes::{ApiCtx, ROUTES},
 };
@@ -452,6 +453,11 @@ impl BeaconApi {
 
     pub fn handle_peer_event(&mut self, event: PeerEvent) {
         match event {
+            PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
+                let peer = Peer { id: peer_id_full, ip, port, inbound: !local_dial };
+                self.ctx.peers.insert(p2p_peer_id, peer);
+            }
+            PeerEvent::P2pDisconnect { p2p_peer, .. } => self.ctx.peers.remove(p2p_peer),
             PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
                 self.publish_relayed_block(ssz)
             }
