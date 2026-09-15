@@ -1,3 +1,4 @@
+pub mod cell_allocator;
 pub mod cell_ingress;
 pub mod cluster;
 mod counters;

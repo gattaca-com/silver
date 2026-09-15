@@ -1,4 +1,5 @@
 use std::{
+    ptr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -8,15 +9,21 @@ use flux::{
     tile::Tile,
 };
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, ForkName, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate,
-    TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
-    cells::RetentionEvent,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszSource, SyncNeed,
+    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    cell_store::{
+        CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
+        CommitmentContext, ContextData, FuluContextSource, RetentionEvent, StoreError,
+    },
     column_util::{self as util, KzgScratch},
-    ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
+    ssz_view::{
+        BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
+        SignedBeaconBlockView, StatusView,
+    },
     ticker::SlotTicker,
 };
 
@@ -24,6 +31,7 @@ use crate::{
     BlockRoot, DataColumnCounters,
     availability::ColumnTracker,
     batch::{self, GossipSidecarFrame, KzgBatch, PendingKzg},
+    cell_store::CellStore,
     el_blobs::ElBlobFetcher,
     sync::SyncStatus,
     validate::{ColumnOutcome, ColumnValidator, PendingColumn},
@@ -83,6 +91,8 @@ pub struct DataColumnsTile {
     el_fetcher: ElBlobFetcher,
     el_column_producer: TProducer,
 
+    cell_store: Option<CellStore>,
+
     kzg_scratch: KzgScratch,
 
     // Declared last so it drops last: a parked column's read releases through
@@ -92,6 +102,7 @@ pub struct DataColumnsTile {
 }
 
 impl DataColumnsTile {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         consumers: ColumnConsumers,
         beacon_state: BeaconStateReader,
@@ -114,15 +125,26 @@ impl DataColumnsTile {
             sync_state: SyncStatus::default(),
             el_fetcher: ElBlobFetcher::new(engine_resp_consumer),
             el_column_producer,
+            cell_store: None,
             kzg_scratch: KzgScratch::default(),
             data_columns_consumer: None,
         }
     }
 
-    pub fn with_data_columns_consumer(mut self, consumer: TRandomAccess) -> Self {
+    pub fn with_data_columns_cache(
+        mut self,
+        config: CellStoreConfig,
+        consumer: TRandomAccess,
+        slot: u64,
+        slot_start: Instant,
+    ) -> Result<Self, StoreError> {
         assert!(consumer.is_retained());
+        if consumer.cache_ref().capacity() < config.cache_capacity() {
+            return Err(StoreError::CacheTooSmall);
+        }
+        self.cell_store = Some(CellStore::new(config, slot, slot_start)?);
         self.data_columns_consumer = Some(Box::new(consumer));
-        self
+        Ok(self)
     }
 
     #[timed]
@@ -166,6 +188,7 @@ impl DataColumnsTile {
 
         if is_gloas {
             self.validator.cache_gloas_commitments(block_root, buffer);
+            self.admit_gloas_context(block_root, slot, producers);
         }
 
         // Custody columns only — silver floors cgc at SAMPLES_PER_SLOT, so the
@@ -200,6 +223,8 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) {
         self.validator.note_validated(block_root, slot);
+        self.admit_gloas_context(block_root, slot, producers);
+        self.drain_pending_gloas_columns(block_root, producers);
         self.drain_parent_pending_columns(block_root, producers);
 
         let to_request = self.tracker.to_request(&block_root);
@@ -217,7 +242,21 @@ impl DataColumnsTile {
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => {
-                self.validator.validate(&column, buf, &self.sync_state, &mut self.tracker)
+                let verify_held = column.ssz_source == SszSource::DataColumns &&
+                    self.cell_store.as_ref().is_some_and(|store| {
+                        util::SidecarIdentity::of(buf).is_some_and(|identity| {
+                            store
+                                .availability(&identity.block_root, identity.column_index as usize)
+                                .is_none_or(|column| column.full.is_none())
+                        })
+                    });
+                self.validator.validate(
+                    &column,
+                    buf,
+                    &self.sync_state,
+                    &mut self.tracker,
+                    verify_held,
+                )
             }
             Err(e) => {
                 tracing::error!(
@@ -272,6 +311,11 @@ impl DataColumnsTile {
                 ColumnDisposition::Rejected { block_root, slot, column }
             }
             ColumnOutcome::Buffer { block_root } => {
+                if self.gloas_pending_columns.len() >= 2 * SLOTS_PER_EPOCH as usize &&
+                    !self.gloas_pending_columns.contains(&block_root)
+                {
+                    return ColumnDisposition::Ignored;
+                }
                 let pending = self.gloas_pending_columns.entry(block_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
                     tracing::debug!(stream_id = ?column.stream_id, "gloas column before block — buffering");
@@ -280,6 +324,11 @@ impl DataColumnsTile {
                 ColumnDisposition::Ignored
             }
             ColumnOutcome::AwaitParent { parent_root } => {
+                if self.parent_pending_columns.len() >= 2 * SLOTS_PER_EPOCH as usize &&
+                    !self.parent_pending_columns.contains(&parent_root)
+                {
+                    return ColumnDisposition::Ignored;
+                }
                 let pending = self.parent_pending_columns.entry(parent_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
                     tracing::info!(stream_id = ?column.stream_id, "column parent pending — buffering");
@@ -290,6 +339,9 @@ impl DataColumnsTile {
             ColumnOutcome::Record { block_root, column_index, slot, relay_eligible } => {
                 let queued = self.kzg_batch.push(PendingKzg {
                     sidecar: column.sidecar,
+                    ssz_source: column.ssz_source,
+                    domain: column.domain.or_else(|| self.validator.domain_at(slot)),
+                    context_eligible: relay_eligible,
                     stream_id: column.stream_id,
                     recv_ts: column.recv_ts,
                     block_root,
@@ -343,6 +395,206 @@ impl DataColumnsTile {
         }
     }
 
+    fn admit_gloas_context(
+        &mut self,
+        root: BlockRoot,
+        slot: u64,
+        producers: &SilverSpineProducers,
+    ) {
+        let Some(store) = &mut self.cell_store else { return };
+        let Some(commitments) = self.validator.gloas_commitments(&root) else { return };
+        let Some(domain) = self.validator.domain_at(slot) else { return };
+        let context = CommitmentContext {
+            block_root: root,
+            slot,
+            format: ForkName::Gloas,
+            blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
+        };
+        if store.admit_context(context, domain, ContextData::Gloas { commitments }, None).is_ok() {
+            if let Some(request) = store.request_assemblies(&root) {
+                producers.produce(CellStoreEvent::Allocate(request));
+            }
+        }
+    }
+
+    fn retain_validated_column(&mut self, p: &PendingKzg, producers: &SilverSpineProducers) {
+        if !p.context_eligible || p.ssz_source != SszSource::DataColumns {
+            return;
+        }
+        let (Some(store), Some(consumer), Some(domain)) =
+            (&mut self.cell_store, &mut self.data_columns_consumer, p.domain)
+        else {
+            return
+        };
+        let Ok((bytes, _)) = p.sidecar.buffer() else { return };
+        let data = if p.is_gloas {
+            let Some(commitments) = self.validator.gloas_commitments(&p.block_root) else { return };
+            ContextData::Gloas { commitments }
+        } else {
+            ContextData::Fulu {
+                signed_header: bytes[20..228].try_into().unwrap(),
+                inclusion_proof: bytes[228..356].try_into().unwrap(),
+                commitments: DataColumnSidecarFuluView::kzg_commitments(bytes),
+            }
+        };
+        let context = CommitmentContext {
+            block_root: p.block_root,
+            slot: p.slot,
+            format: domain.format(),
+            blob_count: data.commitments().len() / BYTES_PER_KZG_COMMITMENT,
+        };
+        let source = (!p.is_gloas).then_some(FuluContextSource::Sidecar(p.sidecar.read));
+        if let Err(e) = store.admit_context(context, domain, data, source) {
+            tracing::debug!(?e, slot = p.slot, "cell context not admitted");
+            return;
+        }
+        match store.retain_full(&p.block_root, p.column_index as usize, p.sidecar.read, consumer) {
+            Ok(_) => store.mark_changed(&p.block_root, p.column_index as usize),
+            Err(e) => tracing::debug!(?e, column = p.column_index, "full sidecar not retained"),
+        }
+        if let Some(request) = store.request_assemblies(&p.block_root) {
+            producers.produce(CellStoreEvent::Allocate(request));
+        }
+    }
+
+    fn handle_cell_event(
+        &mut self,
+        event: CellStoreEvent,
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        match event {
+            CellStoreEvent::Allocated { request, set } => {
+                let (Some(store), Some(consumer)) =
+                    (&mut self.cell_store, &mut self.data_columns_consumer)
+                else {
+                    return
+                };
+                match set {
+                    Some(set)
+                        if set.request.id == request.id &&
+                            set.request.context == request.context =>
+                    {
+                        match store.install(set, consumer) {
+                            Ok(true) => {
+                                let mut columns = request.columns;
+                                while columns != 0 {
+                                    let column = columns.trailing_zeros() as usize;
+                                    columns &= columns - 1;
+                                    store.mark_changed(&request.context.block_root, column);
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                store.allocation_failed(request);
+                                tracing::debug!(?e, "cell allocation not installed");
+                            }
+                        }
+                    }
+                    _ => store.allocation_failed(request),
+                }
+            }
+            CellStoreEvent::Validate(request) => {
+                let outcome = self.validate_cell(request, now);
+                producers.produce(CellStoreEvent::Validation { request, outcome });
+            }
+            CellStoreEvent::Cancel(pending) => {
+                if let Some(consumer) = &mut self.data_columns_consumer {
+                    let _ = pending.data.cancel(consumer);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn validate_cell(
+        &mut self,
+        request: CellValidationRequest,
+        now: Instant,
+    ) -> CellValidationOutcome {
+        let (Some(store), Some(consumer)) = (&mut self.cell_store, &mut self.data_columns_consumer)
+        else {
+            return CellValidationOutcome::Ignored
+        };
+        let key = request.pending.key;
+        let eligible = store.availability(&key.block_root, key.column).is_some_and(|column| {
+            now < request.deadline &&
+                now < column.expires &&
+                column.domain == request.domain &&
+                column.assembly.is_some_and(|reference| {
+                    reference.read().seq() == request.pending.data.reservation().read().seq()
+                }) &&
+                key.row == request.pending.data.part()
+        });
+        if !eligible {
+            let _ = request.pending.data.cancel(consumer);
+            return CellValidationOutcome::Ignored;
+        }
+        let Ok(validation) = request.pending.data.acquire(consumer) else {
+            return CellValidationOutcome::Ignored
+        };
+        let (context, data) = store.context(&key.block_root).unwrap();
+        if key.row >= context.blob_count {
+            return CellValidationOutcome::Ignored;
+        }
+        let [cell, proof] = validation.buffers();
+        let commitments = &data.commitments()
+            [key.row * BYTES_PER_KZG_COMMITMENT..(key.row + 1) * BYTES_PER_KZG_COMMITMENT];
+        let valid = util::kzg_verify_batch_multi(
+            std::iter::once(util::KzgBatchEntry {
+                column: cell,
+                commitments,
+                proofs: proof,
+                index: key.column as u64,
+            }),
+            &mut self.kzg_scratch,
+        );
+        if !valid {
+            return CellValidationOutcome::Rejected;
+        }
+        if validation.accept().is_err() {
+            return CellValidationOutcome::Ignored;
+        }
+        store.mark_changed(&key.block_root, key.column);
+        CellValidationOutcome::Accepted
+    }
+
+    fn flush_cell_updates(&mut self, producers: &mut SilverSpineProducers) {
+        loop {
+            let (Some(store), Some(consumer)) =
+                (&mut self.cell_store, &mut self.data_columns_consumer)
+            else {
+                return
+            };
+            let Some((root, column)) = store.next_changed() else { return };
+            let Ok(update) = store.refresh_column(&root, column, consumer) else { continue };
+            let Some(available) = store.availability(&root, column) else { continue };
+            producers.produce(CellStoreEvent::Available(available));
+            if !update.column_completed || self.tracker.has_any(&root, 1u128 << column) {
+                continue;
+            }
+            let Some(ssz) = update.complete_read else { continue };
+            self.record_columns(
+                root,
+                available.slot,
+                1u128 << column,
+                IngestionTime::now(),
+                producers,
+            );
+            if self.tracker.wants(1u128 << column) {
+                producers.produce(DataColumnsEvent::Persist {
+                    ssz,
+                    source: ColumnSource::Assembly,
+                    ssz_source: SszSource::DataColumns,
+                    domain: Some(available.domain),
+                    block_root: root,
+                    column_index: column as u64,
+                    slot: available.slot,
+                });
+            }
+        }
+    }
+
     fn record_validated_column(&mut self, p: PendingKzg, producers: &mut SilverSpineProducers) {
         let PendingKzg { sidecar, stream_id, recv_ts, block_root, column_index, slot, .. } = p;
         debug_assert!(
@@ -361,6 +613,8 @@ impl DataColumnsTile {
                 DataColumnsEvent::Persist {
                     ssz: sidecar.read,
                     source,
+                    ssz_source,
+                    domain: p.domain,
                     block_root,
                     column_index,
                     slot,
@@ -440,11 +694,24 @@ impl DataColumnsTile {
             msg_hash: gossip.msg_hash,
             protobuf: gossip.protobuf,
         });
-        let sidecar = self.consumers.gossip.acquire(gossip.ssz);
+        let sidecar = match gossip.ssz_source {
+            SszSource::DataColumns => {
+                let Some(consumer) = self.data_columns_consumer.as_mut() else { return };
+                if !ptr::eq(&*consumer.cache_ref(), &*gossip.ssz.cache_ref()) {
+                    return;
+                }
+                let Some(read) = consumer.acquire_strict(gossip.ssz) else { return };
+                read
+            }
+            SszSource::Gossip => self.consumers.gossip.acquire(gossip.ssz),
+            _ => return,
+        };
         self.handle_data_column_sidecar(
             PendingColumn {
                 stream_id: gossip.stream_id,
                 sidecar,
+                ssz_source: gossip.ssz_source,
+                domain: Some(gossip.domain),
                 gossip_subnet: Some(custody_group),
                 recv_ts: gossip.recv_ts.into(),
             },
@@ -536,12 +803,14 @@ impl DataColumnsTile {
                 originator_stream_id: p.stream_id,
                 topic: GossipTopic::DataColumnSidecar(p.column_index),
                 domain,
+                ssz_source: p.ssz_source,
                 msg_hash,
                 recv_ts: p.recv_ts.into(),
                 protobuf,
                 ssz: p.sidecar.read,
             });
         }
+        self.retain_validated_column(&p, producers);
         self.record_validated_column(p, producers);
     }
 
@@ -602,6 +871,8 @@ impl DataColumnsTile {
         let column = PendingColumn {
             stream_id: P2pStreamId::new(1, 1, StreamProtocol::GossipSub, true),
             sidecar: self.consumers.gossip.acquire(ssz),
+            ssz_source: SszSource::Gossip,
+            domain: None,
             gossip_subnet: Some(subnet),
             recv_ts: IngestionTime::now(),
         };
@@ -632,6 +903,11 @@ impl DataColumnsTile {
         let mut latest_status_event: Option<[u8; 92]> = None;
         match event {
             BeaconStateEvent::Status { ssz, .. } => {
+                let root = *StatusView::head_root(&ssz);
+                let slot = StatusView::head_slot(&ssz);
+                self.validator.note_validated(root, slot);
+                self.admit_gloas_context(root, slot, producers);
+                self.drain_pending_gloas_columns(root, producers);
                 // Per-event (not latest-only): BS emits one Status per accepted
                 // block, and each newly validated root may unblock buffered
                 // children.
@@ -639,7 +915,7 @@ impl DataColumnsTile {
                 latest_status_event = Some(ssz);
             }
             BeaconStateEvent::BlockReceived {
-                stage: BlockStage::AwaitData,
+                stage: BlockStage::AwaitData | BlockStage::Applied | BlockStage::AlreadyKnown,
                 block_root,
                 slot,
                 ..
@@ -648,6 +924,12 @@ impl DataColumnsTile {
             }
             BeaconStateEvent::BlockRejected { block_root, .. } => {
                 self.validator.note_rejected(&block_root);
+                self.gloas_pending_columns.remove(&block_root);
+                self.parent_pending_columns.remove(&block_root);
+                if let Some(store) = &mut self.cell_store {
+                    store.reject(&block_root);
+                    producers.produce(CellStoreEvent::RejectedContext { block_root });
+                }
             }
             BeaconStateEvent::PersistBlock { ssz, source, .. } => {
                 let t_read = self.consumers.acquire_persisted(source, ssz);
@@ -657,9 +939,10 @@ impl DataColumnsTile {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let block_root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
 
-                        self.validator.note_validated(block_root, slot);
-
-                        self.drain_parent_pending_columns(block_root, producers);
+                        if self.spec.is_gloas_at_slot(slot) {
+                            self.validator.cache_gloas_commitments(block_root, buf);
+                        }
+                        self.note_staged_block(block_root, slot, producers);
                     }
                     Err(e) => {
                         tracing::error!(?e, seq=t_read.seq(), consumer=?self.consumers.persist_gossip, "persist consumer buffer acquire failed");
@@ -680,11 +963,31 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.consumers.free();
+        if let Some(store) = &mut self.cell_store {
+            store.advance(Instant::now(), self.sync_state.data_availability_floor(), |_| {});
+        }
         if let Some(consumer) = &mut self.data_columns_consumer {
             adapter.consume(|event: RetentionEvent, _| {
+                if let Some(store) = &mut self.cell_store {
+                    store.expire_through(event.expired_slot);
+                }
+                for pending in [&mut self.gloas_pending_columns, &mut self.parent_pending_columns] {
+                    pending.retain(|_, columns| {
+                        columns.retain(|column| {
+                            column.ssz_source != SszSource::DataColumns ||
+                                column.sidecar.seq() >= event.retain_from
+                        });
+                        !columns.is_empty()
+                    });
+                }
                 consumer.advance_retention(event.retain_from);
             });
+            consumer.free();
         }
+
+        adapter.consume(|event: CellStoreEvent, producers| {
+            self.handle_cell_event(event, Instant::now(), producers)
+        });
 
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
             silver_common::GossipTopic::BeaconBlock if self.sync_state.is_synced() => {
@@ -718,6 +1021,8 @@ impl Tile<SilverSpine> for DataColumnsTile {
                         PendingColumn {
                             stream_id: rsp.stream_id,
                             sidecar,
+                            ssz_source: SszSource::Rpc,
+                            domain: None,
                             gossip_subnet: None,
                             recv_ts: IngestionTime::now(),
                         },
@@ -775,6 +1080,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
         self.tracker.maybe_rotate(now);
         self.parent_pending_columns.maybe_rotate(now);
         self.gloas_pending_columns.maybe_rotate(now);
+        self.flush_cell_updates(&mut adapter.producers);
         self.el_fetcher.rotate(now);
     }
 }
@@ -882,6 +1188,7 @@ mod tests {
             inj.consume(|_: SyncNeed, _| {});
             inj.consume(|_: EngineReq, _| {});
             inj.consume(|_: PeerEvent, _| {});
+            inj.consume(|_: CellStoreEvent, _| {});
             Self { inj, conn, tile, gossip_p, rpc_p, engine_p, _spine: spine, _dir: dir }
         }
 
@@ -918,7 +1225,12 @@ mod tests {
             let gossip = NewGossipMsg {
                 stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
                 topic: GossipTopic::DataColumnSidecar(index),
-                domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+                domain: self
+                    .tile
+                    .validator
+                    .domain_at(SidecarIdentity::of(bytes).unwrap().slot)
+                    .unwrap(),
+                ssz_source: SszSource::Gossip,
                 msg_hash: MessageId { id },
                 recv_ts,
                 ssz,
@@ -939,6 +1251,8 @@ mod tests {
                         true,
                     ),
                     sidecar,
+                    ssz_source: SszSource::Rpc,
+                    domain: None,
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),
                 },
@@ -975,16 +1289,25 @@ mod tests {
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
             let consumers = &mut self.tile.consumers;
+            let data_columns = &mut self.tile.data_columns_consumer;
             self.inj.consume(|event: PeerEvent, _| {
-                let (source, topic, sidecar) = match event {
-                    PeerEvent::SendGossip { topic, ssz, .. } => {
-                        (ColumnSource::Gossip, topic, consumers.gossip.acquire(ssz))
+                let (source, topic, domain, sidecar) = match event {
+                    PeerEvent::SendGossip { topic, domain, ssz, ssz_source, .. } => {
+                        let read = match ssz_source {
+                            SszSource::DataColumns => {
+                                data_columns.as_mut().unwrap().acquire_strict(ssz).unwrap()
+                            }
+                            SszSource::Gossip => consumers.gossip.acquire(ssz),
+                            _ => panic!("unexpected gossip cache"),
+                        };
+                        (ColumnSource::Gossip, topic, domain, read)
                     }
                     _ => return,
                 };
                 let (bytes, _) = sidecar.buffer().expect("published bytes readable");
                 let column = SidecarIdentity::of(bytes).expect("a published sidecar has a layout");
                 out.publications.push((source, topic, column));
+                out.domains.push(domain);
             });
             out
         }
@@ -1004,6 +1327,7 @@ mod tests {
         validated: u128,
         receipts: Vec<DataColumnsEvent>,
         publications: Vec<(ColumnSource, GossipTopic, SidecarIdentity)>,
+        domains: Vec<silver_common::GossipDomain>,
         engine: usize,
         missing: Vec<SyncNeed>,
     }
@@ -1330,6 +1654,8 @@ mod tests {
                         true,
                     ),
                     sidecar: read,
+                    ssz_source: SszSource::Rpc,
+                    domain: None,
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),
                 },
@@ -1371,6 +1697,8 @@ mod tests {
             PendingColumn {
                 stream_id: P2pStreamId::new(2, 2, StreamProtocol::DataColumnSidecarsByRange, true),
                 sidecar: read,
+                ssz_source: SszSource::Rpc,
+                domain: None,
                 gossip_subnet: None,
                 recv_ts: IngestionTime::now(),
             },
@@ -1476,10 +1804,16 @@ mod tests {
             let read = consumer.acquire(ssz);
 
             let disposition = rig.tile.handle_column(
-                ColumnOutcome::AlreadyHeld { block_root, column_index: 3, slot: 7 },
+                ColumnOutcome::AlreadyHeld { block_root, slot: 7 },
                 PendingColumn {
                     stream_id: P2pStreamId::new(2, 2, protocol, true),
                     sidecar: read,
+                    ssz_source: if protocol.is_gossip() {
+                        SszSource::Gossip
+                    } else {
+                        SszSource::Rpc
+                    },
+                    domain: None,
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),
                 },
@@ -1495,8 +1829,8 @@ mod tests {
             );
             assert_eq!(
                 out.receipts.len(),
-                1,
-                "{protocol:?}: storage is the one that knows whether it landed"
+                0,
+                "{protocol:?}: unchecked duplicate bytes must not be persisted"
             );
             assert_eq!(
                 out.custody_complete, answers,

@@ -309,6 +309,7 @@ impl Harness {
             stream_id: null_stream_id(),
             topic: GossipTopic::BeaconBlock,
             domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+            ssz_source: silver_common::SszSource::Gossip,
             msg_hash: MessageId { id: [0u8; 20] },
             recv_ts: Nanos(0),
             ssz: tcache,

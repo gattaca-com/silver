@@ -11,8 +11,8 @@ use std::{
 use flux::spine::SpineProducers;
 use silver_common::{
     ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
-    MAX_BLOBS_PER_BLOCK, SilverSpineProducers, TCacheProducer, TProducer, TRandomAccess, Wheel,
-    column_util as util,
+    MAX_BLOBS_PER_BLOCK, SilverSpineProducers, SszSource, TCacheProducer, TProducer, TRandomAccess,
+    Wheel, column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -243,6 +243,8 @@ impl ElBlobFetcher {
                         producers.produce(DataColumnsEvent::Persist {
                             ssz: reservation.read(),
                             source: ColumnSource::El,
+                            ssz_source: SszSource::El,
+                            domain: None,
                             block_root,
                             column_index: j,
                             slot: pending.slot,

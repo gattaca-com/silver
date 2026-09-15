@@ -202,6 +202,7 @@ fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
         topic,
         domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+        ssz_source: silver_common::SszSource::Gossip,
         msg_hash: MessageId { id: [byte; 20] },
         recv_ts: Nanos::now(),
         // The boundary does not read protobuf, so no encoded payload is needed.
@@ -1143,14 +1144,15 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
         std::thread::sleep(Duration::from_millis(1));
     };
     let topics = "block_gossip,data_column_sidecar";
-    let early = EventsSubscriber::new(addr, topics, 3, &mut crank);
+    let early = EventsSubscriber::new(addr, topics, 4, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
     let (relay, relayed) = gossip_column(20, 0x11, 3);
     let (published, publication) = rpc_column(21, 0x12, 5);
     inj.produce(block);
     inj.produce(relay);
+    inj.produce(dc_relay);
     inj.produce(published);
-    early.assert_topic_sequences(&[relayed_block, relayed, publication], &mut crank);
+    early.assert_topic_sequences(&[relayed_block, relayed, dc_relayed, publication], &mut crank);
     early.client.join().unwrap();
 
     let late = EventsSubscriber::new(addr, topics, 3, &mut crank);

@@ -1,24 +1,25 @@
 use std::{sync::Arc, time::Duration};
 
 use silver_beacon_state_data::{FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, SpecConfig};
-use silver_common::{
+
+use super::StoreError;
+use crate::{
     SubLayout,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
     },
 };
 
-use super::StoreError;
-
+#[derive(Clone)]
 pub struct CellStoreConfig {
-    pub(super) spec: Arc<SpecConfig>,
-    pub(super) columns: u128,
-    pub(super) column_indices: Box<[usize]>,
-    pub(super) max_blobs: usize,
-    pub(super) slot_duration: Duration,
-    pub(super) block_capacity: usize,
-    pub(super) live_blocks: usize,
-    pub(super) cell_capacity: usize,
+    spec: Arc<SpecConfig>,
+    columns: u128,
+    column_indices: Box<[usize]>,
+    max_blobs: usize,
+    slot_duration: Duration,
+    block_capacity: usize,
+    live_blocks: usize,
+    cell_capacity: usize,
     cache_bytes: usize,
 }
 
@@ -60,7 +61,8 @@ impl CellStoreConfig {
             .checked_mul(column_count)
             .and_then(|n| n.checked_mul(max_blobs))
             .ok_or(StoreError::CapacityOverflow)?;
-        let context_bytes = DATA_COLUMN_SIDECAR_MIN + max_blobs * BYTES_PER_KZG_COMMITMENT;
+        let context_bytes =
+            DATA_COLUMN_SIDECAR_MIN + max_blobs * BYTES_PER_KZG_COMMITMENT + column_count * 16;
         let column_bytes = SubLayout {
             parts: max_blobs,
             first_len: BYTES_PER_CELL,
@@ -104,20 +106,58 @@ impl CellStoreConfig {
         })
     }
 
+    #[inline]
+    pub fn spec(&self) -> &SpecConfig {
+        &self.spec
+    }
+
+    #[inline]
+    pub fn columns(&self) -> u128 {
+        self.columns
+    }
+
+    #[inline]
+    pub fn column_indices(&self) -> &[usize] {
+        &self.column_indices
+    }
+
+    #[inline]
+    pub fn slot_duration(&self) -> Duration {
+        self.slot_duration
+    }
+
+    #[inline]
+    pub fn block_capacity(&self) -> usize {
+        self.block_capacity
+    }
+
+    #[inline]
+    pub fn live_blocks(&self) -> usize {
+        self.live_blocks
+    }
+
+    #[inline]
     pub fn cache_capacity(&self) -> usize {
         self.cache_bytes
     }
 
+    #[inline]
     pub fn cell_capacity(&self) -> usize {
         self.cell_capacity
     }
 
+    #[inline]
+    pub fn column_capacity(&self) -> usize {
+        self.live_blocks * self.column_indices.len()
+    }
+
+    #[inline]
     pub fn max_blobs(&self) -> usize {
         self.max_blobs
     }
 
     #[inline]
-    pub(super) fn column_position(&self, column: usize) -> Option<usize> {
+    pub fn column_position(&self, column: usize) -> Option<usize> {
         let bit = 1u128.checked_shl(u32::try_from(column).ok()?)?;
         (self.columns & bit != 0).then(|| (self.columns & (bit - 1)).count_ones() as usize)
     }

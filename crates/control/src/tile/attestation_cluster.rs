@@ -578,6 +578,7 @@ mod tests {
                 originator_stream_id: message.stream_id,
                 topic: message.topic,
                 domain: message.domain,
+                ssz_source: message.ssz_source,
                 msg_hash: message.msg_hash,
                 recv_ts: message.recv_ts,
                 protobuf: message.protobuf,

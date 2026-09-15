@@ -445,6 +445,7 @@ impl PeerManager {
                 originator_stream_id,
                 topic,
                 domain,
+                ssz_source: _,
                 msg_hash,
                 recv_ts: _,
                 protobuf,

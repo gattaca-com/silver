@@ -11,7 +11,6 @@ bytes.workspace = true
 flux.workspace = true
 raft.workspace = true
 silver_chain_spec.workspace = true
-silver_columns.workspace = true
 silver_common.workspace = true
 silver_gossip.workspace = true
 silver_peer.workspace = true
@@ -22,6 +21,7 @@ tracing.workspace = true
 buffa-build = "0.2.0"
 
 [dev-dependencies]
+silver_columns.workspace = true
 silver_common = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 

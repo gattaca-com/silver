@@ -225,6 +225,10 @@ impl AcquiredSubReservation {
         self.view().ready()
     }
 
+    pub fn finish(&self) -> Result<TCacheRead, SubReservationError> {
+        self.view().finish()
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.view().len()

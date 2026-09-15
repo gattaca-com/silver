@@ -22,14 +22,14 @@ pub use stream_protocol::{
 };
 pub use tcache::{
     AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, AcquiredRead, AcquiredSubReservation,
-    AcquiredWithOffset, CacheFrameError, CacheFrameRef, CacheFrameSegment, CacheFrameView,
-    CacheSegment, Consumer, Error, MAX_CACHE_SEGMENTS, MultiProducer, PendingSubReservation,
-    Producer, RandomAccessConsumer, Reservation, SubLayout, SubReservation, SubReservationError,
-    SubReservationRef, SubReservationView, SubValidation, SubWrite, TCache, TCacheProducer,
-    TCacheRead, TCacheRef,
+    AcquiredSubReservationList, AcquiredWithOffset, CacheFrameError, CacheFrameRef,
+    CacheFrameSegment, CacheFrameView, CacheSegment, Consumer, Error, MAX_CACHE_SEGMENTS,
+    MultiProducer, PendingSubReservation, Producer, RandomAccessConsumer, Reservation, SubLayout,
+    SubReservation, SubReservationError, SubReservationList, SubReservationRef, SubReservationView,
+    SubValidation, SubWrite, TCache, TCacheProducer, TCacheRead, TCacheRef,
 };
 
-use crate::cells::{CellStoreEvent, RetentionEvent};
+use crate::cell_store::{CellStoreEvent, RetentionEvent};
 
 mod messages;
 mod stream_id;

@@ -173,7 +173,7 @@ mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
         BlockSource, BlockStage, ColumnSource, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
-        PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        PayloadValidationStatus, SszSource, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;

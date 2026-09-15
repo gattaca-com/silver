@@ -26,6 +26,7 @@ ef_tests = ["silver_common/test-util"]
 workspace = true
 
 [dev-dependencies]
+silver_control.workspace = true
 silver_common = { workspace = true, features = ["test-util"] }
 rand.workspace = true
 snap.workspace = true

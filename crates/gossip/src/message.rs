@@ -7,8 +7,8 @@ use buffa::{
 use flux::timing::Nanos;
 use silver_common::{
     Error, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE, MessageId,
-    NewGossipMsg, P2pStreamId, PeerEvent, TCacheProducer, TCacheRead, TProducer, TReservation,
-    msg_id_invalid_snappy, msg_id_valid_snappy,
+    NewGossipMsg, P2pStreamId, PeerEvent, SszSource, TCacheProducer, TCacheRead, TProducer,
+    TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -25,6 +25,7 @@ pub(super) fn handle_incoming(
     recv_ts: Nanos,
     dedup_cache: &mut DedupCache,
     incoming_gossip_publish: &mut TProducer,
+    data_columns_publish: Option<&mut TProducer>,
     mcache_publish: &mut TProducer,
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
@@ -53,6 +54,16 @@ pub(super) fn handle_incoming(
     let (topic, domain) = domains.parse(topic_string)?;
     tracing::trace!(?stream_id, ?topic, "Gossip message received");
 
+    // Data column sidecars decompress into the data-columns cache so the
+    // cell store can retain them by reference; everything else, and the
+    // fallback when no cell store is configured, uses the ssz-gossip cache.
+    let (publish, ssz_source) = match data_columns_publish {
+        Some(dc) if matches!(topic, GossipTopic::DataColumnSidecar(_)) => {
+            (dc, SszSource::DataColumns)
+        }
+        _ => (incoming_gossip_publish, SszSource::Gossip),
+    };
+
     // Decompress: block snappy.
     let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
         let hash = msg_id_invalid_snappy(topic_string, snappy_data);
@@ -66,22 +77,15 @@ pub(super) fn handle_incoming(
     })?;
 
     // Alloc into downstream tcache - SSZ message bytes
-    let mut reservation = incoming_gossip_publish
-        .reserve(len, false)
-        .ok_or(Error::BufferTooSmall)
-        .inspect_err(|e| {
+    let mut reservation =
+        publish.reserve(len, false).ok_or(Error::BufferTooSmall).inspect_err(|e| {
             tracing::error!(?e, len, topic_string, "failed to reserve incoming gossip SSZ");
         })?;
 
-    let msg_id = decompress_to_reservation(
-        incoming_gossip_publish,
-        snappy_data,
-        &mut reservation,
-        topic_string,
-    )
-    .inspect_err(|e| {
-        tracing::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg")
-    })?;
+    let msg_id = decompress_to_reservation(publish, snappy_data, &mut reservation, topic_string)
+        .inspect_err(|e| {
+            tracing::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg")
+        })?;
 
     if !dedup_cache.insert(fast_id, msg_id) {
         // Second dedup check. Different snappy bytes can decompress to the same message
@@ -123,6 +127,7 @@ pub(super) fn handle_incoming(
         stream_id: *stream_id,
         topic,
         domain,
+        ssz_source,
         msg_hash: msg_id,
         recv_ts,
         ssz: ssz_read,

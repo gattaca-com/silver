@@ -11,7 +11,8 @@ use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
-    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SilverSpine, cells::RetentionEvent,
+    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SilverSpine,
+    cell_store::RetentionEvent,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 

@@ -17,17 +17,16 @@ use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_columns::{
-    cell_store::CellStoreConfig,
-    tile::{ColumnConsumers, DataColumnsTile},
-};
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
     APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer,
-    cells::GOSSIP_DELIVERY_RETENTION, profiler::enable_profiler, tracing::initialise_tracing_log,
+    cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
+    profiler::enable_profiler,
+    tracing::initialise_tracing_log,
 };
-use silver_config::Config;
+use silver_config::{Config, PartialColumnsMode};
 use silver_control::{Controller, cluster::AttestationClusterConfig, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
@@ -256,17 +255,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Validation only: a non-Off mode fails startup rather than being ignored.
-    let _partial_columns =
+    let partial_columns =
         config.partial_columns().map_err(|error| format!("partial columns config: {error:?}"))?;
 
-    let cell_config =
-        CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
-            .map_err(|error| format!("cell store configuration: {error:?}"))?;
-    let data_columns_producer = TCache::producer("data_columns", cell_config.cache_capacity());
-    let columns_consumer =
-        data_columns_producer.cache_ref().retained_random_access("columns_cells")?;
-    p2p_context.data_columns_consumer =
-        Some(Box::new(data_columns_producer.cache_ref().retained_random_access("network_cells")?));
+    let cell_config = (partial_columns != PartialColumnsMode::Off)
+        .then(|| CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION))
+        .transpose()
+        .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let data_columns_producer = TCache::producer(
+        "data_columns",
+        cell_config.as_ref().map_or(1 << 16, CellStoreConfig::cache_capacity),
+    );
+    let columns_consumer = cell_config
+        .as_ref()
+        .map(|_| data_columns_producer.cache_ref().retained_random_access("columns_cells"))
+        .transpose()?;
+    let storage_data_columns_consumer =
+        data_columns_producer.cache_ref().random_access("storage_cells", true)?;
+    p2p_context.data_columns_consumer = cell_config
+        .as_ref()
+        .map(|_| {
+            data_columns_producer.cache_ref().retained_random_access("network_cells").map(Box::new)
+        })
+        .transpose()?;
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
 
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
@@ -312,9 +323,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         spec.clone(),
     )?;
-    control_tile = control_tile
-        .with_data_columns_cache(cell_config, data_columns_producer, cell_slot, cell_slot_start)
-        .map_err(|error| format!("cell store construction: {error:?}"))?;
+    if let Some(cell_config) = &cell_config {
+        control_tile = control_tile
+            .with_data_columns_cache(
+                cell_config.clone(),
+                data_columns_producer,
+                cell_slot,
+                cell_slot_start,
+            )
+            .map_err(|error| format!("cell store construction: {error:?}"))?;
+    }
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
             .map(silver_common::GossipTopic::BeaconAttestation)
@@ -345,6 +363,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let storage_tile = StorageTile::new(
         ssz_persist_gossip_consumer_ds,
+        storage_data_columns_consumer,
         incoming_rpc_consumer_ds,
         persist_rpc_consumer_ds,
         el_columns_consumer,
@@ -358,7 +377,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let state_reader = beacon_state_tile.reader();
-    let data_columns_tile = DataColumnsTile::new(
+    let mut data_columns_tile = DataColumnsTile::new(
         ColumnConsumers {
             gossip: ssz_gossip_consumer_dc,
             persist_gossip: ssz_persist_gossip_consumer_dc,
@@ -375,8 +394,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),
-    )
-    .with_data_columns_consumer(columns_consumer);
+    );
+    if let (Some(config), Some(consumer)) = (cell_config, columns_consumer) {
+        data_columns_tile = data_columns_tile
+            .with_data_columns_cache(config, consumer, cell_slot, cell_slot_start)
+            .map_err(|error| format!("cell store construction: {error:?}"))?;
+    }
 
     let beacon_api_binds =
         config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
