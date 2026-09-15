@@ -84,27 +84,28 @@ impl GossipReadState {
     {
         match self {
             GossipReadState::ReadingLength { mut buf, mut read } => {
-                match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
-                    Ok(len) => read += len,
-                    Err(StreamError::StreamEOF) if read == 0 => {
-                        return Ok(Spin::Ok(Self::Closed));
+                // Parse buffered excess from the previous frame before asking
+                // QUIC for more: a complete buffered frame must survive FIN.
+                if !varint_complete(&buf[..read]) {
+                    match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
+                        Ok(len) => read += len,
+                        Err(StreamError::StreamEOF) if read == 0 => {
+                            return Ok(Spin::Ok(Self::Closed));
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
                 }
 
-                for pos in 0..read {
-                    if buf[pos] & 0x80 == 0 {
-                        // last byte of varint.
-                        let (length, offset) = decode_varint(&buf[..read], 0)?;
-                        let length = checked_frame_length(length)?;
-                        return Ok(Spin::Next(Self::AllocBody {
-                            length,
-                            buf,
-                            buf_start: offset,
-                            buf_end: read,
-                            fail_count: 0,
-                        }));
-                    }
+                if varint_complete(&buf[..read]) {
+                    let (length, offset) = decode_varint(&buf[..read], 0)?;
+                    let length = checked_frame_length(length)?;
+                    return Ok(Spin::Next(Self::AllocBody {
+                        length,
+                        buf,
+                        buf_start: offset,
+                        buf_end: read,
+                        fail_count: 0,
+                    }));
                 }
 
                 if read == buf.len() {
@@ -130,12 +131,8 @@ impl GossipReadState {
                     }
                     if remaining == 0 {
                         assert!(reservation.is_committed());
-                        tracing::warn!(
-                            ?p2p_id,
-                            length,
-                            frame = %format_args!("{:02x?}", &buf[buf_start..buf_start + take]),
-                            "tiny gossip frame"
-                        );
+                        tracing::trace!(?p2p_id, length, "tiny gossip frame");
+                        emit(NetEvent::Gossip { stream: *p2p_id, msg: reservation.read() });
                         let excess = buf_end - buf_start - take;
                         let mut next = [0u8; 10];
                         next[..excess].copy_from_slice(&buf[buf_start + take..buf_end]);
@@ -182,6 +179,10 @@ impl GossipReadState {
     }
 }
 
+fn varint_complete(buf: &[u8]) -> bool {
+    buf.iter().any(|byte| byte & 0x80 == 0)
+}
+
 fn checked_frame_length(length: u64) -> Result<usize, StreamError> {
     if length > MAX_GOSSIP_FRAME_SIZE as u64 {
         return Err(StreamError::GossipFrameTooLarge);
@@ -202,6 +203,8 @@ mod tests {
     struct MockIo {
         data: Vec<u8>,
         pos: usize,
+        /// Signal FIN (StreamEOF) once `data` is exhausted.
+        eof: bool,
     }
 
     impl StreamIo for MockIo {
@@ -215,6 +218,9 @@ mod tests {
             buf: &mut [u8],
         ) -> Result<usize, StreamError> {
             let n = (self.data.len() - self.pos).min(buf.len());
+            if n == 0 && self.eof {
+                return Err(StreamError::StreamEOF);
+            }
             buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
             self.pos += n;
             Ok(n)
@@ -264,7 +270,7 @@ mod tests {
         let mut producer = TCache::producer("test_gossip_pipelined", 1 << 16);
         let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
-        let mut io = MockIo { data: wire, pos: 0 };
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
 
         let state = GossipReadState::default()
             .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |_| {})
@@ -279,6 +285,102 @@ mod tests {
         assert_eq!(&frame[header..], b"bbbbbbbbbbbb");
     }
 
+    /// Frames that complete inside the length read-ahead (an
+    /// extensions-only RPC is 6 bytes) must still reach the handler.
+    /// Regression: the tiny-frame path committed the reservation but
+    /// never emitted `NetEvent::Gossip`.
+    #[test]
+    fn tiny_frames_emit_gossip_events() {
+        let mut wire = vec![3u8];
+        wire.extend_from_slice(b"aaa");
+        wire.push(4);
+        wire.extend_from_slice(b"bbbb");
+
+        let mut producer = TCache::producer("test_gossip_tiny", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
+        let header = size_of::<P2pStreamId>();
+
+        let mut events = Vec::new();
+        let mut state = GossipReadState::default();
+        for _ in 0..4 {
+            state = state
+                .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |event| {
+                    let NetEvent::Gossip { msg, .. } = event else { panic!("expected gossip") };
+                    events.push(msg);
+                })
+                .unwrap();
+        }
+        assert!(matches!(state, GossipReadState::ReadingLength { read: 0, .. }));
+        assert_eq!(events.len(), 2);
+        assert_eq!(&producer.read_buffer(events[0]).unwrap()[header..], b"aaa");
+        assert_eq!(&producer.read_buffer(events[1]).unwrap()[header..], b"bbbb");
+    }
+
+    /// Two complete tiny frames arrive coalesced, immediately followed by
+    /// FIN: both must emit before the EOF is honoured. Regression: the
+    /// length state read from QUIC before parsing buffered bytes, so the
+    /// second frame died with StreamEOF.
+    #[test]
+    fn coalesced_tiny_frames_survive_fin() {
+        let mut wire = vec![3u8];
+        wire.extend_from_slice(b"aaa");
+        wire.push(4);
+        wire.extend_from_slice(b"bbbb");
+
+        let mut producer = TCache::producer("test_gossip_fin", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0, eof: true };
+        let header = size_of::<P2pStreamId>();
+
+        let mut events = Vec::new();
+        let mut state = GossipReadState::default();
+        for _ in 0..4 {
+            state = state
+                .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |event| {
+                    let NetEvent::Gossip { msg, .. } = event else { panic!("expected gossip") };
+                    events.push(msg);
+                })
+                .unwrap();
+            if matches!(state, GossipReadState::Closed) {
+                break;
+            }
+        }
+        assert!(matches!(state, GossipReadState::Closed));
+        assert_eq!(events.len(), 2);
+        assert_eq!(&producer.read_buffer(events[0]).unwrap()[header..], b"aaa");
+        assert_eq!(&producer.read_buffer(events[1]).unwrap()[header..], b"bbbb");
+    }
+
+    /// Byte-by-byte delivery of a tiny frame: fragmented varint and body
+    /// reads still produce exactly one event.
+    #[test]
+    fn fragmented_tiny_frame_emits_one_event() {
+        let mut wire = vec![6u8];
+        wire.extend_from_slice(b"cccccc");
+
+        let mut producer = TCache::producer("test_gossip_frag", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: Vec::new(), pos: 0, eof: false };
+        let header = size_of::<P2pStreamId>();
+
+        let mut events = Vec::new();
+        let mut state = GossipReadState::default();
+        for byte in wire {
+            io.data.push(byte);
+            for _ in 0..2 {
+                state = state
+                    .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |event| {
+                        let NetEvent::Gossip { msg, .. } = event else { panic!("expected gossip") };
+                        events.push(msg);
+                    })
+                    .unwrap();
+            }
+        }
+        assert_eq!(events.len(), 1);
+        assert_eq!(&producer.read_buffer(events[0]).unwrap()[header..], b"cccccc");
+    }
+
     #[test]
     fn stalled_body_times_out() {
         let mut wire = vec![100u8];
@@ -286,7 +388,7 @@ mod tests {
 
         let mut producer = TCache::producer("test_gossip_stall", 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
-        let mut io = MockIo { data: wire, pos: 0 };
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
 
         let t0 = Instant::now();
         let state = GossipReadState::default()
@@ -316,7 +418,7 @@ mod tests {
 
         let mut producer = TCache::producer("test_gossip_progress", 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
-        let mut io = MockIo { data: wire, pos: 0 };
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
 
         let t0 = Instant::now();
         let state = GossipReadState::default()
@@ -341,7 +443,7 @@ mod tests {
         let mut producer = TCache::producer("test_gossip_abort_skip", 1 << 16);
         let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
-        let mut io = MockIo { data: wire, pos: 0 };
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
 
         let state = GossipReadState::default()
             .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |_| {})
@@ -350,7 +452,7 @@ mod tests {
 
         let mut whole = vec![6u8];
         whole.extend_from_slice(b"cccccc");
-        let mut io = MockIo { data: whole, pos: 0 };
+        let mut io = MockIo { data: whole, pos: 0, eof: false };
         let state = GossipReadState::default()
             .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |_| {})
             .expect("complete frame");
@@ -373,7 +475,7 @@ mod tests {
             let now = Instant::now();
             let mut partial = vec![100u8];
             partial.extend_from_slice(&[0xaa; 10]);
-            let mut slow_io = MockIo { data: partial, pos: 0 };
+            let mut slow_io = MockIo { data: partial, pos: 0, eof: false };
             let slow = GossipReadState::default()
                 .spin(&mut slow_io, &mut producer, &slow_id, now, &mut |_| {})
                 .unwrap();
@@ -381,7 +483,7 @@ mod tests {
 
             let mut wire = vec![100u8];
             wire.extend_from_slice(&[0xbb; 100]);
-            let mut fast_io = MockIo { data: wire, pos: 0 };
+            let mut fast_io = MockIo { data: wire, pos: 0, eof: false };
             let mut fast = GossipReadState::default();
             loop {
                 fast_io.pos = 0;

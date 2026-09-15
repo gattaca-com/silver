@@ -1,6 +1,8 @@
 use std::slice;
 
-use silver_common::{MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead};
+use silver_common::{
+    GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
+};
 
 use crate::{
     NetworkCounters,
@@ -13,6 +15,12 @@ use crate::{
 /// Write-side state for gossipsub: idle → varint length → body.
 #[derive(Debug)]
 pub(crate) enum GossipWriteState {
+    /// Initial state on a meshsub 1.3 stream: the extensions
+    /// announcement must be the first RPC and is never repeated;
+    /// stream recreation restarts from here.
+    Announcing {
+        written: usize,
+    },
     Idle,
     WritingLength {
         buffer: [u8; 10],
@@ -56,6 +64,18 @@ impl GossipWriteState {
         p2p_id: &P2pStreamId,
     ) -> Result<Spin, StreamError> {
         match self {
+            Self::Announcing { mut written } => {
+                let n = io.write_to_stream(
+                    p2p_id.stream_id(),
+                    &GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME[written..],
+                )?;
+                written += n;
+                if written == GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME.len() {
+                    Ok(Spin::Next(Self::Idle))
+                } else {
+                    Ok(Spin::Ok(Self::Announcing { written }))
+                }
+            }
             Self::Idle => match io.gossip_next() {
                 Some(message) => {
                     let mut buffer = [0u8; 10];
@@ -241,6 +261,31 @@ mod tests {
 
         io.retained.clear();
         assert_eq!(wheel.active_count(), 0);
+    }
+
+    /// The extensions announcement precedes any queued message and
+    /// survives blocked partial writes.
+    #[test]
+    fn announcing_writes_extensions_frame_before_gossip() {
+        let (_consumer, _producer, msg) = queued_msg("test_gossip_announce");
+        let now = Instant::now();
+        let wheel = Box::new(OutboundLeaseWheel::new(now));
+        let mut io = MockIo {
+            pending: Some(wheel.leased(msg, now)),
+            retained: vec![],
+            written: vec![],
+            budget: 2,
+        };
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, false);
+
+        let mut state = GossipWriteState::Announcing { written: 0 };
+        for _ in 0..64 {
+            state = state.spin(&mut io, &p2p_id).unwrap();
+        }
+        assert!(matches!(state, GossipWriteState::Idle));
+        let frame = GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME;
+        assert_eq!(&io.written[..frame.len()], frame);
+        assert!(io.written.len() > frame.len(), "queued gossip follows the announcement");
     }
 
     #[test]

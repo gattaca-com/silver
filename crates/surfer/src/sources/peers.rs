@@ -13,6 +13,8 @@ use silver_common::{
     SilverSpine,
 };
 
+use crate::render::peers_pane::short_id;
+
 /// Rows not re-sampled within this window are dropped — covers a full
 /// round-robin sweep of a large peer set plus slack.
 const STALE_NS: Nanos = Nanos(10_000_000_000);
@@ -27,6 +29,14 @@ pub struct PeerRow {
 }
 
 impl PeerRow {
+    /// What a `/` search matches: the short id, address and user agent shown
+    /// in the row.
+    pub fn search_text(&self, id: &PeerId) -> String {
+        let addr = self.p2p.as_ref().map(|s| s.addr.to_string()).unwrap_or_default();
+        let agent = self.scores.as_ref().map(|s| s.user_agent.as_str()).unwrap_or("");
+        format!("{} {addr} {agent}", short_id(id.as_bytes()))
+    }
+
     /// Meshed topics, name-sorted for stable display.
     pub fn sorted_topics(&self) -> Vec<&PeerTopicScores> {
         let mut topics: Vec<_> = self.topics.values().map(|(t, _)| t).collect();
@@ -94,6 +104,10 @@ impl Peers {
 
     pub fn rows(&self) -> impl Iterator<Item = (&PeerId, &PeerRow)> {
         self.tile.rows.iter()
+    }
+
+    pub fn get(&self, id: &PeerId) -> Option<&PeerRow> {
+        self.tile.rows.get(id)
     }
 
     pub fn is_empty(&self) -> bool {
