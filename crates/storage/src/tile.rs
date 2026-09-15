@@ -217,9 +217,6 @@ impl StorageTile {
 }
 
 impl StorageTile {
-    /// Defer checkpoint scheduling until the head is near the wall clock.
-    /// Record the scheduled epoch so repeated observations do not schedule it
-    /// again.
     fn on_status(&mut self, ssz: &[u8; 92], wall_slot: u64) {
         self.wall_slot = wall_slot;
         let head_slot = StatusView::head_slot(ssz);
