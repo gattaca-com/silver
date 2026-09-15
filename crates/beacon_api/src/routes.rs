@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, SpecConfig, StateReadView};
+use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
@@ -83,31 +83,22 @@ impl ApiCtx {
         spec: &SpecConfig,
         state: BeaconStateReader,
     ) -> Self {
-        let head_slot = state
-            .read(&|view: StateReadView<'_>| view.slot.state().latest_block_header.slot)
+        let (head_slot, anchor_epoch) = state
+            .read(&|view: StateReadView<'_>| {
+                let slot = view.slot.state();
+                (slot.latest_block_header.slot, slot.slot / SLOTS_PER_EPOCH)
+            })
             .expect("beacon api needs the anchor state published");
         Self {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             spec: spec.clone(),
             state,
-            node_status: NodeStatus::at_anchor(head_slot),
+            node_status: NodeStatus::at_anchor(head_slot, anchor_epoch),
         }
     }
 
-    /// Reads the published state, or answers `code`/`message` while the node
-    /// has published none. Which code that is belongs to the endpoint.
-    pub(crate) fn read_state_or<R>(
-        &self,
-        resp: &mut Response<'_>,
-        code: u16,
-        message: &str,
-        read: impl Fn(StateReadView<'_>) -> R,
-    ) -> Option<R> {
-        let result = self.state.read(&read);
-        if result.is_none() {
-            resp.error(code, message);
-        }
-        result
+    pub(crate) fn read_state<R>(&self, read: impl Fn(StateReadView<'_>) -> R) -> R {
+        self.state.read(&read).expect("beacon api needs the anchor state published")
     }
 
     /// Resolves `{state_id}` and reads from the state it names, alongside the
@@ -130,18 +121,18 @@ impl ApiCtx {
             return None;
         }
 
-        let execution_optimistic = self.node_status.execution_optimistic();
-        let read = |view: StateReadView<'_>| StateRead {
-            flags: ReadFlags {
-                execution_optimistic,
-                // Genesis is the only state that is its own finalized history:
-                // finalization trails the current epoch, so past genesis the
-                // finalized checkpoint is always behind the state's own slot.
-                finalized: view.slot.state().slot == 0,
-            },
-            data: read(view),
+        let node_status = self.node_status;
+        let read = |view: StateReadView<'_>| {
+            let block_slot = view.slot.state().latest_block_header.slot;
+            StateRead {
+                flags: ReadFlags {
+                    execution_optimistic: node_status.execution_optimistic(),
+                    finalized: node_status.is_finalized(block_slot),
+                },
+                data: read(view),
+            }
         };
-        self.read_state_or(resp, 404, "state not found", read)
+        Some(self.read_state(read))
     }
 
     /// A `{state_id}` read whose body is the envelope around `render`, for the
@@ -186,15 +177,11 @@ fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
 }
 
 fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let Some(genesis) =
-        ctx.read_state_or(resp, 404, "Chain genesis info is not yet known", |view| GenesisData {
-            genesis_time: view.imm.genesis_time,
-            genesis_validators_root: view.imm.genesis_validators_root,
-            genesis_fork_version: view.imm.genesis_fork_version,
-        })
-    else {
-        return;
-    };
+    let genesis = ctx.read_state(|view| GenesisData {
+        genesis_time: view.imm.genesis_time,
+        genesis_validators_root: view.imm.genesis_validators_root,
+        genesis_fork_version: view.imm.genesis_fork_version,
+    });
     resp.json_body(|json| json.data_envelope(|json| json.genesis(&genesis)));
 }
 
@@ -291,7 +278,8 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
+        BeaconBlockHeader, BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork,
+        SlotState, SlotStateFinalized, SlotStateGroup,
     };
     use silver_common::{AGENT_VERSION, ELSyncStatus, SyncUpdate};
     use silver_httpcore::ParsedRequest;
@@ -375,6 +363,7 @@ mod tests {
     fn ready() -> NodeStatus {
         NodeStatus {
             head: HeadStatus { slot: 100, optimistic: false },
+            finalized_epoch: 12_343,
             target: Some(SyncUpdate::Following),
             el: ELSyncStatus::Synced,
         }
@@ -606,6 +595,11 @@ mod tests {
     /// endpoints read is set, so a golden catches a swapped field.
     fn published_ctx(epoch: EpochState, slot: u64) -> ApiCtx {
         let mut state = BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], slot);
+        state.slot_states = SlotStateGroup::new(SlotStateFinalized::new(SlotState {
+            slot,
+            latest_block_header: BeaconBlockHeader { slot, ..Default::default() },
+            ..Default::default()
+        }));
         state.immutable.genesis_time = 1_606_824_023;
         state.immutable.genesis_validators_root = [0x4b; 32];
         state.immutable.genesis_fork_version = [0x00, 0x00, 0x00, 0x01];
@@ -767,22 +761,24 @@ mod tests {
         }
     }
 
-    /// `finalized` describes the state served, and genesis is the only state
-    /// that is its own finalized history.
     #[test]
-    fn finalized_is_true_only_for_the_genesis_state() {
+    fn finalized_is_whether_the_head_block_is_at_or_before_the_checkpoint() {
         let genesis_epoch = EpochState {
             previous_justified_checkpoint: Checkpoint::default(),
             current_justified_checkpoint: Checkpoint::default(),
             finalized_checkpoint: Checkpoint::default(),
             ..epoch_state()
         };
-        let at_genesis = published_ctx(genesis_epoch, 0);
-        let past_genesis = published_ctx(epoch_state(), HEAD_SLOT);
+        let mut at_genesis = published_ctx(genesis_epoch, 0);
+        at_genesis.node_status.finalized_epoch = 0;
+        let mut at_anchor = published_ctx(epoch_state(), HEAD_SLOT);
+        at_anchor.node_status.finalized_epoch = HEAD_SLOT / SLOTS_PER_EPOCH;
+        let past_finality = published_ctx(epoch_state(), HEAD_SLOT);
         for path in state_paths("head") {
             let flags = "{\"execution_optimistic\":false,\"finalized\":";
             assert!(state_body(&at_genesis, &path).starts_with(&format!("{flags}true,")));
-            assert!(state_body(&past_genesis, &path).starts_with(&format!("{flags}false,")));
+            assert!(state_body(&at_anchor, &path).starts_with(&format!("{flags}true,")));
+            assert!(state_body(&past_finality, &path).starts_with(&format!("{flags}false,")));
         }
     }
 }

@@ -411,6 +411,7 @@ impl BeaconApi {
             } => {
                 self.ctx.node_status.head =
                     HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
+                self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if let Some(HeadChange { event, legacy }) = self.head.observe(
                     StatusView::head_slot(&ssz),
                     *StatusView::head_root(&ssz),

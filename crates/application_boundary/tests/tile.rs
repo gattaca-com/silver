@@ -388,8 +388,10 @@ fn receive_while_pumping<T>(receiver: &Receiver<T>, mut pump: impl FnMut()) -> T
 }
 
 fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> BeaconStateEvent {
+    let mut ssz = [0u8; STATUS_V2_SIZE];
+    ssz[36..44].copy_from_slice(&3u64.to_le_bytes());
     BeaconStateEvent::Status {
-        ssz: [0u8; STATUS_V2_SIZE],
+        ssz,
         head_optimistic,
         latest_block_slot: head_slot,
         wall_slot,
@@ -750,6 +752,7 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
 
     let status = *tile.beacon.node_status();
     assert_eq!(status.head, HeadStatus { slot: 7, optimistic: true });
+    assert_eq!(status.finalized_epoch, 3);
     assert_eq!(status.target, Some(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 }));
 
     inj.produce(status_event(9, 9, false));
