@@ -6,7 +6,7 @@ use buffa::{
     types::{encode_bytes, encode_string, string_encoded_len},
 };
 use silver_common::{
-    GossipFrameError, GossipFrameRef, GossipSegment, TProducer,
+    CacheFrameError, CacheFrameRef, CacheSegment, TProducer,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF,
         partial_column::{PartialSidecarPlan, parts_metadata_len, write_parts_metadata},
@@ -46,7 +46,7 @@ pub struct PartialFrame<'a> {
     pub plan: Option<PartialSidecarPlan>,
     /// Fulu eager push only; the segment length must equal the plan's
     /// `header_bytes`.
-    pub header: Option<GossipSegment>,
+    pub header: Option<CacheSegment>,
     pub metadata: Option<PartsMetadata>,
 }
 
@@ -57,10 +57,10 @@ impl PartialFrame<'_> {
     pub fn write(
         &self,
         producer: &mut TProducer,
-        cells: impl ExactSizeIterator<Item = GossipSegment> + Clone,
-        proofs: impl ExactSizeIterator<Item = GossipSegment> + Clone,
+        cells: impl ExactSizeIterator<Item = CacheSegment> + Clone,
+        proofs: impl ExactSizeIterator<Item = CacheSegment> + Clone,
         expires: Instant,
-    ) -> Result<GossipFrameRef, GossipFrameError> {
+    ) -> Result<CacheFrameRef, CacheFrameError> {
         let k = self.plan.map_or(0, |plan| plan.cell_count());
         let header_bytes = self.plan.map_or(0, |plan| plan.header_bytes());
         // Range lengths back the declared varints; a mismatch would emit
@@ -76,7 +76,7 @@ impl PartialFrame<'_> {
                 !meta.encodable() || self.plan.is_some_and(|plan| plan.n_rows() != meta.n_rows)
             })
         {
-            return Err(GossipFrameError::InvalidDescriptor);
+            return Err(CacheFrameError::InvalidDescriptor);
         }
 
         let ssz_len = self.plan.map_or(0, |plan| plan.ssz_len());
@@ -98,7 +98,7 @@ impl PartialFrame<'_> {
         let mid = if header_bytes > 0 { 4 } else { 0 };
         let framing_len = lead + mid + tail;
         if framing_len > MAX_PARTIAL_FRAMING {
-            return Err(GossipFrameError::TooLarge);
+            return Err(CacheFrameError::TooLarge);
         }
 
         let mut buf = [0u8; MAX_PARTIAL_FRAMING];
@@ -131,16 +131,16 @@ impl PartialFrame<'_> {
         debug_assert!(cursor.is_empty());
 
         let header_prefix =
-            (header_bytes > 0).then_some(GossipSegment::Framing { offset: lead, length: 4 });
+            (header_bytes > 0).then_some(CacheSegment::Framing { offset: lead, length: 4 });
         let metadata_framing =
-            (tail > 0).then_some(GossipSegment::Framing { offset: lead + mid, length: tail });
+            (tail > 0).then_some(CacheSegment::Framing { offset: lead + mid, length: tail });
         let count = 1 +
             2 * k +
             usize::from(header_prefix.is_some()) * 2 +
             usize::from(metadata_framing.is_some());
-        GossipFrameRef::write(producer, expires, &buf[..framing_len], WithLen {
+        CacheFrameRef::write(producer, expires, &buf[..framing_len], WithLen {
             len: count,
-            inner: iter::once(GossipSegment::Framing { offset: 0, length: lead })
+            inner: iter::once(CacheSegment::Framing { offset: 0, length: lead })
                 .chain(cells)
                 .chain(proofs)
                 .chain(header_prefix)
@@ -171,12 +171,12 @@ impl<I: Iterator> Iterator for WithLen<I> {
 
 impl<I: Iterator> ExactSizeIterator for WithLen<I> {}
 
-fn segment_len(segment: GossipSegment) -> usize {
+fn segment_len(segment: CacheSegment) -> usize {
     match segment {
-        GossipSegment::Framing { length, .. } |
-        GossipSegment::Gossip { length, .. } |
-        GossipSegment::DataColumns { length, .. } |
-        GossipSegment::Shared { length, .. } => length,
+        CacheSegment::Framing { length, .. } |
+        CacheSegment::Gossip { length, .. } |
+        CacheSegment::DataColumns { length, .. } |
+        CacheSegment::Shared { length, .. } => length,
     }
 }
 
@@ -264,7 +264,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use silver_common::{
-        GossipFrameError, GossipFrameRef, GossipSegment, TCache, TCacheProducer, TProducer,
+        CacheFrameError, CacheFrameRef, CacheSegment, TCache, TCacheProducer, TProducer,
         TRandomAccess,
         ssz_view::{
             BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -294,7 +294,7 @@ mod tests {
         .encode_to_vec()
     }
 
-    fn reassemble(frame: GossipFrameRef, consumer: &mut TRandomAccess, now: Instant) -> Vec<u8> {
+    fn reassemble(frame: CacheFrameRef, consumer: &mut TRandomAccess, now: Instant) -> Vec<u8> {
         let view = frame.acquire(consumer, now).unwrap();
         let descriptor = view.descriptor_range();
         let mut wire = Vec::new();
@@ -315,7 +315,7 @@ mod tests {
         producer: &mut TProducer,
         k: usize,
         header_bytes: usize,
-    ) -> (Vec<GossipSegment>, Vec<GossipSegment>, Option<GossipSegment>, Vec<u8>) {
+    ) -> (Vec<CacheSegment>, Vec<CacheSegment>, Option<CacheSegment>, Vec<u8>) {
         let len = k * (BYTES_PER_CELL + BYTES_PER_KZG_PROOF) + header_bytes;
         let mut reservation = producer.reserve(len, true).unwrap();
         let read = reservation.read();
@@ -333,20 +333,20 @@ mod tests {
         reservation.increment_offset(len);
 
         let cells = (0..k)
-            .map(|i| GossipSegment::Gossip {
+            .map(|i| CacheSegment::Gossip {
                 read,
                 offset: i * BYTES_PER_CELL,
                 length: BYTES_PER_CELL,
             })
             .collect();
         let proofs = (0..k)
-            .map(|i| GossipSegment::Gossip {
+            .map(|i| CacheSegment::Gossip {
                 read,
                 offset: k * BYTES_PER_CELL + i * BYTES_PER_KZG_PROOF,
                 length: BYTES_PER_KZG_PROOF,
             })
             .collect();
-        let header = (header_bytes > 0).then_some(GossipSegment::Gossip {
+        let header = (header_bytes > 0).then_some(CacheSegment::Gossip {
             read,
             offset: len - header_bytes,
             length: header_bytes,
@@ -450,7 +450,7 @@ mod tests {
             proofs.iter().copied().take(1),
             now + Duration::from_secs(1),
         );
-        assert!(matches!(missing_proof, Err(GossipFrameError::InvalidDescriptor)));
+        assert!(matches!(missing_proof, Err(CacheFrameError::InvalidDescriptor)));
 
         let with_header = PartialSidecarPlan::new(
             PartialLayout::Fulu { header_bytes: PARTIAL_HEADER_FIXED },
@@ -471,7 +471,7 @@ mod tests {
             proofs.iter().copied(),
             now + Duration::from_secs(1),
         );
-        assert!(matches!(missing_header, Err(GossipFrameError::InvalidDescriptor)));
+        assert!(matches!(missing_header, Err(CacheFrameError::InvalidDescriptor)));
 
         let mismatched_rows = PartialFrame {
             topic: TOPIC,
@@ -486,7 +486,7 @@ mod tests {
             proofs.iter().copied(),
             now + Duration::from_secs(1),
         );
-        assert!(matches!(mismatched_rows, Err(GossipFrameError::InvalidDescriptor)));
+        assert!(matches!(mismatched_rows, Err(CacheFrameError::InvalidDescriptor)));
     }
 
     #[test]
@@ -535,6 +535,6 @@ mod tests {
             std::iter::empty(),
             now + Duration::from_secs(1),
         );
-        assert!(matches!(empty, Err(GossipFrameError::InvalidDescriptor)));
+        assert!(matches!(empty, Err(CacheFrameError::InvalidDescriptor)));
     }
 }
