@@ -28,6 +28,16 @@ pub struct GossipMsgOut {
     pub tcache: TCacheRead,
 }
 
+/// A locally originated message after gossip encoding: the frame for the mesh
+/// and the IDONTWANT naming it.
+#[derive(Clone, Copy, Debug)]
+pub struct Published {
+    pub msg_id: MessageId,
+    pub domain: GossipDomain,
+    pub protobuf: TCacheRead,
+    pub idontwant: TCacheRead,
+}
+
 // Consumed by controller tile.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -493,12 +503,6 @@ pub enum PeerEvent {
     OutboundIWant {
         p2p_peer: usize,
         iwant: TCacheRead,
-    },
-    /// The SSZ handle refers to incoming RPC bytes, before gossip encoding.
-    PublishDataColumn {
-        originator: P2pStreamId,
-        topic: GossipTopic,
-        ssz: TCacheRead,
     },
     /// Emitted in order to trigger sending of a gossip message.
     /// Peer manager will generate select peers to send to.

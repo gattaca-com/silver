@@ -438,9 +438,6 @@ impl PeerManager {
             PeerEvent::OutboundIHave { topic, msg_count: _, protobuf } => {
                 self.on_outbound_ihave(topic, protobuf, emit);
             }
-            // Consumed by the control tile (gossip republish); PM sees only
-            // the SendGossip it turns into.
-            PeerEvent::PublishDataColumn { .. } => {}
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
                 self.on_outbound_iwant(p2p_peer, iwant, emit);
             }

@@ -7,9 +7,9 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
 use silver_columns::cell_store::{CellStoreConfig, StoreError};
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, GossipDomain, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos,
-    P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest,
-    RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
+    BeaconApiRequest, BeaconStateEvent, ColumnSource, DataColumnsEvent, GossipDomain, GossipTopic,
+    LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
     SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
     cells::CellStoreEvent,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
@@ -39,9 +39,10 @@ pub struct Controller {
     /// (peer-pick, caps, send) and owns column sync.
     sync_engine: SyncEngine,
     rpc_producer: TMultiProducer,
-    /// Reads `incoming_rpc` sidecar payloads referenced by
-    /// `PeerEvent::PublishDataColumn`.
+    /// Validated sidecars this node did not receive over gossip are
+    /// republished from the cache their `Persist` names.
     rpc_ssz_consumer: TRandomAccess,
+    el_ssz_consumer: TRandomAccess,
     attestation_cluster: AttestationClusterHandler,
     last_tick: Instant,
     last_ping: Instant,
@@ -75,6 +76,7 @@ impl Controller {
         gossip_handler: GossipHandler,
         rpc_producer: TMultiProducer,
         rpc_ssz_consumer: TRandomAccess,
+        el_ssz_consumer: TRandomAccess,
         cluster_outbound_producer: TProducer,
         cluster_inbound_consumer: TRandomAccess,
         cluster_config: Option<AttestationClusterConfig>,
@@ -95,6 +97,7 @@ impl Controller {
             sync_engine,
             rpc_producer,
             rpc_ssz_consumer,
+            el_ssz_consumer,
             attestation_cluster,
             last_tick: now,
             last_ping: now,
@@ -189,6 +192,7 @@ impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let now = Instant::now();
         self.rpc_ssz_consumer.free();
+        self.el_ssz_consumer.free();
         self.attestation_cluster.free();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
@@ -244,45 +248,34 @@ impl Tile<SilverSpine> for Controller {
             });
         }
 
-        adapter.consume(|event: PeerEvent, producers| {
-            if let PeerEvent::PublishDataColumn { originator, topic, ssz } = event {
-                let read = self.rpc_ssz_consumer.acquire(ssz);
-                match read.buffer() {
-                    Ok((bytes, _)) => {
-                        if let Some((msg_hash, protobuf)) =
-                            self.gossip_handler.publish(topic, bytes)
-                        {
-                            let domain = self
-                                .gossip_handler
-                                .current_domain()
-                                .expect("publish succeeded so a domain is set");
-                            self.peer_manager.handle_event(
-                                PeerEvent::SendGossip {
-                                    originator_stream_id: originator,
-                                    topic,
-                                    domain,
-                                    msg_hash,
-                                    recv_ts: Nanos::now(),
-                                    protobuf,
-                                    ssz,
-                                },
-                                now,
-                                &mut |evt| {
-                                    handle_peer_control(
-                                        &mut self.gossip_handler,
-                                        &mut self.rpc_producer,
-                                        evt,
-                                        producers,
-                                    )
-                                },
-                            );
-                        }
-                    }
-                    Err(e) => tracing::warn!(?e, ?topic, "publish column ssz read failed"),
-                }
+        adapter.consume(|event: DataColumnsEvent, producers| {
+            let DataColumnsEvent::Persist { ssz, source, column_index, .. } = event else {
                 return;
+            };
+            let read = match source {
+                ColumnSource::Gossip => return,
+                ColumnSource::Rpc => self.rpc_ssz_consumer.acquire(ssz),
+                ColumnSource::El => self.el_ssz_consumer.acquire(ssz),
+            };
+            let topic = GossipTopic::DataColumnSidecar(column_index);
+            match read.buffer() {
+                Ok((bytes, _)) => {
+                    if let Some(published) = self.gossip_handler.publish(topic, bytes) {
+                        self.peer_manager.publish_local(topic, published, &mut |evt| {
+                            handle_peer_control(
+                                &mut self.gossip_handler,
+                                &mut self.rpc_producer,
+                                evt,
+                                producers,
+                            )
+                        });
+                    }
+                }
+                Err(e) => tracing::warn!(?e, ?topic, "publish column ssz read failed"),
             }
+        });
 
+        adapter.consume(|event: PeerEvent, producers| {
             // Beacon State uses the synthetic local stream for a terminal
             // local validation failure. Complete the API request without
             // counting that failure against a (non-existent) network peer.

@@ -13,4 +13,4 @@ mod server;
 mod statics;
 
 pub use node_status::{HeadStatus, NodeStatus};
-pub use server::{ApiConsumers, BeaconApi};
+pub use server::BeaconApi;
