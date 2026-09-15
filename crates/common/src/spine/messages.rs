@@ -157,6 +157,7 @@ pub struct NewGossipMsg {
     pub topic: GossipTopic,
     /// Originating fork domain: fixed at receipt, never rewritten.
     pub domain: GossipDomain,
+    pub ssz_source: SszSource,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -536,6 +537,7 @@ pub enum PeerEvent {
         topic: GossipTopic,
         /// Originating fork domain, carried from `NewGossipMsg`.
         domain: GossipDomain,
+        ssz_source: SszSource,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
@@ -913,12 +915,25 @@ pub enum BlockSource {
     Rpc,
 }
 
+/// Which tcache a decompressed gossip-SSZ `TCacheRead` lives in. Data
+/// column sidecars decompress into the data-columns cache (when the
+/// cell store is configured); everything else into the ssz-gossip cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum SszSource {
+    Gossip,
+    DataColumns,
+    Rpc,
+    El,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ColumnSource {
     Gossip,
     Rpc,
     El,
+    Assembly,
 }
 
 impl ColumnSource {
@@ -1334,6 +1349,11 @@ pub enum DataColumnsEvent {
     Persist {
         ssz: TCacheRead,
         source: ColumnSource,
+        ssz_source: SszSource,
+        /// Retain the validated fork domain when republishing after a fork
+        /// boundary. EL reconstructions without a domain use the
+        /// current gossip domain.
+        domain: Option<GossipDomain>,
         block_root: [u8; 32],
         column_index: u64,
         slot: u64,

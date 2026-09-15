@@ -1067,6 +1067,7 @@ mod tests {
                 originator_stream_id: stream_id,
                 topic: GossipTopic::BeaconBlock,
                 domain: test_domain(),
+                ssz_source: silver_common::SszSource::Gossip,
                 msg_hash: hash,
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),
@@ -1123,6 +1124,68 @@ mod tests {
                 originator_stream_id: silver_common::LOCAL_GOSSIP_STREAM_ID,
                 topic: GossipTopic::BeaconBlock,
                 domain: test_domain(),
+                ssz_source: silver_common::SszSource::Gossip,
+                msg_hash: silver_common::MessageId { id: [0xCD; 20] },
+                recv_ts: silver_common::Nanos::now(),
+                protobuf: mk_tcache_read(),
+                ssz: mk_tcache_read(),
+            },
+            now,
+            &mut |event| cap.0.push(event),
+        );
+
+        let recipients: Vec<usize> = cap
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
+                    Some(*peer_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(recipients, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn partial_requests_do_not_suppress_full_columns_while_serving_is_disabled() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.d_low = 0;
+        params.d = 0;
+        params.d_high = 8;
+        let topic = GossipTopic::DataColumnSidecar(4);
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
+
+        for i in 1..=3u8 {
+            connect(&mut mgr, &mut cap, i as usize, i, now);
+            mgr.handle_event(
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: i as usize, topic, digest: [0; 4] },
+                now,
+                &mut |event| cap.0.push(event),
+            );
+            mgr.test_mesh_extend(topic, [i as usize]);
+        }
+        for (peer, subnet) in [(1, 4), (2, 7)] {
+            mgr.handle_event(
+                PeerEvent::P2pGossipPartialCaps {
+                    p2p_peer: peer,
+                    subnet,
+                    requests: true,
+                    supports_sending: false,
+                },
+                now,
+                &mut |event| cap.0.push(event),
+            );
+        }
+        cap.0.clear();
+
+        mgr.handle_event(
+            PeerEvent::SendGossip {
+                originator_stream_id: silver_common::LOCAL_GOSSIP_STREAM_ID,
+                topic,
+                domain: test_domain(),
+                ssz_source: silver_common::SszSource::DataColumns,
                 msg_hash: silver_common::MessageId { id: [0xCD; 20] },
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),

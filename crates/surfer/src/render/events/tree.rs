@@ -131,6 +131,7 @@ fn cols_label(source: ColumnSource) -> &'static str {
         ColumnSource::Gossip => "gossip cols",
         ColumnSource::Rpc => "rpc cols",
         ColumnSource::El => "el cols",
+        ColumnSource::Assembly => "assembled cols",
     }
 }
 

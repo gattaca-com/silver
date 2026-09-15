@@ -2,8 +2,11 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_beacon_state_data::{BlobParameters, FAR_FUTURE_EPOCH, SpecConfig};
 use silver_common::{
-    TCache, TCacheRef, TRandomAccess, column_util::push_data_column_sidecar_prefix,
+    SubReservationError, TCache, TCacheProducer, TCacheRef, TRandomAccess, TReservation,
+    cell_store::{AcquiredCell, CELL_RECORD_BYTES, PendingCell},
+    column_util::push_data_column_sidecar_prefix,
 };
+use silver_control::cell_allocator::CellAllocator;
 
 use super::*;
 
@@ -13,6 +16,7 @@ const PROOF: [u8; BYTES_PER_KZG_PROOF] = [0x22; BYTES_PER_KZG_PROOF];
 
 struct Harness {
     store: CellStore,
+    allocator: CellAllocator,
     consumer: Box<TRandomAccess>,
     cache: TCacheRef,
     start: Instant,
@@ -52,7 +56,8 @@ impl Harness {
         let consumer = Box::new(cache.retained_random_access("").unwrap());
         let start = Instant::now();
         Self {
-            store: CellStore::new(config, producer, slot, start).unwrap(),
+            allocator: CellAllocator::new(config.clone(), producer, slot, start).unwrap(),
+            store: CellStore::new(config, slot, start).unwrap(),
             consumer,
             cache,
             start,
@@ -63,7 +68,7 @@ impl Harness {
         let context = CommitmentContext {
             block_root: root,
             slot,
-            format: self.store.config.spec.fork_at_slot(slot),
+            format: self.store.config.spec().fork_at_slot(slot),
             blob_count: rows,
         };
         assert!(self.admit(context, 0x33).unwrap());
@@ -80,7 +85,38 @@ impl Harness {
             ForkName::Gloas => ContextData::Gloas { commitments },
             _ => ContextData::Fulu { signed_header: &header, inclusion_proof: &proof, commitments },
         };
-        self.store.admit_context(context, data)
+        let domain = GossipDomain::new([0; 4], context.format);
+        let admitted = self.store.admit_context(context, domain, data, None)?;
+        if self.store.reservations(&context.block_root).next().is_some() {
+            return Ok(false);
+        }
+        let source = if context.format == ForkName::Fulu {
+            let mut write = self
+                .allocator
+                .producer_mut()
+                .reserve(data.encoded_len(), false)
+                .ok_or(StoreError::CacheFull)?;
+            data.write(write.buffer().unwrap());
+            write.flush().unwrap();
+            Some(FuluContextSource::Header(write.read()))
+        } else {
+            None
+        };
+        self.store.admit_context(context, domain, data, source)?;
+        let request = self.store.request_assemblies(&context.block_root).unwrap();
+        let set = match self.allocator.allocate(request) {
+            Ok(set) => set,
+            Err(error) => {
+                self.store.allocation_failed(request);
+                return Err(error);
+            }
+        };
+        self.store.install(set, &mut self.consumer)?;
+        for position in 0..self.store.config.column_indices().len() {
+            let column = self.store.config.column_indices()[position];
+            self.refresh(&context.block_root, column)?;
+        }
+        Ok(admitted)
     }
 
     fn insert(&mut self, key: CellKey) -> (CellRef, bool) {
@@ -96,22 +132,23 @@ impl Harness {
         let mut expected =
             StoreCounts { blocks: self.store.blocks.len(), ..StoreCounts::default() };
         for (index, block) in &self.store.blocks {
-            if block.ssz.is_none() {
+            if !block.active {
                 continue;
             }
             expected.contexts += 1;
             expected.active_slots = 1;
-            let start = index * self.store.config.column_indices.len();
-            for column in &self.store.columns[start..start + self.store.config.column_indices.len()]
+            let start = index * self.store.config.column_indices().len();
+            for column in
+                &self.store.columns[start..start + self.store.config.column_indices().len()]
             {
                 expected.cells += column.admitted.0.count_ones() as usize;
                 if let Some(reference) = column.assembly {
                     expected.bytes +=
-                        self.store.producer.view_sub_reservation(reference).unwrap().len();
+                        self.allocator.producer().view_sub_reservation(reference).unwrap().len();
                 }
                 if let Some(full) = &column.full {
                     expected.full_bytes +=
-                        self.store.producer.read_buffer(full.read).unwrap().len();
+                        self.allocator.producer().read_buffer(full.read).unwrap().len();
                 }
             }
         }
@@ -123,8 +160,9 @@ impl Harness {
     }
 
     fn advance(&mut self, now: Instant, min_slot: u64, on_expired: impl FnMut(CellKey)) {
+        let boundary = self.allocator.advance(now, min_slot);
         self.store.advance(now, min_slot, on_expired);
-        if let Some(event) = self.store.take_retention_event() {
+        if let Some(event) = boundary {
             self.consumer.advance_retention(event.retain_from);
         }
     }
@@ -135,11 +173,11 @@ impl Harness {
         cell: &[u8; BYTES_PER_CELL],
         proof: &[u8; BYTES_PER_KZG_PROOF],
     ) -> Result<CellAdmission, StoreError> {
-        let Some(pending) = self.store.stage_cell(key, cell, proof)? else {
+        let Some(pending) = self.stage(key, cell, proof)? else {
             return Ok(CellAdmission::Duplicate);
         };
         pending.data.acquire(&mut self.consumer)?.accept()?;
-        let update = self.store.refresh_column(&key.block_root, key.column)?;
+        let update = self.refresh(&key.block_root, key.column)?;
         Ok(CellAdmission::Inserted {
             cell: self.store.cell(key).unwrap(),
             column_completed: update.column_completed,
@@ -150,10 +188,39 @@ impl Harness {
         self.store.cell(key)?.acquire(&mut self.consumer)
     }
 
+    fn stage(
+        &self,
+        key: CellKey,
+        cell: &[u8; BYTES_PER_CELL],
+        proof: &[u8; BYTES_PER_KZG_PROOF],
+    ) -> Result<Option<PendingCell>, StoreError> {
+        if self.store.cell(key).is_some() {
+            return Ok(None);
+        }
+        self.allocator.stage(key, cell, proof)
+    }
+
+    fn refresh(&mut self, root: &BlockRoot, column: usize) -> Result<ColumnUpdate, StoreError> {
+        self.store.refresh_column(root, column, &mut self.consumer)
+    }
+
+    fn retain(
+        &mut self,
+        root: &BlockRoot,
+        column: usize,
+        read: TCacheRead,
+    ) -> Result<ColumnUpdate, StoreError> {
+        self.store.retain_full(root, column, read, &mut self.consumer)
+    }
+
+    fn reserve(&mut self, len: usize) -> Result<TReservation, StoreError> {
+        self.allocator.producer_mut().reserve(len, false).ok_or(StoreError::CacheFull)
+    }
+
     fn full_bytes(&self, root: &BlockRoot, column: usize) -> Vec<u8> {
         let block = &self.store.blocks[self.store.roots[root]];
         let context = block.context;
-        let bytes = self.store.producer.read_buffer(block.ssz.unwrap()).unwrap();
+        let bytes = &block.data[..block.data_len];
         let mut full = Vec::new();
         match context.format {
             ForkName::Fulu => push_data_column_sidecar_prefix(
@@ -280,7 +347,7 @@ fn an_undersized_cache_is_rejected() {
     let producer = TCache::producer("", 1 << 16);
     assert_eq!(producer.cache_ref().capacity(), 1 << 16);
     assert!(matches!(
-        CellStore::new(config, producer, 0, Instant::now()),
+        CellAllocator::new(config, producer, 0, Instant::now()),
         Err(StoreError::CacheTooSmall)
     ));
 }
@@ -314,31 +381,32 @@ fn incremental_counts_track_refresh_duplicates_full_columns_and_expiry() {
         assert!(!h.admit(context, 0x33).unwrap());
         assert_eq!(h.store.counts(), admitted);
 
-        let pending = h.store.stage_cell(key(0, 0), &CELL, &PROOF).unwrap().unwrap();
+        let pending = h.stage(key(0, 0), &CELL, &PROOF).unwrap().unwrap();
         pending.data.acquire(&mut h.consumer).unwrap().accept().unwrap();
-        assert_eq!(h.store.column(&ROOT, 0).unwrap().available.bits(), 1);
+        assert_eq!(h.store.column(&ROOT, 0).unwrap().available.bits(), 0);
         assert_eq!(h.store.counts().cells, 0);
         h.assert_counts();
-        assert_eq!(h.store.refresh_column(&ROOT, 0).unwrap().new_cells.bits(), 1);
+        assert_eq!(h.refresh(&ROOT, 0).unwrap().new_cells.bits(), 1);
         assert_eq!(h.store.counts().cells, 1);
         h.assert_counts();
-        assert_eq!(h.store.refresh_column(&ROOT, 0).unwrap().new_cells.bits(), 0);
+        assert_eq!(h.refresh(&ROOT, 0).unwrap().new_cells.bits(), 0);
         h.assert_counts();
 
         let full = h.full_bytes(&ROOT, 0);
-        let mut write = h.store.reserve_full(full.len()).unwrap();
+        let mut write = h.reserve(full.len()).unwrap();
         write.write_all(&full).unwrap();
         write.flush().unwrap();
         let read = write.read();
-        assert_eq!(h.store.retain_full(&ROOT, 0, read).unwrap().new_cells.bits(), 2);
+        assert_eq!(h.retain(&ROOT, 0, read).unwrap().new_cells.bits(), 2);
         assert_eq!(h.store.counts().cells, 2);
         assert_eq!(h.store.counts().full_bytes, full.len());
         h.assert_counts();
-        assert_eq!(h.store.retain_full(&ROOT, 0, read).unwrap().new_cells.bits(), 0);
+        assert_eq!(h.retain(&ROOT, 0, read).unwrap().new_cells.bits(), 0);
         h.assert_counts();
 
-        let pending = h.store.stage_cell(key(1, 0), &CELL, &PROOF).unwrap().unwrap();
+        let pending = h.stage(key(1, 0), &CELL, &PROOF).unwrap().unwrap();
         pending.data.acquire(&mut h.consumer).unwrap().accept().unwrap();
+        h.refresh(&ROOT, 1).unwrap();
         h.context([2; 32], slot, 1);
         h.assert_counts();
         let mut expired = 0;
@@ -346,7 +414,7 @@ fn incremental_counts_track_refresh_duplicates_full_columns_and_expiry() {
         assert_eq!(expired, 3);
         assert_eq!(h.store.counts(), StoreCounts { blocks: 2, ..StoreCounts::default() });
         h.assert_counts();
-        assert!(matches!(h.store.refresh_column(&ROOT, 1), Err(StoreError::ContextExpired)));
+        assert!(matches!(h.refresh(&ROOT, 1), Err(StoreError::ContextExpired)));
         h.advance(h.start + Duration::from_secs(12), slot + 1, |_| panic!("already expired"));
         assert_eq!(h.store.counts(), StoreCounts::default());
         h.assert_counts();
@@ -354,21 +422,73 @@ fn incremental_counts_track_refresh_duplicates_full_columns_and_expiry() {
 }
 
 #[test]
-fn failed_context_reservation_does_not_change_incremental_counts() {
+fn failed_allocation_keeps_context_without_publishing_assemblies() {
     let mut h = Harness::new(1, 3);
-    let mut pressure = h.store.reserve_full(h.cache.capacity() - 4096).unwrap();
+    let mut pressure = h.reserve(h.cache.capacity() - 4096).unwrap();
     pressure.buffer().unwrap().fill(0);
     pressure.flush().unwrap();
     let context =
         CommitmentContext { block_root: ROOT, slot: 0, format: ForkName::Fulu, blob_count: 1 };
     assert_eq!(h.admit(context, 0x33), Err(StoreError::CacheFull));
-    assert_eq!(h.store.counts(), StoreCounts::default());
+    assert_eq!(h.store.counts(), StoreCounts {
+        contexts: 1,
+        blocks: 1,
+        active_slots: 1,
+        ..StoreCounts::default()
+    });
     h.assert_counts();
     assert!(h.store.columns.iter().all(|column| column.assembly.is_none()));
-    h.advance_ms(12_000);
+    h.advance(h.start + Duration::from_secs(12), 1, |_| {});
     h.context(ROOT, 1, 1);
     h.assert_counts();
     h.insert(key(0, 0));
+    h.assert_counts();
+}
+
+#[test]
+fn rejection_expires_only_its_block_and_discards_pending_updates() {
+    let mut h = Harness::new(1, 1);
+    h.context(ROOT, 0, 1);
+    h.insert(key(0, 0));
+    let other = [2; 32];
+    h.context(other, 0, 1);
+    let live = CellKey { block_root: other, column: 0, row: 0 };
+    h.insert(live);
+    h.store.mark_changed(&ROOT, 0);
+    h.store.mark_changed(&other, 0);
+    h.store.reject(&ROOT);
+    h.allocator.reject(&ROOT);
+    h.assert_counts();
+    assert_eq!(h.store.counts().cells, 1);
+    assert_eq!(h.store.counts().contexts, 1);
+    assert!(h.store.cell(key(0, 0)).is_none());
+    assert!(h.store.cell(live).is_some());
+    assert_eq!(h.store.next_changed(), Some((other, 0)));
+    assert!(h.store.next_changed().is_none());
+    h.store.reject(&ROOT);
+    h.assert_counts();
+    h.advance_ms(12_000);
+    h.assert_counts();
+}
+
+#[test]
+fn stale_allocation_reply_cannot_resurrect_an_expired_context() {
+    let mut h = Harness::new(1, 1);
+    h.context(ROOT, 0, 1);
+    let block = &h.store.blocks[h.store.roots[&ROOT]];
+    let set = h
+        .allocator
+        .allocate(AssemblyRequest {
+            id: block.request.unwrap(),
+            context: block.context,
+            domain: block.domain,
+            columns: h.store.config.columns(),
+            source: block.source,
+        })
+        .unwrap();
+    h.advance_ms(12_000);
+    assert_eq!(h.store.install(set, &mut h.consumer), Err(StoreError::ContextExpired));
+    assert!(h.store.context(&ROOT).is_none());
     h.assert_counts();
 }
 
@@ -384,7 +504,7 @@ fn duplicates_do_not_copy_or_refresh_deadlines() {
     assert_eq!(h.store.cell(key(0, 0)).unwrap().read().seq(), first.read().seq());
     h.advance_ms(12_000);
     assert!(h.store.cell(key(0, 0)).is_none());
-    assert!(matches!(h.admit_cell(key(0, 0), &CELL, &PROOF), Ok(CellAdmission::Duplicate)));
+    assert!(matches!(h.admit_cell(key(0, 0), &CELL, &PROOF), Err(StoreError::UnknownCell)));
     assert_eq!(h.store.counts().cells, 0);
 }
 
@@ -473,7 +593,7 @@ fn completion_survives_serving_expiry_without_reopening_admission() {
     assert!(column.complete);
     assert_eq!(column.available.bits(), 0);
     assert_eq!(column.admitted.bits(), 3);
-    assert!(matches!(h.admit_cell(key(0, 1), &CELL, &PROOF), Ok(CellAdmission::Duplicate)));
+    assert!(matches!(h.admit_cell(key(0, 1), &CELL, &PROOF), Err(StoreError::UnknownCell)));
     assert_eq!(h.store.counts().cells, 0);
 }
 
@@ -485,7 +605,7 @@ fn unfinished_columns_cannot_continue_in_the_next_slot() {
     h.advance_ms(11_000);
     h.insert(key(0, 1));
     h.advance_ms(13_000);
-    assert!(matches!(h.admit_cell(key(0, 2), &CELL, &PROOF), Err(StoreError::ContextExpired)));
+    assert!(matches!(h.admit_cell(key(0, 2), &CELL, &PROOF), Err(StoreError::UnknownCell)));
     let status = h.store.column(&ROOT, 0).unwrap();
     assert_eq!(status.admitted.bits(), 3);
     assert_eq!(status.available.bits(), 0);
@@ -500,8 +620,8 @@ fn context_survives_until_the_slot_boundary() {
     h.advance_ms(11_000);
     h.insert(key(0, 1));
     h.advance_ms(11_999);
-    let read = h.store.context(&ROOT).unwrap().1;
-    assert_eq!(&h.store.producer.read_buffer(read).unwrap()[12..20], &[0x33; 8]);
+    let read = h.store.blocks[h.store.roots[&ROOT]].ssz.unwrap();
+    assert_eq!(&h.allocator.producer().read_buffer(read).unwrap()[12..20], &[0x33; 8]);
     h.advance_ms(12_000);
     assert!(h.store.context(&ROOT).is_none());
     assert_eq!(h.store.counts().contexts, 0);
@@ -513,7 +633,7 @@ fn expired_incomplete_context_requires_full_sidecar_recovery() {
     let context = h.context(ROOT, 0, 2);
     h.insert(key(0, 0));
     h.advance_ms(13_000);
-    assert!(matches!(h.admit_cell(key(0, 1), &CELL, &PROOF), Err(StoreError::ContextExpired)));
+    assert!(matches!(h.admit_cell(key(0, 1), &CELL, &PROOF), Err(StoreError::UnknownCell)));
     assert_eq!(h.admit(context, 0x33), Err(StoreError::OutsideServingSlot));
     assert!(!h.store.column(&ROOT, 0).unwrap().complete);
 }
@@ -564,7 +684,7 @@ fn non_current_slots_are_not_admitted() {
 fn conflicting_and_oversized_contexts_do_not_replace_descriptors() {
     let mut h = Harness::new(2, 1);
     let context = h.context(ROOT, 0, 2);
-    let seq = h.store.context(&ROOT).unwrap().1.seq();
+    let seq = h.store.blocks[h.store.roots[&ROOT]].ssz.unwrap().seq();
     assert_eq!(h.admit(context, 0x44), Err(StoreError::ConflictingContext));
     assert_eq!(
         h.admit(CommitmentContext { blob_count: 1, ..context }, 0x33),
@@ -577,8 +697,11 @@ fn conflicting_and_oversized_contexts_do_not_replace_descriptors() {
         inclusion_proof: &[0x33; 128],
         commitments: &[0; 3 * 48],
     };
-    assert_eq!(h.store.admit_context(context, data), Err(StoreError::InvalidContext));
-    assert_eq!(h.store.context(&ROOT).unwrap().1.seq(), seq);
+    assert_eq!(
+        h.store.admit_context(context, GossipDomain::new([0; 4], context.format), data, None),
+        Err(StoreError::InvalidContext)
+    );
+    assert_eq!(h.store.blocks[h.store.roots[&ROOT]].ssz.unwrap().seq(), seq);
 }
 
 #[test]
@@ -617,13 +740,20 @@ fn sparse_columns_and_invalid_indices_are_isolated() {
 
 #[test]
 fn admission_pressure_does_not_publish_failed_cells() {
-    let mut config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
-    config.live_blocks = 1;
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
+    let limit = config.live_blocks();
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 2);
     h.insert(key(0, 0));
-    let context =
-        CommitmentContext { block_root: [2; 32], slot: 0, format: ForkName::Fulu, blob_count: 2 };
+    for index in 1..limit {
+        h.context([index as u8 + 1; 32], 0, 2);
+    }
+    let context = CommitmentContext {
+        block_root: [0xff; 32],
+        slot: 0,
+        format: ForkName::Fulu,
+        blob_count: 2,
+    };
     assert!(matches!(h.admit(context, 0x33), Err(StoreError::Full)));
     assert_eq!(h.store.column(&ROOT, 0).unwrap().admitted.bits(), 1);
     assert_eq!(h.store.counts().cells, 1);
@@ -647,20 +777,24 @@ fn slot_jumps_expire_the_previous_slot() {
 
 #[test]
 fn context_table_pressure_preserves_existing_blocks() {
-    let mut config = CellStoreConfig::new(Arc::new(Harness::spec(1)), 1, Duration::ZERO).unwrap();
-    config.block_capacity = 1;
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(1)), 1, Duration::ZERO).unwrap();
+    let limit = config.block_capacity();
     let mut h = Harness::configured(config);
-    h.store.blocks.reserve(4);
+    h.store.blocks.reserve(limit + 4);
     let capacity = h.store.blocks.capacity();
-    assert!(capacity > h.store.config.block_capacity);
-    let context = h.context(ROOT, 0, 1);
+    assert!(capacity > limit);
+    let mut context = h.context(ROOT, 0, 1);
+    for slot in 1..limit as u64 {
+        h.advance_ms(slot * 12_000);
+        context = h.context([slot as u8 + 1; 32], slot, 1);
+    }
     assert_eq!(
-        h.admit(CommitmentContext { block_root: [2; 32], ..context }, 0x33),
+        h.admit(CommitmentContext { block_root: [0xff; 32], ..context }, 0x33),
         Err(StoreError::Full)
     );
-    assert_eq!(h.store.context(&ROOT).unwrap().0, &context);
+    assert_eq!(h.store.context(&context.block_root).unwrap().0, &context);
     assert!(!h.admit(context, 0x33).unwrap());
-    assert_eq!(h.store.blocks.len(), 1);
+    assert_eq!(h.store.blocks.len(), limit);
     assert_eq!(h.store.blocks.capacity(), capacity);
 }
 
@@ -681,13 +815,14 @@ fn expiry_reports_rows_and_slot_floor_prevents_readmission() {
 
 #[test]
 fn block_slot_reuse_does_not_alias_expired_cell_indices() {
-    let mut config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
-    config.block_capacity = 1;
+    let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 2);
+    let index = h.store.roots[&ROOT];
     h.insert(key(0, 0));
     h.advance(h.start + Duration::from_secs(13), 1, |_| {});
     h.context([2; 32], 1, 2);
+    assert_eq!(h.store.roots[&[2; 32]], index);
     let missing = CellKey { block_root: [2; 32], column: 0, row: 0 };
     assert!(h.store.cell(missing).is_none());
     let new = CellKey { row: 1, ..missing };
@@ -699,9 +834,8 @@ fn block_slot_reuse_does_not_alias_expired_cell_indices() {
 
 #[test]
 fn slab_reuses_holes_without_moving_live_blocks() {
-    let mut config =
+    let config =
         CellStoreConfig::new(Arc::new(Harness::spec(2)), 3, Duration::from_secs(11)).unwrap();
-    config.block_capacity = 3;
     let mut h = Harness::configured(config);
     h.context(ROOT, 0, 2);
     h.advance_ms(12_000);
@@ -747,7 +881,7 @@ fn acquired_send_outlives_expiry_and_blocks_overwrite() {
         let context = CommitmentContext {
             block_root: [slot as u8 + 1; 32],
             slot,
-            format: h.store.config.spec.fork_at_slot(slot),
+            format: h.store.config.spec().fork_at_slot(slot),
             blob_count: 1,
         };
         match h.admit(context, 0x33) {
@@ -796,8 +930,7 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
     let read = incoming.acquire_strict(old).unwrap();
     let bytes = read.buffer().unwrap().0;
     let pending = h
-        .store
-        .stage_cell(
+        .stage(
             key(0, 0),
             bytes[..BYTES_PER_CELL].try_into().unwrap(),
             bytes[BYTES_PER_CELL..].try_into().unwrap(),
@@ -819,7 +952,7 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
     let validation = pending.data.acquire(&mut h.consumer).unwrap();
     assert_eq!(validation.buffers(), [&CELL[..], &PROOF[..]]);
     validation.accept().unwrap();
-    let update = h.store.refresh_column(&ROOT, 0).unwrap();
+    let update = h.refresh(&ROOT, 0).unwrap();
     assert_eq!(update.new_cells.bits(), 1);
     assert!(update.column_completed);
     assert_eq!(h.acquire_cell(key(0, 0)).unwrap().cell.as_ref(), CELL);
@@ -833,21 +966,21 @@ fn independent_ingress_writers_ignore_duplicates_and_retry_failed_validation() {
     let columns: Vec<_> = h.store.reservations(&ROOT).collect();
     assert_eq!(columns.len(), 2);
     assert_eq!(columns[0].expires, h.start + Duration::from_secs(12));
-    let old = h.store.stage_cell(key(0, 0), &[0; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
+    let old = h.stage(key(0, 0), &[0; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
     assert!(columns[0].stage(&mut el, 0, &CELL, &PROOF).unwrap().is_none());
     let validation = old.data.acquire(&mut h.consumer).unwrap();
     assert!(h.store.cell(key(0, 0)).is_none());
     assert!(!old.data.cancel(&mut el).unwrap());
     drop(validation);
     let retry = columns[0].stage(&mut el, 0, &CELL, &PROOF).unwrap().unwrap();
-    assert!(!h.store.cancel_pending(old).unwrap());
+    assert!(!h.allocator.cancel(old).unwrap());
     assert!(matches!(old.data.acquire(&mut h.consumer), Err(SubReservationError::Stale)));
     let validation = retry.data.acquire(&mut h.consumer).unwrap();
     assert_eq!(validation.buffers(), [&CELL[..], &PROOF[..]]);
     validation.accept().unwrap();
-    assert!(h.store.stage_cell(key(0, 0), &CELL, &PROOF).unwrap().is_none());
-    assert_eq!(h.store.refresh_column(&ROOT, 0).unwrap().new_cells.bits(), 1);
-    assert_eq!(h.store.refresh_column(&ROOT, 0).unwrap().new_cells.bits(), 0);
+    assert!(h.stage(key(0, 0), &CELL, &PROOF).unwrap().is_none());
+    assert_eq!(h.refresh(&ROOT, 0).unwrap().new_cells.bits(), 1);
+    assert_eq!(h.refresh(&ROOT, 0).unwrap().new_cells.bits(), 0);
     assert_eq!(h.store.column(&ROOT, 1).unwrap().available.bits(), 0);
 }
 
@@ -883,18 +1016,17 @@ fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
         let (old_cell, _) = h.insert(key(3, 0));
         let assembly_send = old_cell.acquire(&mut network).unwrap();
         let pending = h
-            .store
-            .stage_cell(key(3, 1), &[0x12; BYTES_PER_CELL], &[0x23; BYTES_PER_KZG_PROOF])
+            .stage(key(3, 1), &[0x12; BYTES_PER_CELL], &[0x23; BYTES_PER_KZG_PROOF])
             .unwrap()
             .unwrap();
         let validation = pending.data.acquire(&mut h.consumer).unwrap();
         let full = h.full_bytes(&ROOT, 3);
-        let mut write = h.store.reserve_full(full.len()).unwrap();
+        let mut write = h.reserve(full.len()).unwrap();
         write.write_all(&full).unwrap();
         write.flush().unwrap();
         let read = write.read();
         drop(write);
-        let update = h.store.retain_full(&ROOT, 3, read).unwrap();
+        let update = h.retain(&ROOT, 3, read).unwrap();
         assert!(update.column_completed);
         assert_eq!(update.new_cells.bits(), 2);
         assert_eq!(update.complete_read.unwrap().seq(), read.seq());
@@ -907,14 +1039,14 @@ fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
         assert_eq!(full_send.cell.as_ref(), &[0x12; BYTES_PER_CELL]);
         assert_eq!(full_send.proof.as_ref(), &[0x23; BYTES_PER_KZG_PROOF]);
         assert_eq!(h.store.counts().full_bytes, full.len());
-        assert!(h.store.stage_cell(key(3, 1), &CELL, &PROOF).unwrap().is_none());
+        assert!(h.stage(key(3, 1), &CELL, &PROOF).unwrap().is_none());
 
         validation.accept().unwrap();
-        assert!(!h.store.refresh_column(&ROOT, 3).unwrap().column_completed);
+        assert!(!h.refresh(&ROOT, 3).unwrap().column_completed);
         let entry = &h.store.columns[h.store.roots[&ROOT]];
         let complete = h
-            .store
-            .producer
+            .allocator
+            .producer()
             .view_sub_reservation(entry.assembly.unwrap())
             .unwrap()
             .finish()
@@ -939,14 +1071,14 @@ fn mismatched_full_sidecars_cannot_replace_the_context_or_cell_source() {
         let original = h.insert(key(0, 0)).0;
         let full = h.full_bytes(&ROOT, 0);
         for corrupt_offset in [0, 8, 12, 24] {
-            let mut write = h.store.reserve_full(full.len()).unwrap();
+            let mut write = h.reserve(full.len()).unwrap();
             let bytes = write.buffer().unwrap();
             bytes.copy_from_slice(&full);
             bytes[corrupt_offset] ^= 1;
             write.flush().unwrap();
             let read = write.read();
             drop(write);
-            assert!(matches!(h.store.retain_full(&ROOT, 0, read), Err(StoreError::InvalidContext)));
+            assert!(matches!(h.retain(&ROOT, 0, read), Err(StoreError::InvalidContext)));
             assert_eq!(h.store.cell(key(0, 0)).unwrap().read().seq(), original.read().seq());
             assert_eq!(h.store.counts().full_bytes, 0);
         }
@@ -961,7 +1093,7 @@ fn expired_context_rejects_full_sidecars_without_changing_state() {
         h.context(ROOT, slot, 2);
         h.insert(key(0, 0));
         let full = h.full_bytes(&ROOT, 0);
-        let mut write = h.store.reserve_full(full.len()).unwrap();
+        let mut write = h.reserve(full.len()).unwrap();
         write.write_all(&full).unwrap();
         write.flush().unwrap();
         let read = write.read();
@@ -971,7 +1103,7 @@ fn expired_context_rejects_full_sidecars_without_changing_state() {
         h.advance_ms(12_000);
         assert_eq!(pin.buffer().unwrap().0, full);
         let before = h.store.counts();
-        assert!(matches!(h.store.retain_full(&ROOT, 0, read), Err(StoreError::ContextExpired)));
+        assert!(matches!(h.retain(&ROOT, 0, read), Err(StoreError::ContextExpired)));
         assert_eq!(h.store.counts(), before);
         assert!(!h.store.dirty);
         assert!(h.store.columns[h.store.roots[&ROOT]].full.is_none());
@@ -992,23 +1124,20 @@ fn rpc_sidecars_do_not_become_sendable_cells() {
     let mut rpc = TCache::producer("", 1 << 16);
     let mut reservation = rpc.reserve(full.len(), true).unwrap();
     reservation.write_all(&full).unwrap();
-    assert!(matches!(
-        h.store.retain_full(&ROOT, 0, reservation.read()),
-        Err(StoreError::WrongCache)
-    ));
+    assert!(matches!(h.retain(&ROOT, 0, reservation.read()), Err(StoreError::WrongCache)));
     assert_eq!(h.store.counts().full_bytes, 0);
     assert!(h.store.cell(key(0, 0)).is_none());
 }
 
 #[test]
-fn dropping_the_store_closes_descriptors_without_invalidating_active_validation() {
+fn dropping_the_allocator_closes_descriptors_without_invalidating_active_validation() {
     let mut h = Harness::new(1, 1);
     h.context(ROOT, 0, 1);
     let column = h.store.reservations(&ROOT).next().unwrap();
-    let pending = h.store.stage_cell(key(0, 0), &CELL, &PROOF).unwrap().unwrap();
-    let Harness { store, mut consumer, .. } = h;
+    let pending = h.stage(key(0, 0), &CELL, &PROOF).unwrap().unwrap();
+    let Harness { allocator, mut consumer, .. } = h;
     let validation = pending.data.acquire(&mut consumer).unwrap();
-    drop(store);
+    drop(allocator);
     assert!(matches!(column.reservation.acquire(&mut consumer), Err(SubReservationError::Closed)));
     assert_eq!(validation.buffers(), [&CELL[..], &PROOF[..]]);
     assert_eq!(validation.accept(), Err(SubReservationError::Closed));

@@ -5,13 +5,13 @@ use std::{
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
-use silver_columns::cell_store::{CellStoreConfig, StoreError};
 use silver_common::{
     BeaconApiRequest, BeaconStateEvent, ColumnSource, DataColumnsEvent, GossipDomain, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
-    cells::CellStoreEvent,
+    SilverSpineProducers, SszSource, SyncNeed, SyncUpdate, TMultiProducer, TProducer,
+    TRandomAccess,
+    cell_store::{CellStoreConfig, CellStoreEvent, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -249,18 +249,35 @@ impl Tile<SilverSpine> for Controller {
         }
 
         adapter.consume(|event: DataColumnsEvent, producers| {
-            let DataColumnsEvent::Persist { ssz, source, column_index, .. } = event else {
+            let DataColumnsEvent::Persist { ssz, source, ssz_source, domain, column_index, .. } =
+                event
+            else {
                 return;
             };
-            let read = match source {
-                ColumnSource::Gossip => return,
-                ColumnSource::Rpc => self.rpc_ssz_consumer.acquire(ssz),
-                ColumnSource::El => self.el_ssz_consumer.acquire(ssz),
+            if source == ColumnSource::Gossip {
+                return;
+            }
+            let read = match ssz_source {
+                SszSource::Rpc => Some(self.rpc_ssz_consumer.acquire(ssz)),
+                SszSource::El => Some(self.el_ssz_consumer.acquire(ssz)),
+                SszSource::DataColumns => None,
+                SszSource::Gossip => return,
+            };
+            let bytes = match read.as_ref() {
+                Some(read) => read.buffer().map(|(bytes, _)| bytes),
+                None => {
+                    let Some(ingress) = self.cell_ingress.as_mut() else { return };
+                    ingress.producer_mut().read_buffer(ssz)
+                }
             };
             let topic = GossipTopic::DataColumnSidecar(column_index);
-            match read.buffer() {
-                Ok((bytes, _)) => {
-                    if let Some(published) = self.gossip_handler.publish(topic, bytes) {
+            match bytes {
+                Ok(bytes) => {
+                    let published = match domain {
+                        Some(domain) => self.gossip_handler.publish_in_domain(topic, domain, bytes),
+                        None => self.gossip_handler.publish(topic, bytes),
+                    };
+                    if let Some(published) = published {
                         self.peer_manager.publish_local(topic, published, &mut |evt| {
                             handle_peer_control(
                                 &mut self.gossip_handler,
@@ -294,6 +311,7 @@ impl Tile<SilverSpine> for Controller {
                 originator_stream_id: _,
                 topic,
                 domain,
+                ssz_source: _,
                 msg_hash,
                 recv_ts: _,
                 protobuf,
@@ -480,7 +498,8 @@ impl Tile<SilverSpine> for Controller {
             });
         }
 
-        if self.gossip_handler.spin(adapter) {
+        let data_columns = self.cell_ingress.as_mut().map(|i| i.producer_mut());
+        if self.gossip_handler.spin(adapter, data_columns) {
             adapter.mark_work();
         }
         while let Some(event) = self.gossip_handler.pop_event() {

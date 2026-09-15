@@ -1,16 +1,21 @@
 use std::time::Instant;
 
 use flux::spine::SpineProducers;
-use silver_columns::cell_store::{
-    CellStore, CellStoreConfig, CommitmentContext, ContextData, StoreError,
-};
+use fxhash::FxHashMap;
 use silver_common::{
     SilverSpineProducers, TProducer,
-    cells::{CellKey, CellStoreEvent, CellValidationOutcome, PendingCell},
+    cell_store::{
+        CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, PendingCell, StoreError,
+    },
+    ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
 
+use crate::cell_allocator::CellAllocator;
+
 pub struct CellIngress {
-    store: CellStore,
+    allocator: CellAllocator,
+    available: FxHashMap<([u8; 32], usize), ColumnAvailability>,
+    capacity: usize,
     min_slot: u64,
 }
 
@@ -21,7 +26,13 @@ impl CellIngress {
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        Ok(Self { store: CellStore::new(config, producer, slot, slot_start)?, min_slot: 0 })
+        let capacity = config.column_capacity();
+        Ok(Self {
+            allocator: CellAllocator::new(config, producer, slot, slot_start)?,
+            available: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            capacity,
+            min_slot: 0,
+        })
     }
 
     pub fn set_min_slot(&mut self, min_slot: u64) {
@@ -29,37 +40,10 @@ impl CellIngress {
     }
 
     pub fn spin(&mut self, now: Instant, producers: &SilverSpineProducers) {
-        self.store.advance(now, self.min_slot, |_| {});
-        if let Some(event) = self.store.take_retention_event() {
+        if let Some(event) = self.allocator.advance(now, self.min_slot) {
+            self.available.clear();
             producers.produce(event);
         }
-    }
-
-    pub fn admit_context(
-        &mut self,
-        context: CommitmentContext,
-        data: ContextData<'_>,
-        now: Instant,
-        producers: &SilverSpineProducers,
-    ) -> Result<bool, StoreError> {
-        self.spin(now, producers);
-        if !self.store.admit_context(context, data)? {
-            return Ok(false);
-        }
-        let expires = self.store.slot_end();
-        let (_, ssz) = self.store.context(&context.block_root).unwrap();
-        producers.produce(CellStoreEvent::Context {
-            block_root: context.block_root,
-            slot: context.slot,
-            format: context.format,
-            blob_count: context.blob_count,
-            ssz,
-            expires,
-        });
-        for column in self.store.reservations(&context.block_root) {
-            producers.produce(CellStoreEvent::Reservation(column));
-        }
-        Ok(true)
     }
 
     pub fn handle(
@@ -68,36 +52,77 @@ impl CellIngress {
         now: Instant,
         producers: &SilverSpineProducers,
     ) {
+        self.spin(now, producers);
         match event {
-            CellStoreEvent::Cancel(pending) => {
-                self.cancel(pending, now);
+            CellStoreEvent::RejectedContext { block_root } => {
+                self.allocator.reject(&block_root);
+                self.available.retain(|(root, _), _| *root != block_root);
             }
-            CellStoreEvent::Validation { request, outcome: CellValidationOutcome::Accepted } => {
-                self.spin(now, producers);
-                let key = request.pending.key;
-                let Ok(update) = self.store.refresh_column(&key.block_root, key.column) else {
-                    return;
-                };
-                let mut rows = update.new_cells.bits();
-                while rows != 0 {
-                    let row = rows.trailing_zeros() as usize;
-                    rows &= rows - 1;
-                    let key = CellKey { row, ..key };
-                    if let Some(cell) = self.store.cell(key) {
-                        producers.produce(CellStoreEvent::Available { key, cell });
+            CellStoreEvent::Allocate(request) => {
+                let set = match self.allocator.allocate(request) {
+                    Ok(set) => Some(set),
+                    Err(e) => {
+                        tracing::debug!(?e, slot = request.context.slot, "cell allocation failed");
+                        None
                     }
+                };
+                producers.produce(CellStoreEvent::Allocated { request, set });
+            }
+            CellStoreEvent::Available(update)
+                if now < update.expires && update.slot >= self.min_slot =>
+            {
+                let key = (update.block_root, update.column);
+                if self.available.contains_key(&key) || self.available.len() < self.capacity {
+                    self.available.insert(key, update);
                 }
             }
             _ => {}
         }
     }
 
-    pub fn cancel(&mut self, pending: PendingCell, now: Instant) -> bool {
-        self.store.advance(now, self.min_slot, |_| {});
-        self.store.cancel_pending(pending).unwrap_or(false)
+    pub fn availability(
+        &self,
+        root: &[u8; 32],
+        column: usize,
+        now: Instant,
+    ) -> Option<ColumnAvailability> {
+        self.available
+            .get(&(*root, column))
+            .copied()
+            .filter(|update| now < update.expires && update.slot >= self.min_slot)
     }
 
-    pub fn store_mut(&mut self) -> &mut CellStore {
-        &mut self.store
+    pub fn stage_cell(
+        &self,
+        key: CellKey,
+        cell: &[u8; BYTES_PER_CELL],
+        proof: &[u8; BYTES_PER_KZG_PROOF],
+        now: Instant,
+    ) -> Result<Option<PendingCell>, StoreError> {
+        if self
+            .availability(&key.block_root, key.column, now)
+            .is_some_and(|column| column.cell(key.row).is_some())
+        {
+            return Ok(None);
+        }
+        let reference = self.allocator.column(key).ok_or(StoreError::UnknownCell)?;
+        if now >= reference.expires {
+            return Err(StoreError::ContextExpired);
+        }
+        self.allocator.stage(key, cell, proof)
+    }
+
+    pub fn cancel(&mut self, pending: PendingCell, now: Instant) -> bool {
+        if self.allocator.column(pending.key).is_none_or(|column| now >= column.expires) {
+            return false;
+        }
+        self.allocator.cancel(pending).unwrap_or(false)
+    }
+
+    pub fn allocator_mut(&mut self) -> &mut CellAllocator {
+        &mut self.allocator
+    }
+    pub fn producer_mut(&mut self) -> &mut TProducer {
+        self.allocator.producer_mut()
     }
 }
