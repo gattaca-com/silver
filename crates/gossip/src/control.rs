@@ -29,13 +29,14 @@ pub(super) fn handle_subscriptions<'a>(
         if let Some(topic) = subscription.topic_id &&
             let Some(subscribe) = subscription.subscribe
         {
-            let Ok(topic) = gossip_topic(topic, domains) else {
+            let Ok((topic, digest)) = gossip_topic(topic, domains) else {
                 continue;
             };
             if subscribe {
                 emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: stream_id.peer(),
                     topic,
+                    digest,
                 }));
                 if let GossipTopic::DataColumnSidecar(subnet) = topic {
                     // Replacement semantics: absent flags clear earlier bits.
@@ -52,6 +53,7 @@ pub(super) fn handle_subscriptions<'a>(
                 emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicUnsubscribe {
                     p2p_peer: stream_id.peer(),
                     topic,
+                    digest,
                 }));
             }
         }
@@ -66,13 +68,14 @@ pub(super) fn handle_grafts<'a>(
 ) {
     for graft in grafts {
         if let Some(topic) = graft.topic_id {
-            let Ok(topic) = gossip_topic(topic, domains) else {
+            let Ok((topic, digest)) = gossip_topic(topic, domains) else {
                 continue;
             };
             tracing::debug!(?stream_id, ?topic, "GRAFT received");
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicGraft {
                 p2p_peer: stream_id.peer(),
                 topic,
+                digest,
             }));
         }
     }
@@ -86,7 +89,7 @@ pub(super) fn handle_prunes<'a>(
 ) {
     for prune in prunes {
         if let Some(topic) = prune.topic_id {
-            let Ok(topic) = gossip_topic(topic, domains) else {
+            let Ok((topic, digest)) = gossip_topic(topic, domains) else {
                 continue;
             };
             tracing::debug!(?stream_id, ?topic, "PRUNE received");
@@ -96,6 +99,7 @@ pub(super) fn handle_prunes<'a>(
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicPrune {
                 p2p_peer: stream_id.peer(),
                 topic,
+                digest,
                 backoff_seconds: prune.backoff,
             }));
         }
@@ -166,7 +170,7 @@ pub(super) fn handle_ihaves<'a>(
     scratch_buffer.clear();
     for ihave in haves {
         if let Some(topic) = ihave.topic_id {
-            let Ok(topic) = gossip_topic(topic, domains) else {
+            let Ok((topic, _digest)) = gossip_topic(topic, domains) else {
                 continue;
             };
             for have in &ihave.message_ids {
@@ -460,8 +464,8 @@ fn encode_control_topics(
     Ok(reservation.read())
 }
 
-fn gossip_topic(topic: &str, domains: &ActiveDomains) -> Result<GossipTopic, Error> {
-    domains.parse(topic).map(|(topic, _)| topic).inspect_err(|_| {
+fn gossip_topic(topic: &str, domains: &ActiveDomains) -> Result<(GossipTopic, [u8; 4]), Error> {
+    domains.parse(topic).map(|(topic, domain)| (topic, domain.digest)).inspect_err(|_| {
         tracing::warn!(topic, "invalid gossipsub topic");
     })
 }

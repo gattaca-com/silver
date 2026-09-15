@@ -411,18 +411,22 @@ pub enum PeerEvent {
     P2pGossipTopicSubscribe {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicUnsubscribe {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicGraft {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicPrune {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         backoff_seconds: Option<u64>,
     },
     P2pGossipWant {

@@ -90,9 +90,11 @@ impl GossipPublications {
                 port: 4000 + peer as u16,
                 local_dial: false,
             });
-            capture
-                .observer
-                .produce(PeerEvent::P2pGossipTopicSubscribe { p2p_peer: peer as usize, topic });
+            capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: peer as usize,
+                topic,
+                digest: [0; 4],
+            });
         }
         capture.crank();
         capture.sent();

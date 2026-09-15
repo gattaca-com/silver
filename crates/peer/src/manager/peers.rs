@@ -17,7 +17,7 @@ use silver_common::{
 
 use super::{
     PeerManager, SHORT_LIVED_CONNECTION, SHORT_LIVED_DIAL_BACKOFF, TRANSPORT_DISCONNECT,
-    build_subnet_masks,
+    build_subnet_masks, mesh,
 };
 use crate::{
     database::PeerRecord,
@@ -168,7 +168,7 @@ impl PeerManager {
         let mesh_topics: Vec<_> = self
             .mesh
             .iter()
-            .filter_map(|(topic, peers)| peers.contains(&conn).then_some(*topic))
+            .filter_map(|(topic, meshes)| meshes.contains(conn).then_some(*topic))
             .collect();
         for topic in mesh_topics {
             self.leave_mesh(conn, topic);
@@ -255,8 +255,8 @@ impl PeerManager {
 
     /// Raw per-topic gossipsub counters for every meshed (peer, topic) pair.
     pub fn peer_topic_scores(&self, now: Instant, emit: &mut impl FnMut(PeerTopicScores)) {
-        for (topic, mesh_peers) in &self.mesh {
-            for conn in mesh_peers {
+        for (topic, meshes) in &self.mesh {
+            for conn in meshes.iter().flat_map(|m| &m.peers) {
                 let Some(peer) = self.peers.get(conn) else { continue };
                 let Some(t) = peer.topic_stats.get(topic) else { continue };
                 emit(PeerTopicScores {
@@ -282,8 +282,8 @@ impl PeerManager {
     /// Score breakdown for every live peer, as of the last `rescore_all`.
     pub fn peer_scores(&self, emit: &mut impl FnMut(PeerScores)) {
         let mut mesh_counts: HashMap<usize, u32> = HashMap::with_capacity(self.peers.len());
-        for mesh_peers in self.mesh.values() {
-            for conn in mesh_peers {
+        for meshes in self.mesh.values() {
+            for conn in meshes.iter().flat_map(|m| &m.peers) {
                 *mesh_counts.entry(*conn).or_insert(0) += 1;
             }
         }
@@ -317,13 +317,83 @@ impl PeerManager {
     /// `our_topics` + mesh bookkeeping + subnet masks, and announces
     /// SUBSCRIBE to every connected peer. New connections pick the
     /// topics up via the normal `on_connected` fan-out.
+    /// Declare the routable fork domains for gossip: `current` plus at most
+    /// one neighbour (the next domain during advance subscription, or the
+    /// previous while it drains). Diffs against each topic's `TopicMeshes`
+    /// and drives the Single<->Multi transitions, emitting SUBSCRIBE for a
+    /// newly-active digest and UNSUBSCRIBE + backoff-free PRUNE for a
+    /// removed one. Idempotent: unchanged domains emit nothing.
+    pub fn set_active_domains(
+        &mut self,
+        current: [u8; 4],
+        other: Option<[u8; 4]>,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let capacity = self.params.d_high as usize;
+        let want: [[u8; 4]; 2] = [current, other.unwrap_or(current)];
+        // Snapshot topics up front so we can borrow `self` mutably per topic.
+        let topics = self.our_topics.clone();
+        for topic in topics {
+            let meshes = self
+                .mesh
+                .entry(topic)
+                .or_insert_with(|| mesh::TopicMeshes::single(current, capacity));
+
+            // Add the neighbour digest as an empty second mesh, and announce.
+            if let Some(other) = other &&
+                other != current &&
+                !meshes.has_digest(other)
+            {
+                meshes.add_digest(other, capacity);
+                for (&conn, peer) in &self.peers {
+                    emit(PeerControl::P2pGossipSubscribe {
+                        p2p: peer.peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest: other,
+                    });
+                }
+            }
+
+            // Drop any live digest no longer wanted: unsubscribe + drain its
+            // mesh with backoff-free prunes (administrative, not punitive).
+            let stale: Vec<[u8; 4]> = meshes.digests().filter(|d| !want.contains(d)).collect();
+            for digest in stale {
+                let drained =
+                    self.mesh.get_mut(&topic).map(|m| m.keep_only(current)).unwrap_or_default();
+                for conn in drained {
+                    let peer_id = match self.peers.get(&conn) {
+                        Some(p) => p.peer_id,
+                        None => continue,
+                    };
+                    emit(PeerControl::P2pGossipPrune {
+                        p2p: peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest,
+                        backoff_seconds: None,
+                    });
+                }
+                for (&conn, peer) in &self.peers {
+                    emit(PeerControl::P2pGossipUnsubscribe {
+                        p2p: peer.peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn activate_topics(&mut self, topics: &[GossipTopic], emit: &mut impl FnMut(PeerControl)) {
         for &topic in topics {
             if self.our_topics.contains(&topic) {
                 continue;
             }
             self.our_topics.push(topic);
-            self.mesh.insert(topic, Vec::with_capacity(self.params.d_high as usize));
+            let digest = self.current_digest();
+            self.mesh.insert(topic, mesh::TopicMeshes::single(digest, self.params.d_high as usize));
             let digest = self.current_digest();
             for (&conn, peer) in &self.peers {
                 emit(PeerControl::P2pGossipSubscribe {
@@ -353,10 +423,37 @@ impl PeerManager {
         }
     }
 
+    /// Test-only: the first (current) sub-mesh's peers for a topic.
+    #[cfg(test)]
+    pub(crate) fn test_mesh(&self, topic: GossipTopic) -> &[usize] {
+        self.mesh
+            .get(&topic)
+            .and_then(|m| m.iter().next())
+            .map(|m| m.peers.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Test-only: push connections into a topic's current-digest sub-mesh,
+    /// creating the mesh at the current digest if absent.
+    #[cfg(test)]
+    pub(crate) fn test_mesh_extend(
+        &mut self,
+        topic: GossipTopic,
+        conns: impl IntoIterator<Item = usize>,
+    ) {
+        let digest = self.current_digest();
+        let cap = self.params.d_high as usize;
+        let meshes =
+            self.mesh.entry(topic).or_insert_with(|| mesh::TopicMeshes::single(digest, cap));
+        if let Some(mesh) = meshes.get_mut(digest) {
+            mesh.peers.extend(conns);
+        }
+    }
+
     /// Mesh size for a topic (for tests/introspection).
     #[allow(dead_code)]
     pub(crate) fn mesh_size(&self, topic: GossipTopic) -> usize {
-        self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0)
+        self.mesh.get(&topic).map(|m| m.total()).unwrap_or(0)
     }
 
     #[timed]
@@ -364,6 +461,7 @@ impl PeerManager {
         &mut self,
         conn: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
@@ -376,7 +474,8 @@ impl PeerManager {
         };
 
         let we_want = self.our_topics.contains(&topic);
-        let mesh_size = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        let mesh_size =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
         tracing::debug!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
 
         // Opportunistic graft: if this is a topic we care about and our mesh
@@ -387,7 +486,7 @@ impl PeerManager {
                     score >= 0.0 &&
                     !self.is_backed_off(conn, topic, now)))
         {
-            self.do_graft(conn, peer_id, topic, now, false, emit);
+            self.do_graft(conn, peer_id, topic, digest, now, false, emit);
         }
     }
 
@@ -396,6 +495,7 @@ impl PeerManager {
         &mut self,
         conn: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         _now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
@@ -413,13 +513,13 @@ impl PeerManager {
             None => return,
         };
         tracing::debug!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
-        // If peer was in our mesh, remove them.
-        if self.leave_mesh(conn, topic) {
+        // If peer was in this domain's mesh, remove them.
+        if self.leave_mesh_digest(conn, topic, digest) {
             emit(PeerControl::P2pGossipPrune {
                 p2p: peer_id,
                 p2p_connection: conn,
                 topic,
-                digest: self.current_digest(),
+                digest,
                 backoff_seconds: None,
             });
         }
@@ -430,6 +530,7 @@ impl PeerManager {
         &mut self,
         conn: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
@@ -443,7 +544,8 @@ impl PeerManager {
         };
         let peer_id = peer.peer_id;
         let score = peer.cached_score;
-        let mesh_size = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        let mesh_size =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
         // No mesh-size gate: refusing at the cap makes well-behaved remotes
         // retry on a 60s backoff loop forever and keeps us out of their
         // meshes (no first-delivery score → pruned as excess). Reference
@@ -452,7 +554,7 @@ impl PeerManager {
             (peer.is_trusted || (score >= 0.0 && !self.is_backed_off(conn, topic, now)));
         if accept {
             crate::PeerCounters::MeshGraftAcceptedByUs.inc();
-            self.do_graft(conn, peer_id, topic, now, false, emit);
+            self.do_graft(conn, peer_id, topic, digest, now, false, emit);
             tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
         } else {
             crate::PeerCounters::MeshGraftRefusedByUs.inc();
@@ -463,7 +565,7 @@ impl PeerManager {
                 crate::PeerCounters::MeshGraftBackoffViolation.inc();
                 self.add_behaviour_penalty(conn, 1.0, "graft during prune backoff");
             }
-            self.do_prune(conn, peer_id, topic, now, "graft refused", emit);
+            self.do_prune(conn, peer_id, topic, digest, now, "graft refused", emit);
             tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
     }
@@ -473,6 +575,7 @@ impl PeerManager {
         &mut self,
         conn: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         backoff_seconds: Option<u64>,
         emit: &mut impl FnMut(PeerControl),
@@ -482,8 +585,9 @@ impl PeerManager {
             .get(&conn)
             .and_then(|p| p.topic_stats.get(&topic))
             .and_then(|t| t.meshed_since);
-        let was_in_mesh = self.leave_mesh(conn, topic);
-        let mesh_size = self.mesh.get(&topic).map(|peers| peers.len()).unwrap_or(0);
+        let was_in_mesh = self.leave_mesh_digest(conn, topic, digest);
+        let mesh_size =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
         if !self.peers.contains_key(&conn) {
             if let Some(record) = self.database.by_p2p_id(conn) &&
                 let Some(id) = record.peer_id
@@ -576,23 +680,28 @@ impl PeerManager {
             .or_insert(deadline);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn do_graft(
         &mut self,
         conn: usize,
         peer_id: PeerId,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         opportunistic: bool,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let mesh = self
-            .mesh
-            .entry(topic)
-            .or_insert_with(|| Vec::with_capacity(self.params.d_high as usize));
-        if mesh.contains(&conn) {
+        let d_high = self.params.d_high as usize;
+        let meshes =
+            self.mesh.entry(topic).or_insert_with(|| mesh::TopicMeshes::single(digest, d_high));
+        let Some(mesh) = meshes.get_mut(digest) else {
+            // The digest is not a live domain for this topic; nothing to graft.
+            return;
+        };
+        if mesh.peers.contains(&conn) {
             return;
         }
-        mesh.push(conn);
+        mesh.peers.push(conn);
         // Seed per-topic state so P3 tracking kicks in after grace window.
         if let Some(peer) = self.peers.get_mut(&conn) {
             let t = peer.topic_stats.entry(topic).or_default();
@@ -601,19 +710,16 @@ impl PeerManager {
             t.opportunistic = opportunistic;
         }
         tracing::debug!(?topic, conn, "GRAFT peer");
-        emit(PeerControl::P2pGossipGraft {
-            p2p: peer_id,
-            p2p_connection: conn,
-            topic,
-            digest: self.current_digest(),
-        });
+        emit(PeerControl::P2pGossipGraft { p2p: peer_id, p2p_connection: conn, topic, digest });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_prune(
         &mut self,
         conn: usize,
         peer_id: PeerId,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         reason: &'static str,
         emit: &mut impl FnMut(PeerControl),
@@ -623,7 +729,7 @@ impl PeerManager {
             .get(&conn)
             .and_then(|p| p.topic_stats.get(&topic))
             .and_then(|t| t.meshed_since);
-        let was_in_mesh = self.leave_mesh(conn, topic);
+        let was_in_mesh = self.leave_mesh_digest(conn, topic, digest);
         self.set_backoff(conn, topic, now, self.params.prune_backoff);
         // Advertise what we will actually enforce, not the nominal param:
         // `set_backoff` keeps any longer deadline already recorded, and a
@@ -650,23 +756,46 @@ impl PeerManager {
             p2p: peer_id,
             p2p_connection: conn,
             topic,
-            digest: self.current_digest(),
+            digest,
             backoff_seconds,
         });
     }
 
-    pub(super) fn leave_mesh(&mut self, conn: usize, topic: GossipTopic) -> bool {
-        let removed = if let Some(mesh) = self.mesh.get_mut(&topic) &&
-            let Some(index) = mesh.iter().position(|peer| *peer == conn)
+    /// Remove `conn` from a specific digest's sub-mesh (per-digest events:
+    /// our prune, a remote prune/unsubscribe on one wire topic).
+    pub(super) fn leave_mesh_digest(
+        &mut self,
+        conn: usize,
+        topic: GossipTopic,
+        digest: [u8; 4],
+    ) -> bool {
+        let removed = if let Some(mesh) = self.mesh.get_mut(&topic).and_then(|m| m.get_mut(digest)) &&
+            let Some(index) = mesh.peers.iter().position(|peer| *peer == conn)
         {
-            mesh.swap_remove(index);
+            mesh.peers.swap_remove(index);
             true
         } else {
             false
         };
+        self.on_left_mesh(conn, topic, removed)
+    }
 
-        if let Some(topic_score) =
-            self.peers.get_mut(&conn).and_then(|peer| peer.topic_stats.get_mut(&topic))
+    /// Remove `conn` from every sub-mesh of `topic` (peer gone entirely).
+    pub(super) fn leave_mesh(&mut self, conn: usize, topic: GossipTopic) -> bool {
+        let removed = self.mesh.get_mut(&topic).is_some_and(|m| m.remove(conn));
+        self.on_left_mesh(conn, topic, removed)
+    }
+
+    /// Shared P3 mesh-failure bookkeeping after leaving a mesh. Only
+    /// applies once the peer is out of every sub-mesh of the topic — being
+    /// dropped from one digest while still meshed on the other is not a
+    /// semantic mesh departure.
+    fn on_left_mesh(&mut self, conn: usize, topic: GossipTopic, removed: bool) -> bool {
+        let still_meshed = self.mesh.get(&topic).is_some_and(|m| m.contains(conn));
+        if removed &&
+            !still_meshed &&
+            let Some(topic_score) =
+                self.peers.get_mut(&conn).and_then(|peer| peer.topic_stats.get_mut(&topic))
         {
             let threshold = scoring::topic_params(&topic).p3_threshold;
             if topic_score.mesh_active && topic_score.mesh_deliveries < threshold {
@@ -686,14 +815,16 @@ impl PeerManager {
         // suppresses grafting via a phantom degree and, once quinn recycles
         // the handle, mesh-pushes to a peer that never grafted.
         let peers = &self.peers;
-        for (topic, mesh_peers) in self.mesh.iter_mut() {
-            mesh_peers.retain(|conn| {
-                let live = peers.contains_key(conn);
-                if !live {
-                    tracing::warn!(conn, ?topic, "dropping mesh entry with no peer state");
-                }
-                live
-            });
+        for (topic, meshes) in self.mesh.iter_mut() {
+            for mesh in meshes.iter_mut() {
+                mesh.peers.retain(|conn| {
+                    let live = peers.contains_key(conn);
+                    if !live {
+                        tracing::warn!(conn, ?topic, "dropping mesh entry with no peer state");
+                    }
+                    live
+                });
+            }
         }
 
         // Iterate over OUR topics (topics we care about). We briefly take
@@ -706,16 +837,21 @@ impl PeerManager {
         let mut deficit_columns = 0u128;
         let mut deficits = 0u64;
         for topic in &our_topics {
-            self.prune_negative_mesh_peers(*topic, now, emit);
-            self.ensure_mesh_filled(*topic, now, emit);
-            self.ensure_mesh_capped(*topic, now, emit);
-            if opportunistic_graft_due {
-                self.opportunistic_graft(*topic, now, emit);
+            let digests: Vec<[u8; 4]> =
+                self.mesh.get(topic).map(|m| m.digests().collect()).unwrap_or_default();
+            for digest in digests {
+                self.prune_negative_mesh_peers(*topic, digest, now, emit);
+                self.ensure_mesh_filled(*topic, digest, now, emit);
+                self.ensure_mesh_capped(*topic, digest, now, emit);
+                if opportunistic_graft_due {
+                    self.opportunistic_graft(*topic, digest, now, emit);
+                }
             }
-            // Measured after the fill: still short of `d` means we ran out
-            // of connected subscribers to graft, so the shortfall can only
-            // be closed by acquiring peers that serve this subnet.
-            if self.mesh.get(topic).map_or(0, |mesh| mesh.len()) >= self.params.d as usize {
+            // Measured after the fill: still short of `d` on every live
+            // digest means we ran out of connected subscribers to graft, so
+            // the shortfall can only be closed by acquiring peers.
+            let d = self.params.d as usize;
+            if self.mesh.get(topic).is_some_and(|m| m.iter().any(|sub| sub.peers.len() >= d)) {
                 continue;
             }
             deficits += 1;
@@ -741,14 +877,16 @@ impl PeerManager {
     fn prune_negative_mesh_peers(
         &mut self,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
         let peers: Vec<_> = self
             .mesh
             .get(&topic)
+            .and_then(|m| m.get(digest))
             .into_iter()
-            .flatten()
+            .flat_map(|m| &m.peers)
             .filter_map(|conn| {
                 self.peers
                     .get(conn)
@@ -757,17 +895,19 @@ impl PeerManager {
             })
             .collect();
         for (conn, peer_id) in peers {
-            self.do_prune(conn, peer_id, topic, now, "negative score", emit);
+            self.do_prune(conn, peer_id, topic, digest, now, "negative score", emit);
         }
     }
 
     fn ensure_mesh_filled(
         &mut self,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let current = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        let current =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
         let d = self.params.d as usize;
         if current >= d {
             return;
@@ -781,7 +921,12 @@ impl PeerManager {
                 if !peer.topics.contains(&topic) {
                     return None;
                 }
-                if self.mesh.get(&topic).is_some_and(|m| m.contains(conn)) {
+                if self
+                    .mesh
+                    .get(&topic)
+                    .and_then(|m| m.get(digest))
+                    .is_some_and(|m| m.peers.contains(conn))
+                {
                     return None;
                 }
                 if peer.cached_score < 0.0 {
@@ -798,19 +943,21 @@ impl PeerManager {
             let Some(peer_id) = self.peers.get(&conn).map(|p| p.peer_id) else {
                 continue;
             };
-            self.do_graft(conn, peer_id, topic, now, false, emit);
+            self.do_graft(conn, peer_id, topic, digest, now, false, emit);
         }
     }
 
     fn ensure_mesh_capped(
         &mut self,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
         let d_high = self.params.d_high as usize;
         let d = self.params.d as usize;
-        let current = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        let current =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
         // Strictly above d_high (spec heartbeat rule): remote grafts can
         // push the mesh past the cap between heartbeats; a mesh sitting at
         // exactly d_high is steady state, not a prune trigger.
@@ -835,8 +982,10 @@ impl PeerManager {
         let mut ranked: Vec<(usize, f64, PeerId)> = self
             .mesh
             .get(&topic)
+            .and_then(|m| m.get(digest))
             .map(|mesh| {
-                mesh.iter()
+                mesh.peers
+                    .iter()
                     .filter_map(|conn| {
                         if self.in_opportunistic_grace(*conn, topic, now) {
                             return None;
@@ -856,23 +1005,25 @@ impl PeerManager {
             .unwrap_or_default();
         ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         for (conn, _, peer_id) in ranked.into_iter().take(excess) {
-            self.do_prune(conn, peer_id, topic, now, "mesh capped", emit);
+            self.do_prune(conn, peer_id, topic, digest, now, "mesh capped", emit);
         }
     }
 
     fn opportunistic_graft(
         &mut self,
         topic: GossipTopic,
+        digest: [u8; 4],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let Some(mesh) = self.mesh.get(&topic) else { return };
-        if mesh.len() <= 1 {
+        let Some(mesh) = self.mesh.get(&topic).and_then(|m| m.get(digest)) else { return };
+        let mesh_peers: Vec<usize> = mesh.peers.clone();
+        if mesh_peers.len() <= 1 {
             return;
         }
         // One round per activation window: stacking exempt grafts while the
         // last batch is still unproven would shrink the evictable pool.
-        if mesh.iter().any(|&conn| self.in_opportunistic_grace(conn, topic, now)) {
+        if mesh_peers.iter().any(|&conn| self.in_opportunistic_grace(conn, topic, now)) {
             return;
         }
         // Established members only: peers meshed for less than the P3
@@ -880,9 +1031,9 @@ impl PeerManager {
         // reads a freshly-built mesh as underperforming and re-grafts (then
         // prunes) before anyone has a chance to establish.
         let activation = self.params.mesh_message_deliveries_activation_s;
-        let mut local_scores = Vec::with_capacity(mesh.len());
-        let mut global_scores = Vec::with_capacity(mesh.len());
-        for conn in mesh {
+        let mut local_scores = Vec::with_capacity(mesh_peers.len());
+        let mut global_scores = Vec::with_capacity(mesh_peers.len());
+        for conn in &mesh_peers {
             let Some(peer) = self.peers.get(conn) else { continue };
             let Some(since) = peer.topic_stats.get(&topic).and_then(|t| t.meshed_since) else {
                 continue;
@@ -913,7 +1064,7 @@ impl PeerManager {
             .iter()
             .filter_map(|(conn, peer)| {
                 if !peer.topics.contains(&topic) ||
-                    mesh.contains(conn) ||
+                    mesh_peers.contains(conn) ||
                     scoring::candidate_score(peer) <= bar ||
                     self.is_backed_off(*conn, topic, now)
                 {
@@ -927,7 +1078,7 @@ impl PeerManager {
             let Some(peer_id) = self.peers.get(&conn).map(|peer| peer.peer_id) else {
                 continue;
             };
-            self.do_graft(conn, peer_id, topic, now, true, emit);
+            self.do_graft(conn, peer_id, topic, digest, now, true, emit);
         }
     }
 }
@@ -1045,7 +1196,7 @@ mod tests {
             &mut emit,
         );
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut emit,
         );
@@ -1063,7 +1214,11 @@ mod tests {
         cap.0.clear();
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic: GossipTopic::BeaconBlock },
+            PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: 1,
+                topic: GossipTopic::BeaconBlock,
+                digest: [0; 4],
+            },
             now,
             &mut |c| cap.0.push(c),
         );
@@ -1089,7 +1244,7 @@ mod tests {
         cap.0.clear();
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1098,7 +1253,7 @@ mod tests {
         assert!(!cap.0.iter().any(|event| matches!(event, PeerControl::P2pGossipGraft { .. })));
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicGraft { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicGraft { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1123,16 +1278,16 @@ mod tests {
         for i in 1..=3u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
             mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: i as usize, topic },
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: i as usize, topic, digest: [0; 4] },
                 now,
                 &mut |event| cap.0.push(event),
             );
         }
-        mgr.mesh.entry(topic).or_default().extend([1, 2]);
+        mgr.test_mesh_extend(topic, [1, 2]);
         cap.0.clear();
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicGraft { p2p_peer: 3, topic },
+            PeerEvent::P2pGossipTopicGraft { p2p_peer: 3, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1153,7 +1308,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1182,7 +1337,7 @@ mod tests {
         for conn in 1..=6 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic },
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic, digest: [0; 4] },
                 now,
                 &mut |event| cap.0.push(event),
             );
@@ -1191,9 +1346,9 @@ mod tests {
         mgr.peers.get_mut(&1).unwrap().cached_score = -0.1;
         mgr.set_backoff(2, topic, now, Duration::from_secs(60));
 
-        mgr.ensure_mesh_filled(topic, now, &mut |event| cap.0.push(event));
+        mgr.ensure_mesh_filled(topic, [0; 4], now, &mut |event| cap.0.push(event));
 
-        let mesh = &mgr.mesh[&topic];
+        let mesh = mgr.test_mesh(topic);
         assert_eq!(mesh.len(), 4);
         assert!(!mesh.contains(&1));
         assert!(!mesh.contains(&2));
@@ -1216,27 +1371,27 @@ mod tests {
         // 1..=3 are incumbents; 4 is an opportunistic graft with the lowest
         // effective score — exempt, so the trim falls on incumbent 1.
         for conn in 1..=3 {
-            mgr.do_graft(conn, peer_id(conn as u8), topic, now, false, &mut |event| {
+            mgr.do_graft(conn, peer_id(conn as u8), topic, [0; 4], now, false, &mut |event| {
                 cap.0.push(event)
             });
         }
-        mgr.do_graft(4, peer_id(4), topic, now, true, &mut |event| cap.0.push(event));
+        mgr.do_graft(4, peer_id(4), topic, [0; 4], now, true, &mut |event| cap.0.push(event));
         mgr.peers.get_mut(&4).unwrap().cached_score = 0.0;
         cap.0.clear();
 
-        mgr.ensure_mesh_capped(topic, now, &mut |event| cap.0.push(event));
-        let mesh = &mgr.mesh[&topic];
+        mgr.ensure_mesh_capped(topic, [0; 4], now, &mut |event| cap.0.push(event));
+        let mesh = mgr.test_mesh(topic);
         assert!(mesh.contains(&4));
         assert!(!mesh.contains(&1));
 
         // Past the activation window the exemption lapses: lowest score
         // (still peer 4) is evicted like anyone else.
-        mgr.do_graft(1, peer_id(1), topic, now, false, &mut |event| cap.0.push(event));
-        mgr.do_graft(2, peer_id(2), topic, now, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(1, peer_id(1), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(2, peer_id(2), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
         let settled =
             now + Duration::from_secs_f64(mgr.params.mesh_message_deliveries_activation_s);
-        mgr.ensure_mesh_capped(topic, settled, &mut |event| cap.0.push(event));
-        assert!(!mgr.mesh[&topic].contains(&4));
+        mgr.ensure_mesh_capped(topic, [0; 4], settled, &mut |event| cap.0.push(event));
+        assert!(!mgr.test_mesh(topic).contains(&4));
     }
 
     #[test]
@@ -1250,27 +1405,27 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=12 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
-            mgr.do_graft(conn, peer_id(conn as u8), topic, now, false, &mut |event| {
+            mgr.do_graft(conn, peer_id(conn as u8), topic, [0; 4], now, false, &mut |event| {
                 cap.0.push(event)
             });
             mgr.peers.get_mut(&conn).unwrap().cached_score = conn as f64;
         }
         cap.0.clear();
 
-        mgr.ensure_mesh_capped(topic, now, &mut |event| cap.0.push(event));
-        assert_eq!(mgr.mesh[&topic].len(), 12);
+        mgr.ensure_mesh_capped(topic, [0; 4], now, &mut |event| cap.0.push(event));
+        assert_eq!(mgr.test_mesh(topic).len(), 12);
         assert!(cap.0.is_empty());
 
         connect(&mut mgr, &mut cap, 13, 13, now);
-        mgr.do_graft(13, peer_id(13), topic, now, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(13, peer_id(13), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
         mgr.peers.get_mut(&13).unwrap().cached_score = 13.0;
         cap.0.clear();
 
         // Over cap: trims to d immediately — grace-window members are
         // eligible victims, top scorers retained.
-        mgr.ensure_mesh_capped(topic, now, &mut |event| cap.0.push(event));
+        mgr.ensure_mesh_capped(topic, [0; 4], now, &mut |event| cap.0.push(event));
 
-        let mesh = &mgr.mesh[&topic];
+        let mesh = mgr.test_mesh(topic);
         assert_eq!(mesh.len(), 8);
         assert!((6..=13).all(|conn| mesh.contains(&conn)));
         assert_eq!(
@@ -1294,25 +1449,25 @@ mod tests {
         connect(&mut mgr, &mut cap, 2, 2, now);
         let backoff = mgr.params.prune_backoff;
         for conn in [1, 2] {
-            mgr.do_prune(conn, peer_id(conn as u8), topic, now, "test", &mut |event| {
+            mgr.do_prune(conn, peer_id(conn as u8), topic, [0; 4], now, "test", &mut |event| {
                 cap.0.push(event)
             });
         }
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicGraft { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicGraft { p2p_peer: 1, topic, digest: [0; 4] },
             now + Duration::from_secs(1),
             &mut |event| cap.0.push(event),
         );
         assert_eq!(mgr.peers[&1].behaviour_penalty, 1.0, "early re-GRAFT must earn P7");
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicGraft { p2p_peer: 2, topic },
+            PeerEvent::P2pGossipTopicGraft { p2p_peer: 2, topic, digest: [0; 4] },
             now + backoff,
             &mut |event| cap.0.push(event),
         );
         assert_eq!(mgr.peers[&2].behaviour_penalty, 0.0, "honoured backoff must not earn P7");
-        assert!(!mgr.mesh[&topic].contains(&2), "slack window still refuses the graft");
+        assert!(!mgr.test_mesh(topic).contains(&2), "slack window still refuses the graft");
     }
 
     #[test]
@@ -1330,13 +1485,13 @@ mod tests {
         for conn in 1..=4 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic },
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic, digest: [0; 4] },
                 now,
                 &mut |event| cap.0.push(event),
             );
         }
         for conn in [1, 2] {
-            mgr.do_graft(conn, peer_id(conn as u8), topic, now, false, &mut |event| {
+            mgr.do_graft(conn, peer_id(conn as u8), topic, [0; 4], now, false, &mut |event| {
                 cap.0.push(event)
             });
             // Saturate this topic's P2 (cap 1000 × weight 0.001 = 1.0).
@@ -1387,13 +1542,13 @@ mod tests {
         for conn in 1..=4 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic },
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic, digest: [0; 4] },
                 now,
                 &mut |event| cap.0.push(event),
             );
         }
         for conn in [1, 2] {
-            mgr.do_graft(conn, peer_id(conn as u8), topic, now, false, &mut |event| {
+            mgr.do_graft(conn, peer_id(conn as u8), topic, [0; 4], now, false, &mut |event| {
                 cap.0.push(event)
             });
             mgr.peers.get_mut(&conn).unwrap().cached_score = 1.0;
@@ -1410,7 +1565,7 @@ mod tests {
             Duration::from_secs_f64(mgr.params.mesh_message_deliveries_activation_s);
         mgr.manage_mesh(established, &mut |event| cap.0.push(event));
 
-        let mesh = &mgr.mesh[&topic];
+        let mesh = mgr.test_mesh(topic);
         assert!(mesh.contains(&3), "candidate with global delivery merit must be grafted");
         assert!(!mesh.contains(&4), "candidate below the members' global median must not be");
     }
@@ -1427,13 +1582,13 @@ mod tests {
         for conn in 1..=5 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
             mgr.handle_event(
-                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic },
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic, digest: [0; 4] },
                 now,
                 &mut |event| cap.0.push(event),
             );
         }
-        mgr.do_graft(1, peer_id(1), topic, now, false, &mut |event| cap.0.push(event));
-        mgr.do_graft(2, peer_id(2), topic, now, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(1, peer_id(1), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(2, peer_id(2), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
         for (conn, score) in [(1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0), (5, 1.4)] {
             mgr.peers.get_mut(&conn).unwrap().cached_score = score;
         }
@@ -1453,7 +1608,7 @@ mod tests {
             due + Duration::from_secs_f64(mgr.params.mesh_message_deliveries_activation_s);
         mgr.manage_mesh(established, &mut |event| cap.0.push(event));
 
-        let mesh = &mgr.mesh[&topic];
+        let mesh = mgr.test_mesh(topic);
         assert_eq!(mesh.len(), 4);
         assert!(mesh.contains(&3));
         assert!(mesh.contains(&4));
@@ -1469,10 +1624,15 @@ mod tests {
 
         // Graft, then pruned 1s later (their heartbeat trim): base backoff
         // doubles.
-        mgr.do_graft(1, peer_id(1), topic, now, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(1, peer_id(1), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
         let pruned_at = now + Duration::from_secs(1);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(60) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(60),
+            },
             pruned_at,
             &mut |event| cap.0.push(event),
         );
@@ -1481,10 +1641,17 @@ mod tests {
 
         // Second quick trim: ×4.
         mgr.peers.get_mut(&1).unwrap().backoffs.clear();
-        mgr.do_graft(1, peer_id(1), topic, pruned_at, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(1, peer_id(1), topic, [0; 4], pruned_at, false, &mut |event| {
+            cap.0.push(event)
+        });
         let pruned_again = pruned_at + Duration::from_secs(1);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(60) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(60),
+            },
             pruned_again,
             &mut |event| cap.0.push(event),
         );
@@ -1493,10 +1660,17 @@ mod tests {
 
         // A graft that outlives the window resets the escalation.
         mgr.peers.get_mut(&1).unwrap().backoffs.clear();
-        mgr.do_graft(1, peer_id(1), topic, pruned_again, false, &mut |event| cap.0.push(event));
+        mgr.do_graft(1, peer_id(1), topic, [0; 4], pruned_again, false, &mut |event| {
+            cap.0.push(event)
+        });
         let pruned_late = pruned_again + QUICK_PRUNE_WINDOW + Duration::from_secs(1);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(60) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(60),
+            },
             pruned_late,
             &mut |event| cap.0.push(event),
         );
@@ -1513,14 +1687,24 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(7200) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(7200),
+            },
             now,
             &mut |event| cap.0.push(event),
         );
         let original_deadline = mgr.peers[&1].backoffs[&topic];
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(60) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(60),
+            },
             now + Duration::from_secs(1),
             &mut |event| cap.0.push(event),
         );
@@ -1532,7 +1716,12 @@ mod tests {
 
         connect(&mut mgr, &mut cap, 2, 2, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 2, topic, backoff_seconds: Some(u64::MAX) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 2,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(u64::MAX),
+            },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1546,7 +1735,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1557,7 +1746,7 @@ mod tests {
         topic_score.invalid_deliveries = 3.0;
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1579,7 +1768,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1588,7 +1777,12 @@ mod tests {
         topic_score.mesh_active = true;
 
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicPrune { p2p_peer: 1, topic, backoff_seconds: Some(60) },
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(60),
+            },
             now,
             &mut |event| cap.0.push(event),
         );
@@ -1608,7 +1802,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic },
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
             now,
             &mut |event| cap.0.push(event),
         );
