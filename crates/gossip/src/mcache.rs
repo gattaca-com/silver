@@ -184,7 +184,7 @@ mod tests {
 
     use silver_common::{ForkName, MessageId, TCache, TCacheProducer};
 
-    const TEST_DOMAIN: GossipDomain = GossipDomain { digest: [0; 4], format: ForkName::Fulu };
+    const TEST_DOMAIN: GossipDomain = GossipDomain::new([0; 4], ForkName::Fulu);
 
     use super::*;
 

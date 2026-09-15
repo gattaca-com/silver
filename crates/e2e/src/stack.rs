@@ -342,7 +342,7 @@ impl EchoStack {
         let boot_domain = (!fork_digest_hex.is_empty()).then(|| {
             let mut digest = [0u8; 4];
             hex::decode_to_slice(&fork_digest_hex, &mut digest).expect("valid fork digest hex");
-            silver_common::GossipDomain { digest, format: silver_common::ForkName::Fulu }
+            silver_common::GossipDomain::new(digest, silver_common::ForkName::Fulu)
         });
 
         // Inbound gossip raw bytes: network writes, compression consumes.

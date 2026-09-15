@@ -8,7 +8,7 @@ use silver_common::{
 use silver_peer::SyncingConfig;
 
 fn test_domain() -> silver_common::GossipDomain {
-    silver_common::GossipDomain { digest: [0; 4], format: silver_common::ForkName::Fulu }
+    silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu)
 }
 
 use super::*;

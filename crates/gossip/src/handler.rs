@@ -443,7 +443,7 @@ struct DomainState {
 
 impl DomainState {
     fn new(domain: GossipDomain) -> Self {
-        Self { domain, hex: hex::encode(domain.digest) }
+        Self { domain, hex: hex::encode(domain.digest()) }
     }
 }
 
@@ -587,7 +587,7 @@ mod tests {
             incoming_consumer,
             ssz_producer,
             protobuf_producer,
-            Some(GossipDomain { digest: [1, 2, 3, 4], format: silver_common::ForkName::Fulu }),
+            Some(GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
         )
         .expect("gossip handler");
         let topic = GossipTopic::BeaconAttestation(7);

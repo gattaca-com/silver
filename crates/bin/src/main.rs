@@ -278,10 +278,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_gossip_consumer,
         ssz_gossip_producer,
         outgoing_gossip_producer,
-        Some(silver_common::GossipDomain {
-            digest: config.fork_digest(),
-            format: spec.fork_at_slot(boot_wall_slot),
-        }),
+        Some(silver_common::GossipDomain::new(
+            config.fork_digest(),
+            spec.fork_at_slot(boot_wall_slot),
+        )),
     )?;
 
     let mut control_tile = Controller::new(

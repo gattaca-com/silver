@@ -148,10 +148,10 @@ impl Controller {
             // PM still tracks our Status (peer-Status validation) + applied head
             // (custody-peer eligibility); the wall slot is the engine's only.
             let fork_digest_changed = self.peer_manager.set_status(ssz);
-            let domain = GossipDomain {
-                digest: *StatusView::fork_digest(&ssz),
-                format: self.spec.fork_at_slot(wall_slot),
-            };
+            let domain = GossipDomain::new(
+                *StatusView::fork_digest(&ssz),
+                self.spec.fork_at_slot(wall_slot),
+            );
             self.gossip_handler.set_domains(domain, None);
             self.peer_manager.set_local_head_imported(latest_block_slot);
             self.sync_engine.on_local_status(

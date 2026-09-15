@@ -350,7 +350,7 @@ mod tests {
     use crate::manager::fixture::*;
 
     fn test_domain() -> silver_common::GossipDomain {
-        silver_common::GossipDomain { digest: [0; 4], format: silver_common::ForkName::Fulu }
+        silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu)
     }
 
     fn mk_tcache_read() -> silver_common::TCacheRead {

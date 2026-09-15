@@ -308,10 +308,7 @@ impl Harness {
         self.inj_adapter.produce(NewGossipMsg {
             stream_id: null_stream_id(),
             topic: GossipTopic::BeaconBlock,
-            domain: silver_common::GossipDomain {
-                digest: [0; 4],
-                format: silver_common::ForkName::Fulu,
-            },
+            domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
             msg_hash: MessageId { id: [0u8; 20] },
             recv_ts: Nanos(0),
             ssz: tcache,

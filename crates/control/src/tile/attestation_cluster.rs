@@ -505,10 +505,7 @@ mod tests {
                 incoming.cache_ref().random_access("standalone_gossip", true).unwrap(),
                 TCache::producer("standalone_gossip_ssz", 1 << 12),
                 TCache::producer("standalone_gossip_protobuf", 1 << 12),
-                Some(silver_common::GossipDomain {
-                    digest: [1, 2, 3, 4],
-                    format: silver_common::ForkName::Fulu,
-                }),
+                Some(silver_common::GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
             )
             .unwrap();
             Self { handler: handler(now), gossip, adapter, _spine: spine, _base: base }

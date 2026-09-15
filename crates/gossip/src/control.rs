@@ -465,7 +465,7 @@ fn encode_control_topics(
 }
 
 fn gossip_topic(topic: &str, domains: &ActiveDomains) -> Result<(GossipTopic, [u8; 4]), Error> {
-    domains.parse(topic).map(|(topic, domain)| (topic, domain.digest)).inspect_err(|_| {
+    domains.parse(topic).map(|(topic, domain)| (topic, domain.digest())).inspect_err(|_| {
         tracing::warn!(topic, "invalid gossipsub topic");
     })
 }
@@ -511,10 +511,10 @@ mod tests {
         use crate::generated::{RPC, rpc::SubOpts};
 
         let digest = "8c9f62fe";
-        let domains = ActiveDomains::new(Some(GossipDomain {
-            digest: [0x8c, 0x9f, 0x62, 0xfe],
-            format: silver_common::ForkName::Fulu,
-        }));
+        let domains = ActiveDomains::new(Some(GossipDomain::new(
+            [0x8c, 0x9f, 0x62, 0xfe],
+            silver_common::ForkName::Fulu,
+        )));
         let column_topic = format!("/eth2/{digest}/data_column_sidecar_3/ssz_snappy");
         let block_topic = format!("/eth2/{digest}/beacon_block/ssz_snappy");
         let rpc = RPC {

@@ -458,7 +458,7 @@ impl PeerManager {
                     originator_stream_id.peer(),
                     msg_hash,
                     topic,
-                    domain.digest,
+                    domain.digest(),
                     protobuf,
                     emit,
                 );

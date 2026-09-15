@@ -39,8 +39,22 @@ pub const MAX_GOSSIP_FRAME_SIZE: usize = MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 10
 /// BPO transition changes the digest without changing the format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GossipDomain {
-    pub digest: [u8; 4],
-    pub format: ForkName,
+    digest: [u8; 4],
+    format: ForkName,
+}
+
+impl GossipDomain {
+    pub const fn new(digest: [u8; 4], format: ForkName) -> Self {
+        Self { digest, format }
+    }
+
+    pub const fn digest(&self) -> [u8; 4] {
+        self.digest
+    }
+
+    pub const fn format(&self) -> ForkName {
+        self.format
+    }
 }
 
 /// Gossipsub 1.3 extensions announcement, sent as the first RPC on
