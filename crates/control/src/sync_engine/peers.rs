@@ -45,6 +45,10 @@ impl PeerView {
         !self.claims.is_empty()
     }
 
+    pub(super) fn any_peer_ahead_of(&self, our_head_slot: u64, cfg: &SyncingConfig) -> bool {
+        self.claims.values().any(|c| c.head_slot > our_head_slot + cfg.head_lag_threshold_slots)
+    }
+
     pub(super) fn claims_span(&self, peer: usize, span: RangeInclusive<Slot>) -> bool {
         self.claims.get(&peer).is_some_and(|c| {
             c.head_slot >= *span.end() && c.earliest_available_slot <= *span.start()

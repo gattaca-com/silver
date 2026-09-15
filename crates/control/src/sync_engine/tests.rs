@@ -240,6 +240,25 @@ fn quiet_chain_is_caught_up_not_behind() {
     );
 }
 
+/// The only offered chain went unavailable while its peer still claims a
+/// head far past ours. That is "behind with nothing selectable", so the
+/// engine must not fall back to `Following`: the following tick would
+/// advance the head state across every slot up to the wall clock.
+#[test]
+fn unselectable_chains_with_peers_ahead_stay_idle_not_following() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 20_000);
+    local_status(&mut e, 0, 20_000);
+    advance(&mut e);
+    assert!(matches!(e.current_target(), Some(SyncUpdate::SyncingHead { .. })));
+
+    e.ctx.peers.mark_unavailable(HEAD_ROOT);
+    e.mark_dirty();
+    assert_eq!(e.advance(), None, "no target published");
+    assert!(matches!(e.phase, Phase::Idle), "behind a peer: Idle, not Following");
+    assert_ne!(e.current_target(), Some(SyncUpdate::Following));
+}
+
 #[test]
 fn tail_advances_only_on_coverage() {
     let now = Instant::now();

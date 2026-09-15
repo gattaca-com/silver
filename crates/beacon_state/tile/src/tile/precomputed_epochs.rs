@@ -1,52 +1,63 @@
-use rustc_hash::FxHashMap;
-use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, Slot, StateId};
+use silver_beacon_state_data::{B256, Epoch, StateId};
 
 use crate::fork_choice::ForkChoice;
 
-/// A block's post-state at each later epoch's first slot, shared by the tick,
+// Steady state holds the head's next epoch plus reorg/precompute transients.
+const MAX_PRECOMPUTED_EPOCHS: usize = 8;
+
+struct Entry {
+    root: B256,
+    epoch: Epoch,
+    state: StateId,
+}
+
+/// A block's post-state at a later epoch's first slot, shared by the tick,
 /// the block path and the precompute. The spec's `store.checkpoint_states`.
 #[derive(Default)]
-pub(super) struct PrecomputedEpochs(FxHashMap<(B256, Epoch), StateId>);
+pub(super) struct PrecomputedEpochs([Option<Entry>; MAX_PRECOMPUTED_EPOCHS]);
 
 impl PrecomputedEpochs {
-    /// Advances from the latest cached epoch, else `from`, caching every
-    /// boundary crossed. Spec `store_target_checkpoint_state`.
-    pub(super) fn get_or_advance(
+    pub(super) fn get_or_insert(
         &mut self,
         root: B256,
-        mut from: StateId,
-        from_slot: Slot,
         epoch: Epoch,
-        mut advance: impl FnMut(StateId, Slot) -> StateId,
+        compute: impl FnOnce() -> StateId,
     ) -> StateId {
-        let mut next = from_slot / SLOTS_PER_EPOCH + 1;
-        for cached in (next..=epoch).rev() {
-            if let Some(id) = self.get(root, cached) {
-                (from, next) = (id, cached + 1);
-                break;
-            }
+        if let Some(e) = self.0.iter().flatten().find(|e| e.root == root && e.epoch == epoch) {
+            return e.state;
         }
-        for crossed in next..=epoch {
-            from = advance(from, crossed * SLOTS_PER_EPOCH);
-            self.0.insert((root, crossed), from);
-        }
-        from
+
+        let state = compute();
+        let slot = self.find_slot();
+        self.0[slot] = Some(Entry { root, epoch, state });
+        state
     }
 
-    fn get(&self, root: B256, epoch: Epoch) -> Option<StateId> {
-        self.0.get(&(root, epoch)).copied()
+    /// Empty slot first, otherwise the lowest-epoch entry.
+    fn find_slot(&self) -> usize {
+        if let Some(empty) = self.0.iter().position(Option::is_none) {
+            return empty;
+        }
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, e)| e.as_ref().map(|e| (slot, e.epoch)))
+            .min_by_key(|&(_, epoch)| epoch)
+            .map_or(0, |(slot, _)| slot)
     }
 
     /// Entries off pruned blocks, or at or before the finalized epoch, can no
     /// longer be asked for.
     pub(super) fn drop_outdated(&mut self, fork_choice: &ForkChoice) {
         let finalized_epoch = fork_choice.finalized_checkpoint.epoch;
-        self.0.retain(|(root, epoch), _| {
-            *epoch > finalized_epoch && fork_choice.find_node_idx(root).is_some()
-        });
+        for slot in &mut self.0 {
+            slot.take_if(|e| {
+                e.epoch <= finalized_epoch || fork_choice.find_node_idx(&e.root).is_none()
+            });
+        }
     }
 
     pub(super) fn state_ids_mut(&mut self) -> impl Iterator<Item = &mut StateId> {
-        self.0.values_mut()
+        self.0.iter_mut().flatten().map(|e| &mut e.state)
     }
 }
