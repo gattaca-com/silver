@@ -20,8 +20,9 @@ use silver_common::{
     TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
-        SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
+        BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
+        DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, SIGNED_BEACON_BLOCK_MIN,
+        STATUS_V2_SIZE,
     },
     test_util::ShmemDir,
 };
@@ -197,17 +198,22 @@ fn block_bytes(slot: u64, byte: u8) -> Vec<u8> {
     block
 }
 
-/// Empty Fulu sidecar for field extraction; consensus validation is outside
-/// this fixture.
+/// Contains two distinct commitments for field extraction, without
+/// consensus-valid column or proof lists.
 fn fulu_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
+    let commitments =
+        [[byte; BYTES_PER_KZG_COMMITMENT], [!byte; BYTES_PER_KZG_COMMITMENT]].concat();
     let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_MIN];
     sidecar[0..8].copy_from_slice(&index.to_le_bytes());
-    for offset in [8, 12, 16] {
-        sidecar[offset..offset + 4]
-            .copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
+    let proofs = DATA_COLUMN_SIDECAR_MIN + commitments.len();
+    for (offset, start) in
+        [(8, DATA_COLUMN_SIDECAR_MIN), (12, DATA_COLUMN_SIDECAR_MIN), (16, proofs)]
+    {
+        sidecar[offset..offset + 4].copy_from_slice(&(start as u32).to_le_bytes());
     }
     sidecar[20..28].copy_from_slice(&slot.to_le_bytes());
     sidecar[68..100].copy_from_slice(&[byte; 32]);
+    sidecar.extend_from_slice(&commitments);
     sidecar
 }
 
@@ -245,9 +251,13 @@ fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEv
 
 fn column_relay(gossip: &mut TProducer, slot: u64, byte: u8, index: u64) -> (PeerEvent, SseEvent) {
     let sidecar = fulu_sidecar_bytes(slot, byte, index);
+    let commitments = DataColumnSidecarFuluView::kzg_commitments(&sidecar);
+    assert_eq!(commitments.len(), 2 * BYTES_PER_KZG_COMMITMENT, "the fixture carries two");
     let topic = GossipTopic::DataColumnSidecar(index);
     let event = send_gossip(topic, byte, write_object(gossip, &sidecar));
-    (event, SseEvent::column(slot, &block_root_from_sidecar(&sidecar), index))
+    let expected =
+        SseEvent::column(slot, &block_root_from_sidecar(&sidecar), index, Some(commitments));
+    (event, expected)
 }
 
 fn column_publication(
@@ -261,13 +271,16 @@ fn column_publication(
         topic: GossipTopic::DataColumnSidecar(index),
         ssz: write_object(rpc, &gloas_sidecar_bytes(slot, byte, index)),
     };
-    (event, SseEvent::column(slot, &[byte; 32], index))
+    (event, SseEvent::column(slot, &[byte; 32], index, None))
 }
 
+/// Expected fields are matched individually; additional fields are allowed
+/// unless listed in `absent`.
 #[derive(Clone, Debug)]
 struct SseEvent {
     name: String,
     data: Value,
+    absent: Vec<&'static str>,
 }
 
 impl SseEvent {
@@ -275,6 +288,7 @@ impl SseEvent {
         Self {
             name: "block".to_owned(),
             data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode([byte; 32]))}),
+            absent: Vec::new(),
         }
     }
 
@@ -282,20 +296,38 @@ impl SseEvent {
         Self {
             name: "block_gossip".to_owned(),
             data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode(block_root))}),
+            absent: Vec::new(),
         }
     }
 
-    fn column(slot: u64, block_root: &[u8; 32], index: u64) -> Self {
-        Self {
-            name: "data_column_sidecar".to_owned(),
-            data: json!({"block_root": format!("0x{}", hex::encode(block_root)), "index": index.to_string(), "slot": slot.to_string()}),
+    fn column(
+        slot: u64,
+        block_root: &[u8; 32],
+        index: u64,
+        kzg_commitments: Option<&[u8]>,
+    ) -> Self {
+        let mut data = json!({"block_root": format!("0x{}", hex::encode(block_root)), "index": index.to_string(), "slot": slot.to_string()});
+        let mut absent = Vec::new();
+        match kzg_commitments {
+            Some(commitments) => {
+                let list: Vec<_> = commitments
+                    .chunks_exact(BYTES_PER_KZG_COMMITMENT)
+                    .map(|commitment| format!("0x{}", hex::encode(commitment)))
+                    .collect();
+                data["kzg_commitments"] = json!(list);
+            }
+            None => absent.push("kzg_commitments"),
         }
+        Self { name: "data_column_sidecar".to_owned(), data, absent }
     }
 
     fn assert_matches(&self, expected: &Self) {
         assert_eq!(self.name, expected.name);
         for (key, value) in expected.data.as_object().unwrap() {
             assert_eq!(self.data.get(key), Some(value), "field {key} in {}", self.name);
+        }
+        for key in &expected.absent {
+            assert!(self.data.get(key).is_none(), "field {key} present in {}", self.name);
         }
     }
 
@@ -332,6 +364,7 @@ impl EventsSubscriber {
                         send.send(SseEvent {
                             name: if name.is_empty() { "message".to_owned() } else { name.clone() },
                             data: serde_json::from_str(&data).expect("event data is JSON"),
+                            absent: Vec::new(),
                         })
                         .unwrap();
                         received += 1;
@@ -702,7 +735,7 @@ fn pool_cap_gates_spine_intake() {
 /// after that intake: a request reaches the EL in the iteration that took it,
 /// not the one after.
 #[test]
-fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
+fn engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
@@ -1015,7 +1048,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 }
 
 #[test]
-fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
+fn applied_block_on_the_spine_reaches_an_events_subscriber() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
@@ -1137,7 +1170,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
 }
 
 #[test]
-fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
+fn late_subscriber_receives_only_relay_requests_published_after_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
@@ -1180,7 +1213,7 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 }
 
 #[test]
-fn an_idle_boundary_lets_the_object_rings_evict_its_consumers() {
+fn idle_boundary_lets_the_object_rings_evict_its_consumers() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =

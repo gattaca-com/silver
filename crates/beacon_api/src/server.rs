@@ -411,9 +411,15 @@ impl BeaconApi {
         block_root: &[u8; 32],
         column_index: u64,
         slot: u64,
+        kzg_commitments: Option<&[u8]>,
     ) {
         let mut data = Vec::new();
-        Json::new(&mut data).data_column_sidecar_event(block_root, column_index, slot);
+        Json::new(&mut data).data_column_sidecar_event(
+            block_root,
+            column_index,
+            slot,
+            kzg_commitments,
+        );
         self.publish(Channel::DataColumnSidecar, "data_column_sidecar", &data);
     }
 

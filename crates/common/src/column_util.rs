@@ -112,6 +112,15 @@ impl SidecarIdentity {
     }
 }
 
+/// Returns `None` unless the length and column offset identify Fulu.
+/// Borrows the commitment bytes without validating the remaining SSZ offsets.
+pub fn kzg_commitments_from_sidecar(sidecar: &[u8]) -> Option<&[u8]> {
+    match SidecarLayout::of(sidecar)? {
+        SidecarLayout::Fulu => Some(DataColumnSidecarFuluView::kzg_commitments(sidecar)),
+        SidecarLayout::Gloas => None,
+    }
+}
+
 fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8], max_blobs: usize) -> bool {
     if !column.len().is_multiple_of(BYTES_PER_CELL) ||
         !commits.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) ||
@@ -473,6 +482,22 @@ mod tests {
         buf[12..16].copy_from_slice(&com_off.to_le_bytes());
         buf[16..20].copy_from_slice(&proof_off.to_le_bytes());
         buf
+    }
+
+    #[test]
+    fn kzg_commitments_from_sidecar_reads_fulu_and_returns_none_for_other_layouts() {
+        let commitments =
+            [[0x42; BYTES_PER_KZG_COMMITMENT], [0xa7; BYTES_PER_KZG_COMMITMENT]].concat();
+        let mut sidecar = synth_sidecar(3, 2, 2, 2);
+        let start = DATA_COLUMN_SIDECAR_MIN + 2 * BYTES_PER_CELL;
+        sidecar[start..start + commitments.len()].copy_from_slice(&commitments);
+
+        assert_eq!(kzg_commitments_from_sidecar(&sidecar), Some(commitments.as_slice()));
+        assert_eq!(kzg_commitments_from_sidecar(&synth_gloas_sidecar(3, 2, 2)), None);
+        assert_eq!(kzg_commitments_from_sidecar(&sidecar[..DATA_COLUMN_SIDECAR_MIN - 1]), None);
+
+        sidecar[8..12].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(kzg_commitments_from_sidecar(&sidecar), None);
     }
 
     /// Every sidecar carries at least one blob; the active schedule is the
