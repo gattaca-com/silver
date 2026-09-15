@@ -235,6 +235,11 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
         }
 
+        if self.spec.is_gloas_at_slot(slot) {
+            tracing::warn!(?stream_id, slot, "Fulu sidecar at or after Gloas activation");
+            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+        }
+
         if tracker.has_any(&block_root, column_bitmask) {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
