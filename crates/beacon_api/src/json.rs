@@ -1,7 +1,6 @@
 //! Beacon-API bodies are written by hand: the spec quotes every integer as a
 //! decimal string and every byte array as lowercase `0x`-hex, and the
 //! SSZ-backed containers have no Rust struct to hang `Serialize` on.
-//! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
 
 use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
 

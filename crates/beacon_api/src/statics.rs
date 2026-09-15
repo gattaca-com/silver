@@ -3,13 +3,10 @@ use silver_common::{AGENT_VERSION, Enr, Identify, Keypair};
 
 use crate::{
     config::{deposit_contract_body, fork_schedule_body, spec_body},
-    identity::build_identity_json,
+    identity::identity_body,
     json::Json,
 };
 
-/// Bodies whose every input is known at boot. Rendering them once leaves
-/// their handlers a buffer copy, and keeps the spec table — the largest body
-/// silver serves — off the request path entirely.
 pub(crate) struct StaticBodies {
     pub(crate) identity: Vec<u8>,
     pub(crate) version: Vec<u8>,
@@ -26,7 +23,7 @@ impl StaticBodies {
         spec: &SpecConfig,
     ) -> Self {
         Self {
-            identity: build_identity_json(keypair, local_enr, identify),
+            identity: identity_body(keypair, local_enr, identify),
             version: version_body(),
             spec: spec_body(spec),
             fork_schedule: fork_schedule_body(spec),
