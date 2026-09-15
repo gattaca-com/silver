@@ -756,7 +756,7 @@ mod tests {
     /// later one. Handing that offset out again replaces the map entry, which
     /// drops the older connection and closes its socket unannounced.
     #[test]
-    fn a_recycled_offset_skips_the_connection_still_holding_it() {
+    fn recycled_offset_skips_the_connection_still_holding_it() {
         let span = 3;
         let tokens = TokenRange::new(64, span);
         let binds = [Bind::parse("127.0.0.1:0")];
@@ -1071,7 +1071,7 @@ mod tests {
     /// An operator large enough to declare more body than the read buffer
     /// holds gets a status back rather than a connection that goes quiet.
     #[test]
-    fn a_body_declared_past_the_read_cap_is_answered_with_413() {
+    fn body_declared_past_the_read_cap_is_answered_with_413() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -1096,7 +1096,7 @@ mod tests {
     /// like every other reject, where dropping the socket mid-send would be
     /// the reset that costs a client its node.
     #[test]
-    fn a_head_that_outgrows_the_read_buffer_is_answered_with_431() {
+    fn head_that_outgrows_the_read_buffer_is_answered_with_431() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -1128,7 +1128,7 @@ mod tests {
     /// caller and costs the node its place in the rotation, where a 413 costs
     /// nothing.
     #[test]
-    fn a_client_still_streaming_when_the_413_is_framed_reads_all_of_it() {
+    fn client_still_streaming_when_the_413_is_framed_reads_all_of_it() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -1147,7 +1147,7 @@ mod tests {
     /// Unix sockets take the same half-close, so the drain ends on the peer's
     /// own close there too rather than running to the linger cap.
     #[test]
-    fn a_client_still_streaming_over_uds_reads_all_of_the_413() {
+    fn client_still_streaming_over_uds_reads_all_of_the_413() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1178,7 +1178,7 @@ mod tests {
     /// Draining an answered connection is bounded: one client cannot hold a
     /// slot for as long as it cares to keep sending.
     #[test]
-    fn a_client_that_never_stops_sending_is_dropped_at_the_linger_cap() {
+    fn client_that_never_stops_sending_is_dropped_at_the_linger_cap() {
         let mut server = server_with(64, Duration::from_millis(800));
         // A peer that never pauses keeps the wait between reads at zero, so the
         // total cap is the only one that can end it.
@@ -1217,7 +1217,7 @@ mod tests {
     /// the wait between reads, not for the whole draining window — and not for
     /// the far longer deadline that keeps a served connection available.
     #[test]
-    fn a_lingering_connection_that_goes_quiet_is_dropped_at_the_idle_cap() {
+    fn lingering_connection_that_goes_quiet_is_dropped_at_the_idle_cap() {
         let idle_timeout = Duration::from_secs(2);
         let mut server = server_with(64, idle_timeout);
         server.api.linger =
@@ -1411,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_gets_the_head_then_every_block_published_on_its_channel() {
+    fn subscriber_gets_the_head_then_every_block_published_on_its_channel() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "block");
@@ -1570,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn a_topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
+    fn topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
         let client = std::thread::spawn(move || {
@@ -1615,7 +1615,7 @@ mod tests {
     /// accepts no bytes. Delivery therefore does not require a particular
     /// kernel send-buffer capacity.
     #[test]
-    fn a_burst_reaches_a_reading_subscriber_in_order() {
+    fn burst_reaches_a_reading_subscriber_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1642,7 +1642,7 @@ mod tests {
     /// event. The small frame keeps this probe independent of burst capacity.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_frame_written_whole_to_an_idle_subscriber_leaves_nothing_to_report() {
+    fn frame_written_whole_to_an_idle_subscriber_leaves_nothing_to_report() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "block");
@@ -1662,7 +1662,7 @@ mod tests {
     /// and retain interest in inbound bytes.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_publish_that_drains_the_unsent_head_leaves_nothing_to_report() {
+    fn publish_that_drains_the_unsent_head_leaves_nothing_to_report() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1691,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_that_stops_reading_is_closed_at_the_cap() {
+    fn subscriber_that_stops_reading_is_closed_at_the_cap() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1713,7 +1713,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_that_takes_nothing_for_the_send_deadline_is_closed() {
+    fn subscriber_that_takes_nothing_for_the_send_deadline_is_closed() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1739,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quiet_subscriber_outlives_the_idle_timeout() {
+    fn quiet_subscriber_outlives_the_idle_timeout() {
         let idle_timeout = Duration::from_millis(100);
         let mut server = server_with(64, idle_timeout);
         let mut client = connect(tcp_addr(&server));
@@ -1752,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_that_hangs_up_is_forgotten() {
+    fn subscriber_that_hangs_up_is_forgotten() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "block");
@@ -1765,7 +1765,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_pipelined_behind_the_subscribe_is_never_answered() {
+    fn request_pipelined_behind_the_subscribe_is_never_answered() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         write!(

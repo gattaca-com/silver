@@ -265,7 +265,7 @@ mod tests {
     /// The queued head supplies the initial backlog. Once drained, later
     /// deliveries need no registration change while the writer accepts output.
     #[test]
-    fn a_burst_past_the_cap_is_written_as_it_is_pushed() {
+    fn burst_past_the_cap_is_written_as_it_is_pushed() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let mut socket = ScriptedSocket::taking_everything();
@@ -287,7 +287,7 @@ mod tests {
     /// requests `READABLE` alone. The readiness path reports a complete drain
     /// for the caller to make the same registration change.
     #[test]
-    fn a_refused_write_arms_writable_until_the_backlog_drains() {
+    fn refused_write_arms_writable_until_the_backlog_drains() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let mut socket = ScriptedSocket::taking_everything();
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn the_head_leaves_first_ahead_of_chunks_pushed_before_the_first_drain() {
+    fn head_leaves_first_ahead_of_chunks_pushed_before_the_first_drain() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         assert!(stream.push(b"event: block\ndata: {}\n\n", t0));
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn a_push_landing_exactly_on_the_cap_fits_and_the_next_byte_is_refused() {
+    fn push_landing_exactly_on_the_cap_fits_and_the_next_byte_is_refused() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let payload = vec![b'x'; largest_fitting_payload(&stream)];
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "terminal chunk")]
-    fn an_empty_chunk_is_refused() {
+    fn empty_chunk_is_refused() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let _ = stream.push(b"", t0);
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn the_send_buffer_is_allocated_once_at_the_cap_and_never_moves() {
+    fn send_buffer_is_allocated_once_at_the_cap_and_never_moves() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         assert_eq!(stream.pending.capacity(), PENDING_MAX);
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exact_fit_behind_a_consumed_prefix_is_appended_without_compaction() {
+    fn exact_fit_behind_a_consumed_prefix_is_appended_without_compaction() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         drain_all(&mut stream, t0);
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_push_moves_nothing_either() {
+    fn refused_push_moves_nothing_either() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         drain_all(&mut stream, t0);
@@ -563,12 +563,12 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "exceeds the send cap")]
-    fn a_head_past_the_cap_is_a_bug() {
+    fn head_past_the_cap_is_a_bug() {
         let _ = ChunkedResponse::new(vec![b'h'; PENDING_MAX + 1], vec![0; 16], Instant::now());
     }
 
     #[test]
-    fn a_read_buffer_grown_by_an_earlier_request_is_cut_back_to_scratch_size() {
+    fn read_buffer_grown_by_an_earlier_request_is_cut_back_to_scratch_size() {
         let t0 = Instant::now();
         let mut conn = ServerConnection::new();
         let body = vec![b'b'; 6000];
@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn the_waiting_clock_moves_only_when_bytes_leave() {
+    fn waiting_clock_moves_only_when_bytes_leave() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
 
@@ -680,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn a_materialised_response_still_frames_as_before() {
+    fn materialised_response_still_frames_as_before() {
         let mut out = Vec::new();
         frame_response(&mut out, "200 OK", None, b"ok");
         assert_eq!(out, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
