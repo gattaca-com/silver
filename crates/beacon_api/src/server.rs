@@ -19,7 +19,7 @@ use silver_httpcore::{
 };
 
 use crate::{
-    NodeStatus, SlotStatus,
+    HeadStatus, NodeStatus,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
     observed_head::{HeadChange, ObservedHead},
@@ -404,14 +404,13 @@ impl BeaconApi {
             BeaconStateEvent::Status {
                 ssz,
                 latest_block_slot,
-                wall_slot,
                 head_optimistic,
                 head_roots,
                 head_payload,
                 ..
             } => {
-                self.ctx.node_status.slots =
-                    Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
+                self.ctx.node_status.head =
+                    HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
                 if let Some(HeadChange { event, legacy }) = self.head.observe(
                     StatusView::head_slot(&ssz),
                     *StatusView::head_root(&ssz),
@@ -436,9 +435,8 @@ impl BeaconApi {
     }
 
     pub fn handle_sync_update(&mut self, update: SyncUpdate) {
-        let following = matches!(update, SyncUpdate::Following);
-        self.ctx.node_status.syncing = !following;
-        self.head.set_following(following);
+        self.ctx.node_status.target = Some(update);
+        self.head.set_following(update.is_following());
     }
 
     pub fn set_el_sync_status(&mut self, el: ELSyncStatus) {
@@ -774,7 +772,7 @@ mod tests {
                 local_enr,
                 &Identify::default(),
                 &SpecConfig::mainnet(),
-                BeaconStateOwner::empty_test(0).reader(),
+                BeaconStateOwner::published_empty_test(0).reader(),
                 ApiConsumers { gossip: consumer(), rpc: consumer() },
             );
             Self { readiness, api }

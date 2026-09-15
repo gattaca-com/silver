@@ -201,7 +201,7 @@ fn same_match_set(a: &[Seg], b: &[Seg]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routes::preboot_ctx;
+    use crate::routes::anchor_ctx;
 
     fn request<'a>(method: &'a str, path: &'a str) -> ParsedRequest<'a> {
         ParsedRequest {
@@ -220,7 +220,7 @@ mod tests {
     fn dispatch(router: &Router, method: &str, path: &str) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(
-            router.dispatch(&request(method, path), &preboot_ctx(), &mut out),
+            router.dispatch(&request(method, path), &anchor_ctx(), &mut out),
             Served::Response
         );
         out
@@ -278,7 +278,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(router.dispatch(&req, &preboot_ctx(), &mut out), Served::Response);
+        assert_eq!(router.dispatch(&req, &anchor_ctx(), &mut out), Served::Response);
         out
     }
 
@@ -362,7 +362,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(router.dispatch(&req, &preboot_ctx(), &mut out), Served::Response);
+        assert_eq!(router.dispatch(&req, &anchor_ctx(), &mut out), Served::Response);
         assert_eq!(body(&out), b"k=v|payload");
     }
 

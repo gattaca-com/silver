@@ -11,7 +11,7 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde_json::{Value, json};
 use silver_application_boundary::ApplicationBoundaryTile;
-use silver_beacon_api::SlotStatus;
+use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
@@ -69,7 +69,7 @@ fn boundary_tile_with_spec(
         local_enr,
         &Identify::default(),
         spec,
-        BeaconStateOwner::empty_test(0).reader(),
+        BeaconStateOwner::published_empty_test(0).reader(),
         engine_config,
         gossip_p.cache_ref().random_access("t", true).unwrap(),
         rpc_p.cache_ref().random_access("t", true).unwrap(),
@@ -793,8 +793,9 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
 
     inj.produce(status_event(1, 1, true));
     tile.loop_body(&mut adapter);
-    assert!(
-        tile.beacon.node_status().slots.is_none(),
+    assert_eq!(
+        tile.beacon.node_status().head,
+        HeadStatus { slot: 0, optimistic: false },
         "a status published before the first consume is skipped, not delivered"
     );
 
@@ -803,23 +804,23 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     tile.loop_body(&mut adapter);
 
     let status = *tile.beacon.node_status();
-    assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: true })
-    );
-    assert_eq!(status.slots.unwrap().sync_distance(), 2);
-    assert!(status.syncing);
+    assert_eq!(status.head, HeadStatus { slot: 7, optimistic: true });
+    assert_eq!(status.target, Some(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 }));
 
     inj.produce(status_event(9, 9, false));
     inj.produce(SyncUpdate::Following);
     tile.loop_body(&mut adapter);
     let status = *tile.beacon.node_status();
     assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 9, wall_slot: 9, head_optimistic: false }),
+        status.head,
+        HeadStatus { slot: 9, optimistic: false },
         "each status replaces the last, execution status included"
     );
-    assert!(!status.syncing, "reaching the target clears the syncing flag");
+    assert_eq!(
+        status.target,
+        Some(SyncUpdate::Following),
+        "reaching the target clears the syncing flag"
+    );
 }
 
 /// The engine's spine intake is gated on free pool connections; node status
@@ -879,17 +880,14 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
 
     inj.produce(status_event(7, 9, false));
     inj.produce(SyncUpdate::Following);
-    while tile.beacon.node_status().slots.is_none() {
+    while tile.beacon.node_status().head.slot != 7 {
         crank(&mut tile, &mut el, "status consumed while the pool is at cap");
         assert_eq!(fcu_count(&el), 3, "the 4th request must stay gated on the spine");
     }
 
     let status = *tile.beacon.node_status();
-    assert_eq!(
-        status.slots,
-        Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: false })
-    );
-    assert!(!status.syncing);
+    assert_eq!(status.head, HeadStatus { slot: 7, optimistic: false });
+    assert_eq!(status.target, Some(SyncUpdate::Following));
     assert_eq!(status.el, ELSyncStatus::Synced);
 }
 
@@ -1327,10 +1325,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
         inj.produce(status);
     }
     crank(&mut tile, "head observations update node status");
-    assert_eq!(
-        tile.beacon.node_status().slots,
-        Some(SlotStatus { head_slot: slot, wall_slot: slot, head_optimistic: false })
-    );
+    assert_eq!(tile.beacon.node_status().head, HeadStatus { slot, optimistic: false });
 
     // A later head delimits all preceding frames, including unwanted repeats.
     inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full));
@@ -1409,10 +1404,7 @@ fn head_events_describe_changes_observed_while_following() {
     inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full));
     inj.produce(head_status(34, 0xab, true, PayloadResolution::Full));
     crank(&mut tile, "observations outside following update node status");
-    assert_eq!(
-        tile.beacon.node_status().slots,
-        Some(SlotStatus { head_slot: 34, wall_slot: 34, head_optimistic: true })
-    );
+    assert_eq!(tile.beacon.node_status().head, HeadStatus { slot: 34, optimistic: true });
 
     // Following: the latest observation is already the baseline, so the next
     // change is reported at once.
@@ -1462,16 +1454,13 @@ fn node_status_optimism_follows_a_status_that_publishes_no_head_event() {
 
     inj.produce(head_status(32, 0x0a, true, PayloadResolution::Full));
     tile.loop_body(&mut adapter);
-    assert_eq!(
-        tile.beacon.node_status().slots,
-        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: true })
-    );
+    assert_eq!(tile.beacon.node_status().head, HeadStatus { slot: 32, optimistic: true });
 
     inj.produce(head_status(32, 0x0a, false, PayloadResolution::Full));
     tile.loop_body(&mut adapter);
     assert_eq!(
-        tile.beacon.node_status().slots,
-        Some(SlotStatus { head_slot: 32, wall_slot: 32, head_optimistic: false }),
+        tile.beacon.node_status().head,
+        HeadStatus { slot: 32, optimistic: false },
         "the verdict reaches node status whatever the head filter decides"
     );
 }

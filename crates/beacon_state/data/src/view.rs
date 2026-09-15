@@ -61,6 +61,16 @@ impl BeaconStateOwner {
         Self::new(BeaconState::empty_test(slot))
     }
 
+    /// [`Self::empty_test`] with its anchor published, as a node is right
+    /// after bootstrap. Test-only.
+    #[doc(hidden)]
+    pub fn published_empty_test(slot: u64) -> Self {
+        let mut owner = Self::empty_test(slot);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        owner
+    }
+
     pub fn state(&self) -> &BeaconState {
         self.state.get()
     }

@@ -191,7 +191,7 @@ mod tests {
     use super::*;
     use crate::{
         router::{Router, Served},
-        routes::{ROUTES, preboot_ctx},
+        routes::{ROUTES, anchor_ctx},
     };
 
     const REGISTER: &str = "/eth/v1/validator/register_validator";
@@ -244,7 +244,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(Router::new(ROUTES).dispatch(&req, &preboot_ctx(), &mut out), Served::Response);
+        assert_eq!(Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out), Served::Response);
         out
     }
 

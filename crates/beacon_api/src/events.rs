@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use crate::{
         router::{Router, Served},
-        routes::{ROUTES, preboot_ctx},
+        routes::{ROUTES, anchor_ctx},
     };
 
     fn set(of: &[Channel]) -> ChannelSet {
@@ -136,7 +136,7 @@ mod tests {
             keep_alive: true,
         };
         let mut out = Vec::new();
-        let served = Router::new(ROUTES).dispatch(&req, &preboot_ctx(), &mut out);
+        let served = Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out);
         (served, out)
     }
 

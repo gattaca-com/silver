@@ -83,11 +83,14 @@ impl ApiCtx {
         spec: &SpecConfig,
         state: BeaconStateReader,
     ) -> Self {
+        let head_slot = state
+            .read(&|view: StateReadView<'_>| view.slot.state().latest_block_header.slot)
+            .expect("beacon api needs the anchor state published");
         Self {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             spec: spec.clone(),
             state,
-            node_status: NodeStatus::default(),
+            node_status: NodeStatus::at_anchor(head_slot),
         }
     }
 
@@ -195,8 +198,6 @@ fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     resp.json_body(|json| json.data_envelope(|json| json.genesis(&genesis)));
 }
 
-/// This reads no beacon state, and its schema declares no code but 200, so a
-/// node before bootstrap answers out of the status it has.
 fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let syncing = ctx.node_status.syncing_data();
     resp.json_body(|json| json.data_envelope(|json| json.syncing(&syncing)));
@@ -252,7 +253,6 @@ fn health(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let code = match ctx.node_status.health() {
         Health::Ready => 200,
         Health::Syncing => syncing_status,
-        Health::Uninitialized => 503,
     };
     resp.status_only(code);
 }
@@ -273,11 +273,10 @@ fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
     resp.empty(METRICS_CONTENT_TYPE);
 }
 
-/// Never-published reader: `read` yields `None`, as on a node before
-/// bootstrap.
+/// A node right after bootstrap: an empty anchor published at slot 0.
 #[cfg(test)]
-pub(crate) fn preboot_ctx() -> ApiCtx {
-    test_ctx(&SpecConfig::mainnet(), BeaconStateOwner::empty_test(0).reader())
+pub(crate) fn anchor_ctx() -> ApiCtx {
+    test_ctx(&SpecConfig::mainnet(), BeaconStateOwner::published_empty_test(0).reader())
 }
 
 #[cfg(test)]
@@ -294,12 +293,12 @@ mod tests {
     use silver_beacon_state_data::{
         BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
     };
-    use silver_common::{AGENT_VERSION, ELSyncStatus};
+    use silver_common::{AGENT_VERSION, ELSyncStatus, SyncUpdate};
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
-        SlotStatus,
+        HeadStatus,
         router::{Router, Served},
     };
 
@@ -336,14 +335,14 @@ mod tests {
     #[test]
     fn identity_wire_bytes_match_pre_table_implementation() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/identity");
+        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/identity");
         assert_eq!(std::str::from_utf8(&resp).unwrap(), GOLDEN_IDENTITY);
     }
 
     #[test]
     fn identity_content_length_matches_body() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/identity");
+        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/identity");
         let s = std::str::from_utf8(&resp).unwrap();
         let header_end = s.find("\r\n\r\n").unwrap();
         let cl: usize = s[..header_end]
@@ -362,7 +361,7 @@ mod tests {
     #[test]
     fn version_body_carries_this_build_s_agent_version() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/version");
+        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/version");
         assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
         assert_eq!(
             std::str::from_utf8(body(&resp)).unwrap(),
@@ -381,7 +380,7 @@ mod tests {
             "/eth/v1/config/fork_schedule",
             "/eth/v1/config/deposit_contract",
         ] {
-            let resp = get(&router, &preboot_ctx(), path);
+            let resp = get(&router, &anchor_ctx(), path);
             assert!(
                 resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
                 "{path}"
@@ -394,31 +393,24 @@ mod tests {
 
     fn ready() -> NodeStatus {
         NodeStatus {
-            slots: Some(SlotStatus { head_slot: 100, wall_slot: 100, head_optimistic: false }),
-            syncing: false,
+            head: HeadStatus { slot: 100, optimistic: false },
+            target: Some(SyncUpdate::Following),
             el: ELSyncStatus::Synced,
         }
     }
 
-    fn head_at(head_slot: u64, wall_slot: u64) -> NodeStatus {
-        NodeStatus {
-            slots: Some(SlotStatus { head_slot, wall_slot, head_optimistic: false }),
-            ..ready()
-        }
+    fn at_head(slot: u64) -> NodeStatus {
+        NodeStatus { head: HeadStatus { slot, optimistic: false }, ..ready() }
+    }
+
+    fn chasing(head_slot: u64) -> Option<SyncUpdate> {
+        Some(SyncUpdate::SyncingHead { head_root: [0; 32], head_slot })
     }
 
     fn health_response(status: NodeStatus, query: &str) -> Vec<u8> {
-        let mut ctx = preboot_ctx();
+        let mut ctx = anchor_ctx();
         ctx.node_status = status;
         query_get(&Router::new(ROUTES), &ctx, "/eth/v1/node/health", query)
-    }
-
-    #[test]
-    fn health_is_503_until_the_first_slot_status_arrives() {
-        assert_eq!(
-            health_response(NodeStatus::default(), ""),
-            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
-        );
     }
 
     #[test]
@@ -429,20 +421,16 @@ mod tests {
             let resp = health_response(NodeStatus { el, ..ready() }, "");
             assert!(resp.starts_with(b"HTTP/1.1 206 Partial Content\r\n"), "{el:?}");
         }
-        let resp = health_response(NodeStatus { syncing: true, ..ready() }, "");
+        let resp = health_response(NodeStatus { target: chasing(200), ..ready() }, "");
         assert_eq!(resp, b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n");
     }
 
     #[test]
     fn syncing_status_replaces_the_206_and_nothing_else() {
-        let syncing = NodeStatus { syncing: true, ..ready() };
+        let syncing = NodeStatus { target: chasing(200), ..ready() };
         assert!(health_response(syncing, "syncing_status=200").starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(health_response(syncing, "syncing_status=503").starts_with(b"HTTP/1.1 503 "));
         assert!(health_response(ready(), "syncing_status=503").starts_with(b"HTTP/1.1 200 OK\r\n"));
-        assert!(
-            health_response(NodeStatus::default(), "syncing_status=200")
-                .starts_with(b"HTTP/1.1 503 ")
-        );
         assert!(health_response(syncing, "other=1").starts_with(b"HTTP/1.1 206 "));
     }
 
@@ -450,7 +438,7 @@ mod tests {
     /// with the empty reason phrase RFC 9112 §4.1 permits.
     #[test]
     fn a_syncing_status_with_no_reason_phrase_still_frames() {
-        let syncing = NodeStatus { syncing: true, ..ready() };
+        let syncing = NodeStatus { target: chasing(200), ..ready() };
         assert_eq!(
             health_response(syncing, "syncing_status=250"),
             b"HTTP/1.1 250 \r\nContent-Length: 0\r\n\r\n"
@@ -477,10 +465,10 @@ mod tests {
         }
     }
 
-    /// Both node-status endpoints answer from `NodeStatus` alone, so a
-    /// never-published reader is the whole context they need.
+    /// Both node-status endpoints answer from `NodeStatus` alone, so the
+    /// anchor context is all they need.
     fn status_body(status: NodeStatus, path: &str) -> String {
-        let mut ctx = preboot_ctx();
+        let mut ctx = anchor_ctx();
         ctx.node_status = status;
         let resp = get(&Router::new(ROUTES), &ctx, path);
         assert!(
@@ -508,42 +496,38 @@ mod tests {
         );
     }
 
-    /// `syncing.yaml` declares no 503, and a node with nothing published has
-    /// an answer: no head, the farthest distance the schema can carry, and
-    /// every flag in the not-usable direction.
+    /// Right after bootstrap the head is the anchor, no target exists to
+    /// measure a distance to, and neither layer has vouched for anything.
     #[test]
-    fn syncing_answers_before_bootstrap_as_a_node_with_no_head() {
+    fn syncing_answers_at_the_anchor_before_any_tile_reports() {
+        let ctx = anchor_ctx();
         assert_eq!(
-            status_body(NodeStatus::default(), "/eth/v1/node/syncing"),
+            status_body(ctx.node_status, "/eth/v1/node/syncing"),
             "{\"data\":{\"head_slot\":\"0\",\"sync_distance\":\"18446744073709551615\",\
-             \"is_syncing\":true,\"is_optimistic\":true,\"el_offline\":true}}"
+             \"is_syncing\":true,\"is_optimistic\":false,\"el_offline\":true}}"
         );
     }
 
-    /// The sync flag answers for the head this node is *chasing*: the control
-    /// tile publishes a `SyncUpdate` only when its target changes, so a node
-    /// that has found no peer to sync from carries `syncing: false` however
-    /// far behind the chain it falls.
+    /// The sync engine owns "at the head": the API answers from its target
+    /// and never from a slot tolerance of its own.
     #[test]
-    fn is_syncing_is_true_past_the_head_tolerance_whatever_the_sync_flag() {
-        assert_eq!(syncing_data(NodeStatus { syncing: true, ..ready() })["is_syncing"], true);
-        let within = syncing_data(head_at(992, 1_000));
-        assert_eq!(within["is_syncing"], false, "within the head tolerance");
-        assert_eq!(syncing_data(head_at(991, 1_000))["is_syncing"], true, "past the tolerance");
+    fn is_syncing_is_whether_the_engine_is_following() {
         assert_eq!(
-            syncing_data(head_at(10, 1_000_000))["is_syncing"],
-            true,
-            "a node that never found a peer to sync from is still syncing"
+            syncing_data(NodeStatus { target: chasing(200), ..ready() })["is_syncing"],
+            true
         );
+        assert_eq!(syncing_data(at_head(10))["is_syncing"], false, "following");
+        let no_target = NodeStatus { target: None, ..ready() };
+        assert_eq!(syncing_data(no_target)["is_syncing"], true, "before the first target");
     }
 
     /// One node, one answer: a validator client gating on `/node/health` and
     /// reading the head from `/node/syncing` must not see the two disagree.
     #[test]
     fn health_reports_syncing_wherever_the_syncing_endpoint_does() {
-        let far_behind = head_at(10, 1_000_000);
-        assert_eq!(syncing_data(far_behind)["is_syncing"], true);
-        assert!(health_response(far_behind, "").starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
+        let chasing = NodeStatus { target: chasing(200), ..ready() };
+        assert_eq!(syncing_data(chasing)["is_syncing"], true);
+        assert!(health_response(chasing, "").starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
     }
 
     /// The same flag the state envelopes carry: the head's own execution
@@ -552,7 +536,7 @@ mod tests {
     fn syncing_is_optimistic_is_the_head_s_own_status() {
         assert_eq!(syncing_data(with_head_optimistic(true))["is_optimistic"], true);
         assert_eq!(syncing_data(with_head_optimistic(false))["is_optimistic"], false);
-        let syncing_node = NodeStatus { syncing: true, ..with_head_optimistic(false) };
+        let syncing_node = NodeStatus { target: chasing(200), ..with_head_optimistic(false) };
         assert_eq!(syncing_data(syncing_node)["is_optimistic"], false);
         let offline_el = NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) };
         assert_eq!(syncing_data(offline_el)["is_optimistic"], false);
@@ -574,13 +558,18 @@ mod tests {
         }
     }
 
+    /// The distance is to the target the engine reports: zero once following,
+    /// and never an underflow when the target sits below the head.
     #[test]
-    fn sync_distance_is_the_wall_clock_gap_and_never_underflows() {
-        assert_eq!(syncing_data(head_at(90, 100))["sync_distance"], "10");
-        assert_eq!(syncing_data(head_at(100, 100))["sync_distance"], "0");
-        let head_ahead = syncing_data(head_at(101, 100));
-        assert_eq!(head_ahead["sync_distance"], "0", "head ahead of the wall slot");
-        assert_eq!(syncing_data(head_at(0, u64::MAX))["sync_distance"], "18446744073709551615");
+    fn sync_distance_is_to_the_sync_target() {
+        assert_eq!(syncing_data(at_head(90))["sync_distance"], "0", "following");
+        let to_head = NodeStatus { target: chasing(150), ..at_head(100) };
+        assert_eq!(syncing_data(to_head)["sync_distance"], "50");
+        let finalized = SyncUpdate::SyncingFinalized { target_epoch: 4, target_root: [0; 32] };
+        let to_finalized = NodeStatus { target: Some(finalized), ..at_head(100) };
+        assert_eq!(syncing_data(to_finalized)["sync_distance"], "28");
+        let reached = NodeStatus { target: chasing(90), ..at_head(100) };
+        assert_eq!(syncing_data(reached)["sync_distance"], "0", "target below the head");
     }
 
     /// Every stubbed route answers 501 whatever the node's state: routed, so
@@ -589,7 +578,7 @@ mod tests {
     #[test]
     fn stubbed_routes_answer_501_not_404() {
         let router = Router::new(ROUTES);
-        let ctx = preboot_ctx();
+        let ctx = anchor_ctx();
         for (method, path) in [
             ("GET", "/eth/v1/beacon/blocks/head/root"),
             ("GET", "/eth/v1/beacon/headers/head"),
@@ -627,7 +616,7 @@ mod tests {
     #[test]
     fn metrics_response_valid_prometheus_format() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/metrics");
+        let resp = get(&router, &anchor_ctx(), "/metrics");
         let s = std::str::from_utf8(&resp).unwrap();
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
@@ -637,7 +626,7 @@ mod tests {
     #[test]
     fn unknown_path_returns_404() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/not/real");
+        let resp = get(&router, &anchor_ctx(), "/not/real");
         assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     }
 
@@ -786,46 +775,32 @@ mod tests {
         }
     }
 
-    /// Neither endpoint's schema declares a 503, so a node with no state
-    /// published answers 404 — genesis with the phrase its own schema names.
-    #[test]
-    fn state_reads_are_404_before_bootstrap() {
-        let ctx = preboot_ctx();
-        let resp = get(&Router::new(ROUTES), &ctx, "/eth/v1/beacon/genesis");
-        assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
-        assert_eq!(body(&resp), br#"{"code":404,"message":"Chain genesis info is not yet known"}"#);
-        assert_state_not_found(&ctx, "head");
-    }
-
     /// The `state_id` verdict does not depend on there being a state to read.
     #[test]
     fn an_invalid_state_id_is_answered_before_the_state_is_read() {
         for path in state_paths("banana") {
-            let resp = get(&Router::new(ROUTES), &preboot_ctx(), &path);
+            let resp = get(&Router::new(ROUTES), &anchor_ctx(), &path);
             assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
         }
     }
 
-    fn with_head_optimistic(head_optimistic: bool) -> NodeStatus {
-        let ready = ready();
-        NodeStatus { slots: Some(SlotStatus { head_optimistic, ..ready.slots.unwrap() }), ..ready }
+    fn with_head_optimistic(optimistic: bool) -> NodeStatus {
+        NodeStatus { head: HeadStatus { optimistic, ..ready().head }, ..ready() }
     }
 
     /// The envelope flag is the head's own execution status, not a reading of
     /// how far behind the node is: an unverified head is optimistic with both
     /// layers reporting themselves synced, and a verified one is not while they
-    /// do not. A state read served before the first status announces a head is
-    /// optimistic — nothing has vouched for that head's payload yet.
+    /// do not.
     #[test]
     fn execution_optimistic_is_the_head_s_own_status() {
         let mut ctx = published_ctx(epoch_state(), HEAD_SLOT);
         for (status, want) in [
             (with_head_optimistic(true), "true"),
             (with_head_optimistic(false), "false"),
-            (NodeStatus { syncing: true, ..with_head_optimistic(false) }, "false"),
+            (NodeStatus { target: chasing(200), ..with_head_optimistic(false) }, "false"),
             (NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) }, "false"),
-            (NodeStatus { syncing: true, ..with_head_optimistic(true) }, "true"),
-            (NodeStatus::default(), "true"),
+            (NodeStatus { target: chasing(200), ..with_head_optimistic(true) }, "true"),
         ] {
             ctx.node_status = status;
             for path in state_paths("head") {

@@ -628,6 +628,14 @@ impl SyncUpdate {
         local_finalized_slot.max(settled_by_target)
     }
 
+    pub fn target_slot(self) -> Option<u64> {
+        match self {
+            Self::SyncingFinalized { target_epoch, .. } => Some(target_epoch * SLOTS_PER_EPOCH),
+            Self::SyncingHead { head_slot, .. } => Some(head_slot),
+            Self::Following => None,
+        }
+    }
+
     pub fn end_slot(self) -> u64 {
         const EPOCHS_TO_FINALIZE: u64 = 2;
         match self {
