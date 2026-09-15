@@ -1,5 +1,4 @@
 use std::{
-    mem,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,7 +23,7 @@ use silver_common::{
 use crate::{
     BlockRoot, DataColumnCounters,
     availability::ColumnTracker,
-    batch::{self, KzgBatch, PendingKzg, RelayMeta},
+    batch::{self, GossipSidecarFrame, KzgBatch, PendingKzg},
     el_blobs::ElBlobFetcher,
     sync::SyncStatus,
     validate::{ColumnOutcome, ColumnValidator, PendingColumn},
@@ -213,7 +212,7 @@ impl DataColumnsTile {
     fn data_columns(
         &mut self,
         column: PendingColumn,
-        relay: RelayMeta,
+        frame: Option<GossipSidecarFrame>,
         producers: &mut SilverSpineProducers,
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
@@ -232,7 +231,7 @@ impl DataColumnsTile {
         let Some((outcome, is_gloas)) = validated else {
             return ColumnDisposition::Ignored;
         };
-        self.handle_column(outcome, column, is_gloas, relay, producers)
+        self.handle_column(outcome, column, is_gloas, frame, producers)
     }
 
     fn handle_column(
@@ -240,7 +239,7 @@ impl DataColumnsTile {
         outcome: ColumnOutcome,
         column: PendingColumn,
         is_gloas: bool,
-        relay: RelayMeta,
+        frame: Option<GossipSidecarFrame>,
         producers: &mut SilverSpineProducers,
     ) -> ColumnDisposition {
         match outcome {
@@ -296,7 +295,7 @@ impl DataColumnsTile {
                     bitmask,
                     slot,
                     is_gloas,
-                    relay: if relay_eligible { relay } else { RelayMeta::None },
+                    frame: if relay_eligible { frame } else { None },
                 });
                 if queued { ColumnDisposition::Batched } else { ColumnDisposition::Ignored }
             }
@@ -339,7 +338,7 @@ impl DataColumnsTile {
             return;
         };
         for column in pending {
-            self.data_columns(column, RelayMeta::None, producers);
+            self.data_columns(column, None, producers);
         }
     }
 
@@ -433,13 +432,11 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) {
         tracing::debug!(custody_group, "data column sidecar over gossip");
-        let relay = RelayMeta::Gossip {
-            topic: gossip.topic,
+        let frame = Some(GossipSidecarFrame {
             domain: gossip.domain,
             msg_hash: gossip.msg_hash,
-            recv_ts: gossip.recv_ts,
             protobuf: gossip.protobuf,
-        };
+        });
         let sidecar = self.consumers.gossip.acquire(gossip.ssz);
         self.handle_data_column_sidecar(
             PendingColumn {
@@ -448,7 +445,7 @@ impl DataColumnsTile {
                 gossip_subnet: Some(custody_group),
                 recv_ts: gossip.recv_ts.into(),
             },
-            relay,
+            frame,
             producers,
         );
     }
@@ -457,11 +454,11 @@ impl DataColumnsTile {
     fn handle_data_column_sidecar(
         &mut self,
         column: PendingColumn,
-        relay: RelayMeta,
+        frame: Option<GossipSidecarFrame>,
         producers: &mut SilverSpineProducers,
     ) {
         let stream_id = column.stream_id;
-        let disposition = self.data_columns(column, relay, producers);
+        let disposition = self.data_columns(column, frame, producers);
 
         if let ColumnDisposition::Rejected { block_root, slot, bitmask } = disposition {
             producers.produce(PeerEvent::RpcMisbehaviour {
@@ -531,26 +528,16 @@ impl DataColumnsTile {
     }
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
-        match mem::replace(&mut p.relay, RelayMeta::None) {
-            RelayMeta::Gossip { topic, domain, msg_hash, recv_ts, protobuf } => {
-                producers.produce(PeerEvent::SendGossip {
-                    originator_stream_id: p.stream_id,
-                    topic,
-                    domain,
-                    msg_hash,
-                    recv_ts,
-                    protobuf,
-                    ssz: p.sidecar.read,
-                });
-            }
-            RelayMeta::Rpc { ssz } if self.sync_state.is_synced() => {
-                producers.produce(PeerEvent::PublishDataColumn {
-                    originator: p.stream_id,
-                    topic: GossipTopic::DataColumnSidecar(p.column_index),
-                    ssz,
-                });
-            }
-            _ => {}
+        if let Some(GossipSidecarFrame { domain, msg_hash, protobuf }) = p.frame.take() {
+            producers.produce(PeerEvent::SendGossip {
+                originator_stream_id: p.stream_id,
+                topic: GossipTopic::DataColumnSidecar(p.column_index),
+                domain,
+                msg_hash,
+                recv_ts: p.recv_ts.into(),
+                protobuf,
+                ssz: p.sidecar.read,
+            });
         }
         self.record_validated_column(p, producers);
     }
@@ -612,7 +599,7 @@ impl DataColumnsTile {
             gossip_subnet: Some(subnet),
             recv_ts: IngestionTime::now(),
         };
-        match self.data_columns(column, RelayMeta::None, producers) {
+        match self.data_columns(column, None, producers) {
             ColumnDisposition::Rejected { .. } => EfVerdict::Reject,
             ColumnDisposition::Ignored => EfVerdict::Ignore,
             ColumnDisposition::Batched => {
@@ -728,7 +715,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
                             gossip_subnet: None,
                             recv_ts: IngestionTime::now(),
                         },
-                        RelayMeta::Rpc { ssz },
+                        None,
                         producers,
                     );
                 }
@@ -790,8 +777,9 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadRoots, MessageId, Nanos,
-        P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadRoots, MESSAGE_ID_LEN,
+        MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer,
+        TCacheRead,
         column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
@@ -946,7 +934,7 @@ mod tests {
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),
                 },
-                RelayMeta::Rpc { ssz },
+                None,
                 &mut self.conn.producers,
             );
         }
@@ -980,9 +968,6 @@ mod tests {
                 let (source, topic, sidecar) = match event {
                     PeerEvent::SendGossip { topic, ssz, .. } => {
                         (ColumnSource::Gossip, topic, consumers.gossip.acquire(ssz))
-                    }
-                    PeerEvent::PublishDataColumn { topic, ssz, .. } => {
-                        (ColumnSource::Rpc, topic, consumers.rpc.acquire(ssz))
                     }
                     _ => return,
                 };
@@ -1292,7 +1277,11 @@ mod tests {
                     recv_ts: IngestionTime::now(),
                 },
                 false,
-                RelayMeta::Rpc { ssz },
+                Some(GossipSidecarFrame {
+                    domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+                    msg_hash: MessageId { id: [0; MESSAGE_ID_LEN] },
+                    protobuf: ssz,
+                }),
                 &mut rig.conn.producers,
             );
 
@@ -1301,11 +1290,7 @@ mod tests {
                 "relay_eligible={relay_eligible}: imported either way"
             );
             let queued = rig.tile.kzg_batch.pending.first().expect("batched");
-            assert_eq!(
-                !matches!(queued.relay, RelayMeta::None),
-                want_relay,
-                "relay_eligible={relay_eligible}"
-            );
+            assert_eq!(queued.frame.is_some(), want_relay, "relay_eligible={relay_eligible}");
             rig.tile.kzg_batch.pending.clear();
         }
     }
@@ -1332,7 +1317,7 @@ mod tests {
                 gossip_subnet: None,
                 recv_ts: IngestionTime::now(),
             },
-            RelayMeta::None,
+            None,
             &mut rig.conn.producers,
         )
     }
@@ -1442,7 +1427,7 @@ mod tests {
                     recv_ts: IngestionTime::now(),
                 },
                 false,
-                RelayMeta::None,
+                None,
                 &mut rig.conn.producers,
             );
             let out = rig.drain();

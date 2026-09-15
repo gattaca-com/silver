@@ -7,7 +7,8 @@ use std::{collections::HashMap, time::Instant};
 
 use flux_profiler::timed;
 use silver_common::{
-    GossipMsgOut, GossipTopic, MessageId, Nanos, P2pSend, PeerControl, PeerId, TCacheRead,
+    GossipMsgOut, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, P2pSend, PeerControl,
+    PeerId, Published, TCacheRead,
 };
 
 use super::PeerManager;
@@ -195,12 +196,41 @@ impl PeerManager {
                 .insert(msg_hash, RecentDelivery::new(topic, recv_ts, credited_peer));
         }
 
-        // Fan IDONTWANT out to mesh members (except sender) above threshold.
+        self.fan_out_idontwant(topic, sender_conn, idontwant, emit);
+    }
+
+    /// A message this node built itself, from RPC or EL bytes: it goes to
+    /// the topic mesh like a forwarded one, and the mesh is told not to send
+    /// it back. A syncing node publishes nothing; its peers are ahead of it.
+    pub fn publish_local(
+        &mut self,
+        topic: GossipTopic,
+        published: Published,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        if !self.current_sync_target().is_following() {
+            return;
+        }
+        let local = LOCAL_GOSSIP_STREAM_ID.peer();
+        let Published { msg_id, domain, protobuf, idontwant } = published;
+        self.on_send_gossip(local, msg_id, topic, domain.digest(), protobuf, emit);
+        self.fan_out_idontwant(topic, local, idontwant, emit);
+    }
+
+    /// Mesh members on every digest of `topic`, except `sender`, whose score
+    /// clears `gossip_threshold`.
+    fn fan_out_idontwant(
+        &self,
+        topic: GossipTopic,
+        sender: usize,
+        idontwant: TCacheRead,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
         let Some(meshes) = self.mesh.get(&topic) else {
             return;
         };
         for conn in meshes.iter().flat_map(|m| &m.peers) {
-            if *conn == sender_conn {
+            if *conn == sender {
                 continue;
             }
             let Some(peer) = self.peers.get(conn) else {

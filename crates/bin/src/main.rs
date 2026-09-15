@@ -112,8 +112,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("dc_persist_incoming_rpc", true)?;
     let incoming_rpc_consumer_eng =
         incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
-    let incoming_rpc_consumer_api =
-        incoming_rpc_producer.cache_ref().random_access("api_incoming_rpc", true)?;
     let incoming_rpc_consumer_ctl =
         incoming_rpc_producer.cache_ref().random_access("ctl_incoming_rpc", true)?;
     let incoming_engine_resp_producer = TCache::producer(
@@ -145,6 +143,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // engine producer
     let el_producer = TCache::producer("el_data_columns", 1 << 25);
     let el_columns_consumer = el_producer.cache_ref().random_access("el_data_columns", true)?;
+    let el_columns_consumer_ctl =
+        el_producer.cache_ref().random_access("ctl_el_data_columns", true)?;
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -298,6 +298,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_handler,
         outgoing_rpc_producer.clone(),
         incoming_rpc_consumer_ctl,
+        el_columns_consumer_ctl,
         cluster_outbound_producer,
         cluster_inbound_consumer,
         cluster_config,
@@ -391,7 +392,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
         ssz_gossip_consumer_api,
-        incoming_rpc_consumer_api,
     );
 
     // Spine

@@ -4,9 +4,9 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::{BeaconApi, SlotStatus};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, Enr, GossipTopic, Identify, Keypair, PeerEvent, SilverSpine,
-    SyncUpdate, TProducer, TRandomAccess, TRead,
-    column_util::{SidecarIdentity, block_root},
+    BeaconStateEvent, BlockStage, DataColumnsEvent, Enr, GossipTopic, Identify, Keypair, PeerEvent,
+    SilverSpine, SyncUpdate, TProducer, TRandomAccess,
+    column_util::block_root,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_config::EngineConfig;
@@ -30,7 +30,6 @@ pub struct ApplicationBoundaryTile {
     head: ObservedHead,
     spec: SpecConfig,
     relayed_gossip: TRandomAccess,
-    relayed_rpc: TRandomAccess,
 }
 
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
@@ -61,7 +60,6 @@ impl ApplicationBoundaryTile {
         rpc_consumer: TRandomAccess,
         resp_producer: TProducer,
         relayed_gossip: TRandomAccess,
-        relayed_rpc: TRandomAccess,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -96,15 +94,13 @@ impl ApplicationBoundaryTile {
             head: ObservedHead::default(),
             spec: spec.clone(),
             relayed_gossip,
-            relayed_rpc,
         }
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let Self { beacon, head, spec, relayed_gossip, relayed_rpc, .. } = self;
+        let Self { beacon, head, spec, relayed_gossip, .. } = self;
         // Publish tails even without reads so idle consumers can release cache space.
         relayed_gossip.free();
-        relayed_rpc.free();
 
         // A consumer's first consume starts at the producer's write head.
         // Keep both event queues active during engine saturation; delaying
@@ -128,7 +124,8 @@ impl ApplicationBoundaryTile {
                     head_payload,
                     head_roots,
                 ) {
-                    if legacy {
+                    // TODO(xatu): remove when Xatu will add filtering by optimistic flag
+                    if legacy && !event.execution_optimistic {
                         beacon.publish_head(&event);
                     }
                     beacon.publish_head_v2(&event);
@@ -142,8 +139,8 @@ impl ApplicationBoundaryTile {
             } => beacon.publish_block(slot, &block_root),
             _ => {}
         });
-        adapter.consume(|event: PeerEvent, _| match event {
-            PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
+        adapter.consume(|event: PeerEvent, _| {
+            if let PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } = event {
                 match relayed_gossip.acquire(ssz).buffer() {
                     Ok((block, _)) => {
                         let slot = SignedBeaconBlockView::slot(block);
@@ -153,13 +150,11 @@ impl ApplicationBoundaryTile {
                     Err(e) => tracing::warn!(?e, "relayed block unavailable to block_gossip"),
                 }
             }
-            PeerEvent::SendGossip { topic: GossipTopic::DataColumnSidecar(_), ssz, .. } => {
-                publish_data_column_sidecar(beacon, relayed_gossip.acquire(ssz))
+        });
+        adapter.consume(|event: DataColumnsEvent, _| {
+            if let DataColumnsEvent::Persist { block_root, column_index, slot, .. } = event {
+                beacon.publish_data_column_sidecar(&block_root, column_index, slot);
             }
-            PeerEvent::PublishDataColumn { ssz, .. } => {
-                publish_data_column_sidecar(beacon, relayed_rpc.acquire(ssz))
-            }
-            _ => {}
         });
         let status = beacon.node_status_mut();
         adapter.consume(|update: SyncUpdate, _| {
@@ -169,15 +164,5 @@ impl ApplicationBoundaryTile {
         });
 
         status.el = self.engine.sync_status();
-    }
-}
-
-fn publish_data_column_sidecar(beacon: &mut BeaconApi, sidecar: TRead) {
-    match sidecar.buffer().map(|(bytes, _)| SidecarIdentity::of(bytes)) {
-        Ok(Some(column)) => {
-            beacon.publish_data_column_sidecar(&column.block_root, column.column_index, column.slot)
-        }
-        Ok(None) => tracing::warn!("published sidecar fits no layout data_column_sidecar reads"),
-        Err(e) => tracing::warn!(?e, "published sidecar unavailable to data_column_sidecar"),
     }
 }
