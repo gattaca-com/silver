@@ -5,18 +5,18 @@ use std::{
 };
 
 use super::{
-    AcquiredRange, AcquiredRead, GossipFrameSegment, GossipFrameView, RandomAccessConsumer,
+    AcquiredRange, AcquiredRead, CacheFrameSegment, CacheFrameView, RandomAccessConsumer,
     SubReservationRef, TCacheRead,
 };
 
-pub enum AcquiredGossipSegment {
+pub enum AcquiredCacheSegment {
     Framing(Range<usize>),
     Data(AcquiredRange),
 }
 
 #[derive(Debug)]
-pub struct AcquiredGossipFrame {
-    view: GossipFrameView,
+pub struct AcquiredCacheFrame {
+    view: CacheFrameView,
     gossip: NonNull<RandomAccessConsumer>,
     columns: Option<NonNull<RandomAccessConsumer>>,
     // Every non-framing descriptor in [next, acquired_end) owns one bucket
@@ -27,11 +27,11 @@ pub struct AcquiredGossipFrame {
 
 // As with AcquiredRead, consumers stay at stable addresses and outlive their
 // reads. Acquisition, handoff, and drops remain on the consumer's tile.
-unsafe impl Send for AcquiredGossipFrame {}
+unsafe impl Send for AcquiredCacheFrame {}
 
-impl AcquiredGossipFrame {
+impl AcquiredCacheFrame {
     pub(super) fn new(
-        view: GossipFrameView,
+        view: CacheFrameView,
         gossip: &mut RandomAccessConsumer,
         mut columns: Option<&mut RandomAccessConsumer>,
     ) -> Option<Self> {
@@ -54,14 +54,14 @@ impl AcquiredGossipFrame {
         Some(frame)
     }
 
-    pub fn take_next(&mut self) -> Option<AcquiredGossipSegment> {
+    pub fn take_next(&mut self) -> Option<AcquiredCacheSegment> {
         if self.next == self.acquired_end {
             return None;
         }
         let segment = self.view.segment(self.next);
         if let Some(range) = segment.framing_range() {
             self.next += 1;
-            return Some(AcquiredGossipSegment::Framing(range));
+            return Some(AcquiredCacheSegment::Framing(range));
         }
         let mut range = self.take_range(&segment);
         while self.next < self.acquired_end {
@@ -76,14 +76,14 @@ impl AcquiredGossipFrame {
             let next = self.take_range(&next);
             assert!(range.extend_contiguous(&next));
         }
-        Some(AcquiredGossipSegment::Data(range))
+        Some(AcquiredCacheSegment::Data(range))
     }
 
-    fn consumer(&self, segment: &GossipFrameSegment) -> NonNull<RandomAccessConsumer> {
+    fn consumer(&self, segment: &CacheFrameSegment) -> NonNull<RandomAccessConsumer> {
         if segment.kind == 1 { self.gossip } else { self.columns.expect("acquired column segment") }
     }
 
-    fn take_read(&mut self, segment: &GossipFrameSegment) -> AcquiredRead {
+    fn take_read(&mut self, segment: &CacheFrameSegment) -> AcquiredRead {
         let consumer = self.consumer(segment);
         // Each call transfers exactly one existing count. Nothing increments
         // here, and frame cleanup excludes the transferred descriptor.
@@ -96,13 +96,13 @@ impl AcquiredGossipFrame {
         read
     }
 
-    fn take_range(&mut self, segment: &GossipFrameSegment) -> AcquiredRange {
+    fn take_range(&mut self, segment: &CacheFrameSegment) -> AcquiredRange {
         let read = self.take_read(segment);
         let offset = Self::offset(segment, read.read);
         AcquiredRange { read, offset, length: segment.length }
     }
 
-    fn offset(segment: &GossipFrameSegment, read: TCacheRead) -> usize {
+    fn offset(segment: &CacheFrameSegment, read: TCacheRead) -> usize {
         if segment.kind != 3 {
             return segment.offset;
         }
@@ -119,15 +119,15 @@ impl AcquiredGossipFrame {
     }
 }
 
-impl Deref for AcquiredGossipFrame {
-    type Target = GossipFrameView;
+impl Deref for AcquiredCacheFrame {
+    type Target = CacheFrameView;
 
     fn deref(&self) -> &Self::Target {
         &self.view
     }
 }
 
-impl Drop for AcquiredGossipFrame {
+impl Drop for AcquiredCacheFrame {
     fn drop(&mut self) {
         while self.next < self.acquired_end {
             let segment = self.view.segment(self.next);

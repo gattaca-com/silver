@@ -1,8 +1,8 @@
 extern crate self as silver_common;
 
 pub use spine::{
-    AcquiredGossipFrame, AcquiredGossipSegment, GossipFrameError, GossipFrameRef,
-    GossipFrameSegment, GossipFrameView, GossipSegment, MAX_GOSSIP_SEGMENTS,
+    AcquiredCacheFrame, AcquiredCacheSegment, CacheFrameError, CacheFrameRef, CacheFrameSegment,
+    CacheFrameView, CacheSegment, MAX_CACHE_SEGMENTS,
 };
 
 pub use crate::{

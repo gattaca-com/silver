@@ -17,19 +17,19 @@ fn write(producer: &mut Producer, bytes: &[u8]) -> TCacheRead {
 fn copy_handle_round_trips_framing_and_source_ranges() {
     fn is_copy<T: Copy>() {}
     is_copy::<P2pSend>();
-    is_copy::<GossipFrameRef>();
+    is_copy::<CacheFrameRef>();
     let mut producer = TCache::producer("", 1 << 18);
     let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
     let source = write(&mut producer, b"0123456789");
     let now = Instant::now();
-    let frame = GossipFrameRef::write(
+    let frame = CacheFrameRef::write(
         &mut producer,
         now + Duration::from_secs(1),
         b"ab--cd",
         [
-            GossipSegment::Framing { offset: 0, length: 2 },
-            GossipSegment::Gossip { read: source, offset: 3, length: 4 },
-            GossipSegment::Framing { offset: 4, length: 2 },
+            CacheSegment::Framing { offset: 0, length: 2 },
+            CacheSegment::Gossip { read: source, offset: 3, length: 4 },
+            CacheSegment::Framing { offset: 4, length: 2 },
         ]
         .into_iter(),
     )
@@ -49,7 +49,7 @@ fn copy_handle_round_trips_framing_and_source_ranges() {
     assert_eq!(wire, b"ab3456cd");
     assert!(matches!(
         frame.acquire(&mut consumer, now + Duration::from_secs(1)),
-        Err(GossipFrameError::Expired)
+        Err(CacheFrameError::Expired)
     ));
 }
 
@@ -70,19 +70,19 @@ fn shared_segments_expose_only_verified_subranges() {
         .write(b"cell", b"pf")
         .unwrap();
     let now = Instant::now();
-    let frame = GossipFrameRef::write(
+    let frame = CacheFrameRef::write(
         &mut producer,
         now + Duration::from_secs(1),
         b"",
         [
-            GossipSegment::Shared {
+            CacheSegment::Shared {
                 reservation: reference,
                 part: 0,
                 second: false,
                 offset: 1,
                 length: 2,
             },
-            GossipSegment::Shared {
+            CacheSegment::Shared {
                 reservation: reference,
                 part: 0,
                 second: true,
@@ -117,33 +117,33 @@ fn descriptor_bounds_and_sources_are_checked() {
     let other_read = write(&mut other, b"data");
     let expires = Instant::now() + Duration::from_secs(1);
     for segment in [
-        GossipSegment::Framing { offset: usize::MAX, length: 1 },
-        GossipSegment::Framing { offset: 0, length: 0 },
-        GossipSegment::Framing { offset: 1, length: 4 },
-        GossipSegment::Gossip { read: other_read, offset: 0, length: 4 },
+        CacheSegment::Framing { offset: usize::MAX, length: 1 },
+        CacheSegment::Framing { offset: 0, length: 0 },
+        CacheSegment::Framing { offset: 1, length: 4 },
+        CacheSegment::Gossip { read: other_read, offset: 0, length: 4 },
     ] {
         assert!(
-            GossipFrameRef::write(&mut producer, expires, b"data", [segment].into_iter()).is_err()
+            CacheFrameRef::write(&mut producer, expires, b"data", [segment].into_iter()).is_err()
         );
     }
-    assert!(GossipFrameRef::write(&mut producer, expires, b"", [].into_iter()).is_err());
+    assert!(CacheFrameRef::write(&mut producer, expires, b"", [].into_iter()).is_err());
     assert!(
-        GossipFrameRef::write(
+        CacheFrameRef::write(
             &mut producer,
             expires,
             b"x",
             std::iter::repeat_n(
-                GossipSegment::Framing { offset: 0, length: 1 },
-                MAX_GOSSIP_SEGMENTS + 1,
+                CacheSegment::Framing { offset: 0, length: 1 },
+                MAX_CACHE_SEGMENTS + 1,
             )
         )
         .is_err()
     );
-    let frame = GossipFrameRef::write(
+    let frame = CacheFrameRef::write(
         &mut producer,
         expires,
         b"",
-        [GossipSegment::DataColumns { read: other_read, offset: 2, length: 4 }].into_iter(),
+        [CacheSegment::DataColumns { read: other_read, offset: 2, length: 4 }].into_iter(),
     )
     .unwrap();
     let view = frame.acquire(&mut consumer, Instant::now()).unwrap();
@@ -152,10 +152,10 @@ fn descriptor_bounds_and_sources_are_checked() {
     assert!(segment.acquire(&mut consumer, Some(&mut other_reader)).is_none());
 
     for bytes in [&b"not a descriptor"[..], &b"SGFRAME1\xff\xff\xff\xff\x01\x00\x00\x00"[..]] {
-        let malformed = GossipFrameRef { descriptor: write(&mut producer, bytes), expires };
+        let malformed = CacheFrameRef { descriptor: write(&mut producer, bytes), expires };
         assert!(matches!(
             malformed.acquire(&mut consumer, Instant::now()),
-            Err(GossipFrameError::InvalidDescriptor)
+            Err(CacheFrameError::InvalidDescriptor)
         ));
     }
 }
@@ -207,18 +207,18 @@ fn failed_acquisition_releases_every_successful_prefix_without_touching_other_re
         .unwrap();
     let now = Instant::now();
     let segments = [
-        GossipSegment::Framing { offset: 0, length: 1 },
-        GossipSegment::Gossip { read: gossip, offset: 1, length: 3 },
-        GossipSegment::DataColumns { read: column, offset: 0, length: 4 },
-        GossipSegment::Shared { reservation: shared, part: 0, second: false, offset: 0, length: 4 },
-        GossipSegment::Shared { reservation: shared, part: 0, second: true, offset: 0, length: 2 },
-        GossipSegment::Gossip { read: gossip, offset: 1, length: 3 },
-        GossipSegment::Framing { offset: 0, length: 1 },
+        CacheSegment::Framing { offset: 0, length: 1 },
+        CacheSegment::Gossip { read: gossip, offset: 1, length: 3 },
+        CacheSegment::DataColumns { read: column, offset: 0, length: 4 },
+        CacheSegment::Shared { reservation: shared, part: 0, second: false, offset: 0, length: 4 },
+        CacheSegment::Shared { reservation: shared, part: 0, second: true, offset: 0, length: 2 },
+        CacheSegment::Gossip { read: gossip, offset: 1, length: 3 },
+        CacheSegment::Framing { offset: 0, length: 1 },
     ];
     for failed in 0..segments.len() {
         let mut descriptors = segments;
-        descriptors[failed] = GossipSegment::DataColumns { read: column, offset: 100, length: 1 };
-        let frame = GossipFrameRef::write(
+        descriptors[failed] = CacheSegment::DataColumns { read: column, offset: 100, length: 1 };
+        let frame = CacheFrameRef::write(
             &mut producer,
             now + Duration::from_secs(1),
             b"f",
@@ -252,16 +252,16 @@ fn handoff_transfers_counts_and_frame_drop_releases_only_the_remainder() {
     let gossip = write(&mut producer, b"gossip");
     let column = write(&mut columns, b"column");
     let now = Instant::now();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut producer,
         now + Duration::from_secs(1),
         b"f",
         [
-            GossipSegment::Framing { offset: 0, length: 1 },
-            GossipSegment::Gossip { read: gossip, offset: 0, length: 6 },
-            GossipSegment::DataColumns { read: column, offset: 0, length: 6 },
-            GossipSegment::DataColumns { read: column, offset: 0, length: 6 },
-            GossipSegment::Framing { offset: 0, length: 1 },
+            CacheSegment::Framing { offset: 0, length: 1 },
+            CacheSegment::Gossip { read: gossip, offset: 0, length: 6 },
+            CacheSegment::DataColumns { read: column, offset: 0, length: 6 },
+            CacheSegment::DataColumns { read: column, offset: 0, length: 6 },
+            CacheSegment::Framing { offset: 0, length: 1 },
         ]
         .into_iter(),
     )
@@ -273,9 +273,9 @@ fn handoff_transfers_counts_and_frame_drop_releases_only_the_remainder() {
         .unwrap();
     assert_eq!(consumer.active_count(), 2);
     assert_eq!(reader.active_count(), 2);
-    assert!(matches!(frame.take_next(), Some(AcquiredGossipSegment::Framing(_))));
-    let Some(AcquiredGossipSegment::Data(gossip_range)) = frame.take_next() else { panic!() };
-    let Some(AcquiredGossipSegment::Data(column_range)) = frame.take_next() else { panic!() };
+    assert!(matches!(frame.take_next(), Some(AcquiredCacheSegment::Framing(_))));
+    let Some(AcquiredCacheSegment::Data(gossip_range)) = frame.take_next() else { panic!() };
+    let Some(AcquiredCacheSegment::Data(column_range)) = frame.take_next() else { panic!() };
     assert_eq!(consumer.active_count(), 2);
     assert_eq!(reader.active_count(), 2);
     reader.advance_retention(columns.next_seq());
@@ -313,33 +313,33 @@ fn shared_handoff_survives_closure_without_exposing_unverified_gaps() {
             .unwrap();
     }
     let now = Instant::now();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut producer,
         now + Duration::from_secs(1),
         b"",
         [
-            GossipSegment::Shared {
+            CacheSegment::Shared {
                 reservation: shared,
                 part: 0,
                 second: false,
                 offset: 1,
                 length: 3,
             },
-            GossipSegment::Shared {
+            CacheSegment::Shared {
                 reservation: shared,
                 part: 2,
                 second: false,
                 offset: 0,
                 length: 4,
             },
-            GossipSegment::Shared {
+            CacheSegment::Shared {
                 reservation: shared,
                 part: 0,
                 second: true,
                 offset: 0,
                 length: 2,
             },
-            GossipSegment::Shared {
+            CacheSegment::Shared {
                 reservation: shared,
                 part: 2,
                 second: true,
@@ -367,7 +367,7 @@ fn shared_handoff_survives_closure_without_exposing_unverified_gaps() {
     );
     assert_eq!(reader.active_count(), 4);
     for (index, expected) in [&[0; 3][..], &[2; 4], &[10; 2], &[12; 1]].into_iter().enumerate() {
-        let Some(AcquiredGossipSegment::Data(range)) = frame.take_next() else { panic!() };
+        let Some(AcquiredCacheSegment::Data(range)) = frame.take_next() else { panic!() };
         assert_eq!(reader.active_count(), 4 - index);
         assert_eq!(range.as_ref(), expected);
         drop(range);
@@ -385,14 +385,14 @@ fn coalescing_transfers_one_pin_and_releases_redundant_pins() {
     let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
     let source = write(&mut producer, b"0123456789");
     let now = Instant::now();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut producer,
         now + Duration::from_secs(1),
         b"",
         [
-            GossipSegment::Gossip { read: source, offset: 1, length: 3 },
-            GossipSegment::Gossip { read: source, offset: 4, length: 3 },
-            GossipSegment::Gossip { read: source, offset: 7, length: 2 },
+            CacheSegment::Gossip { read: source, offset: 1, length: 3 },
+            CacheSegment::Gossip { read: source, offset: 4, length: 3 },
+            CacheSegment::Gossip { read: source, offset: 7, length: 2 },
         ]
         .into_iter(),
     )
@@ -403,7 +403,7 @@ fn coalescing_transfers_one_pin_and_releases_redundant_pins() {
         .acquire_segments(&mut consumer, None)
         .unwrap();
     assert_eq!(consumer.active_count(), 4);
-    let Some(AcquiredGossipSegment::Data(range)) = frame.take_next() else { panic!() };
+    let Some(AcquiredCacheSegment::Data(range)) = frame.take_next() else { panic!() };
     assert_eq!(consumer.active_count(), 2);
     assert!(frame.take_next().is_none());
     drop(frame);
@@ -419,11 +419,11 @@ fn unwinding_releases_untransferred_pins_but_not_the_handed_off_read() {
     let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
     let source = write(&mut producer, b"data");
     let now = Instant::now();
-    let reference = GossipFrameRef::write(
+    let reference = CacheFrameRef::write(
         &mut producer,
         now + Duration::from_secs(1),
         b"",
-        [GossipSegment::Gossip { read: source, offset: 0, length: 4 }; 3].into_iter(),
+        [CacheSegment::Gossip { read: source, offset: 0, length: 4 }; 3].into_iter(),
     )
     .unwrap();
     let mut handed_off = None;
@@ -433,7 +433,7 @@ fn unwinding_releases_untransferred_pins_but_not_the_handed_off_read() {
             .unwrap()
             .acquire_segments(&mut consumer, None)
             .unwrap();
-        let Some(AcquiredGossipSegment::Data(range)) = frame.take_next() else { panic!() };
+        let Some(AcquiredCacheSegment::Data(range)) = frame.take_next() else { panic!() };
         handed_off = Some(range);
         panic!("abort a partially handed-off frame");
     }));

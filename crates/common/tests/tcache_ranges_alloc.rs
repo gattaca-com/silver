@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_common::{AcquiredGossipSegment, GossipFrameRef, GossipSegment, TCache, TCacheProducer};
+use silver_common::{AcquiredCacheSegment, CacheFrameRef, CacheSegment, TCache, TCacheProducer};
 
 thread_local! {
     static ALLOCATION_EVENTS: Cell<u64> = const { Cell::new(0) };
@@ -94,11 +94,11 @@ fn descriptor_construction_and_acquisition_allocate_nothing() {
     let now = Instant::now();
     let before = ALLOCATION_EVENTS.with(Cell::get);
     for _ in 0..128 {
-        let frame = GossipFrameRef::write(
+        let frame = CacheFrameRef::write(
             &mut producer,
             now + Duration::from_secs(1),
             b"framing",
-            [GossipSegment::Framing { offset: 0, length: 3 }, GossipSegment::Framing {
+            [CacheSegment::Framing { offset: 0, length: 3 }, CacheSegment::Framing {
                 offset: 3,
                 length: 4,
             }]
@@ -126,15 +126,15 @@ fn frame_acquisition_handoff_and_rollback_allocate_nothing() {
     let now = Instant::now();
     let before = ALLOCATION_EVENTS.with(Cell::get);
     for _ in 0..32 {
-        let reference = GossipFrameRef::write(
+        let reference = CacheFrameRef::write(
             &mut producer,
             now + Duration::from_secs(1),
             b"framing",
             [
-                GossipSegment::Gossip { read: source, offset: 0, length: 4 },
-                GossipSegment::Gossip { read: source, offset: 4, length: 4 },
-                GossipSegment::Framing { offset: 0, length: 7 },
-                GossipSegment::Gossip { read: source, offset: 16, length: 4 },
+                CacheSegment::Gossip { read: source, offset: 0, length: 4 },
+                CacheSegment::Gossip { read: source, offset: 4, length: 4 },
+                CacheSegment::Framing { offset: 0, length: 7 },
+                CacheSegment::Gossip { read: source, offset: 16, length: 4 },
             ]
             .into_iter(),
         )
@@ -146,20 +146,20 @@ fn frame_acquisition_handoff_and_rollback_allocate_nothing() {
             .unwrap();
         while let Some(segment) = frame.take_next() {
             match segment {
-                AcquiredGossipSegment::Framing(range) => {
+                AcquiredCacheSegment::Framing(range) => {
                     black_box(range);
                 }
-                AcquiredGossipSegment::Data(range) => {
+                AcquiredCacheSegment::Data(range) => {
                     black_box(range.as_ref());
                 }
             }
         }
         drop(frame);
-        let invalid = GossipFrameRef::write(
+        let invalid = CacheFrameRef::write(
             &mut producer,
             now + Duration::from_secs(1),
             b"",
-            [GossipSegment::Gossip { read: source, offset: 0, length: 4 }, GossipSegment::Gossip {
+            [CacheSegment::Gossip { read: source, offset: 0, length: 4 }, CacheSegment::Gossip {
                 read: source,
                 offset: 64,
                 length: 1,
