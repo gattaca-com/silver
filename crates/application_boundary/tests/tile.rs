@@ -14,7 +14,7 @@ use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipTopic, HeadChange, HeadRoots, Identify, Keypair, MessageId, P2pStreamId,
+    Enr, GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
     PayloadResolution, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
     TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
@@ -726,6 +726,68 @@ fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
         }
     }
     assert_eq!(produce_to_wire, [1; 5], "iterations from produce to wire, per request");
+}
+
+#[test]
+fn peer_table_follows_connections_and_disconnects() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_peers_gossip",
+        "cs_peers_rpc",
+        "cs_peers_resp",
+    ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+
+    let peer_id = |secret: u8| Keypair::from_secret(&[secret; 32]).unwrap().peer_id();
+    for (p2p_peer_id, local_dial) in [(3, false), (4, true)] {
+        inj.produce(PeerEvent::P2pNewConnection {
+            p2p_peer_id,
+            peer_id_full: peer_id(p2p_peer_id as u8),
+            ip: IpBytes::V4([10, 0, 0, p2p_peer_id as u8]),
+            port: 9000,
+            local_dial,
+        });
+    }
+    tile.loop_body(&mut adapter);
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let peers = |tile: &mut ApplicationBoundaryTile,
+                 adapter: &mut SpineAdapter<SilverSpine>,
+                 query: &str|
+     -> Value {
+        let path = format!("/eth/v1/node/peers{query}");
+        let client = std::thread::spawn(move || {
+            let stream = TcpStream::connect(addr).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            http_get(stream, &path)
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !client.is_finished() {
+            assert!(Instant::now() < deadline, "timeout: peers answered");
+            tile.loop_body(adapter);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+        serde_json::from_str(&response[response.find("\r\n\r\n").unwrap() + 4..]).unwrap()
+    };
+
+    assert_eq!(peers(&mut tile, &mut adapter, "")["meta"]["count"], 2);
+    let outbound = peers(&mut tile, &mut adapter, "?direction=outbound");
+    assert_eq!(outbound["meta"]["count"], 1);
+    assert!(
+        outbound["data"][0]["last_seen_p2p_address"]
+            .as_str()
+            .unwrap()
+            .starts_with("/ip4/10.0.0.4/udp/9000/quic-v1/p2p/")
+    );
+
+    inj.produce(PeerEvent::P2pDisconnect { p2p_peer: 4, peer_id: peer_id(4) });
+    tile.loop_body(&mut adapter);
+    assert_eq!(peers(&mut tile, &mut adapter, "")["meta"]["count"], 1);
 }
 
 /// A broadcast consumer's cursor jumps to the producer's write head on its
