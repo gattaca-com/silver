@@ -144,10 +144,17 @@ fn finalized_state_loads() {
         return;
     };
 
-    // Ticker against the SSZ's genesis_time so `current_slot()` returns the
-    // real mainnet slot — otherwise `precheck_block` ignores blocks as future.
+    let mut blocks = dir.read_sorted_next_blocks();
+    let state = BeaconState::from_checkpoint(&ssz, &SpecConfig::mainnet(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+    let checkpoint_slot = state.slot_states.finalized_view().slot_number();
+    let last_slot = blocks.last().map_or(checkpoint_slot, |(slot, _)| *slot);
+
+    // Keep the checkpoint recent and every fixture block in the past,
+    // independent of the date on which the test runs.
     let genesis_time = u64::from_le_bytes(ssz[0..8].try_into().unwrap());
-    let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
+    let mut ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
+    ticker.set_current_slot(last_slot + 1);
     let gossip_p = TCache::producer("gossip_in", 1 << 20);
     let rpc_p = TCache::producer("rpc_in", 1 << 20);
     let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
@@ -157,8 +164,6 @@ fn finalized_state_loads() {
     let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
     let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconState::from_checkpoint(&ssz, &SpecConfig::mainnet(), &[])
-        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
@@ -217,8 +222,6 @@ fn finalized_state_loads() {
         );
     }
 
-    // Collect and sort `next_block_<slot>.ssz` fixtures.
-    let mut blocks = dir.read_sorted_next_blocks();
     if blocks.is_empty() {
         eprintln!(
             "skipping next-block apply: no next_block_*.ssz fixtures in {}",
