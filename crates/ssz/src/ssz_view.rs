@@ -34,6 +34,8 @@ pub enum SszView {
     None,
 }
 
+pub mod partial_column;
+
 #[inline(always)]
 fn u64_le(buf: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
