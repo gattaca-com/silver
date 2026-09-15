@@ -11,14 +11,17 @@ use silver_common::{
     msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
-use crate::{GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache};
+use crate::{
+    GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache,
+    handler::ActiveDomains,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_incoming(
     topic_string: &str,
     snappy_data: &[u8],
     stream_id: &P2pStreamId,
-    fork_digest_hex: &str,
+    domains: &ActiveDomains,
     recv_ts: Nanos,
     dedup_cache: &mut DedupCache,
     incoming_gossip_publish: &mut TProducer,
@@ -36,7 +39,7 @@ pub(super) fn handle_incoming(
     let fast_id = match dedup_cache.contains_fast(topic_string, snappy_data) {
         Ok(fast_hash) => fast_hash,
         Err(msg_id) => {
-            let topic = GossipTopic::from_wire(topic_string, fork_digest_hex)?;
+            let (topic, _) = domains.parse(topic_string)?;
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::GossipDuplicate {
                 p2p_peer: stream_id.peer(),
                 topic,
@@ -47,7 +50,7 @@ pub(super) fn handle_incoming(
         }
     };
 
-    let topic = GossipTopic::from_wire(topic_string, fork_digest_hex)?;
+    let (topic, domain) = domains.parse(topic_string)?;
     tracing::trace!(?stream_id, ?topic, "Gossip message received");
 
     // Decompress: block snappy.
@@ -119,6 +122,7 @@ pub(super) fn handle_incoming(
     emit(GossipHandlerEvent::NewGossip(NewGossipMsg {
         stream_id: *stream_id,
         topic,
+        domain,
         msg_hash: msg_id,
         recv_ts,
         ssz: ssz_read,

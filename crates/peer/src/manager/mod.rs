@@ -443,6 +443,7 @@ impl PeerManager {
             PeerEvent::SendGossip {
                 originator_stream_id,
                 topic,
+                domain: _,
                 msg_hash,
                 recv_ts: _,
                 protobuf,

@@ -15,20 +15,21 @@ use crate::{
         ControlGraftView, ControlIDontWantView, ControlIHaveView, ControlIWantView,
         ControlPruneView, rpc::SubOptsView,
     },
+    handler::ActiveDomains,
     mcache::MessageCache,
 };
 
 pub(super) fn handle_subscriptions<'a>(
     stream_id: &P2pStreamId,
     subscriptions: RepeatedView<'a, SubOptsView<'a>>,
-    fork_digest_hex: &str,
+    domains: &ActiveDomains,
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for subscription in subscriptions {
         if let Some(topic) = subscription.topic_id &&
             let Some(subscribe) = subscription.subscribe
         {
-            let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
+            let Ok(topic) = gossip_topic(topic, domains) else {
                 continue;
             };
             if subscribe {
@@ -60,12 +61,12 @@ pub(super) fn handle_subscriptions<'a>(
 pub(super) fn handle_grafts<'a>(
     stream_id: &P2pStreamId,
     grafts: &RepeatedView<'a, ControlGraftView<'a>>,
-    fork_digest_hex: &str,
+    domains: &ActiveDomains,
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for graft in grafts {
         if let Some(topic) = graft.topic_id {
-            let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
+            let Ok(topic) = gossip_topic(topic, domains) else {
                 continue;
             };
             tracing::debug!(?stream_id, ?topic, "GRAFT received");
@@ -80,12 +81,12 @@ pub(super) fn handle_grafts<'a>(
 pub(super) fn handle_prunes<'a>(
     stream_id: &P2pStreamId,
     prunes: &RepeatedView<'a, ControlPruneView<'a>>,
-    fork_digest_hex: &str,
+    domains: &ActiveDomains,
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for prune in prunes {
         if let Some(topic) = prune.topic_id {
-            let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
+            let Ok(topic) = gossip_topic(topic, domains) else {
                 continue;
             };
             tracing::debug!(?stream_id, ?topic, "PRUNE received");
@@ -155,7 +156,7 @@ pub(super) fn handle_idontwants<'a>(
 pub(super) fn handle_ihaves<'a>(
     stream_id: &P2pStreamId,
     haves: &RepeatedView<'a, ControlIHaveView<'a>>,
-    fork_digest_hex: &str,
+    domains: &ActiveDomains,
     mcache: &MessageCache,
     dedup: &DedupCache,
     mcache_publish: &mut TProducer,
@@ -165,7 +166,7 @@ pub(super) fn handle_ihaves<'a>(
     scratch_buffer.clear();
     for ihave in haves {
         if let Some(topic) = ihave.topic_id {
-            let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
+            let Ok(topic) = gossip_topic(topic, domains) else {
                 continue;
             };
             for have in &ihave.message_ids {
@@ -459,9 +460,9 @@ fn encode_control_topics(
     Ok(reservation.read())
 }
 
-fn gossip_topic(topic: &str, fork_digest_hex: &str) -> Result<GossipTopic, Error> {
-    GossipTopic::from_wire(topic, fork_digest_hex).inspect_err(|_| {
-        tracing::warn!(topic, fork_digest_hex, "invalid gossipsub topic");
+fn gossip_topic(topic: &str, domains: &ActiveDomains) -> Result<GossipTopic, Error> {
+    domains.parse(topic).map(|(topic, _)| topic).inspect_err(|_| {
+        tracing::warn!(topic, "invalid gossipsub topic");
     })
 }
 
@@ -485,7 +486,7 @@ fn message_id(
 #[cfg(test)]
 mod tests {
     use buffa::MessageView;
-    use silver_common::TCache;
+    use silver_common::{GossipDomain, TCache};
 
     use super::*;
     use crate::generated::RPCView;
@@ -506,6 +507,10 @@ mod tests {
         use crate::generated::{RPC, rpc::SubOpts};
 
         let digest = "8c9f62fe";
+        let domains = ActiveDomains::new(Some(GossipDomain {
+            digest: [0x8c, 0x9f, 0x62, 0xfe],
+            format: silver_common::ForkName::Fulu,
+        }));
         let column_topic = format!("/eth2/{digest}/data_column_sidecar_3/ssz_snappy");
         let block_topic = format!("/eth2/{digest}/beacon_block/ssz_snappy");
         let rpc = RPC {
@@ -532,7 +537,7 @@ mod tests {
 
         let mut caps = Vec::new();
         let mut subscribes = 0;
-        handle_subscriptions(&stream_id, view.subscriptions, digest, &mut |event| match event {
+        handle_subscriptions(&stream_id, view.subscriptions, &domains, &mut |event| match event {
             GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipPartialCaps {
                 p2p_peer,
                 subnet,

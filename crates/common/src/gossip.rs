@@ -1,5 +1,7 @@
 use std::fmt;
 
+use silver_beacon_state_data::ForkName;
+
 use crate::{
     Error,
     ssz_view::{
@@ -31,6 +33,15 @@ pub const MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE: usize = MAX_PAYLOAD_SIZE;
 pub const MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE: usize =
     32 + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE / 6;
 pub const MAX_GOSSIP_FRAME_SIZE: usize = MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 1024;
+
+/// One fork-qualified gossip domain: the digest names the wire topics,
+/// the format fixes every schema decision for messages carrying it. A
+/// BPO transition changes the digest without changing the format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GossipDomain {
+    pub digest: [u8; 4],
+    pub format: ForkName,
+}
 
 /// Gossipsub 1.3 extensions announcement, sent as the first RPC on
 /// every stream we write to after negotiating meshsub 1.3. Length

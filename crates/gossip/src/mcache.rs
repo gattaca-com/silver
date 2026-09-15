@@ -6,7 +6,7 @@ use std::{
 };
 
 use silver_common::{
-    GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess, TRead, Wheel,
+    GossipDomain, GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess, TRead, Wheel,
 };
 
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
@@ -21,7 +21,7 @@ const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(700);
 #[derive(Clone)]
 struct Bucket {
     messages: HashMap<MessageId, TRead, BuildHasherDefault<MessageIdHasher>>,
-    ihaves: HashMap<GossipTopic, Vec<MessageId>>,
+    ihaves: HashMap<(GossipTopic, GossipDomain), Vec<MessageId>>,
     tcache_min_seq: u64,
 }
 
@@ -52,12 +52,18 @@ impl MessageCache {
         }
     }
 
-    pub(crate) fn insert(&mut self, id: MessageId, topic: GossipTopic, tcache: TCacheRead) {
+    pub(crate) fn insert(
+        &mut self,
+        id: MessageId,
+        topic: GossipTopic,
+        domain: GossipDomain,
+        tcache: TCacheRead,
+    ) {
         let acquired = self.cache_consumer.acquire(tcache);
         let bucket = &mut self.buckets[self.current_bucket];
 
         // TODO could have a preallocated ring of max ihaves per gossip topic.
-        bucket.ihaves.entry(topic).and_modify(|v| v.push(id)).or_insert_with(|| vec![id]);
+        bucket.ihaves.entry((topic, domain)).and_modify(|v| v.push(id)).or_insert_with(|| vec![id]);
         bucket.tcache_min_seq = bucket.tcache_min_seq.min(acquired.seq());
         bucket.messages.insert(id, acquired);
         self.history.insert(id, Instant::now());
@@ -77,12 +83,13 @@ impl MessageCache {
 
     pub(crate) fn get_ihaves(
         &self,
-        topic: &GossipTopic,
+        topic: GossipTopic,
+        domain: GossipDomain,
     ) -> impl ExactSizeIterator<Item = &MessageId> {
-        IHaveIterator::new(*topic, self)
+        IHaveIterator::new((topic, domain), self)
     }
 
-    pub(crate) fn topics(&self) -> impl Iterator<Item = &GossipTopic> {
+    pub(crate) fn topics(&self) -> impl Iterator<Item = &(GossipTopic, GossipDomain)> {
         self.buckets.iter().flat_map(|b| b.ihaves.keys())
     }
 
@@ -113,7 +120,7 @@ impl MessageCache {
 }
 
 struct IHaveIterator<'a> {
-    topic: GossipTopic,
+    key: (GossipTopic, GossipDomain),
     count: usize,
     len: usize,
     bucket: usize,
@@ -123,15 +130,15 @@ struct IHaveIterator<'a> {
 }
 
 impl<'a> IHaveIterator<'a> {
-    fn new(topic: GossipTopic, mcache: &'a MessageCache) -> Self {
+    fn new(key: (GossipTopic, GossipDomain), mcache: &'a MessageCache) -> Self {
         let mut len = 0;
         for i in 0..IHAVE_BUCKETS {
             let idx = (mcache.current_bucket + BUCKETS - i) % BUCKETS;
-            len += mcache.buckets[idx].ihaves.get(&topic).map(|v| v.len()).unwrap_or_default();
+            len += mcache.buckets[idx].ihaves.get(&key).map(|v| v.len()).unwrap_or_default();
         }
-        let iter = mcache.buckets[mcache.current_bucket].ihaves.get(&topic).map(|v| v.iter());
+        let iter = mcache.buckets[mcache.current_bucket].ihaves.get(&key).map(|v| v.iter());
         Self {
-            topic,
+            key,
             count: 0,
             len: len.min(MAX_IHAVES_PER_TOPIC),
             bucket: mcache.current_bucket,
@@ -158,7 +165,7 @@ impl<'a> Iterator for IHaveIterator<'a> {
                     self.buckets_left -= 1;
                     self.bucket = (self.bucket + BUCKETS - 1) % BUCKETS;
                     self.iter =
-                        self.mcache.buckets[self.bucket].ihaves.get(&self.topic).map(|v| v.iter());
+                        self.mcache.buckets[self.bucket].ihaves.get(&self.key).map(|v| v.iter());
                 }
             }
         }
@@ -175,7 +182,9 @@ impl<'a> ExactSizeIterator for IHaveIterator<'a> {}
 mod tests {
     use std::io::Write;
 
-    use silver_common::{MessageId, TCache, TCacheProducer};
+    use silver_common::{ForkName, MessageId, TCache, TCacheProducer};
+
+    const TEST_DOMAIN: GossipDomain = GossipDomain { digest: [0; 4], format: ForkName::Fulu };
 
     use super::*;
 
@@ -196,7 +205,7 @@ mod tests {
         let (mut mcache, mut producer) = mk_mcache();
         let id = MessageId { id: [1u8; 20] };
         let tc = mk_tcache_read(&mut producer);
-        mcache.insert(id, GossipTopic::BeaconBlock, tc);
+        mcache.insert(id, GossipTopic::BeaconBlock, TEST_DOMAIN, tc);
         assert!(matches!(mcache.get(&id), Some(_)));
     }
 
@@ -212,14 +221,14 @@ mod tests {
         let ids: Vec<_> = (1u8..=4).map(|b| MessageId { id: [b; 20] }).collect();
         for (i, id) in ids.iter().enumerate() {
             let tc = mk_tcache_read(&mut producer);
-            mcache.insert(*id, GossipTopic::BeaconBlock, tc);
+            mcache.insert(*id, GossipTopic::BeaconBlock, TEST_DOMAIN, tc);
             if i < ids.len() - 1 {
                 force_rotate(&mut mcache);
             }
         }
         assert_eq!(mcache.current_bucket, 3);
 
-        let iter = mcache.get_ihaves(&GossipTopic::BeaconBlock);
+        let iter = mcache.get_ihaves(GossipTopic::BeaconBlock, TEST_DOMAIN);
         assert_eq!(iter.len(), 3);
         let mut ihaves: Vec<_> = iter.copied().collect();
         ihaves.sort_by_key(|m| m.id);

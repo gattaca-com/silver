@@ -348,6 +348,10 @@ mod tests {
     use super::*;
     use crate::manager::fixture::*;
 
+    fn test_domain() -> silver_common::GossipDomain {
+        silver_common::GossipDomain { digest: [0; 4], format: silver_common::ForkName::Fulu }
+    }
+
     fn mk_tcache_read() -> silver_common::TCacheRead {
         let mut producer = silver_common::TCache::producer("test_peer", 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
@@ -1023,6 +1027,7 @@ mod tests {
             PeerEvent::SendGossip {
                 originator_stream_id: stream_id,
                 topic: GossipTopic::BeaconBlock,
+                domain: test_domain(),
                 msg_hash: hash,
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),
@@ -1077,6 +1082,7 @@ mod tests {
             PeerEvent::SendGossip {
                 originator_stream_id: silver_common::LOCAL_GOSSIP_STREAM_ID,
                 topic: GossipTopic::BeaconBlock,
+                domain: test_domain(),
                 msg_hash: silver_common::MessageId { id: [0xCD; 20] },
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),

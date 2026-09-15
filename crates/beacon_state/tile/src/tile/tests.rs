@@ -186,6 +186,10 @@ fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
     BlockSourceMsg::Gossip(NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconBlock,
+        domain: silver_common::GossipDomain {
+            digest: [0; 4],
+            format: silver_common::ForkName::Fulu,
+        },
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,
@@ -2250,6 +2254,10 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic,
+        domain: silver_common::GossipDomain {
+            digest: [0; 4],
+            format: silver_common::ForkName::Fulu,
+        },
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz,
@@ -2279,6 +2287,10 @@ fn gossip_att_msg(
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconAttestation(subnet),
+        domain: silver_common::GossipDomain {
+            digest: [0; 4],
+            format: silver_common::ForkName::Fulu,
+        },
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,

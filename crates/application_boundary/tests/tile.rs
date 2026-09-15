@@ -229,6 +229,10 @@ fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
     PeerEvent::SendGossip {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
         topic,
+        domain: silver_common::GossipDomain {
+            digest: [0; 4],
+            format: silver_common::ForkName::Fulu,
+        },
         msg_hash: MessageId { id: [byte; 20] },
         recv_ts: Nanos::now(),
         // The boundary does not read protobuf, so no encoded payload is needed.
