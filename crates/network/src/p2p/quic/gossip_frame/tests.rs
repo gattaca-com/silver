@@ -426,6 +426,7 @@ fn framing_fragments_share_one_lazy_owner_until_the_last_ack() {
     )
     .unwrap();
     let before = ALLOCATIONS.with(Cell::get);
+    let before = ALLOCATIONS.with(Cell::get);
     let mut writer = h.acquire(reference).unwrap().into_writer();
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     let descriptor_len = writer.frame.segments.descriptor_len();
