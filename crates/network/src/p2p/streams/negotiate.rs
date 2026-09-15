@@ -293,7 +293,7 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
+        fn gossip_next(&mut self) -> Option<crate::p2p::quic::OutboundGossip> {
             None
         }
         fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {

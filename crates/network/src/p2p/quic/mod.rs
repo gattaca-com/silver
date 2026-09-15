@@ -8,10 +8,12 @@ use silver_common::{Keypair, PeerId};
 
 use super::tls;
 
+mod gossip_frame;
 mod leased;
 mod peer;
 mod stream;
 
+pub(crate) use gossip_frame::{OutboundGossip, SegmentedGossipLimits, SegmentedWriter};
 pub(crate) use leased::Leased;
 #[cfg(test)]
 pub(crate) use leased::OutboundLeaseWheel;
