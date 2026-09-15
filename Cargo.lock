@@ -4861,6 +4861,7 @@ dependencies = [
  "rand 0.8.6",
  "silver_beacon_state_data",
  "silver_common",
+ "slab",
  "snap 1.1.1",
  "tracing",
 ]
@@ -4933,6 +4934,7 @@ dependencies = [
  "fxhash",
  "raft",
  "silver_chain_spec",
+ "silver_columns",
  "silver_common",
  "silver_gossip",
  "silver_peer",

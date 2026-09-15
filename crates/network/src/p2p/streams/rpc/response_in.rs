@@ -326,7 +326,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TRead, ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN};
+    use silver_common::{StreamProtocol, TCache, ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN};
 
     use super::*;
     use crate::p2p::streams::{rpc::AcquiredRpcOutbound, snappy::SnappyEncoder};
@@ -362,7 +362,7 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+        fn gossip_next(&mut self) -> Option<crate::p2p::quic::OutboundGossip> {
             None
         }
 
@@ -378,7 +378,7 @@ mod tests {
             Ok(data.as_ref().len())
         }
 
-        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<TRead>> {
+        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
             None
         }
     }

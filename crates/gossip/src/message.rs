@@ -149,9 +149,8 @@ fn decompress_to_reservation(
     let output_buffer = producer.reservation_buffer(reservation)?;
 
     let decompressed_len = snap_decoder.decompress(data, output_buffer)?;
-    reservation.increment_offset(decompressed_len);
-
     let msg_id = msg_id_valid_snappy(topic, &output_buffer[..decompressed_len]);
+    reservation.increment_offset(decompressed_len);
     Ok(msg_id)
 }
 

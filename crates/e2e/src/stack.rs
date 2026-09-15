@@ -241,6 +241,7 @@ impl PublisherStack {
             .expect("cluster outbound random access");
 
         let context = Context {
+            data_columns_consumer: None,
             gossip_producer: gossip_in_producer,
             gossip_consumer: gossip_out_ra_for_network,
             rpc_producer: rpc_in_producer,
@@ -373,6 +374,7 @@ impl EchoStack {
             .expect("cluster outbound random access");
 
         let context = Context {
+            data_columns_consumer: None,
             gossip_producer: gossip_in_producer,
             gossip_consumer: protobuf_ra_for_network,
             rpc_producer: rpc_in_producer,
