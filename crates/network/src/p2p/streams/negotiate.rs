@@ -238,10 +238,13 @@ impl NegotiateState {
 #[cfg(test)]
 mod tests {
     use quinn_proto::{Dir, Side};
-    use silver_common::ALL_PROTOCOLS;
+    use silver_common::{ALL_PROTOCOLS, TRead};
 
     use super::*;
-    use crate::p2p::streams::AcquiredRpcOutbound;
+    use crate::p2p::{
+        quic::{Leased, OutboundGossip},
+        streams::AcquiredRpcOutbound,
+    };
 
     /// In-memory `StreamIo` for driving the negotiation state machine.
     struct MockIo {
@@ -293,10 +296,10 @@ mod tests {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<crate::p2p::quic::OutboundGossip> {
+        fn gossip_next(&mut self) -> Option<OutboundGossip> {
             None
         }
-        fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
+        fn cluster_next(&mut self) -> Option<Leased<TRead>> {
             None
         }
         fn remote_addr(&self) -> std::net::SocketAddr {
@@ -306,7 +309,7 @@ mod tests {
         fn write_leased_to_stream(
             &mut self,
             _id: StreamId,
-            _data: crate::p2p::quic::Leased<silver_common::AcquiredWithOffset>,
+            _data: Leased<silver_common::AcquiredWithOffset>,
         ) -> Result<usize, StreamError> {
             Ok(0)
         }

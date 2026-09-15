@@ -4,7 +4,7 @@ use silver_common::{
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
-        DataColumnSidecarGloasView,
+        DataColumnSidecarGloasView, partial_column::PARTIAL_HEADER_FIXED,
     },
 };
 
@@ -35,8 +35,9 @@ impl CommitmentContext {
                         rows * BYTES_PER_KZG_COMMITMENT ||
                     DataColumnSidecarFuluView::kzg_proofs(bytes).len() !=
                         rows * BYTES_PER_KZG_PROOF ||
-                    bytes[20..356] != context[4..340] ||
-                    DataColumnSidecarFuluView::kzg_commitments(bytes) != &context[340..]
+                    bytes[20..356] != context[4..PARTIAL_HEADER_FIXED] ||
+                    DataColumnSidecarFuluView::kzg_commitments(bytes) !=
+                        &context[PARTIAL_HEADER_FIXED..]
                 {
                     return None;
                 }
@@ -89,17 +90,20 @@ impl<'a> ContextData<'a> {
         }
     }
 
+    /// A Fulu context is stored as PartialDataColumnHeader SSZ, so it can
+    /// later be referenced verbatim as a partial frame's header ranges.
     pub(super) fn encoded_len(self) -> usize {
-        self.commitments().len() + if matches!(self, Self::Fulu { .. }) { 340 } else { 0 }
+        self.commitments().len() +
+            if matches!(self, Self::Fulu { .. }) { PARTIAL_HEADER_FIXED } else { 0 }
     }
 
     pub(super) fn write(self, out: &mut [u8]) {
         match self {
             Self::Fulu { signed_header, inclusion_proof, commitments } => {
-                out[..4].copy_from_slice(&340u32.to_le_bytes());
+                out[..4].copy_from_slice(&(PARTIAL_HEADER_FIXED as u32).to_le_bytes());
                 out[4..212].copy_from_slice(signed_header);
-                out[212..340].copy_from_slice(inclusion_proof);
-                out[340..].copy_from_slice(commitments);
+                out[212..PARTIAL_HEADER_FIXED].copy_from_slice(inclusion_proof);
+                out[PARTIAL_HEADER_FIXED..].copy_from_slice(commitments);
             }
             Self::Gloas { commitments } => out.copy_from_slice(commitments),
         }
@@ -111,10 +115,10 @@ impl<'a> ContextData<'a> {
         }
         match self {
             Self::Fulu { signed_header, inclusion_proof, commitments } => {
-                bytes[..4] == 340u32.to_le_bytes() &&
+                bytes[..4] == (PARTIAL_HEADER_FIXED as u32).to_le_bytes() &&
                     bytes[4..212] == *signed_header &&
-                    bytes[212..340] == *inclusion_proof &&
-                    bytes[340..] == *commitments
+                    bytes[212..PARTIAL_HEADER_FIXED] == *inclusion_proof &&
+                    bytes[PARTIAL_HEADER_FIXED..] == *commitments
             }
             Self::Gloas { commitments } => bytes == commitments,
         }
