@@ -80,6 +80,13 @@ impl PeerManager {
         self.our_fork_digest
     }
 
+    /// Digest for the gossip control messages we emit. Falls back to the
+    /// zero digest before the first status (matches the pre-status wire
+    /// behaviour, where nothing is published anyway).
+    pub(super) fn current_digest(&self) -> [u8; 4] {
+        self.our_fork_digest.unwrap_or_default()
+    }
+
     /// Track the engine-selected sync target (the engine is authoritative) so
     /// `pick_sync_peer` / `best_peer_for_data_columns` can match peers against
     /// it. Watermark + column resets are the engine's.

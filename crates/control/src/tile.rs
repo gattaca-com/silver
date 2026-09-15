@@ -1,12 +1,16 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use silver_chain_spec::SpecConfig;
 use silver_columns::cell_store::{CellStoreConfig, StoreError};
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos, P2pSend,
-    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
-    RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SyncNeed,
-    SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
+    BeaconApiRequest, BeaconStateEvent, GossipDomain, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos,
+    P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest,
+    RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
     cells::CellStoreEvent,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
@@ -56,6 +60,9 @@ pub struct Controller {
     /// forwards until then. Drained into the PM on the first transition.
     pending_subnet_topics: Vec<GossipTopic>,
     cell_ingress: Option<CellIngress>,
+    /// Chain schedule, used to resolve the active gossip fork domain from
+    /// the wall slot.
+    spec: Arc<SpecConfig>,
 }
 
 impl Controller {
@@ -72,6 +79,7 @@ impl Controller {
         cluster_inbound_consumer: TRandomAccess,
         cluster_config: Option<AttestationClusterConfig>,
         sync_engine: SyncEngine,
+        spec: Arc<SpecConfig>,
     ) -> Result<Self, ClusterError> {
         let now = Instant::now();
         let attestation_cluster = AttestationClusterHandler::new(
@@ -95,6 +103,7 @@ impl Controller {
             auto_ping: true,
             pending_subnet_topics: Vec::new(),
             cell_ingress: None,
+            spec,
         })
     }
 
@@ -139,7 +148,11 @@ impl Controller {
             // PM still tracks our Status (peer-Status validation) + applied head
             // (custody-peer eligibility); the wall slot is the engine's only.
             let fork_digest_changed = self.peer_manager.set_status(ssz);
-            self.gossip_handler.set_fork_digest(&ssz);
+            let domain = GossipDomain::new(
+                *StatusView::fork_digest(&ssz),
+                self.spec.fork_at_slot(wall_slot),
+            );
+            self.gossip_handler.set_domains(domain, None);
             self.peer_manager.set_local_head_imported(latest_block_slot);
             self.sync_engine.on_local_status(
                 latest_block_slot,
@@ -239,10 +252,15 @@ impl Tile<SilverSpine> for Controller {
                         if let Some((msg_hash, protobuf)) =
                             self.gossip_handler.publish(topic, bytes)
                         {
+                            let domain = self
+                                .gossip_handler
+                                .current_domain()
+                                .expect("publish succeeded so a domain is set");
                             self.peer_manager.handle_event(
                                 PeerEvent::SendGossip {
                                     originator_stream_id: originator,
                                     topic,
+                                    domain,
                                     msg_hash,
                                     recv_ts: Nanos::now(),
                                     protobuf,
@@ -282,13 +300,14 @@ impl Tile<SilverSpine> for Controller {
             if let PeerEvent::SendGossip {
                 originator_stream_id: _,
                 topic,
+                domain,
                 msg_hash,
                 recv_ts: _,
                 protobuf,
                 ssz: _,
             } = &event
             {
-                self.gossip_handler.mcache_insert(*msg_hash, *topic, *protobuf);
+                self.gossip_handler.mcache_insert(*msg_hash, *topic, *domain, *protobuf);
             }
 
             self.peer_manager.handle_event(event, now, &mut |evt| {

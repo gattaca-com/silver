@@ -286,7 +286,7 @@ impl PublisherStack {
                 gossip_in_consumer_2,
                 TCache::producer("g_ssz", 32),
                 TCache::producer("g_proto", 32),
-                String::new(),
+                None,
             )
             .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
@@ -295,6 +295,7 @@ impl PublisherStack {
             cluster_in_consumer,
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
+            Arc::new(SpecConfig::mainnet()),
         )
         .map_err(std::io::Error::other)?;
 
@@ -338,6 +339,11 @@ impl EchoStack {
         fork_digest_hex: String,
     ) -> std::io::Result<Self> {
         let peer_id = keypair.peer_id();
+        let boot_domain = (!fork_digest_hex.is_empty()).then(|| {
+            let mut digest = [0u8; 4];
+            hex::decode_to_slice(&fork_digest_hex, &mut digest).expect("valid fork digest hex");
+            silver_common::GossipDomain::new(digest, silver_common::ForkName::Fulu)
+        });
 
         // Inbound gossip raw bytes: network writes, compression consumes.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
@@ -401,13 +407,9 @@ impl EchoStack {
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
-        let compression = GossipHandler::new(
-            gossip_in_consumer,
-            ssz_producer,
-            protobuf_producer,
-            fork_digest_hex,
-        )
-        .map_err(std::io::Error::other)?;
+        let compression =
+            GossipHandler::new(gossip_in_consumer, ssz_producer, protobuf_producer, boot_domain)
+                .map_err(std::io::Error::other)?;
 
         let controller = Controller::new(
             PeerManager::new(
@@ -430,6 +432,7 @@ impl EchoStack {
             cluster_in_consumer,
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
+            Arc::new(SpecConfig::mainnet()),
         )
         .map_err(std::io::Error::other)?;
 

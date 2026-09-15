@@ -1,5 +1,5 @@
 use silver_common::{
-    GossipTopic, IngestionTime, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
+    GossipDomain, GossipTopic, IngestionTime, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
     column_util::KzgBatchEntry,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
@@ -11,8 +11,16 @@ use crate::{BlockRoot, availability::ColumnTracker, validate::ColumnValidator};
 /// KZG check so nothing unverified is ever relayed.
 pub(crate) enum RelayMeta {
     None,
-    Gossip { topic: GossipTopic, msg_hash: MessageId, recv_ts: Nanos, protobuf: TCacheRead },
-    Rpc { ssz: TCacheRead },
+    Gossip {
+        topic: GossipTopic,
+        domain: GossipDomain,
+        msg_hash: MessageId,
+        recv_ts: Nanos,
+        protobuf: TCacheRead,
+    },
+    Rpc {
+        ssz: TCacheRead,
+    },
 }
 
 /// A sidecar that passed every per-sidecar check and awaits the end-of-pass

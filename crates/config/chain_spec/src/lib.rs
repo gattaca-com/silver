@@ -35,7 +35,7 @@ pub struct BlobParameters {
 /// Every fork silver's config can name, in activation order. The set is
 /// closed and minted upstream, so it is an enum rather than a table
 /// (ADR-0003); forks past Gloas are added here as the spec schedules them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ForkName {
     Phase0,
     Altair,

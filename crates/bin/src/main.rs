@@ -278,7 +278,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_gossip_consumer,
         ssz_gossip_producer,
         outgoing_gossip_producer,
-        hex::encode(config.fork_digest()),
+        Some(silver_common::GossipDomain::new(
+            config.fork_digest(),
+            spec.fork_at_slot(boot_wall_slot),
+        )),
     )?;
 
     let mut control_tile = Controller::new(
@@ -304,6 +307,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             das_custody_groups,
             spec.clone(),
         ),
+        spec.clone(),
     )?;
     control_tile = control_tile
         .with_data_columns_cache(cell_config, data_columns_producer, cell_slot, cell_slot_start)

@@ -435,6 +435,7 @@ impl DataColumnsTile {
         tracing::debug!(custody_group, "data column sidecar over gossip");
         let relay = RelayMeta::Gossip {
             topic: gossip.topic,
+            domain: gossip.domain,
             msg_hash: gossip.msg_hash,
             recv_ts: gossip.recv_ts,
             protobuf: gossip.protobuf,
@@ -531,10 +532,11 @@ impl DataColumnsTile {
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
         match mem::replace(&mut p.relay, RelayMeta::None) {
-            RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
+            RelayMeta::Gossip { topic, domain, msg_hash, recv_ts, protobuf } => {
                 producers.produce(PeerEvent::SendGossip {
                     originator_stream_id: p.stream_id,
                     topic,
+                    domain,
                     msg_hash,
                     recv_ts,
                     protobuf,
@@ -920,6 +922,7 @@ mod tests {
             let gossip = NewGossipMsg {
                 stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
                 topic: GossipTopic::DataColumnSidecar(index),
+                domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
                 msg_hash: MessageId { id },
                 recv_ts,
                 ssz,

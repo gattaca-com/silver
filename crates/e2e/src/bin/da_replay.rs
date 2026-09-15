@@ -178,6 +178,7 @@ impl Node {
         self.inj.produce(NewGossipMsg {
             stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic: GossipTopic::DataColumnSidecar(index),
+            domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
             msg_hash: MessageId { id },
             recv_ts: Nanos::now(),
             ssz,

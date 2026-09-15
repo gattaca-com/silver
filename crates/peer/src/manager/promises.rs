@@ -125,7 +125,7 @@ impl PeerManager {
     }
 
     fn credit_mesh_delivery(&mut self, conn: usize, topic: GossipTopic) -> Option<PeerId> {
-        if !self.mesh.get(&topic).is_some_and(|mesh| mesh.contains(&conn)) {
+        if !self.mesh.get(&topic).is_some_and(|meshes| meshes.contains(conn)) {
             return None;
         }
         let peer = self.peers.get_mut(&conn)?;
@@ -141,7 +141,7 @@ impl PeerManager {
         recv_ts: Nanos,
     ) {
         self.promises.remove(&hash);
-        if !self.mesh.get(&topic).is_some_and(|mesh| mesh.contains(&conn)) {
+        if !self.mesh.get(&topic).is_some_and(|meshes| meshes.contains(conn)) {
             return;
         }
         let Some(peer_id) = self.peers.get(&conn).map(|peer| peer.peer_id) else {
@@ -196,10 +196,10 @@ impl PeerManager {
         }
 
         // Fan IDONTWANT out to mesh members (except sender) above threshold.
-        let Some(mesh_peers) = self.mesh.get(&topic) else {
+        let Some(meshes) = self.mesh.get(&topic) else {
             return;
         };
-        for conn in mesh_peers {
+        for conn in meshes.iter().flat_map(|m| &m.peers) {
             if *conn == sender_conn {
                 continue;
             }
@@ -236,7 +236,7 @@ impl PeerManager {
             if !peer.topics.contains(&topic) {
                 continue;
             }
-            if mesh_for_topic.is_some_and(|m| m.contains(conn)) {
+            if mesh_for_topic.is_some_and(|m| m.contains(*conn)) {
                 continue; // mesh peers get full-body forwards, not IHAVE
             }
             if peer.gossip_gate_score() < self.params.gossip_threshold {
@@ -277,13 +277,14 @@ impl PeerManager {
         sender: usize,
         msg_hash: MessageId,
         topic: GossipTopic,
+        digest: [u8; 4],
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let Some(meshed_peers) = self.mesh.get(&topic) else {
+        let Some(meshed_peers) = self.mesh.get(&topic).and_then(|m| m.get(digest)) else {
             return;
         };
-        for peer in meshed_peers {
+        for peer in &meshed_peers.peers {
             let Some(peer_state) = self.peers.get_mut(peer) else {
                 continue;
             };
@@ -347,6 +348,10 @@ mod tests {
 
     use super::*;
     use crate::manager::fixture::*;
+
+    fn test_domain() -> silver_common::GossipDomain {
+        silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu)
+    }
 
     fn mk_tcache_read() -> silver_common::TCacheRead {
         let mut producer = silver_common::TCache::producer("test_peer", 1 << 14);
@@ -505,7 +510,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=3 {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
-            mgr.do_graft(conn, peer_id(conn as u8), topic, now, false, &mut |event| {
+            mgr.do_graft(conn, peer_id(conn as u8), topic, [0; 4], now, false, &mut |event| {
                 cap.0.push(event)
             });
         }
@@ -709,6 +714,7 @@ mod tests {
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: i as usize,
                     topic: GossipTopic::BeaconBlock,
+                    digest: [0; 4],
                 },
                 now,
                 &mut |c| cap.0.push(c),
@@ -759,7 +765,11 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic: GossipTopic::BeaconBlock },
+            PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: 1,
+                topic: GossipTopic::BeaconBlock,
+                digest: [0; 4],
+            },
             now,
             &mut |c| cap.0.push(c),
         );
@@ -875,13 +885,14 @@ mod tests {
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: i as usize,
                     topic: GossipTopic::BeaconBlock,
+                    digest: [0; 4],
                 },
                 now,
                 &mut |c| cap.0.push(c),
             );
         }
         for i in 1..=4usize {
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
+            mgr.test_mesh_extend(GossipTopic::BeaconBlock, [i]);
         }
         cap.0.clear();
 
@@ -942,13 +953,14 @@ mod tests {
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: i as usize,
                     topic: GossipTopic::BeaconBlock,
+                    digest: [0; 4],
                 },
                 now,
                 &mut |c| cap.0.push(c),
             );
         }
         for i in 1..=2usize {
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
+            mgr.test_mesh_extend(GossipTopic::BeaconBlock, [i]);
         }
         for _ in 0..7 {
             mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 2 }, now, &mut |c| {
@@ -998,13 +1010,14 @@ mod tests {
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: i as usize,
                     topic: GossipTopic::BeaconBlock,
+                    digest: [0; 4],
                 },
                 now,
                 &mut |c| cap.0.push(c),
             );
         }
         for i in 1..=3usize {
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
+            mgr.test_mesh_extend(GossipTopic::BeaconBlock, [i]);
         }
 
         let hash = silver_common::MessageId { id: [0xAB; 20] };
@@ -1023,6 +1036,7 @@ mod tests {
             PeerEvent::SendGossip {
                 originator_stream_id: stream_id,
                 topic: GossipTopic::BeaconBlock,
+                domain: test_domain(),
                 msg_hash: hash,
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),
@@ -1065,11 +1079,12 @@ mod tests {
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: i as usize,
                     topic: GossipTopic::BeaconBlock,
+                    digest: [0; 4],
                 },
                 now,
                 &mut |event| cap.0.push(event),
             );
-            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i as usize);
+            mgr.test_mesh_extend(GossipTopic::BeaconBlock, [i as usize]);
         }
         cap.0.clear();
 
@@ -1077,6 +1092,7 @@ mod tests {
             PeerEvent::SendGossip {
                 originator_stream_id: silver_common::LOCAL_GOSSIP_STREAM_ID,
                 topic: GossipTopic::BeaconBlock,
+                domain: test_domain(),
                 msg_hash: silver_common::MessageId { id: [0xCD; 20] },
                 recv_ts: silver_common::Nanos::now(),
                 protobuf: mk_tcache_read(),

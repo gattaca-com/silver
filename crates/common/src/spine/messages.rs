@@ -8,8 +8,8 @@ use flux::timing::Nanos;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 
 use crate::{
-    CacheFrameRef, DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId,
-    StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
+    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
+    P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
     column_util::columns_of,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -120,6 +120,8 @@ pub enum LocalAttestationFailure {
 pub struct NewGossipMsg {
     pub stream_id: P2pStreamId,
     pub topic: GossipTopic,
+    /// Originating fork domain: fixed at receipt, never rewritten.
+    pub domain: GossipDomain,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -409,18 +411,22 @@ pub enum PeerEvent {
     P2pGossipTopicSubscribe {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicUnsubscribe {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicGraft {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicPrune {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         backoff_seconds: Option<u64>,
     },
     P2pGossipWant {
@@ -499,6 +505,8 @@ pub enum PeerEvent {
     SendGossip {
         originator_stream_id: P2pStreamId,
         topic: GossipTopic,
+        /// Originating fork domain, carried from `NewGossipMsg`.
+        domain: GossipDomain,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
@@ -768,21 +776,26 @@ pub enum PeerControl {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        /// Fork domain digest this subscription targets.
+        digest: [u8; 4],
     },
     P2pGossipUnsubscribe {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipGraft {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipPrune {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         /// How long we will refuse a re-GRAFT on this topic, advertised so
         /// the remote's own default doesn't diverge from what we enforce.
         /// `None` on unsubscribe, where we record no backoff.

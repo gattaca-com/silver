@@ -3,10 +3,10 @@ use std::{collections::VecDeque, io::Write, time::Instant};
 use buffa::MessageView;
 use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgIn, GossipMsgOut, GossipTopic,
+    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
     SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer, TRandomAccess,
-    msg_id_valid_snappy, ssz_view::StatusView,
+    msg_id_valid_snappy,
 };
 
 use crate::{
@@ -33,7 +33,7 @@ use crate::{
 pub struct GossipHandler {
     incoming_gossip: TRandomAccess,
     incoming_gossip_publish: TProducer,
-    pub fork_digest_hex: String,
+    domains: ActiveDomains,
     dedup_cache: DedupCache,
 
     // publisher of gossip message protobufs.
@@ -57,7 +57,7 @@ impl GossipHandler {
         incoming_gossip: TRandomAccess,
         ssz_gossip_publish: TProducer,
         protobuf_gossip_publish: TProducer,
-        fork_digest_hex: String,
+        domain: Option<GossipDomain>,
     ) -> Result<Self, Error> {
         let mcache_consumer =
             protobuf_gossip_publish.cache_ref().random_access("gossip_mcache", false)?;
@@ -66,7 +66,7 @@ impl GossipHandler {
         Ok(Self {
             incoming_gossip,
             incoming_gossip_publish: ssz_gossip_publish,
-            fork_digest_hex,
+            domains: ActiveDomains::new(domain),
             dedup_cache: DedupCache::default(),
             mcache_publish: protobuf_gossip_publish,
             mcache,
@@ -80,23 +80,27 @@ impl GossipHandler {
 
     fn generate_ihave_messages(&mut self, now: Instant, emit: &mut impl FnMut(GossipHandlerEvent)) {
         if self.mcache.generate_ihaves(now) {
-            let mut seen = [false; GOSSIP_TOPIC_COUNTER_SLOTS];
-            for topic in self.mcache.topics() {
-                if seen[topic.counter_slot()] {
+            let mut seen = [[false; GOSSIP_TOPIC_COUNTER_SLOTS]; 2];
+            for &(topic, domain) in self.mcache.topics() {
+                // A drained domain's leftover entries advertise nothing.
+                let Some((lane, hex)) = self.domains.index_hex(domain) else {
+                    continue;
+                };
+                if seen[lane][topic.counter_slot()] {
                     continue;
                 }
-                seen[topic.counter_slot()] = true;
+                seen[lane][topic.counter_slot()] = true;
 
-                let msgs_iter = self.mcache.get_ihaves(topic);
+                let msgs_iter = self.mcache.get_ihaves(topic, domain);
                 let (msg_count, _) = msgs_iter.size_hint(); // exact size iterator
                 if msg_count > 0 {
                     if let Ok(tcache) = copy_ihaves_to_protobuf_output(
                         &mut self.mcache_publish,
-                        &topic.to_wire(&self.fork_digest_hex),
+                        &topic.to_wire(hex),
                         msgs_iter,
                     ) {
                         emit(GossipHandlerEvent::PeerEvent(PeerEvent::OutboundIHave {
-                            topic: *topic,
+                            topic,
                             msg_count,
                             protobuf: tcache,
                         }));
@@ -112,14 +116,11 @@ impl GossipHandler {
     /// Returns `None` when the message was already seen via gossip, or
     /// pre-Status (no fork digest yet).
     pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<(MessageId, TCacheRead)> {
-        if self.fork_digest_hex.is_empty() {
-            return None;
-        }
+        let (domain, wire) = self.domains.current_wire(topic)?;
         if ssz.len() > topic.max_uncompressed_size() {
             tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
             return None;
         }
-        let wire = topic.to_wire(&self.fork_digest_hex);
         self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
         let n = match self.snap_encoder.compress(ssz, &mut self.snap_scratch) {
             Ok(n) => n,
@@ -140,7 +141,7 @@ impl GossipHandler {
         )
         .inspect_err(|e| tracing::error!(?e, ?topic, "publish protobuf write failed"))
         .ok()?;
-        self.mcache.insert(msg_id, topic, read);
+        self.mcache.insert(msg_id, topic, domain, read);
         Some((msg_id, read))
     }
 
@@ -158,14 +159,13 @@ impl GossipHandler {
         ssz: &[u8],
         recv_ts: Nanos,
     ) -> Result<Option<MessageId>, Error> {
-        if self.fork_digest_hex.is_empty() {
+        let Some((domain, wire)) = self.domains.current_wire(topic) else {
             return Ok(None);
-        }
+        };
         if ssz.len() > topic.max_uncompressed_size() {
             return Err(Error::GossipPayloadTooLarge);
         }
 
-        let wire = topic.to_wire(&self.fork_digest_hex);
         self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
         let compressed_len = self.snap_encoder.compress(ssz, &mut self.snap_scratch)?;
         let compressed = &self.snap_scratch[..compressed_len];
@@ -202,6 +202,7 @@ impl GossipHandler {
         self.events.push_back(GossipHandlerEvent::NewGossip(NewGossipMsg {
             stream_id: LOCAL_GOSSIP_STREAM_ID,
             topic,
+            domain,
             msg_hash: msg_id,
             recv_ts,
             ssz: ssz_read,
@@ -210,8 +211,11 @@ impl GossipHandler {
         Ok(Some(msg_id))
     }
 
-    pub fn set_fork_digest(&mut self, status_ssz: &[u8; 92]) {
-        self.fork_digest_hex = hex::encode(StatusView::fork_digest(status_ssz));
+    /// Replace the routable domains: `current` plus at most one
+    /// neighbour (next during advance subscription, previous while it
+    /// drains).
+    pub fn set_domains(&mut self, current: GossipDomain, other: Option<GossipDomain>) {
+        self.domains.set(current, other);
     }
 
     pub fn handle_peer_control(&mut self, peer_control: PeerControl) {
@@ -220,8 +224,18 @@ impl GossipHandler {
         self.events = events;
     }
 
-    pub fn mcache_insert(&mut self, id: MessageId, topic: GossipTopic, protobuf: TCacheRead) {
-        self.mcache.insert(id, topic, protobuf);
+    pub fn current_domain(&self) -> Option<GossipDomain> {
+        self.domains.current_domain()
+    }
+
+    pub fn mcache_insert(
+        &mut self,
+        id: MessageId,
+        topic: GossipTopic,
+        domain: GossipDomain,
+        protobuf: TCacheRead,
+    ) {
+        self.mcache.insert(id, topic, domain, protobuf);
     }
 
     pub fn pop_event(&mut self) -> Option<GossipHandlerEvent> {
@@ -234,11 +248,10 @@ impl GossipHandler {
         emit: &mut impl FnMut(GossipHandlerEvent),
     ) {
         match peer_control {
-            PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic } => {
+            PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic, digest } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) =
-                    control::copy_subscribes_to_protobuf_output(&mut self.mcache_publish, &[
-                        &topic.to_wire(&self.fork_digest_hex)
-                    ])
+                    control::copy_subscribes_to_protobuf_output(&mut self.mcache_publish, &[&wire])
                 {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip subscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
@@ -247,10 +260,11 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipUnsubscribe { p2p: _, p2p_connection, topic } => {
+            PeerControl::P2pGossipUnsubscribe { p2p: _, p2p_connection, topic, digest } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) =
                     control::copy_unsubscribes_to_protobuf_output(&mut self.mcache_publish, &[
-                        &topic.to_wire(&self.fork_digest_hex),
+                        &wire,
                     ])
                 {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip unsubscribe");
@@ -260,11 +274,10 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipGraft { p2p: _, p2p_connection, topic } => {
+            PeerControl::P2pGossipGraft { p2p: _, p2p_connection, topic, digest } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) =
-                    control::copy_grafts_to_protobuf_output(&mut self.mcache_publish, &[
-                        &topic.to_wire(&self.fork_digest_hex)
-                    ])
+                    control::copy_grafts_to_protobuf_output(&mut self.mcache_publish, &[&wire])
                 {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip graft");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
@@ -273,10 +286,17 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipPrune { p2p: _, p2p_connection, topic, backoff_seconds } => {
+            PeerControl::P2pGossipPrune {
+                p2p: _,
+                p2p_connection,
+                topic,
+                digest,
+                backoff_seconds,
+            } => {
+                let wire = topic.to_wire(&hex::encode(digest));
                 if let Ok(tcache) = control::copy_prunes_to_protobuf_output(
                     &mut self.mcache_publish,
-                    &[&topic.to_wire(&self.fork_digest_hex)],
+                    &[&wire],
                     backoff_seconds,
                 ) {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip prune");
@@ -345,22 +365,17 @@ impl GossipHandler {
                         partial_messages,
                     }));
                 }
-                handle_subscriptions(
-                    stream_id,
-                    gossip_proto.subscriptions,
-                    &self.fork_digest_hex,
-                    emit,
-                );
+                handle_subscriptions(stream_id, gossip_proto.subscriptions, &self.domains, emit);
 
                 if let Some(control) = gossip_proto.control.as_option() {
-                    handle_grafts(stream_id, &control.graft, &self.fork_digest_hex, emit);
-                    handle_prunes(stream_id, &control.prune, &self.fork_digest_hex, emit);
+                    handle_grafts(stream_id, &control.graft, &self.domains, emit);
+                    handle_prunes(stream_id, &control.prune, &self.domains, emit);
                     handle_iwants(stream_id, &control.iwant, &mut self.mcache, emit);
                     handle_idontwants(stream_id, &control.idontwant, emit);
                     handle_ihaves(
                         stream_id,
                         &control.ihave,
-                        &self.fork_digest_hex,
+                        &self.domains,
                         &self.mcache,
                         &self.dedup_cache,
                         &mut self.mcache_publish,
@@ -386,7 +401,7 @@ impl GossipHandler {
                             gossip_msg.topic,
                             snappy_data,
                             stream_id,
-                            &self.fork_digest_hex,
+                            &self.domains,
                             recv_ts,
                             &mut self.dedup_cache,
                             &mut self.incoming_gossip_publish,
@@ -409,6 +424,79 @@ impl GossipHandler {
         self.incoming_gossip.free();
 
         did_work
+    }
+}
+
+/// The routable fork domains: `current` plus at most one neighbour —
+/// the next domain during advance subscription, or the previous one
+/// while it drains. `current` is `None` until the first status.
+#[derive(Default)]
+pub struct ActiveDomains {
+    current: Option<DomainState>,
+    other: Option<DomainState>,
+}
+
+struct DomainState {
+    domain: GossipDomain,
+    hex: String,
+}
+
+impl DomainState {
+    fn new(domain: GossipDomain) -> Self {
+        Self { domain, hex: hex::encode(domain.digest()) }
+    }
+}
+
+impl ActiveDomains {
+    pub(crate) fn new(current: Option<GossipDomain>) -> Self {
+        Self { current: current.map(DomainState::new), other: None }
+    }
+
+    fn set(&mut self, current: GossipDomain, other: Option<GossipDomain>) {
+        if self.current.as_ref().map(|s| s.domain) != Some(current) {
+            self.current = Some(DomainState::new(current));
+        }
+        if self.other.as_ref().map(|s| s.domain) != other {
+            self.other = other.map(DomainState::new);
+        }
+    }
+
+    fn states(&self) -> impl Iterator<Item = &DomainState> {
+        self.current.iter().chain(self.other.iter())
+    }
+
+    /// Resolve a wire topic against the routable domains; unknown
+    /// digests are ignored, never penalized.
+    pub(crate) fn parse(&self, wire: &str) -> Result<(GossipTopic, GossipDomain), Error> {
+        for state in self.states() {
+            if let Ok(topic) = GossipTopic::from_wire(wire, &state.hex) {
+                return Ok((topic, state.domain));
+            }
+        }
+        Err(Error::ParseTopicError)
+    }
+
+    /// Local sends always use the current domain.
+    fn current_wire(&self, topic: GossipTopic) -> Option<(GossipDomain, String)> {
+        self.current.as_ref().map(|s| (s.domain, topic.to_wire(&s.hex)))
+    }
+
+    fn current_domain(&self) -> Option<GossipDomain> {
+        self.current.as_ref().map(|s| s.domain)
+    }
+
+    fn index_hex(&self, domain: GossipDomain) -> Option<(usize, &str)> {
+        if let Some(s) = &self.current &&
+            s.domain == domain
+        {
+            return Some((0, &s.hex));
+        }
+        if let Some(s) = &self.other &&
+            s.domain == domain
+        {
+            return Some((1, &s.hex));
+        }
+        None
     }
 }
 
@@ -499,7 +587,7 @@ mod tests {
             incoming_consumer,
             ssz_producer,
             protobuf_producer,
-            "01020304".to_owned(),
+            Some(GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
         )
         .expect("gossip handler");
         let topic = GossipTopic::BeaconAttestation(7);
@@ -533,7 +621,7 @@ mod tests {
         };
         assert_eq!(duplicate.msg_hash, msg_id);
 
-        handler.mcache_insert(msg_id, topic, message.protobuf);
+        handler.mcache_insert(msg_id, topic, message.domain, message.protobuf);
         assert!(handler.mcache.has(&msg_id));
     }
 }
