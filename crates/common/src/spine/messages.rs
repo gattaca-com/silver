@@ -863,7 +863,7 @@ pub enum ColumnSource {
 
 /// A zero `state_root` marks all three roots unavailable. This can occur
 /// before seeding or when checkpoint history has overwritten a dependent
-/// root. Consumers tracking head changes must ignore incomplete bundles.
+/// root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct HeadRoots {
@@ -880,6 +880,14 @@ impl HeadRoots {
     pub fn is_complete(&self) -> bool {
         self.state_root != B256::default()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HeadChange {
+    None,
+    Payload,
+    Head,
 }
 
 /// Fork choice's selection of the block's own payload, independent of its
@@ -914,6 +922,8 @@ pub enum BeaconStateEvent {
         enr_fork_id: [u8; 16],
         head_roots: HeadRoots,
         head_payload: PayloadResolution,
+        head_change: HeadChange,
+        epoch_transition: bool,
     },
     EnvelopeAvailable {
         ssz: TCacheRead,

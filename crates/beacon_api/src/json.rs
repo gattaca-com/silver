@@ -233,22 +233,8 @@ impl Json<'_> {
     }
 
     pub(crate) fn head_event(&mut self, head: &HeadEvent) {
-        self.begin_object();
-        self.key("slot");
-        self.quoted_u64(head.slot);
-        self.key("block");
-        self.hex(&head.block_root);
-        self.key("state");
-        self.hex(&head.roots.state_root);
-        self.key("epoch_transition");
-        self.bool(head.epoch_transition);
-        self.key("previous_duty_dependent_root");
-        self.hex(&head.roots.previous_duty_dependent_root);
-        self.key("current_duty_dependent_root");
-        self.hex(&head.roots.current_duty_dependent_root);
-        self.key("execution_optimistic");
-        self.bool(head.execution_optimistic);
-        self.end_object();
+        let roots = ["previous_duty_dependent_root", "current_duty_dependent_root"];
+        self.head(head, roots, None);
     }
 
     pub(crate) fn head_v2_event(&mut self, head: &HeadEvent, fork_name: &str) {
@@ -256,6 +242,12 @@ impl Json<'_> {
         self.key("version");
         self.string(fork_name);
         self.key("data");
+        let roots = ["current_epoch_dependent_root", "next_epoch_dependent_root"];
+        self.head(head, roots, Some(head.payload.name()));
+        self.end_object();
+    }
+
+    fn head(&mut self, head: &HeadEvent, [previous, current]: [&str; 2], payload: Option<&str>) {
         self.begin_object();
         self.key("slot");
         self.quoted_u64(head.slot);
@@ -263,17 +255,18 @@ impl Json<'_> {
         self.hex(&head.block_root);
         self.key("state");
         self.hex(&head.roots.state_root);
-        self.key("payload_status");
-        self.string(head.payload.name());
+        if let Some(payload) = payload {
+            self.key("payload_status");
+            self.string(payload);
+        }
         self.key("epoch_transition");
         self.bool(head.epoch_transition);
-        self.key("current_epoch_dependent_root");
+        self.key(previous);
         self.hex(&head.roots.previous_duty_dependent_root);
-        self.key("next_epoch_dependent_root");
+        self.key(current);
         self.hex(&head.roots.current_duty_dependent_root);
         self.key("execution_optimistic");
         self.bool(head.execution_optimistic);
-        self.end_object();
         self.end_object();
     }
 

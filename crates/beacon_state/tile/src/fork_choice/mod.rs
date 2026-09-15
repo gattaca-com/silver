@@ -307,6 +307,11 @@ impl ForkChoice {
         &self.nodes[idx]
     }
 
+    #[inline]
+    pub fn parent(&self, idx: usize) -> Option<&ForkChoiceNode> {
+        self.nodes.get(self.nodes[idx].parent_ix)
+    }
+
     pub fn set_proposer_boost(&mut self, root: B256) {
         self.proposer_boost_root = root;
         self.proposer_boost_score = proposer_boost_score(self.justified_total_active_balance);

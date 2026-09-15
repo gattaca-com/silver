@@ -29,7 +29,7 @@ pub use crate::{
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
         EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
         EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
-        GossipMsgIn, GossipMsgOut, HeadRoots, IpBytes, LOCAL_GOSSIP_STREAM_ID,
+        GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, LOCAL_GOSSIP_STREAM_ID,
         LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
         MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg,
         P2pConnectionStats, P2pSend, P2pStreamId, PREFILL_SLOTS, PayloadResolution,

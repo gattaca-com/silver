@@ -14,9 +14,9 @@ use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipTopic, HeadRoots, Identify, Keypair, MessageId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache,
-    TCacheProducer, TCacheRead, TProducer,
+    Enr, GossipTopic, HeadChange, HeadRoots, Identify, Keypair, MessageId, P2pStreamId,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
+    TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -392,12 +392,14 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
     ssz[36..44].copy_from_slice(&3u64.to_le_bytes());
     BeaconStateEvent::Status {
         ssz,
-        head_optimistic,
         latest_block_slot: head_slot,
         wall_slot,
+        head_optimistic,
         enr_fork_id: [0u8; 16],
         head_roots: HeadRoots::default(),
         head_payload: PayloadResolution::Full,
+        head_change: HeadChange::None,
+        epoch_transition: false,
     }
 }
 
@@ -412,20 +414,23 @@ fn head_roots() -> HeadRoots {
 fn head_status(
     slot: u64,
     block_root: u8,
-    head_optimistic: bool,
-    head_payload: PayloadResolution,
+    optimistic: bool,
+    payload: PayloadResolution,
+    head_change: HeadChange,
 ) -> BeaconStateEvent {
     let mut ssz = [0u8; STATUS_V2_SIZE];
     ssz[44..76].copy_from_slice(&[block_root; 32]);
     ssz[76..84].copy_from_slice(&slot.to_le_bytes());
     BeaconStateEvent::Status {
         ssz,
-        head_optimistic,
         latest_block_slot: slot,
         wall_slot: slot,
+        head_optimistic: optimistic,
         enr_fork_id: [0u8; 16],
         head_roots: head_roots(),
-        head_payload,
+        head_payload: payload,
+        head_change,
+        epoch_transition: false,
     }
 }
 
@@ -1261,14 +1266,10 @@ fn head_subscribers_receive_changes_for_their_topics() {
     crank(&mut tile, "the node is following");
 
     for status in [
-        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
-        head_status(gloas + 1, 0x0a, true, PayloadResolution::Full),
-        head_status(slot, 0xab, true, PayloadResolution::Empty),
-        head_status(slot, 0xab, true, PayloadResolution::Empty),
-        head_status(slot, 0xab, true, PayloadResolution::Full),
-        head_status(slot, 0xab, true, PayloadResolution::Full),
-        head_status(slot, 0xab, false, PayloadResolution::Full),
-        head_status(slot, 0xab, false, PayloadResolution::Full),
+        head_status(slot, 0xab, true, PayloadResolution::Empty, HeadChange::Head),
+        head_status(slot, 0xab, true, PayloadResolution::Empty, HeadChange::None),
+        head_status(slot, 0xab, true, PayloadResolution::Full, HeadChange::Payload),
+        head_status(slot, 0xab, false, PayloadResolution::Full, HeadChange::Head),
     ] {
         inj.produce(status);
     }
@@ -1276,7 +1277,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
     assert_eq!(tile.beacon.node_status().head, HeadStatus { slot, optimistic: false });
 
     // A later head delimits all preceding frames, including unwanted repeats.
-    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full));
+    inj.produce(head_status(sentinel_slot, 0xcd, false, PayloadResolution::Full, HeadChange::Head));
     while !legacy.is_finished() || !v2.is_finished() {
         crank(&mut tile, "every frame reaches its subscriber");
     }
@@ -1320,7 +1321,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
 }
 
 /// Head events describe changes observed while following. Observations in
-/// any other mode move the baseline and node status silently.
+/// any other mode update node status silently.
 #[test]
 fn head_events_describe_changes_observed_while_following() {
     let base = ShmemDir::new().unwrap();
@@ -1349,8 +1350,8 @@ fn head_events_describe_changes_observed_while_following() {
     }
 
     // Restoration and catch-up: Control has not concluded, so heads move silently.
-    inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full));
-    inj.produce(head_status(34, 0xab, true, PayloadResolution::Full));
+    inj.produce(head_status(33, 0xaa, true, PayloadResolution::Full, HeadChange::Head));
+    inj.produce(head_status(34, 0xab, true, PayloadResolution::Full, HeadChange::Head));
     crank(&mut tile, "observations outside following update node status");
     assert_eq!(tile.beacon.node_status().head, HeadStatus { slot: 34, optimistic: true });
 
@@ -1358,22 +1359,22 @@ fn head_events_describe_changes_observed_while_following() {
     // change is reported at once.
     inj.produce(SyncUpdate::Following);
     crank(&mut tile, "the mode change is consumed");
-    inj.produce(head_status(35, 0xac, true, PayloadResolution::Full));
-    inj.produce(head_status(35, 0xac, false, PayloadResolution::Full));
+    inj.produce(head_status(35, 0xac, true, PayloadResolution::Full, HeadChange::Head));
+    inj.produce(head_status(35, 0xac, false, PayloadResolution::Full, HeadChange::Head));
     crank(&mut tile, "changes while following are reported");
 
     // Falling behind silences the stream while the head keeps moving.
     inj.produce(SyncUpdate::SyncingHead { head_root: [0xff; 32], head_slot: 100 });
     crank(&mut tile, "the mode change is consumed");
-    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full, HeadChange::Head));
     crank(&mut tile, "changes while syncing are silent");
 
     // Following again: a repeat of the head reached while syncing is no change.
     inj.produce(SyncUpdate::Following);
     crank(&mut tile, "the mode change is consumed");
-    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full));
-    inj.produce(head_status(37, 0xae, true, PayloadResolution::Full));
-    inj.produce(head_status(sentinel_slot, 0xcd, true, PayloadResolution::Full));
+    inj.produce(head_status(36, 0xad, true, PayloadResolution::Full, HeadChange::None));
+    inj.produce(head_status(37, 0xae, true, PayloadResolution::Full, HeadChange::Head));
+    inj.produce(head_status(sentinel_slot, 0xcd, true, PayloadResolution::Full, HeadChange::Head));
     while !client.is_finished() {
         crank(&mut tile, "every frame reaches the subscriber");
     }

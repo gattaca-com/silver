@@ -39,7 +39,7 @@ impl NodeStatus {
     }
 
     pub(crate) fn health(&self) -> Health {
-        if self.is_syncing() || self.el != ELSyncStatus::Synced {
+        if !self.is_following() || self.el != ELSyncStatus::Synced {
             Health::Syncing
         } else {
             Health::Ready
@@ -50,14 +50,14 @@ impl NodeStatus {
         SyncingData {
             head_slot: self.head.slot,
             sync_distance: self.sync_distance(),
-            is_syncing: self.is_syncing(),
+            is_syncing: !self.is_following(),
             is_optimistic: self.head.optimistic,
             el_offline: self.el_offline(),
         }
     }
 
-    fn is_syncing(&self) -> bool {
-        !self.target.is_some_and(SyncUpdate::is_following)
+    pub(crate) fn is_following(&self) -> bool {
+        self.target.is_some_and(SyncUpdate::is_following)
     }
 
     /// Slots to the sync target while chasing one

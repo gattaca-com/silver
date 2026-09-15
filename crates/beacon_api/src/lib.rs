@@ -4,7 +4,6 @@ mod identity;
 mod ids;
 mod json;
 mod node_status;
-mod observed_head;
 mod receipts;
 mod response;
 mod router;

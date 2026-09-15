@@ -788,8 +788,8 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadRoots, MessageId, Nanos,
-        P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots, MessageId,
+        Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer, TCacheRead,
         column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
@@ -1218,6 +1218,8 @@ mod tests {
             enr_fork_id: [0u8; 16],
             head_roots: HeadRoots::default(),
             head_payload: PayloadResolution::Full,
+            head_change: HeadChange::None,
+            epoch_transition: false,
         }
     }
 

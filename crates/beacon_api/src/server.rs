@@ -8,8 +8,8 @@ use std::{
 use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, ELSyncStatus, Enr, GossipTopic, Identify, Keypair, PeerEvent,
-    SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    BeaconStateEvent, BlockStage, ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair,
+    PeerEvent, SyncUpdate, TCacheRead, TRandomAccess, TRead,
     column_util::{SidecarIdentity, block_root},
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -22,7 +22,6 @@ use crate::{
     HeadStatus, NodeStatus,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
-    observed_head::{HeadChange, ObservedHead},
     router::{Router, Served},
     routes::{ApiCtx, ROUTES},
 };
@@ -333,7 +332,6 @@ pub struct BeaconApi {
     router: Router,
     ctx: ApiCtx,
     consumers: ApiConsumers,
-    head: ObservedHead,
 }
 
 impl BeaconApi {
@@ -387,7 +385,6 @@ impl BeaconApi {
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
             consumers,
-            head: ObservedHead::default(),
         }
     }
 
@@ -407,23 +404,30 @@ impl BeaconApi {
                 head_optimistic,
                 head_roots,
                 head_payload,
+                head_change,
+                epoch_transition,
                 ..
             } => {
                 self.ctx.node_status.head =
                     HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
-                if let Some(HeadChange { event, legacy }) = self.head.observe(
-                    StatusView::head_slot(&ssz),
-                    *StatusView::head_root(&ssz),
-                    head_optimistic,
-                    head_payload,
-                    head_roots,
-                ) {
-                    if legacy {
-                        self.publish_head(&event);
-                    }
-                    self.publish_head_v2(&event);
+                if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
+                    return;
                 }
+
+                let head = HeadEvent {
+                    slot: StatusView::head_slot(&ssz),
+                    block_root: *StatusView::head_root(&ssz),
+                    roots: head_roots,
+                    payload: head_payload,
+                    epoch_transition,
+                    execution_optimistic: head_optimistic,
+                };
+
+                if head_change == HeadChange::Head {
+                    self.publish_head(&head);
+                }
+                self.publish_head_v2(&head);
             }
             BeaconStateEvent::BlockReceived {
                 slot,
@@ -437,7 +441,6 @@ impl BeaconApi {
 
     pub fn handle_sync_update(&mut self, update: SyncUpdate) {
         self.ctx.node_status.target = Some(update);
-        self.head.set_following(update.is_following());
     }
 
     pub fn set_el_sync_status(&mut self, el: ELSyncStatus) {
@@ -529,27 +532,18 @@ impl BeaconApi {
     fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
         let mut frame = Vec::new();
         events::frame(&mut frame, event, data);
-        self.fan_out(
-            |subscription| subscription.channels.contains(channel),
-            &frame,
-            Instant::now(),
-        );
+        self.fan_out(Some(channel), &frame, Instant::now());
     }
 
     /// Returns whether any output was queued, so the pump can report work.
-    fn fan_out(
-        &mut self,
-        wants: impl Fn(&Subscription) -> bool,
-        chunk: &[u8],
-        now: Instant,
-    ) -> bool {
+    fn fan_out(&mut self, channel: Option<Channel>, chunk: &[u8], now: Instant) -> bool {
         let Self { connections, registry, .. } = self;
         let mut pushed = false;
         connections.retain(|token, conn| {
             let Connection { stream, state: State::Subscription(subscription) } = conn else {
                 return true;
             };
-            if !wants(subscription) {
+            if channel.is_some_and(|channel| !subscription.channels.contains(channel)) {
                 return true;
             }
             let outcome = subscription.body.deliver(stream, chunk, now).and_then(|interest| {
@@ -601,7 +595,7 @@ impl BeaconApi {
         }
         if now.duration_since(self.last_keep_alive) >= self.streams.keep_alive_every {
             self.last_keep_alive = now;
-            did_work |= self.fan_out(|_| true, events::KEEP_ALIVE, now);
+            did_work |= self.fan_out(None, events::KEEP_ALIVE, now);
         }
 
         did_work
@@ -1500,7 +1494,7 @@ mod tests {
     // Queued after every publication, so readers can detect leaked or repeated
     // frames without relying on a quiet socket or cross-topic ordering.
     fn finish_events(server: &mut Server) {
-        server.api.fan_out(|_| true, b"event: test_end\ndata: {}\n\n", Instant::now());
+        server.api.fan_out(None, b"event: test_end\ndata: {}\n\n", Instant::now());
     }
 
     #[test]
@@ -1591,7 +1585,7 @@ mod tests {
         frames.iter().for_each(|frame| expected.extend(chunk(frame)));
         let now = Instant::now();
         for frame in &frames {
-            assert!(server.api.fan_out(|_| true, frame, now), "queued for the subscriber");
+            assert!(server.api.fan_out(None, frame, now), "queued for the subscriber");
         }
         assert_eq!(subscribers(&server), 1);
 
