@@ -5,8 +5,9 @@ use silver_columns::cell_store::{CellStoreConfig, StoreError};
 use silver_common::{
     BeaconApiRequest, BeaconStateEvent, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos, P2pSend,
     PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
-    RpcResponse, RpcResponseInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate,
-    TMultiProducer, TProducer, TRandomAccess,
+    RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SyncNeed,
+    SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
+    cells::CellStoreEvent,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -14,15 +15,12 @@ use silver_peer::PeerManager;
 
 use self::attestation_cluster::AttestationClusterHandler;
 use crate::{
+    cell_ingress::CellIngress,
     cluster::{AttestationClusterConfig, ClusterError},
     sync_engine::{SyncAction, SyncEngine},
 };
 
 mod attestation_cluster;
-use crate::{
-    cell_ingress::CellIngress,
-    sync_engine::{SyncAction, SyncEngine},
-};
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -97,7 +95,7 @@ impl Controller {
             auto_ping: true,
             pending_subnet_topics: Vec::new(),
             cell_ingress: None,
-        }
+        })
     }
 
     pub fn with_data_columns_cache(
