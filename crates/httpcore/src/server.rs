@@ -572,7 +572,7 @@ mod tests {
     /// the buffer filling up is itself the verdict: the 431 of RFC 6585,
     /// answered and lingered like every other reject rather than a bare drop.
     #[test]
-    fn an_exhausted_buffer_holding_no_request_writes_431_then_lingers() {
+    fn exhausted_buffer_holding_no_request_writes_431_then_lingers() {
         let mut conn = ServerConnection::new();
         feed(&mut conn, b"GET /eth/v1/node/health HTTP/1.1\r\nCookie: ");
         loop {
@@ -605,7 +605,7 @@ mod tests {
     /// The body the client is still sending is read for one reason only — to
     /// keep the answer from being lost — so it must cost nothing to read.
     #[test]
-    fn a_lingering_connection_discards_without_growing() {
+    fn lingering_connection_discards_without_growing() {
         let mut conn = reject_and_linger(&oversized_post(READ_BUF_MAX), "413 Payload Too Large");
         let scratch = conn.read_buf.len();
 
@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn a_large_response_does_not_leave_the_connection_inflated() {
+    fn large_response_does_not_leave_the_connection_inflated() {
         let mut conn = ServerConnection::new();
         let big = vec![b'x'; 4 << 20];
         feed(&mut conn, &get_req("/big", "HTTP/1.1"));

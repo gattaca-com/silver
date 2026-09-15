@@ -1,11 +1,15 @@
 use std::{
-    io::Write,
+    io::{self, ErrorKind, Write},
     time::{Duration, Instant},
 };
 
+use mio::Interest;
+
 // Reserve the full output allowance at construction so accepted pushes do
 // not reallocate. The response head and chunk framing count against it.
-const PENDING_MAX: usize = 64 << 10;
+// Allows one block's 128 column events with 21 commitments each, about
+// 290 KiB in total, even when the writer accepts no bytes.
+const PENDING_MAX: usize = 512 << 10;
 const DISCARD_LEN: usize = 4096;
 
 /// Does not emit a terminal chunk; the caller ends the stream by closing
@@ -57,6 +61,52 @@ impl ChunkedResponse {
         true
     }
 
+    /// Attempts to drain existing output before checking whether the framed
+    /// chunk fits under the pending-byte cap. If it fits, queues it and
+    /// attempts to drain again. Socket write progress can therefore free
+    /// room for the new chunk.
+    ///
+    /// Returns replacement readiness interests for the caller to register.
+    /// `None` means no output was pending on entry and the new chunk
+    /// drained completely, so the caller can retain its `READABLE`
+    /// registration. Errors require the caller to close the connection.
+    pub fn deliver(
+        &mut self,
+        stream: &mut impl Write,
+        chunk: &[u8],
+        now: Instant,
+    ) -> Result<Option<Interest>, Closed> {
+        let had_backlog = !self.pending_write().is_empty();
+        if had_backlog {
+            self.drain_into(stream, now).map_err(Closed::Lost)?;
+        }
+        if !self.push(chunk, now) {
+            return Err(Closed::AtCap { pending: self.pending_write().len() });
+        }
+        // An empty buffer already has READABLE alone. A backlog may retain
+        // WRITABLE from the response head or an earlier blocked write.
+        Ok(match (self.drain_into(stream, now).map_err(Closed::Lost)?, had_backlog) {
+            (true, false) => None,
+            (true, true) => Some(Interest::READABLE),
+            (false, _) => Some(Interest::READABLE | Interest::WRITABLE),
+        })
+    }
+
+    /// Returns `true` when no output remains, or `false` on `WouldBlock`.
+    /// On `true`, readiness-driven callers restore `READABLE` alone.
+    pub fn drain_into(&mut self, stream: &mut impl Write, now: Instant) -> io::Result<bool> {
+        while !self.pending_write().is_empty() {
+            match stream.write(self.pending_write()) {
+                Ok(0) => return Err(io::Error::new(ErrorKind::WriteZero, "write returned 0")),
+                Ok(n) => self.commit_write(n, now),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(false),
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(true)
+    }
+
     pub fn pending_write(&self) -> &[u8] {
         &self.pending[self.write_pos..]
     }
@@ -86,6 +136,12 @@ impl ChunkedResponse {
     }
 }
 
+#[derive(Debug)]
+pub enum Closed {
+    AtCap { pending: usize },
+    Lost(io::Error),
+}
+
 fn hex_digits(n: usize) -> usize {
     (usize::BITS - n.leading_zeros()).div_ceil(4).max(1) as usize
 }
@@ -102,7 +158,7 @@ pub fn frame_chunked_head(out: &mut Vec<u8>, content_type: &str, headers: &[(&st
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::{cell::Cell, collections::VecDeque};
 
     use super::*;
     use crate::{ParsedRequest, ServerConnection, frame_response};
@@ -157,8 +213,271 @@ mod tests {
         vec![b'e'; n]
     }
 
+    fn burst_frame(index: usize, len: usize) -> Vec<u8> {
+        let mut frame = format!("event: burst\ndata: {index:02}").into_bytes();
+        frame.resize(len - 2, b'c');
+        frame.extend_from_slice(b"\n\n");
+        frame
+    }
+
+    #[derive(Clone, Copy)]
+    enum Step {
+        Take(usize),
+        WouldBlock,
+        Zero,
+        Broken,
+    }
+
+    /// After the scripted steps are consumed, each write follows `then`.
+    struct ScriptedSocket {
+        steps: VecDeque<Step>,
+        then: Step,
+        taken: Vec<u8>,
+    }
+
+    impl ScriptedSocket {
+        fn taking_everything() -> Self {
+            Self { steps: VecDeque::new(), then: Step::Take(usize::MAX), taken: Vec::new() }
+        }
+
+        fn refusing_everything() -> Self {
+            Self { then: Step::WouldBlock, ..Self::taking_everything() }
+        }
+
+        fn script(&mut self, steps: impl IntoIterator<Item = Step>) {
+            self.steps.extend(steps);
+        }
+    }
+
+    impl Write for ScriptedSocket {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            match self.steps.pop_front().unwrap_or(self.then) {
+                Step::Take(n) => {
+                    let n = n.min(buf.len());
+                    self.taken.extend_from_slice(&buf[..n]);
+                    Ok(n)
+                }
+                Step::WouldBlock => Err(ErrorKind::WouldBlock.into()),
+                Step::Zero => Ok(0),
+                Step::Broken => Err(ErrorKind::BrokenPipe.into()),
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    const BOTH: Interest = Interest::READABLE.add(Interest::WRITABLE);
+
+    #[derive(Default)]
+    struct BudgetSocket {
+        remaining: usize,
+        taken: Vec<u8>,
+        interrupt_once: bool,
+    }
+
+    impl Write for BudgetSocket {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if std::mem::take(&mut self.interrupt_once) {
+                return Err(ErrorKind::Interrupted.into());
+            }
+            if self.remaining == 0 {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            let n = buf.len().min(self.remaining);
+            self.taken.extend_from_slice(&buf[..n]);
+            self.remaining -= n;
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The queued head supplies the initial backlog. Once drained, later
+    /// deliveries need no registration change while the writer accepts output.
     #[test]
-    fn the_head_leaves_first_ahead_of_chunks_pushed_before_the_first_drain() {
+    fn burst_past_the_cap_is_written_as_it_is_pushed() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = ScriptedSocket::taking_everything();
+        let past_the_cap = PENDING_MAX / framed(&burst_frame(0, 2300)).len() + 1;
+        let frames: Vec<_> = (0..past_the_cap).map(|index| burst_frame(index, 2300)).collect();
+        let mut expected = HEAD.to_vec();
+        frames.iter().for_each(|frame| expected.extend(framed(frame)));
+        assert!(expected.len() - HEAD.len() > PENDING_MAX, "the burst passes the cap");
+
+        let (first, rest) = frames.split_first().unwrap();
+        assert_eq!(stream.deliver(&mut socket, first, t0).unwrap(), Some(Interest::READABLE));
+        for frame in rest {
+            assert_eq!(stream.deliver(&mut socket, frame, t0).unwrap(), None);
+        }
+        assert_eq!(socket.taken, expected);
+        assert!(stream.pending_write().is_empty());
+    }
+
+    /// A blocked write requests `WRITABLE`; a delivery that drains the backlog
+    /// requests `READABLE` alone. The readiness path reports a complete drain
+    /// for the caller to make the same registration change.
+    #[test]
+    fn refused_write_arms_writable_until_the_backlog_drains() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = ScriptedSocket::taking_everything();
+        assert!(stream.drain_into(&mut socket, t0).unwrap());
+        let frames = [burst_frame(1, 300), burst_frame(2, 300), burst_frame(3, 300)];
+
+        socket.script([Step::WouldBlock]);
+        assert_eq!(stream.deliver(&mut socket, &frames[0], t0).unwrap(), Some(BOTH));
+        assert_eq!(stream.pending_write(), framed(&frames[0]));
+        let by_publish = stream.deliver(&mut socket, &frames[1], t0).unwrap();
+        assert_eq!(by_publish, Some(Interest::READABLE));
+        assert!(stream.pending_write().is_empty());
+
+        socket.script([Step::WouldBlock]);
+        assert_eq!(stream.deliver(&mut socket, &frames[2], t0).unwrap(), Some(BOTH));
+        assert!(stream.drain_into(&mut socket, t0).unwrap(), "the loop drains the rest");
+
+        let expected: Vec<_> = frames.iter().flat_map(|frame| framed(frame)).collect();
+        assert_eq!(socket.taken[HEAD.len()..], expected);
+    }
+
+    /// Partial writes reset the stall clock. Interruptions are retried, and
+    /// draining the remaining bytes clears the clock.
+    #[test]
+    fn partial_writes_continue_until_the_socket_refuses() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = BudgetSocket { remaining: usize::MAX, ..BudgetSocket::default() };
+        let frame = burst_frame(0, 1000);
+        let expected = [HEAD, &framed(&frame)].concat();
+
+        assert!(stream.drain_into(&mut socket, t0).unwrap());
+        let already_sent = socket.taken.len();
+        let allowance = 200;
+        socket.remaining = allowance;
+        let t1 = t0 + Duration::from_secs(1);
+        assert_eq!(stream.deliver(&mut socket, &frame, t1).unwrap(), Some(BOTH));
+        let sent = already_sent + allowance;
+        assert_eq!(socket.taken, expected[..sent]);
+        assert_eq!(stream.pending_write(), &expected[sent..]);
+        assert!(!stream.stalled(t1 + DEADLINE, DEADLINE));
+        assert!(stream.stalled(t1 + DEADLINE + Duration::from_millis(1), DEADLINE));
+
+        socket.interrupt_once = true;
+        socket.remaining = usize::MAX;
+        assert!(stream.drain_into(&mut socket, t1).unwrap());
+        assert_eq!(socket.taken, expected);
+        assert!(!stream.stalled(t1 + DEADLINE * 100, DEADLINE));
+    }
+
+    /// Synthetic frames approximate column events with 21 commitments.
+    /// The queued response head also counts against the allowance.
+    #[test]
+    fn one_blocks_column_events_fit_the_cap_with_the_socket_taking_nothing() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = ScriptedSocket::refusing_everything();
+        let frames: Vec<_> = (0..128).map(|index| burst_frame(index, 2300)).collect();
+
+        for frame in &frames {
+            assert_eq!(stream.deliver(&mut socket, frame, t0).unwrap(), Some(BOTH));
+        }
+        let mut expected = HEAD.to_vec();
+        frames.iter().for_each(|frame| expected.extend(framed(frame)));
+        assert_eq!(stream.pending_write(), expected);
+    }
+
+    /// The cap error reports bytes already pending, including the response
+    /// head.
+    #[test]
+    fn pushes_the_socket_never_takes_close_at_the_cap() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = ScriptedSocket::refusing_everything();
+        let frame = burst_frame(0, 2300);
+        let chunk = framed(&frame).len();
+        let fit = (PENDING_MAX - HEAD.len()) / chunk;
+
+        for pushed in 0..fit {
+            let interest = stream.deliver(&mut socket, &frame, t0).unwrap();
+            assert_eq!(interest, Some(BOTH), "push {pushed} waits for the socket");
+        }
+        let closed = stream.deliver(&mut socket, &frame, t0).unwrap_err();
+        let at_cap =
+            matches!(closed, Closed::AtCap { pending } if pending == HEAD.len() + fit * chunk);
+        assert!(at_cap, "{closed:?}");
+        assert!(socket.taken.is_empty());
+    }
+
+    #[test]
+    fn draining_a_full_backlog_makes_room_for_the_next_frame() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = BudgetSocket::default();
+        let first = payload_framed_to(PENDING_MAX - HEAD.len());
+        stream.deliver(&mut socket, &first, t0).unwrap();
+        assert_eq!(stream.pending_write().len(), PENDING_MAX);
+
+        let next = burst_frame(1, 300);
+        socket.remaining = framed(&next).len();
+        let t1 = t0 + Duration::from_secs(1);
+        stream.deliver(&mut socket, &next, t1).unwrap();
+        assert!(stream.pending_write().len() <= PENDING_MAX);
+
+        socket.remaining = usize::MAX;
+        assert!(stream.drain_into(&mut socket, t1).unwrap());
+        assert_eq!(socket.taken, [HEAD, &framed(&first), &framed(&next)].concat());
+    }
+
+    #[test]
+    fn draining_too_little_still_refuses_the_next_frame() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        let mut socket = BudgetSocket::default();
+        let first = payload_framed_to(PENDING_MAX - HEAD.len());
+        stream.deliver(&mut socket, &first, t0).unwrap();
+        assert_eq!(stream.pending_write().len(), PENDING_MAX);
+
+        let next = burst_frame(1, 300);
+        socket.remaining = framed(&next).len() - 1;
+        let t1 = t0 + Duration::from_secs(1);
+        let Err(Closed::AtCap { pending }) = stream.deliver(&mut socket, &next, t1) else {
+            panic!("insufficient room after draining must still end delivery")
+        };
+
+        let expected = [HEAD, &framed(&first)].concat();
+        let sent = socket.taken.len();
+        assert!(sent > 0, "delivery must try draining before refusing the frame");
+        assert_eq!(pending, expected.len() - sent);
+        assert_eq!(socket.taken, expected[..sent]);
+    }
+
+    /// Both zero-length writes and write errors require the caller to close.
+    #[test]
+    fn dead_socket_ends_the_stream() {
+        let t0 = Instant::now();
+        let frame = burst_frame(0, 100);
+
+        let mut zero = ScriptedSocket::taking_everything();
+        zero.script([Step::Zero]);
+        let Err(Closed::Lost(e)) = subscribed(t0).deliver(&mut zero, &frame, t0) else {
+            panic!("a zero-length write is an error")
+        };
+        assert_eq!(e.kind(), ErrorKind::WriteZero);
+
+        let mut broken = ScriptedSocket::taking_everything();
+        broken.script([Step::Broken]);
+        let Err(Closed::Lost(e)) = subscribed(t0).deliver(&mut broken, &frame, t0) else {
+            panic!("a failed write is an error")
+        };
+        assert_eq!(e.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn head_leaves_first_ahead_of_chunks_pushed_before_the_first_drain() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         assert!(stream.push(b"event: block\ndata: {}\n\n", t0));
@@ -185,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn a_push_landing_exactly_on_the_cap_fits_and_the_next_byte_is_refused() {
+    fn push_landing_exactly_on_the_cap_fits_and_the_next_byte_is_refused() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let payload = vec![b'x'; largest_fitting_payload(&stream)];
@@ -203,7 +522,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "terminal chunk")]
-    fn an_empty_chunk_is_refused() {
+    fn empty_chunk_is_refused() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let _ = stream.push(b"", t0);
@@ -228,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn the_send_buffer_is_allocated_once_at_the_cap_and_never_moves() {
+    fn send_buffer_is_allocated_once_at_the_cap_and_never_moves() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         assert_eq!(stream.pending.capacity(), PENDING_MAX);
@@ -288,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exact_fit_behind_a_consumed_prefix_is_appended_without_compaction() {
+    fn exact_fit_behind_a_consumed_prefix_is_appended_without_compaction() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         drain_all(&mut stream, t0);
@@ -328,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_push_moves_nothing_either() {
+    fn refused_push_moves_nothing_either() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         drain_all(&mut stream, t0);
@@ -344,12 +663,12 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "exceeds the send cap")]
-    fn a_head_past_the_cap_is_a_bug() {
+    fn head_past_the_cap_is_a_bug() {
         let _ = ChunkedResponse::new(vec![b'h'; PENDING_MAX + 1], vec![0; 16], Instant::now());
     }
 
     #[test]
-    fn a_read_buffer_grown_by_an_earlier_request_is_cut_back_to_scratch_size() {
+    fn read_buffer_grown_by_an_earlier_request_is_cut_back_to_scratch_size() {
         let t0 = Instant::now();
         let mut conn = ServerConnection::new();
         let body = vec![b'b'; 6000];
@@ -375,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn the_waiting_clock_moves_only_when_bytes_leave() {
+    fn waiting_clock_moves_only_when_bytes_leave() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
 
@@ -461,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn a_materialised_response_still_frames_as_before() {
+    fn materialised_response_still_frames_as_before() {
         let mut out = Vec::new();
         frame_response(&mut out, "200 OK", None, b"ok");
         assert_eq!(out, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");

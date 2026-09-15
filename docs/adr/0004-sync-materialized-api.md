@@ -67,10 +67,11 @@ head, then the connection replaces its `ServerConnection` with this machine.
 Each SSE frame occupies one HTTP chunk. Closing the connection ends the stream
 without a terminal chunk.
 
-Subscriptions are exempt from the request idle timeout. A push that would take
-pending output past 64 KiB closes the connection. The expiry sweep also closes
-connections whose pending output has made no socket write progress for over
-12 seconds. This measures writes accepted by the socket, not reads by the peer.
+Subscriptions are exempt from the request idle timeout. After attempting to drain
+existing output, a push that would take pending output past 512 KiB closes the
+connection. The expiry sweep also closes connections whose pending output has
+made no socket write progress for over 30 seconds. This measures writes accepted
+by the socket, not reads by the peer.
 The pump queues keep-alive comments every 15 seconds, including when no events
 are published.
 
@@ -174,3 +175,26 @@ following; previously the gate held only network requests, and disk replay
 is chosen exactly when peers look comparable, so following could be announced
 during replay. Completion re-evaluates the target. Beacon-state's Status
 publications are unchanged.
+
+Amended 2026-09-15: delivery first attempts to drain the subscription's existing
+output, then checks whether the new chunk, including its HTTP framing, fits
+under the 512 KiB pending-output cap. This lets socket capacity that became
+available since the last write attempt free room before rejecting the chunk,
+without waiting for the next writable-readiness event. If the chunk still does
+not fit, the connection closes. Otherwise, delivery queues it and attempts to
+drain again. The pending response head also counts against the cap.
+
+Each drain writes until the buffer is empty or the socket returns `WouldBlock`;
+unrecoverable write errors close the connection. Successful writes reset the
+send deadline while output remains pending; draining it clears the deadline.
+Progress means kernel acceptance, not peer consumption.
+
+Amended 2026-09-14: the send cap is 512 KiB. This accommodates one block's
+128 `data_column_sidecar` events with 21 commitments each, estimated at
+290 KiB, even when the socket accepts no bytes. Earlier pending events or
+repeated publications can still exhaust the allowance.
+
+At 64 subscriptions, the pending-output allowance totals 32 MiB. Each
+subscription reserves its buffer at construction and retains the allocation
+until it closes. A full drain reuses the buffer from its beginning without
+releasing it. Partial drains can advance through the entire allocation.

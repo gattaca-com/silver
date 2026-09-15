@@ -9,8 +9,8 @@ use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::{
-    AfterResponse, Bind, ChunkedResponse, Listener, ParsedRequest, ServerConnection, Stream,
-    TokenRange,
+    AfterResponse, Bind, ChunkedResponse, Closed, Listener, ParsedRequest, ServerConnection,
+    Stream, TokenRange,
 };
 
 use crate::{
@@ -255,18 +255,7 @@ impl Subscription {
             return Ok(true);
         }
 
-        if event.is_writable() {
-            while !self.body.pending_write().is_empty() {
-                match stream.write(self.body.pending_write()) {
-                    Ok(0) => {
-                        return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
-                    }
-                    Ok(n) => self.body.commit_write(n, now),
-                    Err(e) if would_block(&e) => return Ok(false),
-                    Err(e) if interrupted(&e) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
+        if event.is_writable() && self.body.drain_into(stream, now)? {
             registry.reregister(stream, event.token(), Interest::READABLE)?;
         }
 
@@ -448,26 +437,36 @@ impl BeaconApi {
         let Self { connections, registry, .. } = self;
         let mut pushed = false;
         connections.retain(|token, conn| {
-            let State::Subscription(subscription) = &mut conn.state else { return true };
+            let Connection { stream, state: State::Subscription(subscription) } = conn else {
+                return true;
+            };
             if !wants(subscription) {
                 return true;
             }
-            if !subscription.body.push(chunk, now) {
-                tracing::warn!(
-                    "beacon api subscriber would exceed send cap with {} bytes already pending, closing",
-                    subscription.body.pending_write().len()
-                );
-                let _ = registry.deregister(&mut conn.stream);
-                return false;
+            let outcome = subscription.body.deliver(stream, chunk, now).and_then(|interest| {
+                pushed = true;
+                match interest {
+                    Some(interest) => {
+                        registry.reregister(stream, *token, interest).map_err(Closed::Lost)
+                    }
+                    None => Ok(()),
+                }
+            });
+            match outcome {
+                Ok(()) => true,
+                Err(Closed::AtCap { pending }) => {
+                    tracing::warn!(
+                        "beacon api subscriber would exceed send cap with {pending} bytes already pending, closing"
+                    );
+                    let _ = registry.deregister(stream);
+                    false
+                }
+                Err(Closed::Lost(e)) => {
+                    tracing::warn!("beacon api subscriber lost: {e}");
+                    let _ = registry.deregister(stream);
+                    false
+                }
             }
-            pushed = true;
-            let interest = Interest::READABLE | Interest::WRITABLE;
-            if let Err(e) = registry.reregister(&mut conn.stream, *token, interest) {
-                tracing::warn!("beacon api subscriber lost: {e}");
-                let _ = registry.deregister(&mut conn.stream);
-                return false;
-            }
-            true
         });
         pushed
     }
@@ -757,7 +756,7 @@ mod tests {
     /// later one. Handing that offset out again replaces the map entry, which
     /// drops the older connection and closes its socket unannounced.
     #[test]
-    fn a_recycled_offset_skips_the_connection_still_holding_it() {
+    fn recycled_offset_skips_the_connection_still_holding_it() {
         let span = 3;
         let tokens = TokenRange::new(64, span);
         let binds = [Bind::parse("127.0.0.1:0")];
@@ -1072,7 +1071,7 @@ mod tests {
     /// An operator large enough to declare more body than the read buffer
     /// holds gets a status back rather than a connection that goes quiet.
     #[test]
-    fn a_body_declared_past_the_read_cap_is_answered_with_413() {
+    fn body_declared_past_the_read_cap_is_answered_with_413() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -1097,7 +1096,7 @@ mod tests {
     /// like every other reject, where dropping the socket mid-send would be
     /// the reset that costs a client its node.
     #[test]
-    fn a_head_that_outgrows_the_read_buffer_is_answered_with_431() {
+    fn head_that_outgrows_the_read_buffer_is_answered_with_431() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -1129,7 +1128,7 @@ mod tests {
     /// caller and costs the node its place in the rotation, where a 413 costs
     /// nothing.
     #[test]
-    fn a_client_still_streaming_when_the_413_is_framed_reads_all_of_it() {
+    fn client_still_streaming_when_the_413_is_framed_reads_all_of_it() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -1148,7 +1147,7 @@ mod tests {
     /// Unix sockets take the same half-close, so the drain ends on the peer's
     /// own close there too rather than running to the linger cap.
     #[test]
-    fn a_client_still_streaming_over_uds_reads_all_of_the_413() {
+    fn client_still_streaming_over_uds_reads_all_of_the_413() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1179,7 +1178,7 @@ mod tests {
     /// Draining an answered connection is bounded: one client cannot hold a
     /// slot for as long as it cares to keep sending.
     #[test]
-    fn a_client_that_never_stops_sending_is_dropped_at_the_linger_cap() {
+    fn client_that_never_stops_sending_is_dropped_at_the_linger_cap() {
         let mut server = server_with(64, Duration::from_millis(800));
         // A peer that never pauses keeps the wait between reads at zero, so the
         // total cap is the only one that can end it.
@@ -1218,7 +1217,7 @@ mod tests {
     /// the wait between reads, not for the whole draining window — and not for
     /// the far longer deadline that keeps a served connection available.
     #[test]
-    fn a_lingering_connection_that_goes_quiet_is_dropped_at_the_idle_cap() {
+    fn lingering_connection_that_goes_quiet_is_dropped_at_the_idle_cap() {
         let idle_timeout = Duration::from_secs(2);
         let mut server = server_with(64, idle_timeout);
         server.api.linger =
@@ -1412,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_gets_the_head_then_every_block_published_on_its_channel() {
+    fn subscriber_gets_the_head_then_every_block_published_on_its_channel() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "block");
@@ -1571,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn a_topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
+    fn topic_silver_does_not_serve_is_refused_on_an_ordinary_connection() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
         let client = std::thread::spawn(move || {
@@ -1605,8 +1604,117 @@ mod tests {
         assert_same_bytes(&got, &expected);
     }
 
+    fn burst_frame(index: usize, len: usize) -> Vec<u8> {
+        let mut frame = format!("event: burst\ndata: {index:02}").into_bytes();
+        frame.resize(len - 2, b'c');
+        frame.extend_from_slice(b"\n\n");
+        frame
+    }
+
+    /// The burst fits in the application buffer even if the socket initially
+    /// accepts no bytes. Delivery therefore does not require a particular
+    /// kernel send-buffer capacity. The frames approximate one block's column
+    /// events with commitments; any unsent remainder drains through the
+    /// readiness loop.
     #[test]
-    fn a_subscriber_that_stops_reading_is_closed_at_the_cap() {
+    fn burst_reaches_a_reading_subscriber_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        let mut client = connect_uds(&socket);
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed and head sent", |server| {
+            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
+        });
+
+        let frames: Vec<_> = (0..128).map(|index| burst_frame(index, 2300)).collect();
+        let mut expected = SSE_HEAD.to_vec();
+        frames.iter().for_each(|frame| expected.extend(chunk(frame)));
+        let now = Instant::now();
+        for frame in &frames {
+            assert!(server.api.fan_out(|_| true, frame, now), "queued for the subscriber");
+        }
+        assert_eq!(subscribers(&server), 1);
+
+        let got = serve(&mut server, read_exactly(client, expected.len()), "the burst");
+        assert_same_bytes(&got, &expected);
+    }
+
+    /// Checks that publication attempts delivery before the readiness loop,
+    /// independently of whether a larger burst fits the application buffer.
+    #[test]
+    fn a_publish_to_a_reading_subscriber_leaves_nothing_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        let mut client = connect_uds(&socket);
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed and head sent", |server| {
+            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
+        });
+
+        for slot in 1..=3 {
+            server.api.publish_block(slot, &[0x33; 32]);
+        }
+        assert_eq!(bytes_waiting_for_subscribers(&server), 0);
+        assert_eq!(subscribers(&server), 1);
+        drop(client);
+    }
+
+    /// On Linux, registering `WRITABLE` on a writable socket queues an epoll
+    /// event. The small frame keeps this probe independent of burst capacity.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn frame_written_whole_to_an_idle_subscriber_leaves_nothing_to_report() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed and head sent", |server| {
+            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
+        });
+
+        server.api.publish_block(7, &[0x77; 32]);
+        assert_eq!(bytes_waiting_for_subscribers(&server), 0, "the socket took the frame");
+        server.readiness.wait(Duration::ZERO);
+        assert_eq!(server.readiness.events().iter().count(), 0);
+        drop(client);
+    }
+
+    /// The queued response head leaves `WRITABLE` registered. On Linux, a
+    /// publish that drains the head must remove that interest before polling
+    /// and retain interest in inbound bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn publish_that_drains_the_unsent_head_leaves_nothing_to_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+        let mut client = connect_uds(&socket);
+        subscribe(&mut client, "block");
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+        assert!(bytes_waiting_for_subscribers(&server) > 0, "the head is still queued");
+
+        server.api.publish_block(5, &[0x55; 32]);
+        assert_eq!(bytes_waiting_for_subscribers(&server), 0, "the publish drained the head");
+        server.readiness.wait(Duration::ZERO);
+        assert_eq!(server.readiness.events().iter().count(), 0, "no writable event remains");
+
+        client.write_all(b"GET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        assert!(server.pump(), "inbound bytes produce a readable event");
+        assert_eq!(
+            subscribers(&server),
+            1,
+            "a request behind the subscribe is dropped, not answered"
+        );
+
+        drop(client);
+        pump_until(&mut server, "hung-up subscriber removed", |server| {
+            server.api.connections.is_empty()
+        });
+    }
+
+    #[test]
+    fn subscriber_that_stops_reading_is_closed_at_the_cap() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1628,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_that_takes_nothing_for_the_send_deadline_is_closed() {
+    fn subscriber_that_takes_nothing_for_the_send_deadline_is_closed() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("api.sock");
         let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
@@ -1654,7 +1762,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quiet_subscriber_outlives_the_idle_timeout() {
+    fn quiet_subscriber_outlives_the_idle_timeout() {
         let idle_timeout = Duration::from_millis(100);
         let mut server = server_with(64, idle_timeout);
         let mut client = connect(tcp_addr(&server));
@@ -1667,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subscriber_that_hangs_up_is_forgotten() {
+    fn subscriber_that_hangs_up_is_forgotten() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "block");
@@ -1680,7 +1788,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_pipelined_behind_the_subscribe_is_never_answered() {
+    fn request_pipelined_behind_the_subscribe_is_never_answered() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         write!(
