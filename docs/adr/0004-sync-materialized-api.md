@@ -207,3 +207,45 @@ over the `beacon_api_requests` and `beacon_api_responses` queues, and the tile
 frames the answer into the waiting connection. One request waits per
 connection. A connection storage never answers closes on the idle timeout.
 Only a root is served, and the block body only as SSZ.
+
+Amended 2026-09-16: beacon-state classifies each Status against its last
+published head. With complete head roots and a prior observation,
+`head_change` is `Head` when the root or optimism differs.
+It is `Payload` when only the payload resolution differs, and `None`
+otherwise. The first Status and any Status with incomplete head roots carry
+`None`. Every published Status becomes the baseline, including incomplete
+observations.
+
+`epoch_transition` compares the head block's epoch with its parent's epoch.
+It is true when the head's epoch is later, and false when no parent is
+available. A reorg between heads in the same epoch can therefore carry
+`true` when the new head's parent belongs to an earlier epoch.
+
+The beacon API publishes `head` for `Head`, and `head_v2` for `Head` and
+`Payload`, only while the latest sync update reports following. The
+application boundary forwards the spine queues and holds no head state. The
+API also reads relayed blocks and sidecars for `block_gossip` and
+`data_column_sidecar`. Status and sync updates still travel on separate
+queues, applied in the order the boundary drains them, so the one-iteration
+imprecision described above remains.
+
+API construction requires a published anchor and seeds node status from it.
+The health endpoint has no separate uninitialized response: before the first
+sync update, it returns the syncing code, which defaults to 206.
+The anchor is reported as not optimistic, matching fork choice's trusted
+anchor. `is_syncing` is true until a sync update arrives, then reflects
+whether the latest update reports following.
+
+`sync_distance` measures slots to Control's target, saturating at zero when
+the imported head has reached or passed it. It is zero while following and
+`u64::MAX` before the first sync update. The `finalized` envelope flag
+compares the served state's latest block slot with the cached finalized
+epoch's first slot. It is true when the block is at or before that slot.
+
+Known gap: a following node can stop importing and keep reporting synced
+when peers disappear or remain at the same head. Unknown block coverage
+prompts peer-status requests but does not itself withdraw following.
+The API applies no wall-clock tolerance of its own. A follow-up must make
+Control withdraw following when coverage becomes unknown and publish an
+update the API can apply. Entering an internal phase without publishing an
+update leaves the API's previous following status intact.

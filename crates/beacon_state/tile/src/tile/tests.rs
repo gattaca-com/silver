@@ -571,6 +571,16 @@ impl Published {
             .collect()
     }
 
+    fn transitions(&self) -> Vec<bool> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Status { epoch_transition, .. } => Some(*epoch_transition),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn reorgs(&self) -> Vec<Slot> {
         self.0
             .iter()
@@ -927,6 +937,32 @@ fn head_change_is_classified_against_the_last_complete_status() {
 
     rig.tile.publish_status(&mut rig.adapter.producers);
     assert_eq!(rig.drain().changes(), [HeadChange::None]);
+}
+
+/// Both reorg heads are in epoch 3, with a parent in epoch 2.
+/// The flag stays true even though the observed head epoch does not advance.
+#[test]
+fn epoch_transition_follows_the_parent_through_a_reorg() {
+    let mut same_epoch = HeadRig::new();
+    same_epoch.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    assert_eq!(same_epoch.crank().transitions(), [false]);
+
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 96, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 97, B_PREVIOUS, B_CURRENT);
+    let events = rig.crank();
+    assert_eq!(events.last_head().root, A_ROOT);
+    assert!(events.transitions().iter().all(|&t| t), "epoch 3 heads over the epoch 2 anchor");
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let events = rig.crank();
+    assert_eq!(events.reorgs(), [70], "the head left A's branch for its sibling");
+    assert_eq!(events.last_head().root, B_ROOT);
+    assert_eq!(
+        events.transitions().last(),
+        Some(&true),
+        "B's parent is in epoch 2 although the previous head was in epoch 3"
+    );
 }
 
 #[test]
