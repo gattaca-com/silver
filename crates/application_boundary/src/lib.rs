@@ -24,6 +24,10 @@ pub struct ApplicationBoundaryTile {
 }
 
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
+    fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.subscribe_broadcast::<PeerEvent>();
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.engine.intake(adapter);
         self.readiness.wait(Duration::ZERO);

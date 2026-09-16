@@ -8,7 +8,7 @@ use std::{
 };
 
 use flux::{
-    tile::{TileConfig, attach_tile},
+    tile::{Tile, TileConfig, attach_tile, tile_runner},
     utils::ThreadNiceness,
 };
 use mimalloc::MiMalloc;
@@ -437,6 +437,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Spine
     let spine = SilverSpine::new(None);
     spine.start(None, None, |scoped_spine| {
+        // Establish peer subscriptions before any producer starts.
+        let boundary_name = application_boundary_tile.name().as_str().to_owned();
+        let boundary_run = tile_runner(
+            application_boundary_tile,
+            scoped_spine,
+            TileConfig::new(5, Some(ThreadNiceness::Highest)),
+        );
+
         // TODO core config
         attach_tile(control_tile, scoped_spine, TileConfig::new(1, Some(ThreadNiceness::Highest)));
         attach_tile(network_tile, scoped_spine, TileConfig::new(2, Some(ThreadNiceness::Highest)));
@@ -446,11 +454,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             TileConfig::new(3, Some(ThreadNiceness::Highest)),
         );
         attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
-        attach_tile(
-            application_boundary_tile,
-            scoped_spine,
-            TileConfig::new(5, Some(ThreadNiceness::Highest)),
-        );
+        std::thread::Builder::new()
+            .name(boundary_name)
+            .spawn_scoped(scoped_spine.scope, boundary_run)
+            .expect("spawn application boundary");
         attach_tile(
             data_columns_tile,
             scoped_spine,
