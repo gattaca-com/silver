@@ -75,6 +75,7 @@ fn boundary_tile_with_spec(
         rpc_p.cache_ref().random_access("t", true).unwrap(),
         resp_p,
         gossip_p.cache_ref().random_access("t_events", true).unwrap(),
+        rpc_p.cache_ref().random_access("t_storage", true).unwrap(),
     );
     (tile, gossip_p, rpc_p)
 }

@@ -28,6 +28,7 @@ fn main() {
         &SpecConfig::mainnet(),
         state,
         consumer(),
+        consumer(),
     );
     println!("serving on {:?}", api.local_addrs());
     loop {

@@ -51,6 +51,7 @@ impl ApplicationBoundaryTile {
         rpc_consumer: TRandomAccess,
         resp_producer: TProducer,
         relayed_gossip: TRandomAccess,
+        outgoing_rpc: TRandomAccess,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -70,6 +71,7 @@ impl ApplicationBoundaryTile {
             spec,
             state,
             relayed_gossip,
+            outgoing_rpc,
         );
         let engine = EngineApi::new(
             readiness.registry(),

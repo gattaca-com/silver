@@ -136,6 +136,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // rpc producer
     let outgoing_rpc_producer =
         TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
+    let outgoing_rpc_consumer_api =
+        outgoing_rpc_producer.cache_ref().random_access("api_outgoing_rpc", true)?;
     let replay_blocks_producer = TCache::producer("replay_blocks", 1 << 25);
     let replay_blocks_consumer =
         replay_blocks_producer.cache_ref().random_access("bs_replay", true)?;
@@ -392,6 +394,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
         ssz_gossip_consumer_api,
+        outgoing_rpc_consumer_api,
     );
 
     // Spine
