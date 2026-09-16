@@ -305,16 +305,12 @@ impl SyncEngine {
             self.ctx.cfg.head_lag_threshold_slots
     }
 
-    /// Whether a block gap warrants faster peer-status requests while following
-    /// or stalled.
     pub fn fell_behind(&self) -> bool {
-        self.published.is_some_and(|p| !p.is_chasing()) &&
+        self.published.is_some_and(|p| !p.is_syncing()) &&
             self.ctx.local.have_status &&
             self.has_block_gap()
     }
 
-    /// A block gap without a peer claim near or ahead of our imported head.
-    /// A nearby claim allows following even when both heads lag the clock.
     fn stalled(&self) -> bool {
         self.has_block_gap() &&
             !self.ctx.peers.any_peer_level_with(self.ctx.local.head_imported_slot, &self.ctx.cfg)

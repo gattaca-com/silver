@@ -243,7 +243,7 @@ impl Store {
         if self.head.root != [0u8; 32] && self.write_queue.landing() == 0 {
             self.history.step(
                 self.head,
-                !self.sync_target.is_chasing(),
+                !self.sync_target.is_syncing(),
                 &self.store_dir,
                 &mut self.finalized,
                 &self.unfinalized,

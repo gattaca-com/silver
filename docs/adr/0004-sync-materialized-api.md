@@ -197,7 +197,7 @@ chains cannot be selected.
 continues slot ticks, status publication, and gossip imports. Columns remain
 eligible for relay, and storage processes history as it does while
 following. These consumers distinguish a selected sync target through
-`is_chasing()`.
+`is_syncing()`.
 
 The API uses `is_following()` for readiness and head-event publication.
 While stalled, it reports `is_syncing: true`, returns the syncing health

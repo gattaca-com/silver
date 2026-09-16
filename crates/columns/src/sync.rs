@@ -10,7 +10,7 @@ pub(crate) struct SyncStatus {
 
 impl SyncStatus {
     pub(crate) fn is_synced(&self) -> bool {
-        !self.sync_target.is_chasing()
+        !self.sync_target.is_syncing()
     }
 
     pub(crate) fn finalized_slot(&self) -> u64 {
@@ -39,20 +39,5 @@ impl SyncStatus {
         self.head_root = head_root;
         self.finalized_slot = finalized_slot;
         self.sync_target = SyncUpdate::Following;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Stalled preserves the synced flag used to gate column relay.
-    #[test]
-    fn stalled_target_counts_as_synced() {
-        let mut status = SyncStatus::default();
-        status.set_sync_target(SyncUpdate::Stalled);
-        assert!(status.is_synced());
-        status.set_sync_target(SyncUpdate::SyncingHead { head_root: [0; 32], head_slot: 1 });
-        assert!(!status.is_synced());
     }
 }

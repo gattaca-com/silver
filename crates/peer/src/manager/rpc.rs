@@ -661,7 +661,7 @@ impl PeerManager {
     /// target is pinned or no eligible peer is connected.
     pub(crate) fn pick_sync_peer(&self, start: u64, count: u64, now: Instant) -> Option<usize> {
         let target = self.current_sync_target();
-        if !target.is_chasing() {
+        if !target.is_syncing() {
             return None;
         }
 

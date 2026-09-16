@@ -760,7 +760,7 @@ impl BeaconStateTile {
     }
 
     fn on_sync_update(&mut self, target: SyncUpdate) {
-        if target.is_chasing() != self.sync_target.is_chasing() {
+        if target.is_syncing() != self.sync_target.is_syncing() {
             tracing::info!(from = ?self.sync_target, to = ?target, "BeaconState mode transition");
         }
         self.sync_target = target;
@@ -989,7 +989,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.initial_status_emitted = true;
         }
 
-        if !self.sync_target.is_chasing() {
+        if !self.sync_target.is_syncing() {
             self.following_loop(adapter)
         } else {
             self.syncing_loop(adapter)

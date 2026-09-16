@@ -683,7 +683,7 @@ impl SyncUpdate {
 
     /// A head or finalized checkpoint is selected for syncing.
     /// `Following` and `Stalled` both allow gossip imports.
-    pub fn is_chasing(self) -> bool {
+    pub fn is_syncing(self) -> bool {
         matches!(self, Self::SyncingFinalized { .. } | Self::SyncingHead { .. })
     }
 
