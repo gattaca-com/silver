@@ -100,6 +100,7 @@ impl GossipHandler {
                         msgs_iter,
                     ) {
                         emit(GossipHandlerEvent::PeerEvent(PeerEvent::OutboundIHave {
+                            digest: domain.digest(),
                             topic,
                             msg_count,
                             protobuf: tcache,

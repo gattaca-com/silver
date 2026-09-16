@@ -145,14 +145,15 @@ impl PeerManager {
         }
 
         // Announce our own topic subscriptions to this peer.
-        let digest = self.current_digest();
-        for &topic in &self.our_topics {
-            emit(PeerControl::P2pGossipSubscribe {
-                p2p: peer_id,
-                p2p_connection: conn,
-                topic,
-                digest,
-            });
+        for digest in self.active_gossip_digests.into_iter().flatten() {
+            for &topic in &self.our_topics {
+                emit(PeerControl::P2pGossipSubscribe {
+                    p2p: peer_id,
+                    p2p_connection: conn,
+                    topic,
+                    digest,
+                });
+            }
         }
     }
 
@@ -312,11 +313,6 @@ impl PeerManager {
         self.archived.retain(|_, a| now.saturating_duration_since(a.archived_at) < ttl);
     }
 
-    /// Announce our topic subscriptions to every currently-connected peer.
-    /// Add topics at runtime (deferred long-lived subnets): extends
-    /// `our_topics` + mesh bookkeeping + subnet masks, and announces
-    /// SUBSCRIBE to every connected peer. New connections pick the
-    /// topics up via the normal `on_connected` fan-out.
     /// Declare the routable fork domains for gossip: `current` plus at most
     /// one neighbour (the next domain during advance subscription, or the
     /// previous while it drains). Diffs against each topic's `TopicMeshes`
@@ -329,45 +325,52 @@ impl PeerManager {
         other: Option<[u8; 4]>,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        let other = other.filter(|digest| *digest != current);
+        let wanted = [Some(current), other];
+        self.adopt_fork_digest(current);
+        if let Some(status) = &mut self.status {
+            status[..4].copy_from_slice(&current);
+        }
+        if self.active_gossip_digests == wanted {
+            return;
+        }
+        let old = std::mem::replace(&mut self.active_gossip_digests, wanted);
         let capacity = self.params.d_high as usize;
-        let want: [[u8; 4]; 2] = [current, other.unwrap_or(current)];
-        // Snapshot topics up front so we can borrow `self` mutably per topic.
-        let topics = self.our_topics.clone();
-        for topic in topics {
+        for &topic in &self.our_topics {
             let meshes = self
                 .mesh
                 .entry(topic)
                 .or_insert_with(|| mesh::TopicMeshes::single(current, capacity));
 
-            // Add the neighbour digest as an empty second mesh, and announce.
-            if let Some(other) = other &&
-                other != current &&
-                !meshes.has_digest(other)
+            let retired = meshes.set_domains(current, other, capacity);
+            for digest in
+                wanted.into_iter().flatten().filter(|digest| !old.contains(&Some(*digest)))
             {
-                meshes.add_digest(other, capacity);
                 for (&conn, peer) in &self.peers {
                     emit(PeerControl::P2pGossipSubscribe {
                         p2p: peer.peer_id,
                         p2p_connection: conn,
                         topic,
-                        digest: other,
+                        digest,
                     });
                 }
             }
 
             // Drop any live digest no longer wanted: unsubscribe + drain its
             // mesh with backoff-free prunes (administrative, not punitive).
-            let stale: Vec<[u8; 4]> = meshes.digests().filter(|d| !want.contains(d)).collect();
-            for digest in stale {
-                let drained =
-                    self.mesh.get_mut(&topic).map(|m| m.keep_only(current)).unwrap_or_default();
-                for conn in drained {
-                    let peer_id = match self.peers.get(&conn) {
-                        Some(p) => p.peer_id,
-                        None => continue,
-                    };
+            for retired in retired.into_iter().flatten() {
+                let digest = retired.digest;
+                for conn in retired.peers {
+                    let Some(peer) = self.peers.get_mut(&conn) else { continue };
+                    if !meshes.contains(conn) &&
+                        let Some(score) = peer.topic_stats.get_mut(&topic)
+                    {
+                        score.meshed_since = None;
+                        score.mesh_active = false;
+                        score.opportunistic = false;
+                    }
                     emit(PeerControl::P2pGossipPrune {
-                        p2p: peer_id,
+                        p2p: peer.peer_id,
                         p2p_connection: conn,
                         topic,
                         digest,
@@ -384,6 +387,9 @@ impl PeerManager {
                 }
             }
         }
+        for peer in self.peers.values_mut() {
+            peer.subscriptions.retain(|(digest, _), _| wanted.contains(&Some(*digest)));
+        }
     }
 
     pub fn activate_topics(&mut self, topics: &[GossipTopic], emit: &mut impl FnMut(PeerControl)) {
@@ -393,15 +399,19 @@ impl PeerManager {
             }
             self.our_topics.push(topic);
             let digest = self.current_digest();
-            self.mesh.insert(topic, mesh::TopicMeshes::single(digest, self.params.d_high as usize));
-            let digest = self.current_digest();
-            for (&conn, peer) in &self.peers {
-                emit(PeerControl::P2pGossipSubscribe {
-                    p2p: peer.peer_id,
-                    p2p_connection: conn,
-                    topic,
-                    digest,
-                });
+            let capacity = self.params.d_high as usize;
+            let mut meshes = mesh::TopicMeshes::single(digest, capacity);
+            meshes.set_domains(digest, self.active_gossip_digests[1], capacity);
+            self.mesh.insert(topic, meshes);
+            for digest in self.active_gossip_digests.into_iter().flatten() {
+                for (&conn, peer) in &self.peers {
+                    emit(PeerControl::P2pGossipSubscribe {
+                        p2p: peer.peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest,
+                    });
+                }
             }
         }
         let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
@@ -410,15 +420,16 @@ impl PeerManager {
     }
 
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        let digest = self.current_digest();
-        for (&conn, peer) in &self.peers {
-            for &topic in &self.our_topics {
-                emit(PeerControl::P2pGossipSubscribe {
-                    p2p: peer.peer_id,
-                    p2p_connection: conn,
-                    topic,
-                    digest,
-                });
+        for digest in self.active_gossip_digests.into_iter().flatten() {
+            for (&conn, peer) in &self.peers {
+                for &topic in &self.our_topics {
+                    emit(PeerControl::P2pGossipSubscribe {
+                        p2p: peer.peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest,
+                    });
+                }
             }
         }
     }
@@ -465,11 +476,14 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.active_gossip_digests.contains(&Some(digest)) {
+            return;
+        }
         let (peer_id, score, is_trusted) = {
             let Some(peer) = self.peers.get_mut(&conn) else {
                 return;
             };
-            peer.topics.insert(topic);
+            peer.subscriptions.entry((digest, topic)).or_default();
             (peer.peer_id, peer.cached_score, peer.is_trusted)
         };
 
@@ -501,13 +515,7 @@ impl PeerManager {
     ) {
         let peer_id = match self.peers.get_mut(&conn) {
             Some(p) => {
-                p.topics.remove(&topic);
-                if let GossipTopic::DataColumnSidecar(subnet) = topic &&
-                    subnet < 128
-                {
-                    p.partial_requests &= !(1u128 << subnet);
-                    p.partial_supports_sending &= !(1u128 << subnet);
-                }
+                p.subscriptions.remove(&(digest, topic));
                 p.peer_id
             }
             None => return,
@@ -534,6 +542,9 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.active_gossip_digests.contains(&Some(digest)) {
+            return;
+        }
         let Some(peer) = self.peers.get(&conn) else {
             if let Some(record) = self.database.by_p2p_id(conn) &&
                 let Some(id) = record.peer_id
@@ -580,6 +591,9 @@ impl PeerManager {
         backoff_seconds: Option<u64>,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.active_gossip_digests.contains(&Some(digest)) {
+            return;
+        }
         let meshed_since = self
             .peers
             .get(&conn)
@@ -694,6 +708,7 @@ impl PeerManager {
         let d_high = self.params.d_high as usize;
         let meshes =
             self.mesh.entry(topic).or_insert_with(|| mesh::TopicMeshes::single(digest, d_high));
+        let already_meshed = meshes.contains(conn);
         let Some(mesh) = meshes.get_mut(digest) else {
             // The digest is not a live domain for this topic; nothing to graft.
             return;
@@ -703,7 +718,7 @@ impl PeerManager {
         }
         mesh.peers.push(conn);
         // Seed per-topic state so P3 tracking kicks in after grace window.
-        if let Some(peer) = self.peers.get_mut(&conn) {
+        if !already_meshed && let Some(peer) = self.peers.get_mut(&conn) {
             let t = peer.topic_stats.entry(topic).or_default();
             t.meshed_since = Some(now);
             t.mesh_active = false;
@@ -837,9 +852,7 @@ impl PeerManager {
         let mut deficit_columns = 0u128;
         let mut deficits = 0u64;
         for topic in &our_topics {
-            let digests: Vec<[u8; 4]> =
-                self.mesh.get(topic).map(|m| m.digests().collect()).unwrap_or_default();
-            for digest in digests {
+            for digest in self.active_gossip_digests.into_iter().flatten() {
                 self.prune_negative_mesh_peers(*topic, digest, now, emit);
                 self.ensure_mesh_filled(*topic, digest, now, emit);
                 self.ensure_mesh_capped(*topic, digest, now, emit);
@@ -918,7 +931,7 @@ impl PeerManager {
             .peers
             .iter()
             .filter_map(|(conn, peer)| {
-                if !peer.topics.contains(&topic) {
+                if !peer.subscriptions.contains_key(&(digest, topic)) {
                     return None;
                 }
                 if self
@@ -1063,7 +1076,7 @@ impl PeerManager {
             .peers
             .iter()
             .filter_map(|(conn, peer)| {
-                if !peer.topics.contains(&topic) ||
+                if !peer.subscriptions.contains_key(&(digest, topic)) ||
                     mesh_peers.contains(conn) ||
                     scoring::candidate_score(peer) <= bar ||
                     self.is_backed_off(*conn, topic, now)
@@ -1139,8 +1152,7 @@ mod tests {
         }
     }
 
-    /// Partial capability masks follow the subscription lifecycle:
-    /// updates replace earlier flags and unsubscribe clears them.
+    /// Capability updates and unsubscribe affect only their own digest.
     #[test]
     fn partial_caps_follow_subscription_lifecycle() {
         let now = Instant::now();
@@ -1148,6 +1160,10 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
         let mut emit = |c| cap.0.push(c);
+        mgr.set_active_domains([0; 4], Some([1; 4]), &mut emit);
+        for digest in [[0; 4], [1; 4]] {
+            mgr.on_subscribe(1, topic, digest, now, &mut emit);
+        }
 
         mgr.handle_event(
             PeerEvent::P2pGossipExtensions { p2p_peer: 1, partial_messages: true },
@@ -1157,22 +1173,25 @@ mod tests {
         mgr.handle_event(
             PeerEvent::P2pGossipPartialCaps {
                 p2p_peer: 1,
+                digest: [0; 4],
                 subnet: 3,
                 requests: true,
-                supports_sending: true,
+                supports_sending: false,
             },
             now,
             &mut emit,
         );
         let peer = mgr.peers.get(&1).unwrap();
         assert!(peer.partial_extensions);
-        assert_eq!(peer.partial_requests, 1 << 3);
-        assert_eq!(peer.partial_supports_sending, 1 << 3);
+        assert!(peer.subscriptions[&([0; 4], topic)].requests);
+        assert!(peer.subscriptions[&([0; 4], topic)].supports_sending);
+        assert!(!peer.subscriptions[&([1; 4], topic)].requests);
 
         // A later subscription update without flags replaces them.
         mgr.handle_event(
             PeerEvent::P2pGossipPartialCaps {
                 p2p_peer: 1,
+                digest: [0; 4],
                 subnet: 3,
                 requests: false,
                 supports_sending: false,
@@ -1181,13 +1200,14 @@ mod tests {
             &mut emit,
         );
         let peer = mgr.peers.get(&1).unwrap();
-        assert_eq!(peer.partial_requests, 0);
-        assert_eq!(peer.partial_supports_sending, 0);
+        assert!(!peer.subscriptions[&([0; 4], topic)].requests);
+        assert!(!peer.subscriptions[&([0; 4], topic)].supports_sending);
 
         // Unsubscribe clears whatever the last update set.
         mgr.handle_event(
             PeerEvent::P2pGossipPartialCaps {
                 p2p_peer: 1,
+                digest: [1; 4],
                 subnet: 3,
                 requests: true,
                 supports_sending: true,
@@ -1201,8 +1221,10 @@ mod tests {
             &mut emit,
         );
         let peer = mgr.peers.get(&1).unwrap();
-        assert_eq!(peer.partial_requests, 0);
-        assert_eq!(peer.partial_supports_sending, 0);
+        assert!(!peer.subscriptions.contains_key(&([0; 4], topic)));
+        assert!(peer.subscriptions[&([1; 4], topic)].requests);
+        assert!(peer.subscriptions[&([1; 4], topic)].supports_sending);
+        assert!(mgr.mesh[&topic].get([1; 4]).unwrap().peers.contains(&1));
     }
 
     #[test]

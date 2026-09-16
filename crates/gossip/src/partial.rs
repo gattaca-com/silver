@@ -290,8 +290,9 @@ mod tests {
         ssz_view::{
             BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
             partial_column::{
-                PARTIAL_HEADER_FIXED, PartialLayout, PartialSidecarPlan, fulu_group_id,
-                gloas_group_id, parts_metadata_len, write_parts_metadata,
+                PARTIAL_HEADER_FIXED, PartialDataColumnSidecarFuluView, PartialLayout,
+                PartialSidecarPlan, fulu_group_id, gloas_group_id, parts_metadata_len,
+                write_parts_metadata,
             },
         },
     };
@@ -418,6 +419,70 @@ mod tests {
             reference_rpc(&group, reference_ssz(&plan, &source, header_bytes), Some(metadata));
 
         assert_eq!(reassemble(frame, &mut consumer, now), reference);
+    }
+
+    #[test]
+    fn segmented_frames_preserve_lighthouse_ssz_without_compression() {
+        let fixtures = [
+            (include_str!("../../ssz/tests/fixtures/partial_columns/fulu_header_only.hex"), 0),
+            (
+                include_str!(
+                    "../../ssz/tests/fixtures/partial_columns/fulu_sparse_with_header.hex"
+                ),
+                0x109,
+            ),
+            (include_str!("../../ssz/tests/fixtures/partial_columns/fulu_sparse.hex"), 0x109),
+        ];
+        for (hex, rows) in fixtures {
+            let reference: Vec<_> = hex
+                .split_whitespace()
+                .flat_map(|line| {
+                    (0..line.len())
+                        .step_by(2)
+                        .map(|index| u8::from_str_radix(&line[index..index + 2], 16).unwrap())
+                })
+                .collect();
+            let mut producer = TCache::producer("", 1 << 18);
+            let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+            let mut reservation = producer.reserve(reference.len(), true).unwrap();
+            let read = reservation.read();
+            reservation.buffer().unwrap().copy_from_slice(&reference);
+            reservation.increment_offset(reference.len());
+
+            let header_bytes = PartialDataColumnSidecarFuluView::header(&reference).len();
+            let plan =
+                PartialSidecarPlan::new(PartialLayout::Fulu { header_bytes }, rows, 9).unwrap();
+            let proof_start = plan.prefix_len() + plan.cell_count() * BYTES_PER_CELL;
+            let cells = (0..plan.cell_count()).map(|index| CacheSegment::Gossip {
+                read,
+                offset: plan.prefix_len() + index * BYTES_PER_CELL,
+                length: BYTES_PER_CELL,
+            });
+            let proofs = (0..plan.cell_count()).map(|index| CacheSegment::Gossip {
+                read,
+                offset: proof_start + index * BYTES_PER_KZG_PROOF,
+                length: BYTES_PER_KZG_PROOF,
+            });
+            let header = (header_bytes > 0).then_some(CacheSegment::Gossip {
+                read,
+                offset: reference.len() - header_bytes,
+                length: header_bytes,
+            });
+            let group = fulu_group_id(&[0xab; 32]);
+            let now = Instant::now();
+            let frame = PartialFrame {
+                topic: TOPIC,
+                group_id: &group,
+                plan: Some(plan),
+                header,
+                metadata: Some(PartsMetadata { available: 0x109, requests: 0xf6, n_rows: 9 }),
+            }
+            .write(&mut producer, cells, proofs, now + Duration::from_secs(1))
+            .unwrap();
+            let wire = reassemble(frame, &mut consumer, now);
+            let metadata = vec![8, 0, 0, 0, 10, 0, 0, 0, 9, 3, 0xf6, 2];
+            assert_eq!(wire, reference_rpc(&group, reference, Some(metadata)));
+        }
     }
 
     #[test]

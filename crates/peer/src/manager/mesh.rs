@@ -56,6 +56,7 @@ impl TopicMeshes {
         std::iter::once(head).chain(tail)
     }
 
+    #[cfg(test)]
     pub(super) fn digests(&self) -> impl Iterator<Item = [u8; 4]> + '_ {
         self.iter().map(|m| m.digest)
     }
@@ -90,34 +91,36 @@ impl TopicMeshes {
     }
 
     /// Whether `digest` is one of the live meshes.
+    #[cfg(test)]
     pub(super) fn has_digest(&self, digest: [u8; 4]) -> bool {
         self.iter().any(|m| m.digest == digest)
     }
 
-    /// Add a second, empty mesh for `digest`. No-op if already present or
-    /// already `Multi`.
-    pub(super) fn add_digest(&mut self, digest: [u8; 4], capacity: usize) {
-        if let Self::Single(existing) = self &&
-            existing.digest != digest
-        {
-            let a = std::mem::replace(existing, Mesh::new(digest, 0));
-            *self = Self::Multi([a, Mesh::new(digest, capacity)]);
-        }
-    }
-
-    /// Collapse to just `keep`'s mesh, returning the peers of the dropped
-    /// digest so the caller can PRUNE them. No-op if already `Single(keep)`.
-    pub(super) fn keep_only(&mut self, keep: [u8; 4]) -> Vec<usize> {
-        let Self::Multi([a, b]) = self else {
-            return Vec::new();
+    /// Reuse surviving meshes, create missing ones, and return retired meshes
+    /// for administrative pruning.
+    pub(super) fn set_domains(
+        &mut self,
+        current: [u8; 4],
+        other: Option<[u8; 4]>,
+        capacity: usize,
+    ) -> [Option<Mesh>; 2] {
+        let old = std::mem::replace(self, Self::single(current, 0));
+        let mut old = match old {
+            Self::Single(a) => [Some(a), None],
+            Self::Multi([a, b]) => [Some(a), Some(b)],
         };
-        let (kept, dropped) = if a.digest == keep {
-            (std::mem::replace(a, Mesh::new([0; 4], 0)), std::mem::replace(b, Mesh::new([0; 4], 0)))
-        } else {
-            (std::mem::replace(b, Mesh::new([0; 4], 0)), std::mem::replace(a, Mesh::new([0; 4], 0)))
+        let mut take = |digest| {
+            old.iter_mut()
+                .find(|m| m.as_ref().is_some_and(|m| m.digest == digest))
+                .and_then(Option::take)
+                .unwrap_or_else(|| Mesh::new(digest, capacity))
         };
-        *self = Self::Single(kept);
-        dropped.peers
+        let current_mesh = take(current);
+        *self = match other.filter(|digest| *digest != current) {
+            Some(digest) => Self::Multi([current_mesh, take(digest)]),
+            None => Self::Single(current_mesh),
+        };
+        old
     }
 }
 
@@ -137,7 +140,7 @@ mod tests {
         assert_eq!(m.total(), 2);
 
         // Enter overlap: second, empty mesh for B.
-        m.add_digest(B, 4);
+        m.set_domains(A, Some(B), 4);
         assert!(matches!(m, TopicMeshes::Multi(_)));
         assert!(m.has_digest(A) && m.has_digest(B));
         assert_eq!(m.get(B).unwrap().peers.len(), 0);
@@ -146,8 +149,8 @@ mod tests {
         assert_eq!(m.digests().collect::<Vec<_>>(), vec![A, B]);
 
         // Drain: keep only B; A's peers are returned for pruning.
-        let dropped = m.keep_only(B);
-        assert_eq!(dropped, vec![1, 2]);
+        let dropped = m.set_domains(B, None, 4);
+        assert_eq!(dropped[0].as_ref().unwrap().peers, vec![1, 2]);
         assert!(matches!(m, TopicMeshes::Single(_)));
         assert!(m.has_digest(B) && !m.has_digest(A));
         assert!(m.contains(3));
@@ -157,7 +160,7 @@ mod tests {
     fn remove_clears_all_submeshes_and_total_dedupes() {
         let mut m = TopicMeshes::single(A, 4);
         m.get_mut(A).unwrap().peers.push(1);
-        m.add_digest(B, 4);
+        m.set_domains(A, Some(B), 4);
         m.get_mut(B).unwrap().peers.push(1); // same peer meshed on both
         assert_eq!(m.total(), 1, "a peer on both digests counts once");
         assert!(m.remove(1));
@@ -166,12 +169,19 @@ mod tests {
     }
 
     #[test]
-    fn add_digest_is_noop_when_already_present_or_same() {
+    fn reconcile_handles_skipped_transitions() {
         let mut m = TopicMeshes::single(A, 4);
-        m.add_digest(A, 4); // same digest: stays Single
+        m.set_domains(A, Some(A), 4);
         assert!(matches!(m, TopicMeshes::Single(_)));
-        m.add_digest(B, 4);
-        m.add_digest(B, 4); // already Multi: no panic, no third mesh
-        assert_eq!(m.digests().count(), 2);
+        m.get_mut(A).unwrap().peers.push(1);
+        let dropped = m.set_domains(B, None, 4);
+        assert_eq!(dropped[0].as_ref().unwrap().peers, [1]);
+        assert_eq!(m.digests().collect::<Vec<_>>(), [B]);
+        m.get_mut(B).unwrap().peers.push(2);
+        m.set_domains(B, Some(A), 4);
+        m.set_domains([0xcc; 4], Some(B), 4);
+        assert!(!m.has_digest(A));
+        assert_eq!(m.get(B).unwrap().peers, [2]);
+        assert!(m.has_digest([0xcc; 4]));
     }
 }

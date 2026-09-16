@@ -66,7 +66,7 @@ mod id;
 mod identity;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
-pub use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
+pub use silver_beacon_state_data::{FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH};
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
 #[cfg(feature = "test-util")]
 pub mod test_util;

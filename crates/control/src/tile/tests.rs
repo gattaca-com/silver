@@ -1,9 +1,10 @@
-use std::{io::Write, sync::Arc};
+use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    ForkName, GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId, Nanos, P2pStreamId, PeerId,
-    StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
+    ForkName, GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, Keypair, MessageId, Nanos,
+    P2pStreamId, PayloadResolution, PeerId, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+    TProducer, test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -172,6 +173,115 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     reservation.write_all(bytes).unwrap();
     reservation.flush().unwrap();
     reservation.read()
+}
+
+#[test]
+fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_retirement() {
+    let topic = GossipTopic::DataColumnSidecar(5);
+    let bytes = b"validated gossip frame";
+    let mut capture = GossipPublications::new(topic, bytes);
+    capture.observer.consume(|_: PeerControl, _| {});
+    let mut spec = SpecConfig::mainnet();
+    spec.fulu_fork_epoch = 0;
+    spec.gloas_fork_epoch = 10;
+    spec.blob_schedule.clear();
+    let old = GossipDomain::new(spec.fork_digest_at(9, &[0; 32]), ForkName::Fulu);
+    let new = GossipDomain::new(spec.fork_digest_at(10, &[0; 32]), ForkName::Gloas);
+    capture.controller.spec = Arc::new(spec);
+    let mut ticker = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(3));
+    ticker.set_current_slot(9 * SLOTS_PER_EPOCH);
+    capture.controller.set_gossip_clock(ticker, &[0; 32]);
+    capture.crank();
+    assert_eq!(capture.controller.gossip_handler.current_domain(), Some(old));
+    let mut subscriptions = Vec::new();
+    capture.observer.consume(|event: PeerControl, _| {
+        if let PeerControl::P2pGossipSubscribe { digest, .. } = event {
+            subscriptions.push(digest);
+        }
+    });
+    assert_eq!(subscriptions.iter().filter(|digest| **digest == old.digest()).count(), 2);
+    assert_eq!(subscriptions.iter().filter(|digest| **digest == new.digest()).count(), 2);
+    for peer in [1, 2] {
+        for domain in [old, new] {
+            capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: peer,
+                topic,
+                digest: domain.digest(),
+            });
+        }
+    }
+    capture.crank();
+    capture.sent();
+
+    capture
+        .controller
+        .gossip_schedule
+        .as_mut()
+        .unwrap()
+        .ticker
+        .set_current_slot(10 * SLOTS_PER_EPOCH);
+    let mut old_status = [0; STATUS_V2_SIZE];
+    old_status[..4].copy_from_slice(&old.digest());
+    capture.observer.produce(BeaconStateEvent::Status {
+        ssz: old_status,
+        latest_block_slot: 0,
+        wall_slot: 9 * SLOTS_PER_EPOCH,
+        head_optimistic: false,
+        enr_fork_id: [0; 16],
+        head_roots: HeadRoots::default(),
+        head_payload: PayloadResolution::Full,
+        head_change: HeadChange::None,
+        epoch_transition: false,
+    });
+    capture.crank();
+    assert_eq!(capture.controller.gossip_handler.current_domain(), Some(new));
+    assert_eq!(capture.controller.peer_manager.our_fork_digest(), Some(new.digest()));
+    assert_eq!(
+        StatusView::fork_digest(capture.controller.peer_manager.status().unwrap()),
+        &new.digest()
+    );
+    let mut cutover_enr = false;
+    capture.observer.consume(|event: PeerControl, _| {
+        if let PeerControl::UpdateEnrForkId { epoch: 10, enr_fork_id } = event {
+            assert_eq!(&enr_fork_id[..4], &new.digest());
+            cutover_enr = true;
+        }
+    });
+    assert!(cutover_enr);
+    capture.sent();
+
+    let ssz = write_bytes(&mut capture.rpc, b"validated sidecar");
+    for (index, domain) in [old, new].into_iter().enumerate() {
+        capture.observer.produce(PeerEvent::SendGossip {
+            originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+            topic,
+            domain,
+            ssz_source: SszSource::Gossip,
+            msg_hash: MessageId { id: [0xCD + index as u8; 20] },
+            recv_ts: Nanos::now(),
+            protobuf: capture.payload,
+            ssz,
+        });
+        capture.crank();
+        assert_eq!(capture.sent(), [(2, bytes.to_vec())]);
+    }
+
+    capture
+        .controller
+        .gossip_schedule
+        .as_mut()
+        .unwrap()
+        .ticker
+        .set_current_slot(12 * SLOTS_PER_EPOCH);
+    capture.crank();
+    let mut retired = Vec::new();
+    capture.observer.consume(|event: PeerControl, _| {
+        if let PeerControl::P2pGossipUnsubscribe { digest, .. } = event {
+            retired.push(digest);
+        }
+    });
+    assert_eq!(retired, [old.digest(); 2]);
+    assert_eq!(capture.controller.gossip_handler.current_domain(), Some(new));
 }
 
 #[test]
