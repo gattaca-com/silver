@@ -13,11 +13,11 @@ use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, ELSyncStatus,
-    EngineFcuReq, EngineReq, EngineResp, Enr, GossipTopic, HeadChange, HeadRoots, Identify,
-    IpBytes, Keypair, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead,
-    TProducer,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage, ColumnSource,
+    DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr, GossipTopic,
+    HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine, StreamProtocol, SyncUpdate,
+    TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -1462,4 +1462,69 @@ fn head_events_describe_changes_observed_while_following() {
         assert_eq!(event["data"]["slot"], slot.to_string());
         assert_eq!(event["data"]["execution_optimistic"], optimistic);
     }
+}
+
+/// The request leaves on `beacon_api_requests` in the pass that parks the
+/// connection, and the answer on `beacon_api_responses` frees it.
+#[test]
+fn block_by_root_round_trips_over_the_storage_queues() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut tile, _gossip, mut served) =
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
+            "cs_block_gossip",
+            "cs_block_rpc",
+            "cs_block_resp",
+        ]);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    tile.loop_body(&mut adapter);
+    inj.consume(|_: BeaconApiRequest, _| {});
+
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let client = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(
+            stream,
+            "GET /eth/v2/beacon/blocks/0x{} HTTP/1.1\r\nHost: localhost\r\n\
+             Accept: application/octet-stream\r\nConnection: close\r\n\r\n",
+            "ab".repeat(32)
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        response
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut request = None;
+    while request.is_none() {
+        assert!(Instant::now() < deadline, "timeout: block request on the spine");
+        tile.loop_body(&mut adapter);
+        inj.consume(|r: BeaconApiRequest, _| request = Some(r));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let Some(BeaconApiRequest::BlockByRoot { request_id, block_root }) = request else {
+        panic!("expected a block request, got {request:?}");
+    };
+    assert_eq!(block_root, [0xab; 32]);
+    assert!(!client.is_finished(), "the connection waits on storage");
+
+    let block = block_bytes(10, 0xab);
+    let ssz = write_object(&mut served, &block);
+    inj.produce(BeaconApiResponse::Block {
+        request_id,
+        block: Some(ServedBlock { slot: 10, ssz }),
+    });
+    while !client.is_finished() {
+        assert!(Instant::now() < deadline, "timeout: block response");
+        tile.loop_body(&mut adapter);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let response = client.join().unwrap();
+    let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                 Eth-Consensus-Version: phase0\r\n";
+    assert!(response.starts_with(head), "{}", String::from_utf8_lossy(&response));
+    assert!(response.ends_with(&block), "the body is the served bytes verbatim");
 }

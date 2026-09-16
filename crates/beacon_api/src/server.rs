@@ -345,8 +345,6 @@ pub struct BeaconApi {
     /// Blocks storage serves, in the `outgoing_rpc` tcache.
     storage: TRandomAccess,
     next_request_id: u64,
-    /// Storage requests handlers deferred to, until the tile takes them.
-    requests: Vec<BeaconApiRequest>,
 }
 
 impl BeaconApi {
@@ -404,7 +402,6 @@ impl BeaconApi {
             relayed_gossip,
             storage,
             next_request_id: 0,
-            requests: Vec::new(),
         }
     }
 
@@ -588,13 +585,9 @@ impl BeaconApi {
         pushed
     }
 
-    pub fn requests(&mut self) -> impl Iterator<Item = BeaconApiRequest> + '_ {
-        self.requests.drain(..)
-    }
-
     /// The block a handler deferred to storage for: framed into the waiting
     /// connection, or dropped if that connection closed meanwhile.
-    pub fn handle_storage_response(&mut self, response: BeaconApiResponse) {
+    pub fn handle_response(&mut self, response: BeaconApiResponse) {
         let BeaconApiResponse::Block { request_id, block } = response else { return };
         let Some(token) = self.token_awaiting(request_id) else {
             tracing::debug!(request_id, "block served to a connection already closed");
@@ -626,7 +619,7 @@ impl BeaconApi {
         }
     }
 
-    pub fn pump(&mut self, events: &Events) -> bool {
+    pub fn pump(&mut self, events: &Events, emit: &mut impl FnMut(BeaconApiRequest)) -> bool {
         self.relayed_gossip.free();
         self.storage.free();
         let now = Instant::now();
@@ -639,7 +632,7 @@ impl BeaconApi {
             did_work |= if offset < self.listeners.len() {
                 self.accept_all(offset, now)
             } else {
-                self.serve(event, now)
+                self.serve(event, now, emit)
             };
         }
 
@@ -684,7 +677,12 @@ impl BeaconApi {
         did_work
     }
 
-    fn serve(&mut self, event: &Event, now: Instant) -> bool {
+    fn serve(
+        &mut self,
+        event: &Event,
+        now: Instant,
+        emit: &mut impl FnMut(BeaconApiRequest),
+    ) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
         let dispatched = Cell::new(Outcome::Response);
@@ -703,7 +701,7 @@ impl BeaconApi {
                     let request_id = self.next_request_id;
                     self.next_request_id += 1;
                     requests.pending = Some(request_id);
-                    self.requests.push(BeaconApiRequest::BlockByRoot { request_id, block_root });
+                    emit(BeaconApiRequest::BlockByRoot { request_id, block_root });
                 }
             },
             Ok(true) => {
@@ -827,6 +825,8 @@ mod tests {
         api: BeaconApi,
         /// Stands in for the `outgoing_rpc` tcache storage serves from.
         served: TProducer,
+        /// Stands in for the `beacon_api_requests` queue.
+        requests: Vec<BeaconApiRequest>,
     }
 
     impl Server {
@@ -855,7 +855,7 @@ mod tests {
                 consumer(),
                 consumer(),
             );
-            Self { readiness, api, served: cache }
+            Self { readiness, api, served: cache, requests: Vec::new() }
         }
 
         fn serve_block(&mut self, request_id: u64, slot: u64, bytes: &[u8]) {
@@ -863,12 +863,13 @@ mod tests {
             reservation.write_all(bytes).unwrap();
             reservation.flush().unwrap();
             let block = Some(ServedBlock { slot, ssz: reservation.read() });
-            self.api.handle_storage_response(BeaconApiResponse::Block { request_id, block });
+            self.api.handle_response(BeaconApiResponse::Block { request_id, block });
         }
 
         fn pump(&mut self) -> bool {
             self.readiness.wait(Duration::ZERO);
-            self.api.pump(self.readiness.events())
+            let Self { readiness, api, requests, .. } = self;
+            api.pump(readiness.events(), &mut |request| requests.push(request))
         }
     }
 
@@ -1796,17 +1797,12 @@ mod tests {
     }
 
     fn deferred_request(server: &mut Server) -> (u64, [u8; 32]) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            server.pump();
-            if let Some(BeaconApiRequest::BlockByRoot { request_id, block_root }) =
-                server.api.requests().next()
-            {
-                return (request_id, block_root);
-            }
-            assert!(Instant::now() < deadline, "timeout: the block request was deferred");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        pump_until(server, "the block request was deferred", |s| !s.requests.is_empty());
+        let BeaconApiRequest::BlockByRoot { request_id, block_root } = server.requests.remove(0)
+        else {
+            panic!("expected a block request");
+        };
+        (request_id, block_root)
     }
 
     #[test]
@@ -1840,7 +1836,7 @@ mod tests {
         let client = connect(tcp_addr(&server));
         get_block(&client, &format!("0x{}", "cd".repeat(32)));
         let (request_id, _) = deferred_request(&mut server);
-        server.api.handle_storage_response(BeaconApiResponse::Block { request_id, block: None });
+        server.api.handle_response(BeaconApiResponse::Block { request_id, block: None });
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "404 response");
         assert!(response.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{response:?}");
