@@ -1463,7 +1463,7 @@ fn block_by_root_round_trips_over_the_storage_queues() {
         inj.consume(|r: BeaconApiRequest, _| request = Some(r));
         std::thread::sleep(Duration::from_millis(1));
     }
-    let Some(BeaconApiRequest::Block { request_id, lookup }) = request else {
+    let Some(BeaconApiRequest::Block { request_id, lookup, with_bytes: true }) = request else {
         panic!("expected a block request, got {request:?}");
     };
     assert_eq!(lookup, BlockLookup::Root([0xab; 32]));

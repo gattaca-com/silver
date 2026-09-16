@@ -214,11 +214,11 @@ fn fork_tree_persist_serve_promote() {
     assert_block(&byroot[0], &bytes_b);
 
     // The API is answered by root the same way, without a stream to complete.
-    store.block_request(7, BlockLookup::Root(root_b));
-    store.block_request(8, BlockLookup::Root([0xEE; 32]));
-    store.block_request(9, BlockLookup::Root(root_a));
-    store.block_request(10, BlockLookup::Slot(slot));
-    store.block_request(11, BlockLookup::Slot(slot + 1));
+    store.queue_block_request(7, BlockLookup::Root(root_b));
+    store.queue_block_request(8, BlockLookup::Root([0xEE; 32]));
+    store.queue_block_request(9, BlockLookup::Root(root_a));
+    store.queue_block_request(10, BlockLookup::Slot(slot));
+    store.queue_block_request(11, BlockLookup::Slot(slot + 1));
     let mut api = vec![];
     store
         .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
@@ -1028,6 +1028,19 @@ fn finalized_column_does_not_index_its_block() {
         "the column itself is written"
     );
     let _ = std::fs::remove_dir_all(&store_path);
+}
+
+#[test]
+fn retention_keeps_the_group_holding_the_floor_and_nothing_below() {
+    let group = super::SLOTS_PER_DIR;
+    assert_eq!(super::first_retained_slot(0), 0);
+    assert_eq!(super::first_retained_slot(group - 1), 0);
+    assert_eq!(
+        super::first_retained_slot(group),
+        group,
+        "a floor on the boundary starts its group"
+    );
+    assert_eq!(super::first_retained_slot(7 * group + 104), 7 * group);
 }
 
 /// Written once the queue has drained, not once per turn while it drains.

@@ -1816,8 +1816,7 @@ mod tests {
 
     fn request_id(request: &BeaconApiRequest) -> u64 {
         match request {
-            BeaconApiRequest::Block { request_id, .. } |
-            BeaconApiRequest::BlockRoot { request_id, .. } => *request_id,
+            BeaconApiRequest::Block { request_id, .. } => *request_id,
             BeaconApiRequest::LocalAttestation { .. } => panic!("not a block request"),
         }
     }
@@ -1827,7 +1826,9 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         get(&mut client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xab)));
-        let BeaconApiRequest::Block { request_id, lookup } = deferred_request(&mut server) else {
+        let BeaconApiRequest::Block { request_id, lookup, with_bytes: true } =
+            deferred_request(&mut server)
+        else {
             panic!("the body needs the bytes");
         };
         assert_eq!(lookup, BlockLookup::Root([0xab; 32]));
@@ -1857,13 +1858,15 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let root_client = connect(tcp_addr(&server));
         get(&root_client, &format!("/eth/v1/beacon/blocks/{}/root", root_hex(0xcd)));
-        let BeaconApiRequest::BlockRoot { request_id: root_id, .. } = deferred_request(&mut server)
+        let BeaconApiRequest::Block { request_id: root_id, with_bytes: false, .. } =
+            deferred_request(&mut server)
         else {
             panic!("the root needs no bytes");
         };
         let header_client = connect(tcp_addr(&server));
         get(&header_client, &format!("/eth/v1/beacon/headers/{}", root_hex(0xcd)));
-        let BeaconApiRequest::Block { request_id: header_id, .. } = deferred_request(&mut server)
+        let BeaconApiRequest::Block { request_id: header_id, with_bytes: true, .. } =
+            deferred_request(&mut server)
         else {
             panic!("the header needs the bytes");
         };
@@ -1914,7 +1917,8 @@ mod tests {
         server.api.ctx.node_status.head_root = [0x77; 32];
         let head_client = connect(tcp_addr(&server));
         get(&head_client, "/eth/v1/beacon/headers/head");
-        let BeaconApiRequest::Block { request_id: head_id, lookup } = deferred_request(&mut server)
+        let BeaconApiRequest::Block { request_id: head_id, lookup, with_bytes: true } =
+            deferred_request(&mut server)
         else {
             panic!("the header needs the bytes");
         };
@@ -1922,7 +1926,7 @@ mod tests {
 
         let slot_client = connect(tcp_addr(&server));
         get(&slot_client, "/eth/v1/beacon/blocks/10/root");
-        let BeaconApiRequest::BlockRoot { request_id: slot_id, lookup } =
+        let BeaconApiRequest::Block { request_id: slot_id, lookup, with_bytes: false } =
             deferred_request(&mut server)
         else {
             panic!("the root needs no bytes");

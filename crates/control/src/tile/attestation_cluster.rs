@@ -143,24 +143,23 @@ impl AttestationClusterHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        match request {
-            BeaconApiRequest::LocalAttestation { request_id, validator_pubkey, subnet, ssz } => {
-                let slot = SingleAttestationView::slot(&ssz);
-                self.handle_local_attestation(
-                    PendingAttestation {
-                        request_id,
-                        command: AttestationLockCommand {
-                            key: AttestationKey { validator_pubkey, slot },
-                            subnet,
-                            ssz,
-                        },
+        if let BeaconApiRequest::LocalAttestation { request_id, validator_pubkey, subnet, ssz } =
+            request
+        {
+            let slot = SingleAttestationView::slot(&ssz);
+            self.handle_local_attestation(
+                PendingAttestation {
+                    request_id,
+                    command: AttestationLockCommand {
+                        key: AttestationKey { validator_pubkey, slot },
+                        subnet,
+                        ssz,
                     },
-                    now,
-                    gossip_handler,
-                    producers,
-                );
-            }
-            _ => {}
+                },
+                now,
+                gossip_handler,
+                producers,
+            );
         }
     }
 

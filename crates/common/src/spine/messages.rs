@@ -91,10 +91,7 @@ pub enum BeaconApiRequest {
     Block {
         request_id: u64,
         lookup: BlockLookup,
-    },
-    BlockRoot {
-        request_id: u64,
-        lookup: BlockLookup,
+        with_bytes: bool,
     },
 }
 

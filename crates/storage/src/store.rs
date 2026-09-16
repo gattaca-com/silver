@@ -254,9 +254,8 @@ impl QueryUnit {
     }
 }
 
-/// A block the store holds, resolved from a `BlockLookup`.
 #[derive(Clone, Copy, Debug)]
-struct Located {
+struct BlockLookupResult {
     file: QueryUnit,
     root: B256,
     canonical: bool,
@@ -371,10 +370,10 @@ impl PendingQuery {
     }
 }
 
-/// Truncation removes whole slot groups, so the slots kept on disk start at
-/// the group boundary at or above `earliest_slot - SLOTS_PER_DIR`.
+/// Truncation removes whole slot groups, so the group holding `earliest_slot`
+/// stays and everything below it goes.
 pub(super) fn first_retained_slot(earliest_slot: u64) -> u64 {
-    earliest_slot.saturating_sub(SLOTS_PER_DIR).div_ceil(SLOTS_PER_DIR) * SLOTS_PER_DIR
+    earliest_slot - earliest_slot % SLOTS_PER_DIR
 }
 
 pub(super) fn slot_dir(store_dir: &str, payload: Payload, slot: u64) -> PathBuf {
@@ -886,8 +885,8 @@ impl Store {
         self.query_queue.push_back(PendingQuery::new(RequestSource::Peer(stream_id), units));
     }
 
-    pub(super) fn block_request(&mut self, request_id: u64, lookup: BlockLookup) {
-        let located = self.locate(lookup);
+    pub(super) fn queue_block_request(&mut self, request_id: u64, lookup: BlockLookup) {
+        let located = self.lookup(lookup);
         let (root, canonical) = located.map_or(([0u8; 32], false), |l| (l.root, l.canonical));
         let source = RequestSource::Api { request_id, root, canonical };
         let units = located.map(|l| l.file).into_iter().collect();
@@ -895,7 +894,7 @@ impl Store {
     }
 
     pub(super) fn block_facts(&self, lookup: BlockLookup) -> Option<ServedBlock> {
-        let Located { file, root, canonical } = self.locate(lookup)?;
+        let BlockLookupResult { file, root, canonical } = self.lookup(lookup)?;
         Some(ServedBlock {
             slot: file.slot(),
             root,
@@ -905,7 +904,7 @@ impl Store {
         })
     }
 
-    fn locate(&self, lookup: BlockLookup) -> Option<Located> {
+    fn lookup(&self, lookup: BlockLookup) -> Option<BlockLookupResult> {
         match lookup {
             BlockLookup::Root(root) => {
                 let file = self.block_file(&root)?;
@@ -915,11 +914,11 @@ impl Store {
                     }
                     _ => true,
                 };
-                Some(Located { file, root, canonical })
+                Some(BlockLookupResult { file, root, canonical })
             }
             BlockLookup::Slot(slot) if slot <= self.head.finalized_slot => {
                 let root = self.finalized.root_at(slot)?;
-                Some(Located { file: QueryUnit::Block { slot }, root, canonical: true })
+                Some(BlockLookupResult { file: QueryUnit::Block { slot }, root, canonical: true })
             }
             BlockLookup::Slot(slot) => {
                 let (parent_root, block_root) = *self
@@ -927,7 +926,7 @@ impl Store {
                     .canonical_chain_in_range(self.head.root, self.head.slot, slot, slot + 1)
                     .get(&slot)?;
                 let file = QueryUnit::UnfinalizedBlock { slot, parent_root, block_root };
-                Some(Located { file, root: block_root, canonical: true })
+                Some(BlockLookupResult { file, root: block_root, canonical: true })
             }
         }
     }

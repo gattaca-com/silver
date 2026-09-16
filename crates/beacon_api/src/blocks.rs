@@ -25,7 +25,6 @@ pub(crate) struct BlockRequest {
     pub(crate) kind: Kind,
 }
 
-/// Only SSZ: the JSON body is not rendered yet.
 pub(crate) fn block(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let Some(lookup) = requested_block(req, ctx, resp) else { return };
     if !req.accepts_ssz() {
@@ -72,11 +71,8 @@ fn requested_block(
 
 impl BlockRequest {
     pub(crate) fn storage_request(self, request_id: u64) -> BeaconApiRequest {
-        let lookup = self.lookup;
-        match self.kind {
-            Kind::Root => BeaconApiRequest::BlockRoot { request_id, lookup },
-            Kind::Ssz | Kind::Header => BeaconApiRequest::Block { request_id, lookup },
-        }
+        let with_bytes = self.kind != Kind::Root;
+        BeaconApiRequest::Block { request_id, lookup: self.lookup, with_bytes }
     }
 }
 
@@ -88,58 +84,69 @@ impl Kind {
         storage: &mut TRandomAccess,
         ctx: &ApiCtx,
     ) {
-        let Some(ServedBlock { slot, root, finalized, canonical, ssz }) = block else {
+        let Some(block) = block else {
             return resp.error(404, "block not found");
         };
-        let flags =
-            ReadFlags { execution_optimistic: ctx.node_status.execution_optimistic(), finalized };
-        if self == Self::Root {
-            return resp
-                .json_body(|json| json.flagged_envelope(flags, |json| json.block_root(&root)));
-        }
-
-        let Some(ssz) = ssz else {
-            tracing::error!(slot, "storage answered a block request without the bytes");
-            return resp.error(500, "block bytes missing");
+        let flags = ReadFlags {
+            execution_optimistic: ctx.node_status.execution_optimistic(),
+            finalized: block.finalized,
         };
-        let ssz = storage.acquire(ssz);
-        let bytes = match ssz.buffer() {
-            Ok((bytes, _)) if SignedBeaconBlockView::check_size(bytes) => bytes,
-            Ok(_) => {
-                tracing::error!(slot, "stored block fits no SignedBeaconBlock layout");
-                return resp.error(500, "stored block is malformed");
-            }
-            Err(e) => {
-                tracing::warn!(?e, slot, "served block overwritten before it was read");
-                return resp.error(503, "block no longer available");
-            }
-        };
-
-        let is_gloas = ctx.spec.is_gloas_at_slot(slot);
         match self {
-            Self::Ssz => {
-                let version = ctx.spec.fork_at_slot(slot).name();
+            Self::Root => resp.json_body(|json| {
+                json.flagged_envelope(flags, |json| json.block_root(&block.root))
+            }),
+            Self::Ssz => with_bytes(resp, &block, storage, |resp, bytes| {
+                let version = ctx.spec.fork_at_slot(block.slot).name();
                 resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], bytes);
-            }
-            Self::Root => unreachable!("answered above"),
-            Self::Header => {
-                let body = SignedBeaconBlockView::body(bytes);
-                let signed = SignedHeader {
-                    root,
-                    canonical,
-                    header: BeaconBlockHeader {
-                        slot,
-                        proposer_index: SignedBeaconBlockView::proposer_index(bytes),
-                        parent_root: *SignedBeaconBlockView::parent_root(bytes),
-                        state_root: *SignedBeaconBlockView::state_root(bytes),
-                        body_root: body_root_at(body, is_gloas),
-                    },
-                    signature: *SignedBeaconBlockView::signature(bytes),
-                };
+            }),
+            Self::Header => with_bytes(resp, &block, storage, |resp, bytes| {
+                let signed =
+                    SignedHeader::read(&block, bytes, ctx.spec.is_gloas_at_slot(block.slot));
                 resp.json_body(|json| {
                     json.flagged_envelope(flags, |json| json.signed_header(&signed))
                 });
-            }
+            }),
+        }
+    }
+}
+
+fn with_bytes(
+    resp: &mut Response<'_>,
+    block: &ServedBlock,
+    storage: &mut TRandomAccess,
+    respond: impl FnOnce(&mut Response<'_>, &[u8]),
+) {
+    let Some(ssz) = block.ssz else {
+        tracing::error!(block.slot, "storage answered a block request without the bytes");
+        return resp.error(500, "block bytes missing");
+    };
+    let ssz = storage.acquire(ssz);
+    match ssz.buffer() {
+        Ok((bytes, _)) if SignedBeaconBlockView::check_size(bytes) => respond(resp, bytes),
+        Ok(_) => {
+            tracing::error!(block.slot, "stored block fits no SignedBeaconBlock layout");
+            resp.error(500, "stored block is malformed");
+        }
+        Err(e) => {
+            tracing::warn!(?e, block.slot, "served block overwritten before it was read");
+            resp.error(503, "block no longer available");
+        }
+    }
+}
+
+impl SignedHeader {
+    fn read(block: &ServedBlock, bytes: &[u8], is_gloas: bool) -> Self {
+        Self {
+            root: block.root,
+            canonical: block.canonical,
+            header: BeaconBlockHeader {
+                slot: block.slot,
+                proposer_index: SignedBeaconBlockView::proposer_index(bytes),
+                parent_root: *SignedBeaconBlockView::parent_root(bytes),
+                state_root: *SignedBeaconBlockView::state_root(bytes),
+                body_root: body_root_at(SignedBeaconBlockView::body(bytes), is_gloas),
+            },
+            signature: *SignedBeaconBlockView::signature(bytes),
         }
     }
 }
