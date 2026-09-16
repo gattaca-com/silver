@@ -5,8 +5,8 @@ use flux::spine::SpineAdapter;
 use silver_common::{
     Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
-    Published, SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer, TRandomAccess,
-    msg_id_valid_snappy,
+    SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
+    TRandomAccess, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -110,12 +110,12 @@ impl GossipHandler {
         }
     }
 
-    /// Publish a locally-obtained, already-validated message on `topic`:
-    /// compress, wrap as protobuf into the outgoing tcache, register with
-    /// dedup + mcache (so gossip copies dedupe and IWANTs can be served).
-    /// Returns `None` when the message was already seen via gossip, or
+    /// Publish an already-validated message that did not arrive over gossip
+    /// on `topic`: compress, wrap as protobuf into the outgoing tcache,
+    /// register with dedup + mcache (so gossip copies dedupe and IWANTs can
+    /// be served). Returns `None` when a gossip copy was already seen, or
     /// pre-Status (no fork digest yet).
-    pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<Published> {
+    pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<SelfBuiltGossip> {
         let (domain, wire) = self.domains.current_wire(topic)?;
         if ssz.len() > topic.max_uncompressed_size() {
             tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
@@ -146,7 +146,7 @@ impl GossipHandler {
             copy_idontwants_to_protobuf_output(&mut self.mcache_publish, std::iter::once(&msg_id))
                 .inspect_err(|e| tracing::error!(?e, ?topic, "publish idontwant write failed"))
                 .ok()?;
-        Some(Published { msg_id, domain, protobuf: read, idontwant })
+        Some(SelfBuiltGossip { msg_id, domain, protobuf: read, idontwant })
     }
 
     /// Inject a locally-originated, not-yet-validated SSZ message at the same

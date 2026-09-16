@@ -28,10 +28,11 @@ pub struct GossipMsgOut {
     pub tcache: TCacheRead,
 }
 
-/// A locally originated message after gossip encoding: the frame for the mesh
-/// and the IDONTWANT naming it.
+/// A gossip message this node built rather than received from the mesh, after
+/// encoding: the frame for the mesh and the IDONTWANT that stops the mesh
+/// sending it back. The payload may be self-built, EL-built or RPC-fetched.
 #[derive(Clone, Copy, Debug)]
-pub struct Published {
+pub struct SelfBuiltGossip {
     pub msg_id: MessageId,
     pub domain: GossipDomain,
     pub protobuf: TCacheRead,

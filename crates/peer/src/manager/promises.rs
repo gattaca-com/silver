@@ -8,7 +8,7 @@ use std::{collections::HashMap, time::Instant};
 use flux_profiler::timed;
 use silver_common::{
     GossipMsgOut, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, P2pSend, PeerControl,
-    PeerId, Published, TCacheRead,
+    PeerId, SelfBuiltGossip, TCacheRead,
 };
 
 use super::PeerManager;
@@ -205,14 +205,14 @@ impl PeerManager {
     pub fn publish_local(
         &mut self,
         topic: GossipTopic,
-        published: Published,
+        built: SelfBuiltGossip,
         emit: &mut impl FnMut(PeerControl),
     ) {
         if !self.current_sync_target().is_following() {
             return;
         }
         let local = LOCAL_GOSSIP_STREAM_ID.peer();
-        let Published { msg_id, domain, protobuf, idontwant } = published;
+        let SelfBuiltGossip { msg_id, domain, protobuf, idontwant } = built;
         self.on_send_gossip(local, msg_id, topic, domain.digest(), protobuf, emit);
         self.fan_out_idontwant(topic, local, idontwant, emit);
     }
