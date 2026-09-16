@@ -1,8 +1,12 @@
 use std::time::{Duration, Instant};
 
-use silver_common::{Wheel, ssz_view::NUMBER_OF_COLUMNS};
+use flux::spine::SpineProducers;
+use silver_common::{
+    DataColumnsEvent, DataKind, IngestionTime, SilverSpineProducers, SyncNeed, Wheel,
+    ssz_view::NUMBER_OF_COLUMNS,
+};
 
-use crate::BlockRoot;
+use crate::{BlockRoot, DataColumnCounters};
 
 #[derive(Clone, Copy)]
 struct Custody(u128);
@@ -64,6 +68,32 @@ impl ColumnTracker {
             custody.becomes_available(before, columns),
             !custody.is_covered_by(before) && custody.is_covered_by(block.validated),
         )
+    }
+
+    /// The only place `Available` and custody completion are announced; both
+    /// fire on their threshold edge, so each lands once per block.
+    pub(crate) fn record_and_notify(
+        &mut self,
+        block_root: BlockRoot,
+        slot: u64,
+        columns: u128,
+        recv_ts: IngestionTime,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let (available, custody_complete) = self.record(block_root, columns);
+        if available {
+            DataColumnCounters::DataColumnsAvailableEmitted.inc();
+            tracing::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
+            producers
+                .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
+        }
+        if custody_complete {
+            tracing::info!(block = hex::encode(block_root), slot, "custody set complete");
+            producers.produce_with_ingestion(
+                SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns },
+                recv_ts,
+            );
+        }
     }
 
     pub(crate) fn becomes_available(&self, root: &BlockRoot, columns: u128) -> bool {

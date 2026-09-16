@@ -1,6 +1,6 @@
 use silver_common::{
     GossipDomain,
-    cell_store::{CellKey, CellOrigin},
+    cell_store::{CellKey, CellOrigin, CellValidationRequest},
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, EXECUTION_PAYLOAD_BID_MIN},
 };
@@ -142,8 +142,7 @@ impl Rig {
         let config = CellStoreConfig::new(self.tile.spec.clone(), columns, Duration::ZERO).unwrap();
         let producer = TCache::producer("", config.cache_capacity());
         let consumer = producer.cache_ref().retained_random_access("").unwrap();
-        self.tile.cell_store = Some(CellStore::new(config.clone(), slot, start).unwrap());
-        self.tile.data_columns_consumer = Some(Box::new(consumer));
+        self.tile.cells = Some(CellHandler::new(config.clone(), consumer, slot, start).unwrap());
         CellAllocator::new(config, producer, slot, start).unwrap()
     }
 
@@ -169,9 +168,10 @@ impl Rig {
         self.inj.consume(|event: CellStoreEvent, _| {
             if let CellStoreEvent::Allocate(request) = event {
                 let set = allocator.allocate(request).unwrap();
-                self.tile.handle_cell_event(
+                self.tile.cells.as_mut().unwrap().handle_event(
                     CellStoreEvent::Allocated { request, set: Some(set) },
                     Instant::now(),
+                    &mut self.tile.kzg_scratch,
                     &mut self.conn.producers,
                 );
             }
@@ -198,12 +198,14 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     let domain = rig.tile.validator.domain_at(SLOT).unwrap();
     rig.follow([0; 32]);
     rig.block(&block);
-    assert!(rig.tile.cell_store.as_ref().unwrap().context(&root).is_none());
+    assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
     rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
     rig.rpc_sidecar(&blob.gloas_sidecar(3, SLOT, &root));
     rig.turn();
     assert!(rig.drain().persisted(root, 3));
-    assert!(rig.tile.cell_store.as_ref().unwrap().availability(&root, 3).unwrap().full.is_none());
+    assert!(
+        rig.tile.cells.as_ref().unwrap().store().availability(&root, 3).unwrap().full.is_none()
+    );
 
     let bad =
         tcache_write(allocator.producer_mut(), &blob.gloas_sidecar_with_proofs(3, SLOT, &root, 7));
@@ -212,7 +214,9 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     let out = rig.drain();
     assert!(out.receipts.is_empty());
     assert!(out.publications.is_empty());
-    assert!(rig.tile.cell_store.as_ref().unwrap().availability(&root, 3).unwrap().full.is_none());
+    assert!(
+        rig.tile.cells.as_ref().unwrap().store().availability(&root, 3).unwrap().full.is_none()
+    );
 
     let good = tcache_write(allocator.producer_mut(), &blob.gloas_sidecar(3, SLOT, &root));
     rig.cached_gossip(good, 3, domain);
@@ -220,7 +224,7 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     let out = rig.drain();
     assert_eq!(out.available, 0);
     assert!(out.receipts.is_empty());
-    let backing = rig.tile.cell_store.as_ref().unwrap().availability(&root, 3).unwrap();
+    let backing = rig.tile.cells.as_ref().unwrap().store().availability(&root, 3).unwrap();
     assert_eq!(backing.available, 1);
     assert_eq!(backing.full.unwrap().0.seq(), good.seq());
     assert!(backing.assembly.is_none(), "full backing does not wait for allocation");
@@ -244,7 +248,7 @@ fn fulu_unresolved_proposer_cannot_authorize_serving() {
         let read = tcache_write(allocator.producer_mut(), &bytes);
         rig.cached_gossip(read, 3, domain);
         rig.turn();
-        assert_eq!(rig.tile.cell_store.as_ref().unwrap().context(&root).is_some(), eligible);
+        assert_eq!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_some(), eligible);
         assert_eq!(!rig.drain().publications.is_empty(), eligible);
     }
 }
@@ -263,19 +267,19 @@ fn gloas_context_needs_approval_in_either_arrival_order_and_is_revocable() {
         } else {
             rig.block(&block);
         }
-        assert!(rig.tile.cell_store.as_ref().unwrap().context(&root).is_none());
+        assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
         if approval_first {
             rig.block(&block);
         } else {
             rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
         }
-        assert!(rig.tile.cell_store.as_ref().unwrap().context(&root).is_some());
+        assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_some());
         rig.allocate_cells(&mut allocator);
         rig.tile.handle_beacon_state_event(
             BeaconStateEvent::BlockRejected { block_root: root, source: BlockSource::Gossip },
             &mut rig.conn.producers,
         );
-        assert!(rig.tile.cell_store.as_ref().unwrap().context(&root).is_none());
+        assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
         assert!(rig.tile.validator.gloas_commitments(&root).is_none());
         rig.inj.consume(|event: CellStoreEvent, _| {
             if let CellStoreEvent::RejectedContext { block_root } = event {
@@ -344,15 +348,23 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
             let request = CellValidationRequest {
                 pending,
                 domain,
-                deadline: rig.tile.cell_store.as_ref().unwrap().slot_end(),
+                deadline: rig.tile.cells.as_ref().unwrap().store().slot_end(),
                 origin: CellOrigin::El { request_id: 0 },
             };
             assert!(matches!(
-                rig.tile.validate_cell(request, Instant::now()),
+                rig.tile.cells.as_mut().unwrap().validate_cell(
+                    request,
+                    Instant::now(),
+                    &mut rig.tile.kzg_scratch
+                ),
                 CellValidationOutcome::Accepted
             ));
         }
-        rig.tile.flush_cell_updates(&mut rig.conn.producers);
+        rig.tile
+            .cells
+            .as_mut()
+            .unwrap()
+            .flush_updates(&mut rig.tile.tracker, &mut rig.conn.producers);
         let out = rig.drain();
         assert_eq!(out.available, 1);
         assert_eq!(out.custody_complete, 1);
@@ -372,8 +384,7 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
                 panic!("expected an assembled column")
             };
             assert_eq!(published_domain, Some(domain));
-            let read =
-                rig.tile.data_columns_consumer.as_mut().unwrap().acquire_strict(ssz).unwrap();
+            let read = rig.tile.cells.as_mut().unwrap().acquire(ssz).unwrap();
             let expected = if format == ForkName::Fulu {
                 blob.fulu_sidecar(column_index, &block)
             } else {
@@ -381,7 +392,11 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
             };
             assert_eq!(read.buffer().unwrap().0, expected);
         }
-        rig.tile.flush_cell_updates(&mut rig.conn.producers);
+        rig.tile
+            .cells
+            .as_mut()
+            .unwrap()
+            .flush_updates(&mut rig.tile.tracker, &mut rig.conn.producers);
         let out = rig.drain();
         assert_eq!(out.available, 0);
         assert_eq!(out.custody_complete, 0);
