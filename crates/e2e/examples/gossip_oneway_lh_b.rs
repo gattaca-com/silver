@@ -191,6 +191,7 @@ fn network_thread(mut net: EchoNetworkHalf, compression_done: Arc<AtomicBool>) {
                     p2p,
                     p2p_connection,
                     topic: TOPIC,
+                    digest: [0; 4],
                 });
                 subscribed = true;
             }

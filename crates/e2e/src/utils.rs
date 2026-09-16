@@ -175,7 +175,7 @@ impl PmBsHarness {
             dummy_gossip_c,
             TCache::producer("g ssz", 32),
             TCache::producer("g proto", 32),
-            String::new(),
+            None,
         )
         .unwrap();
         let cluster_in = TCache::producer("test_cluster_in", 1 << 12);
@@ -192,6 +192,7 @@ impl PmBsHarness {
             cluster_in_consumer,
             None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),
+            Arc::new(SpecConfig::mainnet()),
         )
         .expect("controller");
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);

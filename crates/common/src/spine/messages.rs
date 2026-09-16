@@ -8,8 +8,8 @@ use flux::timing::Nanos;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 
 use crate::{
-    CacheFrameRef, DataKind, Enr, GossipTopic, Identify, MessageId, Origin, P2pStreamId, PeerId,
-    StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
+    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
+    P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
     column_util::columns_of,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -120,6 +120,8 @@ pub enum LocalAttestationFailure {
 pub struct NewGossipMsg {
     pub stream_id: P2pStreamId,
     pub topic: GossipTopic,
+    /// Originating fork domain: fixed at receipt, never rewritten.
+    pub domain: GossipDomain,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -409,18 +411,22 @@ pub enum PeerEvent {
     P2pGossipTopicSubscribe {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicUnsubscribe {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicGraft {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipTopicPrune {
         p2p_peer: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         backoff_seconds: Option<u64>,
     },
     P2pGossipWant {
@@ -499,6 +505,8 @@ pub enum PeerEvent {
     SendGossip {
         originator_stream_id: P2pStreamId,
         topic: GossipTopic,
+        /// Originating fork domain, carried from `NewGossipMsg`.
+        domain: GossipDomain,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
@@ -642,6 +650,14 @@ impl SyncUpdate {
         local_finalized_slot.max(settled_by_target)
     }
 
+    pub fn target_slot(self) -> Option<u64> {
+        match self {
+            Self::SyncingFinalized { target_epoch, .. } => Some(target_epoch * SLOTS_PER_EPOCH),
+            Self::SyncingHead { head_slot, .. } => Some(head_slot),
+            Self::Following => None,
+        }
+    }
+
     pub fn end_slot(self) -> u64 {
         const EPOCHS_TO_FINALIZE: u64 = 2;
         match self {
@@ -768,21 +784,26 @@ pub enum PeerControl {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        /// Fork domain digest this subscription targets.
+        digest: [u8; 4],
     },
     P2pGossipUnsubscribe {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipGraft {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
     },
     P2pGossipPrune {
         p2p: PeerId,
         p2p_connection: usize,
         topic: GossipTopic,
+        digest: [u8; 4],
         /// How long we will refuse a re-GRAFT on this topic, advertised so
         /// the remote's own default doesn't diverge from what we enforce.
         /// `None` on unsubscribe, where we record no backoff.
@@ -869,7 +890,7 @@ pub enum ColumnSource {
 
 /// A zero `state_root` marks all three roots unavailable. This can occur
 /// before seeding or when checkpoint history has overwritten a dependent
-/// root. Consumers tracking head changes must ignore incomplete bundles.
+/// root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct HeadRoots {
@@ -886,6 +907,14 @@ impl HeadRoots {
     pub fn is_complete(&self) -> bool {
         self.state_root != B256::default()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HeadChange {
+    None,
+    Payload,
+    Head,
 }
 
 /// Fork choice's selection of the block's own payload, independent of its
@@ -920,6 +949,8 @@ pub enum BeaconStateEvent {
         enr_fork_id: [u8; 16],
         head_roots: HeadRoots,
         head_payload: PayloadResolution,
+        head_change: HeadChange,
+        epoch_transition: bool,
     },
     EnvelopeAvailable {
         ssz: TCacheRead,

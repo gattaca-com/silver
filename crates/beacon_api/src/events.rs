@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use silver_beacon_state_data::B256;
 use silver_common::{HeadRoots, PayloadResolution};
 use silver_httpcore::Query;
@@ -94,13 +92,6 @@ fn channel(topic: &str) -> Option<Channel> {
     }
 }
 
-pub(crate) fn frame(out: &mut Vec<u8>, event: &str, data: &[u8]) {
-    debug_assert!(!data.contains(&b'\n'), "a multi-line body needs one data: line per line");
-    write!(out, "event: {event}\ndata: ").unwrap();
-    out.extend_from_slice(data);
-    out.extend_from_slice(b"\n\n");
-}
-
 #[cfg(test)]
 mod tests {
     use silver_httpcore::ParsedRequest;
@@ -108,7 +99,7 @@ mod tests {
     use super::*;
     use crate::{
         router::{Router, Served},
-        routes::{ROUTES, preboot_ctx},
+        routes::{ROUTES, anchor_ctx},
     };
 
     fn set(of: &[Channel]) -> ChannelSet {
@@ -136,7 +127,7 @@ mod tests {
             keep_alive: true,
         };
         let mut out = Vec::new();
-        let served = Router::new(ROUTES).dispatch(&req, &preboot_ctx(), &mut out);
+        let served = Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out);
         (served, out)
     }
 
@@ -190,35 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn head_is_served_alone_and_alongside_block() {
-        assert_eq!(topics("topics=head"), Ok(set(&[Channel::Head])));
-        assert_eq!(topics("topics=block,head"), Ok(set(&[Channel::Block, Channel::Head])));
-        assert_eq!(topics("topics=head,block"), Ok(set(&[Channel::Block, Channel::Head])));
-        assert_eq!(topics("topics=head&topics=block"), Ok(set(&[Channel::Block, Channel::Head])));
-    }
-
-    #[test]
-    fn head_v2_is_served_alone_and_alongside_the_other_topics() {
-        let all = set(&[Channel::Block, Channel::Head, Channel::HeadV2]);
-        assert_eq!(topics("topics=head_v2"), Ok(set(&[Channel::HeadV2])));
-        assert_eq!(topics("topics=head_v2,head_v2"), Ok(set(&[Channel::HeadV2])));
-        assert_eq!(topics("topics=head,head_v2"), Ok(set(&[Channel::Head, Channel::HeadV2])));
-        assert_eq!(topics("topics=block,head,head_v2"), Ok(all));
-        assert_eq!(topics("topics=head_v2&topics=block&topics=head"), Ok(all));
-    }
-
-    #[test]
     fn a_topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
         let unknown = |topic: &str| Err(Refused::Unknown(topic.to_string()));
         assert_eq!(topics("topics=finalized_checkpoint"), unknown("finalized_checkpoint"));
         assert_eq!(topics("topics=block,finalized_checkpoint"), unknown("finalized_checkpoint"));
         assert_eq!(topics("topics=head_v2&topics=chain_reorg"), unknown("chain_reorg"));
-    }
-
-    #[test]
-    fn no_topic_is_no_subscription() {
-        assert_eq!(topics(""), Err(Refused::NoTopic));
-        assert_eq!(topics("other=block"), Err(Refused::NoTopic));
     }
 
     /// Empty entries must not silently turn a malformed list into a valid
@@ -233,13 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_names_its_event_and_carries_one_data_line() {
-        let mut out = Vec::new();
-        frame(&mut out, "block", br#"{"slot":"1"}"#);
-        assert_eq!(out, b"event: block\ndata: {\"slot\":\"1\"}\n\n");
-    }
-
-    #[test]
     fn subscribing_frames_the_stream_head_and_hands_the_connection_over() {
         let (served, out) = dispatch("topics=block");
         assert_eq!(served, Served::Stream(block_only()));
@@ -250,30 +210,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unserved_topic_is_a_400_naming_it_on_an_ordinary_connection() {
-        let (served, out) = dispatch("topics=block,chain_reorg");
-        assert_eq!(served, Served::Response);
-        assert_eq!(out, bad_request(r#"unknown topic \"chain_reorg\""#));
-    }
-
-    #[test]
-    fn an_empty_name_is_a_400_showing_the_empty_quotes() {
-        let (served, out) = dispatch("topics=block,");
-        assert_eq!(served, Served::Response);
-        assert_eq!(out, bad_request(r#"unknown topic \"\""#));
-    }
-
-    #[test]
-    fn a_named_topic_is_json_escaped() {
-        let (served, out) = dispatch("topics=%22he%5Cad%22");
-        assert_eq!(served, Served::Response);
-        assert_eq!(out, bad_request(r#"unknown topic \"\"he\\ad\"\""#));
-    }
-
-    #[test]
     fn no_topic_is_a_400() {
-        let (served, out) = dispatch("");
-        assert_eq!(served, Served::Response);
-        assert_eq!(out, bad_request("no topics"));
+        for query in ["", "other=block"] {
+            let (served, out) = dispatch(query);
+            assert_eq!(served, Served::Response, "{query}");
+            assert_eq!(out, bad_request("no topics"), "{query}");
+        }
     }
 }

@@ -505,7 +505,7 @@ mod tests {
                 incoming.cache_ref().random_access("standalone_gossip", true).unwrap(),
                 TCache::producer("standalone_gossip_ssz", 1 << 12),
                 TCache::producer("standalone_gossip_protobuf", 1 << 12),
-                "01020304".to_owned(),
+                Some(silver_common::GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
             )
             .unwrap();
             Self { handler: handler(now), gossip, adapter, _spine: spine, _base: base }
@@ -575,6 +575,7 @@ mod tests {
             &PeerEvent::SendGossip {
                 originator_stream_id: message.stream_id,
                 topic: message.topic,
+                domain: message.domain,
                 msg_hash: message.msg_hash,
                 recv_ts: message.recv_ts,
                 protobuf: message.protobuf,

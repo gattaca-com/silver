@@ -1382,7 +1382,7 @@ mod tests {
 
         mgr.tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| cap.0.push(event));
 
-        let meshed = mgr.mesh[&topic][0];
+        let meshed = mgr.test_mesh(topic)[0];
         let goodbyes: Vec<_> =
             cap.0
                 .iter()
@@ -1485,7 +1485,7 @@ mod tests {
         for conn in 1..=10usize {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
         }
-        mgr.mesh.entry(covered).or_default().extend([1, 2]);
+        mgr.test_mesh_extend(covered, [1, 2]);
 
         mgr.manage_mesh(now, &mut |c| cap.0.push(c));
         assert_eq!(mgr.deficit_attnets[0], 1 << 5, "only the unfilled subnet is a deficit");

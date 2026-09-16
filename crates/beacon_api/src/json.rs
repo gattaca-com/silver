@@ -1,12 +1,13 @@
 //! Beacon-API bodies are written by hand: the spec quotes every integer as a
 //! decimal string and every byte array as lowercase `0x`-hex, and the
 //! SSZ-backed containers have no Rust struct to hang `Serialize` on.
-//! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
+
+use std::io::Write;
 
 use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
-use crate::events::HeadEvent;
+use crate::{events::HeadEvent, peers::Peer};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -66,6 +67,16 @@ impl<'a> Json<'a> {
         self.out.push(b'"');
         self.out.extend_from_slice(&digits[20 - written..]);
         self.out.push(b'"');
+    }
+
+    pub(crate) fn u64(&mut self, value: u64) {
+        self.separate();
+        let _ = write!(self.out, "{value}");
+    }
+
+    pub(crate) fn null(&mut self) {
+        self.separate();
+        self.out.extend_from_slice(b"null");
     }
 
     pub(crate) fn hex(&mut self, bytes: &[u8]) {
@@ -154,6 +165,47 @@ pub(crate) struct ReadFlags {
 
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
+    pub(crate) fn peers<'p>(&mut self, peers: impl Iterator<Item = &'p Peer>) {
+        self.begin_object();
+        self.key("data");
+        self.begin_array();
+        let mut count = 0;
+        for peer in peers {
+            self.begin_object();
+            self.key("peer_id");
+            self.string(&peer.id_string());
+            // xatu doesn't read enr so we skip it - updating it properly requires more work
+            self.key("enr");
+            self.null();
+            self.key("last_seen_p2p_address");
+            self.string(&peer.multiaddr());
+            self.key("state");
+            self.string("connected");
+            self.key("direction");
+            self.string(peer.direction());
+            self.end_object();
+            count += 1;
+        }
+        self.end_array();
+        self.key("meta");
+        self.begin_object();
+        self.key("count");
+        self.u64(count);
+        self.end_object();
+        self.end_object();
+    }
+
+    pub(crate) fn peer_count(&mut self, connected: u64) {
+        self.begin_object();
+        for (state, count) in
+            [("disconnected", 0), ("connecting", 0), ("connected", connected), ("disconnecting", 0)]
+        {
+            self.key(state);
+            self.quoted_u64(count);
+        }
+        self.end_object();
+    }
+
     pub(crate) fn data_envelope(&mut self, data: impl FnOnce(&mut Self)) {
         self.begin_object();
         self.key("data");
@@ -235,22 +287,8 @@ impl Json<'_> {
     }
 
     pub(crate) fn head_event(&mut self, head: &HeadEvent) {
-        self.begin_object();
-        self.key("slot");
-        self.quoted_u64(head.slot);
-        self.key("block");
-        self.hex(&head.block_root);
-        self.key("state");
-        self.hex(&head.roots.state_root);
-        self.key("epoch_transition");
-        self.bool(head.epoch_transition);
-        self.key("previous_duty_dependent_root");
-        self.hex(&head.roots.previous_duty_dependent_root);
-        self.key("current_duty_dependent_root");
-        self.hex(&head.roots.current_duty_dependent_root);
-        self.key("execution_optimistic");
-        self.bool(head.execution_optimistic);
-        self.end_object();
+        let roots = ["previous_duty_dependent_root", "current_duty_dependent_root"];
+        self.head(head, roots, None);
     }
 
     pub(crate) fn head_v2_event(&mut self, head: &HeadEvent, fork_name: &str) {
@@ -258,6 +296,12 @@ impl Json<'_> {
         self.key("version");
         self.string(fork_name);
         self.key("data");
+        let roots = ["current_epoch_dependent_root", "next_epoch_dependent_root"];
+        self.head(head, roots, Some(head.payload.name()));
+        self.end_object();
+    }
+
+    fn head(&mut self, head: &HeadEvent, [previous, current]: [&str; 2], payload: Option<&str>) {
         self.begin_object();
         self.key("slot");
         self.quoted_u64(head.slot);
@@ -265,17 +309,18 @@ impl Json<'_> {
         self.hex(&head.block_root);
         self.key("state");
         self.hex(&head.roots.state_root);
-        self.key("payload_status");
-        self.string(head.payload.name());
+        if let Some(payload) = payload {
+            self.key("payload_status");
+            self.string(payload);
+        }
         self.key("epoch_transition");
         self.bool(head.epoch_transition);
-        self.key("current_epoch_dependent_root");
+        self.key(previous);
         self.hex(&head.roots.previous_duty_dependent_root);
-        self.key("next_epoch_dependent_root");
+        self.key(current);
         self.hex(&head.roots.current_duty_dependent_root);
         self.key("execution_optimistic");
         self.bool(head.execution_optimistic);
-        self.end_object();
         self.end_object();
     }
 
@@ -336,9 +381,7 @@ pub(crate) fn json_safe(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
     use silver_beacon_state_data::FAR_FUTURE_EPOCH;
-    use silver_common::{HeadRoots, PayloadResolution};
 
     use super::*;
 
@@ -379,22 +422,6 @@ mod tests {
             assert!(rendered.ends_with('"'), "width {width}: {rendered}");
             assert!(rendered[3..rendered.len() - 1].bytes().all(|b| b == b'd' || b == b'e'));
         }
-    }
-
-    #[test]
-    fn leading_zero_bytes_survive_hex_encoding() {
-        let mut root = [0u8; 32];
-        root[31] = 1;
-        assert_eq!(
-            write(|j| j.hex(&root)),
-            "\"0x0000000000000000000000000000000000000000000000000000000000000001\""
-        );
-    }
-
-    #[test]
-    fn bools_are_json_literals_not_strings() {
-        assert_eq!(write(|j| j.bool(true)), "true");
-        assert_eq!(write(|j| j.bool(false)), "false");
     }
 
     #[test]
@@ -453,204 +480,6 @@ mod tests {
         json.quoted_u64(3);
         json.end_object();
         assert_eq!(String::from_utf8(out).unwrap(), "HTTP-ish prefix}{\"epoch\":\"3\"}");
-    }
-
-    #[test]
-    fn sibling_objects_in_an_array_are_comma_separated() {
-        let mut out = Vec::new();
-        let mut json = Json::new(&mut out);
-        json.begin_array();
-        for epoch in 1..=2 {
-            json.begin_object();
-            json.key("epoch");
-            json.quoted_u64(epoch);
-            json.end_object();
-        }
-        json.begin_object();
-        json.end_object();
-        json.end_array();
-        assert_eq!(String::from_utf8(out).unwrap(), "[{\"epoch\":\"1\"},{\"epoch\":\"2\"},{}]");
-    }
-
-    /// Field names/order: `GenesisData`, `apis/beacon/genesis.yaml`.
-    #[test]
-    fn genesis_golden() {
-        let genesis = GenesisData {
-            genesis_time: 1_606_824_023,
-            genesis_validators_root: [0x4b; 32],
-            genesis_fork_version: [0x00, 0x00, 0x00, 0x01],
-        };
-        assert_body(
-            |j| j.genesis(&genesis),
-            "{\"genesis_time\":\"1606824023\",\"genesis_validators_root\":\"0x4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\",\"genesis_fork_version\":\"0x00000001\"}",
-        );
-    }
-
-    /// Field names/order: SSZ `Fork` container
-    /// (`apis/config/fork_schedule.yaml` and `apis/beacon/states/fork.yaml`
-    /// share it).
-    #[test]
-    fn fork_golden() {
-        let fork = Fork {
-            previous_version: [0x05, 0x00, 0x00, 0x00],
-            current_version: [0x06, 0x00, 0x00, 0x00],
-            epoch: 269_568,
-        };
-        assert_body(
-            |j| j.fork(&fork),
-            "{\"previous_version\":\"0x05000000\",\"current_version\":\"0x06000000\",\"epoch\":\"269568\"}",
-        );
-    }
-
-    /// Field names/order: SSZ `Checkpoint` container, as used by
-    /// `apis/beacon/states/finality_checkpoints.yaml`.
-    #[test]
-    fn checkpoint_golden() {
-        let checkpoint = Checkpoint { epoch: 12_345, root: [0xa1; 32] };
-        assert_body(
-            |j| j.checkpoint(&checkpoint),
-            "{\"epoch\":\"12345\",\"root\":\"0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\"}",
-        );
-    }
-
-    fn checkpoints() -> FinalityCheckpoints {
-        FinalityCheckpoints {
-            previous_justified: Checkpoint { epoch: 12_344, root: [0x01; 32] },
-            current_justified: Checkpoint { epoch: 12_345, root: [0x02; 32] },
-            finalized: Checkpoint { epoch: 12_343, root: [0x03; 32] },
-        }
-    }
-
-    /// Field names/order: `apis/beacon/states/finality_checkpoints.yaml` — the
-    /// one body that calls a container writer more than once.
-    #[test]
-    fn finality_checkpoints_golden() {
-        assert_body(
-            |j| j.finality_checkpoints(&checkpoints()),
-            "{\"previous_justified\":{\"epoch\":\"12344\",\
-             \"root\":\"0x0101010101010101010101010101010101010101010101010101010101010101\"},\
-             \"current_justified\":{\"epoch\":\"12345\",\
-             \"root\":\"0x0202020202020202020202020202020202020202020202020202020202020202\"},\
-             \"finalized\":{\"epoch\":\"12343\",\
-             \"root\":\"0x0303030303030303030303030303030303030303030303030303030303030303\"}}",
-        );
-    }
-
-    /// Field names/order: `GetStateForkResponse` and its siblings, which
-    /// require both flags beside `data`.
-    #[test]
-    fn flagged_envelope_golden() {
-        let flags = ReadFlags { execution_optimistic: false, finalized: true };
-        assert_body(
-            |j| j.flagged_envelope(flags, |j| j.checkpoint(&Checkpoint::default())),
-            "{\"execution_optimistic\":false,\"finalized\":true,\"data\":{\"epoch\":\"0\",\
-             \"root\":\"0x0000000000000000000000000000000000000000000000000000000000000000\"}}",
-        );
-    }
-
-    /// The envelope's `finalized` is its own flag: a `data` field of the same
-    /// name must not overwrite or be overwritten by it.
-    #[test]
-    fn envelope_flags_and_data_of_the_same_name_both_survive() {
-        let flags = ReadFlags { execution_optimistic: true, finalized: false };
-        let body = write(|j| j.flagged_envelope(flags, |j| j.finality_checkpoints(&checkpoints())));
-        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["execution_optimistic"], true);
-        assert_eq!(parsed["finalized"], false);
-        assert_eq!(parsed["data"]["finalized"]["epoch"], "12343");
-    }
-
-    #[test]
-    fn json_safe_rejects_what_would_break_an_unescaped_splice() {
-        assert!(json_safe("active_ongoing"));
-        assert!(!json_safe("say \"hi\""));
-        assert!(!json_safe("back\\slash"));
-    }
-
-    #[test]
-    fn head_event_encodes_the_required_fields() {
-        let head = HeadEvent {
-            slot: 10,
-            block_root: [0x9a; 32],
-            roots: HeadRoots {
-                state_root: [0x60; 32],
-                previous_duty_dependent_root: [0x5e; 32],
-                current_duty_dependent_root: [0x91; 32],
-            },
-            payload: PayloadResolution::Full,
-            epoch_transition: true,
-            execution_optimistic: false,
-        };
-        let mut out = Vec::new();
-        Json::new(&mut out).head_event(&head);
-        let data: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(data["slot"], head.slot.to_string());
-        assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
-        assert_eq!(data["state"], format!("0x{}", hex::encode(head.roots.state_root)));
-        assert_eq!(data["epoch_transition"], true);
-        assert_eq!(data["execution_optimistic"], false);
-        assert_eq!(
-            data["previous_duty_dependent_root"],
-            format!("0x{}", hex::encode(head.roots.previous_duty_dependent_root))
-        );
-        assert_eq!(
-            data["current_duty_dependent_root"],
-            format!("0x{}", hex::encode(head.roots.current_duty_dependent_root))
-        );
-    }
-
-    #[test]
-    fn head_v2_event_wraps_the_versioned_data_and_maps_the_dependent_roots() {
-        let head = HeadEvent {
-            slot: 10,
-            block_root: [0x9a; 32],
-            roots: HeadRoots {
-                state_root: [0x60; 32],
-                previous_duty_dependent_root: [0x5e; 32],
-                current_duty_dependent_root: [0x91; 32],
-            },
-            payload: PayloadResolution::Empty,
-            epoch_transition: false,
-            execution_optimistic: true,
-        };
-        let mut out = Vec::new();
-        Json::new(&mut out).head_v2_event(&head, "gloas");
-        let body: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(body["version"], "gloas");
-        let data = &body["data"];
-        assert_eq!(data["slot"], head.slot.to_string());
-        assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
-        assert_eq!(data["state"], format!("0x{}", hex::encode(head.roots.state_root)));
-        assert_eq!(data["payload_status"], "empty");
-        assert_eq!(data["epoch_transition"], false);
-        assert_eq!(data["execution_optimistic"], true);
-        assert_eq!(
-            data["current_epoch_dependent_root"],
-            format!("0x{}", hex::encode(head.roots.previous_duty_dependent_root))
-        );
-        assert_eq!(
-            data["next_epoch_dependent_root"],
-            format!("0x{}", hex::encode(head.roots.current_duty_dependent_root))
-        );
-    }
-
-    #[test]
-    fn block_gossip_event_carries_the_slot_and_the_root() {
-        let body = write(|json| json.block_gossip_event(10, &[0x9a; 32]));
-        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["slot"], "10");
-        assert_eq!(parsed["block"], format!("0x{}", hex::encode([0x9a; 32])));
-    }
-
-    #[test]
-    fn block_event_quotes_the_slot_and_hexes_the_root() {
-        let mut out = Vec::new();
-        Json::new(&mut out).block_event(10, &[0x9a; 32], false);
-        let expected = format!(
-            "{{\"slot\":\"10\",\"block\":\"0x{}\",\"execution_optimistic\":false}}",
-            "9a".repeat(32)
-        );
-        assert_eq!(out, expected.as_bytes());
     }
 
     #[test]

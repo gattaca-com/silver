@@ -4783,6 +4783,7 @@ version = "0.0.1"
 dependencies = [
  "hex",
  "mio",
+ "rustc-hash",
  "serde",
  "serde_json",
  "silver_beacon_state_data",

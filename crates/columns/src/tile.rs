@@ -435,6 +435,7 @@ impl DataColumnsTile {
         tracing::debug!(custody_group, "data column sidecar over gossip");
         let relay = RelayMeta::Gossip {
             topic: gossip.topic,
+            domain: gossip.domain,
             msg_hash: gossip.msg_hash,
             recv_ts: gossip.recv_ts,
             protobuf: gossip.protobuf,
@@ -531,10 +532,11 @@ impl DataColumnsTile {
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
         match mem::replace(&mut p.relay, RelayMeta::None) {
-            RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
+            RelayMeta::Gossip { topic, domain, msg_hash, recv_ts, protobuf } => {
                 producers.produce(PeerEvent::SendGossip {
                     originator_stream_id: p.stream_id,
                     topic,
+                    domain,
                     msg_hash,
                     recv_ts,
                     protobuf,
@@ -788,8 +790,8 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadRoots, MessageId, Nanos,
-        P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots, MessageId,
+        Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheProducer, TCacheRead,
         column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
@@ -920,6 +922,7 @@ mod tests {
             let gossip = NewGossipMsg {
                 stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
                 topic: GossipTopic::DataColumnSidecar(index),
+                domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
                 msg_hash: MessageId { id },
                 recv_ts,
                 ssz,
@@ -1218,6 +1221,8 @@ mod tests {
             enr_fork_id: [0u8; 16],
             head_roots: HeadRoots::default(),
             head_payload: PayloadResolution::Full,
+            head_change: HeadChange::None,
+            epoch_transition: false,
         }
     }
 

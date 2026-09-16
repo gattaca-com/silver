@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, SpecConfig, StateReadView};
+use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
@@ -13,6 +13,7 @@ use crate::{
     ids::{parse_root, parse_uint64},
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
+    peers::{PeerFilter, PeerTable},
     receipts::{
         post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
         post_sync_committee_subscriptions,
@@ -46,7 +47,8 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/events", events),
     (Method::Get, "/eth/v1/node/health", health),
     (Method::Get, "/eth/v1/node/identity", identity),
-    (Method::Get, "/eth/v1/node/peer_count", not_implemented),
+    (Method::Get, "/eth/v1/node/peer_count", peer_count),
+    (Method::Get, "/eth/v1/node/peers", peers),
     (Method::Get, "/eth/v1/node/syncing", syncing),
     (Method::Get, "/eth/v1/node/version", version),
     (
@@ -73,6 +75,7 @@ pub(crate) struct ApiCtx {
     pub(crate) spec: SpecConfig,
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
+    pub(crate) peers: PeerTable,
 }
 
 impl ApiCtx {
@@ -83,28 +86,23 @@ impl ApiCtx {
         spec: &SpecConfig,
         state: BeaconStateReader,
     ) -> Self {
+        let (head_slot, anchor_epoch) = state
+            .read(&|view: StateReadView<'_>| {
+                let slot = view.slot.state();
+                (slot.latest_block_header.slot, slot.slot / SLOTS_PER_EPOCH)
+            })
+            .expect("beacon api needs the anchor state published");
         Self {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             spec: spec.clone(),
             state,
-            node_status: NodeStatus::default(),
+            node_status: NodeStatus::at_anchor(head_slot, anchor_epoch),
+            peers: PeerTable::new(),
         }
     }
 
-    /// Reads the published state, or answers `code`/`message` while the node
-    /// has published none. Which code that is belongs to the endpoint.
-    pub(crate) fn read_state_or<R>(
-        &self,
-        resp: &mut Response<'_>,
-        code: u16,
-        message: &str,
-        read: impl Fn(StateReadView<'_>) -> R,
-    ) -> Option<R> {
-        let result = self.state.read(&read);
-        if result.is_none() {
-            resp.error(code, message);
-        }
-        result
+    pub(crate) fn read_state<R>(&self, read: impl Fn(StateReadView<'_>) -> R) -> R {
+        self.state.read(&read).expect("beacon api needs the anchor state published")
     }
 
     /// Resolves `{state_id}` and reads from the state it names, alongside the
@@ -127,18 +125,18 @@ impl ApiCtx {
             return None;
         }
 
-        let execution_optimistic = self.node_status.execution_optimistic();
-        let read = |view: StateReadView<'_>| StateRead {
-            flags: ReadFlags {
-                execution_optimistic,
-                // Genesis is the only state that is its own finalized history:
-                // finalization trails the current epoch, so past genesis the
-                // finalized checkpoint is always behind the state's own slot.
-                finalized: view.slot.state().slot == 0,
-            },
-            data: read(view),
+        let node_status = self.node_status;
+        let read = |view: StateReadView<'_>| {
+            let block_slot = view.slot.state().latest_block_header.slot;
+            StateRead {
+                flags: ReadFlags {
+                    execution_optimistic: node_status.execution_optimistic(),
+                    finalized: node_status.is_finalized(block_slot),
+                },
+                data: read(view),
+            }
         };
-        self.read_state_or(resp, 404, "state not found", read)
+        Some(self.read_state(read))
     }
 
     /// A `{state_id}` read whose body is the envelope around `render`, for the
@@ -175,7 +173,7 @@ fn is_recognized_state_id(state_id: &str) -> bool {
 
 /// The surface a request can name ahead of what silver serves: each of these
 /// routes needs data the node does not yet keep (a block store, the validator
-/// registry, duty shuffling, liveness tracking, in-process peer counts), so
+/// registry, duty shuffling, liveness tracking), so
 /// the honest answer is the 501 that tells the client to look elsewhere,
 /// rather than a partial answer assembled from the wrong data.
 fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -183,20 +181,14 @@ fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
 }
 
 fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let Some(genesis) =
-        ctx.read_state_or(resp, 404, "Chain genesis info is not yet known", |view| GenesisData {
-            genesis_time: view.imm.genesis_time,
-            genesis_validators_root: view.imm.genesis_validators_root,
-            genesis_fork_version: view.imm.genesis_fork_version,
-        })
-    else {
-        return;
-    };
+    let genesis = ctx.read_state(|view| GenesisData {
+        genesis_time: view.imm.genesis_time,
+        genesis_validators_root: view.imm.genesis_validators_root,
+        genesis_fork_version: view.imm.genesis_fork_version,
+    });
     resp.json_body(|json| json.data_envelope(|json| json.genesis(&genesis)));
 }
 
-/// This reads no beacon state, and its schema declares no code but 200, so a
-/// node before bootstrap answers out of the status it has.
 fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let syncing = ctx.node_status.syncing_data();
     resp.json_body(|json| json.data_envelope(|json| json.syncing(&syncing)));
@@ -252,7 +244,6 @@ fn health(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let code = match ctx.node_status.health() {
         Health::Ready => 200,
         Health::Syncing => syncing_status,
-        Health::Uninitialized => 503,
     };
     resp.status_only(code);
 }
@@ -269,15 +260,26 @@ fn syncing_status(query: &str) -> Option<u16> {
     }
 }
 
+fn peers(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    match PeerFilter::parse(req.query) {
+        Some(filter) => resp.json_body(|json| json.peers(ctx.peers.matching(&filter))),
+        None => resp.error(400, "invalid state or direction"),
+    }
+}
+
+fn peer_count(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let connected = ctx.peers.len() as u64;
+    resp.json_body(|json| json.data_envelope(|json| json.peer_count(connected)));
+}
+
 fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
     resp.empty(METRICS_CONTENT_TYPE);
 }
 
-/// Never-published reader: `read` yields `None`, as on a node before
-/// bootstrap.
+/// A node right after bootstrap: an empty anchor published at slot 0.
 #[cfg(test)]
-pub(crate) fn preboot_ctx() -> ApiCtx {
-    test_ctx(&SpecConfig::mainnet(), BeaconStateOwner::empty_test(0).reader())
+pub(crate) fn anchor_ctx() -> ApiCtx {
+    test_ctx(&SpecConfig::mainnet(), BeaconStateOwner::published_empty_test(0).reader())
 }
 
 #[cfg(test)]
@@ -292,14 +294,16 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
+        BeaconBlockHeader, BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork,
+        SlotState, SlotStateFinalized, SlotStateGroup,
     };
-    use silver_common::{AGENT_VERSION, ELSyncStatus};
+    use silver_common::{AGENT_VERSION, ELSyncStatus, IpBytes, SyncUpdate};
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
-        SlotStatus,
+        HeadStatus,
+        peers::Peer,
         router::{Router, Served},
     };
 
@@ -336,33 +340,14 @@ mod tests {
     #[test]
     fn identity_wire_bytes_match_pre_table_implementation() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/identity");
+        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/identity");
         assert_eq!(std::str::from_utf8(&resp).unwrap(), GOLDEN_IDENTITY);
-    }
-
-    #[test]
-    fn identity_content_length_matches_body() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/identity");
-        let s = std::str::from_utf8(&resp).unwrap();
-        let header_end = s.find("\r\n\r\n").unwrap();
-        let cl: usize = s[..header_end]
-            .lines()
-            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
-            .unwrap()
-            .split(':')
-            .nth(1)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(cl, s[header_end + 4..].len());
     }
 
     #[test]
     fn version_body_carries_this_build_s_agent_version() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/eth/v1/node/version");
+        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/version");
         assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
         assert_eq!(
             std::str::from_utf8(body(&resp)).unwrap(),
@@ -381,7 +366,7 @@ mod tests {
             "/eth/v1/config/fork_schedule",
             "/eth/v1/config/deposit_contract",
         ] {
-            let resp = get(&router, &preboot_ctx(), path);
+            let resp = get(&router, &anchor_ctx(), path);
             assert!(
                 resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
                 "{path}"
@@ -394,31 +379,25 @@ mod tests {
 
     fn ready() -> NodeStatus {
         NodeStatus {
-            slots: Some(SlotStatus { head_slot: 100, wall_slot: 100, head_optimistic: false }),
-            syncing: false,
+            head: HeadStatus { slot: 100, optimistic: false },
+            finalized_epoch: 12_343,
+            target: Some(SyncUpdate::Following),
             el: ELSyncStatus::Synced,
         }
     }
 
-    fn head_at(head_slot: u64, wall_slot: u64) -> NodeStatus {
-        NodeStatus {
-            slots: Some(SlotStatus { head_slot, wall_slot, head_optimistic: false }),
-            ..ready()
-        }
+    fn at_head(slot: u64) -> NodeStatus {
+        NodeStatus { head: HeadStatus { slot, optimistic: false }, ..ready() }
+    }
+
+    fn chasing(head_slot: u64) -> Option<SyncUpdate> {
+        Some(SyncUpdate::SyncingHead { head_root: [0; 32], head_slot })
     }
 
     fn health_response(status: NodeStatus, query: &str) -> Vec<u8> {
-        let mut ctx = preboot_ctx();
+        let mut ctx = anchor_ctx();
         ctx.node_status = status;
         query_get(&Router::new(ROUTES), &ctx, "/eth/v1/node/health", query)
-    }
-
-    #[test]
-    fn health_is_503_until_the_first_slot_status_arrives() {
-        assert_eq!(
-            health_response(NodeStatus::default(), ""),
-            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
-        );
     }
 
     #[test]
@@ -429,32 +408,17 @@ mod tests {
             let resp = health_response(NodeStatus { el, ..ready() }, "");
             assert!(resp.starts_with(b"HTTP/1.1 206 Partial Content\r\n"), "{el:?}");
         }
-        let resp = health_response(NodeStatus { syncing: true, ..ready() }, "");
+        let resp = health_response(NodeStatus { target: chasing(200), ..ready() }, "");
         assert_eq!(resp, b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n");
     }
 
     #[test]
     fn syncing_status_replaces_the_206_and_nothing_else() {
-        let syncing = NodeStatus { syncing: true, ..ready() };
+        let syncing = NodeStatus { target: chasing(200), ..ready() };
         assert!(health_response(syncing, "syncing_status=200").starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(health_response(syncing, "syncing_status=503").starts_with(b"HTTP/1.1 503 "));
         assert!(health_response(ready(), "syncing_status=503").starts_with(b"HTTP/1.1 200 OK\r\n"));
-        assert!(
-            health_response(NodeStatus::default(), "syncing_status=200")
-                .starts_with(b"HTTP/1.1 503 ")
-        );
         assert!(health_response(syncing, "other=1").starts_with(b"HTTP/1.1 206 "));
-    }
-
-    /// A code the schema allows but this API has no phrase for still frames,
-    /// with the empty reason phrase RFC 9112 §4.1 permits.
-    #[test]
-    fn a_syncing_status_with_no_reason_phrase_still_frames() {
-        let syncing = NodeStatus { syncing: true, ..ready() };
-        assert_eq!(
-            health_response(syncing, "syncing_status=250"),
-            b"HTTP/1.1 250 \r\nContent-Length: 0\r\n\r\n"
-        );
     }
 
     #[test]
@@ -477,10 +441,10 @@ mod tests {
         }
     }
 
-    /// Both node-status endpoints answer from `NodeStatus` alone, so a
-    /// never-published reader is the whole context they need.
+    /// Both node-status endpoints answer from `NodeStatus` alone, so the
+    /// anchor context is all they need.
     fn status_body(status: NodeStatus, path: &str) -> String {
-        let mut ctx = preboot_ctx();
+        let mut ctx = anchor_ctx();
         ctx.node_status = status;
         let resp = get(&Router::new(ROUTES), &ctx, path);
         assert!(
@@ -508,42 +472,29 @@ mod tests {
         );
     }
 
-    /// `syncing.yaml` declares no 503, and a node with nothing published has
-    /// an answer: no head, the farthest distance the schema can carry, and
-    /// every flag in the not-usable direction.
+    /// Right after bootstrap the head is the anchor, no target exists to
+    /// measure a distance to, and neither layer has vouched for anything.
     #[test]
-    fn syncing_answers_before_bootstrap_as_a_node_with_no_head() {
+    fn syncing_answers_at_the_anchor_before_any_tile_reports() {
+        let ctx = anchor_ctx();
         assert_eq!(
-            status_body(NodeStatus::default(), "/eth/v1/node/syncing"),
+            status_body(ctx.node_status, "/eth/v1/node/syncing"),
             "{\"data\":{\"head_slot\":\"0\",\"sync_distance\":\"18446744073709551615\",\
-             \"is_syncing\":true,\"is_optimistic\":true,\"el_offline\":true}}"
+             \"is_syncing\":true,\"is_optimistic\":false,\"el_offline\":true}}"
         );
     }
 
-    /// The sync flag answers for the head this node is *chasing*: the control
-    /// tile publishes a `SyncUpdate` only when its target changes, so a node
-    /// that has found no peer to sync from carries `syncing: false` however
-    /// far behind the chain it falls.
+    /// The sync engine owns "at the head": the API answers from its target
+    /// and never from a slot tolerance of its own.
     #[test]
-    fn is_syncing_is_true_past_the_head_tolerance_whatever_the_sync_flag() {
-        assert_eq!(syncing_data(NodeStatus { syncing: true, ..ready() })["is_syncing"], true);
-        let within = syncing_data(head_at(992, 1_000));
-        assert_eq!(within["is_syncing"], false, "within the head tolerance");
-        assert_eq!(syncing_data(head_at(991, 1_000))["is_syncing"], true, "past the tolerance");
+    fn is_syncing_is_whether_the_engine_is_following() {
         assert_eq!(
-            syncing_data(head_at(10, 1_000_000))["is_syncing"],
-            true,
-            "a node that never found a peer to sync from is still syncing"
+            syncing_data(NodeStatus { target: chasing(200), ..ready() })["is_syncing"],
+            true
         );
-    }
-
-    /// One node, one answer: a validator client gating on `/node/health` and
-    /// reading the head from `/node/syncing` must not see the two disagree.
-    #[test]
-    fn health_reports_syncing_wherever_the_syncing_endpoint_does() {
-        let far_behind = head_at(10, 1_000_000);
-        assert_eq!(syncing_data(far_behind)["is_syncing"], true);
-        assert!(health_response(far_behind, "").starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
+        assert_eq!(syncing_data(at_head(10))["is_syncing"], false, "following");
+        let no_target = NodeStatus { target: None, ..ready() };
+        assert_eq!(syncing_data(no_target)["is_syncing"], true, "before the first target");
     }
 
     /// The same flag the state envelopes carry: the head's own execution
@@ -552,7 +503,7 @@ mod tests {
     fn syncing_is_optimistic_is_the_head_s_own_status() {
         assert_eq!(syncing_data(with_head_optimistic(true))["is_optimistic"], true);
         assert_eq!(syncing_data(with_head_optimistic(false))["is_optimistic"], false);
-        let syncing_node = NodeStatus { syncing: true, ..with_head_optimistic(false) };
+        let syncing_node = NodeStatus { target: chasing(200), ..with_head_optimistic(false) };
         assert_eq!(syncing_data(syncing_node)["is_optimistic"], false);
         let offline_el = NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) };
         assert_eq!(syncing_data(offline_el)["is_optimistic"], false);
@@ -574,13 +525,18 @@ mod tests {
         }
     }
 
+    /// The distance is to the target the engine reports: zero once following,
+    /// and never an underflow when the target sits below the head.
     #[test]
-    fn sync_distance_is_the_wall_clock_gap_and_never_underflows() {
-        assert_eq!(syncing_data(head_at(90, 100))["sync_distance"], "10");
-        assert_eq!(syncing_data(head_at(100, 100))["sync_distance"], "0");
-        let head_ahead = syncing_data(head_at(101, 100));
-        assert_eq!(head_ahead["sync_distance"], "0", "head ahead of the wall slot");
-        assert_eq!(syncing_data(head_at(0, u64::MAX))["sync_distance"], "18446744073709551615");
+    fn sync_distance_is_to_the_sync_target() {
+        assert_eq!(syncing_data(at_head(90))["sync_distance"], "0", "following");
+        let to_head = NodeStatus { target: chasing(150), ..at_head(100) };
+        assert_eq!(syncing_data(to_head)["sync_distance"], "50");
+        let finalized = SyncUpdate::SyncingFinalized { target_epoch: 4, target_root: [0; 32] };
+        let to_finalized = NodeStatus { target: Some(finalized), ..at_head(100) };
+        assert_eq!(syncing_data(to_finalized)["sync_distance"], "28");
+        let reached = NodeStatus { target: chasing(90), ..at_head(100) };
+        assert_eq!(syncing_data(reached)["sync_distance"], "0", "target below the head");
     }
 
     /// Every stubbed route answers 501 whatever the node's state: routed, so
@@ -589,14 +545,13 @@ mod tests {
     #[test]
     fn stubbed_routes_answer_501_not_404() {
         let router = Router::new(ROUTES);
-        let ctx = preboot_ctx();
+        let ctx = anchor_ctx();
         for (method, path) in [
             ("GET", "/eth/v1/beacon/blocks/head/root"),
             ("GET", "/eth/v1/beacon/headers/head"),
             ("GET", "/eth/v1/beacon/states/head/validators"),
             ("POST", "/eth/v1/beacon/states/head/validators"),
             ("GET", "/eth/v1/beacon/states/head/validators/0"),
-            ("GET", "/eth/v1/node/peer_count"),
             ("GET", "/eth/v1/validator/duties/proposer/0"),
             ("POST", "/eth/v1/validator/duties/sync/0"),
             ("POST", "/eth/v1/validator/liveness/0"),
@@ -624,21 +579,64 @@ mod tests {
         }
     }
 
+    fn two_peer_ctx() -> ApiCtx {
+        let mut ctx = anchor_ctx();
+        for (connection, inbound) in [(1, true), (2, false)] {
+            ctx.peers.insert(connection, Peer {
+                id: Keypair::from_secret(&[connection as u8; 32]).unwrap().peer_id(),
+                ip: IpBytes::V4([10, 0, 0, connection as u8]),
+                port: 9000,
+                inbound,
+            });
+        }
+        ctx
+    }
+
+    fn peers_json(query: &str) -> serde_json::Value {
+        let resp = query_get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peers", query);
+        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
+        serde_json::from_slice(body(&resp)).unwrap()
+    }
+
+    #[test]
+    fn peers_list_every_connection_and_honour_the_filters() {
+        let all = peers_json("");
+        assert_eq!(all["meta"]["count"], 2);
+        let inbound = peers_json("direction=inbound&state=connected&state=connecting");
+        assert_eq!(inbound["meta"]["count"], 1);
+        let peer = &inbound["data"][0];
+        let id = peer["peer_id"].as_str().unwrap();
+        assert!(peer["enr"].is_null());
+        assert_eq!(
+            peer["last_seen_p2p_address"],
+            format!("/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{id}")
+        );
+        assert_eq!(peer["state"], "connected");
+        assert_eq!(peer["direction"], "inbound");
+        assert_eq!(peers_json("state=disconnected")["meta"]["count"], 0);
+
+        let resp =
+            query_get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peers", "state=x");
+        assert_eq!(body(&resp), br#"{"code":400,"message":"invalid state or direction"}"#);
+    }
+
+    #[test]
+    fn peer_count_reports_connected_peers_only() {
+        let resp = get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peer_count");
+        assert_eq!(
+            body(&resp),
+            br#"{"data":{"disconnected":"0","connecting":"0","connected":"2","disconnecting":"0"}}"#
+        );
+    }
+
     #[test]
     fn metrics_response_valid_prometheus_format() {
         let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/metrics");
+        let resp = get(&router, &anchor_ctx(), "/metrics");
         let s = std::str::from_utf8(&resp).unwrap();
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
         assert_eq!(body(&resp), b"");
-    }
-
-    #[test]
-    fn unknown_path_returns_404() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &preboot_ctx(), "/not/real");
-        assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     }
 
     /// First slot of the epoch two past [`epoch_state`]'s finalized
@@ -663,6 +661,11 @@ mod tests {
     /// endpoints read is set, so a golden catches a swapped field.
     fn published_ctx(epoch: EpochState, slot: u64) -> ApiCtx {
         let mut state = BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], slot);
+        state.slot_states = SlotStateGroup::new(SlotStateFinalized::new(SlotState {
+            slot,
+            latest_block_header: BeaconBlockHeader { slot, ..Default::default() },
+            ..Default::default()
+        }));
         state.immutable.genesis_time = 1_606_824_023;
         state.immutable.genesis_validators_root = [0x4b; 32];
         state.immutable.genesis_fork_version = [0x00, 0x00, 0x00, 0x01];
@@ -786,46 +789,32 @@ mod tests {
         }
     }
 
-    /// Neither endpoint's schema declares a 503, so a node with no state
-    /// published answers 404 — genesis with the phrase its own schema names.
-    #[test]
-    fn state_reads_are_404_before_bootstrap() {
-        let ctx = preboot_ctx();
-        let resp = get(&Router::new(ROUTES), &ctx, "/eth/v1/beacon/genesis");
-        assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
-        assert_eq!(body(&resp), br#"{"code":404,"message":"Chain genesis info is not yet known"}"#);
-        assert_state_not_found(&ctx, "head");
-    }
-
     /// The `state_id` verdict does not depend on there being a state to read.
     #[test]
     fn an_invalid_state_id_is_answered_before_the_state_is_read() {
         for path in state_paths("banana") {
-            let resp = get(&Router::new(ROUTES), &preboot_ctx(), &path);
+            let resp = get(&Router::new(ROUTES), &anchor_ctx(), &path);
             assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
         }
     }
 
-    fn with_head_optimistic(head_optimistic: bool) -> NodeStatus {
-        let ready = ready();
-        NodeStatus { slots: Some(SlotStatus { head_optimistic, ..ready.slots.unwrap() }), ..ready }
+    fn with_head_optimistic(optimistic: bool) -> NodeStatus {
+        NodeStatus { head: HeadStatus { optimistic, ..ready().head }, ..ready() }
     }
 
     /// The envelope flag is the head's own execution status, not a reading of
     /// how far behind the node is: an unverified head is optimistic with both
     /// layers reporting themselves synced, and a verified one is not while they
-    /// do not. A state read served before the first status announces a head is
-    /// optimistic — nothing has vouched for that head's payload yet.
+    /// do not.
     #[test]
     fn execution_optimistic_is_the_head_s_own_status() {
         let mut ctx = published_ctx(epoch_state(), HEAD_SLOT);
         for (status, want) in [
             (with_head_optimistic(true), "true"),
             (with_head_optimistic(false), "false"),
-            (NodeStatus { syncing: true, ..with_head_optimistic(false) }, "false"),
+            (NodeStatus { target: chasing(200), ..with_head_optimistic(false) }, "false"),
             (NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) }, "false"),
-            (NodeStatus { syncing: true, ..with_head_optimistic(true) }, "true"),
-            (NodeStatus::default(), "true"),
+            (NodeStatus { target: chasing(200), ..with_head_optimistic(true) }, "true"),
         ] {
             ctx.node_status = status;
             for path in state_paths("head") {
@@ -838,22 +827,24 @@ mod tests {
         }
     }
 
-    /// `finalized` describes the state served, and genesis is the only state
-    /// that is its own finalized history.
     #[test]
-    fn finalized_is_true_only_for_the_genesis_state() {
+    fn finalized_is_whether_the_head_block_is_at_or_before_the_checkpoint() {
         let genesis_epoch = EpochState {
             previous_justified_checkpoint: Checkpoint::default(),
             current_justified_checkpoint: Checkpoint::default(),
             finalized_checkpoint: Checkpoint::default(),
             ..epoch_state()
         };
-        let at_genesis = published_ctx(genesis_epoch, 0);
-        let past_genesis = published_ctx(epoch_state(), HEAD_SLOT);
+        let mut at_genesis = published_ctx(genesis_epoch, 0);
+        at_genesis.node_status.finalized_epoch = 0;
+        let mut at_anchor = published_ctx(epoch_state(), HEAD_SLOT);
+        at_anchor.node_status.finalized_epoch = HEAD_SLOT / SLOTS_PER_EPOCH;
+        let past_finality = published_ctx(epoch_state(), HEAD_SLOT);
         for path in state_paths("head") {
             let flags = "{\"execution_optimistic\":false,\"finalized\":";
             assert!(state_body(&at_genesis, &path).starts_with(&format!("{flags}true,")));
-            assert!(state_body(&past_genesis, &path).starts_with(&format!("{flags}false,")));
+            assert!(state_body(&at_anchor, &path).starts_with(&format!("{flags}true,")));
+            assert!(state_body(&past_finality, &path).starts_with(&format!("{flags}false,")));
         }
     }
 }

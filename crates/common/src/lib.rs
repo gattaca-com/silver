@@ -9,7 +9,7 @@ pub use crate::{
     error::Error,
     gossip::{
         ATTESTATION_SUBNETS, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_TOPIC_COUNTER_SLOTS,
-        GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE,
+        GossipDomain, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE,
         MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE, MESSAGE_ID_LEN, MessageId, MessageIdHasher,
         SYNC_COMMITTEE_SUBNETS, gossip_topic_for_counter_slot, msg_id_invalid_snappy,
         msg_id_valid_snappy,
@@ -29,7 +29,7 @@ pub use crate::{
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
         EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
         EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
-        GossipMsgIn, GossipMsgOut, HeadRoots, IpBytes, LOCAL_GOSSIP_STREAM_ID,
+        GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, LOCAL_GOSSIP_STREAM_ID,
         LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
         MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg,
         P2pConnectionStats, P2pSend, P2pStreamId, PREFILL_SLOTS, PayloadResolution,
@@ -63,7 +63,7 @@ mod gossip;
 mod id;
 mod identity;
 mod spine;
-pub use silver_beacon_state_data::SLOTS_PER_EPOCH;
+pub use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
 #[cfg(feature = "test-util")]
 pub mod test_util;

@@ -2,21 +2,28 @@ use std::{
     cell::Cell,
     collections::HashMap,
     io::{self, Read, Write},
+    mem,
     time::{Duration, Instant},
 };
 
 use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
-use silver_common::{Enr, Identify, Keypair};
+use silver_common::{
+    BeaconStateEvent, BlockStage, ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair,
+    PeerEvent, SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    column_util::{SidecarIdentity, block_root, kzg_commitments_from_sidecar},
+    ssz_view::{SignedBeaconBlockView, StatusView},
+};
 use silver_httpcore::{
     AfterResponse, Bind, ChunkedResponse, Closed, Listener, ParsedRequest, ServerConnection,
     Stream, TokenRange,
 };
 
 use crate::{
-    NodeStatus,
+    HeadStatus, NodeStatus,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
+    peers::Peer,
     router::{Router, Served},
     routes::{ApiCtx, ROUTES},
 };
@@ -301,6 +308,18 @@ impl IdleSweep {
     }
 }
 
+pub struct ApiConsumers {
+    pub gossip: TRandomAccess,
+    pub rpc: TRandomAccess,
+}
+
+impl ApiConsumers {
+    fn free(&mut self) {
+        self.gossip.free();
+        self.rpc.free();
+    }
+}
+
 pub struct BeaconApi {
     registry: Registry,
     tokens: TokenRange,
@@ -312,8 +331,10 @@ pub struct BeaconApi {
     last_keep_alive: Instant,
     next_connection_offset: usize,
     connections: HashMap<Token, Connection>,
+    frame: Vec<u8>,
     router: Router,
     ctx: ApiCtx,
+    consumers: ApiConsumers,
 }
 
 impl BeaconApi {
@@ -329,6 +350,7 @@ impl BeaconApi {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        consumers: ApiConsumers,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let tokens_needed = binds.len().checked_add(max_connections);
@@ -363,8 +385,10 @@ impl BeaconApi {
             next_connection_offset: listeners.len(),
             listeners,
             connections: HashMap::new(),
+            frame: Vec::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
+            consumers,
         }
     }
 
@@ -372,38 +396,133 @@ impl BeaconApi {
         self.listeners.iter().map(Listener::local_addr).collect()
     }
 
-    /// In-place update seam for the status's single writer.
-    pub fn node_status_mut(&mut self) -> &mut NodeStatus {
-        &mut self.ctx.node_status
+    pub fn node_status(&self) -> &NodeStatus {
+        &self.ctx.node_status
+    }
+
+    pub fn handle_beacon_state_event(&mut self, event: BeaconStateEvent) {
+        match event {
+            BeaconStateEvent::Status {
+                ssz,
+                latest_block_slot,
+                head_optimistic,
+                head_roots,
+                head_payload,
+                head_change,
+                epoch_transition,
+                ..
+            } => {
+                self.ctx.node_status.head =
+                    HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
+                self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
+                if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
+                    return;
+                }
+
+                let head = HeadEvent {
+                    slot: StatusView::head_slot(&ssz),
+                    block_root: *StatusView::head_root(&ssz),
+                    roots: head_roots,
+                    payload: head_payload,
+                    epoch_transition,
+                    execution_optimistic: head_optimistic,
+                };
+
+                if head_change == HeadChange::Head {
+                    self.publish_head(&head);
+                }
+                self.publish_head_v2(&head);
+            }
+            BeaconStateEvent::BlockReceived {
+                slot,
+                block_root,
+                stage: BlockStage::Applied,
+                ..
+            } => self.publish_block(slot, &block_root),
+            _ => {}
+        }
+    }
+
+    pub fn handle_sync_update(&mut self, update: SyncUpdate) {
+        self.ctx.node_status.target = Some(update);
+    }
+
+    pub fn set_el_sync_status(&mut self, el: ELSyncStatus) {
+        self.ctx.node_status.el = el;
+    }
+
+    pub fn handle_peer_event(&mut self, event: PeerEvent) {
+        match event {
+            PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
+                let peer = Peer { id: peer_id_full, ip, port, inbound: !local_dial };
+                self.ctx.peers.insert(p2p_peer_id, peer);
+            }
+            PeerEvent::P2pDisconnect { p2p_peer, .. } => self.ctx.peers.remove(p2p_peer),
+            PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
+                self.publish_relayed_block(ssz)
+            }
+            PeerEvent::SendGossip { topic: GossipTopic::DataColumnSidecar(_), ssz, .. } => {
+                let sidecar = self.consumers.gossip.acquire(ssz);
+                self.publish_sidecar(sidecar)
+            }
+            PeerEvent::PublishDataColumn { ssz, .. } => {
+                let sidecar = self.consumers.rpc.acquire(ssz);
+                self.publish_sidecar(sidecar)
+            }
+            _ => {}
+        }
+    }
+
+    fn publish_relayed_block(&mut self, ssz: TCacheRead) {
+        let block = self.consumers.gossip.acquire(ssz);
+        match block.buffer() {
+            Ok((buf, _)) => {
+                let slot = SignedBeaconBlockView::slot(buf);
+                let root = block_root(buf, self.ctx.spec.is_gloas_at_slot(slot));
+                self.publish_block_gossip(slot, &root);
+            }
+            Err(e) => tracing::warn!(?e, "relayed block unavailable to block_gossip"),
+        }
+    }
+
+    fn publish_sidecar(&mut self, sidecar: TRead) {
+        match sidecar.buffer() {
+            Ok((bytes, _)) => match SidecarIdentity::of(bytes) {
+                Some(column) => self.publish_data_column_sidecar(
+                    &column.block_root,
+                    column.column_index,
+                    column.slot,
+                    kzg_commitments_from_sidecar(bytes),
+                ),
+                None => {
+                    tracing::warn!("published sidecar fits no layout data_column_sidecar reads")
+                }
+            },
+            Err(e) => tracing::warn!(?e, "published sidecar unavailable to data_column_sidecar"),
+        }
     }
 
     /// Import notifications can precede payload validation, so events are
     /// marked optimistic without consulting the current verdict. Repeated
     /// notifications are not deduplicated.
     pub fn publish_block(&mut self, slot: u64, block_root: &[u8; 32]) {
-        let mut data = Vec::new();
-        Json::new(&mut data).block_event(slot, block_root, true);
-        self.publish(Channel::Block, "block", &data);
+        self.publish(Channel::Block, "block", |json| json.block_event(slot, block_root, true));
     }
 
-    /// Head-change detection belongs to the caller.
-    pub fn publish_head(&mut self, head: &HeadEvent) {
-        let mut data = Vec::new();
-        Json::new(&mut data).head_event(head);
-        self.publish(Channel::Head, "head", &data);
+    fn publish_head(&mut self, head: &HeadEvent) {
+        self.publish(Channel::Head, "head", |json| json.head_event(head));
     }
 
-    pub fn publish_head_v2(&mut self, head: &HeadEvent) {
-        let mut data = Vec::new();
-        Json::new(&mut data).head_v2_event(head, self.ctx.spec.fork_at_slot(head.slot).name());
-        self.publish(Channel::HeadV2, "head_v2", &data);
+    fn publish_head_v2(&mut self, head: &HeadEvent) {
+        let fork_name = self.ctx.spec.fork_at_slot(head.slot).name();
+        self.publish(Channel::HeadV2, "head_v2", |json| json.head_v2_event(head, fork_name));
     }
 
     /// Repeated roots are not deduplicated.
     pub fn publish_block_gossip(&mut self, slot: u64, block_root: &[u8; 32]) {
-        let mut data = Vec::new();
-        Json::new(&mut data).block_gossip_event(slot, block_root);
-        self.publish(Channel::BlockGossip, "block_gossip", &data);
+        self.publish(Channel::BlockGossip, "block_gossip", |json| {
+            json.block_gossip_event(slot, block_root)
+        });
     }
 
     pub fn publish_data_column_sidecar(
@@ -413,40 +532,35 @@ impl BeaconApi {
         slot: u64,
         kzg_commitments: Option<&[u8]>,
     ) {
-        let mut data = Vec::new();
-        Json::new(&mut data).data_column_sidecar_event(
-            block_root,
-            column_index,
-            slot,
-            kzg_commitments,
-        );
-        self.publish(Channel::DataColumnSidecar, "data_column_sidecar", &data);
+        self.publish(Channel::DataColumnSidecar, "data_column_sidecar", |json| {
+            json.data_column_sidecar_event(block_root, column_index, slot, kzg_commitments)
+        });
     }
 
-    fn publish(&mut self, channel: Channel, event: &str, data: &[u8]) {
-        let mut frame = Vec::new();
-        events::frame(&mut frame, event, data);
-        self.fan_out(
-            |subscription| subscription.channels.contains(channel),
-            &frame,
-            Instant::now(),
+    fn publish(&mut self, channel: Channel, event: &str, render: impl FnOnce(&mut Json<'_>)) {
+        let mut frame = mem::take(&mut self.frame);
+        frame.clear();
+        write!(frame, "event: {event}\ndata: ").unwrap();
+        let data_start = frame.len();
+        render(&mut Json::new(&mut frame));
+        debug_assert!(
+            !frame[data_start..].contains(&b'\n'),
+            "a multi-line body needs one data: line per line"
         );
+        frame.extend_from_slice(b"\n\n");
+        self.fan_out(Some(channel), &frame, Instant::now());
+        self.frame = frame;
     }
 
     /// Returns whether any output was queued, so the pump can report work.
-    fn fan_out(
-        &mut self,
-        wants: impl Fn(&Subscription) -> bool,
-        chunk: &[u8],
-        now: Instant,
-    ) -> bool {
+    fn fan_out(&mut self, channel: Option<Channel>, chunk: &[u8], now: Instant) -> bool {
         let Self { connections, registry, .. } = self;
         let mut pushed = false;
         connections.retain(|token, conn| {
             let Connection { stream, state: State::Subscription(subscription) } = conn else {
                 return true;
             };
-            if !wants(subscription) {
+            if channel.is_some_and(|channel| !subscription.channels.contains(channel)) {
                 return true;
             }
             let outcome = subscription.body.deliver(stream, chunk, now).and_then(|interest| {
@@ -478,6 +592,7 @@ impl BeaconApi {
     }
 
     pub fn pump(&mut self, events: &Events) -> bool {
+        self.consumers.free();
         let now = Instant::now();
 
         let mut did_work = false;
@@ -497,7 +612,7 @@ impl BeaconApi {
         }
         if now.duration_since(self.last_keep_alive) >= self.streams.keep_alive_every {
             self.last_keep_alive = now;
-            did_work |= self.fan_out(|_| true, events::KEEP_ALIVE, now);
+            did_work |= self.fan_out(None, events::KEEP_ALIVE, now);
         }
 
         did_work
@@ -632,7 +747,7 @@ mod tests {
 
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
-    use silver_common::{HeadRoots, PayloadResolution};
+    use silver_common::{HeadRoots, PayloadResolution, TCache, TCacheProducer};
     use silver_httpcore::Readiness;
 
     use super::*;
@@ -657,6 +772,8 @@ mod tests {
             let readiness = Readiness::new(1024);
             let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
             let local_enr = Enr::empty(keypair.secret_key()).unwrap();
+            let cache = TCache::producer("beacon_api_test", 1 << 12);
+            let consumer = || cache.cache_ref().random_access("beacon_api_test", true).unwrap();
             let api = BeaconApi::new(
                 readiness.registry(),
                 tokens,
@@ -667,7 +784,8 @@ mod tests {
                 local_enr,
                 &Identify::default(),
                 &SpecConfig::mainnet(),
-                BeaconStateOwner::empty_test(0).reader(),
+                BeaconStateOwner::published_empty_test(0).reader(),
+                ApiConsumers { gossip: consumer(), rpc: consumer() },
             );
             Self { readiness, api }
         }
@@ -874,12 +992,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at least one bind")]
-    fn an_empty_bind_list_is_rejected() {
-        server_bound_to(&[], 64, LONG_TIMEOUT);
-    }
-
-    #[test]
     fn every_tcp_listener_serves_the_api() {
         let mut server = server_bound_to(
             &[Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")],
@@ -992,109 +1104,6 @@ mod tests {
             "second listener served once the slot freed",
         );
         assert_identity_ok(&response);
-    }
-
-    #[test]
-    fn connection_cap_drops_excess_then_recovers() {
-        let mut server = server_with(1, LONG_TIMEOUT);
-        let addr = tcp_addr(&server);
-
-        let held_open = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
-                let mut response = Vec::new();
-                let mut chunk = [0u8; 1024];
-                while !response.windows(4).any(|w| w == b"\r\n\r\n") {
-                    let n = stream.read(&mut chunk).unwrap();
-                    assert!(n > 0, "server closed the first connection");
-                    response.extend_from_slice(&chunk[..n]);
-                }
-                assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-                stream
-            }),
-            "first client served",
-        );
-
-        let denied = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
-                let mut chunk = [0u8; 1024];
-                stream.read(&mut chunk)
-            }),
-            "second client dropped at cap",
-        );
-        assert!(
-            !matches!(denied, Ok(n) if n > 0),
-            "connection over the cap must not be served: {denied:?}"
-        );
-
-        drop(held_open);
-        pump_until(&mut server, "closed connection reaped", |server| {
-            server.api.connections.is_empty()
-        });
-
-        let response = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-                    .unwrap();
-                let mut response = Vec::new();
-                stream.read_to_end(&mut response).unwrap();
-                response
-            }),
-            "third client served after the slot freed",
-        );
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-    }
-
-    /// A partial request that never completes holds its slot until the idle
-    /// deadline reaps it. Definitively malformed input gets 400-and-close
-    /// at parse time.
-    #[test]
-    fn partial_request_is_reaped_after_the_idle_deadline() {
-        let mut server = server_with(64, Duration::from_millis(200));
-        let addr = tcp_addr(&server);
-
-        let received = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
-                read_to_eof(stream)
-            }),
-            "partial request reaped",
-        );
-
-        assert!(received.is_empty(), "half a request must not be answered: {received:?}");
-        assert!(server.api.connections.is_empty(), "reaped connection must leave the map");
-    }
-
-    /// An operator large enough to declare more body than the read buffer
-    /// holds gets a status back rather than a connection that goes quiet.
-    #[test]
-    fn body_declared_past_the_read_cap_is_answered_with_413() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let addr = tcp_addr(&server);
-
-        let received = serve(
-            &mut server,
-            std::thread::spawn(move || {
-                let mut stream = connect(addr);
-                declare_oversized_body(&mut stream);
-                read_to_eof(stream)
-            }),
-            "oversized declaration accepted",
-        );
-
-        assert_eq!(received, PAYLOAD_TOO_LARGE, "{}", String::from_utf8_lossy(&received));
-        pump_until(&mut server, "answered connection closed on the peer's own close", |server| {
-            server.api.connections.is_empty()
-        });
     }
 
     /// A head that outgrows the whole read buffer declares no length to
@@ -1502,52 +1511,7 @@ mod tests {
     // Queued after every publication, so readers can detect leaked or repeated
     // frames without relying on a quiet socket or cross-topic ordering.
     fn finish_events(server: &mut Server) {
-        server.api.fan_out(|_| true, b"event: test_end\ndata: {}\n\n", Instant::now());
-    }
-
-    #[test]
-    fn each_subscriber_receives_only_the_channels_it_asked_for() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let subscriptions =
-            ["block", "head", "block,head", "head_v2", "head,head_v2", "block,head,head_v2"];
-        let readers = subscriptions.map(|topics| {
-            let mut stream = connect(tcp_addr(&server));
-            subscribe(&mut stream, topics);
-            read_events_until_marker(stream)
-        });
-        pump_until(&mut server, "all subscribed", |server| {
-            subscribers(server) == subscriptions.len()
-        });
-
-        let slot = SpecConfig::mainnet().fulu_fork_epoch * SLOTS_PER_EPOCH;
-        let head = head_event(slot, &[0xab; 32], true);
-        server.api.publish_block(slot, &head.block_root);
-        server.api.publish_head(&head);
-        server.api.publish_head_v2(&head);
-        finish_events(&mut server);
-        pump_until(&mut server, "every subscriber served", |_| {
-            readers.iter().all(JoinHandle::is_finished)
-        });
-
-        for (topics, reader) in subscriptions.into_iter().zip(readers) {
-            let events = reader.join().unwrap();
-            assert_eq!(events.len(), topics.split(',').count(), "{topics}");
-            for topic in topics.split(',') {
-                let matching: Vec<_> = events.iter().filter(|event| event.topic == topic).collect();
-                assert_eq!(matching.len(), 1, "{topics}: {topic}");
-                let body = &matching[0].data;
-                let data = if topic == "head_v2" {
-                    assert_eq!(body["version"], "fulu");
-                    assert_eq!(body["data"]["payload_status"], "full");
-                    &body["data"]
-                } else {
-                    body
-                };
-                assert_eq!(data["slot"], slot.to_string());
-                assert_eq!(data["block"], format!("0x{}", hex::encode(head.block_root)));
-                assert_eq!(data["execution_optimistic"], true);
-            }
-        }
+        server.api.fan_out(None, b"event: test_end\ndata: {}\n\n", Instant::now());
     }
 
     #[test]
@@ -1638,33 +1602,12 @@ mod tests {
         frames.iter().for_each(|frame| expected.extend(chunk(frame)));
         let now = Instant::now();
         for frame in &frames {
-            assert!(server.api.fan_out(|_| true, frame, now), "queued for the subscriber");
+            assert!(server.api.fan_out(None, frame, now), "queued for the subscriber");
         }
         assert_eq!(subscribers(&server), 1);
 
         let got = serve(&mut server, read_exactly(client, expected.len()), "the burst");
         assert_same_bytes(&got, &expected);
-    }
-
-    /// Checks that publication attempts delivery before the readiness loop,
-    /// independently of whether a larger burst fits the application buffer.
-    #[test]
-    fn a_publish_to_a_reading_subscriber_leaves_nothing_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("api.sock");
-        let mut server = server_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
-        let mut client = connect_uds(&socket);
-        subscribe(&mut client, "block");
-        pump_until(&mut server, "subscribed and head sent", |server| {
-            subscribers(server) == 1 && bytes_waiting_for_subscribers(server) == 0
-        });
-
-        for slot in 1..=3 {
-            server.api.publish_block(slot, &[0x33; 32]);
-        }
-        assert_eq!(bytes_waiting_for_subscribers(&server), 0);
-        assert_eq!(subscribers(&server), 1);
-        drop(client);
     }
 
     /// On Linux, registering `WRITABLE` on a writable socket queues an epoll

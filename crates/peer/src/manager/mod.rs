@@ -23,6 +23,7 @@ use crate::{
 
 pub(crate) mod admission;
 pub(crate) mod attempts;
+pub(crate) mod mesh;
 pub(crate) mod peers;
 pub(crate) mod promises;
 pub(crate) mod rpc;
@@ -84,8 +85,9 @@ pub struct PeerManager {
     our_topics: Vec<GossipTopic>,
 
     /// Our mesh per topic: connections we've grafted onto. May exceed d_high
-    /// between heartbeats; trimmed back to d by `ensure_mesh_capped`.
-    mesh: HashMap<GossipTopic, Vec<usize>>,
+    /// between heartbeats; trimmed back to d by `ensure_mesh_capped`. Split
+    /// by fork digest during a transition (see `mesh::TopicMeshes`).
+    mesh: HashMap<GossipTopic, mesh::TopicMeshes>,
 
     /// Outstanding IHAVE→IWANT promises, keyed by `MessageId`. Each entry
     /// holds every (conn, deadline) that has promised that id. Any one
@@ -212,8 +214,10 @@ impl PeerManager {
         custody_columns: u128,
     ) -> Self {
         let now = Instant::now();
-        let mesh =
-            our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
+        let mesh = our_topics
+            .iter()
+            .map(|t| (*t, mesh::TopicMeshes::single(fork_digest, params.d_high as usize)))
+            .collect();
         let (required_attnets, required_syncnets) = build_subnet_masks(&our_topics);
         let rejected = RejectedRoots::new(syncing.rejected_cap);
 
@@ -363,11 +367,11 @@ impl PeerManager {
                     }
                 }
             }
-            PeerEvent::P2pGossipTopicSubscribe { p2p_peer, topic } => {
-                self.on_subscribe(p2p_peer, topic, now, emit);
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer, topic, digest } => {
+                self.on_subscribe(p2p_peer, topic, digest, now, emit);
             }
-            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer, topic } => {
-                self.on_unsubscribe(p2p_peer, topic, now, emit);
+            PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer, topic, digest } => {
+                self.on_unsubscribe(p2p_peer, topic, digest, now, emit);
             }
             PeerEvent::P2pGossipExtensions { p2p_peer, partial_messages } => {
                 if let Some(peer) = self.peers.get_mut(&p2p_peer) {
@@ -391,11 +395,11 @@ impl PeerManager {
                     };
                 }
             }
-            PeerEvent::P2pGossipTopicGraft { p2p_peer, topic } => {
-                self.on_remote_graft(p2p_peer, topic, now, emit);
+            PeerEvent::P2pGossipTopicGraft { p2p_peer, topic, digest } => {
+                self.on_remote_graft(p2p_peer, topic, digest, now, emit);
             }
-            PeerEvent::P2pGossipTopicPrune { p2p_peer, topic, backoff_seconds } => {
-                self.on_remote_prune(p2p_peer, topic, now, backoff_seconds, emit);
+            PeerEvent::P2pGossipTopicPrune { p2p_peer, topic, digest, backoff_seconds } => {
+                self.on_remote_prune(p2p_peer, topic, digest, now, backoff_seconds, emit);
             }
             PeerEvent::P2pGossipHave { p2p_peer, topic: _, hash, already_seen } => {
                 self.on_ihave(p2p_peer, hash, already_seen, now);
@@ -443,13 +447,21 @@ impl PeerManager {
             PeerEvent::SendGossip {
                 originator_stream_id,
                 topic,
+                domain,
                 msg_hash,
                 recv_ts: _,
                 protobuf,
                 ssz: _,
             } => {
                 // TODO recv_ts elapsed metric
-                self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf, emit);
+                self.on_send_gossip(
+                    originator_stream_id.peer(),
+                    msg_hash,
+                    topic,
+                    domain.digest(),
+                    protobuf,
+                    emit,
+                );
             }
             PeerEvent::RpcServeOutcome {
                 p2p_peer,
@@ -506,8 +518,8 @@ impl PeerManager {
     pub fn tick(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         // Mesh-size gauges refreshed here rather than at each mutation site —
         // mesh entries persist (empty vecs stay), so this is exact.
-        for (topic, mesh_peers) in &self.mesh {
-            crate::counters::GossipTopicCounters::mesh(*topic, mesh_peers.len());
+        for (topic, meshes) in &self.mesh {
+            crate::counters::GossipTopicCounters::mesh(*topic, meshes.total());
         }
         // 1) Heartbeat rollover: reset per-heartbeat counters, sweep broken promises.
         if now.saturating_duration_since(self.last_heartbeat) >= self.params.heartbeat_interval {

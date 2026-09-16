@@ -10,9 +10,9 @@ use silver_beacon_state_data::{
     StateReadView, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipTopic, LOCAL_GOSSIP_STREAM_ID, MessageId, P2pStreamId,
-    PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed, TCache,
-    TCacheProducer, TCacheRead, TProducer,
+    BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID, MessageId,
+    P2pStreamId, PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed,
+    TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -186,6 +186,7 @@ fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
     BlockSourceMsg::Gossip(NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconBlock,
+        domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,
@@ -560,6 +561,16 @@ impl Published {
             .collect()
     }
 
+    fn changes(&self) -> Vec<HeadChange> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Status { head_change, .. } => Some(*head_change),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn reorgs(&self) -> Vec<Slot> {
         self.0
             .iter()
@@ -900,6 +911,22 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
             );
         }
     }
+}
+
+#[test]
+fn head_change_is_classified_against_the_last_complete_status() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    assert_eq!(rig.crank().changes(), [HeadChange::Head]);
+
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    assert_eq!(rig.crank().changes(), [HeadChange::Payload]);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().changes(), [HeadChange::Head]);
+
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.drain().changes(), [HeadChange::None]);
 }
 
 #[test]
@@ -2250,6 +2277,7 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic,
+        domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz,
@@ -2279,6 +2307,7 @@ fn gossip_att_msg(
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconAttestation(subnet),
+        domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,

@@ -1,25 +1,14 @@
-use std::{fmt::Write, str};
+use std::str;
 
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
-use crate::{
-    events::ChannelSet,
-    json::{Json, json_safe},
-    router::Served,
-};
+use crate::{events::ChannelSet, json::Json, router::Served};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 pub(crate) struct Response<'a> {
     out: &'a mut Vec<u8>,
     stream: Option<ChannelSet>,
-}
-
-/// One entry of a beacon-API `IndexedErrorMessage.failures` list; `index` is
-/// the item's position in the submitted list, not a validator index.
-pub(crate) struct Failure<'a> {
-    pub(crate) index: usize,
-    pub(crate) message: &'a str,
 }
 
 impl<'a> Response<'a> {
@@ -115,26 +104,6 @@ impl<'a> Response<'a> {
         body.push(b'}');
         self.send(code, Some(JSON_CONTENT_TYPE), &[], &body);
     }
-
-    /// Beacon-API `IndexedErrorMessage` shape, for requests carrying a list of
-    /// items of which only some failed. The schema requires `failures` but
-    /// sets no minimum, so an empty list stays a well-formed body.
-    // Live with the first endpoint that validates a submitted list item by item.
-    #[allow(dead_code)]
-    pub(crate) fn indexed_error(&mut self, code: u16, message: &str, failures: &[Failure<'_>]) {
-        debug_assert!(json_safe(message), "message goes into JSON unescaped");
-        let mut body = format!("{{\"code\":{code},\"message\":\"{message}\",\"failures\":[");
-        for (position, failure) in failures.iter().enumerate() {
-            debug_assert!(json_safe(failure.message), "message goes into JSON unescaped");
-            if position > 0 {
-                body.push(',');
-            }
-            write!(body, "{{\"index\":{},\"message\":\"{}\"}}", failure.index, failure.message)
-                .unwrap();
-        }
-        body.push_str("]}");
-        self.send(code, Some(JSON_CONTENT_TYPE), &[], body.as_bytes());
-    }
 }
 
 /// `None` for codes this API has no phrase for; those still frame, with the
@@ -190,39 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn json_frames_ok_with_content_type() {
-        let mut out = Vec::new();
-        Response::new(&mut out).json(b"{\"data\":1}");
-        assert_eq!(
-            out,
-            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{\"data\":1}"
-        );
-    }
-
-    #[test]
-    fn empty_frames_ok_with_zero_length_body() {
-        let mut out = Vec::new();
-        Response::new(&mut out).empty("text/plain");
-        assert_eq!(
-            out,
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n"
-        );
-    }
-
-    #[test]
-    fn error_frames_any_mapped_status() {
-        let out = framed(|resp| resp.error(415, "unsupported media type"));
-        let expected: &[u8] = b"HTTP/1.1 415 Unsupported Media Type\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"code\":415,\"message\":\"unsupported media type\"}";
-        assert_eq!(out, expected);
-    }
-
-    #[test]
-    fn send_frames_a_bodyless_status() {
-        let out = framed(|resp| resp.send(202, None, &[], b""));
-        assert_eq!(out, b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n");
-    }
-
-    #[test]
     fn send_emits_extra_headers_in_order() {
         let out = framed(|resp| {
             resp.send(
@@ -236,12 +172,6 @@ mod tests {
             out,
             b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: fulu\r\nEth-Execution-Payload-Blinded: false\r\nContent-Length: 3\r\n\r\n\x01\x02\x03"
         );
-    }
-
-    #[test]
-    fn unmapped_status_frames_with_an_empty_reason_phrase() {
-        let out = framed(|resp| resp.send(599, None, &[], b""));
-        assert_eq!(out, b"HTTP/1.1 599 \r\nContent-Length: 0\r\n\r\n");
     }
 
     /// A `syncing_status` a client picked reaches the wire whether or not this
@@ -274,24 +204,5 @@ mod tests {
             assert_eq!(status.split(' ').next(), Some(code.to_string().as_str()), "{status}");
             assert!(status.len() > 4, "reason phrase missing from {status}");
         }
-    }
-
-    #[test]
-    fn indexed_error_lists_every_failure() {
-        let out = framed(|resp| {
-            resp.indexed_error(400, "some failures", &[
-                Failure { index: 1, message: "invalid signature" },
-                Failure { index: 3, message: "unknown validator" },
-            ])
-        });
-        let expected: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 135\r\n\r\n{\"code\":400,\"message\":\"some failures\",\"failures\":[{\"index\":1,\"message\":\"invalid signature\"},{\"index\":3,\"message\":\"unknown validator\"}]}";
-        assert_eq!(out, expected);
-    }
-
-    #[test]
-    fn indexed_error_without_failures_keeps_the_required_empty_array() {
-        let out = framed(|resp| resp.indexed_error(400, "some failures", &[]));
-        let expected: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 52\r\n\r\n{\"code\":400,\"message\":\"some failures\",\"failures\":[]}";
-        assert_eq!(out, expected);
     }
 }

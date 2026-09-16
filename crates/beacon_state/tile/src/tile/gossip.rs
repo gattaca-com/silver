@@ -1298,6 +1298,7 @@ impl BeaconStateTile {
         producers.produce(PeerEvent::SendGossip {
             originator_stream_id: m.stream_id,
             topic: m.topic,
+            domain: m.domain,
             msg_hash: m.msg_hash,
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,

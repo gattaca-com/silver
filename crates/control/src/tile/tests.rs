@@ -7,6 +7,10 @@ use silver_common::{
 };
 use silver_peer::SyncingConfig;
 
+fn test_domain() -> silver_common::GossipDomain {
+    silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu)
+}
+
 use super::*;
 
 struct GossipPublications {
@@ -49,7 +53,7 @@ impl GossipPublications {
                 incoming.cache_ref().random_access("publication_in", true).unwrap(),
                 TCache::producer("publication_ssz", 1 << 16),
                 protobuf,
-                "00000000".to_owned(),
+                Some(test_domain()),
             )
             .unwrap(),
             TCache::multi_producer("publication_rpc_out", 1 << 16),
@@ -58,6 +62,7 @@ impl GossipPublications {
             cluster_in.cache_ref().random_access("publication_cluster", true).unwrap(),
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
+            Arc::new(SpecConfig::mainnet()),
         )
         .unwrap();
         let dir = ShmemDir::new().unwrap();
@@ -85,9 +90,11 @@ impl GossipPublications {
                 port: 4000 + peer as u16,
                 local_dial: false,
             });
-            capture
-                .observer
-                .produce(PeerEvent::P2pGossipTopicSubscribe { p2p_peer: peer as usize, topic });
+            capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: peer as usize,
+                topic,
+                digest: [0; 4],
+            });
         }
         capture.crank();
         capture.sent();
@@ -141,6 +148,7 @@ fn relay_requests_preserve_routing_and_iwant_service() {
         capture.observer.produce(PeerEvent::SendGossip {
             originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic,
+            domain: test_domain(),
             msg_hash: hash,
             recv_ts: Nanos::now(),
             protobuf: capture.payload,
@@ -184,7 +192,7 @@ fn column_publication_encodes_and_routes_without_another_spine_request() {
         capture.incoming.cache_ref().random_access("publication_receiver", true).unwrap(),
         decoded,
         TCache::producer("publication_received_protobuf", 1 << 16),
-        "00000000".to_owned(),
+        Some(test_domain()),
     )
     .unwrap();
     let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
