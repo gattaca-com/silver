@@ -88,13 +88,26 @@ pub enum BeaconApiRequest {
         subnet: u64,
         ssz: [u8; SINGLE_ATT_SIZE],
     },
+    BlockByRoot {
+        request_id: u64,
+        block_root: [u8; 32],
+    },
 }
 
 /// Completion of work submitted through [`BeaconApiRequest`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
     LocalAttestationResponse { request_id: u64, response: LocalAttestationResult },
+    Block { request_id: u64, block: Option<ServedBlock> },
+}
+
+/// `ssz` points into the `outgoing_rpc` tcache.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ServedBlock {
+    pub slot: u64,
+    pub ssz: TCacheRead,
 }
 
 /// Final result for one locally submitted attestation. `Success` is emitted

@@ -160,6 +160,7 @@ impl AttestationClusterHandler {
                     producers,
                 );
             }
+            BeaconApiRequest::BlockByRoot { .. } => {}
         }
     }
 
@@ -542,6 +543,7 @@ mod tests {
                 BeaconApiResponse::LocalAttestationResponse { request_id, response } => {
                     responses.push((request_id, response));
                 }
+                BeaconApiResponse::Block { .. } => {}
             });
             responses
         }
