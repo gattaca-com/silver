@@ -81,12 +81,12 @@ impl ColumnTracker {
     }
 
     /// Whether any of `columns` is ours to keep.
-    pub(crate) fn wants(&self, columns: u128) -> bool {
-        self.custody.contains_any(columns)
+    pub(crate) fn is_custody(&self, column: u64) -> bool {
+        self.custody.contains_any(1u128 << column)
     }
 
-    pub(crate) fn has_any(&self, root: &BlockRoot, columns: u128) -> bool {
-        self.blocks.get(root).is_some_and(|b| b.validated & columns != 0)
+    pub(crate) fn holds(&self, root: &BlockRoot, column: u64) -> bool {
+        self.blocks.get(root).is_some_and(|b| b.validated & (1u128 << column) != 0)
     }
 
     pub(crate) fn signature_verified(&self, root: &BlockRoot, signature: &[u8; 96]) -> bool {

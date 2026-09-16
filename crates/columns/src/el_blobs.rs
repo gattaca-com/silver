@@ -225,7 +225,6 @@ impl ElBlobFetcher {
             }
             debug_assert_eq!(self.sidecar_buffer.len(), util::data_column_sidecar_len(n));
 
-            // TODO(republish): maybe gossip these EL-reconstructed columns to peers?
             match column_producer.reserve(self.sidecar_buffer.len(), true) {
                 Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
                     Ok(_) => {
@@ -235,6 +234,12 @@ impl ElBlobFetcher {
                             column_index = j,
                             "EL data column recv"
                         );
+                        producers.produce(DataColumnsEvent::Validated {
+                            block_root,
+                            column_index: j,
+                            slot: pending.slot,
+                            source: ColumnSource::El,
+                        });
                         producers.produce(DataColumnsEvent::Persist {
                             ssz: reservation.read(),
                             source: ColumnSource::El,
@@ -242,6 +247,7 @@ impl ElBlobFetcher {
                             column_index: j,
                             slot: pending.slot,
                         });
+                        built |= bit;
                     }
                     Err(e) => tracing::error!(?e, "failed to write el sidecar to tcache"),
                 },
@@ -249,8 +255,6 @@ impl ElBlobFetcher {
                     tracing::error!("failed to allocation cache space for el data column");
                 }
             }
-
-            built |= bit;
         }
 
         if built == 0 {

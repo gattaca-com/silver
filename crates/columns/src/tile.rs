@@ -36,7 +36,7 @@ use crate::{
 enum ColumnDisposition {
     Batched,
     Ignored,
-    Rejected { block_root: BlockRoot, slot: u64, bitmask: u128 },
+    Rejected { block_root: BlockRoot, slot: u64, column: Option<u64> },
 }
 
 pub struct ColumnConsumers {
@@ -245,19 +245,21 @@ impl DataColumnsTile {
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::AlreadyHeld { block_root, column_index, slot } => {
-                let is_gossip = column.stream_id.protocol().is_gossip();
-                producers.produce_with_ingestion(
-                    DataColumnsEvent::Persist {
-                        ssz: column.sidecar.read,
-                        source: if is_gossip { ColumnSource::Gossip } else { ColumnSource::Rpc },
-                        block_root,
-                        column_index,
-                        slot,
-                    },
-                    column.recv_ts,
-                );
+                let source = ColumnSource::from_protocol(column.stream_id.protocol());
+                if self.tracker.is_custody(column_index) {
+                    producers.produce_with_ingestion(
+                        DataColumnsEvent::Persist {
+                            ssz: column.sidecar.read,
+                            source,
+                            block_root,
+                            column_index,
+                            slot,
+                        },
+                        column.recv_ts,
+                    );
+                }
 
-                if !is_gossip && self.tracker.custody_complete(&block_root) {
+                if source != ColumnSource::Gossip && self.tracker.custody_complete(&block_root) {
                     producers.produce(SyncNeed::Arrived {
                         root: block_root,
                         slot,
@@ -266,8 +268,8 @@ impl DataColumnsTile {
                 }
                 ColumnDisposition::Ignored
             }
-            ColumnOutcome::Reject { block_root, slot, bitmask } => {
-                ColumnDisposition::Rejected { block_root, slot, bitmask }
+            ColumnOutcome::Reject { block_root, slot, column } => {
+                ColumnDisposition::Rejected { block_root, slot, column }
             }
             ColumnOutcome::Buffer { block_root } => {
                 let pending = self.gloas_pending_columns.entry(block_root).or_default();
@@ -285,14 +287,13 @@ impl DataColumnsTile {
                 }
                 ColumnDisposition::Ignored
             }
-            ColumnOutcome::Record { block_root, column_index, bitmask, slot, relay_eligible } => {
+            ColumnOutcome::Record { block_root, column_index, slot, relay_eligible } => {
                 let queued = self.kzg_batch.push(PendingKzg {
                     sidecar: column.sidecar,
                     stream_id: column.stream_id,
                     recv_ts: column.recv_ts,
                     block_root,
                     column_index,
-                    bitmask,
                     slot,
                     is_gloas,
                     frame: if relay_eligible { frame } else { None },
@@ -343,17 +344,19 @@ impl DataColumnsTile {
     }
 
     fn record_validated_column(&mut self, p: PendingKzg, producers: &mut SilverSpineProducers) {
-        let PendingKzg {
-            sidecar, stream_id, recv_ts, block_root, column_index, bitmask, slot, ..
-        } = p;
-        self.record_columns(block_root, slot, bitmask, recv_ts, producers);
+        let PendingKzg { sidecar, stream_id, recv_ts, block_root, column_index, slot, .. } = p;
+        debug_assert!(
+            !self.tracker.holds(&block_root, column_index),
+            "a batched column is recorded before anything else can set its bit"
+        );
+        self.record_columns(block_root, slot, 1u128 << column_index, recv_ts, producers);
 
-        if self.tracker.wants(bitmask) {
-            let source = if stream_id.protocol().is_gossip() {
-                ColumnSource::Gossip
-            } else {
-                ColumnSource::Rpc
-            };
+        let source = ColumnSource::from_protocol(stream_id.protocol());
+        producers.produce_with_ingestion(
+            DataColumnsEvent::Validated { block_root, column_index, slot, source },
+            recv_ts,
+        );
+        if self.tracker.is_custody(column_index) {
             producers.produce_with_ingestion(
                 DataColumnsEvent::Persist {
                     ssz: sidecar.read,
@@ -460,13 +463,13 @@ impl DataColumnsTile {
         let stream_id = column.stream_id;
         let disposition = self.data_columns(column, frame, producers);
 
-        if let ColumnDisposition::Rejected { block_root, slot, bitmask } = disposition {
+        if let ColumnDisposition::Rejected { block_root, slot, column } = disposition {
             producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: stream_id.peer(),
                 severity: RpcSeverity::Fatal,
             });
-            if bitmask != 0 {
-                producers.produce(SyncNeed::missing_columns(block_root, slot, bitmask));
+            if let Some(column) = column {
+                producers.produce(SyncNeed::missing_column(block_root, slot, column));
             }
         }
     }
@@ -549,7 +552,7 @@ impl DataColumnsTile {
             p2p_peer: p.stream_id.peer(),
             severity: RpcSeverity::Fatal,
         });
-        producers.produce(SyncNeed::missing_columns(p.block_root, p.slot, p.bitmask));
+        producers.produce(SyncNeed::missing_column(p.block_root, p.slot, p.column_index));
     }
 }
 
@@ -607,9 +610,9 @@ impl DataColumnsTile {
             ColumnDisposition::Ignored => EfVerdict::Ignore,
             ColumnDisposition::Batched => {
                 let queued = self.kzg_batch.pending.last().expect("batched sidecar is pending");
-                let (block_root, bitmask) = (queued.block_root, queued.bitmask);
+                let (block_root, column_index) = (queued.block_root, queued.column_index);
                 self.flush_kzg_batch(producers);
-                if self.tracker.has_any(&block_root, bitmask) {
+                if self.tracker.holds(&block_root, column_index) {
                     EfVerdict::Valid
                 } else {
                     EfVerdict::Reject
@@ -739,6 +742,12 @@ impl Tile<SilverSpine> for DataColumnsTile {
             }
         });
 
+        // Verified before the EL response is read, so `to_request` excludes
+        // columns that arrived this iteration and no column is recorded twice.
+        if !self.kzg_batch.is_empty() {
+            self.flush_kzg_batch(&mut adapter.producers);
+        }
+
         adapter.consume(|sync_update: SyncUpdate, _| {
             self.sync_state.set_sync_target(sync_update);
         });
@@ -759,10 +768,6 @@ impl Tile<SilverSpine> for DataColumnsTile {
             }
         });
         self.el_fetcher.free();
-
-        if !self.kzg_batch.is_empty() {
-            self.flush_kzg_batch(&mut adapter.producers);
-        }
 
         let now = Instant::now();
 
@@ -956,6 +961,9 @@ mod tests {
             let mut out = Produced::default();
             self.inj.consume(|event: DataColumnsEvent, _| match event {
                 DataColumnsEvent::Available { .. } => out.available += 1,
+                DataColumnsEvent::Validated { column_index, .. } => {
+                    out.validated |= 1u128 << column_index
+                }
                 DataColumnsEvent::Persist { .. } => out.receipts.push(event),
             });
             self.inj.consume(|need: SyncNeed, _| match need {
@@ -993,6 +1001,7 @@ mod tests {
     struct Produced {
         available: usize,
         custody_complete: usize,
+        validated: u128,
         receipts: Vec<DataColumnsEvent>,
         publications: Vec<(ColumnSource, GossipTopic, SidecarIdentity)>,
         engine: usize,
@@ -1197,6 +1206,50 @@ mod tests {
         }
     }
 
+    /// `Validated` is the fact and fires once per column whether or not it is
+    /// custody; `Persist` is the storage command, custody-gated, and a repeat
+    /// copy re-offers it without restating the fact.
+    #[test]
+    fn validated_once_persist_for_custody() {
+        const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
+                            gossip_data_column_sidecar__ignore_parent_not_seen";
+        let Some((sidecar, state)) = ef_sidecar(CASE) else { return };
+        let reader = reader_over(&state);
+        let slot = DataColumnSidecarFuluView::slot(&sidecar);
+        let index = DataColumnSidecarFuluView::index(&sidecar);
+        let parent_root = *DataColumnSidecarFuluView::parent_root(&sidecar);
+
+        for (custody, receipts) in [(1u128 << index, 1usize), (0, 0)] {
+            let mut rig = Rig::with_state(custody, reader.clone(), fulu_from_genesis());
+            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
+            rig.tile.sync_state.update(status_ssz(0));
+            rig.tile.handle_beacon_state_event(
+                block_received(BlockStage::AwaitData, parent_root, slot - 1),
+                &mut rig.conn.producers,
+            );
+
+            rig.gossip_sidecar(index, &sidecar);
+            rig.turn();
+            let out = rig.drain();
+            assert_eq!(out.validated, 1u128 << index, "custody {custody:b}: the fact fires");
+            assert_eq!(
+                out.receipts.len(),
+                receipts,
+                "custody {custody:b}: storage is custody-gated"
+            );
+
+            rig.gossip_sidecar(index, &sidecar);
+            rig.turn();
+            let out = rig.drain();
+            assert_eq!(out.validated, 0, "custody {custody:b}: a repeat restates nothing");
+            assert_eq!(
+                out.receipts.len(),
+                receipts,
+                "custody {custody:b}: a repeat is re-offered to storage on the same terms"
+            );
+        }
+    }
+
     fn head_status(head_root: BlockRoot, head_slot: u64) -> BeaconStateEvent {
         let mut ssz = status_ssz(0);
         ssz[44..76].copy_from_slice(&head_root);
@@ -1266,7 +1319,6 @@ mod tests {
                 ColumnOutcome::Record {
                     block_root: [4u8; 32],
                     column_index: 3,
-                    bitmask: 1 << 3,
                     slot: 7,
                     relay_eligible,
                 },
@@ -1338,18 +1390,18 @@ mod tests {
             let out = rig.drain();
 
             assert!(
-                matches!(disposition, ColumnDisposition::Rejected { bitmask: 0, .. }),
+                matches!(disposition, ColumnDisposition::Rejected { column: None, .. }),
                 "index {index}: rejected with no column named"
             );
             assert!(out.missing.is_empty(), "index {index}: nothing to re-own");
         }
 
         // Control: an in-range index does name its column, so the assertions
-        // above are about the bound and not about a blanket empty bitmask.
+        // above are about the bound and not about a blanket missing column.
         let mut rig = Rig::new(CUSTODY_COLUMNS);
         let disposition = feed_sidecar(&mut rig, &synth_fulu_sidecar(3, 7), "in_range_index");
         assert!(
-            matches!(disposition, ColumnDisposition::Rejected { bitmask, .. } if bitmask == 1 << 3),
+            matches!(disposition, ColumnDisposition::Rejected { column: Some(3), .. }),
             "an in-range index is re-owed"
         );
     }

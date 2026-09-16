@@ -492,7 +492,7 @@ impl BeaconApi {
     }
 
     pub fn handle_data_columns_event(&mut self, event: DataColumnsEvent) {
-        if let DataColumnsEvent::Persist { block_root, column_index, slot, .. } = event {
+        if let DataColumnsEvent::Validated { block_root, column_index, slot, .. } = event {
             self.publish_data_column_sidecar(&block_root, column_index, slot);
         }
     }

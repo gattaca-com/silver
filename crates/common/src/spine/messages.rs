@@ -626,6 +626,10 @@ impl SyncNeed {
         Self::live_missing(DataKind::Columns, root, slot, columns)
     }
 
+    pub fn missing_column(root: [u8; 32], slot: u64, column: u64) -> Self {
+        Self::missing_columns(root, slot, 1u128 << column)
+    }
+
     fn live_missing(kind: DataKind, root: [u8; 32], slot: u64, columns: u128) -> Self {
         Self::Missing { root, slot, kind, columns, origin: Origin::Live }
     }
@@ -904,6 +908,12 @@ pub enum ColumnSource {
     Gossip,
     Rpc,
     El,
+}
+
+impl ColumnSource {
+    pub const fn from_protocol(protocol: StreamProtocol) -> Self {
+        if protocol.is_gossip() { Self::Gossip } else { Self::Rpc }
+    }
 }
 
 /// A zero `state_root` marks all three roots unavailable. This can occur
@@ -1307,7 +1317,10 @@ impl BeaconStateEvent {
 pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
-    /// Message sent when a data column has been validated.
+    /// A column passed validation. Once per (block_root, column_index): the
+    /// tracker edge fires it, so SSE and telemetry need no dedup.
+    Validated { block_root: [u8; 32], column_index: u64, slot: u64, source: ColumnSource },
+    /// Bytes for storage to write. A repeat offer is allowed; storage dedups.
     Persist {
         ssz: TCacheRead,
         source: ColumnSource,

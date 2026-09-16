@@ -23,7 +23,6 @@ pub(crate) struct PendingKzg {
     pub recv_ts: IngestionTime,
     pub block_root: BlockRoot,
     pub column_index: u64,
-    pub bitmask: u128,
     pub slot: u64,
     pub is_gloas: bool,
     pub frame: Option<GossipSidecarFrame>,
@@ -49,7 +48,7 @@ impl KzgBatch {
         let queued = self
             .pending
             .iter()
-            .any(|p| p.bitmask == entry.bitmask && p.block_root == entry.block_root);
+            .any(|p| p.column_index == entry.column_index && p.block_root == entry.block_root);
         if queued {
             return false;
         }
@@ -68,7 +67,7 @@ impl KzgBatch {
         let mut held = 0;
         for (i, p) in self.pending.iter().enumerate() {
             if p.block_root == root {
-                held |= p.bitmask;
+                held |= 1u128 << p.column_index;
             }
             if tracker.becomes_available(&root, held) {
                 return i + 1;
