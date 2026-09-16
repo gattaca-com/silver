@@ -921,9 +921,6 @@ pub enum BlockSource {
     Rpc,
 }
 
-/// Which tcache a decompressed gossip-SSZ `TCacheRead` lives in. Data
-/// column sidecars decompress into the data-columns cache (when the
-/// cell store is configured); everything else into the ssz-gossip cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum SszSource {

@@ -1,5 +1,4 @@
 use std::{
-    ptr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,21 +8,17 @@ use flux::{
     tile::Tile,
 };
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, BeaconStateReader, ForkName, SLOTS_PER_EPOCH, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
     RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszSource, SyncNeed,
     SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     cell_store::{
-        CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
-        CommitmentContext, ContextData, FuluContextSource, RetentionEvent, StoreError,
+        CellStoreConfig, CellStoreEvent, CellValidationOutcome, RetentionEvent, StoreError,
     },
     column_util::{self as util, KzgScratch},
-    ssz_view::{
-        BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
-        SignedBeaconBlockView, StatusView,
-    },
+    ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
     ticker::SlotTicker,
 };
 
@@ -31,11 +26,14 @@ use crate::{
     BlockRoot, DataColumnCounters,
     availability::ColumnTracker,
     batch::{self, GossipSidecarFrame, KzgBatch, PendingKzg},
-    cell_store::CellStore,
     el_blobs::ElBlobFetcher,
     sync::SyncStatus,
     validate::{ColumnOutcome, ColumnValidator, PendingColumn},
 };
+
+mod cell_handler;
+
+use cell_handler::CellHandler;
 
 /// Only `Batched` sidecars can end up forwarded / republished on gossip
 /// (their relay fires at flush if KZG passes): `Ignored` covers spec-IGNORE
@@ -91,14 +89,11 @@ pub struct DataColumnsTile {
     el_fetcher: ElBlobFetcher,
     el_column_producer: TProducer,
 
-    cell_store: Option<CellStore>,
-
     kzg_scratch: KzgScratch,
 
-    // Declared last so it drops last: a parked column's read releases through
-    // the consumer it was acquired from.
+    // Consumers must outlive the acquired reads held by pending columns.
     consumers: ColumnConsumers,
-    data_columns_consumer: Option<Box<TRandomAccess>>,
+    cells: Option<CellHandler>,
 }
 
 impl DataColumnsTile {
@@ -125,9 +120,8 @@ impl DataColumnsTile {
             sync_state: SyncStatus::default(),
             el_fetcher: ElBlobFetcher::new(engine_resp_consumer),
             el_column_producer,
-            cell_store: None,
             kzg_scratch: KzgScratch::default(),
-            data_columns_consumer: None,
+            cells: None,
         }
     }
 
@@ -138,12 +132,7 @@ impl DataColumnsTile {
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        assert!(consumer.is_retained());
-        if consumer.cache_ref().capacity() < config.cache_capacity() {
-            return Err(StoreError::CacheTooSmall);
-        }
-        self.cell_store = Some(CellStore::new(config, slot, slot_start)?);
-        self.data_columns_consumer = Some(Box::new(consumer));
+        self.cells = Some(CellHandler::new(config, consumer, slot, slot_start)?);
         Ok(self)
     }
 
@@ -188,7 +177,9 @@ impl DataColumnsTile {
 
         if is_gloas {
             self.validator.cache_gloas_commitments(block_root, buffer);
-            self.admit_gloas_context(block_root, slot, producers);
+            if let Some(cells) = &mut self.cells {
+                cells.admit_gloas_context(block_root, slot, &self.validator, producers);
+            }
         }
 
         // Custody columns only — silver floors cgc at SAMPLES_PER_SLOT, so the
@@ -223,7 +214,9 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) {
         self.validator.note_validated(block_root, slot);
-        self.admit_gloas_context(block_root, slot, producers);
+        if let Some(cells) = &mut self.cells {
+            cells.admit_gloas_context(block_root, slot, &self.validator, producers);
+        }
         self.drain_pending_gloas_columns(block_root, producers);
         self.drain_parent_pending_columns(block_root, producers);
 
@@ -243,13 +236,7 @@ impl DataColumnsTile {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => {
                 let verify_held = column.ssz_source == SszSource::DataColumns &&
-                    self.cell_store.as_ref().is_some_and(|store| {
-                        util::SidecarIdentity::of(buf).is_some_and(|identity| {
-                            store
-                                .availability(&identity.block_root, identity.column_index as usize)
-                                .is_none_or(|column| column.full.is_none())
-                        })
-                    });
+                    self.cells.as_ref().is_some_and(|cells| cells.needs_full_validation(buf));
                 self.validator.validate(
                     &column,
                     buf,
@@ -395,206 +382,6 @@ impl DataColumnsTile {
         }
     }
 
-    fn admit_gloas_context(
-        &mut self,
-        root: BlockRoot,
-        slot: u64,
-        producers: &SilverSpineProducers,
-    ) {
-        let Some(store) = &mut self.cell_store else { return };
-        let Some(commitments) = self.validator.gloas_commitments(&root) else { return };
-        let Some(domain) = self.validator.domain_at(slot) else { return };
-        let context = CommitmentContext {
-            block_root: root,
-            slot,
-            format: ForkName::Gloas,
-            blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
-        };
-        if store.admit_context(context, domain, ContextData::Gloas { commitments }, None).is_ok() {
-            if let Some(request) = store.request_assemblies(&root) {
-                producers.produce(CellStoreEvent::Allocate(request));
-            }
-        }
-    }
-
-    fn retain_validated_column(&mut self, p: &PendingKzg, producers: &SilverSpineProducers) {
-        if !p.context_eligible || p.ssz_source != SszSource::DataColumns {
-            return;
-        }
-        let (Some(store), Some(consumer), Some(domain)) =
-            (&mut self.cell_store, &mut self.data_columns_consumer, p.domain)
-        else {
-            return
-        };
-        let Ok((bytes, _)) = p.sidecar.buffer() else { return };
-        let data = if p.is_gloas {
-            let Some(commitments) = self.validator.gloas_commitments(&p.block_root) else { return };
-            ContextData::Gloas { commitments }
-        } else {
-            ContextData::Fulu {
-                signed_header: bytes[20..228].try_into().unwrap(),
-                inclusion_proof: bytes[228..356].try_into().unwrap(),
-                commitments: DataColumnSidecarFuluView::kzg_commitments(bytes),
-            }
-        };
-        let context = CommitmentContext {
-            block_root: p.block_root,
-            slot: p.slot,
-            format: domain.format(),
-            blob_count: data.commitments().len() / BYTES_PER_KZG_COMMITMENT,
-        };
-        let source = (!p.is_gloas).then_some(FuluContextSource::Sidecar(p.sidecar.read));
-        if let Err(e) = store.admit_context(context, domain, data, source) {
-            tracing::debug!(?e, slot = p.slot, "cell context not admitted");
-            return;
-        }
-        match store.retain_full(&p.block_root, p.column_index as usize, p.sidecar.read, consumer) {
-            Ok(_) => store.mark_changed(&p.block_root, p.column_index as usize),
-            Err(e) => tracing::debug!(?e, column = p.column_index, "full sidecar not retained"),
-        }
-        if let Some(request) = store.request_assemblies(&p.block_root) {
-            producers.produce(CellStoreEvent::Allocate(request));
-        }
-    }
-
-    fn handle_cell_event(
-        &mut self,
-        event: CellStoreEvent,
-        now: Instant,
-        producers: &mut SilverSpineProducers,
-    ) {
-        match event {
-            CellStoreEvent::Allocated { request, set } => {
-                let (Some(store), Some(consumer)) =
-                    (&mut self.cell_store, &mut self.data_columns_consumer)
-                else {
-                    return
-                };
-                match set {
-                    Some(set)
-                        if set.request.id == request.id &&
-                            set.request.context == request.context =>
-                    {
-                        match store.install(set, consumer) {
-                            Ok(true) => {
-                                let mut columns = request.columns;
-                                while columns != 0 {
-                                    let column = columns.trailing_zeros() as usize;
-                                    columns &= columns - 1;
-                                    store.mark_changed(&request.context.block_root, column);
-                                }
-                            }
-                            Ok(false) => {}
-                            Err(e) => {
-                                store.allocation_failed(request);
-                                tracing::debug!(?e, "cell allocation not installed");
-                            }
-                        }
-                    }
-                    _ => store.allocation_failed(request),
-                }
-            }
-            CellStoreEvent::Validate(request) => {
-                let outcome = self.validate_cell(request, now);
-                producers.produce(CellStoreEvent::Validation { request, outcome });
-            }
-            CellStoreEvent::Cancel(pending) => {
-                if let Some(consumer) = &mut self.data_columns_consumer {
-                    let _ = pending.data.cancel(consumer);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn validate_cell(
-        &mut self,
-        request: CellValidationRequest,
-        now: Instant,
-    ) -> CellValidationOutcome {
-        let (Some(store), Some(consumer)) = (&mut self.cell_store, &mut self.data_columns_consumer)
-        else {
-            return CellValidationOutcome::Ignored
-        };
-        let key = request.pending.key;
-        let eligible = store.availability(&key.block_root, key.column).is_some_and(|column| {
-            now < request.deadline &&
-                now < column.expires &&
-                column.domain == request.domain &&
-                column.assembly.is_some_and(|reference| {
-                    reference.read().seq() == request.pending.data.reservation().read().seq()
-                }) &&
-                key.row == request.pending.data.part()
-        });
-        if !eligible {
-            let _ = request.pending.data.cancel(consumer);
-            return CellValidationOutcome::Ignored;
-        }
-        let Ok(validation) = request.pending.data.acquire(consumer) else {
-            return CellValidationOutcome::Ignored
-        };
-        let (context, data) = store.context(&key.block_root).unwrap();
-        if key.row >= context.blob_count {
-            return CellValidationOutcome::Ignored;
-        }
-        let [cell, proof] = validation.buffers();
-        let commitments = &data.commitments()
-            [key.row * BYTES_PER_KZG_COMMITMENT..(key.row + 1) * BYTES_PER_KZG_COMMITMENT];
-        let valid = util::kzg_verify_batch_multi(
-            std::iter::once(util::KzgBatchEntry {
-                column: cell,
-                commitments,
-                proofs: proof,
-                index: key.column as u64,
-            }),
-            &mut self.kzg_scratch,
-        );
-        if !valid {
-            return CellValidationOutcome::Rejected;
-        }
-        if validation.accept().is_err() {
-            return CellValidationOutcome::Ignored;
-        }
-        store.mark_changed(&key.block_root, key.column);
-        CellValidationOutcome::Accepted
-    }
-
-    fn flush_cell_updates(&mut self, producers: &mut SilverSpineProducers) {
-        loop {
-            let (Some(store), Some(consumer)) =
-                (&mut self.cell_store, &mut self.data_columns_consumer)
-            else {
-                return
-            };
-            let Some((root, column)) = store.next_changed() else { return };
-            let Ok(update) = store.refresh_column(&root, column, consumer) else { continue };
-            let Some(available) = store.availability(&root, column) else { continue };
-            producers.produce(CellStoreEvent::Available(available));
-            if !update.column_completed || self.tracker.has_any(&root, 1u128 << column) {
-                continue;
-            }
-            let Some(ssz) = update.complete_read else { continue };
-            self.record_columns(
-                root,
-                available.slot,
-                1u128 << column,
-                IngestionTime::now(),
-                producers,
-            );
-            if self.tracker.wants(1u128 << column) {
-                producers.produce(DataColumnsEvent::Persist {
-                    ssz,
-                    source: ColumnSource::Assembly,
-                    ssz_source: SszSource::DataColumns,
-                    domain: Some(available.domain),
-                    block_root: root,
-                    column_index: column as u64,
-                    slot: available.slot,
-                });
-            }
-        }
-    }
-
     fn record_validated_column(&mut self, p: PendingKzg, producers: &mut SilverSpineProducers) {
         let PendingKzg { sidecar, stream_id, recv_ts, block_root, column_index, slot, .. } = p;
         debug_assert!(
@@ -619,32 +406,6 @@ impl DataColumnsTile {
                     column_index,
                     slot,
                 },
-                recv_ts,
-            );
-        }
-    }
-
-    /// The only place `Available` and custody completion are announced; both
-    /// fire on their threshold edge, so each lands once per block.
-    fn record_columns(
-        &mut self,
-        block_root: BlockRoot,
-        slot: u64,
-        columns: u128,
-        recv_ts: IngestionTime,
-        producers: &mut SilverSpineProducers,
-    ) {
-        let (available, custody_complete) = self.tracker.record(block_root, columns);
-        if available {
-            DataColumnCounters::DataColumnsAvailableEmitted.inc();
-            tracing::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
-            producers
-                .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
-        }
-        if custody_complete {
-            tracing::info!(block = hex::encode(block_root), slot, "custody set complete");
-            producers.produce_with_ingestion(
-                SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns },
                 recv_ts,
             );
         }
@@ -696,11 +457,8 @@ impl DataColumnsTile {
         });
         let sidecar = match gossip.ssz_source {
             SszSource::DataColumns => {
-                let Some(consumer) = self.data_columns_consumer.as_mut() else { return };
-                if !ptr::eq(&*consumer.cache_ref(), &*gossip.ssz.cache_ref()) {
-                    return;
-                }
-                let Some(read) = consumer.acquire_strict(gossip.ssz) else { return };
+                let Some(cells) = self.cells.as_mut() else { return };
+                let Some(read) = cells.acquire(gossip.ssz) else { return };
                 read
             }
             SszSource::Gossip => self.consumers.gossip.acquire(gossip.ssz),
@@ -810,7 +568,9 @@ impl DataColumnsTile {
                 ssz: p.sidecar.read,
             });
         }
-        self.retain_validated_column(&p, producers);
+        if let Some(cells) = &mut self.cells {
+            cells.retain_validated_column(&p, &self.validator, producers);
+        }
         self.record_validated_column(p, producers);
     }
 
@@ -906,7 +666,9 @@ impl DataColumnsTile {
                 let root = *StatusView::head_root(&ssz);
                 let slot = StatusView::head_slot(&ssz);
                 self.validator.note_validated(root, slot);
-                self.admit_gloas_context(root, slot, producers);
+                if let Some(cells) = &mut self.cells {
+                    cells.admit_gloas_context(root, slot, &self.validator, producers);
+                }
                 self.drain_pending_gloas_columns(root, producers);
                 // Per-event (not latest-only): BS emits one Status per accepted
                 // block, and each newly validated root may unblock buffered
@@ -926,9 +688,8 @@ impl DataColumnsTile {
                 self.validator.note_rejected(&block_root);
                 self.gloas_pending_columns.remove(&block_root);
                 self.parent_pending_columns.remove(&block_root);
-                if let Some(store) = &mut self.cell_store {
-                    store.reject(&block_root);
-                    producers.produce(CellStoreEvent::RejectedContext { block_root });
+                if let Some(cells) = &mut self.cells {
+                    cells.reject(block_root, producers);
                 }
             }
             BeaconStateEvent::PersistBlock { ssz, source, .. } => {
@@ -963,30 +724,26 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.consumers.free();
-        if let Some(store) = &mut self.cell_store {
-            store.advance(Instant::now(), self.sync_state.data_availability_floor(), |_| {});
-        }
-        if let Some(consumer) = &mut self.data_columns_consumer {
+        if let Some(cells) = &mut self.cells {
+            cells.advance(Instant::now(), self.sync_state.data_availability_floor());
             adapter.consume(|event: RetentionEvent, _| {
-                if let Some(store) = &mut self.cell_store {
-                    store.expire_through(event.expired_slot);
-                }
-                for pending in [&mut self.gloas_pending_columns, &mut self.parent_pending_columns] {
-                    pending.retain(|_, columns| {
-                        columns.retain(|column| {
-                            column.ssz_source != SszSource::DataColumns ||
-                                column.sidecar.seq() >= event.retain_from
-                        });
-                        !columns.is_empty()
-                    });
-                }
-                consumer.advance_retention(event.retain_from);
+                cells.advance_retention(event, [
+                    &mut self.gloas_pending_columns,
+                    &mut self.parent_pending_columns,
+                ]);
             });
-            consumer.free();
+            cells.free();
         }
 
         adapter.consume(|event: CellStoreEvent, producers| {
-            self.handle_cell_event(event, Instant::now(), producers)
+            if let Some(cells) = &mut self.cells {
+                cells.handle_event(event, Instant::now(), &mut self.kzg_scratch, producers);
+            } else if let CellStoreEvent::Validate(request) = event {
+                producers.produce(CellStoreEvent::Validation {
+                    request,
+                    outcome: CellValidationOutcome::Ignored,
+                });
+            }
         });
 
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
@@ -1068,7 +825,13 @@ impl Tile<SilverSpine> for DataColumnsTile {
                     producers,
                 );
                 if let Some((slot, built)) = built {
-                    self.record_columns(block_root, slot, built, IngestionTime::now(), producers);
+                    self.tracker.record_and_notify(
+                        block_root,
+                        slot,
+                        built,
+                        IngestionTime::now(),
+                        producers,
+                    );
                 }
             }
         });
@@ -1080,7 +843,9 @@ impl Tile<SilverSpine> for DataColumnsTile {
         self.tracker.maybe_rotate(now);
         self.parent_pending_columns.maybe_rotate(now);
         self.gloas_pending_columns.maybe_rotate(now);
-        self.flush_cell_updates(&mut adapter.producers);
+        if let Some(cells) = &mut self.cells {
+            cells.flush_updates(&mut self.tracker, &mut adapter.producers);
+        }
         self.el_fetcher.rotate(now);
     }
 }
@@ -1089,7 +854,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
 mod tests {
     use std::{io::Write, path::Path};
 
-    use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
+    use silver_beacon_state_data::{BeaconState, BeaconStateOwner, ForkName};
     use silver_common::{
         BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots,
         MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
@@ -1289,13 +1054,13 @@ mod tests {
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
             let consumers = &mut self.tile.consumers;
-            let data_columns = &mut self.tile.data_columns_consumer;
+            let data_columns = &mut self.tile.cells;
             self.inj.consume(|event: PeerEvent, _| {
                 let (source, topic, domain, sidecar) = match event {
                     PeerEvent::SendGossip { topic, domain, ssz, ssz_source, .. } => {
                         let read = match ssz_source {
                             SszSource::DataColumns => {
-                                data_columns.as_mut().unwrap().acquire_strict(ssz).unwrap()
+                                data_columns.as_mut().unwrap().acquire(ssz).unwrap()
                             }
                             SszSource::Gossip => consumers.gossip.acquire(ssz),
                             _ => panic!("unexpected gossip cache"),
