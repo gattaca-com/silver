@@ -56,7 +56,10 @@ mod sync_contribution_pool;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
-    Accept(Option<B256>),
+    /// The message was accepted; the caller publishes the status.
+    Accept,
+    /// The block was added to fork choice and its status is published.
+    Imported(B256),
     Ignore,
     /// Carries the failed `block_root` (only) when the reject came from a
     /// post-`body_root`/STF path in block validation, so PM can blacklist
@@ -86,8 +89,8 @@ pub enum Feedback {
 impl Debug for Feedback {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Accept(Some(r)) => write!(f, "Accept(Some(0x{}))", hex32(r)),
-            Self::Accept(None) => f.write_str("Accept(None)"),
+            Self::Accept => f.write_str("Accept"),
+            Self::Imported(r) => write!(f, "Imported(0x{})", hex32(r)),
             Self::Ignore => f.write_str("Ignore"),
             Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
             Self::Reject(None) => f.write_str("Reject(None)"),
@@ -537,6 +540,10 @@ impl BeaconStateTile {
     }
 
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
+        debug_assert!(
+            !self.pending_envelopes.contains_key(&head.observation.root),
+            "Status would describe a head whose envelope is still parked"
+        );
         let event = self.status_event(head);
         self.emitted_head = Some(head.observation);
         producers.produce(event);
@@ -838,7 +845,7 @@ impl BeaconStateTile {
 
     pub fn ef_apply_block(&mut self, ssz: &[u8]) -> Option<B256> {
         match self.try_apply_block(ssz) {
-            Feedback::Accept(r) => r,
+            Feedback::Imported(r) => Some(r),
             _ => None,
         }
     }
@@ -849,7 +856,7 @@ impl BeaconStateTile {
     }
 
     pub fn ef_apply_attester_slashing(&mut self, ssz: &[u8]) {
-        if matches!(self.handle_attester_slashing(ssz), Feedback::Accept(_)) {
+        if self.handle_attester_slashing(ssz) == Feedback::Accept {
             self.recompute_head();
         }
     }
@@ -913,15 +920,10 @@ impl BeaconStateTile {
     }
 
     /// The `beacon_block` gossip verdict: precheck plus proposer signature,
-    /// which is what production relays on. The import still runs afterwards,
-    /// as in production, so a repeat is seen as already known.
+    /// which is what production relays on.
     pub fn ef_gossip_block(&mut self, ssz: &[u8]) -> Feedback {
         match self.parse_and_verify_block(ssz, false) {
-            Ok(parsed) => {
-                let block_root = parsed.block_root;
-                self.apply_and_import(parsed, ssz);
-                Feedback::Accept(Some(block_root))
-            }
+            Ok(_) => Feedback::Accept,
             Err(err) => err.feedback(),
         }
     }
@@ -960,14 +962,14 @@ impl BeaconStateTile {
             gossip::EnvelopeCheck::Ready { block_root, state_id } => {
                 let rv = self.state.read_view(state_id);
                 if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
-                    return Feedback::Accept(None);
+                    return Feedback::Accept;
                 }
                 if self.fork_choice.is_payload_verified(&block_root) {
                     return Feedback::Ignore;
                 }
                 self.fork_choice.mark_payload_verified(&block_root);
                 self.recompute_head();
-                Feedback::Accept(Some(block_root))
+                Feedback::Accept
             }
             gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => {
                 Feedback::Ignore

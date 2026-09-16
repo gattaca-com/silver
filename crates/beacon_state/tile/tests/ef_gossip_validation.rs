@@ -142,7 +142,7 @@ fn case_spec(dir: &Path, is_gloas: bool) -> SpecConfig {
 
 fn outcome(feedback: &Feedback) -> &'static str {
     match feedback {
-        Feedback::Accept(_) => "valid",
+        Feedback::Accept | Feedback::Imported(_) => "valid",
         Feedback::Reject(_) => "reject",
         _ => "ignore",
     }
@@ -290,7 +290,16 @@ fn import_setup(
 
 fn dispatch(tile: &mut BeaconStateTile, topic: &str, msg: &Message, ssz: &[u8]) -> Feedback {
     match topic {
-        "beacon_block" => tile.ef_gossip_block(ssz),
+        "beacon_block" => {
+            let verdict = tile.ef_gossip_block(ssz);
+            // A repeat of a valid block must be seen, which only an import
+            // records. The `parent_*` vectors sign the proposer signature
+            // alone, so their import fails the STF by construction.
+            if verdict == Feedback::Accept {
+                let _ = tile.ef_apply_block(ssz);
+            }
+            verdict
+        }
         "beacon_attestation" => tile.ef_gossip_attestation(ssz, msg.subnet_id),
         "beacon_aggregate_and_proof" => tile.ef_gossip_aggregate_and_proof(ssz),
         "voluntary_exit" => tile.ef_gossip_voluntary_exit(ssz),

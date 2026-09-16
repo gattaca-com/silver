@@ -241,7 +241,7 @@ fn finalized_state_loads() {
 
         let feedback = tile.try_apply_block(&block_ssz);
         assert!(
-            matches!(feedback, Feedback::Accept(_)),
+            matches!(feedback, Feedback::Imported(_)),
             "block at slot {block_slot} not accepted (got {feedback:?})",
         );
         assert!(
@@ -330,7 +330,7 @@ fn tile_apply_block_ef_fixture() {
 
     let fb = tile.try_apply_block(&block_ssz);
     assert!(
-        matches!(fb, Feedback::Accept(_)),
+        matches!(fb, Feedback::Imported(_)),
         "EF block rejected through tile (bootstrap or apply path is buggy, independent of mainnet scale)",
     );
 }
