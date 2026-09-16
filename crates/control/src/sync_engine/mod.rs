@@ -515,20 +515,15 @@ impl SyncEngine {
         self.prev_has_block_gap = has_block_gap;
         self.enter_phase_for(select::select_target(&self.ctx, has_block_gap, self.phase.target()));
 
-        let target = self.phase.target().or_else(|| self.withdrawal())?;
+        let target = self.phase.target().or_else(|| {
+            (self.published == Some(SyncUpdate::Following)).then_some(SyncUpdate::Stalled)
+        })?;
         if self.published.is_some_and(|p| p.same_target_as(target)) {
             return None;
         }
         let previous = self.published.replace(target);
         tracing::info!("Sync target updated from: {previous:?} to {target:?}");
         Some(target)
-    }
-
-    /// Withdraws a published `Following` when no target can be selected.
-    /// A previous sync target already reports syncing; startup has no readiness
-    /// to withdraw.
-    fn withdrawal(&self) -> Option<SyncUpdate> {
-        (self.published == Some(SyncUpdate::Following)).then_some(SyncUpdate::Stalled)
     }
 
     fn enter_phase_for(&mut self, chosen: SyncUpdate) {
