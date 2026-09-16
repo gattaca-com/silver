@@ -12,8 +12,8 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecCon
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
-    SyncNeed, SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate,
+    TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     cells::RetentionEvent,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
@@ -561,6 +561,9 @@ pub enum EfVerdict {
     Ignore,
     Reject,
 }
+
+#[cfg(feature = "ef_tests")]
+use silver_common::StreamProtocol;
 
 /// EF `gossip_validation` harness API: the spine-fed inputs (clock, blocks)
 /// set directly, and one sidecar carried through validation and its KZG batch.
