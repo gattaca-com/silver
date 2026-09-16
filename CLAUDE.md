@@ -178,7 +178,3 @@ Defaults (not a checklist, drift is allowed):
 - Use markdown where it can be rendered e.g. documentation, GitHub.
 - State uncertainty and untested assumptions, and do not drop them for brevity.
 
-## Issue tracking
-
-Track project work in GitHub issues. Only use Linear or other platforms when
-explicitly asked.
