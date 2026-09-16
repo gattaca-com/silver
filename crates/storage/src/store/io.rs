@@ -17,9 +17,9 @@ use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TMulti
 
 use super::{
     Payload, PendingWrite, QueryUnit, Store, backfill::BlockFacts, block_path, column_path,
-    envelope_path, slot_dir, unfinalized::PayloadKey,
+    envelope_path, first_retained_slot, slot_dir, unfinalized::PayloadKey,
 };
-use crate::{StorageCounters, store::SLOTS_PER_DIR, tile::IoEvent};
+use crate::{StorageCounters, tile::IoEvent};
 
 /// Per-loop op budgets. Disk I/O on regular files is synchronous —
 /// O_NONBLOCK has no effect there — so each op blocks the tile until done;
@@ -104,7 +104,7 @@ impl Store {
                         finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
                     let dir =
                         PathBuf::new().join(&self.store_dir).join(payload.finalized_dir_name());
-                    remove_subdirs(dir, earliest_slot)?;
+                    remove_subdirs(dir, first_retained_slot(earliest_slot))?;
                     self.finalized.truncated(payload, earliest_slot);
                 }
                 PendingWrite::BackfillBlock { block, ssz } => {
@@ -407,7 +407,7 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Error> {
+fn remove_subdirs<P: AsRef<Path>>(dir: P, first_retained: u64) -> Result<(), Error> {
     let contents = std::fs::read_dir(dir)?;
     for entry in contents {
         let entry = entry?;
@@ -415,7 +415,7 @@ fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Erro
         if let Ok(dir_number) =
             dir_entry.to_str().ok_or(Error::other("unparsable dir name"))?.parse::<u64>()
         {
-            if dir_number + SLOTS_PER_DIR < earliest_slot {
+            if dir_number < first_retained {
                 // `entry.path()` is the full path; `file_name()` alone would
                 // resolve relative to CWD, not `dir`.
                 std::fs::remove_dir_all(entry.path())?;

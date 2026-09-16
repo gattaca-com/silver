@@ -267,7 +267,7 @@ fn fork_tree_persist_serve_promote() {
         "only the promoted block is indexed"
     );
     let facts = store.block_facts(BlockLookup::Slot(slot)).expect("the finalized slot is held");
-    assert_eq!((facts.root, facts.finalized), (root_a, true), "the root comes from the index file");
+    assert_eq!((facts.root, facts.finalized), (root_a, true), "the finalized index knows the root");
     let flat_a =
         store.finalized_slot_dir(super::Payload::Block, slot).join(format!("{slot}_block.ssz"));
     assert!(flat_a.exists());

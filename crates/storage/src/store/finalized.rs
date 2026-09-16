@@ -7,6 +7,7 @@ use super::{
     Payload,
     block_index::BlockIndex,
     coverage::{Block, Coverage, Floors},
+    first_retained_slot,
 };
 
 pub(super) struct Finalized {
@@ -50,8 +51,13 @@ impl Finalized {
         self.blocks.contains(root)
     }
 
+    #[cfg(test)]
     pub(super) fn holds(&self, slot: u64) -> bool {
         self.blocks.holds(slot)
+    }
+
+    pub(super) fn root_at(&self, slot: u64) -> Option<B256> {
+        self.blocks.root_at(slot)
     }
 
     pub(super) fn written(&self, root: &B256, slot: u64) -> bool {
@@ -89,6 +95,9 @@ impl Finalized {
 
     pub(super) fn truncated(&mut self, payload: Payload, earliest_slot: u64) {
         self.coverage.drop_below(payload, earliest_slot);
+        if let Payload::Block = payload {
+            self.blocks.drop_below(first_retained_slot(earliest_slot));
+        }
     }
 
     pub(super) fn describe(
