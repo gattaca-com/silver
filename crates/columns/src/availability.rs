@@ -80,7 +80,6 @@ impl ColumnTracker {
         self.custody.is_covered_by(self.validated(root))
     }
 
-    /// Whether any of `columns` is ours to keep.
     pub(crate) fn is_custody(&self, column: u64) -> bool {
         self.custody.contains_any(1u128 << column)
     }
