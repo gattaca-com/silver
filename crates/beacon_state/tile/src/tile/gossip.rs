@@ -1218,7 +1218,7 @@ impl BeaconStateTile {
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
 
         let feedback = match m.topic {
-            GossipTopic::BeaconBlock if !self.sync_target.is_following() => {
+            GossipTopic::BeaconBlock if self.sync_target.is_chasing() => {
                 match self.parse_and_verify_block(data, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, producers)

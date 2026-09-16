@@ -666,6 +666,8 @@ pub enum SyncUpdate {
         head_slot: u64,
     },
     Following,
+    /// Readiness withdrawn without a selected sync target.
+    Stalled,
 }
 
 impl Default for SyncUpdate {
@@ -679,10 +681,16 @@ impl SyncUpdate {
         matches!(self, SyncUpdate::Following)
     }
 
+    /// A head or finalized checkpoint is selected for syncing.
+    /// `Following` and `Stalled` both allow gossip imports.
+    pub fn is_chasing(self) -> bool {
+        matches!(self, Self::SyncingFinalized { .. } | Self::SyncingHead { .. })
+    }
+
     pub fn data_availability_floor(self, local_finalized_slot: u64) -> u64 {
         let settled_by_target = match self {
             Self::SyncingFinalized { target_epoch, .. } => target_epoch * SLOTS_PER_EPOCH,
-            Self::SyncingHead { .. } | Self::Following => 0,
+            Self::SyncingHead { .. } | Self::Following | Self::Stalled => 0,
         };
         local_finalized_slot.max(settled_by_target)
     }
@@ -691,7 +699,7 @@ impl SyncUpdate {
         match self {
             Self::SyncingFinalized { target_epoch, .. } => Some(target_epoch * SLOTS_PER_EPOCH),
             Self::SyncingHead { head_slot, .. } => Some(head_slot),
-            Self::Following => None,
+            Self::Following | Self::Stalled => None,
         }
     }
 
@@ -702,13 +710,13 @@ impl SyncUpdate {
                 target_epoch.saturating_add(EPOCHS_TO_FINALIZE).saturating_mul(SLOTS_PER_EPOCH)
             }
             Self::SyncingHead { head_slot, .. } => head_slot,
-            Self::Following => 0,
+            Self::Following | Self::Stalled => 0,
         }
     }
 
     pub fn same_target_as(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Following, Self::Following) => true,
+            (Self::Following, Self::Following) | (Self::Stalled, Self::Stalled) => true,
             (
                 Self::SyncingFinalized { target_epoch: e1, target_root: r1 },
                 Self::SyncingFinalized { target_epoch: e2, target_root: r2 },
@@ -722,7 +730,7 @@ impl SyncUpdate {
 
     pub fn is_served_by(&self, peer_status: &[u8]) -> bool {
         match self {
-            Self::Following => true,
+            Self::Following | Self::Stalled => true,
             Self::SyncingFinalized { target_epoch, .. } => {
                 *target_epoch <= StatusView::finalized_epoch(peer_status)
             }
@@ -746,6 +754,7 @@ impl core::fmt::Debug for SyncUpdate {
                 .field("head_root", &format_args!("0x{}", hex32(head_root)))
                 .finish(),
             Self::Following => f.write_str("Following"),
+            Self::Stalled => f.write_str("Stalled"),
         }
     }
 }

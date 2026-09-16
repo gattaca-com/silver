@@ -52,7 +52,7 @@ impl Syncing {
         match self.target {
             SyncUpdate::SyncingFinalized { target_root, .. } => target_root,
             SyncUpdate::SyncingHead { head_root, .. } => head_root,
-            SyncUpdate::Following => [0u8; 32],
+            SyncUpdate::Following | SyncUpdate::Stalled => [0u8; 32],
         }
     }
 

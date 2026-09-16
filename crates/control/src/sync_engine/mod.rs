@@ -305,8 +305,19 @@ impl SyncEngine {
             self.ctx.cfg.head_lag_threshold_slots
     }
 
+    /// Whether a block gap warrants faster peer-status requests while following
+    /// or stalled.
     pub fn fell_behind(&self) -> bool {
-        self.phase.is_following() && self.ctx.local.have_status && self.has_block_gap()
+        self.published.is_some_and(|p| !p.is_chasing()) &&
+            self.ctx.local.have_status &&
+            self.has_block_gap()
+    }
+
+    /// A block gap without a peer claim near or ahead of our imported head.
+    /// A nearby claim allows following even when both heads lag the clock.
+    fn stalled(&self) -> bool {
+        self.has_block_gap() &&
+            !self.ctx.peers.any_peer_level_with(self.ctx.local.head_imported_slot, &self.ctx.cfg)
     }
 
     pub fn take_just_synced(&mut self) -> bool {
@@ -508,13 +519,20 @@ impl SyncEngine {
         self.prev_has_block_gap = has_block_gap;
         self.enter_phase_for(select::select_target(&self.ctx, has_block_gap, self.phase.target()));
 
-        let target = self.phase.target()?;
+        let target = self.phase.target().or_else(|| self.withdrawal())?;
         if self.published.is_some_and(|p| p.same_target_as(target)) {
             return None;
         }
         let previous = self.published.replace(target);
         tracing::info!("Sync target updated from: {previous:?} to {target:?}");
         Some(target)
+    }
+
+    /// Withdraws a published `Following` when no target can be selected.
+    /// A previous sync target already reports syncing; startup has no readiness
+    /// to withdraw.
+    fn withdrawal(&self) -> Option<SyncUpdate> {
+        (self.published == Some(SyncUpdate::Following)).then_some(SyncUpdate::Stalled)
     }
 
     fn enter_phase_for(&mut self, chosen: SyncUpdate) {
@@ -549,12 +567,16 @@ impl SyncEngine {
             return Some(chosen);
         }
         let local = &self.ctx.local;
+        // Retain comparability after entering Idle so coverage recovery can
+        // restore Following without a peer status.
         let comparable = !self.replay.is_pending() &&
             local.have_status &&
-            (self.phase.target().is_some() || self.ctx.peers.received_statuses());
+            (self.phase.target().is_some() ||
+                self.published.is_some() ||
+                self.ctx.peers.received_statuses());
         let peers_are_ahead =
             self.ctx.peers.any_peer_ahead_of(local.head_imported_slot, &self.ctx.cfg);
-        (comparable && !peers_are_ahead).then_some(SyncUpdate::Following)
+        (comparable && !peers_are_ahead && !self.stalled()).then_some(SyncUpdate::Following)
     }
 
     pub fn drive_requests(&mut self, now: Instant, emit: &mut impl FnMut(SyncAction) -> bool) {

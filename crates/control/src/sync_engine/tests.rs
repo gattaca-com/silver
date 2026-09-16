@@ -27,6 +27,10 @@ fn awaiting_peer_backoff() -> Duration {
     super::ISSUE_RETRY_BACKOFF
 }
 
+fn head_lag() -> u64 {
+    SyncingConfig::default().head_lag_threshold_slots
+}
+
 const PEER: usize = 1;
 
 fn tail(e: &SyncEngine) -> u64 {
@@ -240,10 +244,122 @@ fn quiet_chain_is_caught_up_not_behind() {
     );
 }
 
-/// The only offered chain went unavailable while its peer still claims a
-/// head far past ours. That is "behind with nothing selectable", so the
-/// engine must not fall back to `Following`: the following tick would
-/// advance the head state across every slot up to the wall clock.
+/// Withdraw Following after the last peer disconnects and the block gap reaches
+/// the threshold.
+fn stalled_engine() -> SyncEngine {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 100);
+    local_status(&mut e, 100, 100);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+    assert!(e.take_just_synced(), "consume the initial Following transition");
+
+    e.on_peer_disconnected(PEER);
+    local_status(&mut e, 100, 100 + head_lag());
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
+    e
+}
+
+/// A block gap withdraws readiness when no peer claims a head within the lag.
+#[test]
+fn block_gap_with_no_level_peer_withdraws_following() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 100);
+    local_status(&mut e, 100, 100);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+
+    e.on_peer_disconnected(PEER);
+    local_status(&mut e, 100, 100 + head_lag());
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled), "readiness withdrawn");
+    assert!(!e.phase.is_following());
+
+    local_status(&mut e, 100, 100 + head_lag() + 1);
+    assert_eq!(e.advance(), None, "the withdrawal is published once");
+
+    peer_status(&mut e, PEER, [9; 32], 100 - head_lag() - 1);
+    assert_eq!(e.advance(), None, "a peer beyond the lag does not restore Following");
+    assert_ne!(e.current_target(), Some(SyncUpdate::Following));
+}
+
+/// A cached peer claim within the lag preserves Following despite unknown block
+/// coverage.
+#[test]
+fn level_peer_keeps_following_through_a_block_gap() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 100 - head_lag());
+    local_status(&mut e, 100, 100);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+
+    local_status(&mut e, 100, 100 + 4 * head_lag());
+    assert_eq!(e.advance(), None, "still following");
+    assert_eq!(e.current_target(), Some(SyncUpdate::Following));
+}
+
+/// Losing all peers preserves Following while the block gap remains below the
+/// threshold.
+#[test]
+fn peerless_node_follows_until_the_gap_forms() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 100);
+    local_status(&mut e, 100, 100);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+
+    e.on_peer_disconnected(PEER);
+    local_status(&mut e, 100, 100 + head_lag() - 1);
+    assert_eq!(e.advance(), None, "one slot short of the lag");
+    assert_eq!(e.current_target(), Some(SyncUpdate::Following));
+}
+
+/// A peer claim within the lag restores Following and requests a fresh status
+/// fan-out.
+#[test]
+fn level_peer_status_ends_a_stall() {
+    let mut e = stalled_engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 100 - head_lag());
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+    assert!(e.take_just_synced());
+}
+
+/// Imported block coverage can restore Following before any peer status
+/// arrives.
+#[test]
+fn coverage_without_peers_ends_a_stall() {
+    let mut e = stalled_engine();
+    block_at(&mut e, 100 + head_lag(), Some(100));
+    local_status(&mut e, 100 + head_lag(), 100 + head_lag());
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+    assert!(e.take_just_synced());
+}
+
+/// An unavailable chain ahead of our head withdraws Following without selecting
+/// a sync target.
+#[test]
+fn unavailable_chain_ahead_withdraws_following() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 100);
+    local_status(&mut e, 100, 100);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+
+    let ahead = [8; 32];
+    e.ctx.peers.mark_unavailable(ahead);
+    peer_status(&mut e, PEER, ahead, 100 + 2 * head_lag());
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
+    assert!(matches!(e.phase, Phase::Idle));
+}
+
+#[test]
+fn peer_ahead_of_a_stalled_node_is_chased() {
+    let mut e = stalled_engine();
+    let peer_head = 100 + head_lag();
+    peer_status(&mut e, PEER, HEAD_ROOT, peer_head);
+    assert_eq!(
+        e.advance(),
+        Some(SyncUpdate::SyncingHead { head_root: HEAD_ROOT, head_slot: peer_head })
+    );
+}
+
+/// Losing the only selectable chain keeps the previous sync publication.
+/// Publishing Following would resume slot advancement while still behind the
+/// peer.
 #[test]
 fn unselectable_chains_with_peers_ahead_stay_idle_not_following() {
     let mut e = engine();
