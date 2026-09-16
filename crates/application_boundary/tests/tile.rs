@@ -1359,7 +1359,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
     }
     let legacy = legacy.join().unwrap();
     let v2 = v2.join().unwrap();
-    assert_eq!(legacy.len(), 2);
+    assert_eq!(legacy.len(), 1);
     assert_eq!(v2.len(), 3);
     let roots = head_roots();
     for (events, is_v2) in [(&legacy, false), (&v2, true)] {
@@ -1413,7 +1413,7 @@ fn head_events_describe_changes_observed_while_following() {
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let sentinel_slot = 40;
-    let (client, on_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+    let (client, on_subscribed) = head_events_subscriber(addr, "head_v2", sentinel_slot);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
@@ -1458,7 +1458,7 @@ fn head_events_describe_changes_observed_while_following() {
     let events = client.join().unwrap();
     assert_eq!(events.len(), 3);
     for (event, (slot, optimistic)) in events.iter().zip([(35, true), (35, false), (37, true)]) {
-        assert_eq!(event["slot"], slot.to_string());
-        assert_eq!(event["execution_optimistic"], optimistic);
+        assert_eq!(event["data"]["slot"], slot.to_string());
+        assert_eq!(event["data"]["execution_optimistic"], optimistic);
     }
 }
