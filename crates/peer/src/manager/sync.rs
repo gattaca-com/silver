@@ -2,7 +2,7 @@
 //! which target the sync engine has us on. Turning a target into placed
 //! requests is `rpc`'s job.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use fxhash::FxHashSet;
 use silver_common::{
@@ -21,7 +21,7 @@ impl PeerManager {
         self.adopt_fork_digest(digest);
     }
 
-    fn adopt_fork_digest(&mut self, digest: [u8; 4]) -> bool {
+    pub(super) fn adopt_fork_digest(&mut self, digest: [u8; 4]) -> bool {
         match self.our_fork_digest.replace(digest) {
             Some(held) if held == digest => false,
             Some(held) => {
@@ -34,6 +34,7 @@ impl PeerManager {
 
     pub(super) fn is_our_fork_digest(&self, digest: &[u8]) -> bool {
         self.our_fork_digest.is_some_and(|ours| digest == ours) ||
+            self.active_gossip_digests.iter().flatten().any(|active| digest == active) ||
             self.previous_fork_digest.is_some_and(|previous| digest == previous)
     }
 
@@ -148,7 +149,8 @@ impl PeerManager {
         let finalized_epoch = StatusView::finalized_epoch(buf);
 
         if let Some(our_fd) = self.our_fork_digest &&
-            fork_digest != our_fd
+            fork_digest != our_fd &&
+            !self.active_gossip_digests.contains(&Some(fork_digest))
         {
             self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal, "status fork_digest mismatch");
             return;
@@ -187,7 +189,15 @@ impl PeerManager {
     /// `subscribed` counts our data-column topics in the peer's SUBSCRIBEs,
     /// `advertised` counts custody groups from its ENR/MetaData.
     pub(super) fn data_column_overlap(&self, conn: usize, state: &PeerState) -> (u32, u32) {
-        let subscribed = subscribed_column_mask(&state.topics) & self.custody_columns;
+        let subscribed =
+            state.subscriptions.keys().fold(0u128, |mask, (digest, topic)| match topic {
+                GossipTopic::DataColumnSidecar(id)
+                    if *digest == self.current_digest() && *id < 128 =>
+                {
+                    mask | (1u128 << id)
+                }
+                _ => mask,
+            }) & self.custody_columns;
         let advertised =
             self.database.data_column_custody_groups_intersection(conn, self.custody_columns);
         (subscribed.count_ones(), advertised.count_ones())
@@ -241,13 +251,6 @@ impl RejectedRoots {
             self.order.retain(|held| held != root);
         }
     }
-}
-
-fn subscribed_column_mask(topics: &HashSet<GossipTopic>) -> u128 {
-    topics.iter().fold(0u128, |mask, t| match t {
-        GossipTopic::DataColumnSidecar(id) if *id < 128 => mask | (1u128 << id),
-        _ => mask,
-    })
 }
 
 #[cfg(test)]

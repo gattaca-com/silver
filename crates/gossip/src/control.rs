@@ -43,6 +43,7 @@ pub(super) fn handle_subscriptions<'a>(
                     let requests = subscription.requests_partial.unwrap_or(false);
                     let advertised = subscription.supports_sending_partial.unwrap_or(false);
                     emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipPartialCaps {
+                        digest,
                         p2p_peer: stream_id.peer(),
                         subnet,
                         requests,
@@ -544,10 +545,14 @@ mod tests {
         handle_subscriptions(&stream_id, view.subscriptions, &domains, &mut |event| match event {
             GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipPartialCaps {
                 p2p_peer,
+                digest,
                 subnet,
                 requests,
                 supports_sending,
-            }) => caps.push((p2p_peer, subnet, requests, supports_sending)),
+            }) => {
+                assert_eq!(digest, [0x8c, 0x9f, 0x62, 0xfe]);
+                caps.push((p2p_peer, subnet, requests, supports_sending));
+            }
             GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicSubscribe { .. }) => {
                 subscribes += 1;
             }

@@ -348,6 +348,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // crashes the boot rather than running an inert node.
     let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
         .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
+    control_tile.set_gossip_clock(ticker.clone(), &state.immutable.genesis_validators_root);
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         spec.clone(),

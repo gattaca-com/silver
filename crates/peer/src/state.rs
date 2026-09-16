@@ -6,7 +6,7 @@
 //! regardless of which peer delivered it.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     hash::BuildHasherDefault,
     net::{IpAddr, SocketAddr},
     time::Instant,
@@ -19,13 +19,16 @@ use silver_common::{
 
 use crate::scoring::ScoreBreakdown;
 
-/// Max topics an honest eth2 peer can reasonably subscribe to (64 attnets +
-/// 4 syncnets + 6 blobs + aggregates + blocks + slashings + exits + bls-
-/// change + lc updates ≈ 80). Cap capacity so inserts don't rehash in steady
-/// state.
+/// Initial capacity hint; peers with larger custody sets may grow beyond it.
 pub(crate) const TOPICS_PER_PEER_CAP: usize = 96;
 
 pub(crate) type MsgIdBuild = BuildHasherDefault<MessageIdHasher>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PartialCapabilities {
+    pub requests: bool,
+    pub supports_sending: bool,
+}
 
 /// One live peer's state.
 pub(crate) struct PeerState {
@@ -40,13 +43,10 @@ pub(crate) struct PeerState {
     pub user_agent: AgentString,
 
     // Subscriptions observed from the peer's SUBSCRIBE frames.
-    pub topics: HashSet<GossipTopic>,
+    pub subscriptions: HashMap<([u8; 4], GossipTopic), PartialCapabilities>,
 
-    // Gossipsub 1.3 partial-column capabilities. Bit i covers column
-    // subnet i; subscription updates replace, unsubscribe clears.
+    // Stream-wide gossipsub 1.3 extension announcement.
     pub partial_extensions: bool,
-    pub partial_requests: u128,
-    pub partial_supports_sending: u128,
 
     // Per-topic scoring. Sparse — entry created on first meshed activity.
     pub topic_stats: HashMap<GossipTopic, TopicScore>,
@@ -104,10 +104,8 @@ impl PeerState {
             connected_at: now,
             local_dialler: false,
             user_agent: AgentString::default(),
-            topics: HashSet::with_capacity(TOPICS_PER_PEER_CAP),
+            subscriptions: HashMap::with_capacity(TOPICS_PER_PEER_CAP * 2),
             partial_extensions: false,
-            partial_requests: 0,
-            partial_supports_sending: 0,
             topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
             msg_cache: CountingWitherFilter::default(),
             application_score: 0.0,

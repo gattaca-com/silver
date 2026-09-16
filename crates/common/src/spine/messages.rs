@@ -398,6 +398,7 @@ pub enum PeerEvent {
     /// (requestsPartial implies sending support).
     P2pGossipPartialCaps {
         p2p_peer: usize,
+        digest: [u8; 4],
         subnet: u64,
         requests: bool,
         supports_sending: bool,
@@ -512,6 +513,7 @@ pub enum PeerEvent {
     /// Peer manager fans it out to non-mesh subscribers with acceptable score.
     OutboundIHave {
         topic: GossipTopic,
+        digest: [u8; 4],
         msg_count: usize,
         protobuf: TCacheRead,
     },
@@ -804,6 +806,10 @@ pub enum PeerControl {
         ip: IpAddr,
     },
     DiscoverNodes,
+    UpdateEnrForkId {
+        epoch: u64,
+        enr_fork_id: [u8; 16],
+    },
     P2pGossipSubscribe {
         p2p: PeerId,
         p2p_connection: usize,

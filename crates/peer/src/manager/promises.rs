@@ -253,20 +253,21 @@ impl PeerManager {
     pub(super) fn on_outbound_ihave(
         &mut self,
         topic: GossipTopic,
+        digest: [u8; 4],
         protobuf: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let mesh_for_topic = self.mesh.get(&topic);
+        let mesh_for_topic = self.mesh.get(&topic).and_then(|meshes| meshes.get(digest));
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
         for (conn, peer) in &self.peers {
             if emitted >= cap {
                 break;
             }
-            if !peer.topics.contains(&topic) {
+            if !peer.subscriptions.contains_key(&(digest, topic)) {
                 continue;
             }
-            if mesh_for_topic.is_some_and(|m| m.contains(*conn)) {
+            if mesh_for_topic.is_some_and(|m| m.peers.contains(conn)) {
                 continue; // mesh peers get full-body forwards, not IHAVE
             }
             if peer.gossip_gate_score() < self.params.gossip_threshold {
@@ -755,6 +756,7 @@ mod tests {
 
         mgr.handle_event(
             PeerEvent::OutboundIHave {
+                digest: [0; 4],
                 topic: GossipTopic::BeaconBlock,
                 msg_count: 2,
                 protobuf: mk_tcache_read(),
@@ -814,6 +816,7 @@ mod tests {
         cap.0.clear();
         mgr.handle_event(
             PeerEvent::OutboundIHave {
+                digest: [0; 4],
                 topic: GossipTopic::BeaconBlock,
                 msg_count: 1,
                 protobuf: mk_tcache_read(),
@@ -1169,6 +1172,7 @@ mod tests {
         for (peer, subnet) in [(1, 4), (2, 7)] {
             mgr.handle_event(
                 PeerEvent::P2pGossipPartialCaps {
+                    digest: [0; 4],
                     p2p_peer: peer,
                     subnet,
                     requests: true,
