@@ -4,10 +4,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, Origin, P2pSend,
-    PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine, SilverSpineProducers,
-    SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer,
-    TRandomAccess, column_util,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, ColumnSource,
+    DataColumnsEvent, DataKind, Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId,
+    RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy,
+    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, column_util,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -316,6 +316,12 @@ impl Tile<SilverSpine> for StorageTile {
         self.persist_rpc_consumer.free();
         self.el_column_consumer.free();
 
+        adapter.consume(|request: BeaconApiRequest, _| {
+            if let BeaconApiRequest::BlockByRoot { request_id, block_root } = request {
+                self.store.block_by_root_request(request_id, &block_root);
+            }
+        });
+
         // Check for data columns and incoming blocks via RPC.
         adapter.consume(|rpc: RpcInbound, producers| match rpc {
             RpcInbound::Request(req) => {
@@ -450,6 +456,7 @@ impl Tile<SilverSpine> for StorageTile {
                 IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
                 IoEvent::Need(need) => adapter.produce(need),
+                IoEvent::ApiResponse(response) => adapter.produce(response),
             })
         {
             tracing::error!(
@@ -462,10 +469,12 @@ impl Tile<SilverSpine> for StorageTile {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
     Need(SyncNeed),
+    ApiResponse(BeaconApiResponse),
 }
 
 impl IoEvent {
@@ -474,6 +483,9 @@ impl IoEvent {
             IoEvent::P2pSend(send) => producers.p2p_send.produce(&send.into()),
             IoEvent::PeerEvent(event) => producers.peer_events.produce(&event.into()),
             IoEvent::Need(need) => producers.sync_needs.produce(&need.into()),
+            IoEvent::ApiResponse(response) => {
+                producers.beacon_api_responses.produce(&response.into())
+            }
         };
     }
 }

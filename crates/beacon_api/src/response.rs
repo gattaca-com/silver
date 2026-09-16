@@ -1,19 +1,20 @@
 use std::str;
 
+use silver_beacon_state_data::B256;
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
-use crate::{events::ChannelSet, json::Json, router::Served};
+use crate::{events::ChannelSet, json::Json, router::Outcome};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 pub(crate) struct Response<'a> {
     out: &'a mut Vec<u8>,
-    stream: Option<ChannelSet>,
+    outcome: Outcome,
 }
 
 impl<'a> Response<'a> {
     pub(crate) fn new(out: &'a mut Vec<u8>) -> Self {
-        Self { out, stream: None }
+        Self { out, outcome: Outcome::Response }
     }
 
     /// Queues the head and records the subscription; writing begins after
@@ -26,14 +27,16 @@ impl<'a> Response<'a> {
     ) {
         debug_assert!(self.out.is_empty(), "a stream head follows no other response");
         frame_chunked_head(self.out, content_type, headers);
-        self.stream = Some(channels);
+        self.outcome = Outcome::Stream(channels);
     }
 
-    pub(crate) fn served(self) -> Served {
-        match self.stream {
-            Some(channels) => Served::Stream(channels),
-            None => Served::Response,
-        }
+    pub(crate) fn request_block_by_root(&mut self, root: B256) {
+        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
+        self.outcome = Outcome::AwaitingBlock(root);
+    }
+
+    pub(crate) fn outcome(self) -> Outcome {
+        self.outcome
     }
 
     pub(crate) fn json(&mut self, body: &[u8]) {

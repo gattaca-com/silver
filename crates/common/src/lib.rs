@@ -38,7 +38,7 @@ pub use crate::{
         RPC_PROTOCOLS, RandomAccessConsumer as TRandomAccess, ReplayBlock,
         Reservation as TReservation, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
         RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-        SelfBuiltGossip, SilverSpine, SilverSpineProducers, StreamProtocol, SubLayout,
+        SelfBuiltGossip, ServedBlock, SilverSpine, SilverSpineProducers, StreamProtocol, SubLayout,
         SubReservation, SubReservationError, SubReservationRef, SubReservationView, SubValidation,
         SubWrite, SyncNeed, SyncUpdate, SyncingStrategy, TCache, TCacheProducer, TCacheRead,
         TCacheRef, WithdrawalInline,

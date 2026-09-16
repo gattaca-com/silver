@@ -190,7 +190,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::{Router, Served},
+        router::{Outcome, Router},
         routes::{ROUTES, anchor_ctx},
     };
 
@@ -244,7 +244,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out), Served::Response);
+        assert_eq!(Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out), Outcome::Response);
         out
     }
 

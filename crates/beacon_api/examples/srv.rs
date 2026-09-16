@@ -28,11 +28,12 @@ fn main() {
         &SpecConfig::mainnet(),
         state,
         consumer(),
+        consumer(),
     );
     println!("serving on {:?}", api.local_addrs());
     loop {
         readiness.wait(Duration::ZERO);
-        api.pump(readiness.events());
+        api.pump(readiness.events(), &mut |_| {});
         std::thread::sleep(Duration::from_millis(1));
     }
 }

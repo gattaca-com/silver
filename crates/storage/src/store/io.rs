@@ -13,10 +13,7 @@ use std::{
 
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{
-    DataKind, Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound,
-    TCacheProducer, TCacheRead, TMultiProducer, hex32,
-};
+use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TMultiProducer, hex32};
 
 use super::{
     Payload, PendingWrite, QueryUnit, Store, backfill::BlockFacts, block_path, column_path,
@@ -193,12 +190,7 @@ impl Store {
                 break;
             };
             let Some(unit) = query.units.pop_front() else {
-                // Request fully served — terminate the stream and drop it.
-                emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                    stream_id: query.stream_id,
-                    response: RpcResponse::Complete,
-                }))));
-                emit(IoEvent::PeerEvent(query.outcome(false)));
+                query.finish(false, emit);
                 continue;
             };
             reads += 1;
@@ -208,34 +200,11 @@ impl Store {
                     // Context fork-digest for the served object's own slot's fork
                     // (a request can span a fork boundary).
                     let fork_digest = fork_digest_at(unit.slot());
-                    let response = match unit {
-                        QueryUnit::Block { .. } | QueryUnit::UnfinalizedBlock { .. } => {
-                            RpcResponse::BeaconBlock { fork_digest, ssz: read }
-                        }
-                        QueryUnit::Column { .. } | QueryUnit::UnfinalizedColumn { .. } => {
-                            RpcResponse::DataColumnSidecar { fork_digest, ssz: read }
-                        }
-                        QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. } => {
-                            RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz: read }
-                        }
-                    };
-                    emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
-                        RpcResponseOutbound { stream_id: query.stream_id, response },
-                    ))));
-                    query.units_sent += 1;
-                    query.first_chunk_at.get_or_insert_with(Instant::now);
-                    self.query_queue.push_back(query);
+                    if query.deliver(&unit, read, fork_digest, emit) {
+                        self.query_queue.push_back(query);
+                    }
                 }
-                ServeResult::Missing => {
-                    let error = "resource unavailable".as_bytes();
-                    let mut msg = [0u8; 256];
-                    msg[..error.len()].copy_from_slice(error);
-                    let response = RpcResponse::Error { error: 3, msg, len: error.len() };
-                    emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
-                        RpcResponseOutbound { stream_id: query.stream_id, response },
-                    ))));
-                    emit(IoEvent::PeerEvent(query.outcome(true)));
-                }
+                ServeResult::Missing => query.finish(true, emit),
                 ServeResult::ProducerFull => {
                     // Tcache full — un-consume and retry this request first
                     // next loop; trying others would fail too.
