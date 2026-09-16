@@ -10,8 +10,9 @@ use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
-    ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair, PeerEvent, SyncUpdate,
-    TCacheRead, TRandomAccess, block_root,
+    ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair,
+    PayloadValidationStatus, PeerEvent, ServedBlock, SyncUpdate, TCacheRead, TRandomAccess,
+    block_root,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_httpcore::{
@@ -349,6 +350,7 @@ pub struct BeaconApi {
     /// Blocks storage serves, in the `outgoing_rpc` tcache.
     storage: TRandomAccess,
     next_request_id: u64,
+    last_head: Option<HeadEvent>,
 }
 
 impl BeaconApi {
@@ -407,6 +409,7 @@ impl BeaconApi {
             relayed_gossip,
             storage,
             next_request_id: 0,
+            last_head: None,
         }
     }
 
@@ -430,6 +433,7 @@ impl BeaconApi {
                 epoch_transition,
                 ..
             } => {
+                let block_root = *StatusView::head_root(&ssz);
                 self.ctx.node_status.head =
                     HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
                 self.ctx.node_status.head_root = *StatusView::head_root(&ssz);
@@ -440,16 +444,23 @@ impl BeaconApi {
 
                 let head = HeadEvent {
                     slot: StatusView::head_slot(&ssz),
-                    block_root: *StatusView::head_root(&ssz),
+                    block_root,
                     roots: head_roots,
                     payload: head_payload,
                     epoch_transition,
                     execution_optimistic: head_optimistic,
                 };
-
-                // TODO(xatu): remove when Xatu will add filtering by optimistic flag
-                if head_change == HeadChange::Head && !head_optimistic {
-                    self.publish_head(&head);
+                if head_change == HeadChange::Head {
+                    let already = self
+                        .last_head
+                        .is_some_and(|h| h.block_root == block_root && !h.execution_optimistic);
+                    self.last_head = Some(head);
+                    // TODO(xatu): remove when Xatu will add filtering by optimistic flag
+                    if !head_optimistic && !already {
+                        self.publish_head(&head);
+                    }
+                } else {
+                    self.last_head = None;
                 }
                 self.publish_head_v2(&head);
             }
@@ -461,6 +472,22 @@ impl BeaconApi {
             } => self.publish_block(slot, &block_root),
             _ => {}
         }
+    }
+
+    pub fn handle_engine_resp(&mut self, resp: EngineResp) {
+        let EngineResp::NewPayload(r) = resp else { return };
+        if r.status != PayloadValidationStatus::Valid || !self.ctx.node_status.is_following() {
+            return;
+        }
+        let Some(head) =
+            self.last_head.filter(|h| h.block_root == r.block_root && h.execution_optimistic)
+        else {
+            return;
+        };
+        let head = HeadEvent { execution_optimistic: false, ..head };
+        self.last_head = Some(head);
+        self.ctx.node_status.head.optimistic = false;
+        self.publish_head(&head);
     }
 
     pub fn handle_sync_update(&mut self, update: SyncUpdate) {
@@ -794,9 +821,9 @@ mod tests {
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
-        BlockLookup, HeadRoots, PayloadResolution, ServedBlock, TCache, TCacheProducer, TProducer,
-        body_root,
-        ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN},
+        BlockLookup, EngineNewPayloadResp, HeadRoots, PayloadResolution, ServedBlock, TCache,
+        TCacheProducer, TProducer, body_root,
+        ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE},
     };
     use silver_httpcore::Readiness;
 
@@ -1526,6 +1553,24 @@ mod tests {
         }
     }
 
+    fn status(slot: u64, root: u8, optimistic: bool) -> BeaconStateEvent {
+        let head = head_event(slot, &[root; 32], optimistic);
+        let mut ssz = [0u8; STATUS_V2_SIZE];
+        ssz[44..76].copy_from_slice(&head.block_root);
+        ssz[76..84].copy_from_slice(&slot.to_le_bytes());
+        BeaconStateEvent::Status {
+            ssz,
+            latest_block_slot: slot,
+            wall_slot: slot,
+            head_optimistic: optimistic,
+            enr_fork_id: [0; 16],
+            head_roots: head.roots,
+            head_payload: head.payload,
+            head_change: HeadChange::Head,
+            epoch_transition: false,
+        }
+    }
+
     struct SseEvent {
         topic: String,
         data: Value,
@@ -1606,6 +1651,32 @@ mod tests {
             assert_eq!(event.data["data"]["slot"], slot.to_string());
             assert_eq!(event.data["data"]["payload_status"], "full");
         }
+    }
+
+    #[test]
+    fn el_valid_emits_legacy_head() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_beacon_state_event(status(10, 0xab, true));
+        server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: [0xab; 32],
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0; 32],
+        }));
+        assert!(!server.api.node_status().head.optimistic);
+
+        server.api.handle_beacon_state_event(status(10, 0xab, false));
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "overlay frame and marker");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "head");
+        assert_eq!(events[0].data["slot"], "10");
+        assert_eq!(events[0].data["execution_optimistic"], false);
     }
 
     #[test]
