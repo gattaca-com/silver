@@ -7,7 +7,7 @@ use std::{
 };
 
 use mio::{Events, Interest, Registry, Token, event::Event};
-use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair, PeerEvent, SyncUpdate,
@@ -365,6 +365,7 @@ impl BeaconApi {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        anchor_root: B256,
         relayed_gossip: TRandomAccess,
         storage: TRandomAccess,
     ) -> Self {
@@ -403,7 +404,7 @@ impl BeaconApi {
             connections: HashMap::new(),
             frame: Vec::new(),
             router: Router::new(ROUTES),
-            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
+            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, anchor_root),
             relayed_gossip,
             storage,
             next_request_id: 0,
@@ -432,6 +433,7 @@ impl BeaconApi {
             } => {
                 self.ctx.node_status.head =
                     HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
+                self.ctx.node_status.head_root = *StatusView::head_root(&ssz);
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
                     return;
@@ -606,7 +608,7 @@ impl BeaconApi {
             .expect("found awaiting above");
         let (_, request) = requests.pending.take().expect("awaiting above");
         let mut resp = Response::new(requests.http.write_buf_mut());
-        request.kind.respond(&mut resp, request.root, block, storage, ctx);
+        request.kind.respond(&mut resp, request.lookup, block, storage, ctx);
 
         self.resume_writing(token);
     }
@@ -706,7 +708,7 @@ impl BeaconApi {
                     let request_id = self.next_request_id;
                     self.next_request_id += 1;
                     requests.pending = Some((request_id, block));
-                    emit(BeaconApiRequest::BlockByRoot { request_id, block_root: block.root });
+                    emit(BeaconApiRequest::Block { request_id, lookup: block.lookup });
                 }
             },
             Ok(true) => {
@@ -793,7 +795,8 @@ mod tests {
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
-        HeadRoots, PayloadResolution, ServedBlock, TCache, TCacheProducer, TProducer, column_util,
+        BlockLookup, HeadRoots, PayloadResolution, ServedBlock, TCache, TCacheProducer, TProducer,
+        column_util,
         ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN},
     };
     use silver_httpcore::Readiness;
@@ -837,6 +840,7 @@ mod tests {
                 &Identify::default(),
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::published_empty_test(0).reader(),
+                B256::default(),
                 consumer(),
                 consumer(),
             );
@@ -1803,13 +1807,12 @@ mod tests {
         &response[blank + 4..]
     }
 
-    fn deferred_request(server: &mut Server) -> (u64, [u8; 32]) {
+    fn deferred_request(server: &mut Server) -> (u64, BlockLookup) {
         pump_until(server, "the block request was deferred", |s| !s.requests.is_empty());
-        let BeaconApiRequest::BlockByRoot { request_id, block_root } = server.requests.remove(0)
-        else {
+        let BeaconApiRequest::Block { request_id, lookup } = server.requests.remove(0) else {
             panic!("expected a block request");
         };
-        (request_id, block_root)
+        (request_id, lookup)
     }
 
     #[test]
@@ -1817,8 +1820,8 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         get(&mut client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xab)));
-        let (request_id, block_root) = deferred_request(&mut server);
-        assert_eq!(block_root, [0xab; 32]);
+        let (request_id, lookup) = deferred_request(&mut server);
+        assert_eq!(lookup, BlockLookup::Root([0xab; 32]));
         client.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
         let mut probe = [0u8; 1];
         assert!(
@@ -1884,6 +1887,41 @@ mod tests {
                 root_hex(0x00),
                 root_hex(0xef),
                 "00".repeat(96)
+            )
+        );
+    }
+
+    /// `head` resolves in the API from the last `Status`; a slot is resolved
+    /// by storage, so the root it answers with is hashed from the served bytes.
+    #[test]
+    fn head_and_slot_ids_resolve_to_the_block_they_name() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.node_status.head_root = [0x77; 32];
+        let head_client = connect(tcp_addr(&server));
+        get(&head_client, "/eth/v1/beacon/headers/head");
+        let (head_id, lookup) = deferred_request(&mut server);
+        assert_eq!(lookup, BlockLookup::Root([0x77; 32]));
+
+        let slot_client = connect(tcp_addr(&server));
+        get(&slot_client, "/eth/v1/beacon/blocks/10/root");
+        let (slot_id, lookup) = deferred_request(&mut server);
+        assert_eq!(lookup, BlockLookup::Slot(10));
+
+        let block = block_bytes(10, 0xef);
+        server.serve_block(head_id, 10, &block);
+        server.serve_block(slot_id, 10, &block);
+        let head_reader = std::thread::spawn(move || read_to_eof(head_client));
+        let slot_reader = std::thread::spawn(move || read_to_eof(slot_client));
+        let (head_response, slot_response) =
+            serve_both(&mut server, head_reader, slot_reader, "resolved id answers");
+
+        let head_body = std::str::from_utf8(body(&head_response)).unwrap();
+        assert!(head_body.contains(&format!("\"root\":\"{}\"", root_hex(0x77))), "{head_body}");
+        assert_eq!(
+            std::str::from_utf8(body(&slot_response)).unwrap(),
+            format!(
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"0x{}\"}}}}",
+                hex::encode(column_util::block_root_fulu(&block))
             )
         );
     }

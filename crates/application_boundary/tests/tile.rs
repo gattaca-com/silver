@@ -13,11 +13,11 @@ use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage, ColumnSource,
-    DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr, GossipTopic,
-    HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine, StreamProtocol, SyncUpdate,
-    TCache, TCacheProducer, TCacheRead, TProducer,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage,
+    ColumnSource, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
+    GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine,
+    StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -70,6 +70,7 @@ fn boundary_tile_with_spec(
         &Identify::default(),
         spec,
         BeaconStateOwner::published_empty_test(0).reader(),
+        [0u8; 32],
         engine_config,
         gossip_p.cache_ref().random_access("t", true).unwrap(),
         rpc_p.cache_ref().random_access("t", true).unwrap(),
@@ -1462,10 +1463,10 @@ fn block_by_root_round_trips_over_the_storage_queues() {
         inj.consume(|r: BeaconApiRequest, _| request = Some(r));
         std::thread::sleep(Duration::from_millis(1));
     }
-    let Some(BeaconApiRequest::BlockByRoot { request_id, block_root }) = request else {
+    let Some(BeaconApiRequest::Block { request_id, lookup }) = request else {
         panic!("expected a block request, got {request:?}");
     };
-    assert_eq!(block_root, [0xab; 32]);
+    assert_eq!(lookup, BlockLookup::Root([0xab; 32]));
     assert!(!client.is_finished(), "the connection waits on storage");
 
     let block = block_bytes(10, 0xab);

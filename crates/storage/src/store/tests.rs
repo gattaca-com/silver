@@ -90,8 +90,9 @@ fn concurrent_read_write() {
 #[test]
 fn fork_tree_persist_serve_promote() {
     use silver_common::{
-        BeaconApiResponse, P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound,
-        RpcResponse, RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
+        BeaconApiResponse, BlockLookup, P2pSend, P2pStreamId, RpcOutbound, RpcRequest,
+        RpcRequestInbound, RpcResponse, RpcResponseOutbound, StreamProtocol, TCache,
+        TCacheProducer,
     };
 
     let dir = TempDir::new().unwrap();
@@ -213,9 +214,11 @@ fn fork_tree_persist_serve_promote() {
     assert_block(&byroot[0], &bytes_b);
 
     // The API is answered by root the same way, without a stream to complete.
-    store.block_by_root_request(7, &root_b);
-    store.block_by_root_request(8, &[0xEE; 32]);
-    store.block_by_root_request(9, &root_a);
+    store.block_request(7, BlockLookup::Root(root_b));
+    store.block_request(8, BlockLookup::Root([0xEE; 32]));
+    store.block_request(9, BlockLookup::Root(root_a));
+    store.block_request(10, BlockLookup::Slot(slot));
+    store.block_request(11, BlockLookup::Slot(slot + 1));
     let mut api = vec![];
     store
         .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
@@ -227,15 +230,23 @@ fn fork_tree_persist_serve_promote() {
         BeaconApiResponse::Block { request_id: 7, block: Some(served) },
         BeaconApiResponse::Block { request_id: 8, block: None },
         BeaconApiResponse::Block { request_id: 9, block: Some(head) },
+        BeaconApiResponse::Block { request_id: 10, block: Some(at_slot) },
+        BeaconApiResponse::Block { request_id: 11, block: None },
     ] = api[..]
     else {
-        panic!("expected two served blocks and one miss, got {api:?}");
+        panic!("expected three served blocks and two misses, got {api:?}");
     };
     assert_eq!(served.slot, slot);
     assert!(!served.finalized && !served.canonical, "B is the fork off the head");
     assert!(!head.finalized && head.canonical, "A is the unfinalized head");
     let mut api_consumer = producer_cache.cache_ref().random_access("fork_api_read", true).unwrap();
     assert_eq!(api_consumer.acquire(served.ssz).buffer().unwrap().0, &bytes_b);
+    assert!(at_slot.canonical, "a slot resolves along the head chain");
+    assert_eq!(
+        api_consumer.acquire(at_slot.ssz).buffer().unwrap().0,
+        &bytes_a,
+        "the slot serves A"
+    );
 
     // Finalize at slot 42 on A: promote A, prune the orphan B.
     store.update_head(slot, root_a, slot, root_a);

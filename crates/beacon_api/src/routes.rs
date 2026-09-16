@@ -3,7 +3,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
+use silver_beacon_state_data::{
+    B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView,
+};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
@@ -87,6 +89,7 @@ impl ApiCtx {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        anchor_root: B256,
     ) -> Self {
         let (head_slot, anchor_epoch) = state
             .read(&|view: StateReadView<'_>| {
@@ -98,7 +101,7 @@ impl ApiCtx {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             spec: spec.clone(),
             state,
-            node_status: NodeStatus::at_anchor(head_slot, anchor_epoch),
+            node_status: NodeStatus::at_anchor(head_slot, anchor_root, anchor_epoch),
             peers: PeerTable::new(),
         }
     }
@@ -280,7 +283,7 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
     let enr = Enr::builder().build(keypair.secret_key()).unwrap();
     let mut identify = Identify::default();
     identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-    ApiCtx::new(&keypair, &enr, &identify, spec, state)
+    ApiCtx::new(&keypair, &enr, &identify, spec, state, B256::default())
 }
 
 #[cfg(test)]
@@ -372,6 +375,7 @@ mod tests {
     fn ready() -> NodeStatus {
         NodeStatus {
             head: HeadStatus { slot: 100, optimistic: false },
+            head_root: [0x11; 32],
             finalized_epoch: 12_343,
             target: Some(SyncUpdate::Following),
             el: ELSyncStatus::Synced,

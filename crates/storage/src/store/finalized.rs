@@ -50,7 +50,6 @@ impl Finalized {
         self.blocks.contains(root)
     }
 
-    #[cfg(test)]
     pub(super) fn holds(&self, slot: u64) -> bool {
         self.blocks.holds(slot)
     }

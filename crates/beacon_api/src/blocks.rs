@@ -1,8 +1,10 @@
 use silver_beacon_state_data::{B256, BeaconBlockHeader};
-use silver_common::{ServedBlock, TRandomAccess, column_util, ssz_view::SignedBeaconBlockView};
+use silver_common::{
+    BlockLookup, ServedBlock, TRandomAccess, column_util, ssz_view::SignedBeaconBlockView,
+};
 
 use crate::{
-    ids::{is_recognized_id, parse_root},
+    ids::{parse_root, parse_uint64},
     json::{ReadFlags, SignedHeader},
     response::Response,
     router::{Request, SSZ_MEDIA_TYPE},
@@ -18,51 +20,68 @@ pub(crate) enum Kind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BlockRequest {
-    pub(crate) root: B256,
+    pub(crate) lookup: BlockLookup,
     pub(crate) kind: Kind,
 }
 
 /// Only SSZ: the JSON body is not rendered yet.
-pub(crate) fn block(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let Some(root) = requested_root(req, resp) else { return };
+pub(crate) fn block(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Some(lookup) = requested_block(req, ctx, resp) else { return };
     if !req.accepts_ssz() {
         return resp.error(406, "only application/octet-stream is served");
     }
-    resp.request_block(BlockRequest { root, kind: Kind::Ssz });
+    resp.request_block(BlockRequest { lookup, kind: Kind::Ssz });
 }
 
-pub(crate) fn block_root(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if let Some(root) = requested_root(req, resp) {
-        resp.request_block(BlockRequest { root, kind: Kind::Root });
+pub(crate) fn block_root(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if let Some(lookup) = requested_block(req, ctx, resp) {
+        resp.request_block(BlockRequest { lookup, kind: Kind::Root });
     }
 }
 
-pub(crate) fn block_header(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if let Some(root) = requested_root(req, resp) {
-        resp.request_block(BlockRequest { root, kind: Kind::Header });
+pub(crate) fn block_header(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if let Some(lookup) = requested_block(req, ctx, resp) {
+        resp.request_block(BlockRequest { lookup, kind: Kind::Header });
     }
 }
 
-/// The root `{block_id}` names. Only roots are served: the keyword and slot
-/// forms answer 404 here, anything else 400.
-fn requested_root(req: &Request<'_>, resp: &mut Response<'_>) -> Option<B256> {
+fn requested_block(
+    req: &Request<'_>,
+    ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+) -> Option<BlockLookup> {
     let block_id = req.params.get("block_id").expect("{block_id} in the route pattern");
-    let root = parse_root(block_id);
-    if root.is_none() {
-        if is_recognized_id(block_id) {
-            resp.error(404, "block not found");
-        } else {
-            resp.error(400, "invalid block_id");
-        }
+    let lookup = match block_id {
+        "head" => Some(BlockLookup::Root(ctx.node_status.head_root)),
+        "genesis" | "finalized" | "justified" => None,
+        _ => match (parse_root(block_id), parse_uint64(block_id)) {
+            (Some(root), _) => Some(BlockLookup::Root(root)),
+            (_, Some(slot)) => Some(BlockLookup::Slot(slot)),
+            _ => {
+                resp.error(400, "invalid block_id");
+                return None;
+            }
+        },
+    };
+    if lookup.is_none() {
+        resp.error(404, "block not found");
     }
-    root
+    lookup
+}
+
+/// A slot lookup learns its root from the bytes storage returned.
+fn served_root(lookup: BlockLookup, bytes: &[u8], is_gloas: bool) -> B256 {
+    match lookup {
+        BlockLookup::Root(root) => root,
+        BlockLookup::Slot(_) => column_util::block_root(bytes, is_gloas),
+    }
 }
 
 impl Kind {
     pub(crate) fn respond(
         self,
         resp: &mut Response<'_>,
-        root: B256,
+        lookup: BlockLookup,
         block: Option<ServedBlock>,
         storage: &mut TRandomAccess,
         ctx: &ApiCtx,
@@ -83,6 +102,7 @@ impl Kind {
             }
         };
 
+        let is_gloas = ctx.spec.is_gloas_at_slot(slot);
         let flags =
             ReadFlags { execution_optimistic: ctx.node_status.execution_optimistic(), finalized };
         match self {
@@ -91,19 +111,20 @@ impl Kind {
                 resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], bytes);
             }
             Self::Root => {
+                let root = served_root(lookup, bytes, is_gloas);
                 resp.json_body(|json| json.flagged_envelope(flags, |json| json.block_root(&root)))
             }
             Self::Header => {
                 let body = SignedBeaconBlockView::body(bytes);
                 let signed = SignedHeader {
-                    root,
+                    root: served_root(lookup, bytes, is_gloas),
                     canonical,
                     header: BeaconBlockHeader {
                         slot,
                         proposer_index: SignedBeaconBlockView::proposer_index(bytes),
                         parent_root: *SignedBeaconBlockView::parent_root(bytes),
                         state_root: *SignedBeaconBlockView::state_root(bytes),
-                        body_root: column_util::body_root_at(body, ctx.spec.is_gloas_at_slot(slot)),
+                        body_root: column_util::body_root_at(body, is_gloas),
                     },
                     signature: *SignedBeaconBlockView::signature(bytes),
                 };
@@ -128,6 +149,10 @@ mod tests {
     const ROOT: B256 = [0xab; 32];
 
     fn get(path: &str, accept: Option<&str>) -> (Outcome, Vec<u8>) {
+        get_from(&anchor_ctx(), path, accept)
+    }
+
+    fn get_from(ctx: &ApiCtx, path: &str, accept: Option<&str>) -> (Outcome, Vec<u8>) {
         let req = ParsedRequest {
             method: "GET",
             path,
@@ -140,7 +165,7 @@ mod tests {
             keep_alive: true,
         };
         let mut out = Vec::new();
-        let outcome = Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out);
+        let outcome = Router::new(ROUTES).dispatch(&req, ctx, &mut out);
         (outcome, out)
     }
 
@@ -156,11 +181,8 @@ mod tests {
     fn each_block_route_defers_to_storage_and_writes_nothing() {
         for (path, kind) in routes(&format!("0x{}", "ab".repeat(32))) {
             let (outcome, out) = get(&path, Some("application/octet-stream"));
-            assert_eq!(
-                outcome,
-                Outcome::AwaitingBlock(BlockRequest { root: ROOT, kind }),
-                "{path}"
-            );
+            let lookup = BlockLookup::Root(ROOT);
+            assert_eq!(outcome, Outcome::AwaitingBlock(BlockRequest { lookup, kind }), "{path}");
             assert!(out.is_empty(), "{path}");
         }
     }
@@ -180,10 +202,29 @@ mod tests {
     }
 
     #[test]
-    fn ids_that_are_not_roots_are_answered_before_deferring() {
-        for block_id in ["head", "finalized", "genesis", "justified", "12"] {
+    fn keyword_and_slot_ids_resolve_to_a_lookup() {
+        let mut ctx = anchor_ctx();
+        ctx.node_status.head_root = [0x11; 32];
+        for (block_id, lookup) in
+            [("head", BlockLookup::Root([0x11; 32])), ("12", BlockLookup::Slot(12))]
+        {
+            for (path, kind) in routes(block_id) {
+                let (outcome, _) = get_from(&ctx, &path, Some("application/octet-stream"));
+                assert_eq!(
+                    outcome,
+                    Outcome::AwaitingBlock(BlockRequest { lookup, kind }),
+                    "{path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ids_silver_cannot_resolve_are_answered_before_deferring() {
+        for block_id in ["justified", "finalized", "genesis"] {
             for (path, _) in routes(block_id) {
-                let (_, out) = get(&path, Some("application/octet-stream"));
+                let (outcome, out) = get(&path, Some("application/octet-stream"));
+                assert_eq!(outcome, Outcome::Response, "{path}");
                 assert!(out.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{path}");
             }
         }

@@ -317,8 +317,8 @@ impl Tile<SilverSpine> for StorageTile {
         self.el_column_consumer.free();
 
         adapter.consume(|request: BeaconApiRequest, _| {
-            if let BeaconApiRequest::BlockByRoot { request_id, block_root } = request {
-                self.store.block_by_root_request(request_id, &block_root);
+            if let BeaconApiRequest::Block { request_id, lookup } = request {
+                self.store.block_request(request_id, lookup);
             }
         });
 

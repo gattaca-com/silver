@@ -88,10 +88,17 @@ pub enum BeaconApiRequest {
         subnet: u64,
         ssz: [u8; SINGLE_ATT_SIZE],
     },
-    BlockByRoot {
+    Block {
         request_id: u64,
-        block_root: [u8; 32],
+        lookup: BlockLookup,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, u8)]
+pub enum BlockLookup {
+    Root([u8; 32]),
+    Slot(u64),
 }
 
 /// Completion of work submitted through [`BeaconApiRequest`].

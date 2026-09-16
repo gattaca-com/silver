@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::BeaconApi;
-use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, Enr, Identify, Keypair, PeerEvent,
     SilverSpine, SyncUpdate, TProducer, TRandomAccess,
@@ -47,6 +47,7 @@ impl ApplicationBoundaryTile {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        anchor_root: B256,
         engine_config: EngineConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
@@ -71,6 +72,7 @@ impl ApplicationBoundaryTile {
             identify,
             spec,
             state,
+            anchor_root,
             relayed_gossip,
             outgoing_rpc,
         );

@@ -9,8 +9,9 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiResponse, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound, RpcRequestInbound,
-    RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound,
+    RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead,
+    TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -868,13 +869,19 @@ impl Store {
 
     /// Answered by `file_io`, with `None` for a root the store does not hold.
     /// Uncapped: the API's connection cap bounds these.
-    pub(super) fn block_by_root_request(&mut self, request_id: u64, root: &[u8; 32]) {
-        let unit = self.block_unit(root);
-        let canonical = match unit {
-            Some(QueryUnit::UnfinalizedBlock { slot, block_root, .. }) => {
-                self.on_head_chain(slot, &block_root)
+    pub(super) fn block_request(&mut self, request_id: u64, lookup: BlockLookup) {
+        let (unit, canonical) = match lookup {
+            BlockLookup::Root(root) => {
+                let unit = self.block_unit(&root);
+                let canonical = match unit {
+                    Some(QueryUnit::UnfinalizedBlock { slot, block_root, .. }) => {
+                        self.on_head_chain(slot, &block_root)
+                    }
+                    _ => true,
+                };
+                (unit, canonical)
             }
-            _ => true,
+            BlockLookup::Slot(slot) => (self.canonical_block(slot), true),
         };
         let source = RequestSource::Api { request_id, canonical };
         self.query_queue.push_back(PendingQuery::new(source, unit.into_iter().collect()));
@@ -885,6 +892,20 @@ impl Store {
             .canonical_chain_in_range(self.head.root, self.head.slot, slot, slot + 1)
             .get(&slot)
             .is_some_and(|(_, canonical)| canonical == root)
+    }
+
+    fn canonical_block(&self, slot: u64) -> Option<QueryUnit> {
+        if slot <= self.head.finalized_slot {
+            return self.finalized.holds(slot).then_some(QueryUnit::Block { slot });
+        }
+        self.unfinalized
+            .canonical_chain_in_range(self.head.root, self.head.slot, slot, slot + 1)
+            .get(&slot)
+            .map(|&(parent_root, block_root)| QueryUnit::UnfinalizedBlock {
+                slot,
+                parent_root,
+                block_root,
+            })
     }
 
     /// Any block held by root regardless of canonicity: the unfinalized fork
