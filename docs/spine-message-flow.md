@@ -49,6 +49,8 @@ flowchart LR
   BS -->|beacon_events : BeaconStateEvent| EN
   DC -->|"data_columns : DataColumnsEvent (Available)"| BS
   DC -->|"data_columns : DataColumnsEvent (Persist)"| ST
+  DC -->|"data_columns : DataColumnsEvent (Persist)"| CTL
+  DC -->|"data_columns : DataColumnsEvent (Persist)"| EN
   ST -->|replay_blocks : ReplayBlock| BS
 
   %% ---- sync control ----
@@ -94,10 +96,10 @@ rest.
 | `new_gossip` | `NewGossipMsg` | Control _(gossip)_ | BeaconState, DataColumns | refs → `outgoing_gossip` (mcache copy), `ssz_gossip` |
 | `p2p_send` | `P2pSend` | Control, Storage | Network | refs → `outgoing_gossip` / `outgoing_rpc` |
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage, DataColumns | ref → `incoming_rpc` |
-| `peer_events` | `PeerEvent` | Network, BeaconState, Storage, DataColumns | Control | mostly inline; `SendGossip` ref → `outgoing_gossip`, `PublishDataColumn` ref → `incoming_rpc` |
+| `peer_events` | `PeerEvent` | Network, BeaconState, Storage, DataColumns | Control, ApplicationBoundary | mostly inline; `SendGossip` ref → `outgoing_gossip` |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
 | `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns, ApplicationBoundary | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
-| `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
+| `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage, Control, ApplicationBoundary _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
 | `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns, ApplicationBoundary | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
 | `syncing_strategy` | `SyncingStrategy` | Control | Storage, DataColumns | inline |

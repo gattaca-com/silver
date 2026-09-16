@@ -2,8 +2,8 @@ use std::{io::Write, sync::Arc};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId, P2pStreamId, PeerId, StreamProtocol,
-    TCache, TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
+    GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId, Nanos, P2pStreamId, PeerId,
+    StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -58,6 +58,10 @@ impl GossipPublications {
             .unwrap(),
             TCache::multi_producer("publication_rpc_out", 1 << 16),
             rpc.cache_ref().random_access("publication_rpc", true).unwrap(),
+            TCache::producer("publication_el", 32)
+                .cache_ref()
+                .random_access("publication_el", true)
+                .unwrap(),
             TCache::producer("publication_cluster_out", 1 << 16),
             cluster_in.cache_ref().random_access("publication_cluster", true).unwrap(),
             None,
@@ -175,16 +179,26 @@ fn column_publication_encodes_and_routes_without_another_spine_request() {
     let mut capture = GossipPublications::new(topic, &[]);
     capture.observer.consume(|_: PeerEvent, _| {});
     let ssz = write_bytes(&mut capture.rpc, &bytes);
-    capture.observer.produce(PeerEvent::PublishDataColumn {
-        originator: P2pStreamId::new(1, 0, StreamProtocol::DataColumnSidecarsByRoot, true),
-        topic,
+    capture.controller.peer_manager.set_sync_target(SyncUpdate::Following);
+    capture.observer.produce(DataColumnsEvent::Persist {
         ssz,
+        source: ColumnSource::Rpc,
+        block_root: [0x51; 32],
+        column_index: 5,
+        slot: 9,
     });
     capture.crank();
     let sent = capture.sent();
-    let [(peer, encoded)] = sent.as_slice() else { panic!("expected one gossip publication") };
-    assert_eq!(*peer, 2, "the sender is excluded");
+    let frames_to = |peer: usize| {
+        let mut frames: Vec<_> =
+            sent.iter().filter(|(to, _)| *to == peer).map(|(_, frame)| frame.clone()).collect();
+        frames.sort();
+        frames
+    };
+    assert_eq!(frames_to(1), frames_to(2), "a local origin excludes no mesh peer");
+    assert_eq!(frames_to(2).len(), 2, "the message and one control frame: {sent:?}");
 
+    // Decode what peer 2 received as peer 2 would.
     let decoded = TCache::producer("publication_decoded", 1 << 16);
     let mut decoded_reader =
         decoded.cache_ref().random_access("publication_decoded", true).unwrap();
@@ -198,32 +212,64 @@ fn column_publication_encodes_and_routes_without_another_spine_request() {
     let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
     receiver.spin(&mut receiver_adapter);
     let stream = P2pStreamId::new(2, 0, StreamProtocol::GossipSub, true);
-    let mut packet = stream.as_ref().to_vec();
-    packet.extend_from_slice(encoded);
-    let tcache = write_bytes(&mut capture.incoming, &packet);
-    capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
-    receiver.spin(&mut receiver_adapter);
-    // The first RPC on a peer stream reports its (absent) extension state.
-    let Some(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipExtensions {
-        partial_messages: false,
-        ..
-    })) = receiver.pop_event()
-    else {
-        panic!("first RPC must report extension state")
-    };
-    let Some(GossipHandlerEvent::NewGossip(message)) = receiver.pop_event() else {
-        panic!("publication must decode as a gossip message")
-    };
+    let mut message = None;
+    let mut dontwant = None;
+    let mut encoded = Vec::new();
+    for frame in frames_to(2) {
+        let mut packet = stream.as_ref().to_vec();
+        packet.extend_from_slice(&frame);
+        let tcache = write_bytes(&mut capture.incoming, &packet);
+        capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
+        receiver.spin(&mut receiver_adapter);
+        while let Some(event) = receiver.pop_event() {
+            match event {
+                GossipHandlerEvent::NewGossip(received) => {
+                    encoded = frame.clone();
+                    message = Some(received);
+                }
+                GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipDontWant { hash, .. }) => {
+                    dontwant = Some(hash);
+                }
+                // The first RPC on a peer stream reports its (absent) extension
+                // state; a decoded message also notifies the peer manager.
+                GossipHandlerEvent::PeerEvent(
+                    PeerEvent::P2pGossipExtensions { .. } | PeerEvent::NewGossip { .. },
+                ) => {}
+                _ => panic!("unexpected event from the receiver"),
+            }
+        }
+    }
+    let message = message.expect("publication must decode as a gossip message");
     assert_eq!(message.topic, topic);
     assert_eq!(decoded_reader.acquire(message.ssz).buffer().unwrap().0, bytes);
+    assert_eq!(dontwant, Some(message.msg_hash), "the mesh is told not to send it back");
 
     capture.iwant(1, message.msg_hash);
-    assert_eq!(capture.sent(), [(1, encoded.clone())]);
-    let mut publications = 0;
-    capture.observer.consume(|event: PeerEvent, _| match event {
-        PeerEvent::PublishDataColumn { .. } => publications += 1,
-        PeerEvent::SendGossip { .. } => panic!("column conversion must stay local"),
-        _ => {}
+    assert_eq!(capture.sent(), [(1, encoded)], "the publication populated the message cache");
+    capture.observer.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { .. } = event {
+            panic!("column conversion must stay local");
+        }
     });
-    assert_eq!(publications, 1);
+}
+
+#[test]
+fn a_syncing_node_republishes_no_columns() {
+    let topic = GossipTopic::DataColumnSidecar(5);
+    let bytes = vec![0x42; topic.min_uncompressed_size()];
+    let mut capture = GossipPublications::new(topic, &[]);
+    let ssz = write_bytes(&mut capture.rpc, &bytes);
+    capture
+        .controller
+        .peer_manager
+        .set_sync_target(SyncUpdate::SyncingHead { head_root: [0x33; 32], head_slot: 900 });
+    capture.observer.produce(DataColumnsEvent::Persist {
+        ssz,
+        source: ColumnSource::Rpc,
+        block_root: [0x51; 32],
+        column_index: 5,
+        slot: 9,
+    });
+    capture.crank();
+    assert!(capture.sent().is_empty(), "peers ahead of us already hold the column");
 }

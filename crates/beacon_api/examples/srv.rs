@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use silver_beacon_api::{ApiConsumers, BeaconApi};
+use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{Enr, Identify, Keypair, TCache, TCacheProducer};
 use silver_httpcore::{Bind, Readiness, TokenRange};
@@ -27,7 +27,7 @@ fn main() {
         &Identify::default(),
         &SpecConfig::mainnet(),
         state,
-        ApiConsumers { gossip: consumer(), rpc: consumer() },
+        consumer(),
     );
     println!("serving on {:?}", api.local_addrs());
     loop {

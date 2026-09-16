@@ -13,10 +13,11 @@ use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp,
-    Enr, GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
-    PayloadResolution, PayloadValidationStatus, PeerEvent, SilverSpine, StreamProtocol, SyncUpdate,
-    TCache, TCacheProducer, TCacheRead, TProducer,
+    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, ELSyncStatus,
+    EngineFcuReq, EngineReq, EngineResp, Enr, GossipTopic, HeadChange, HeadRoots, Identify,
+    IpBytes, Keypair, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
+    PeerEvent, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead,
+    TProducer,
     column_util::{block_root_from_sidecar, block_root_fulu},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
@@ -74,7 +75,6 @@ fn boundary_tile_with_spec(
         rpc_p.cache_ref().random_access("t", true).unwrap(),
         resp_p,
         gossip_p.cache_ref().random_access("t_events", true).unwrap(),
-        rpc_p.cache_ref().random_access("t_events", true).unwrap(),
     );
     (tile, gossip_p, rpc_p)
 }
@@ -243,23 +243,36 @@ fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEv
     (event, SseEvent::block_gossip(slot, &block_root_fulu(&block)))
 }
 
-fn column_relay(gossip: &mut TProducer, slot: u64, byte: u8, index: u64) -> (PeerEvent, SseEvent) {
+fn gossip_column(
+    gossip: &mut TProducer,
+    slot: u64,
+    byte: u8,
+    index: u64,
+) -> (DataColumnsEvent, SseEvent) {
     let sidecar = fulu_sidecar_bytes(slot, byte, index);
-    let topic = GossipTopic::DataColumnSidecar(index);
-    let event = send_gossip(topic, byte, write_object(gossip, &sidecar));
-    (event, SseEvent::column(slot, &block_root_from_sidecar(&sidecar), index))
+    let block_root = block_root_from_sidecar(&sidecar);
+    let event = DataColumnsEvent::Persist {
+        ssz: write_object(gossip, &sidecar),
+        source: ColumnSource::Gossip,
+        block_root,
+        column_index: index,
+        slot,
+    };
+    (event, SseEvent::column(slot, &block_root, index))
 }
 
-fn column_publication(
+fn rpc_column(
     rpc: &mut TProducer,
     slot: u64,
     byte: u8,
     index: u64,
-) -> (PeerEvent, SseEvent) {
-    let event = PeerEvent::PublishDataColumn {
-        originator: P2pStreamId::new(2, 0, StreamProtocol::DataColumnSidecarsByRange, true),
-        topic: GossipTopic::DataColumnSidecar(index),
+) -> (DataColumnsEvent, SseEvent) {
+    let event = DataColumnsEvent::Persist {
         ssz: write_object(rpc, &gloas_sidecar_bytes(slot, byte, index)),
+        source: ColumnSource::Rpc,
+        block_root: [byte; 32],
+        column_index: index,
+        slot,
     };
     (event, SseEvent::column(slot, &[byte; 32], index))
 }
@@ -1093,8 +1106,8 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
     inj.produce(send_gossip(GossipTopic::BeaconAttestation(0), 0xaf, unrelated));
     inj.produce(PeerEvent::EarliestSlot(99));
 
-    let (relay, relayed) = column_relay(&mut gossip, 10, 0xac, 3);
-    let (published, publication) = column_publication(&mut rpc, 11, 0xad, 5);
+    let (relay, relayed) = gossip_column(&mut gossip, 10, 0xac, 3);
+    let (published, publication) = rpc_column(&mut rpc, 11, 0xad, 5);
     let (block_relayed, relayed_block) = block_relay(&mut gossip, 12, 0xae);
     inj.produce(relay);
     inj.produce(relay);
@@ -1117,7 +1130,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
         &mut crank,
     );
     inj.produce(relay);
-    let (sentinel, sentinel_publication) = column_publication(&mut rpc, 14, 0xaf, 7);
+    let (sentinel, sentinel_publication) = rpc_column(&mut rpc, 14, 0xaf, 7);
     inj.produce(sentinel);
     let (last_block, last_relayed_block) = block_relay(&mut gossip, 15, 0xb0);
     inj.produce(last_block);
@@ -1174,8 +1187,8 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
     let topics = "block_gossip,data_column_sidecar";
     let early = EventsSubscriber::new(addr, topics, 3, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
-    let (relay, relayed) = column_relay(&mut gossip, 20, 0x11, 3);
-    let (published, publication) = column_publication(&mut rpc, 21, 0x12, 5);
+    let (relay, relayed) = gossip_column(&mut gossip, 20, 0x11, 3);
+    let (published, publication) = rpc_column(&mut rpc, 21, 0x12, 5);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
@@ -1184,8 +1197,8 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 
     let late = EventsSubscriber::new(addr, topics, 3, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 22, 0x22);
-    let (relay, relayed) = column_relay(&mut gossip, 22, 0x22, 7);
-    let (published, publication) = column_publication(&mut rpc, 23, 0x23, 9);
+    let (relay, relayed) = gossip_column(&mut gossip, 22, 0x22, 7);
+    let (published, publication) = rpc_column(&mut rpc, 23, 0x23, 9);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
@@ -1281,8 +1294,8 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
     };
     let client = EventsSubscriber::new(addr, "block_gossip,data_column_sidecar", 3, &mut pump);
     let (block, relayed_block) = block_relay(&mut gossip, 30, 0x33);
-    let (relay, relayed) = column_relay(&mut gossip, 31, 0x34, 7);
-    let (published, publication) = column_publication(&mut rpc, 32, 0x35, 9);
+    let (relay, relayed) = gossip_column(&mut gossip, 31, 0x34, 7);
+    let (published, publication) = rpc_column(&mut rpc, 32, 0x35, 9);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
@@ -1346,7 +1359,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
     }
     let legacy = legacy.join().unwrap();
     let v2 = v2.join().unwrap();
-    assert_eq!(legacy.len(), 2);
+    assert_eq!(legacy.len(), 1);
     assert_eq!(v2.len(), 3);
     let roots = head_roots();
     for (events, is_v2) in [(&legacy, false), (&v2, true)] {
@@ -1400,7 +1413,7 @@ fn head_events_describe_changes_observed_while_following() {
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let sentinel_slot = 40;
-    let (client, on_subscribed) = head_events_subscriber(addr, "head", sentinel_slot);
+    let (client, on_subscribed) = head_events_subscriber(addr, "head_v2", sentinel_slot);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut crank = |tile: &mut ApplicationBoundaryTile, msg: &str| {
@@ -1445,7 +1458,7 @@ fn head_events_describe_changes_observed_while_following() {
     let events = client.join().unwrap();
     assert_eq!(events.len(), 3);
     for (event, (slot, optimistic)) in events.iter().zip([(35, true), (35, false), (37, true)]) {
-        assert_eq!(event["slot"], slot.to_string());
-        assert_eq!(event["execution_optimistic"], optimistic);
+        assert_eq!(event["data"]["slot"], slot.to_string());
+        assert_eq!(event["data"]["execution_optimistic"], optimistic);
     }
 }

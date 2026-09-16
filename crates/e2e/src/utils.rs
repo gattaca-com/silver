@@ -188,6 +188,10 @@ impl PmBsHarness {
             gossip_handler,
             TCache::multi_producer("rpc_out_dummy", 32),
             rpc_p.cache_ref().random_access("ctl_test", true).expect("ctl rpc ra"),
+            TCache::producer("ctl_el_dummy", 32)
+                .cache_ref()
+                .random_access("ctl_test_el", true)
+                .expect("ctl el ra"),
             TCache::producer("test_cluster_out", 1 << 12),
             cluster_in_consumer,
             None,
