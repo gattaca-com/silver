@@ -198,3 +198,12 @@ At 64 subscriptions, the pending-output allowance totals 32 MiB. Each
 subscription reserves its buffer at construction and retains the allocation
 until it closes. A full drain reuses the buffer from its beginning without
 releasing it. Partial drains can advance through the entire allocation.
+
+Amended 2026-09-16: the `{block_id}` routes are the second exception:
+`/eth/v2/beacon/blocks`, `/eth/v1/beacon/blocks/{block_id}/root` and
+`/eth/v1/beacon/headers`. The block lives in the storage tile, so the handler
+writes nothing and the connection waits with a request id. Storage answers
+over the `beacon_api_requests` and `beacon_api_responses` queues, and the tile
+frames the answer into the waiting connection. One request waits per
+connection. A connection storage never answers closes on the idle timeout.
+Only a root is served, and the block body only as SSZ.
