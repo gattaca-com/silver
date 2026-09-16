@@ -9,7 +9,8 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    BeaconApiResponse, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound, RpcRequestInbound,
+    RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead, TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -252,13 +253,22 @@ impl QueryUnit {
     }
 }
 
-/// An in-flight read request: the stream and the ordered chunks still to
+#[derive(Clone, Copy, Debug)]
+enum RequestSource {
+    Peer(P2pStreamId),
+    /// One unit at most, answered by the first served file.
+    Api {
+        request_id: u64,
+    },
+}
+
+/// An in-flight read request: the requester and the ordered chunks still to
 /// serve for it. `file_io` serves one unit per turn then rotates the
 /// request to the back of `query_queue` (head-of-line fairness across
 /// streams), emitting `Complete` once `units` drains.
 #[derive(Debug)]
 struct PendingQuery {
-    stream_id: P2pStreamId,
+    source: RequestSource,
     units: VecDeque<QueryUnit>,
     received_at: Instant,
     first_chunk_at: Option<Instant>,
@@ -267,9 +277,9 @@ struct PendingQuery {
 }
 
 impl PendingQuery {
-    fn new(stream_id: P2pStreamId, units: VecDeque<QueryUnit>) -> Self {
+    fn new(source: RequestSource, units: VecDeque<QueryUnit>) -> Self {
         Self {
-            stream_id,
+            source,
             received_at: Instant::now(),
             first_chunk_at: None,
             units_total: units.len() as u32,
@@ -278,19 +288,73 @@ impl PendingQuery {
         }
     }
 
-    /// The `RpcServeOutcome` for this query terminating now.
-    fn outcome(&self, missing: bool) -> PeerEvent {
-        PeerEvent::RpcServeOutcome {
-            p2p_peer: self.stream_id.peer(),
-            protocol: self.stream_id.protocol(),
-            units_total: self.units_total,
-            units_sent: self.units_sent,
-            missing,
-            first_chunk_ms: self
-                .first_chunk_at
-                .map(|t| t.duration_since(self.received_at).as_millis() as u64)
-                .unwrap_or(0),
-            elapsed_ms: self.received_at.elapsed().as_millis() as u64,
+    fn deliver(
+        &mut self,
+        unit: &QueryUnit,
+        ssz: TCacheRead,
+        fork_digest: [u8; 4],
+        emit: &mut impl FnMut(IoEvent),
+    ) -> bool {
+        match self.source {
+            RequestSource::Peer(stream_id) => {
+                let response = match unit {
+                    QueryUnit::Block { .. } | QueryUnit::UnfinalizedBlock { .. } => {
+                        RpcResponse::BeaconBlock { fork_digest, ssz }
+                    }
+                    QueryUnit::Column { .. } | QueryUnit::UnfinalizedColumn { .. } => {
+                        RpcResponse::DataColumnSidecar { fork_digest, ssz }
+                    }
+                    QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. } => {
+                        RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz }
+                    }
+                };
+                emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                    stream_id,
+                    response,
+                }))));
+                self.units_sent += 1;
+                self.first_chunk_at.get_or_insert_with(Instant::now);
+                true
+            }
+            RequestSource::Api { request_id } => {
+                let block = Some(ServedBlock { slot: unit.slot(), ssz });
+                emit(IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block }));
+                false
+            }
+        }
+    }
+
+    fn finish(&self, missing: bool, emit: &mut impl FnMut(IoEvent)) {
+        match self.source {
+            RequestSource::Peer(stream_id) => {
+                let response = if missing {
+                    let error = "resource unavailable".as_bytes();
+                    let mut msg = [0u8; 256];
+                    msg[..error.len()].copy_from_slice(error);
+                    RpcResponse::Error { error: 3, msg, len: error.len() }
+                } else {
+                    RpcResponse::Complete
+                };
+                emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                    stream_id,
+                    response,
+                }))));
+                emit(IoEvent::PeerEvent(PeerEvent::RpcServeOutcome {
+                    p2p_peer: stream_id.peer(),
+                    protocol: stream_id.protocol(),
+                    units_total: self.units_total,
+                    units_sent: self.units_sent,
+                    missing,
+                    first_chunk_ms: self
+                        .first_chunk_at
+                        .map(|t| t.duration_since(self.received_at).as_millis() as u64)
+                        .unwrap_or(0),
+                    elapsed_ms: self.received_at.elapsed().as_millis() as u64,
+                }));
+            }
+            RequestSource::Api { request_id } => {
+                emit(IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block: None }));
+            }
         }
     }
 }
@@ -638,7 +702,8 @@ impl Store {
         // TODO should not return 'Complete' should return rate limit error
         if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
             tracing::warn!(?stream_id, "queries at capacity");
-            self.query_queue.push_back(PendingQuery::new(stream_id, VecDeque::new()));
+            self.query_queue
+                .push_back(PendingQuery::new(RequestSource::Peer(stream_id), VecDeque::new()));
             return;
         }
 
@@ -746,22 +811,12 @@ impl Store {
 
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
-                            // Serve any block we hold by root regardless of
-                            // canonicity: unfinalized fork tree first, then the
-                            // finalized flat store.
-                            if let Some((slot, parent_root)) = self.unfinalized.get(root) {
-                                units.push_back(QueryUnit::UnfinalizedBlock {
-                                    slot,
-                                    parent_root,
-                                    block_root: *root,
-                                });
-                            } else if let Some(slot) = self.finalized.slot_of(root) {
-                                units.push_back(QueryUnit::Block { slot });
-                            } else {
-                                tracing::warn!(
+                            match self.block_unit(root) {
+                                Some(unit) => units.push_back(unit),
+                                None => tracing::warn!(
                                     block_root = hex::encode(root),
                                     "BlockByRoot - root not found"
-                                );
+                                ),
                             }
                         }
                     },
@@ -810,7 +865,23 @@ impl Store {
             // Unhandled request kind: no response (matches prior behaviour).
             _ => return,
         }
-        self.query_queue.push_back(PendingQuery::new(stream_id, units));
+        self.query_queue.push_back(PendingQuery::new(RequestSource::Peer(stream_id), units));
+    }
+
+    /// Answered by `file_io`, with `None` for a root the store does not hold.
+    /// Uncapped: the API's connection cap bounds these.
+    pub(super) fn block_by_root_request(&mut self, request_id: u64, root: &[u8; 32]) {
+        let units = self.block_unit(root).into_iter().collect();
+        self.query_queue.push_back(PendingQuery::new(RequestSource::Api { request_id }, units));
+    }
+
+    /// Any block held by root regardless of canonicity: the unfinalized fork
+    /// tree first, then the finalized flat store.
+    fn block_unit(&self, root: &[u8; 32]) -> Option<QueryUnit> {
+        if let Some((slot, parent_root)) = self.unfinalized.get(root) {
+            return Some(QueryUnit::UnfinalizedBlock { slot, parent_root, block_root: *root });
+        }
+        self.finalized.slot_of(root).map(|slot| QueryUnit::Block { slot })
     }
 
     fn resolve_canonical_range(

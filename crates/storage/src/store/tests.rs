@@ -90,8 +90,8 @@ fn concurrent_read_write() {
 #[test]
 fn fork_tree_persist_serve_promote() {
     use silver_common::{
-        P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponse,
-        RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
+        BeaconApiResponse, P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound,
+        RpcResponse, RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
     };
 
     let dir = TempDir::new().unwrap();
@@ -211,6 +211,27 @@ fn fork_tree_persist_serve_promote() {
         .unwrap();
     assert_eq!(byroot.len(), 2);
     assert_block(&byroot[0], &bytes_b);
+
+    // The API is answered by root the same way, without a stream to complete.
+    store.block_by_root_request(7, &root_b);
+    store.block_by_root_request(8, &[0xEE; 32]);
+    let mut api = vec![];
+    store
+        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
+            IoEvent::ApiResponse(response) => api.push(response),
+            other => panic!("api requests answer the api alone, got {other:?}"),
+        })
+        .unwrap();
+    let [
+        BeaconApiResponse::Block { request_id: 7, block: Some(served) },
+        BeaconApiResponse::Block { request_id: 8, block: None },
+    ] = api[..]
+    else {
+        panic!("expected one served block and one miss, got {api:?}");
+    };
+    assert_eq!(served.slot, slot);
+    let mut api_consumer = producer_cache.cache_ref().random_access("fork_api_read", true).unwrap();
+    assert_eq!(api_consumer.acquire(served.ssz).buffer().unwrap().0, &bytes_b);
 
     // Finalize at slot 42 on A: promote A, prune the orphan B.
     store.update_head(slot, root_a, slot, root_a);
