@@ -107,6 +107,8 @@ pub enum BeaconApiResponse {
 #[repr(C)]
 pub struct ServedBlock {
     pub slot: u64,
+    pub finalized: bool,
+    pub canonical: bool,
     pub ssz: TCacheRead,
 }
 

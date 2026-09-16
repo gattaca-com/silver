@@ -1472,7 +1472,7 @@ fn block_by_root_round_trips_over_the_storage_queues() {
     let ssz = write_object(&mut served, &block);
     inj.produce(BeaconApiResponse::Block {
         request_id,
-        block: Some(ServedBlock { slot: 10, ssz }),
+        block: Some(ServedBlock { slot: 10, finalized: true, canonical: true, ssz }),
     });
     while !client.is_finished() {
         assert!(Instant::now() < deadline, "timeout: block response");

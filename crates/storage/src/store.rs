@@ -256,10 +256,7 @@ impl QueryUnit {
 #[derive(Clone, Copy, Debug)]
 enum RequestSource {
     Peer(P2pStreamId),
-    /// One unit at most, answered by the first served file.
-    Api {
-        request_id: u64,
-    },
+    Api { request_id: u64, canonical: bool },
 }
 
 /// An in-flight read request: the requester and the ordered chunks still to
@@ -316,8 +313,9 @@ impl PendingQuery {
                 self.first_chunk_at.get_or_insert_with(Instant::now);
                 true
             }
-            RequestSource::Api { request_id } => {
-                let block = Some(ServedBlock { slot: unit.slot(), ssz });
+            RequestSource::Api { request_id, canonical } => {
+                let finalized = matches!(unit, QueryUnit::Block { .. });
+                let block = Some(ServedBlock { slot: unit.slot(), finalized, canonical, ssz });
                 emit(IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block }));
                 false
             }
@@ -352,7 +350,7 @@ impl PendingQuery {
                     elapsed_ms: self.received_at.elapsed().as_millis() as u64,
                 }));
             }
-            RequestSource::Api { request_id } => {
+            RequestSource::Api { request_id, .. } => {
                 emit(IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block: None }));
             }
         }
@@ -871,8 +869,22 @@ impl Store {
     /// Answered by `file_io`, with `None` for a root the store does not hold.
     /// Uncapped: the API's connection cap bounds these.
     pub(super) fn block_by_root_request(&mut self, request_id: u64, root: &[u8; 32]) {
-        let units = self.block_unit(root).into_iter().collect();
-        self.query_queue.push_back(PendingQuery::new(RequestSource::Api { request_id }, units));
+        let unit = self.block_unit(root);
+        let canonical = match unit {
+            Some(QueryUnit::UnfinalizedBlock { slot, block_root, .. }) => {
+                self.on_head_chain(slot, &block_root)
+            }
+            _ => true,
+        };
+        let source = RequestSource::Api { request_id, canonical };
+        self.query_queue.push_back(PendingQuery::new(source, unit.into_iter().collect()));
+    }
+
+    fn on_head_chain(&self, slot: u64, root: &[u8; 32]) -> bool {
+        self.unfinalized
+            .canonical_chain_in_range(self.head.root, self.head.slot, slot, slot + 1)
+            .get(&slot)
+            .is_some_and(|(_, canonical)| canonical == root)
     }
 
     /// Any block held by root regardless of canonicity: the unfinalized fork

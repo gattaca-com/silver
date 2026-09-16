@@ -40,6 +40,10 @@ pub fn body_root(body: &[u8]) -> B256 {
     hash_tree_root_body_fulu(body)
 }
 
+pub fn body_root_at(body: &[u8], is_gloas: bool) -> B256 {
+    if is_gloas { BeaconBlockBodyGloasView::hash_tree_root(body) } else { body_root(body) }
+}
+
 /// SSZ `block_root` of a `BeaconBlockHeader` derived from a
 /// `SignedBeaconBlock` buffer. Identical to `hash_tree_root` of the inner
 /// `BeaconBlock`: both merkleize the same five leaves once the body is

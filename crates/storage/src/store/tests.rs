@@ -215,6 +215,7 @@ fn fork_tree_persist_serve_promote() {
     // The API is answered by root the same way, without a stream to complete.
     store.block_by_root_request(7, &root_b);
     store.block_by_root_request(8, &[0xEE; 32]);
+    store.block_by_root_request(9, &root_a);
     let mut api = vec![];
     store
         .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
@@ -225,11 +226,14 @@ fn fork_tree_persist_serve_promote() {
     let [
         BeaconApiResponse::Block { request_id: 7, block: Some(served) },
         BeaconApiResponse::Block { request_id: 8, block: None },
+        BeaconApiResponse::Block { request_id: 9, block: Some(head) },
     ] = api[..]
     else {
-        panic!("expected one served block and one miss, got {api:?}");
+        panic!("expected two served blocks and one miss, got {api:?}");
     };
     assert_eq!(served.slot, slot);
+    assert!(!served.finalized && !served.canonical, "B is the fork off the head");
+    assert!(!head.finalized && head.canonical, "A is the unfinalized head");
     let mut api_consumer = producer_cache.cache_ref().random_access("fork_api_read", true).unwrap();
     assert_eq!(api_consumer.acquire(served.ssz).buffer().unwrap().0, &bytes_b);
 

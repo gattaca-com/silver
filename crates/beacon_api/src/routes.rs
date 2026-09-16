@@ -9,8 +9,9 @@ use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
+    blocks::{block, block_header, block_root},
     events::events,
-    ids::{parse_root, parse_uint64},
+    ids::is_recognized_id,
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
     peers::{PeerFilter, PeerTable},
@@ -29,9 +30,9 @@ const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const DEFAULT_SYNCING_STATUS: u16 = 206;
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
-    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", not_implemented),
+    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
-    (Method::Get, "/eth/v1/beacon/headers/{block_id}", not_implemented),
+    (Method::Get, "/eth/v1/beacon/headers/{block_id}", block_header),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
@@ -66,7 +67,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/sync_committee_subscriptions",
         post_sync_committee_subscriptions,
     ),
-    (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block_by_root),
+    (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
     (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", not_implemented),
     (Method::Get, "/metrics", metrics),
 ];
@@ -160,29 +161,6 @@ impl ApiCtx {
 pub(crate) struct StateRead<R> {
     pub(crate) flags: ReadFlags,
     pub(crate) data: R,
-}
-
-fn is_recognized_id(id: &str) -> bool {
-    matches!(id, "head" | "genesis" | "justified" | "finalized") ||
-        parse_uint64(id).is_some() ||
-        parse_root(id).is_some()
-}
-
-fn block_by_root(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let block_id = req.params.get("block_id").expect("{block_id} in the route pattern");
-    let Some(root) = parse_root(block_id) else {
-        if is_recognized_id(block_id) {
-            resp.error(404, "block not found");
-        } else {
-            resp.error(400, "invalid block_id");
-        }
-        return;
-    };
-    if !req.accepts_ssz() {
-        resp.error(406, "only application/octet-stream is served");
-        return;
-    }
-    resp.request_block_by_root(root);
 }
 
 /// The surface a request can name ahead of what silver serves: each of these
@@ -349,55 +327,6 @@ mod tests {
     fn body(response: &[u8]) -> &[u8] {
         let s = std::str::from_utf8(response).unwrap();
         &response[s.find("\r\n\r\n").unwrap() + 4..]
-    }
-
-    fn get_block(block_id: &str, accept: Option<&str>) -> (Outcome, Vec<u8>) {
-        let path = format!("/eth/v2/beacon/blocks/{block_id}");
-        let req = ParsedRequest {
-            method: "GET",
-            path: &path,
-            query: "",
-            body: b"",
-            accept,
-            content_type: None,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        let mut out = Vec::new();
-        let outcome = Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out);
-        (outcome, out)
-    }
-
-    #[test]
-    fn block_by_root_defers_to_storage_and_writes_nothing() {
-        let root = format!("0x{}", "ab".repeat(32));
-        let (outcome, out) = get_block(&root, Some("application/octet-stream"));
-        assert_eq!(outcome, Outcome::AwaitingBlock([0xab; 32]));
-        assert!(out.is_empty());
-
-        let (outcome, out) =
-            get_block(&root, Some("application/json;q=0.9, application/octet-stream;q=0.5"));
-        assert_eq!(outcome, Outcome::AwaitingBlock([0xab; 32]));
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn block_answers_before_deferring_when_it_cannot_serve() {
-        let root = format!("0x{}", "ab".repeat(32));
-        for accept in [None, Some("application/json")] {
-            let (outcome, out) = get_block(&root, accept);
-            assert_eq!(outcome, Outcome::Response);
-            assert!(out.starts_with(b"HTTP/1.1 406 Not Acceptable\r\n"), "{accept:?}");
-        }
-        for block_id in ["head", "finalized", "genesis", "justified", "12"] {
-            let (_, out) = get_block(block_id, Some("application/octet-stream"));
-            assert!(out.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{block_id}");
-        }
-        for block_id in ["0x1234", "latest", "-1"] {
-            let (_, out) = get_block(block_id, Some("application/octet-stream"));
-            assert!(out.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{block_id}");
-        }
     }
 
     #[test]
@@ -610,8 +539,6 @@ mod tests {
         let router = Router::new(ROUTES);
         let ctx = anchor_ctx();
         for (method, path) in [
-            ("GET", "/eth/v1/beacon/blocks/head/root"),
-            ("GET", "/eth/v1/beacon/headers/head"),
             ("GET", "/eth/v1/beacon/states/head/validators"),
             ("POST", "/eth/v1/beacon/states/head/validators"),
             ("GET", "/eth/v1/beacon/states/head/validators/0"),

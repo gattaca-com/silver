@@ -1,7 +1,6 @@
-use silver_beacon_state_data::B256;
 use silver_httpcore::{ParsedRequest, frame_response};
 
-use crate::{events::ChannelSet, response::Response, routes::ApiCtx};
+use crate::{blocks::BlockRequest, events::ChannelSet, response::Response, routes::ApiCtx};
 
 const MAX_PARAMS: usize = 4;
 
@@ -27,11 +26,11 @@ impl Method {
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[must_use = "Stream and BlockByRoot leave the connection waiting on the caller"]
+#[must_use = "Stream and AwaitingBlock leave the connection waiting on the caller"]
 pub(crate) enum Outcome {
     Response,
     Stream(ChannelSet),
-    AwaitingBlock(B256),
+    AwaitingBlock(BlockRequest),
 }
 
 // `method` and `path` become live with a handler that answers on more than the

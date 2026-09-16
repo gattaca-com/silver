@@ -1,9 +1,8 @@
 use std::str;
 
-use silver_beacon_state_data::B256;
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
-use crate::{events::ChannelSet, json::Json, router::Outcome};
+use crate::{blocks::BlockRequest, events::ChannelSet, json::Json, router::Outcome};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
@@ -30,9 +29,9 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::Stream(channels);
     }
 
-    pub(crate) fn request_block_by_root(&mut self, root: B256) {
+    pub(crate) fn request_block(&mut self, request: BlockRequest) {
         debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingBlock(root);
+        self.outcome = Outcome::AwaitingBlock(request);
     }
 
     pub(crate) fn outcome(self) -> Outcome {

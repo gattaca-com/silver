@@ -10,8 +10,8 @@ use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
-    ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair, PeerEvent, ServedBlock,
-    SyncUpdate, TCacheRead, TRandomAccess,
+    ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair, PeerEvent, SyncUpdate,
+    TCacheRead, TRandomAccess,
     column_util::block_root,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -22,11 +22,12 @@ use silver_httpcore::{
 
 use crate::{
     HeadStatus, NodeStatus,
+    blocks::BlockRequest,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
     peers::Peer,
     response::Response,
-    router::{Outcome, Router, SSZ_MEDIA_TYPE},
+    router::{Outcome, Router},
     routes::{ApiCtx, ROUTES},
 };
 
@@ -73,7 +74,7 @@ struct Requests {
     http: ServerConnection,
     last_activity: Instant,
     linger_since: Option<Instant>,
-    pending: Option<u64>,
+    pending: Option<(u64, BlockRequest)>,
 }
 
 struct Subscription {
@@ -94,7 +95,11 @@ impl Connection {
     }
 
     fn awaits(&self, request_id: u64) -> bool {
-        matches!(self.state, State::Requests(Requests { pending: Some(id), .. }) if id == request_id)
+        matches!(
+            self.state,
+            State::Requests(Requests { pending: Some((id, .. )), .. })
+                if id == request_id
+        )
     }
 
     /// Buffered requests behind the subscription are abandoned; subsequent
@@ -599,9 +604,9 @@ impl BeaconApi {
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
-        requests.pending = None;
+        let (_, request) = requests.pending.take().expect("awaiting above");
         let mut resp = Response::new(requests.http.write_buf_mut());
-        block_response(&mut resp, block, storage, &ctx.spec);
+        request.kind.respond(&mut resp, request.root, block, storage, ctx);
 
         self.resume_writing(token);
     }
@@ -696,12 +701,12 @@ impl BeaconApi {
                     let conn = self.connections.remove(&token).expect("looked up above");
                     self.connections.insert(token, conn.subscribed(channels, now));
                 }
-                Outcome::AwaitingBlock(block_root) => {
+                Outcome::AwaitingBlock(block) => {
                     let requests = conn.requests_mut().expect("only a request handler defers");
                     let request_id = self.next_request_id;
                     self.next_request_id += 1;
-                    requests.pending = Some(request_id);
-                    emit(BeaconApiRequest::BlockByRoot { request_id, block_root });
+                    requests.pending = Some((request_id, block));
+                    emit(BeaconApiRequest::BlockByRoot { request_id, block_root: block.root });
                 }
             },
             Ok(true) => {
@@ -766,27 +771,6 @@ impl BeaconApi {
     }
 }
 
-fn block_response(
-    resp: &mut Response<'_>,
-    block: Option<ServedBlock>,
-    storage: &mut TRandomAccess,
-    spec: &SpecConfig,
-) {
-    let Some(ServedBlock { slot, ssz }) = block else {
-        return resp.error(404, "block not found");
-    };
-    match storage.acquire(ssz).buffer() {
-        Ok((bytes, _)) => {
-            let version = spec.fork_at_slot(slot).name();
-            resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], bytes);
-        }
-        Err(e) => {
-            tracing::warn!(?e, slot, "served block overwritten before it was read");
-            resp.error(503, "block no longer available");
-        }
-    }
-}
-
 fn would_block(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock
 }
@@ -809,7 +793,8 @@ mod tests {
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
-        HeadRoots, PayloadResolution, ServedBlock, TCache, TCacheProducer, TProducer,
+        HeadRoots, PayloadResolution, ServedBlock, TCache, TCacheProducer, TProducer, column_util,
+        ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN},
     };
     use silver_httpcore::Readiness;
 
@@ -862,7 +847,8 @@ mod tests {
             let mut reservation = self.served.reserve(bytes.len(), true).unwrap();
             reservation.write_all(bytes).unwrap();
             reservation.flush().unwrap();
-            let block = Some(ServedBlock { slot, ssz: reservation.read() });
+            let ssz = reservation.read();
+            let block = Some(ServedBlock { slot, finalized: true, canonical: true, ssz });
             self.api.handle_response(BeaconApiResponse::Block { request_id, block });
         }
 
@@ -1787,13 +1773,34 @@ mod tests {
         drop(client);
     }
 
-    fn get_block(mut stream: impl Write, root: &str) {
+    fn get(mut stream: impl Write, path: &str) {
         write!(
             stream,
-            "GET /eth/v2/beacon/blocks/{root} HTTP/1.1\r\nHost: x\r\n\
+            "GET {path} HTTP/1.1\r\nHost: x\r\n\
              Accept: application/octet-stream\r\nConnection: close\r\n\r\n"
         )
         .unwrap();
+    }
+
+    fn root_hex(byte: u8) -> String {
+        format!("0x{}", hex::encode([byte; 32]))
+    }
+
+    /// Passes the layout check; `byte` fills the state root.
+    fn block_bytes(slot: u64, byte: u8) -> Vec<u8> {
+        let mut block = vec![0u8; SIGNED_BEACON_BLOCK_MIN];
+        block[0..4].copy_from_slice(&100u32.to_le_bytes());
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[108..116].copy_from_slice(&7u64.to_le_bytes());
+        block[148..180].copy_from_slice(&[byte; 32]);
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
+        block.extend_from_slice(&[0u8; BEACON_BLOCK_BODY_FIXED]);
+        block
+    }
+
+    fn body(response: &[u8]) -> &[u8] {
+        let blank = response.windows(4).position(|w| w == b"\r\n\r\n").expect("a head");
+        &response[blank + 4..]
     }
 
     fn deferred_request(server: &mut Server) -> (u64, [u8; 32]) {
@@ -1809,7 +1816,7 @@ mod tests {
     fn block_by_root_waits_for_storage_then_answers_ssz() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
-        get_block(&mut client, &format!("0x{}", "ab".repeat(32)));
+        get(&mut client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xab)));
         let (request_id, block_root) = deferred_request(&mut server);
         assert_eq!(block_root, [0xab; 32]);
         client.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
@@ -1819,14 +1826,65 @@ mod tests {
             "nothing is written before storage answers"
         );
 
-        server.serve_block(request_id, 0, b"\x01\x02\x03");
+        let block = block_bytes(0, 0xab);
+        server.serve_block(request_id, 0, &block);
         client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "block response");
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+             Eth-Consensus-Version: phase0\r\nContent-Length: {}\r\n\r\n",
+            block.len()
+        );
+        assert!(response.starts_with(head.as_bytes()), "{}", String::from_utf8_lossy(&response));
+        assert_eq!(body(&response), block);
+    }
+
+    #[test]
+    fn block_root_and_header_answer_json_from_the_served_bytes() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let root_client = connect(tcp_addr(&server));
+        get(&root_client, &format!("/eth/v1/beacon/blocks/{}/root", root_hex(0xcd)));
+        let (root_id, _) = deferred_request(&mut server);
+        let header_client = connect(tcp_addr(&server));
+        get(&header_client, &format!("/eth/v1/beacon/headers/{}", root_hex(0xcd)));
+        let (header_id, _) = deferred_request(&mut server);
+
+        let block = block_bytes(10, 0xef);
+        server.serve_block(root_id, 10, &block);
+        server.serve_block(header_id, 10, &block);
+        let root_reader = std::thread::spawn(move || read_to_eof(root_client));
+        let header_reader = std::thread::spawn(move || read_to_eof(header_client));
+        let (root_response, header_response) =
+            serve_both(&mut server, root_reader, header_reader, "json block answers");
+
+        assert!(
+            root_response.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
+        );
         assert_eq!(
-            response,
-            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
-              Eth-Consensus-Version: phase0\r\nContent-Length: 3\r\n\r\n\x01\x02\x03"
+            std::str::from_utf8(body(&root_response)).unwrap(),
+            format!(
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"{}\"}}}}",
+                root_hex(0xcd)
+            )
+        );
+
+        assert!(
+            header_response.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
+        );
+        let body_root = hex::encode(column_util::body_root(&block[SIGNED_BEACON_BLOCK_MIN..]));
+        assert_eq!(
+            std::str::from_utf8(body(&header_response)).unwrap(),
+            format!(
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"{}\",\
+                 \"canonical\":true,\"header\":{{\"message\":{{\"slot\":\"10\",\"proposer_index\":\"7\",\
+                 \"parent_root\":\"{}\",\"state_root\":\"{}\",\"body_root\":\"0x{body_root}\"}},\
+                 \"signature\":\"0x{}\"}}}}}}",
+                root_hex(0xcd),
+                root_hex(0x00),
+                root_hex(0xef),
+                "00".repeat(96)
+            )
         );
     }
 
@@ -1834,7 +1892,7 @@ mod tests {
     fn block_storage_does_not_hold_is_a_404() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let client = connect(tcp_addr(&server));
-        get_block(&client, &format!("0x{}", "cd".repeat(32)));
+        get(&client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xcd)));
         let (request_id, _) = deferred_request(&mut server);
         server.api.handle_response(BeaconApiResponse::Block { request_id, block: None });
         let reader = std::thread::spawn(move || read_to_eof(client));
@@ -1846,7 +1904,7 @@ mod tests {
     fn block_for_a_closed_connection_is_dropped() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let client = connect(tcp_addr(&server));
-        get_block(&client, &format!("0x{}", "ef".repeat(32)));
+        get(&client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xef)));
         let (request_id, _) = deferred_request(&mut server);
         drop(client);
         server.api.idle.timeout = Duration::ZERO;
@@ -1854,7 +1912,7 @@ mod tests {
 
         let other = connect(tcp_addr(&server));
         pump_until(&mut server, "other accepted", |s| s.api.connections.len() == 1);
-        server.serve_block(request_id, 0, b"\x01");
+        server.serve_block(request_id, 0, &block_bytes(0, 0x01));
         assert!(
             server.api.connections.values().all(|conn| matches!(
                 &conn.state,
