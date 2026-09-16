@@ -170,6 +170,25 @@ when no clients subscribe to `block_gossip`. If the cache has overwritten
 a block's bytes, the API logs a warning and emits no event for that request.
 This does not cancel the publication request.
 
+## Peer inventory
+
+`/eth/v1/node/peers` and `/eth/v1/node/peer_count` list and count unique peer
+identities from the API's observed connection events. Every listed peer is
+`connected`; the other state counts are zero. The inventory does not track
+disconnected, connecting or disconnecting peers. The `enr` field is `null`,
+as permitted by the [peer schema](https://github.com/ethereum/beacon-APIs/blob/master/types/p2p.yaml).
+
+Multiple connections can share an identity while QUIC drains a duplicate.
+The API retains each connection until its disconnect event. Removing one
+connection leaves the peer listed while another remains. Among retained
+connections, the most recently observed supplies the peer's direction and
+`last_seen_p2p_address`, a QUIC multiaddr. Arrival order is tracked separately
+because connection handles can be reused.
+
+Connection events published before the API's first read are missed. A peer
+absent for this reason remains absent until the API observes another
+connection for that identity.
+
 ## Node status
 
 API construction requires a published anchor and seeds node status from it.

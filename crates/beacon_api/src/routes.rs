@@ -274,7 +274,7 @@ fn peers(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
 }
 
 fn peer_count(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let connected = ctx.peers.len() as u64;
+    let connected = ctx.peers.connected() as u64;
     resp.json_body(|json| json.data_envelope(|json| json.peer_count(connected)));
 }
 
@@ -606,30 +606,55 @@ mod tests {
         }
     }
 
+    fn peer(connection: usize, secret: u8, inbound: bool) -> Peer {
+        Peer {
+            id: Keypair::from_secret(&[secret; 32]).unwrap().peer_id(),
+            ip: IpBytes::V4([10, 0, 0, connection as u8]),
+            port: 9000,
+            inbound,
+        }
+    }
+
     fn two_peer_ctx() -> ApiCtx {
         let mut ctx = anchor_ctx();
         for (connection, inbound) in [(1, true), (2, false)] {
-            ctx.peers.insert(connection, Peer {
-                id: Keypair::from_secret(&[connection as u8; 32]).unwrap().peer_id(),
-                ip: IpBytes::V4([10, 0, 0, connection as u8]),
-                port: 9000,
-                inbound,
-            });
+            ctx.peers.insert(connection, peer(connection, connection as u8, inbound));
         }
         ctx
     }
 
-    fn peers_json(query: &str) -> serde_json::Value {
-        let resp = query_get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peers", query);
-        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
-        serde_json::from_slice(body(&resp)).unwrap()
+    fn peers_response(ctx: &ApiCtx, query: &str) -> Vec<u8> {
+        query_get(&Router::new(ROUTES), ctx, "/eth/v1/node/peers", query)
+    }
+
+    fn json_ok(resp: &[u8]) -> serde_json::Value {
+        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        let head_end = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let headers = std::str::from_utf8(&resp[..head_end]).unwrap();
+        assert!(headers.lines().any(|l| l == "Content-Type: application/json"), "{headers}");
+        serde_json::from_slice(body(resp)).unwrap()
+    }
+
+    fn peers_json(ctx: &ApiCtx, query: &str) -> serde_json::Value {
+        json_ok(&peers_response(ctx, query))
+    }
+
+    fn peer_count_json(ctx: &ApiCtx) -> serde_json::Value {
+        json_ok(&get(&Router::new(ROUTES), ctx, "/eth/v1/node/peer_count"))
+    }
+
+    fn address(listed: &serde_json::Value) -> &str {
+        listed["data"][0]["last_seen_p2p_address"].as_str().unwrap()
     }
 
     #[test]
     fn peers_list_every_connection_and_honour_the_filters() {
-        let all = peers_json("");
+        let ctx = two_peer_ctx();
+        let all = peers_json(&ctx, "");
         assert_eq!(all["meta"]["count"], 2);
-        let inbound = peers_json("direction=inbound&state=connected&state=connecting");
+        assert_eq!(all["data"].as_array().unwrap().len(), 2);
+
+        let inbound = peers_json(&ctx, "direction=inbound&state=connected&state=connecting");
         assert_eq!(inbound["meta"]["count"], 1);
         let peer = &inbound["data"][0];
         let id = peer["peer_id"].as_str().unwrap();
@@ -640,20 +665,56 @@ mod tests {
         );
         assert_eq!(peer["state"], "connected");
         assert_eq!(peer["direction"], "inbound");
-        assert_eq!(peers_json("state=disconnected")["meta"]["count"], 0);
+        assert_eq!(peers_json(&ctx, "state=disconnected")["meta"]["count"], 0);
+    }
 
-        let resp =
-            query_get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peers", "state=x");
-        assert_eq!(body(&resp), br#"{"code":400,"message":"invalid state or direction"}"#);
+    #[test]
+    fn unknown_state_or_direction_is_a_400() {
+        let resp = peers_response(&two_peer_ctx(), "state=x");
+        assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+        let error: serde_json::Value = serde_json::from_slice(body(&resp)).unwrap();
+        assert_eq!(error["code"], 400);
+        assert!(error["message"].is_string());
     }
 
     #[test]
     fn peer_count_reports_connected_peers_only() {
-        let resp = get(&Router::new(ROUTES), &two_peer_ctx(), "/eth/v1/node/peer_count");
-        assert_eq!(
-            body(&resp),
-            br#"{"data":{"disconnected":"0","connecting":"0","connected":"2","disconnecting":"0"}}"#
-        );
+        let count = peer_count_json(&two_peer_ctx());
+        assert_eq!(count["data"]["connected"], "2");
+        for state in ["disconnected", "connecting", "disconnecting"] {
+            assert_eq!(count["data"][state], "0", "{state}");
+        }
+    }
+
+    /// A reused handle can be smaller than an older connection's handle.
+    #[test]
+    fn duplicate_connections_count_one_peer() {
+        let mut ctx = anchor_ctx();
+        ctx.peers.insert(20, peer(20, 7, true));
+        ctx.peers.insert(3, peer(3, 7, false));
+        assert_eq!(peer_count_json(&ctx)["data"]["connected"], "1");
+
+        let listed = peers_json(&ctx, "");
+        assert_eq!(listed["meta"]["count"], 1);
+        assert!(address(&listed).starts_with("/ip4/10.0.0.3/"), "{}", address(&listed));
+        assert_eq!(listed["data"][0]["direction"], "outbound");
+    }
+
+    #[test]
+    fn closing_one_duplicate_connection_keeps_the_peer() {
+        for (closed, kept) in [(20, "/ip4/10.0.0.3/"), (3, "/ip4/10.0.0.20/")] {
+            let mut ctx = anchor_ctx();
+            ctx.peers.insert(20, peer(20, 7, true));
+            ctx.peers.insert(3, peer(3, 7, false));
+
+            ctx.peers.remove(closed);
+            let listed = peers_json(&ctx, "");
+            assert_eq!(listed["meta"]["count"], 1, "closed {closed}");
+            assert!(address(&listed).starts_with(kept), "closed {closed}: {}", address(&listed));
+
+            ctx.peers.remove(23 - closed);
+            assert_eq!(peers_json(&ctx, "")["meta"]["count"], 0, "closed both");
+        }
     }
 
     #[test]

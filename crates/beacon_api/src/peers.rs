@@ -29,27 +29,47 @@ impl Peer {
     }
 }
 
+/// Connection handles are reused and do not establish arrival order.
 #[derive(Default)]
-pub(crate) struct PeerTable(FxHashMap<usize, Peer>);
+pub(crate) struct PeerTable {
+    connections: FxHashMap<usize, (u64, Peer)>,
+    arrivals: u64,
+}
 
 impl PeerTable {
     pub(crate) fn new() -> Self {
-        Self(FxHashMap::with_capacity_and_hasher(256, Default::default()))
+        Self {
+            connections: FxHashMap::with_capacity_and_hasher(256, Default::default()),
+            arrivals: 0,
+        }
     }
+
     pub(crate) fn insert(&mut self, connection: usize, peer: Peer) {
-        self.0.insert(connection, peer);
+        self.arrivals += 1;
+        self.connections.insert(connection, (self.arrivals, peer));
     }
 
     pub(crate) fn remove(&mut self, connection: usize) {
-        self.0.remove(&connection);
+        self.connections.remove(&connection);
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
+    fn by_identity(&self) -> Vec<&Peer> {
+        let mut latest: FxHashMap<PeerId, (u64, &Peer)> = FxHashMap::default();
+        for (arrival, peer) in self.connections.values() {
+            let entry = latest.entry(peer.id).or_insert((*arrival, peer));
+            if *arrival > entry.0 {
+                *entry = (*arrival, peer);
+            }
+        }
+        latest.into_values().map(|(_, peer)| peer).collect()
+    }
+
+    pub(crate) fn connected(&self) -> usize {
+        self.by_identity().len()
     }
 
     pub(crate) fn matching<'a>(&'a self, filter: &'a PeerFilter) -> impl Iterator<Item = &'a Peer> {
-        self.0.values().filter(move |peer| filter.admits(peer))
+        self.by_identity().into_iter().filter(move |peer| filter.admits(peer))
     }
 }
 
