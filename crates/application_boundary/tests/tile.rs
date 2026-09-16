@@ -197,34 +197,6 @@ fn block_bytes(slot: u64, byte: u8) -> Vec<u8> {
     block
 }
 
-/// Empty Fulu sidecar for field extraction; consensus validation is outside
-/// this fixture.
-fn fulu_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
-    let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_MIN];
-    sidecar[0..8].copy_from_slice(&index.to_le_bytes());
-    for offset in [8, 12, 16] {
-        sidecar[offset..offset + 4]
-            .copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
-    }
-    sidecar[20..28].copy_from_slice(&slot.to_le_bytes());
-    sidecar[68..100].copy_from_slice(&[byte; 32]);
-    sidecar
-}
-
-/// Empty Gloas sidecar for field extraction; consensus validation is outside
-/// this fixture.
-fn gloas_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
-    let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_GLOAS_MIN];
-    sidecar[0..8].copy_from_slice(&index.to_le_bytes());
-    for offset in [8, 12] {
-        sidecar[offset..offset + 4]
-            .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
-    }
-    sidecar[16..24].copy_from_slice(&slot.to_le_bytes());
-    sidecar[24..56].copy_from_slice(&[byte; 32]);
-    sidecar
-}
-
 fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
     PeerEvent::SendGossip {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
@@ -244,38 +216,23 @@ fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEv
     (event, SseEvent::block_gossip(slot, &block_root_fulu(&block)))
 }
 
-fn gossip_column(
-    gossip: &mut TProducer,
+fn validated_column(
+    source: ColumnSource,
     slot: u64,
     byte: u8,
     index: u64,
 ) -> (DataColumnsEvent, SseEvent) {
-    let sidecar = fulu_sidecar_bytes(slot, byte, index);
-    let block_root = block_root_from_sidecar(&sidecar);
-    let event = DataColumnsEvent::Persist {
-        ssz: write_object(gossip, &sidecar),
-        source: ColumnSource::Gossip,
-        block_root,
-        column_index: index,
-        slot,
-    };
+    let block_root = [byte; 32];
+    let event = DataColumnsEvent::Validated { block_root, column_index: index, slot, source };
     (event, SseEvent::column(slot, &block_root, index))
 }
 
-fn rpc_column(
-    rpc: &mut TProducer,
-    slot: u64,
-    byte: u8,
-    index: u64,
-) -> (DataColumnsEvent, SseEvent) {
-    let event = DataColumnsEvent::Persist {
-        ssz: write_object(rpc, &gloas_sidecar_bytes(slot, byte, index)),
-        source: ColumnSource::Rpc,
-        block_root: [byte; 32],
-        column_index: index,
-        slot,
-    };
-    (event, SseEvent::column(slot, &[byte; 32], index))
+fn gossip_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
+    validated_column(ColumnSource::Gossip, slot, byte, index)
+}
+
+fn rpc_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
+    validated_column(ColumnSource::Rpc, slot, byte, index)
 }
 
 #[derive(Clone, Debug)]
@@ -1078,7 +1035,7 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
 fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let (mut tile, mut gossip, mut rpc) =
+    let (mut tile, mut gossip, _rpc) =
         boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
             "cs_subscriptions_gossip",
             "cs_subscriptions_rpc",
@@ -1107,8 +1064,8 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
     inj.produce(send_gossip(GossipTopic::BeaconAttestation(0), 0xaf, unrelated));
     inj.produce(PeerEvent::EarliestSlot(99));
 
-    let (relay, relayed) = gossip_column(&mut gossip, 10, 0xac, 3);
-    let (published, publication) = rpc_column(&mut rpc, 11, 0xad, 5);
+    let (relay, relayed) = gossip_column(10, 0xac, 3);
+    let (published, publication) = rpc_column(11, 0xad, 5);
     let (block_relayed, relayed_block) = block_relay(&mut gossip, 12, 0xae);
     inj.produce(relay);
     inj.produce(relay);
@@ -1131,7 +1088,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
         &mut crank,
     );
     inj.produce(relay);
-    let (sentinel, sentinel_publication) = rpc_column(&mut rpc, 14, 0xaf, 7);
+    let (sentinel, sentinel_publication) = rpc_column(14, 0xaf, 7);
     inj.produce(sentinel);
     let (last_block, last_relayed_block) = block_relay(&mut gossip, 15, 0xb0);
     inj.produce(last_block);
@@ -1168,7 +1125,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
 fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let (mut tile, mut gossip, mut rpc) =
+    let (mut tile, mut gossip, _rpc) =
         boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
             "cs_late_gossip",
             "cs_late_rpc",
@@ -1188,8 +1145,8 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
     let topics = "block_gossip,data_column_sidecar";
     let early = EventsSubscriber::new(addr, topics, 3, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
-    let (relay, relayed) = gossip_column(&mut gossip, 20, 0x11, 3);
-    let (published, publication) = rpc_column(&mut rpc, 21, 0x12, 5);
+    let (relay, relayed) = gossip_column(20, 0x11, 3);
+    let (published, publication) = rpc_column(21, 0x12, 5);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
@@ -1198,8 +1155,8 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 
     let late = EventsSubscriber::new(addr, topics, 3, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 22, 0x22);
-    let (relay, relayed) = gossip_column(&mut gossip, 22, 0x22, 7);
-    let (published, publication) = rpc_column(&mut rpc, 23, 0x23, 9);
+    let (relay, relayed) = gossip_column(22, 0x22, 7);
+    let (published, publication) = rpc_column(23, 0x23, 9);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
@@ -1254,7 +1211,7 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
         max_connections: capacity,
         ..EngineConfig::default()
     };
-    let (mut tile, mut gossip, mut rpc) =
+    let (mut tile, mut gossip, _rpc) =
         boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), config, [
             "cs_gsat_gossip",
             "cs_gsat_rpc",
@@ -1295,8 +1252,8 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
     };
     let client = EventsSubscriber::new(addr, "block_gossip,data_column_sidecar", 3, &mut pump);
     let (block, relayed_block) = block_relay(&mut gossip, 30, 0x33);
-    let (relay, relayed) = gossip_column(&mut gossip, 31, 0x34, 7);
-    let (published, publication) = rpc_column(&mut rpc, 32, 0x35, 9);
+    let (relay, relayed) = gossip_column(31, 0x34, 7);
+    let (published, publication) = rpc_column(32, 0x35, 9);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
