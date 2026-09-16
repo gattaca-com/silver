@@ -333,7 +333,6 @@ impl Json<'_> {
         self.end_object();
     }
 
-    /// `None` omits `kzg_commitments` rather than emitting an empty array.
     pub(crate) fn data_column_sidecar_event(
         &mut self,
         block_root: &[u8; 32],
