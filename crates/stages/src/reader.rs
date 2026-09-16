@@ -126,7 +126,7 @@ impl StageReader {
     /// on the wire, publish the moment it passed validation.
     fn on_data_columns(&mut self, m: &InternalMessage<DataColumnsEvent>) {
         match *m.data() {
-            DataColumnsEvent::Persist { block_root, column_index, slot, source, .. } => {
+            DataColumnsEvent::Validated { block_root, column_index, slot, source } => {
                 self.roots.entry(block_root).or_insert(Tracked::new(slot));
                 let recv = StageEvent {
                     stage: Stage::ColumnRecv { index: column_index, source },
@@ -141,6 +141,7 @@ impl StageReader {
                     ..recv
                 });
             }
+            DataColumnsEvent::Persist { .. } => {}
             DataColumnsEvent::Available { block_root, slot } => {
                 self.out.push(StageEvent {
                     stage: Stage::DaAvailable,
@@ -237,13 +238,12 @@ mod tests {
         })
     }
 
-    fn persist(root: [u8; 32], slot: u64, column_index: u64) -> DataColumnsEvent {
-        DataColumnsEvent::Persist {
-            ssz: unread_payload(),
-            source: ColumnSource::Gossip,
+    fn validated(root: [u8; 32], slot: u64, column_index: u64) -> DataColumnsEvent {
+        DataColumnsEvent::Validated {
             block_root: root,
             column_index,
             slot,
+            source: ColumnSource::Gossip,
         }
     }
 
@@ -407,7 +407,7 @@ mod tests {
         let mut reader = StageReader::default();
         let root = [7u8; 32];
 
-        reader.on_data_columns(&msg(persist(root, 3, 48), at(3, 1_400)));
+        reader.on_data_columns(&msg(validated(root, 3, 48), at(3, 1_400)));
         reader.on_data_columns(&msg(
             DataColumnsEvent::Available { block_root: root, slot: 3 },
             at(3, 1_500),

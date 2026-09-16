@@ -50,7 +50,7 @@ flowchart LR
   DC -->|"data_columns : DataColumnsEvent (Available)"| BS
   DC -->|"data_columns : DataColumnsEvent (Persist)"| ST
   DC -->|"data_columns : DataColumnsEvent (Persist)"| CTL
-  DC -->|"data_columns : DataColumnsEvent (Persist)"| EN
+  DC -->|"data_columns : DataColumnsEvent (Validated)"| EN
   ST -->|replay_blocks : ReplayBlock| BS
 
   %% ---- sync control ----
@@ -99,7 +99,7 @@ rest.
 | `peer_events` | `PeerEvent` | Network, BeaconState, Storage, DataColumns | Control, ApplicationBoundary | mostly inline; `SendGossip` ref → `outgoing_gossip` |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
 | `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns, ApplicationBoundary | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
-| `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage, Control, ApplicationBoundary _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
+| `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage, Control _(Persist)_, ApplicationBoundary, Stages _(Validated)_ | `Available`, `Validated` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
 | `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns, ApplicationBoundary | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
 | `syncing_strategy` | `SyncingStrategy` | Control | Storage, DataColumns | inline |

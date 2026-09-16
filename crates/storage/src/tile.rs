@@ -405,8 +405,7 @@ impl Tile<SilverSpine> for StorageTile {
                         );
                         StorageCounters::PersistAcquireFailed.inc();
                         producers.sync_needs.produce(
-                            &SyncNeed::missing_columns(block_root, slot, 1u128 << column_index)
-                                .into(),
+                            &SyncNeed::missing_column(block_root, slot, column_index).into(),
                         );
                     }
                 }

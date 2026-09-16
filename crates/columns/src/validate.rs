@@ -36,7 +36,7 @@ pub(crate) enum ColumnOutcome {
     Reject {
         block_root: BlockRoot,
         slot: u64,
-        bitmask: u128,
+        column: Option<u64>,
     },
     Buffer {
         block_root: BlockRoot,
@@ -50,7 +50,6 @@ pub(crate) enum ColumnOutcome {
     Record {
         block_root: BlockRoot,
         column_index: u64,
-        bitmask: u128,
         slot: u64,
         relay_eligible: bool,
     },
@@ -225,23 +224,22 @@ impl ColumnValidator {
         let column_index = DataColumnSidecarFuluView::index(buffer);
         if column_index >= NUMBER_OF_COLUMNS as u64 {
             tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: 0 };
+            return ColumnOutcome::Reject { block_root, slot, column: None };
         }
-        let column_bitmask = 1u128 << column_index;
 
         if let Some(subnet) = gossip_subnet &&
             subnet != column_index
         {
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        if tracker.has_any(&block_root, column_bitmask) {
+        if tracker.holds(&block_root, column_index) {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
         if !util::verify_data_column_sidecar_fulu(buffer, self.max_blobs_at(slot)) {
             tracing::warn!(?stream_id, "badly formed data column sidecar");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
         // Inclusion proof binds the sidecar's `kzg_commitments` to the
@@ -249,7 +247,7 @@ impl ColumnValidator {
         // it must run on every sidecar.
         if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
         // State-driven validations: pull every input in one seqlock pass.
@@ -294,7 +292,7 @@ impl ColumnValidator {
         // No snapshot yet (pre-bootstrap): nothing can be validated.
         let Some((above_finalized, parent, proposer, pubkey, fork_version, gvr)) = checks else {
             tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         };
 
         if !above_finalized {
@@ -314,14 +312,14 @@ impl ColumnValidator {
             }
             ParentCheck::NotExtending { parent_slot } => {
                 tracing::warn!(?stream_id, slot, parent_slot, "sidecar does not extend its parent");
-                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+                return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
         }
         let relay_eligible = match proposer {
             ProposerCheck::Matches => true,
             ProposerCheck::Mismatch => {
                 tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
-                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+                return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
             // Spec answer is IGNORE.
             ProposerCheck::Unresolvable => {
@@ -338,22 +336,16 @@ impl ColumnValidator {
         if !tracker.signature_verified(&block_root, &sig_bytes) {
             let Some(pubkey) = pubkey else {
                 tracing::warn!(?stream_id, "sidecar proposer_index out of range");
-                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+                return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             };
             if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
                 tracing::warn!(?stream_id, "sidecar proposer signature invalid");
-                return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+                return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
             tracker.set_signature(block_root, sig_bytes);
         }
 
-        ColumnOutcome::Record {
-            block_root,
-            column_index,
-            bitmask: column_bitmask,
-            slot,
-            relay_eligible,
-        }
+        ColumnOutcome::Record { block_root, column_index, slot, relay_eligible }
     }
 
     #[timed]
@@ -384,17 +376,16 @@ impl ColumnValidator {
         let column_index = DataColumnSidecarGloasView::index(buffer);
         if column_index >= NUMBER_OF_COLUMNS as u64 {
             tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: 0 };
+            return ColumnOutcome::Reject { block_root, slot, column: None };
         }
-        let column_bitmask = 1u128 << column_index;
 
         if let Some(subnet) = gossip_subnet &&
             subnet != column_index
         {
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        if tracker.has_any(&block_root, column_bitmask) {
+        if tracker.holds(&block_root, column_index) {
             return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
         }
 
@@ -408,7 +399,7 @@ impl ColumnValidator {
                 block_slot = block.slot,
                 "sidecar slot is not its block's"
             );
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
         if !util::verify_data_column_sidecar_gloas(
@@ -417,15 +408,9 @@ impl ColumnValidator {
             self.max_blobs_at(slot),
         ) {
             tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
-            return ColumnOutcome::Reject { block_root, slot, bitmask: column_bitmask };
+            return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        ColumnOutcome::Record {
-            block_root,
-            column_index,
-            bitmask: column_bitmask,
-            slot,
-            relay_eligible: true,
-        }
+        ColumnOutcome::Record { block_root, column_index, slot, relay_eligible: true }
     }
 }

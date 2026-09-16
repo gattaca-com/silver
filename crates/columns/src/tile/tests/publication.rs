@@ -309,3 +309,42 @@ fn reconstructed_columns_do_not_request_publication() {
     );
     assert!(out.publications.is_empty());
 }
+
+/// A column that arrives by gossip and by EL rebuild in one turn is validated
+/// once, and the EL does not rebuild it.
+#[test]
+fn gossip_and_el_copies_validate_once() {
+    const SLOT: u64 = 40;
+    let blob = BlockBlob::counting();
+    let block = block_around(SLOT, &fulu_body(&blob.commitment));
+    let block_root = util::block_root_fulu(&block);
+    let mut rig = Rig::new(CUSTODY_COLUMNS);
+    rig.turn();
+    rig.follow([0xAA; 32]);
+    rig.block(&block);
+    rig.drain();
+
+    let sidecar = blob.fulu_sidecar(3, &block);
+    // Fixture bypass: the empty validator registry cannot verify signatures.
+    rig.tile
+        .tracker
+        .set_signature(block_root, *DataColumnSidecarFuluView::block_signature(&sidecar));
+    rig.receive_column(ColumnSource::Gossip, 3, &sidecar);
+    rig.engine_blobs(block_root, SLOT, &blob.el_frame());
+    rig.turn();
+    let out = rig.drain();
+
+    assert_eq!(out.validated, CUSTODY_COLUMNS, "each custody column is validated once");
+    let el_built = out.receipts.iter().fold(0u128, |mask, event| match event {
+        DataColumnsEvent::Persist { source: ColumnSource::El, column_index, .. } => {
+            mask | 1 << column_index
+        }
+        _ => mask,
+    });
+    assert_eq!(
+        el_built,
+        CUSTODY_COLUMNS & !(1 << 3),
+        "the EL rebuilds only what gossip did not deliver"
+    );
+    assert!(out.persisted(block_root, 3), "the gossip copy reached storage");
+}

@@ -200,7 +200,8 @@ impl Node {
     fn drain(&mut self) -> (u128, bool, bool) {
         let (mut validated, mut available, mut custody_complete) = (0u128, false, false);
         self.inj.consume(|ev: DataColumnsEvent, _| match ev {
-            DataColumnsEvent::Persist { column_index, .. } => validated |= 1u128 << column_index,
+            DataColumnsEvent::Validated { column_index, .. } => validated |= 1u128 << column_index,
+            DataColumnsEvent::Persist { .. } => {}
             DataColumnsEvent::Available { .. } => available = true,
         });
         self.inj.consume(|need: SyncNeed, _| {
