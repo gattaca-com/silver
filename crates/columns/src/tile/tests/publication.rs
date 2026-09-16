@@ -1,4 +1,5 @@
 use silver_common::{
+    block_root_fulu, block_root_gloas, body_root,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, EXECUTION_PAYLOAD_BID_MIN},
 };
@@ -48,7 +49,7 @@ impl BlockBlob {
         header[8..16].copy_from_slice(&SignedBeaconBlockView::proposer_index(block).to_le_bytes());
         header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(block));
         header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(block));
-        header[80..112].copy_from_slice(&util::body_root(body));
+        header[80..112].copy_from_slice(&body_root(body));
 
         let mut out = Vec::with_capacity(util::data_column_sidecar_len(1));
         util::push_data_column_sidecar_prefix(
@@ -148,7 +149,7 @@ fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
-    let block_root = util::block_root_gloas(&block);
+    let block_root = block_root_gloas(&block);
     for (source, following, index) in [
         (ColumnSource::Gossip, true, 3),
         (ColumnSource::Gossip, true, 5),
@@ -188,7 +189,7 @@ fn fulu_column_publication_requires_a_resolved_proposer() {
     // The empty state's lookahead covers the current and next epochs.
     for (slot, relay_eligible) in [(7, true), (2 * SLOTS_PER_EPOCH + 1, false)] {
         let block = block_around(slot, &fulu_body(&blob.commitment));
-        let block_root = util::block_root_fulu(&block);
+        let block_root = block_root_fulu(&block);
         let mut rig = Rig::new(CUSTODY_COLUMNS);
         rig.follow(*SignedBeaconBlockView::parent_root(&block));
         let sidecar = blob.fulu_sidecar(3, &block);
@@ -222,7 +223,7 @@ fn held_columns_do_not_request_publication_again() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
-    let block_root = util::block_root_gloas(&block);
+    let block_root = block_root_gloas(&block);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     rig.follow([0xAA; 32]);
     rig.block(&block);
@@ -249,7 +250,7 @@ fn only_columns_with_valid_kzg_proofs_request_publication() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
-    let block_root = util::block_root_gloas(&block);
+    let block_root = block_root_gloas(&block);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     rig.follow([0xAA; 32]);
     rig.block(&block);
@@ -271,7 +272,7 @@ fn buffered_gloas_columns_are_processed_without_publication() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
-    let block_root = util::block_root_gloas(&block);
+    let block_root = block_root_gloas(&block);
     for source in [ColumnSource::Gossip, ColumnSource::Rpc] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
         rig.follow([0xAA; 32]);
@@ -291,7 +292,7 @@ fn reconstructed_columns_do_not_request_publication() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &fulu_body(&blob.commitment));
-    let block_root = util::block_root_fulu(&block);
+    let block_root = block_root_fulu(&block);
     let mut rig = Rig::new(CUSTODY_COLUMNS);
     rig.turn();
     rig.follow([0xAA; 32]);

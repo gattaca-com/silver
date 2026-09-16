@@ -31,7 +31,7 @@ fn load_gloas(store_dir: String) -> super::Store {
     super::Store::load(store_dir, super::test_spec(0), 0).unwrap()
 }
 
-use silver_common::column_util;
+use silver_common::{block_root, block_root_fulu};
 
 use crate::tile::IoEvent;
 
@@ -236,17 +236,23 @@ fn fork_tree_persist_serve_promote() {
     else {
         panic!("expected three served blocks and two misses, got {api:?}");
     };
-    assert_eq!(served.slot, slot);
+    assert_eq!((served.slot, served.root), (slot, root_b));
     assert!(!served.finalized && !served.canonical, "B is the fork off the head");
     assert!(!head.finalized && head.canonical, "A is the unfinalized head");
     let mut api_consumer = producer_cache.cache_ref().random_access("fork_api_read", true).unwrap();
-    assert_eq!(api_consumer.acquire(served.ssz).buffer().unwrap().0, &bytes_b);
-    assert!(at_slot.canonical, "a slot resolves along the head chain");
+    assert_eq!(api_consumer.acquire(served.ssz.unwrap()).buffer().unwrap().0, &bytes_b);
+    assert!(at_slot.canonical && at_slot.root == root_a, "a slot resolves along the head chain");
     assert_eq!(
-        api_consumer.acquire(at_slot.ssz).buffer().unwrap().0,
+        api_consumer.acquire(at_slot.ssz.unwrap()).buffer().unwrap().0,
         &bytes_a,
         "the slot serves A"
     );
+
+    // Facts alone read no file.
+    let facts = store.block_facts(BlockLookup::Slot(slot)).expect("the head slot holds A");
+    assert_eq!((facts.root, facts.finalized, facts.ssz.is_none()), (root_a, false, true));
+    assert!(store.block_facts(BlockLookup::Slot(slot + 1)).is_none(), "an empty slot");
+    assert!(store.block_facts(BlockLookup::Root([0xEE; 32])).is_none(), "an unknown root");
 
     // Finalize at slot 42 on A: promote A, prune the orphan B.
     store.update_head(slot, root_a, slot, root_a);
@@ -260,6 +266,8 @@ fn fork_tree_persist_serve_promote() {
         vec![super::block_index::Record { block_root: root_a, slot }],
         "only the promoted block is indexed"
     );
+    let facts = store.block_facts(BlockLookup::Slot(slot)).expect("the finalized slot is held");
+    assert_eq!((facts.root, facts.finalized), (root_a, true), "the root comes from the index file");
     let flat_a =
         store.finalized_slot_dir(super::Payload::Block, slot).join(format!("{slot}_block.ssz"));
     assert!(flat_a.exists());
@@ -677,7 +685,7 @@ fn backfill_block_persists_its_index_record() {
 
     let slot = 64u64;
     let block = bare_block(slot, [0x42; 32]);
-    let block_root = column_util::block_root_fulu(&block);
+    let block_root = block_root_fulu(&block);
     let mut staged = stage("backfill_index", &block, 1);
 
     // Nothing held yet, so the finalized root is what the block must be.
@@ -732,7 +740,7 @@ fn failed_write_is_neither_held_nor_reported() {
 
     let slot = 40u64;
     let block = bare_block(slot, [0x42; 32]);
-    let block_root = column_util::block_root_fulu(&block);
+    let block_root = block_root_fulu(&block);
     let mut staged = stage("failed_write", &block, 1);
 
     // A file where the slot directory must go makes `create_dir_all` fail.
@@ -855,7 +863,7 @@ fn promoted_block_missing_its_envelope_becomes_backfill_work() {
 
     let slot = 42u64;
     let block = bare_block(slot, [0x31; 32]);
-    let root = column_util::block_root(&block, true);
+    let root = block_root(&block, true);
     let mut staged = stage("promote_hole", &block, 1);
 
     store.sync_update(SyncUpdate::Following);
@@ -879,11 +887,11 @@ fn failed_finalized_promote_leaves_its_slot_unknown() {
 
     // One block per group directory, so one directory can be blocked.
     let bottom = bare_block(200, [0x31; 32]);
-    let root_bottom = column_util::block_root_fulu(&bottom);
+    let root_bottom = block_root_fulu(&bottom);
     let middle = bare_block(300, root_bottom);
-    let root_middle = column_util::block_root_fulu(&middle);
+    let root_middle = block_root_fulu(&middle);
     let top = bare_block(400, root_middle);
-    let root_top = column_util::block_root_fulu(&top);
+    let root_top = block_root_fulu(&top);
     let mut staged_bottom = stage("failed_top_bottom", &bottom, 1);
     let mut staged_middle = stage("failed_top_middle", &middle, 1);
     let mut staged_top = stage("failed_top_top", &top, 2);
@@ -969,9 +977,9 @@ fn promotion_draining_under_a_later_finality_keeps_its_needs() {
     let mut store = load_gloas(store_path.clone());
 
     let first = bare_block(40, [0x31; 32]);
-    let root_first = column_util::block_root(&first, true);
+    let root_first = block_root(&first, true);
     let second = bare_block(44, root_first);
-    let root_second = column_util::block_root(&second, true);
+    let root_second = block_root(&second, true);
     let mut staged_first = stage("promote_race_first", &first, 1);
     let mut staged_second = stage("promote_race_second", &second, 1);
 
@@ -1031,7 +1039,7 @@ fn coverage_is_persisted_once_the_writes_settle() {
     let file = std::path::Path::new(&store_path).join("coverage.bin");
 
     let block = bare_block(40, [0x31; 32]);
-    let root = column_util::block_root_fulu(&block);
+    let root = block_root_fulu(&block);
     let mut staged = stage("persist_settled", &block, 1);
     following(&mut store, 40, root);
     store.backfill_block(staged.consumer.acquire(staged.reads[0]));
@@ -1063,13 +1071,13 @@ fn store_without_coverage_is_rebuilt_from_its_files() {
 
     // 960 ← 961 ← 963 is one chain; 966 hangs off a block we never got.
     let bare_960 = bare_block(960, [0x31; 32]);
-    let root_960 = column_util::block_root_fulu(&bare_960);
+    let root_960 = block_root_fulu(&bare_960);
     let blob_961 = blob_block(961, root_960);
-    let root_961 = column_util::block_root_fulu(&blob_961);
+    let root_961 = block_root_fulu(&blob_961);
     let bare_963 = bare_block(963, root_961);
-    let root_963 = column_util::block_root_fulu(&bare_963);
+    let root_963 = block_root_fulu(&bare_963);
     let bare_966 = bare_block(966, [0x77; 32]);
-    let root_966 = column_util::block_root_fulu(&bare_966);
+    let root_966 = block_root_fulu(&bare_966);
     {
         let store = load_fulu(store_path.clone());
         for (slot, block, root) in [
@@ -1234,11 +1242,11 @@ fn vanished_unfinalized_files_stay_missing_at_promotion() {
     let mut store = super::Store::load(store_path.clone(), super::test_spec(0), 0b11).unwrap();
 
     let blob = gloas_chain_block(40, [0x31; 32], &[0u8; 48]);
-    let root_blob = column_util::block_root(&blob, true);
+    let root_blob = block_root(&blob, true);
     let middle = gloas_chain_block(44, root_blob, &[]);
-    let root_middle = column_util::block_root(&middle, true);
+    let root_middle = block_root(&middle, true);
     let top = gloas_chain_block(48, root_middle, &[]);
-    let root_top = column_util::block_root(&top, true);
+    let root_top = block_root(&top, true);
     let mut staged_blob = stage("vanished_blob", &blob, 1);
     let mut staged_middle = stage("vanished_middle", &middle, 1);
     let mut staged_top = stage("vanished_top", &top, 1);
@@ -1322,7 +1330,7 @@ fn custody_change_rebuilds_and_misses_only_the_new_columns() {
     let store_path = format!("/tmp/test_store_custody_change_{}", rand::random::<u32>());
     let _ = std::fs::remove_dir_all(&store_path);
     let block = blob_block(32, [0x31; 32]);
-    let root = column_util::block_root_fulu(&block);
+    let root = block_root_fulu(&block);
     place_block(&store_path, 32, &block, root);
     place_column(&store_path, 32, 0);
 
@@ -1354,13 +1362,13 @@ fn rebuild_across_the_fork_misses_envelopes_only_above_it() {
     assert_eq!(spec.gloas_fork_slot(), 32);
 
     let fulu_a = bare_block(30, [0x31; 32]);
-    let root_a = column_util::block_root_fulu(&fulu_a);
+    let root_a = block_root_fulu(&fulu_a);
     let fulu_b = bare_block(31, root_a);
-    let root_b = column_util::block_root_fulu(&fulu_b);
+    let root_b = block_root_fulu(&fulu_b);
     let gloas_a = gloas_chain_block(32, root_b, &[]);
-    let root_c = column_util::block_root(&gloas_a, true);
+    let root_c = block_root(&gloas_a, true);
     let gloas_b = gloas_chain_block(33, root_c, &[]);
-    let root_d = column_util::block_root(&gloas_b, true);
+    let root_d = block_root(&gloas_b, true);
     for (slot, block, root) in [
         (30, &fulu_a, root_a),
         (31, &fulu_b, root_b),

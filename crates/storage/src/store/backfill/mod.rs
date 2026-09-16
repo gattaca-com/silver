@@ -3,7 +3,7 @@ mod pending;
 pub(super) use pending::{Pending, VerifiedColumns, envelope_block_root, sidecar_head};
 use silver_beacon_state_data::SpecConfig;
 use silver_common::{
-    column_util,
+    block_root,
     merkle::B256,
     ssz_view::{ExecutionPayloadBidView, SignedBeaconBlockView},
 };
@@ -73,7 +73,7 @@ impl BlockFacts {
         let is_gloas = spec.is_gloas_at_slot(slot);
         Some(Self {
             slot,
-            block_root: column_util::block_root(buffer, is_gloas),
+            block_root: block_root(buffer, is_gloas),
             parent_root: *SignedBeaconBlockView::parent_root(buffer),
             payload: PayloadFacts::of(buffer, is_gloas),
         })
@@ -97,7 +97,7 @@ pub(in crate::store) mod fixtures {
 
     use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
     use silver_common::{
-        TCache, TCacheProducer, TRead, column_util,
+        TCache, TCacheProducer, TRead, body_root, column_util,
         merkle::B256,
         ssz_hash::kzg_commitments_inclusion_proof,
         ssz_view::{EXECUTION_PAYLOAD_FIXED_GLOAS, NUMBER_OF_COLUMNS},
@@ -238,7 +238,7 @@ pub(in crate::store) mod fixtures {
             let body = &block[184..];
             let mut header = [0u8; 208];
             header[..80].copy_from_slice(&block[100..180]);
-            header[80..112].copy_from_slice(&column_util::body_root(body));
+            header[80..112].copy_from_slice(&body_root(body));
             header[112..].copy_from_slice(&block[4..100]);
             let n = self.commitments.len() / 48;
             let mut out = Vec::new();

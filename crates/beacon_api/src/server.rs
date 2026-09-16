@@ -11,8 +11,7 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair, PeerEvent, SyncUpdate,
-    TCacheRead, TRandomAccess,
-    column_util::block_root,
+    TCacheRead, TRandomAccess, block_root,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_httpcore::{
@@ -22,7 +21,7 @@ use silver_httpcore::{
 
 use crate::{
     HeadStatus, NodeStatus,
-    blocks::BlockRequest,
+    blocks::Kind,
     events::{self, Channel, ChannelSet, HeadEvent},
     json::Json,
     peers::Peer,
@@ -74,7 +73,7 @@ struct Requests {
     http: ServerConnection,
     last_activity: Instant,
     linger_since: Option<Instant>,
-    pending: Option<(u64, BlockRequest)>,
+    pending: Option<(u64, Kind)>,
 }
 
 struct Subscription {
@@ -606,9 +605,9 @@ impl BeaconApi {
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
-        let (_, request) = requests.pending.take().expect("awaiting above");
+        let (_, kind) = requests.pending.take().expect("awaiting above");
         let mut resp = Response::new(requests.http.write_buf_mut());
-        request.kind.respond(&mut resp, request.lookup, block, storage, ctx);
+        kind.respond(&mut resp, block, storage, ctx);
 
         self.resume_writing(token);
     }
@@ -707,8 +706,8 @@ impl BeaconApi {
                     let requests = conn.requests_mut().expect("only a request handler defers");
                     let request_id = self.next_request_id;
                     self.next_request_id += 1;
-                    requests.pending = Some((request_id, block));
-                    emit(BeaconApiRequest::Block { request_id, lookup: block.lookup });
+                    requests.pending = Some((request_id, block.kind));
+                    emit(block.storage_request(request_id));
                 }
             },
             Ok(true) => {
@@ -796,7 +795,7 @@ mod tests {
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
         BlockLookup, HeadRoots, PayloadResolution, ServedBlock, TCache, TCacheProducer, TProducer,
-        column_util,
+        body_root,
         ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN},
     };
     use silver_httpcore::Readiness;
@@ -847,12 +846,15 @@ mod tests {
             Self { readiness, api, served: cache, requests: Vec::new() }
         }
 
-        fn serve_block(&mut self, request_id: u64, slot: u64, bytes: &[u8]) {
-            let mut reservation = self.served.reserve(bytes.len(), true).unwrap();
-            reservation.write_all(bytes).unwrap();
-            reservation.flush().unwrap();
-            let ssz = reservation.read();
-            let block = Some(ServedBlock { slot, finalized: true, canonical: true, ssz });
+        /// A finalized, canonical block; empty `bytes` answer the facts alone.
+        fn serve_block(&mut self, request_id: u64, slot: u64, root: [u8; 32], bytes: &[u8]) {
+            let ssz = (!bytes.is_empty()).then(|| {
+                let mut reservation = self.served.reserve(bytes.len(), true).unwrap();
+                reservation.write_all(bytes).unwrap();
+                reservation.flush().unwrap();
+                reservation.read()
+            });
+            let block = Some(ServedBlock { slot, root, finalized: true, canonical: true, ssz });
             self.api.handle_response(BeaconApiResponse::Block { request_id, block });
         }
 
@@ -1807,12 +1809,17 @@ mod tests {
         &response[blank + 4..]
     }
 
-    fn deferred_request(server: &mut Server) -> (u64, BlockLookup) {
+    fn deferred_request(server: &mut Server) -> BeaconApiRequest {
         pump_until(server, "the block request was deferred", |s| !s.requests.is_empty());
-        let BeaconApiRequest::Block { request_id, lookup } = server.requests.remove(0) else {
-            panic!("expected a block request");
-        };
-        (request_id, lookup)
+        server.requests.remove(0)
+    }
+
+    fn request_id(request: &BeaconApiRequest) -> u64 {
+        match request {
+            BeaconApiRequest::Block { request_id, .. } |
+            BeaconApiRequest::BlockRoot { request_id, .. } => *request_id,
+            BeaconApiRequest::LocalAttestation { .. } => panic!("not a block request"),
+        }
     }
 
     #[test]
@@ -1820,7 +1827,9 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
         get(&mut client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xab)));
-        let (request_id, lookup) = deferred_request(&mut server);
+        let BeaconApiRequest::Block { request_id, lookup } = deferred_request(&mut server) else {
+            panic!("the body needs the bytes");
+        };
         assert_eq!(lookup, BlockLookup::Root([0xab; 32]));
         client.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
         let mut probe = [0u8; 1];
@@ -1830,7 +1839,7 @@ mod tests {
         );
 
         let block = block_bytes(0, 0xab);
-        server.serve_block(request_id, 0, &block);
+        server.serve_block(request_id, 0, [0xab; 32], &block);
         client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "block response");
@@ -1848,14 +1857,20 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let root_client = connect(tcp_addr(&server));
         get(&root_client, &format!("/eth/v1/beacon/blocks/{}/root", root_hex(0xcd)));
-        let (root_id, _) = deferred_request(&mut server);
+        let BeaconApiRequest::BlockRoot { request_id: root_id, .. } = deferred_request(&mut server)
+        else {
+            panic!("the root needs no bytes");
+        };
         let header_client = connect(tcp_addr(&server));
         get(&header_client, &format!("/eth/v1/beacon/headers/{}", root_hex(0xcd)));
-        let (header_id, _) = deferred_request(&mut server);
+        let BeaconApiRequest::Block { request_id: header_id, .. } = deferred_request(&mut server)
+        else {
+            panic!("the header needs the bytes");
+        };
 
         let block = block_bytes(10, 0xef);
-        server.serve_block(root_id, 10, &block);
-        server.serve_block(header_id, 10, &block);
+        server.serve_block(root_id, 10, [0xcd; 32], &[]);
+        server.serve_block(header_id, 10, [0xcd; 32], &block);
         let root_reader = std::thread::spawn(move || read_to_eof(root_client));
         let header_reader = std::thread::spawn(move || read_to_eof(header_client));
         let (root_response, header_response) =
@@ -1875,7 +1890,7 @@ mod tests {
         assert!(
             header_response.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
         );
-        let body_root = hex::encode(column_util::body_root(&block[SIGNED_BEACON_BLOCK_MIN..]));
+        let body_root = hex::encode(body_root(&block[SIGNED_BEACON_BLOCK_MIN..]));
         assert_eq!(
             std::str::from_utf8(body(&header_response)).unwrap(),
             format!(
@@ -1892,24 +1907,30 @@ mod tests {
     }
 
     /// `head` resolves in the API from the last `Status`; a slot is resolved
-    /// by storage, so the root it answers with is hashed from the served bytes.
+    /// by storage, which names the root it found.
     #[test]
     fn head_and_slot_ids_resolve_to_the_block_they_name() {
         let mut server = server_with(64, LONG_TIMEOUT);
         server.api.ctx.node_status.head_root = [0x77; 32];
         let head_client = connect(tcp_addr(&server));
         get(&head_client, "/eth/v1/beacon/headers/head");
-        let (head_id, lookup) = deferred_request(&mut server);
+        let BeaconApiRequest::Block { request_id: head_id, lookup } = deferred_request(&mut server)
+        else {
+            panic!("the header needs the bytes");
+        };
         assert_eq!(lookup, BlockLookup::Root([0x77; 32]));
 
         let slot_client = connect(tcp_addr(&server));
         get(&slot_client, "/eth/v1/beacon/blocks/10/root");
-        let (slot_id, lookup) = deferred_request(&mut server);
+        let BeaconApiRequest::BlockRoot { request_id: slot_id, lookup } =
+            deferred_request(&mut server)
+        else {
+            panic!("the root needs no bytes");
+        };
         assert_eq!(lookup, BlockLookup::Slot(10));
 
-        let block = block_bytes(10, 0xef);
-        server.serve_block(head_id, 10, &block);
-        server.serve_block(slot_id, 10, &block);
+        server.serve_block(head_id, 10, [0x77; 32], &block_bytes(10, 0xef));
+        server.serve_block(slot_id, 10, [0x99; 32], &[]);
         let head_reader = std::thread::spawn(move || read_to_eof(head_client));
         let slot_reader = std::thread::spawn(move || read_to_eof(slot_client));
         let (head_response, slot_response) =
@@ -1920,8 +1941,8 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(body(&slot_response)).unwrap(),
             format!(
-                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"0x{}\"}}}}",
-                hex::encode(column_util::block_root_fulu(&block))
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"{}\"}}}}",
+                root_hex(0x99)
             )
         );
     }
@@ -1931,7 +1952,7 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let client = connect(tcp_addr(&server));
         get(&client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xcd)));
-        let (request_id, _) = deferred_request(&mut server);
+        let request_id = request_id(&deferred_request(&mut server));
         server.api.handle_response(BeaconApiResponse::Block { request_id, block: None });
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "404 response");
@@ -1943,14 +1964,14 @@ mod tests {
         let mut server = server_with(64, LONG_TIMEOUT);
         let client = connect(tcp_addr(&server));
         get(&client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xef)));
-        let (request_id, _) = deferred_request(&mut server);
+        let request_id = request_id(&deferred_request(&mut server));
         drop(client);
         server.api.idle.timeout = Duration::ZERO;
         pump_until(&mut server, "idle connection reaped", |s| s.api.connections.is_empty());
 
         let other = connect(tcp_addr(&server));
         pump_until(&mut server, "other accepted", |s| s.api.connections.len() == 1);
-        server.serve_block(request_id, 0, &block_bytes(0, 0x01));
+        server.serve_block(request_id, 0, [0x01; 32], &block_bytes(0, 0x01));
         assert!(
             server.api.connections.values().all(|conn| matches!(
                 &conn.state,

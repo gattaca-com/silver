@@ -13,7 +13,7 @@ use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
     RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate,
-    TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    TCacheRead, TProducer, TRandomAccess, TRead, Wheel, block_root,
     cells::RetentionEvent,
     column_util::{self as util, KzgScratch},
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
@@ -156,7 +156,7 @@ impl DataColumnsTile {
 
         tracing::info!(slot, has_columns, "beacon block recv");
 
-        let block_root = util::block_root(buffer, is_gloas);
+        let block_root = block_root(buffer, is_gloas);
 
         // Trivial coverage: no commitments, so no columns are owed.
         if !has_columns {
@@ -586,7 +586,7 @@ impl DataColumnsTile {
         let block = self.consumers.gossip.acquire(ssz);
         if let Ok((buf, _)) = block.buffer() {
             let slot = SignedBeaconBlockView::slot(buf);
-            let root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
+            let root = block_root(buf, self.spec.is_gloas_at_slot(slot));
             self.validator.note_validated(root, slot);
         }
         let stream_id = P2pStreamId::new(0, 0, StreamProtocol::GossipSub, true);
@@ -655,7 +655,7 @@ impl DataColumnsTile {
                 match t_read.buffer() {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
-                        let block_root = util::block_root(buf, self.spec.is_gloas_at_slot(slot));
+                        let block_root = block_root(buf, self.spec.is_gloas_at_slot(slot));
 
                         self.validator.note_validated(block_root, slot);
 
@@ -787,7 +787,7 @@ mod tests {
     use silver_common::{
         BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots,
         MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
-        TCacheProducer, TCacheRead,
+        TCacheProducer, TCacheRead, block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
             DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn block_reports_its_missing_custody_columns() {
         let block_bytes = blob_block_bytes(42);
-        let block_root = util::block_root_fulu(&block_bytes);
+        let block_root = block_root_fulu(&block_bytes);
 
         for (protocol, cache) in [
             (StreamProtocol::BeaconBlocksByRange, "need_block_rpc"),

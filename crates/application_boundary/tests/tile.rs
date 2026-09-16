@@ -17,8 +17,8 @@ use silver_common::{
     ColumnSource, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
     GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
     PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine,
-    StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer,
-    column_util::{block_root_from_sidecar, block_root_fulu},
+    StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
+    column_util::block_root_from_sidecar,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
         SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
@@ -1473,7 +1473,13 @@ fn block_by_root_round_trips_over_the_storage_queues() {
     let ssz = write_object(&mut served, &block);
     inj.produce(BeaconApiResponse::Block {
         request_id,
-        block: Some(ServedBlock { slot: 10, finalized: true, canonical: true, ssz }),
+        block: Some(ServedBlock {
+            slot: 10,
+            root: [0xab; 32],
+            finalized: true,
+            canonical: true,
+            ssz: Some(ssz),
+        }),
     });
     while !client.is_finished() {
         assert!(Instant::now() < deadline, "timeout: block response");

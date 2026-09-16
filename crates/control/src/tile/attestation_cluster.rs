@@ -160,7 +160,7 @@ impl AttestationClusterHandler {
                     producers,
                 );
             }
-            BeaconApiRequest::Block { .. } => {}
+            _ => {}
         }
     }
 

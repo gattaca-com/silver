@@ -12,8 +12,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID, MessageId,
     P2pStreamId, PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed,
-    TCache, TCacheProducer, TCacheRead, TProducer,
-    column_util::block_root_fulu,
+    TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,

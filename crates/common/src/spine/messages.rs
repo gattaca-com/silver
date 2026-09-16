@@ -92,6 +92,10 @@ pub enum BeaconApiRequest {
         request_id: u64,
         lookup: BlockLookup,
     },
+    BlockRoot {
+        request_id: u64,
+        lookup: BlockLookup,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,9 +118,10 @@ pub enum BeaconApiResponse {
 #[repr(C)]
 pub struct ServedBlock {
     pub slot: u64,
+    pub root: [u8; 32],
     pub finalized: bool,
     pub canonical: bool,
-    pub ssz: TCacheRead,
+    pub ssz: Option<TCacheRead>,
 }
 
 /// Final result for one locally submitted attestation. `Success` is emitted

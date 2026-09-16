@@ -1,6 +1,7 @@
-use silver_beacon_state_data::{B256, BeaconBlockHeader};
+use silver_beacon_state_data::BeaconBlockHeader;
 use silver_common::{
-    BlockLookup, ServedBlock, TRandomAccess, column_util, ssz_view::SignedBeaconBlockView,
+    BeaconApiRequest, BlockLookup, ServedBlock, TRandomAccess, body_root_at,
+    ssz_view::SignedBeaconBlockView,
 };
 
 use crate::{
@@ -69,11 +70,13 @@ fn requested_block(
     lookup
 }
 
-/// A slot lookup learns its root from the bytes storage returned.
-fn served_root(lookup: BlockLookup, bytes: &[u8], is_gloas: bool) -> B256 {
-    match lookup {
-        BlockLookup::Root(root) => root,
-        BlockLookup::Slot(_) => column_util::block_root(bytes, is_gloas),
+impl BlockRequest {
+    pub(crate) fn storage_request(self, request_id: u64) -> BeaconApiRequest {
+        let lookup = self.lookup;
+        match self.kind {
+            Kind::Root => BeaconApiRequest::BlockRoot { request_id, lookup },
+            Kind::Ssz | Kind::Header => BeaconApiRequest::Block { request_id, lookup },
+        }
     }
 }
 
@@ -81,13 +84,23 @@ impl Kind {
     pub(crate) fn respond(
         self,
         resp: &mut Response<'_>,
-        lookup: BlockLookup,
         block: Option<ServedBlock>,
         storage: &mut TRandomAccess,
         ctx: &ApiCtx,
     ) {
-        let Some(ServedBlock { slot, finalized, canonical, ssz }) = block else {
+        let Some(ServedBlock { slot, root, finalized, canonical, ssz }) = block else {
             return resp.error(404, "block not found");
+        };
+        let flags =
+            ReadFlags { execution_optimistic: ctx.node_status.execution_optimistic(), finalized };
+        if self == Self::Root {
+            return resp
+                .json_body(|json| json.flagged_envelope(flags, |json| json.block_root(&root)));
+        }
+
+        let Some(ssz) = ssz else {
+            tracing::error!(slot, "storage answered a block request without the bytes");
+            return resp.error(500, "block bytes missing");
         };
         let ssz = storage.acquire(ssz);
         let bytes = match ssz.buffer() {
@@ -103,28 +116,23 @@ impl Kind {
         };
 
         let is_gloas = ctx.spec.is_gloas_at_slot(slot);
-        let flags =
-            ReadFlags { execution_optimistic: ctx.node_status.execution_optimistic(), finalized };
         match self {
             Self::Ssz => {
                 let version = ctx.spec.fork_at_slot(slot).name();
                 resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], bytes);
             }
-            Self::Root => {
-                let root = served_root(lookup, bytes, is_gloas);
-                resp.json_body(|json| json.flagged_envelope(flags, |json| json.block_root(&root)))
-            }
+            Self::Root => unreachable!("answered above"),
             Self::Header => {
                 let body = SignedBeaconBlockView::body(bytes);
                 let signed = SignedHeader {
-                    root: served_root(lookup, bytes, is_gloas),
+                    root,
                     canonical,
                     header: BeaconBlockHeader {
                         slot,
                         proposer_index: SignedBeaconBlockView::proposer_index(bytes),
                         parent_root: *SignedBeaconBlockView::parent_root(bytes),
                         state_root: *SignedBeaconBlockView::state_root(bytes),
-                        body_root: column_util::body_root_at(body, is_gloas),
+                        body_root: body_root_at(body, is_gloas),
                     },
                     signature: *SignedBeaconBlockView::signature(bytes),
                 };
@@ -138,6 +146,7 @@ impl Kind {
 
 #[cfg(test)]
 mod tests {
+    use silver_beacon_state_data::B256;
     use silver_httpcore::ParsedRequest;
 
     use super::*;
