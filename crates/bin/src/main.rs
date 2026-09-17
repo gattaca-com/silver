@@ -46,6 +46,11 @@ static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 /// Normal Raft protocol messages only.
 const CLUSTER_MESSAGE_TCACHE_SIZE: usize = 1 << 22;
 
+/// Attester shufflings, one `u32` per active validator: three epochs of a
+/// two-million-validator set, so the two the validator API serves never wait
+/// on the one being written.
+const BEACON_STATE_TCACHE_SIZE: usize = 1 << 25;
+
 const MAINNET_BOOTNODES: [&str; 3] = [
     "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
     "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
@@ -354,6 +359,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
         .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
     control_tile.set_gossip_clock(ticker.clone(), &state.immutable.genesis_validators_root);
+    let beacon_state_producer = TCache::producer("beacon_state", BEACON_STATE_TCACHE_SIZE);
+    let beacon_state_consumer_api =
+        beacon_state_producer.cache_ref().random_access("api_beacon_state", true)?;
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         spec.clone(),
@@ -362,6 +370,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer,
         incoming_engine_resp_consumer,
         replay_blocks_consumer,
+        beacon_state_producer,
         !config.disable_weak_subjectivity_check(),
         state,
     );
@@ -432,6 +441,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into_iter()
         .collect(),
         outgoing_rpc_consumer_api,
+        beacon_state_consumer_api,
     );
 
     // Spine

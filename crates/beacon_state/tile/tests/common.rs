@@ -111,6 +111,7 @@ pub enum OutboundKind {
     RequestBlock,
     RequestEnvelope,
     Reorg,
+    AttestersShuffling,
 }
 
 impl OutboundKind {
@@ -128,6 +129,7 @@ impl OutboundKind {
             "request_block" => Self::RequestBlock,
             "request_envelope" => Self::RequestEnvelope,
             "reorg" => Self::Reorg,
+            "attesters_shuffling" => Self::AttestersShuffling,
             _ => return None,
         })
     }
@@ -141,6 +143,7 @@ impl OutboundKind {
             BeaconStateEvent::ReplayComplete => Self::ReplayComplete,
             BeaconStateEvent::BlockReceived { .. } => Self::BlockReceived,
             BeaconStateEvent::Reorg { .. } => Self::Reorg,
+            BeaconStateEvent::AttestersShuffling { .. } => Self::AttestersShuffling,
         }
     }
 
@@ -190,6 +193,7 @@ impl Harness {
                 rc,
                 ec,
                 repc,
+                TCache::producer("harness_beacon_state", 1 << 20),
                 true,
                 state,
             )

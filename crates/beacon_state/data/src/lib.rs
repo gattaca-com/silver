@@ -9,6 +9,7 @@ pub use column::{
     RootsWriteView, Slashings, SlashingsGroup, SlashingsId, SlashingsView, SlashingsWriteView,
     StateRoots, StateRootsGroup, StateRootsId,
 };
+pub use committee::committee_range;
 pub use decompose::DecomposeError;
 pub use delta_view::{StateReadView, StateWriterView};
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
@@ -43,6 +44,7 @@ pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointC
 
 mod builders;
 mod column;
+mod committee;
 mod decompose;
 mod delta_view;
 mod encode;

@@ -351,6 +351,7 @@ pub struct BeaconApi {
     ssz_consumers: HashMap<SszCache, TRandomAccess>,
     /// Blocks storage serves, in the `outgoing_rpc` tcache.
     storage: TRandomAccess,
+    beacon_state: TRandomAccess,
     next_request_id: u64,
     head_verdict: HeadVerdict,
 }
@@ -371,6 +372,7 @@ impl BeaconApi {
         anchor_root: B256,
         ssz_consumers: HashMap<SszCache, TRandomAccess>,
         storage: TRandomAccess,
+        beacon_state: TRandomAccess,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let tokens_needed = binds.len().checked_add(max_connections);
@@ -410,6 +412,7 @@ impl BeaconApi {
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, anchor_root),
             ssz_consumers,
             storage,
+            beacon_state,
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
         }
@@ -471,6 +474,15 @@ impl BeaconApi {
                 stage: BlockStage::Applied,
                 ..
             } => self.publish_block(slot, &block_root),
+            BeaconStateEvent::AttestersShuffling { epoch, committees_per_slot, indices } => {
+                let posted = self.beacon_state.acquire(indices);
+                match posted.buffer() {
+                    Ok((bytes, _)) => {
+                        self.ctx.shufflings.record(epoch, committees_per_slot as usize, bytes)
+                    }
+                    Err(e) => tracing::warn!(?e, epoch, "posted shuffling unavailable"),
+                }
+            }
             _ => {}
         }
     }
@@ -674,6 +686,7 @@ impl BeaconApi {
             consumer.free();
         }
         self.storage.free();
+        self.beacon_state.free();
         let now = Instant::now();
 
         let mut did_work = false;
@@ -893,6 +906,7 @@ mod tests {
                     .into_iter()
                     .map(|source| (source, consumer()))
                     .collect(),
+                consumer(),
                 consumer(),
             );
             Self { readiness, api, served: cache, requests: Vec::new() }

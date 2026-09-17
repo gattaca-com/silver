@@ -1,16 +1,8 @@
-//! The validator-client POSTs whose success response is a bare
-//! acknowledgement. Each carries a preference or a subscription silver has
-//! nothing wired to yet, and each schema's own model is fire-and-forget — a
-//! subscription "cannot be certain the Beacon node will find peers", a
-//! preparation carries "no guarantee that the beacon node will use the
-//! supplied fee recipient" — so acknowledging a well-formed body is the whole
-//! answer these endpoints owe, and the log line is where the gap shows.
-
 use serde::Deserialize;
 use silver_beacon_state_data::{BLSPubkey, BLSSignature, ExecutionAddress};
 
 use crate::{
-    ids::{MAX_BODY_IDS, is_hex_bytes, parse_uint64},
+    ids::{body_entries, is_hex_bytes, parse_uint64},
     response::Response,
     router::Request,
     routes::ApiCtx,
@@ -84,21 +76,13 @@ pub(crate) fn post_sync_committee_subscriptions(
 }
 
 /// The entries a body carries, or `None` having answered the 400 its schema
-/// declares. Entries borrow their scalars out of `body`, so an array naming a
-/// whole 500k-validator operator costs its `&str` pairs and copies nothing.
+/// declares.
 fn received<'a, T: Deserialize<'a>>(
     body: &'a [u8],
     resp: &mut Response<'_>,
     well_formed: impl Fn(&T) -> bool,
 ) -> Option<Vec<T>> {
-    let Ok(entries) = serde_json::from_slice::<Vec<T>>(body) else {
-        resp.error(400, "invalid request body");
-        return None;
-    };
-    if entries.len() > MAX_BODY_IDS {
-        resp.error(400, "too many entries in request body");
-        return None;
-    }
+    let entries = body_entries(body, resp)?;
     if !entries.iter().all(well_formed) {
         resp.error(400, "invalid entry in request body");
         return None;
@@ -190,6 +174,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        ids::MAX_BODY_IDS,
         router::{Outcome, Router},
         routes::{ROUTES, anchor_ctx},
     };

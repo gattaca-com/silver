@@ -1,7 +1,8 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    Epoch, RandaoMixesView, SLOTS_PER_EPOCH, Slot, StateReadView, ValidatorsView,
+    Epoch, RandaoMixesView, Slot, StateReadView, ValidatorsView, committee_range,
 };
+use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
 use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed, committees_per_slot};
 
@@ -67,17 +68,37 @@ impl<'a> EpochShuffling<'a> {
         self.shuffled.is_empty() || self.committees_per_slot == 0
     }
 
+    pub fn post(
+        &self,
+        epoch: Epoch,
+        producer: &mut TProducer,
+        emit: impl FnOnce(BeaconStateEvent),
+    ) -> bool {
+        let len = size_of_val(self.shuffled);
+        let Some(mut reservation) = producer.reserve(len, true) else {
+            tracing::warn!(epoch, len, "beacon_state tcache full; shuffling not posted");
+            return false;
+        };
+        let Ok(buffer) = reservation.buffer() else {
+            return false;
+        };
+        for (bytes, index) in buffer.chunks_exact_mut(size_of::<u32>()).zip(self.shuffled) {
+            bytes.copy_from_slice(&index.to_le_bytes());
+        }
+        reservation.increment_offset(len);
+        emit(BeaconStateEvent::AttestersShuffling {
+            epoch,
+            committees_per_slot: self.committees_per_slot as u32,
+            indices: reservation.read(),
+        });
+        true
+    }
+
     /// Proportional split, so sizes differ by at most one and the committees
     /// partition `shuffled` exactly — every active validator lands in one.
     pub fn committee(&self, slot: Slot, committee_index: usize) -> &'a [u32] {
-        let epoch_committee_count = self.committees_per_slot * SLOTS_PER_EPOCH as usize;
-        let slot_in_epoch = (slot % SLOTS_PER_EPOCH) as usize;
-        let index_in_epoch = slot_in_epoch * self.committees_per_slot + committee_index;
-
-        let start = self.shuffled.len() * index_in_epoch / epoch_committee_count;
-        let end = self.shuffled.len() * (index_in_epoch + 1) / epoch_committee_count;
-
-        &self.shuffled[start..end]
+        &self.shuffled
+            [committee_range(self.shuffled.len(), self.committees_per_slot, slot, committee_index)]
     }
 }
 
