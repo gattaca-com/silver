@@ -159,8 +159,7 @@ impl Controller {
         );
     }
 
-    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
-        let mut status = status;
+    pub fn set_status(&mut self, mut status: [u8; STATUS_V2_SIZE]) {
         if let Some(schedule) = &self.gossip_schedule {
             status[..4].copy_from_slice(&schedule.current().digest());
         }
