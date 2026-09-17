@@ -182,8 +182,8 @@ Multiple connections can share an identity while QUIC drains a duplicate.
 The API retains each connection until its disconnect event. Removing one
 connection leaves the peer listed while another remains. Among retained
 connections, the most recently observed supplies the peer's direction and
-`last_seen_p2p_address`, a QUIC multiaddr. Arrival order is tracked separately
-because connection handles can be reused.
+`last_seen_p2p_address`, a QUIC multiaddr. Connections are grouped by identity
+and kept in arrival order; handle values do not establish that order.
 
 Connection events published before the API's first read are missed. A peer
 absent for this reason remains absent until the API observes another

@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::{
+    collections::hash_map::Entry,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use rustc_hash::FxHashMap;
 use silver_common::{Eth2Addr, IpBytes, PeerId};
@@ -29,47 +32,45 @@ impl Peer {
     }
 }
 
-/// Connection handles are reused and do not establish arrival order.
+struct Connection {
+    handle: usize,
+    peer: Peer,
+}
+
 #[derive(Default)]
 pub(crate) struct PeerTable {
-    connections: FxHashMap<usize, (u64, Peer)>,
-    arrivals: u64,
+    peers: FxHashMap<PeerId, Vec<Connection>>,
 }
 
 impl PeerTable {
     pub(crate) fn new() -> Self {
-        Self {
-            connections: FxHashMap::with_capacity_and_hasher(256, Default::default()),
-            arrivals: 0,
-        }
+        Self { peers: FxHashMap::with_capacity_and_hasher(256, Default::default()) }
     }
 
     pub(crate) fn insert(&mut self, connection: usize, peer: Peer) {
-        self.arrivals += 1;
-        self.connections.insert(connection, (self.arrivals, peer));
+        let connections = self.peers.entry(peer.id).or_default();
+        connections.retain(|c| c.handle != connection);
+        connections.push(Connection { handle: connection, peer });
     }
 
-    pub(crate) fn remove(&mut self, connection: usize) {
-        self.connections.remove(&connection);
-    }
-
-    fn by_identity(&self) -> Vec<&Peer> {
-        let mut latest: FxHashMap<PeerId, (u64, &Peer)> = FxHashMap::default();
-        for (arrival, peer) in self.connections.values() {
-            let entry = latest.entry(peer.id).or_insert((*arrival, peer));
-            if *arrival > entry.0 {
-                *entry = (*arrival, peer);
-            }
+    pub(crate) fn remove(&mut self, peer_id: PeerId, connection: usize) {
+        let Entry::Occupied(mut entry) = self.peers.entry(peer_id) else { return };
+        entry.get_mut().retain(|c| c.handle != connection);
+        if entry.get().is_empty() {
+            entry.remove();
         }
-        latest.into_values().map(|(_, peer)| peer).collect()
     }
 
     pub(crate) fn connected(&self) -> usize {
-        self.by_identity().len()
+        self.peers.len()
     }
 
     pub(crate) fn matching<'a>(&'a self, filter: &'a PeerFilter) -> impl Iterator<Item = &'a Peer> {
-        self.by_identity().into_iter().filter(move |peer| filter.admits(peer))
+        self.peers
+            .values()
+            .filter_map(|connections| connections.last())
+            .map(|connection| &connection.peer)
+            .filter(move |peer| filter.admits(peer))
     }
 }
 

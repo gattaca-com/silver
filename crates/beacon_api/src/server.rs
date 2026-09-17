@@ -499,7 +499,9 @@ impl BeaconApi {
                 let peer = Peer { id: peer_id_full, ip, port, inbound: !local_dial };
                 self.ctx.peers.insert(p2p_peer_id, peer);
             }
-            PeerEvent::P2pDisconnect { p2p_peer, .. } => self.ctx.peers.remove(p2p_peer),
+            PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
+                self.ctx.peers.remove(peer_id, p2p_peer)
+            }
             PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
                 self.publish_relayed_block(ssz)
             }
