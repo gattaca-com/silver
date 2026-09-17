@@ -199,7 +199,7 @@ fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
         topic,
         domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
-        ssz_source: silver_common::SszSource::Gossip,
+        ssz_cache: silver_common::SszCache::Gossip,
         msg_hash: MessageId { id: [byte; 20] },
         recv_ts: Nanos::now(),
         // The boundary does not read protobuf, so no encoded payload is needed.
@@ -215,22 +215,22 @@ fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEv
 }
 
 fn validated_column(
-    source: ColumnSource,
+    origin: ColumnOrigin,
     slot: u64,
     byte: u8,
     index: u64,
 ) -> (DataColumnsEvent, SseEvent) {
     let block_root = [byte; 32];
-    let event = DataColumnsEvent::Validated { block_root, column_index: index, slot, source };
+    let event = DataColumnsEvent::Validated { block_root, column_index: index, slot, origin };
     (event, SseEvent::column(slot, &block_root, index))
 }
 
 fn gossip_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
-    validated_column(ColumnSource::Gossip, slot, byte, index)
+    validated_column(ColumnOrigin::Gossip, slot, byte, index)
 }
 
 fn rpc_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
-    validated_column(ColumnSource::Rpc, slot, byte, index)
+    validated_column(ColumnOrigin::Rpc, slot, byte, index)
 }
 
 #[derive(Clone, Debug)]
@@ -1144,6 +1144,7 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
     let early = EventsSubscriber::new(addr, topics, 4, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
     let (relay, relayed) = gossip_column(20, 0x11, 3);
+    let (dc_relay, dc_relayed) = gossip_column(20, 0x11, 4);
     let (published, publication) = rpc_column(21, 0x12, 5);
     inj.produce(block);
     inj.produce(relay);

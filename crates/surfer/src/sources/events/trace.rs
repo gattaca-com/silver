@@ -81,7 +81,7 @@ impl BlockTrace {
             Stage::StfDone => self.stf.done(ts),
             Stage::Attestable => self.stf.attestable(ts),
             Stage::ElVerdict { verdict } => self.el.verdict_received(verdict, ts),
-            Stage::ColumnRecv { index, source } => self.da.column_received(index, source, ts),
+            Stage::ColumnRecv { index, origin } => self.da.column_received(index, origin, ts),
             Stage::ColumnValidated { index, .. } => self.da.column_validated(index, ts),
             Stage::DaAvailable => self.da.gate_opened(ts),
             Stage::CustodyDone => self.da.custody_completed(ts),
@@ -147,7 +147,7 @@ impl BlockTrace {
 
 #[cfg(test)]
 pub mod tests {
-    use silver_common::{ColumnSource, PayloadValidationStatus};
+    use silver_common::{ColumnOrigin, PayloadValidationStatus};
 
     use super::*;
 
@@ -160,8 +160,8 @@ pub mod tests {
     pub const APPLY: Span = Span::Stf(StfSpan::Apply);
     pub const DA_WAIT: Span = Span::Stf(StfSpan::DaWait);
 
-    pub fn cols(source: ColumnSource) -> Span {
-        Span::Da(DaSpan::Cols(source))
+    pub fn cols(origin: ColumnOrigin) -> Span {
+        Span::Da(DaSpan::Cols(origin))
     }
 
     pub fn at(slot: u64, ms_into_slot: u64) -> Nanos {
@@ -222,7 +222,7 @@ pub mod tests {
             iv(at(2, 350), at(2, 350)),
             "no sidecars: the component is the gate"
         );
-        assert_eq!(t.interval(cols(ColumnSource::Gossip)), None, "no sidecars observed");
+        assert_eq!(t.interval(cols(ColumnOrigin::Gossip)), None, "no sidecars observed");
         assert_eq!(t.attestable_at(), Some(at(2, 520)));
         assert_eq!(t.el.status(), Some(PayloadValidationStatus::Valid));
     }
@@ -315,25 +315,25 @@ pub mod tests {
     /// into one column with the first timestamps.
     #[test]
     fn duplicate_column_events_fold_into_one_column() {
-        let recv = Stage::ColumnRecv { index: 48, source: ColumnSource::Gossip };
-        let validated = Stage::ColumnValidated { index: 48, source: ColumnSource::Gossip };
+        let recv = Stage::ColumnRecv { index: 48, origin: ColumnOrigin::Gossip };
+        let validated = Stage::ColumnValidated { index: 48, origin: ColumnOrigin::Gossip };
         let t = trace(&[(recv, 200), (validated, 210), (recv, 500), (validated, 510)]);
 
         assert_eq!(t.da.columns.len(), 1);
         assert_eq!(t.da.columns[0].interval(), Interval { start: at(2, 200), end: at(2, 210) });
-        assert_eq!(t.interval(cols(ColumnSource::Gossip)), iv(at(2, 200), at(2, 210)));
-        assert_eq!(t.interval(cols(ColumnSource::El)), None, "no EL-built sidecars");
+        assert_eq!(t.interval(cols(ColumnOrigin::Gossip)), iv(at(2, 200), at(2, 210)));
+        assert_eq!(t.interval(cols(ColumnOrigin::El)), None, "no EL-built sidecars");
         assert_eq!(t.interval(DA), iv(at(2, 200), at(2, 210)), "no gate yet: arrival → validation");
-        assert!(t.da.has_source(ColumnSource::Gossip));
-        assert!(!t.da.has_source(ColumnSource::Rpc));
+        assert!(t.da.has_origin(ColumnOrigin::Gossip));
+        assert!(!t.da.has_origin(ColumnOrigin::Rpc));
     }
 
     /// The gate opens on the column whose validation crossed the threshold;
     /// later columns are custody traffic.
     #[test]
     fn the_data_component_ends_at_the_gate() {
-        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
-        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        let recv = |i| Stage::ColumnRecv { index: i, origin: ColumnOrigin::Gossip };
+        let validated = |i| Stage::ColumnValidated { index: i, origin: ColumnOrigin::Gossip };
         let t = trace(&[
             (recv(1), 200),
             (validated(1), 210),
@@ -345,7 +345,7 @@ pub mod tests {
         ]);
         assert_eq!(t.interval(DA), iv(at(2, 200), at(2, 241)));
         assert_eq!(
-            t.interval(cols(ColumnSource::Gossip)),
+            t.interval(cols(ColumnOrigin::Gossip)),
             iv(at(2, 200), at(2, 310)),
             "the source's columns run past the gate"
         );
@@ -355,7 +355,7 @@ pub mod tests {
     /// its own span and never stretches the strip.
     #[test]
     fn custody_span_outlives_the_strip() {
-        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
+        let recv = |i| Stage::ColumnRecv { index: i, origin: ColumnOrigin::Gossip };
         let t = trace(&[
             (recv(1), 200),
             (received(), 240),

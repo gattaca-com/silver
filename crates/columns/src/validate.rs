@@ -6,7 +6,7 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    GossipDomain, IngestionTime, P2pStreamId, SszSource, TRead, Wheel, column_util as util,
+    GossipDomain, IngestionTime, P2pStreamId, SszCache, TRead, Wheel, column_util as util,
     ssz_view::{
         BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
         NUMBER_OF_COLUMNS, SidecarLayout, SignedBeaconBlockView,
@@ -26,7 +26,7 @@ pub(crate) struct PendingColumn {
     pub(crate) stream_id: P2pStreamId,
     pub(crate) sidecar: TRead,
     /// Which cache `sidecar` lives in, for the persist consumer.
-    pub(crate) ssz_source: SszSource,
+    pub(crate) ssz_cache: SszCache,
     pub(crate) domain: Option<GossipDomain>,
     pub(crate) gossip_subnet: Option<u64>,
     pub(crate) recv_ts: IngestionTime,
@@ -259,8 +259,8 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        if tracker.holds(&block_root, column_index) {
-            return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
+        if !verify_held && tracker.holds(&block_root, column_index) {
+            return ColumnOutcome::AlreadyHeld { block_root, slot };
         }
 
         if !util::verify_data_column_sidecar_fulu(buffer, self.max_blobs_at(slot)) {
@@ -412,8 +412,8 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        if tracker.holds(&block_root, column_index) {
-            return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
+        if !verify_held && tracker.holds(&block_root, column_index) {
+            return ColumnOutcome::AlreadyHeld { block_root, slot };
         }
 
         let Some(block) = self

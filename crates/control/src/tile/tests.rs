@@ -110,13 +110,13 @@ impl GossipPublications {
         self.controller.loop_body(&mut self.adapter);
     }
 
-    fn persist_column(&mut self, source: ColumnSource, bytes: &[u8]) {
-        let (ssz, ssz_source, domain) = match source {
-            ColumnSource::Rpc => {
-                (write_bytes(&mut self.rpc, bytes), SszSource::Rpc, Some(test_domain()))
+    fn persist_column(&mut self, origin: ColumnOrigin, bytes: &[u8]) {
+        let (ssz, ssz_cache, domain) = match origin {
+            ColumnOrigin::Rpc => {
+                (write_bytes(&mut self.rpc, bytes), SszCache::Rpc, Some(test_domain()))
             }
-            ColumnSource::El => (write_bytes(&mut self.el, bytes), SszSource::El, None),
-            ColumnSource::Assembly => {
+            ColumnOrigin::El => (write_bytes(&mut self.el, bytes), SszCache::El, None),
+            ColumnOrigin::Assembly => {
                 let config =
                     CellStoreConfig::new(self.controller.spec.clone(), 1 << 5, Duration::ZERO)
                         .unwrap();
@@ -127,16 +127,16 @@ impl GossipPublications {
                     .insert(CellIngress::new(config, producer, 9, Instant::now()).unwrap());
                 (
                     write_bytes(ingress.producer_mut(), bytes),
-                    SszSource::DataColumns,
+                    SszCache::DataColumns,
                     Some(test_domain()),
                 )
             }
-            ColumnSource::Gossip => unreachable!(),
+            ColumnOrigin::Gossip => unreachable!(),
         };
         self.observer.produce(DataColumnsEvent::Persist {
             ssz,
-            source,
-            ssz_source,
+            origin,
+            ssz_cache,
             domain,
             block_root: [0x51; 32],
             column_index: 5,
@@ -256,7 +256,7 @@ fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_
             originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic,
             domain,
-            ssz_source: SszSource::Gossip,
+            ssz_cache: SszCache::Gossip,
             msg_hash: MessageId { id: [0xCD + index as u8; 20] },
             recv_ts: Nanos::now(),
             protobuf: capture.payload,
@@ -297,7 +297,7 @@ fn relay_requests_preserve_routing_and_iwant_service() {
             originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic,
             domain: test_domain(),
-            ssz_source: silver_common::SszSource::Gossip,
+            ssz_cache: silver_common::SszCache::Gossip,
             msg_hash: hash,
             recv_ts: Nanos::now(),
             protobuf: capture.payload,
@@ -317,12 +317,12 @@ fn relay_requests_preserve_routing_and_iwant_service() {
 
 #[test]
 fn column_publication_encodes_and_routes_without_another_spine_request() {
-    for source in [ColumnSource::Rpc, ColumnSource::El, ColumnSource::Assembly] {
-        assert_column_publication(source);
+    for origin in [ColumnOrigin::Rpc, ColumnOrigin::El, ColumnOrigin::Assembly] {
+        assert_column_publication(origin);
     }
 }
 
-fn assert_column_publication(source: ColumnSource) {
+fn assert_column_publication(origin: ColumnOrigin) {
     let topic = GossipTopic::DataColumnSidecar(5);
     // Transport decoding checks payload size; consensus validation is outside this
     // fixture.
@@ -330,14 +330,14 @@ fn assert_column_publication(source: ColumnSource) {
     let mut capture = GossipPublications::new(topic, &[]);
     capture.observer.consume(|_: PeerEvent, _| {});
     capture.controller.peer_manager.set_sync_target(SyncUpdate::Following);
-    if source != ColumnSource::El {
+    if origin != ColumnOrigin::El {
         // These columns were validated before the fork domain changed.
         capture
             .controller
             .gossip_handler
             .set_domains(GossipDomain::new([1; 4], ForkName::Gloas), None);
     }
-    capture.persist_column(source, &bytes);
+    capture.persist_column(origin, &bytes);
     capture.crank();
     let sent = capture.sent();
     let frames_to = |peer: usize| {
@@ -406,12 +406,12 @@ fn assert_column_publication(source: ColumnSource) {
 
 #[test]
 fn a_syncing_node_republishes_no_columns() {
-    for source in [ColumnSource::Rpc, ColumnSource::El, ColumnSource::Assembly] {
-        assert_no_syncing_publication(source);
+    for origin in [ColumnOrigin::Rpc, ColumnOrigin::El, ColumnOrigin::Assembly] {
+        assert_no_syncing_publication(origin);
     }
 }
 
-fn assert_no_syncing_publication(source: ColumnSource) {
+fn assert_no_syncing_publication(origin: ColumnOrigin) {
     let topic = GossipTopic::DataColumnSidecar(5);
     let bytes = vec![0x42; topic.min_uncompressed_size()];
     let mut capture = GossipPublications::new(topic, &[]);
@@ -419,7 +419,7 @@ fn assert_no_syncing_publication(source: ColumnSource) {
         .controller
         .peer_manager
         .set_sync_target(SyncUpdate::SyncingHead { head_root: [0x33; 32], head_slot: 900 });
-    capture.persist_column(source, &bytes);
+    capture.persist_column(origin, &bytes);
     capture.crank();
     assert!(capture.sent().is_empty(), "peers ahead of us already hold the column");
 }

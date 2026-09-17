@@ -118,8 +118,8 @@ impl RowFormatter {
             Stage::Received { source } | Stage::ElSent { source } => {
                 (Some(format!("{source:?}")), None, None)
             }
-            Stage::ColumnRecv { index, source } | Stage::ColumnValidated { index, source } => {
-                (Some(format!("{source:?}")), None, Some(index))
+            Stage::ColumnRecv { index, origin } | Stage::ColumnValidated { index, origin } => {
+                (Some(format!("{origin:?}")), None, Some(index))
             }
             Stage::ElVerdict { verdict } => (None, Some(format!("{verdict:?}")), None),
             Stage::StfDone | Stage::Attestable | Stage::DaAvailable | Stage::CustodyDone => {
@@ -196,7 +196,7 @@ impl BlockEventsInserter {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{BlockSource, ColumnSource, Nanos, PayloadValidationStatus};
+    use silver_common::{BlockSource, ColumnOrigin, Nanos, PayloadValidationStatus};
 
     use super::*;
 
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn optional_attributes_fill_their_columns() {
-        let column = Stage::ColumnRecv { index: 48, source: ColumnSource::El };
+        let column = Stage::ColumnRecv { index: 48, origin: ColumnOrigin::El };
         let r = json(&event(column, at(3, 1_400), Some(3)));
         assert_eq!(r["stage"], "column_recv");
         assert_eq!(r["source"], "El");

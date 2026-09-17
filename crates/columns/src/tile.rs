@@ -10,9 +10,9 @@ use flux::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, ColumnSource, DataColumnsEvent, DataKind,
+    BeaconStateEvent, BlockSource, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszSource, SyncNeed,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed,
     SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, RetentionEvent, StoreError,
@@ -235,7 +235,7 @@ impl DataColumnsTile {
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => {
-                let verify_held = column.ssz_source == SszSource::DataColumns &&
+                let verify_held = column.ssz_cache == SszCache::DataColumns &&
                     self.cells.as_ref().is_some_and(|cells| cells.needs_full_validation(buf));
                 self.validator.validate(
                     &column,
@@ -270,22 +270,9 @@ impl DataColumnsTile {
     ) -> ColumnDisposition {
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
-            ColumnOutcome::AlreadyHeld { block_root, column_index, slot } => {
-                let source = ColumnSource::from_protocol(column.stream_id.protocol());
-                if self.tracker.is_custody(column_index) {
-                    producers.produce_with_ingestion(
-                        DataColumnsEvent::Persist {
-                            ssz: column.sidecar.read,
-                            source,
-                            block_root,
-                            column_index,
-                            slot,
-                        },
-                        column.recv_ts,
-                    );
-                }
-
-                if source != ColumnSource::Gossip && self.tracker.custody_complete(&block_root) {
+            ColumnOutcome::AlreadyHeld { block_root, slot } => {
+                let origin = ColumnOrigin::from_protocol(column.stream_id.protocol());
+                if origin != ColumnOrigin::Gossip && self.tracker.custody_complete(&block_root) {
                     producers.produce(SyncNeed::Arrived {
                         root: block_root,
                         slot,
@@ -326,7 +313,7 @@ impl DataColumnsTile {
             ColumnOutcome::Record { block_root, column_index, slot, relay_eligible } => {
                 let queued = self.kzg_batch.push(PendingKzg {
                     sidecar: column.sidecar,
-                    ssz_source: column.ssz_source,
+                    ssz_cache: column.ssz_cache,
                     domain: column.domain.or_else(|| self.validator.domain_at(slot)),
                     context_eligible: relay_eligible,
                     stream_id: column.stream_id,
@@ -383,24 +370,32 @@ impl DataColumnsTile {
     }
 
     fn record_validated_column(&mut self, p: PendingKzg, producers: &mut SilverSpineProducers) {
-        let PendingKzg { sidecar, stream_id, recv_ts, block_root, column_index, slot, .. } = p;
-        debug_assert!(
-            !self.tracker.holds(&block_root, column_index),
-            "a batched column is recorded before anything else can set its bit"
-        );
-        self.record_columns(block_root, slot, 1u128 << column_index, recv_ts, producers);
+        let PendingKzg {
+            sidecar,
+            ssz_cache,
+            stream_id,
+            recv_ts,
+            block_root,
+            column_index,
+            slot,
+            ..
+        } = p;
+        if self.tracker.holds(&block_root, column_index) {
+            return;
+        }
+        self.tracker.record_and_notify(block_root, slot, 1u128 << column_index, recv_ts, producers);
 
-        let source = ColumnSource::from_protocol(stream_id.protocol());
+        let origin = ColumnOrigin::from_protocol(stream_id.protocol());
         producers.produce_with_ingestion(
-            DataColumnsEvent::Validated { block_root, column_index, slot, source },
+            DataColumnsEvent::Validated { block_root, column_index, slot, origin },
             recv_ts,
         );
         if self.tracker.is_custody(column_index) {
             producers.produce_with_ingestion(
                 DataColumnsEvent::Persist {
                     ssz: sidecar.read,
-                    source,
-                    ssz_source,
+                    origin,
+                    ssz_cache,
                     domain: p.domain,
                     block_root,
                     column_index,
@@ -455,20 +450,20 @@ impl DataColumnsTile {
             msg_hash: gossip.msg_hash,
             protobuf: gossip.protobuf,
         });
-        let sidecar = match gossip.ssz_source {
-            SszSource::DataColumns => {
+        let sidecar = match gossip.ssz_cache {
+            SszCache::DataColumns => {
                 let Some(cells) = self.cells.as_mut() else { return };
                 let Some(read) = cells.acquire(gossip.ssz) else { return };
                 read
             }
-            SszSource::Gossip => self.consumers.gossip.acquire(gossip.ssz),
+            SszCache::Gossip => self.consumers.gossip.acquire(gossip.ssz),
             _ => return,
         };
         self.handle_data_column_sidecar(
             PendingColumn {
                 stream_id: gossip.stream_id,
                 sidecar,
-                ssz_source: gossip.ssz_source,
+                ssz_cache: gossip.ssz_cache,
                 domain: Some(gossip.domain),
                 gossip_subnet: Some(custody_group),
                 recv_ts: gossip.recv_ts.into(),
@@ -561,7 +556,7 @@ impl DataColumnsTile {
                 originator_stream_id: p.stream_id,
                 topic: GossipTopic::DataColumnSidecar(p.column_index),
                 domain,
-                ssz_source: p.ssz_source,
+                ssz_cache: p.ssz_cache,
                 msg_hash,
                 recv_ts: p.recv_ts.into(),
                 protobuf,
@@ -631,7 +626,7 @@ impl DataColumnsTile {
         let column = PendingColumn {
             stream_id: P2pStreamId::new(1, 1, StreamProtocol::GossipSub, true),
             sidecar: self.consumers.gossip.acquire(ssz),
-            ssz_source: SszSource::Gossip,
+            ssz_cache: SszCache::Gossip,
             domain: None,
             gossip_subnet: Some(subnet),
             recv_ts: IngestionTime::now(),
@@ -778,7 +773,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
                         PendingColumn {
                             stream_id: rsp.stream_id,
                             sidecar,
-                            ssz_source: SszSource::Rpc,
+                            ssz_cache: SszCache::Rpc,
                             domain: None,
                             gossip_subnet: None,
                             recv_ts: IngestionTime::now(),
@@ -995,7 +990,7 @@ mod tests {
                     .validator
                     .domain_at(SidecarIdentity::of(bytes).unwrap().slot)
                     .unwrap(),
-                ssz_source: SszSource::Gossip,
+                ssz_cache: SszCache::Gossip,
                 msg_hash: MessageId { id },
                 recv_ts,
                 ssz,
@@ -1016,7 +1011,7 @@ mod tests {
                         true,
                     ),
                     sidecar,
-                    ssz_source: SszSource::Rpc,
+                    ssz_cache: SszCache::Rpc,
                     domain: None,
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),
@@ -1056,22 +1051,22 @@ mod tests {
             let consumers = &mut self.tile.consumers;
             let data_columns = &mut self.tile.cells;
             self.inj.consume(|event: PeerEvent, _| {
-                let (source, topic, domain, sidecar) = match event {
-                    PeerEvent::SendGossip { topic, domain, ssz, ssz_source, .. } => {
-                        let read = match ssz_source {
-                            SszSource::DataColumns => {
+                let (origin, topic, domain, sidecar) = match event {
+                    PeerEvent::SendGossip { topic, domain, ssz, ssz_cache, .. } => {
+                        let read = match ssz_cache {
+                            SszCache::DataColumns => {
                                 data_columns.as_mut().unwrap().acquire(ssz).unwrap()
                             }
-                            SszSource::Gossip => consumers.gossip.acquire(ssz),
+                            SszCache::Gossip => consumers.gossip.acquire(ssz),
                             _ => panic!("unexpected gossip cache"),
                         };
-                        (ColumnSource::Gossip, topic, domain, read)
+                        (ColumnOrigin::Gossip, topic, domain, read)
                     }
                     _ => return,
                 };
                 let (bytes, _) = sidecar.buffer().expect("published bytes readable");
                 let column = SidecarIdentity::of(bytes).expect("a published sidecar has a layout");
-                out.publications.push((source, topic, column));
+                out.publications.push((origin, topic, column));
                 out.domains.push(domain);
             });
             out
@@ -1091,7 +1086,7 @@ mod tests {
         custody_complete: usize,
         validated: u128,
         receipts: Vec<DataColumnsEvent>,
-        publications: Vec<(ColumnSource, GossipTopic, SidecarIdentity)>,
+        publications: Vec<(ColumnOrigin, GossipTopic, SidecarIdentity)>,
         domains: Vec<silver_common::GossipDomain>,
         engine: usize,
         missing: Vec<SyncNeed>,
@@ -1284,7 +1279,7 @@ mod tests {
 
             if matches!(observation, ParentObservation::BeforeSidecar) {
                 assert_eq!(out.publications, [(
-                    ColumnSource::Gossip,
+                    ColumnOrigin::Gossip,
                     GossipTopic::DataColumnSidecar(index),
                     SidecarIdentity { slot, block_root, column_index: index }
                 )]);
@@ -1295,9 +1290,8 @@ mod tests {
         }
     }
 
-    /// `Validated` is the fact and fires once per column whether or not it is
-    /// custody; `Persist` is the storage command, custody-gated, and a repeat
-    /// copy re-offers it without restating the fact.
+    /// Validation is announced independently of custody. Unchecked duplicate
+    /// bytes cannot produce another validation event or persistence offer.
     #[test]
     fn validated_once_persist_for_custody() {
         const CASE: &str = "networking/gossip_data_column_sidecar/pyspec_tests/\
@@ -1333,8 +1327,8 @@ mod tests {
             assert_eq!(out.validated, 0, "custody {custody:b}: a repeat restates nothing");
             assert_eq!(
                 out.receipts.len(),
-                receipts,
-                "custody {custody:b}: a repeat is re-offered to storage on the same terms"
+                0,
+                "custody {custody:b}: unchecked duplicate bytes must not be persisted"
             );
         }
     }
@@ -1419,7 +1413,7 @@ mod tests {
                         true,
                     ),
                     sidecar: read,
-                    ssz_source: SszSource::Rpc,
+                    ssz_cache: SszCache::Rpc,
                     domain: None,
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),
@@ -1462,7 +1456,7 @@ mod tests {
             PendingColumn {
                 stream_id: P2pStreamId::new(2, 2, StreamProtocol::DataColumnSidecarsByRange, true),
                 sidecar: read,
-                ssz_source: SszSource::Rpc,
+                ssz_cache: SszCache::Rpc,
                 domain: None,
                 gossip_subnet: None,
                 recv_ts: IngestionTime::now(),
@@ -1550,13 +1544,10 @@ mod tests {
         assert_eq!(out.available + out.receipts.len() + out.engine + out.missing.len(), 0);
     }
 
-    /// A sidecar this tile already validated is still offered to storage:
-    /// storage dedupes against what it holds, so a copy it already has costs no
-    /// write, and a second offer is the only thing that fills a hole left by
-    /// one that lapsed. The chase answer is the rationed part — a copy nobody
-    /// asked for tells the engine nothing it does not already have.
+    /// A known column answers an outstanding chase without trusting the
+    /// duplicate's unchecked bytes for storage or gossip.
     #[test]
-    fn held_sidecar_is_offered_again_but_answers_only_when_asked_for() {
+    fn held_sidecar_is_not_persisted_but_answers_only_when_asked_for() {
         let block_root = [9u8; 32];
         for (protocol, cache, answers) in [
             (StreamProtocol::GossipSub, "held_gossip", 0),
@@ -1573,11 +1564,7 @@ mod tests {
                 PendingColumn {
                     stream_id: P2pStreamId::new(2, 2, protocol, true),
                     sidecar: read,
-                    ssz_source: if protocol.is_gossip() {
-                        SszSource::Gossip
-                    } else {
-                        SszSource::Rpc
-                    },
+                    ssz_cache: if protocol.is_gossip() { SszCache::Gossip } else { SszCache::Rpc },
                     domain: None,
                     gossip_subnet: None,
                     recv_ts: IngestionTime::now(),

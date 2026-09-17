@@ -155,7 +155,7 @@ impl Rig {
                 stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
                 topic: GossipTopic::DataColumnSidecar(column),
                 domain,
-                ssz_source: SszSource::DataColumns,
+                ssz_cache: SszCache::DataColumns,
                 msg_hash: MessageId { id: [0; 20] },
                 recv_ts: Nanos::now(),
                 ssz: read,
@@ -179,11 +179,11 @@ impl Rig {
         });
     }
 
-    fn receive_column(&mut self, source: ColumnSource, index: u64, bytes: &[u8]) {
-        match source {
-            ColumnSource::Gossip => self.gossip_sidecar(index, bytes),
-            ColumnSource::Rpc => self.rpc_sidecar(bytes),
-            ColumnSource::El | ColumnSource::Assembly => unreachable!(),
+    fn receive_column(&mut self, origin: ColumnOrigin, index: u64, bytes: &[u8]) {
+        match origin {
+            ColumnOrigin::Gossip => self.gossip_sidecar(index, bytes),
+            ColumnOrigin::Rpc => self.rpc_sidecar(bytes),
+            ColumnOrigin::El | ColumnOrigin::Assembly => unreachable!(),
         }
     }
 }
@@ -203,7 +203,9 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
     rig.rpc_sidecar(&blob.gloas_sidecar(3, SLOT, &root));
     rig.turn();
-    assert!(rig.drain().persisted(root, 3));
+    let out = rig.drain();
+    assert!(out.persisted(root, 3));
+    assert_eq!(out.validated, 1 << 3);
     assert!(
         rig.tile.cells.as_ref().unwrap().store().availability(&root, 3).unwrap().full.is_none()
     );
@@ -213,6 +215,7 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     rig.cached_gossip(bad, 3, domain);
     rig.turn();
     let out = rig.drain();
+    assert_eq!(out.validated, 0);
     assert!(out.receipts.is_empty());
     assert!(out.publications.is_empty());
     assert!(
@@ -223,6 +226,7 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     rig.cached_gossip(good, 3, domain);
     rig.turn();
     let out = rig.drain();
+    assert_eq!(out.validated, 0, "revalidating a backing does not repeat the column event");
     assert_eq!(out.available, 0);
     assert!(out.receipts.is_empty());
     let backing = rig.tile.cells.as_ref().unwrap().store().availability(&root, 3).unwrap();
@@ -369,13 +373,15 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
         let out = rig.drain();
         assert_eq!(out.available, 1);
         assert_eq!(out.custody_complete, 1);
+        let newly_validated = if format == ForkName::Fulu { 1 << 7 } else { CUSTODY_COLUMNS };
+        assert_eq!(out.validated, newly_validated);
         let completed = if format == ForkName::Fulu { 1 } else { 2 };
         assert_eq!(out.receipts.len(), completed);
         assert!(out.publications.is_empty(), "assemblies publish through Persist in Control");
         for event in out.receipts {
             let DataColumnsEvent::Persist {
-                source: ColumnSource::Assembly,
-                ssz_source: SszSource::DataColumns,
+                origin: ColumnOrigin::Assembly,
+                ssz_cache: SszCache::DataColumns,
                 ssz,
                 domain: published_domain,
                 column_index,
@@ -401,6 +407,7 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
         let out = rig.drain();
         assert_eq!(out.available, 0);
         assert_eq!(out.custody_complete, 0);
+        assert_eq!(out.validated, 0);
         assert!(out.receipts.is_empty());
         assert!(out.publications.is_empty());
     }
@@ -451,12 +458,12 @@ fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
         rig.block(&block);
         rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
         rig.drain();
-        rig.receive_column(source, index, &blob.gloas_sidecar(index, SLOT, &block_root));
+        rig.receive_column(origin, index, &blob.gloas_sidecar(index, SLOT, &block_root));
         rig.turn();
         let out = rig.drain();
-        if source == ColumnSource::Gossip {
+        if origin == ColumnOrigin::Gossip {
             let column = SidecarIdentity { slot: SLOT, block_root, column_index: index };
-            assert_eq!(out.publications, [(source, GossipTopic::DataColumnSidecar(index), column)]);
+            assert_eq!(out.publications, [(origin, GossipTopic::DataColumnSidecar(index), column)]);
             assert_eq!(out.domains, [rig.tile.validator.domain_at(SLOT).unwrap()]);
         } else {
             assert_eq!(
@@ -493,7 +500,7 @@ fn fulu_column_publication_requires_a_resolved_proposer() {
         if relay_eligible {
             let column = SidecarIdentity { slot, block_root, column_index: 3 };
             assert_eq!(out.publications, [(
-                ColumnSource::Gossip,
+                ColumnOrigin::Gossip,
                 GossipTopic::DataColumnSidecar(3),
                 column
             )]);
@@ -523,15 +530,15 @@ fn held_columns_do_not_request_publication_again() {
     rig.turn();
     let column = SidecarIdentity { slot: SLOT, block_root, column_index: 3 };
     assert_eq!(rig.drain().publications, [(
-        ColumnSource::Gossip,
+        ColumnOrigin::Gossip,
         GossipTopic::DataColumnSidecar(3),
         column
     )]);
 
-    for source in [ColumnSource::Gossip, ColumnSource::Rpc] {
-        rig.receive_column(source, 3, &sidecar);
+    for origin in [ColumnOrigin::Gossip, ColumnOrigin::Rpc] {
+        rig.receive_column(origin, 3, &sidecar);
         rig.turn();
-        assert!(rig.drain().publications.is_empty(), "{source:?}: a held copy is not republished");
+        assert!(rig.drain().publications.is_empty(), "{origin:?}: a held copy is not republished");
     }
 }
 
@@ -552,7 +559,7 @@ fn only_columns_with_valid_kzg_proofs_request_publication() {
     rig.turn();
     let column = SidecarIdentity { slot: SLOT, block_root, column_index: 3 };
     assert_eq!(rig.drain().publications, [(
-        ColumnSource::Gossip,
+        ColumnOrigin::Gossip,
         GossipTopic::DataColumnSidecar(3),
         column
     )]);
@@ -567,7 +574,7 @@ fn buffered_gloas_columns_are_processed_without_publication() {
     for source in [ColumnSource::Gossip, ColumnSource::Rpc] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
         rig.follow([0xAA; 32]);
-        rig.receive_column(source, 3, &blob.gloas_sidecar(3, SLOT, &block_root));
+        rig.receive_column(origin, 3, &blob.gloas_sidecar(3, SLOT, &block_root));
         rig.turn();
         assert!(rig.drain().publications.is_empty());
         rig.block(&block);
@@ -596,7 +603,7 @@ fn reconstructed_columns_do_not_request_publication() {
     let out = rig.drain();
     assert!(
         out.receipts.iter().any(|event| matches!(event,
-            DataColumnsEvent::Persist { source: ColumnSource::El, block_root: root, .. }
+            DataColumnsEvent::Persist { origin: ColumnOrigin::El, block_root: root, .. }
                 if *root == block_root
         )),
         "the EL response produced a reconstructed column"
@@ -623,14 +630,14 @@ fn gossip_and_el_copies_validate_once() {
     rig.tile
         .tracker
         .set_signature(block_root, *DataColumnSidecarFuluView::block_signature(&sidecar));
-    rig.receive_column(ColumnSource::Gossip, 3, &sidecar);
+    rig.receive_column(ColumnOrigin::Gossip, 3, &sidecar);
     rig.engine_blobs(block_root, SLOT, &blob.el_frame());
     rig.turn();
     let out = rig.drain();
 
     assert_eq!(out.validated, CUSTODY_COLUMNS, "each custody column is validated once");
     let el_built = out.receipts.iter().fold(0u128, |mask, event| match event {
-        DataColumnsEvent::Persist { source: ColumnSource::El, column_index, .. } => {
+        DataColumnsEvent::Persist { origin: ColumnOrigin::El, column_index, .. } => {
             mask | 1 << column_index
         }
         _ => mask,

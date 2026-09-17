@@ -157,7 +157,7 @@ pub struct NewGossipMsg {
     pub topic: GossipTopic,
     /// Originating fork domain: fixed at receipt, never rewritten.
     pub domain: GossipDomain,
-    pub ssz_source: SszSource,
+    pub ssz_cache: SszCache,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -539,7 +539,7 @@ pub enum PeerEvent {
         topic: GossipTopic,
         /// Originating fork domain, carried from `NewGossipMsg`.
         domain: GossipDomain,
-        ssz_source: SszSource,
+        ssz_cache: SszCache,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
@@ -923,7 +923,7 @@ pub enum BlockSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum SszSource {
+pub enum SszCache {
     Gossip,
     DataColumns,
     Rpc,
@@ -932,14 +932,14 @@ pub enum SszSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum ColumnSource {
+pub enum ColumnOrigin {
     Gossip,
     Rpc,
     El,
     Assembly,
 }
 
-impl ColumnSource {
+impl ColumnOrigin {
     pub const fn from_protocol(protocol: StreamProtocol) -> Self {
         if protocol.is_gossip() { Self::Gossip } else { Self::Rpc }
     }
@@ -1347,12 +1347,12 @@ pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
     /// A column passed validation. Once per (block_root, column_index).
-    Validated { block_root: [u8; 32], column_index: u64, slot: u64, source: ColumnSource },
+    Validated { block_root: [u8; 32], column_index: u64, slot: u64, origin: ColumnOrigin },
     /// Bytes for storage to write. A repeat offer is allowed; storage dedups.
     Persist {
         ssz: TCacheRead,
-        source: ColumnSource,
-        ssz_source: SszSource,
+        origin: ColumnOrigin,
+        ssz_cache: SszCache,
         /// Retain the validated fork domain when republishing after a fork
         /// boundary. EL reconstructions without a domain use the
         /// current gossip domain.

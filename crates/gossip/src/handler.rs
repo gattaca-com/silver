@@ -224,7 +224,7 @@ impl GossipHandler {
             stream_id: LOCAL_GOSSIP_STREAM_ID,
             topic,
             domain,
-            ssz_source: silver_common::SszSource::Gossip,
+            ssz_cache: silver_common::SszCache::Gossip,
             msg_hash: msg_id,
             recv_ts,
             ssz: ssz_read,
