@@ -4,10 +4,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, ColumnSource,
-    DataColumnsEvent, DataKind, Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId,
-    RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy,
-    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, column_util,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
+    Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
+    SilverSpineProducers, SszCache, SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer,
+    TMultiProducer, TProducer, TRandomAccess, column_util,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -384,19 +384,19 @@ impl Tile<SilverSpine> for StorageTile {
         adapter.consume(|dc_event: DataColumnsEvent, producers| {
             if let DataColumnsEvent::Persist {
                 ssz,
-                source,
-                ssz_source,
+                origin,
+                ssz_cache,
                 block_root,
                 column_index,
                 slot,
                 ..
             } = dc_event
             {
-                let sidecar_ssz = match ssz_source {
-                    SszSource::DataColumns => self.persist_data_columns_consumer.acquire(ssz),
-                    SszSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    SszSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                    SszSource::El => self.el_column_consumer.acquire(ssz),
+                let sidecar_ssz = match ssz_cache {
+                    SszCache::DataColumns => self.persist_data_columns_consumer.acquire(ssz),
+                    SszCache::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    SszCache::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                    SszCache::El => self.el_column_consumer.acquire(ssz),
                 };
                 match sidecar_ssz.buffer() {
                     Ok(_) => self.store.add_data_column(
@@ -410,7 +410,7 @@ impl Tile<SilverSpine> for StorageTile {
                         tracing::error!(
                             ?e,
                             seq = sidecar_ssz.seq(),
-                            ?source,
+                            ?origin,
                             slot,
                             column_index,
                             "persist data column buffer acquire failed"

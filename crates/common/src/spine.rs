@@ -3,7 +3,7 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage,
-    ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnSource, DataColumnsEvent, ELSyncStatus,
+    ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnOrigin, DataColumnsEvent, ELSyncStatus,
     EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
@@ -14,7 +14,7 @@ pub use messages::{
     PeerControl, PeerEvent, PeerScores, PeerStats, PeerStatus, PeerTopicScores, Prefill,
     ReplayBlock, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound,
     RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SelfBuiltGossip,
-    ServedBlock, SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
+    ServedBlock, SszCache, SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
 };
 pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
 pub use stream_protocol::{

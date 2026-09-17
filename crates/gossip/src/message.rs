@@ -7,7 +7,7 @@ use buffa::{
 use flux::timing::Nanos;
 use silver_common::{
     Error, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE, MessageId,
-    NewGossipMsg, P2pStreamId, PeerEvent, SszSource, TCacheProducer, TCacheRead, TProducer,
+    NewGossipMsg, P2pStreamId, PeerEvent, SszCache, TCacheProducer, TCacheRead, TProducer,
     TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
@@ -57,11 +57,11 @@ pub(super) fn handle_incoming(
     // Data column sidecars decompress into the data-columns cache so the
     // cell store can retain them by reference; everything else, and the
     // fallback when no cell store is configured, uses the ssz-gossip cache.
-    let (publish, ssz_source) = match data_columns_publish {
+    let (publish, ssz_cache) = match data_columns_publish {
         Some(dc) if matches!(topic, GossipTopic::DataColumnSidecar(_)) => {
-            (dc, SszSource::DataColumns)
+            (dc, SszCache::DataColumns)
         }
-        _ => (incoming_gossip_publish, SszSource::Gossip),
+        _ => (incoming_gossip_publish, SszCache::Gossip),
     };
 
     // Decompress: block snappy.
@@ -127,7 +127,7 @@ pub(super) fn handle_incoming(
         stream_id: *stream_id,
         topic,
         domain,
-        ssz_source,
+        ssz_cache,
         msg_hash: msg_id,
         recv_ts,
         ssz: ssz_read,

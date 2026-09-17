@@ -1,5 +1,5 @@
 use silver_common::{
-    GossipDomain, IngestionTime, MessageId, P2pStreamId, SszSource, TCacheRead, TRead,
+    GossipDomain, IngestionTime, MessageId, P2pStreamId, SszCache, TCacheRead, TRead,
     column_util::KzgBatchEntry,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
@@ -19,7 +19,7 @@ pub(crate) struct GossipSidecarFrame {
 /// KZG batch. Holds its `TRead` so the buffer stays acquired until flush.
 pub(crate) struct PendingKzg {
     pub sidecar: TRead,
-    pub ssz_source: SszSource,
+    pub ssz_cache: SszCache,
     pub domain: Option<GossipDomain>,
     pub context_eligible: bool,
     pub stream_id: P2pStreamId,

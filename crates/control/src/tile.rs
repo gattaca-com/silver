@@ -6,11 +6,10 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, ColumnSource, DataColumnsEvent, GossipDomain, GossipTopic,
+    BeaconApiRequest, BeaconStateEvent, ColumnOrigin, DataColumnsEvent, GossipDomain, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SszSource, SyncNeed, SyncUpdate, TMultiProducer, TProducer,
-    TRandomAccess,
+    SilverSpineProducers, SszCache, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
     cell_store::{CellStoreConfig, CellStoreEvent, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
     ticker::SlotTicker,
@@ -295,19 +294,19 @@ impl Tile<SilverSpine> for Controller {
         self.handle_latest_status(latest_status_event, &mut adapter.producers);
 
         adapter.consume(|event: DataColumnsEvent, producers| {
-            let DataColumnsEvent::Persist { ssz, source, ssz_source, domain, column_index, .. } =
+            let DataColumnsEvent::Persist { ssz, origin, ssz_cache, domain, column_index, .. } =
                 event
             else {
                 return;
             };
-            if source == ColumnSource::Gossip {
+            if origin == ColumnOrigin::Gossip {
                 return;
             }
-            let read = match ssz_source {
-                SszSource::Rpc => Some(self.rpc_ssz_consumer.acquire(ssz)),
-                SszSource::El => Some(self.el_ssz_consumer.acquire(ssz)),
-                SszSource::DataColumns => None,
-                SszSource::Gossip => return,
+            let read = match ssz_cache {
+                SszCache::Rpc => Some(self.rpc_ssz_consumer.acquire(ssz)),
+                SszCache::El => Some(self.el_ssz_consumer.acquire(ssz)),
+                SszCache::DataColumns => None,
+                SszCache::Gossip => return,
             };
             let bytes = match read.as_ref() {
                 Some(read) => read.buffer().map(|(bytes, _)| bytes),
@@ -357,7 +356,7 @@ impl Tile<SilverSpine> for Controller {
                 originator_stream_id: _,
                 topic,
                 domain,
-                ssz_source: _,
+                ssz_cache: _,
                 msg_hash,
                 recv_ts: _,
                 protobuf,

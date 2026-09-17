@@ -2,7 +2,7 @@ use std::{iter::once, ptr, time::Instant};
 
 use flux::spine::SpineProducers;
 use silver_common::{
-    ColumnSource, DataColumnsEvent, ForkName, IngestionTime, SilverSpineProducers, SszSource,
+    ColumnOrigin, DataColumnsEvent, ForkName, IngestionTime, SilverSpineProducers, SszCache,
     TCacheRead, TRandomAccess, TRead, Wheel,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
@@ -71,7 +71,7 @@ impl CellHandler {
         for pending in pending {
             pending.retain(|_, columns| {
                 columns.retain(|column| {
-                    column.ssz_source != SszSource::DataColumns ||
+                    column.ssz_cache != SszCache::DataColumns ||
                         column.sidecar.seq() >= event.retain_from
                 });
                 !columns.is_empty()
@@ -122,7 +122,7 @@ impl CellHandler {
         validator: &ColumnValidator,
         producers: &SilverSpineProducers,
     ) {
-        if !p.context_eligible || p.ssz_source != SszSource::DataColumns {
+        if !p.context_eligible || p.ssz_cache != SszCache::DataColumns {
             return;
         }
         let Some(domain) = p.domain else { return };
@@ -264,22 +264,26 @@ impl CellHandler {
             };
             let Some(available) = self.store.availability(&root, column) else { continue };
             producers.produce(CellStoreEvent::Available(available));
-            if !update.column_completed || tracker.has_any(&root, 1u128 << column) {
+            if !update.column_completed || tracker.holds(&root, column as u64) {
                 continue;
             }
             let Some(ssz) = update.complete_read else { continue };
-            tracker.record_and_notify(
-                root,
-                available.slot,
-                1u128 << column,
-                IngestionTime::now(),
-                producers,
+            let recv_ts = IngestionTime::now();
+            tracker.record_and_notify(root, available.slot, 1u128 << column, recv_ts, producers);
+            producers.produce_with_ingestion(
+                DataColumnsEvent::Validated {
+                    block_root: root,
+                    column_index: column as u64,
+                    slot: available.slot,
+                    origin: ColumnOrigin::Assembly,
+                },
+                recv_ts,
             );
-            if tracker.wants(1u128 << column) {
+            if tracker.is_custody(column as u64) {
                 producers.produce(DataColumnsEvent::Persist {
                     ssz,
-                    source: ColumnSource::Assembly,
-                    ssz_source: SszSource::DataColumns,
+                    origin: ColumnOrigin::Assembly,
+                    ssz_cache: SszCache::DataColumns,
                     domain: Some(available.domain),
                     block_root: root,
                     column_index: column as u64,

@@ -1,4 +1,4 @@
-use silver_common::{ColumnSource, Nanos};
+use silver_common::{ColumnOrigin, Nanos};
 
 use super::{
     da::{Column, DataAvailability},
@@ -13,11 +13,11 @@ const BATCH_GAP: Nanos = Nanos::from_millis(1);
 pub struct BatchColumn {
     /// Position in `DataAvailability::columns`.
     pub index: usize,
-    /// 1-based position in the source's persist order.
+    /// 1-based position in the origin's persist order.
     pub rank: usize,
 }
 
-/// Columns of one source validated together, in persist order.
+/// Columns of one origin validated together, in persist order.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Batch {
     pub columns: Vec<BatchColumn>,
@@ -59,13 +59,13 @@ impl Batch {
 }
 
 impl DataAvailability {
-    /// One source's columns in persist order, which is validation order, cut
+    /// One origin's columns in persist order, which is validation order, cut
     /// where consecutive validations are more than `BATCH_GAP` apart. Each
     /// batch is a contiguous run of ranks.
-    pub fn batches(&self, source: ColumnSource) -> Vec<Batch> {
+    pub fn batches(&self, origin: ColumnOrigin) -> Vec<Batch> {
         let mut batches: Vec<Batch> = Vec::new();
         let mut previous_end = None;
-        for ((index, column), rank) in self.of_source(source).zip(1..) {
+        for ((index, column), rank) in self.of_origin(origin).zip(1..) {
             let end = column.interval().end;
             let same_batch =
                 previous_end.is_some_and(|prev: Nanos| end.saturating_sub(prev) <= BATCH_GAP);
@@ -80,8 +80,8 @@ impl DataAvailability {
     }
 
     pub fn batch_of(&self, index: usize) -> Option<Batch> {
-        let source = self.columns.get(index)?.source;
-        self.batches(source).into_iter().find(|b| b.contains(index))
+        let origin = self.columns.get(index)?.origin;
+        self.batches(origin).into_iter().find(|b| b.contains(index))
     }
 
     /// Whether this is the batch that opened the gate: the last one, across
@@ -91,16 +91,16 @@ impl DataAvailability {
             return false;
         };
         let first_validation = |b: &Batch| b.first_validation(&self.columns);
-        let opener = SOURCES
+        let opener = ORIGINS
             .into_iter()
-            .flat_map(|source| self.batches(source))
+            .flat_map(|origin| self.batches(origin))
             .filter(|b| first_validation(b) <= gate)
             .max_by_key(first_validation);
         opener.as_ref() == Some(batch)
     }
 }
 
-const SOURCES: [ColumnSource; 3] = [ColumnSource::Gossip, ColumnSource::El, ColumnSource::Rpc];
+const ORIGINS: [ColumnOrigin; 3] = [ColumnOrigin::Gossip, ColumnOrigin::El, ColumnOrigin::Rpc];
 
 #[cfg(test)]
 mod tests {
@@ -110,11 +110,11 @@ mod tests {
     use crate::sources::events::trace_tests::{at, received, trace};
 
     fn recv(i: u64) -> Stage {
-        Stage::ColumnRecv { index: i, source: ColumnSource::Gossip }
+        Stage::ColumnRecv { index: i, origin: ColumnOrigin::Gossip }
     }
 
     fn validated(i: u64) -> Stage {
-        Stage::ColumnValidated { index: i, source: ColumnSource::Gossip }
+        Stage::ColumnValidated { index: i, origin: ColumnOrigin::Gossip }
     }
 
     fn indices(batch: &Batch, da: &DataAvailability) -> Vec<u64> {
@@ -136,7 +136,7 @@ mod tests {
             (recv(1), 240),
             (validated(1), 260),
         ]);
-        let batches = t.da.batches(ColumnSource::Gossip);
+        let batches = t.da.batches(ColumnOrigin::Gossip);
         assert_eq!(batches.len(), 2);
         assert_eq!(indices(&batches[0], &t.da), [7, 3, 9]);
         assert_eq!(batches[0].ranks(), (1, 3));
@@ -168,7 +168,7 @@ mod tests {
                 slot: Some(t.slot),
             });
         }
-        let batches = t.da.batches(ColumnSource::Gossip);
+        let batches = t.da.batches(ColumnOrigin::Gossip);
         assert_eq!(batches.len(), 2);
         let gate = t.da.available();
         assert!(batches[0].counted_for_gate(&t.da.columns, gate));
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn unvalidated_columns_batch_by_arrival() {
         let t = trace(&[(received(), 300), (recv(1), 200), (recv(2), 200)]);
-        let batches = t.da.batches(ColumnSource::Gossip);
+        let batches = t.da.batches(ColumnOrigin::Gossip);
         assert_eq!(batches.len(), 1, "same instant, no validation yet");
         assert_eq!(batches[0].ranks(), (1, 2));
     }
