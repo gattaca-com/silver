@@ -12,9 +12,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
-    HeadRoots, NewGossipMsg, Origin, PayloadResolution, PayloadValidationStatus, ReplayBlock,
-    RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess,
-    TRead, hex32,
+    HeadRoots, NewGossipMsg, Origin, PayloadResolution, ReplayBlock, RequestId, RpcInbound,
+    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -829,6 +828,9 @@ impl BeaconStateTile {
         }
     }
 }
+
+#[cfg(feature = "ef_tests")]
+use silver_common::PayloadValidationStatus;
 
 /// EF `fork_choice`/`sync` vector harness API: thin gated wrappers over the
 /// private production methods.
