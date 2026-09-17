@@ -1,5 +1,6 @@
 mod blocks;
 mod config;
+mod duties;
 mod events;
 mod head_verdict;
 mod identity;
