@@ -6,10 +6,10 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, ColumnOrigin, DataColumnsEvent, GossipDomain, GossipTopic,
+    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SszCache, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
     cell_store::{CellStoreConfig, CellStoreEvent, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
     ticker::SlotTicker,
@@ -19,7 +19,7 @@ use silver_peer::PeerManager;
 
 use self::{attestation_cluster::AttestationClusterHandler, gossip_schedule::GossipSchedule};
 use crate::{
-    cell_ingress::CellIngress,
+    cell_ingress::{CellIngress, handle_data_column_event},
     cluster::{AttestationClusterConfig, ClusterError},
     sync_engine::{SyncAction, SyncEngine},
 };
@@ -293,47 +293,17 @@ impl Tile<SilverSpine> for Controller {
         self.handle_latest_status(latest_status_event, &mut adapter.producers);
 
         adapter.consume(|event: DataColumnsEvent, producers| {
-            let DataColumnsEvent::Persist { ssz, origin, ssz_cache, domain, column_index, .. } =
-                event
-            else {
-                return;
-            };
-            if origin == ColumnOrigin::Gossip {
-                return;
-            }
-            let read = match ssz_cache {
-                SszCache::Rpc => Some(self.rpc_ssz_consumer.acquire(ssz)),
-                SszCache::El => Some(self.el_ssz_consumer.acquire(ssz)),
-                SszCache::DataColumns => None,
-                SszCache::Gossip => return,
-            };
-            let bytes = match read.as_ref() {
-                Some(read) => read.buffer().map(|(bytes, _)| bytes),
-                None => {
-                    let Some(ingress) = self.cell_ingress.as_mut() else { return };
-                    ingress.producer_mut().read_buffer(ssz)
-                }
-            };
-            let topic = GossipTopic::DataColumnSidecar(column_index);
-            match bytes {
-                Ok(bytes) => {
-                    let published = match domain {
-                        Some(domain) => self.gossip_handler.publish_in_domain(topic, domain, bytes),
-                        None => self.gossip_handler.publish(topic, bytes),
-                    };
-                    if let Some(published) = published {
-                        self.peer_manager.publish_local(topic, published, &mut |evt| {
-                            handle_peer_control(
-                                &mut self.gossip_handler,
-                                &mut self.rpc_producer,
-                                evt,
-                                producers,
-                            )
-                        });
-                    }
-                }
-                Err(e) => tracing::warn!(?e, ?topic, "publish column ssz read failed"),
-            }
+            handle_data_column_event(
+                event,
+                &mut self.rpc_ssz_consumer,
+                &mut self.el_ssz_consumer,
+                self.cell_ingress.as_mut(),
+                &mut self.gossip_handler,
+                &mut self.peer_manager,
+                &mut |evt, gossip_handler| {
+                    handle_peer_control(gossip_handler, &mut self.rpc_producer, evt, producers)
+                },
+            );
         });
 
         adapter.consume(|event: PeerEvent, producers| {
