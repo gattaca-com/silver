@@ -322,14 +322,11 @@ impl Tile<SilverSpine> for Controller {
             self.sync_engine.on_peer_event(event, self.peer_manager.our_fork_digest());
 
             if let PeerEvent::SendGossip {
-                originator_stream_id: _,
                 topic,
                 domain,
-                ssz_cache: _,
                 msg_hash,
-                recv_ts: _,
                 protobuf,
-                ssz: _,
+                ..
             } = &event
             {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *domain, *protobuf);

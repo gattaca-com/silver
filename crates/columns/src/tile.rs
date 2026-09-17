@@ -235,6 +235,9 @@ impl DataColumnsTile {
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => {
+                // cell sourced data columns need revalidation even if the column is already held,
+                // b/c cells can only be served from data columns tcache, not rpc or el
+                // TODO: fix this
                 let verify_held = column.ssz_cache == SszCache::DataColumns &&
                     self.cells.as_ref().is_some_and(|cells| cells.needs_full_validation(buf));
                 self.validator.validate(
