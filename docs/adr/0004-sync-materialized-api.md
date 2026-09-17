@@ -178,12 +178,12 @@ The `finalized` envelope flag compares the served state's latest block slot
 with the cached finalized epoch's first slot. It is true when the block is
 at or before that slot.
 
-### Readiness withdrawal
+### Loss of synced status
 
-Control owns readiness. When it can no longer follow and has no selectable
-sync target, it withdraws a previously published `Following` by publishing
-`SyncUpdate::Stalled`. Repeated evaluations of the same stall publish no
-further update.
+Control determines whether the node is synced. When it can no longer follow
+and has no selectable sync target, it replaces a previously published
+`Following` with `SyncUpdate::Stalled`. Repeated evaluations of the same
+stall publish no further update.
 
 Without a selectable target, a block gap prevents following when no peer
 claims a head within the configured lag behind ours or ahead. The gap is a
@@ -193,26 +193,27 @@ A known block or proven-empty slot ends the run. Peers claiming heads more
 than the configured lag ahead also prevent following, even when their
 chains cannot be selected.
 
-`Stalled` withdraws readiness while preserving live processing. Beacon state
-continues slot ticks, status publication, and gossip imports. Columns remain
-eligible for relay, and storage processes history as it does while
-following. These consumers distinguish a selected sync target through
-`is_syncing()`.
+`Stalled` reports that the node is no longer synced while preserving live
+processing. Beacon state continues slot ticks, status publication, and
+gossip imports. Columns remain eligible for relay, and storage processes
+history as it does while following. These consumers distinguish a selected
+sync target through `is_syncing()`.
 
-The API uses `is_following()` for readiness and head-event publication.
+The API uses `is_following()` to determine whether the node is synced and
+to gate head-event publication.
 While stalled, it reports `is_syncing: true`, returns the syncing health
 code, and suppresses `head` and `head_v2` events. Slot updates keep Control's
 wall slot and the API's distance current. The API applies no independent
-readiness threshold.
+lag threshold.
 
 Control continues requesting peer statuses while stalled with a block gap.
 A peer claim within the lag or restored block coverage can restore
-`Following`. A selectable target ahead starts syncing. Before any readiness
-has been published, there is nothing to withdraw. Entering idle after
+`Following`. A selectable target ahead starts syncing. Before `Following`
+has been published, there is no synced status to replace. Entering idle after
 syncing retains the previous sync publication, which already reports
 syncing and keeps beacon state in its syncing loop.
 
 The peer comparison uses cached head slots, without expiring claims or
 requiring matching block roots. An equally stale peer can therefore
-preserve readiness indefinitely. This policy permits following through a
+preserve synced status indefinitely. This policy permits following through a
 quiet chain but does not distinguish it from peers that stall together.

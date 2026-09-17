@@ -259,7 +259,8 @@ fn stalled_engine() -> SyncEngine {
     e
 }
 
-/// A block gap withdraws readiness when no peer claims a head within the lag.
+/// A block gap marks the node as not synced when no peer claims a head within
+/// the lag.
 #[test]
 fn block_gap_with_no_level_peer_withdraws_following() {
     let mut e = engine();
@@ -269,7 +270,7 @@ fn block_gap_with_no_level_peer_withdraws_following() {
 
     e.on_peer_disconnected(PEER);
     local_status(&mut e, 100, 100 + head_lag());
-    assert_eq!(e.advance(), Some(SyncUpdate::Stalled), "readiness withdrawn");
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled), "no longer synced");
     assert!(!e.phase.is_following());
 
     local_status(&mut e, 100, 100 + head_lag() + 1);

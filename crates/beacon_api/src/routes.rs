@@ -536,7 +536,8 @@ mod tests {
         assert_eq!(syncing_data(reached)["sync_distance"], "0", "target below the head");
     }
 
-    /// Stalled distance uses the wall slot; readiness still comes from Control.
+    /// Stalled distance uses the wall slot; sync status still comes from
+    /// Control.
     #[test]
     fn stalled_is_syncing_at_the_distance_to_the_wall_clock() {
         let stalled = NodeStatus { target: Some(SyncUpdate::Stalled), wall_slot: 130, ..ready() };
