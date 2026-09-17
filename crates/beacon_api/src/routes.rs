@@ -24,6 +24,7 @@ use crate::{
     response::Response,
     router::{Handler, Method, Request},
     statics::StaticBodies,
+    validators::{get_state_validators, post_state_validators, state_validator},
 };
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -41,9 +42,9 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         state_finality_checkpoints,
     ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
-    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
-    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
-    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", not_implemented),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", get_state_validators),
+    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", post_state_validators),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", state_validator),
     (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
     (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
     (Method::Get, "/eth/v1/config/spec", spec),
@@ -167,8 +168,8 @@ pub(crate) struct StateRead<R> {
 }
 
 /// The surface a request can name ahead of what silver serves: each of these
-/// routes needs data the node does not yet keep (a block store, the validator
-/// registry, duty shuffling, liveness tracking), so
+/// routes needs data the node does not yet keep (a block store, duty
+/// shuffling, liveness tracking), so
 /// the honest answer is the 501 that tells the client to look elsewhere,
 /// rather than a partial answer assembled from the wrong data.
 fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -543,9 +544,6 @@ mod tests {
         let router = Router::new(ROUTES);
         let ctx = anchor_ctx();
         for (method, path) in [
-            ("GET", "/eth/v1/beacon/states/head/validators"),
-            ("POST", "/eth/v1/beacon/states/head/validators"),
-            ("GET", "/eth/v1/beacon/states/head/validators/0"),
             ("GET", "/eth/v1/validator/duties/proposer/0"),
             ("POST", "/eth/v1/validator/duties/sync/0"),
             ("POST", "/eth/v1/validator/liveness/0"),

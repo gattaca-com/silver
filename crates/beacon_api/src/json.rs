@@ -6,7 +6,7 @@ use std::io::Write;
 
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Version};
 
-use crate::{events::HeadEvent, peers::Peer};
+use crate::{events::HeadEvent, peers::Peer, validators::ValidatorRecord};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -386,6 +386,45 @@ impl Json<'_> {
         self.quoted_u64(column_index);
         self.key("slot");
         self.quoted_u64(slot);
+        self.end_object();
+    }
+
+    pub(crate) fn validators(&mut self, records: &[ValidatorRecord]) {
+        self.begin_array();
+        for record in records {
+            self.validator(record);
+        }
+        self.end_array();
+    }
+
+    /// `ValidatorResponse` (`apis/beacon/states/validator.yaml`).
+    pub(crate) fn validator(&mut self, record: &ValidatorRecord) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(record.index);
+        self.key("balance");
+        self.quoted_u64(record.balance);
+        self.key("status");
+        self.string(record.status.name());
+        self.key("validator");
+        self.begin_object();
+        self.key("pubkey");
+        self.hex(&record.pubkey);
+        self.key("withdrawal_credentials");
+        self.hex(&record.withdrawal_credentials.0);
+        self.key("effective_balance");
+        self.quoted_u64(record.effective_balance);
+        self.key("slashed");
+        self.bool(record.slashed);
+        self.key("activation_eligibility_epoch");
+        self.quoted_u64(record.activation_eligibility_epoch);
+        self.key("activation_epoch");
+        self.quoted_u64(record.activation_epoch);
+        self.key("exit_epoch");
+        self.quoted_u64(record.exit_epoch);
+        self.key("withdrawable_epoch");
+        self.quoted_u64(record.withdrawable_epoch);
+        self.end_object();
         self.end_object();
     }
 

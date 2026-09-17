@@ -12,6 +12,7 @@ mod router;
 mod routes;
 mod server;
 mod statics;
+mod validators;
 
 pub use node_status::{HeadStatus, NodeStatus};
 pub use server::BeaconApi;
