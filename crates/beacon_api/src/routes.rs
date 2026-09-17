@@ -12,6 +12,7 @@ use silver_httpcore::Query;
 use crate::{
     NodeStatus,
     blocks::{block, block_header, block_root},
+    duties::{proposer_duties, proposer_duties_v2},
     events::events,
     ids::is_recognized_id,
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
@@ -60,7 +61,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/beacon_committee_subscriptions",
         post_beacon_committee_subscriptions,
     ),
-    (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", not_implemented),
+    (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", proposer_duties),
     (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", not_implemented),
     (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
     (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),
@@ -71,7 +72,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         post_sync_committee_subscriptions,
     ),
     (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
-    (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", not_implemented),
+    (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", proposer_duties_v2),
     (Method::Get, "/metrics", metrics),
 ];
 
@@ -578,12 +579,9 @@ mod tests {
     fn stubbed_routes_answer_501_not_404() {
         let router = Router::new(ROUTES);
         let ctx = anchor_ctx();
-        for (method, path) in [
-            ("GET", "/eth/v1/validator/duties/proposer/0"),
-            ("POST", "/eth/v1/validator/duties/sync/0"),
-            ("POST", "/eth/v1/validator/liveness/0"),
-            ("GET", "/eth/v2/validator/duties/proposer/0"),
-        ] {
+        for (method, path) in
+            [("POST", "/eth/v1/validator/duties/sync/0"), ("POST", "/eth/v1/validator/liveness/0")]
+        {
             let mut out = Vec::new();
             let req = ParsedRequest {
                 method,
