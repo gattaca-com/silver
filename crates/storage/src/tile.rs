@@ -4,10 +4,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, ColumnSource,
-    DataColumnsEvent, DataKind, Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId,
-    RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy,
-    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, block_root,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
+    Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
+    SilverSpineProducers, SszCache, SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer,
+    TMultiProducer, TProducer, TRandomAccess, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
