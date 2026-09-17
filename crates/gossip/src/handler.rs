@@ -10,7 +10,7 @@ use silver_common::{
 };
 
 use crate::{
-    GossipHandlerEvent,
+    GossipHandlerEvent, PartialMetadataReceived,
     control::{
         self, copy_idontwants_to_protobuf_output, copy_ihaves_to_protobuf_output, handle_grafts,
         handle_idontwants, handle_ihaves, handle_iwants, handle_prunes, handle_subscriptions,
@@ -48,6 +48,7 @@ pub struct GossipHandler {
     snap_scratch: Vec<u8>,
 
     extensions: ExtensionTracker,
+    send_partial_columns: bool,
 
     events: VecDeque<GossipHandlerEvent>,
 }
@@ -71,6 +72,7 @@ impl GossipHandler {
             mcache_publish: protobuf_gossip_publish,
             mcache,
             extensions: ExtensionTracker::default(),
+            send_partial_columns: false,
             iwant_buffer: Vec::with_capacity(256),
             snap_encoder: snap::raw::Encoder::new(),
             snap_scratch: Vec::new(),
@@ -264,6 +266,10 @@ impl GossipHandler {
         self.events.pop_front()
     }
 
+    pub fn enable_partial_sending(&mut self) {
+        self.send_partial_columns = true;
+    }
+
     fn handle_peer_control_inner(
         &mut self,
         peer_control: PeerControl,
@@ -272,9 +278,11 @@ impl GossipHandler {
         match peer_control {
             PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic, digest } => {
                 let wire = topic.to_wire(&hex::encode(digest));
-                if let Ok(tcache) =
-                    control::copy_subscribes_to_protobuf_output(&mut self.mcache_publish, &[&wire])
-                {
+                if let Ok(tcache) = control::copy_subscriptions(
+                    &mut self.mcache_publish,
+                    &[&wire],
+                    self.send_partial_columns && matches!(topic, GossipTopic::DataColumnSidecar(_)),
+                ) {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip subscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
@@ -393,6 +401,14 @@ impl GossipHandler {
                     }));
                 }
                 handle_subscriptions(stream_id, gossip_proto.subscriptions, &self.domains, emit);
+
+                if self.send_partial_columns &&
+                    let Some(partial) = gossip_proto.partial.as_option() &&
+                    let Some(metadata) =
+                        PartialMetadataReceived::decode(partial, *stream_id, &self.domains)
+                {
+                    emit(GossipHandlerEvent::PartialMetadata(metadata));
+                }
 
                 if let Some(control) = gossip_proto.control.as_option() {
                     handle_grafts(stream_id, &control.graft, &self.domains, emit);
@@ -657,7 +673,9 @@ mod tests {
             .expect("new message");
         let message = match handler.pop_event().expect("new gossip event") {
             GossipHandlerEvent::NewGossip(message) => message,
-            GossipHandlerEvent::PeerEvent(_) | GossipHandlerEvent::SendGossip(_) => {
+            GossipHandlerEvent::PartialMetadata(_) |
+            GossipHandlerEvent::PeerEvent(_) |
+            GossipHandlerEvent::SendGossip(_) => {
                 panic!("unexpected local injection event")
             }
         };
@@ -673,7 +691,9 @@ mod tests {
         assert_eq!(handler.inject_local(topic, &ssz, Nanos::now()).unwrap(), Some(msg_id));
         let duplicate = match handler.pop_event().expect("duplicate local gossip event") {
             GossipHandlerEvent::NewGossip(message) => message,
-            GossipHandlerEvent::PeerEvent(_) | GossipHandlerEvent::SendGossip(_) => {
+            GossipHandlerEvent::PartialMetadata(_) |
+            GossipHandlerEvent::PeerEvent(_) |
+            GossipHandlerEvent::SendGossip(_) => {
                 panic!("unexpected duplicate local injection event")
             }
         };

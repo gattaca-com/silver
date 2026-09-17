@@ -262,7 +262,12 @@ impl StreamState {
                                 Ok(Self::Gossip {
                                     read: GossipReadState::default(),
                                     write: if announce {
-                                        GossipWriteState::Announcing { written: 0 }
+                                        GossipWriteState::Announcing {
+                                            written: 0,
+                                            partial_columns: context
+                                                .data_columns_consumer
+                                                .is_some(),
+                                        }
                                     } else {
                                         GossipWriteState::Idle
                                     },

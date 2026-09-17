@@ -8,8 +8,8 @@ use std::{
 
 use quinn_proto::StreamId;
 use silver_common::{
-    AcquiredWithOffset, CacheFrameRef, CacheSegment, P2pStreamId, StreamProtocol, SubLayout,
-    SubReservationRef, TCache, TCacheProducer, TProducer,
+    AcquiredWithOffset, CacheFrameRef, CacheSegment, GossipFrameOutcome, P2pStreamId,
+    StreamProtocol, SubLayout, SubReservationRef, TCache, TCacheProducer, TProducer,
 };
 
 use super::*;
@@ -257,7 +257,8 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     let warm = h.acquire(reference).unwrap();
     drop(warm);
     let before = ALLOCATIONS.with(Cell::get);
-    let frame = h.acquire(reference).unwrap();
+    let mut frame = h.acquire(reference).unwrap();
+    assert!(frame.track(&h.limits, 0, reference.read().seq()));
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     let cell_ptr = assembly
         .acquire(h.context.data_columns_consumer.as_deref_mut().unwrap())
@@ -305,6 +306,9 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     assert_eq!(&io.written[69..], &[0xcd; 8]);
     assert_eq!(io.retained[1].as_ptr(), cell_ptr);
     assert_eq!(h.limits.frames.get(), 0);
+    let result = h.limits.pop_result().unwrap();
+    assert_eq!(result.frame_seq, reference.read().seq());
+    assert_eq!(result.outcome, GossipFrameOutcome::Written { stream_id: stream() });
     assert!(h.columns.reserve(8192, true).is_none());
     assert!(h.wheel.expire(h.now + Duration::from_secs(11)).is_some());
     io.retained.clear();

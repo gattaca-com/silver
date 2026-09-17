@@ -21,6 +21,7 @@ use self::{attestation_cluster::AttestationClusterHandler, gossip_schedule::Goss
 use crate::{
     cell_ingress::{CellIngress, handle_data_column_event},
     cluster::{AttestationClusterConfig, ClusterError},
+    partial_exchange::PartialExchange,
     sync_engine::{SyncAction, SyncEngine},
 };
 
@@ -62,6 +63,7 @@ pub struct Controller {
     /// forwards until then. Drained into the PM on the first transition.
     pending_subnet_topics: Vec<GossipTopic>,
     cell_ingress: Option<CellIngress>,
+    partial_exchange: Option<PartialExchange>,
     /// Chain schedule, used to resolve the active gossip fork domain from
     /// the wall slot.
     spec: Arc<SpecConfig>,
@@ -108,6 +110,7 @@ impl Controller {
             auto_ping: true,
             pending_subnet_topics: Vec::new(),
             cell_ingress: None,
+            partial_exchange: None,
             spec,
             gossip_schedule: None,
         })
@@ -120,6 +123,8 @@ impl Controller {
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
+        self.partial_exchange = Some(PartialExchange::new(&config, slot, slot_start));
+        self.gossip_handler.enable_partial_sending();
         self.cell_ingress = Some(CellIngress::new(config, producer, slot, slot_start)?);
         Ok(self)
     }
@@ -251,8 +256,32 @@ impl Tile<SilverSpine> for Controller {
         self.attestation_cluster.free();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
+            if let Some(exchange) = &mut self.partial_exchange {
+                exchange.advance_slot(
+                    ingress,
+                    &self.peer_manager,
+                    &mut self.gossip_handler.mcache_publish,
+                    now,
+                    &mut |send| adapter.produce(send),
+                );
+            }
             adapter.consume(|event: CellStoreEvent, producers| {
                 ingress.handle(event, now, producers);
+                if let Some(exchange) = &mut self.partial_exchange {
+                    match event {
+                        CellStoreEvent::Available(column) => {
+                            if let Some(column) =
+                                ingress.availability(&column.block_root, column.column, now)
+                            {
+                                exchange.available(column, &self.peer_manager, now, false);
+                            }
+                        }
+                        CellStoreEvent::RejectedContext { block_root } => {
+                            exchange.reject(&block_root)
+                        }
+                        _ => {}
+                    }
+                }
             });
         }
 
@@ -335,7 +364,21 @@ impl Tile<SilverSpine> for Controller {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *domain, *protobuf);
             }
 
-            self.peer_manager.handle_event(event, now, &mut |evt| {
+            if let Some(exchange) = &mut self.partial_exchange {
+                exchange.peer_event(&event, now);
+            }
+            let serving_column =
+                self.cell_ingress.as_ref().and_then(|ingress| ingress.serving_column(&event, now));
+            if let (
+                Some(exchange),
+                Some(column),
+                PeerEvent::SendGossip { originator_stream_id, .. },
+            ) = (&mut self.partial_exchange, serving_column, event)
+            {
+                exchange.validated_sender(originator_stream_id.peer(), column);
+            }
+            let partial_serving = serving_column.is_some();
+            self.peer_manager.handle_event_with_partial(event, now, partial_serving, &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,
                     &mut self.rpc_producer,
@@ -518,22 +561,53 @@ impl Tile<SilverSpine> for Controller {
         }
         while let Some(event) = self.gossip_handler.pop_event() {
             match event {
+                GossipHandlerEvent::PartialMetadata(metadata) => {
+                    if let (Some(exchange), Some(ingress)) =
+                        (&mut self.partial_exchange, &self.cell_ingress)
+                    {
+                        exchange.metadata(metadata, ingress, &self.peer_manager, now);
+                    }
+                }
                 GossipHandlerEvent::PeerEvent(peer_event) => {
                     self.sync_engine.on_peer_event(peer_event, self.peer_manager.our_fork_digest());
-                    self.peer_manager.handle_event(peer_event, now, &mut |evt| {
-                        handle_peer_control(
-                            &mut self.gossip_handler,
-                            &mut self.rpc_producer,
-                            evt,
-                            &mut adapter.producers,
-                        )
-                    });
+                    if let Some(exchange) = &mut self.partial_exchange {
+                        exchange.peer_event(&peer_event, now);
+                    }
+                    let partial_serving = self
+                        .cell_ingress
+                        .as_ref()
+                        .and_then(|ingress| ingress.serving_column(&peer_event, now))
+                        .is_some();
+                    self.peer_manager.handle_event_with_partial(
+                        peer_event,
+                        now,
+                        partial_serving,
+                        &mut |evt| {
+                            handle_peer_control(
+                                &mut self.gossip_handler,
+                                &mut self.rpc_producer,
+                                evt,
+                                &mut adapter.producers,
+                            )
+                        },
+                    );
                 }
                 GossipHandlerEvent::NewGossip(new_gossip_msg) => adapter.produce(new_gossip_msg),
                 GossipHandlerEvent::SendGossip(gossip_msg_out) => {
                     adapter.produce(P2pSend::Gossip(gossip_msg_out))
                 }
             }
+        }
+        if let (Some(exchange), Some(ingress)) = (&mut self.partial_exchange, &self.cell_ingress) &&
+            exchange.spin(
+                ingress,
+                &self.peer_manager,
+                &mut self.gossip_handler.mcache_publish,
+                now,
+                &mut |send| adapter.produce(send),
+            )
+        {
+            adapter.mark_work();
         }
     }
 

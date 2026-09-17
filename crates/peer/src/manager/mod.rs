@@ -24,8 +24,10 @@ use crate::{
 pub(crate) mod admission;
 pub(crate) mod attempts;
 pub(crate) mod mesh;
+mod partial;
 pub(crate) mod peers;
 pub(crate) mod promises;
+pub use partial::PartialPeer;
 pub(crate) mod rpc;
 pub(crate) mod sync;
 
@@ -296,7 +298,18 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        self.handle_event_with_partial(event, now, false, emit);
+    }
+
+    pub fn handle_event_with_partial(
+        &mut self,
+        event: PeerEvent,
+        now: Instant,
+        partial_serving: bool,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
         match event {
+            PeerEvent::SegmentedGossipResult(_) => {}
             PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
             }
@@ -445,7 +458,7 @@ impl PeerManager {
                 self.on_new_gossip(p2p_peer, topic, msg_hash, recv_ts, idontwant, emit);
             }
             PeerEvent::OutboundIHave { topic, digest, msg_count: _, protobuf } => {
-                self.on_outbound_ihave(topic, digest, protobuf, emit);
+                self.on_outbound_ihave(topic, digest, protobuf, partial_serving, emit);
             }
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
                 self.on_outbound_iwant(p2p_peer, iwant, emit);
@@ -467,6 +480,7 @@ impl PeerManager {
                     topic,
                     domain.digest(),
                     protobuf,
+                    partial_serving,
                     emit,
                 );
             }

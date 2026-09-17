@@ -375,6 +375,7 @@ impl RpcOutbound {
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
 pub enum PeerEvent {
+    SegmentedGossipResult(GossipFrameResult),
     /// Peer_id_full contains the secp256k1 pubkey and can be used to derive
     /// discovery id
     P2pNewConnection {
@@ -770,6 +771,22 @@ pub enum P2pSend {
     SegmentedGossip { peer_id: usize, frame: CacheFrameRef },
     Identify(usize),
     Rpc(RpcOutbound),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GossipFrameOutcome {
+    /// Entire frame accepted by the transport, not acknowledged by the peer.
+    Written {
+        stream_id: P2pStreamId,
+    },
+    Dropped,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GossipFrameResult {
+    pub p2p_peer: usize,
+    pub frame_seq: u64,
+    pub outcome: GossipFrameOutcome,
 }
 
 impl P2pSend {

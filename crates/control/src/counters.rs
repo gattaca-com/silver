@@ -8,5 +8,17 @@ silver_common::declare_counters! {
         RootNeedsStalled,
         RootNeedsTracked,
         RootNeedsRefused,
+        PartialMetadataReceived,
+        PartialMetadataReplaced,
+        PartialMetadataIgnored,
+        PartialStateLimited,
+        PartialFramesQueued,
+        PartialFramesWritten,
+        PartialFramesDropped,
+        PartialCellsServed,
+        PartialWithdrawals,
+        PartialExchanges,
+        PartialPendingFrames,
+        PartialResponsesSent,
     }
 }

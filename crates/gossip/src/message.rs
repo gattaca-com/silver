@@ -54,16 +54,6 @@ pub(super) fn handle_incoming(
     let (topic, domain) = domains.parse(topic_string)?;
     tracing::trace!(?stream_id, ?topic, "Gossip message received");
 
-    // Data column sidecars decompress into the data-columns cache so the
-    // cell store can retain them by reference; everything else, and the
-    // fallback when no cell store is configured, uses the ssz-gossip cache.
-    let (publish, ssz_cache) = match data_columns_publish {
-        Some(dc) if matches!(topic, GossipTopic::DataColumnSidecar(_)) => {
-            (dc, SszCache::DataColumns)
-        }
-        _ => (incoming_gossip_publish, SszCache::Gossip),
-    };
-
     // Decompress: block snappy.
     let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
         let hash = msg_id_invalid_snappy(topic_string, snappy_data);
@@ -76,11 +66,24 @@ pub(super) fn handle_incoming(
         }
     })?;
 
-    // Alloc into downstream tcache - SSZ message bytes
-    let mut reservation =
-        publish.reserve(len, false).ok_or(Error::BufferTooSmall).inspect_err(|e| {
-            tracing::error!(?e, len, topic_string, "failed to reserve incoming gossip SSZ");
-        })?;
+    // Serving retention must not prevent ordinary full-sidecar validation.
+    let retained = data_columns_publish
+        .filter(|_| matches!(topic, GossipTopic::DataColumnSidecar(_)))
+        .and_then(|producer| {
+            producer.reserve(len, false).map(|reservation| (producer, reservation))
+        });
+    let (publish, ssz_cache, mut reservation) = match retained {
+        Some((producer, reservation)) => (producer, SszCache::DataColumns, reservation),
+        None => {
+            let reservation = incoming_gossip_publish
+                .reserve(len, false)
+                .ok_or(Error::BufferTooSmall)
+                .inspect_err(|e| {
+                    tracing::error!(?e, len, topic_string, "failed to reserve incoming gossip SSZ");
+                })?;
+            (incoming_gossip_publish, SszCache::Gossip, reservation)
+        }
+    };
 
     let msg_id = decompress_to_reservation(publish, snappy_data, &mut reservation, topic_string)
         .inspect_err(|e| {
@@ -221,7 +224,7 @@ fn read_message_length(msg: &[u8], gossip_topic: &GossipTopic) -> Result<usize, 
 
 #[cfg(test)]
 mod tests {
-    use silver_common::encode_varint;
+    use silver_common::{ForkName, GossipDomain, StreamProtocol, TCache, encode_varint};
 
     use super::*;
 
@@ -262,5 +265,43 @@ mod tests {
             read_message_length(&snappy_length_prefix(topic.max_uncompressed_size() + 1), &topic),
             Err(Error::GossipPayloadTooLarge)
         ));
+    }
+
+    #[test]
+    fn full_retention_cache_falls_back_to_normal_gossip_ingress() {
+        let mut columns = TCache::producer("", 1 << 16);
+        let _retained = Box::new(columns.cache_ref().retained_random_access("").unwrap());
+        while let Some(mut reservation) = columns.reserve(1024, false) {
+            reservation.buffer().unwrap().fill(0);
+            reservation.flush().unwrap();
+        }
+        let mut ssz = TCache::producer("", 1 << 16);
+        let mut protobuf = TCache::producer("", 1 << 16);
+        let topic = GossipTopic::DataColumnSidecar(0);
+        let bytes = vec![0x33; topic.min_uncompressed_size() + 2048 + 96];
+        let compressed = snap::raw::Encoder::new().compress_vec(&bytes).unwrap();
+        let stream = P2pStreamId::new(1, 3, StreamProtocol::GossipSubV13, true);
+        let domains = ActiveDomains::new(Some(GossipDomain::new([0; 4], ForkName::Fulu)));
+        let mut message = None;
+        handle_incoming(
+            &topic.to_wire("00000000"),
+            &compressed,
+            &stream,
+            &domains,
+            Nanos::now(),
+            &mut DedupCache::default(),
+            &mut ssz,
+            Some(&mut columns),
+            &mut protobuf,
+            &mut |event| {
+                if let GossipHandlerEvent::NewGossip(msg) = event {
+                    message = Some(msg);
+                }
+            },
+        )
+        .unwrap();
+        let message = message.unwrap();
+        assert_eq!(message.ssz_cache, SszCache::Gossip);
+        assert_eq!(ssz.read_buffer(message.ssz).unwrap(), bytes);
     }
 }

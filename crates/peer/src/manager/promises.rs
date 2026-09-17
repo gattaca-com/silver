@@ -213,7 +213,7 @@ impl PeerManager {
         }
         let local = LOCAL_GOSSIP_STREAM_ID.peer();
         let SelfBuiltGossip { msg_id, domain, protobuf, idontwant } = built;
-        self.on_send_gossip(local, msg_id, topic, domain.digest(), protobuf, emit);
+        self.on_send_gossip(local, msg_id, topic, domain.digest(), protobuf, false, emit);
         self.fan_out_idontwant(topic, local, idontwant, emit);
     }
 
@@ -255,6 +255,7 @@ impl PeerManager {
         topic: GossipTopic,
         digest: [u8; 4],
         protobuf: TCacheRead,
+        partial_serving: bool,
         emit: &mut impl FnMut(PeerControl),
     ) {
         let mesh_for_topic = self.mesh.get(&topic).and_then(|meshes| meshes.get(digest));
@@ -271,6 +272,12 @@ impl PeerManager {
                 continue; // mesh peers get full-body forwards, not IHAVE
             }
             if peer.gossip_gate_score() < self.params.gossip_threshold {
+                continue;
+            }
+            if partial_serving &&
+                peer.partial_extensions &&
+                peer.subscriptions.get(&(digest, topic)).is_some_and(|caps| caps.requests)
+            {
                 continue;
             }
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
@@ -303,6 +310,7 @@ impl PeerManager {
     }
 
     #[timed]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn on_send_gossip(
         &mut self,
         sender: usize,
@@ -310,6 +318,7 @@ impl PeerManager {
         topic: GossipTopic,
         digest: [u8; 4],
         tcache: TCacheRead,
+        partial_serving: bool,
         emit: &mut impl FnMut(PeerControl),
     ) {
         let Some(meshed_peers) = self.mesh.get(&topic).and_then(|m| m.get(digest)) else {
@@ -328,6 +337,12 @@ impl PeerManager {
             }
             if peer_state.msg_cache_contains(&msg_hash) {
                 // dontwant
+                continue;
+            }
+            if partial_serving &&
+                peer_state.partial_extensions &&
+                peer_state.subscriptions.get(&(digest, topic)).is_some_and(|caps| caps.requests)
+            {
                 continue;
             }
             peer_state.topic_stats.entry(topic).or_default().fanout_sent += 1;
@@ -374,7 +389,7 @@ impl PeerManager {
 mod tests {
     use std::time::Duration;
 
-    use silver_common::{PeerEvent, TCacheProducer};
+    use silver_common::{PeerEvent, SszCache, TCacheProducer};
     use silver_config::ScoreParams;
 
     use super::*;
@@ -1210,5 +1225,59 @@ mod tests {
             })
             .collect();
         assert_eq!(recipients, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn partial_routing_requires_a_servable_source_and_exact_topic_capabilities() {
+        let now = Instant::now();
+        let params = ScoreParams { d: 0, d_low: 0, d_high: 8, ..Default::default() };
+        let topic = GossipTopic::DataColumnSidecar(4);
+        let (mut manager, mut captured) = fixture(vec![topic], params);
+        for id in 1..=3u8 {
+            connect(&mut manager, &mut captured, id as usize, id, now);
+            manager.handle_event(
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: id as usize, topic, digest: [0; 4] },
+                now,
+                &mut |_| {},
+            );
+            manager.handle_event(
+                PeerEvent::P2pGossipExtensions { p2p_peer: id as usize, partial_messages: true },
+                now,
+                &mut |_| {},
+            );
+            manager.handle_event(
+                PeerEvent::P2pGossipPartialCaps {
+                    p2p_peer: id as usize,
+                    subnet: 4,
+                    digest: [0; 4],
+                    requests: id == 1,
+                    supports_sending: id != 3,
+                },
+                now,
+                &mut |_| {},
+            );
+            manager.test_mesh_extend(topic, [id as usize]);
+        }
+        let event = PeerEvent::SendGossip {
+            originator_stream_id: LOCAL_GOSSIP_STREAM_ID,
+            topic,
+            domain: test_domain(),
+            ssz_cache: SszCache::DataColumns,
+            msg_hash: MessageId { id: [0xcd; 20] },
+            recv_ts: Nanos::now(),
+            protobuf: mk_tcache_read(),
+            ssz: mk_tcache_read(),
+        };
+        for (servable, expected) in [(true, vec![2, 3]), (false, vec![1, 2, 3])] {
+            let mut recipients = Vec::new();
+            manager.handle_event_with_partial(event, now, servable, &mut |event| {
+                if let PeerControl::P2pSend(P2pSend::Gossip(message)) = event {
+                    recipients.push(message.peer_id);
+                }
+            });
+            assert_eq!(recipients, expected);
+        }
+        assert!(manager.partial_peer(1, topic, [1; 4]).is_none());
+        assert!(manager.partial_peer(1, GossipTopic::DataColumnSidecar(5), [0; 4]).is_none());
     }
 }

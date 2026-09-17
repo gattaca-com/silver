@@ -17,8 +17,12 @@ use silver_common::{
 // offsets-plus-bitmap prefix; every piece is small and bounded.
 const MAX_PARTIAL_FRAMING: usize = 256;
 
+mod metadata;
+pub use metadata::{ColumnGroupKey, PartialMetadataReceived};
+
 /// Row masks for a `partsMetadata` field; both bitlists carry exactly
 /// `n_rows` bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartsMetadata {
     pub available: u128,
     pub requests: u128,
@@ -183,30 +187,37 @@ fn segment_len(segment: CacheSegment) -> usize {
 #[cfg(test)]
 mod tests {
     use buffa::{Message, MessageField, MessageView};
+    use silver_common::{
+        GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
+    };
 
     use crate::generated::{
         ControlExtensions, ControlMessage, PartialMessagesExtension, RPC, RPCView, rpc::SubOpts,
     };
 
-    /// The constant announcement frame is a canonical encoding of
-    /// `RPC { control { extensions {} } }` with its length prefix.
     #[test]
     fn extensions_announcement_frame_decodes() {
-        use silver_common::GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME as FRAME;
-        assert_eq!(FRAME[0] as usize, FRAME.len() - 1);
-        let reference = RPC {
-            control: MessageField::some(ControlMessage {
-                extensions: MessageField::some(ControlExtensions::default()),
+        for (frame, partial_messages) in [
+            (GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, None),
+            (GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME, Some(true)),
+        ] {
+            assert_eq!(frame[0] as usize, frame.len() - 1);
+            let reference = RPC {
+                control: MessageField::some(ControlMessage {
+                    extensions: MessageField::some(ControlExtensions {
+                        partial_messages,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
+            }
+            .encode_to_vec();
+            assert_eq!(&frame[1..], reference);
+            let view = RPCView::decode_view(&frame[1..]).unwrap();
+            let control = view.control.as_option().unwrap();
+            assert_eq!(control.extensions.as_option().unwrap().partial_messages, partial_messages);
         }
-        .encode_to_vec();
-        assert_eq!(&FRAME[1..], reference);
-        let view = RPCView::decode_view(&FRAME[1..]).unwrap();
-        let control = view.control.as_option().unwrap();
-        assert!(control.extensions.is_set());
-        assert_eq!(control.extensions.as_option().unwrap().partial_messages, None);
     }
 
     /// Registry wire numbers: SubOpts.requestsPartial=3,

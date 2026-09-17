@@ -546,11 +546,11 @@ impl Config {
         self.attestation_subnet_count
     }
 
-    /// Validated partial-columns mode. Non-Off modes are unsupported
-    /// and rejected rather than silently ignored.
+    /// Receiving partial columns remains disabled until validation and request
+    /// scheduling are connected.
     pub fn partial_columns(&self) -> Result<PartialColumnsMode, Error> {
         match self.partial_columns {
-            PartialColumnsMode::Off => Ok(PartialColumnsMode::Off),
+            PartialColumnsMode::Off | PartialColumnsMode::SendOnly => Ok(self.partial_columns),
             mode => Err(Error::ConfigError(format!("partial_columns {mode:?} is not supported"))),
         }
     }
@@ -598,7 +598,6 @@ mod tests {
         assert_eq!(cfg.partial_columns().unwrap(), PartialColumnsMode::Off);
     }
 
-    /// Non-Off partial modes are unsupported.
     #[test]
     fn partial_columns_modes_are_validated() {
         let base = r#"
@@ -608,6 +607,8 @@ mod tests {
         "#;
         let cfg: Config =
             toml::from_str(&format!("{base}partial_columns = \"send_only\"")).unwrap();
+        assert_eq!(cfg.partial_columns().unwrap(), PartialColumnsMode::SendOnly);
+        let cfg: Config = toml::from_str(&format!("{base}partial_columns = \"enabled\"")).unwrap();
         let err = format!("{:?}", cfg.partial_columns().unwrap_err());
         assert!(err.contains("not supported"), "{err}");
     }

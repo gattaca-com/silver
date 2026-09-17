@@ -193,14 +193,18 @@ impl Peer {
             .acquire(&mut context.gossip_consumer, now)
             .ok()
             .and_then(|view| limits.acquire(view, context, &self.outbound_lease_wheel, now));
-        let Some(frame) = acquired else {
+        let Some(mut acquired) = acquired else {
             crate::NetworkCounters::CacheSegmentedRejected.inc();
             return SendResult::MessageDropped;
         };
-        self.queue_gossip(OutboundGossip::Segmented(frame))
+        if !acquired.track(limits, self.handle.0, frame.read().seq()) {
+            return SendResult::MessageDropped;
+        }
+        self.queue_gossip(OutboundGossip::Segmented(acquired))
     }
 
     fn queue_gossip(&mut self, msg: OutboundGossip) -> SendResult {
+        let tracked = matches!(msg, OutboundGossip::Segmented(_));
         self.dirty = true;
         let stream_id = match self.outbound_gossip {
             Some(id) => id,
@@ -216,7 +220,11 @@ impl Peer {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
                 stream.needs_spin = true;
-                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+                return if dropped && !tracked {
+                    SendResult::MessageDropped
+                } else {
+                    SendResult::Ok
+                };
             }
         }
         SendResult::StreamCreationError
@@ -1302,6 +1310,23 @@ mod tests {
     }
 
     #[test]
+    fn queue_eviction_reports_the_evicted_frame_not_its_replacement() {
+        let receipts = Box::new(super::super::send_receipts::SendReceipts::new(4));
+        let mut buffer = OutBuffer::new(2);
+        assert!(!buffer.add_msg(receipts.acquire(1, 10, 100).unwrap()));
+        assert!(!buffer.add_msg(receipts.acquire(1, 11, 100).unwrap()));
+        assert!(buffer.add_msg(receipts.acquire(1, 12, 100).unwrap()));
+        let dropped = receipts.pop().unwrap();
+        assert_eq!(dropped.frame_seq, 10);
+        assert_eq!(dropped.outcome, silver_common::GossipFrameOutcome::Dropped);
+        assert!(receipts.pop().is_none());
+        drop(buffer);
+        let dropped: Vec<_> =
+            std::iter::from_fn(|| receipts.pop()).map(|result| result.frame_seq).collect();
+        assert_eq!(dropped, [12, 11]);
+    }
+
+    #[test]
     fn outbound_lease_wheel_drop_cancels_lease_after_box_moves() {
         let t0 = Instant::now();
         let wheel = Box::new(OutboundLeaseWheel::new(t0));
@@ -2240,7 +2265,9 @@ mod tests {
             .advance_retention(columns.next_seq());
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         let wire: Vec<_> = server_h.received.values().flatten().copied().collect();
-        assert_eq!(wire, announced(payload));
+        let mut expected = vec![0x1a, 4, 0x32, 2, 0x50, 1];
+        expected.extend_from_slice(payload);
+        assert_eq!(wire, expected);
         let now = Instant::now();
         for i in 0..200 {
             if pair.client_peer.outbound_lease_wheel.active_count() == 0 {
@@ -2279,12 +2306,16 @@ mod tests {
         let id = peer.outbound_gossip.unwrap();
         peer.streams.get_mut(&id).unwrap().out_buffer = OutboundBuffer::Gossip(OutBuffer::new(1));
         assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
-        for expected in [SendResult::Ok, SendResult::MessageDropped, SendResult::MessageDropped] {
+        assert_eq!(limits.pop_result().unwrap().frame_seq, frame.read().seq());
+        for i in 0..3 {
             assert_eq!(
                 peer.send_segmented_gossip(frame, &mut h.context, &limits, &mut h.rpc_codec_pool),
-                expected
+                SendResult::Ok
             );
             assert_eq!(peer.outbound_lease_wheel.active_count(), 1);
+            if i > 0 {
+                assert_eq!(limits.pop_result().unwrap().frame_seq, frame.read().seq());
+            }
         }
         peer.clear_streams(&mut h.rpc_codec_pool);
         assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
