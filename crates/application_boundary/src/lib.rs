@@ -91,7 +91,7 @@ impl ApplicationBoundaryTile {
         let Self { beacon, engine, .. } = self;
 
         adapter.consume(|event: BeaconStateEvent, _| beacon.handle_beacon_state_event(event));
-        adapter.consume(|resp: EngineResp, _| beacon.handle_engine_resp(resp));
+        adapter.consume(|response: EngineResp, _| beacon.handle_engine_resp(response));
         adapter.consume(|event: PeerEvent, _| beacon.handle_peer_event(event));
         adapter.consume(|event: DataColumnsEvent, _| beacon.handle_data_columns_event(event));
         adapter.consume(|update: SyncUpdate, _| beacon.handle_sync_update(update));
