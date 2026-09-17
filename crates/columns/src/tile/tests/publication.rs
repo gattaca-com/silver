@@ -318,7 +318,7 @@ fn gossip_and_el_copies_validate_once() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &fulu_body(&blob.commitment));
-    let block_root = util::block_root_fulu(&block);
+    let block_root = block_root_fulu(&block);
     let mut rig = Rig::new(CUSTODY_COLUMNS);
     rig.turn();
     rig.follow([0xAA; 32]);

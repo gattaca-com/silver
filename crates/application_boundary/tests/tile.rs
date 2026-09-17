@@ -18,11 +18,7 @@ use silver_common::{
     GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
     PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine,
     StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
-    column_util::block_root_from_sidecar,
-    ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
-        SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
-    },
+    ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE},
     test_util::ShmemDir,
 };
 use silver_config::EngineConfig;
