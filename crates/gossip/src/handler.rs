@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, io::Write, time::Instant};
+use std::{collections::VecDeque, io::Write, str, time::Instant};
 
 use buffa::MessageView;
 use flux::spine::SpineAdapter;
@@ -100,6 +100,7 @@ impl GossipHandler {
                         msgs_iter,
                     ) {
                         emit(GossipHandlerEvent::PeerEvent(PeerEvent::OutboundIHave {
+                            digest: domain.digest(),
                             topic,
                             msg_count,
                             protobuf: tcache,
@@ -116,7 +117,23 @@ impl GossipHandler {
     /// be served). Returns `None` when a gossip copy was already seen, or
     /// pre-Status (no fork digest yet).
     pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<SelfBuiltGossip> {
-        let (domain, wire) = self.domains.current_wire(topic)?;
+        self.publish_in_domain(topic, self.domains.current_domain()?, ssz)
+    }
+
+    pub fn publish_in_domain(
+        &mut self,
+        topic: GossipTopic,
+        domain: GossipDomain,
+        ssz: &[u8],
+    ) -> Option<SelfBuiltGossip> {
+        let mut encoded = [0; 8];
+        let digest = if let Some((_, digest)) = self.domains.index_hex(domain) {
+            digest
+        } else {
+            hex::encode_to_slice(domain.digest(), &mut encoded).expect("fork digest hex size");
+            str::from_utf8(&encoded).expect("hex is ASCII")
+        };
+        let wire = topic.to_wire(digest);
         if ssz.len() > topic.max_uncompressed_size() {
             tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
             return None;
@@ -207,6 +224,7 @@ impl GossipHandler {
             stream_id: LOCAL_GOSSIP_STREAM_ID,
             topic,
             domain,
+            ssz_cache: silver_common::SszCache::Gossip,
             msg_hash: msg_id,
             recv_ts,
             ssz: ssz_read,
@@ -314,9 +332,13 @@ impl GossipHandler {
         }
     }
 
-    pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+    pub fn spin(
+        &mut self,
+        adapter: &mut SpineAdapter<SilverSpine>,
+        data_columns: Option<&mut TProducer>,
+    ) -> bool {
         let mut events = std::mem::take(&mut self.events);
-        let did_work = self.spin_inner(adapter, &mut |e| events.push_back(e));
+        let did_work = self.spin_inner(adapter, data_columns, &mut |e| events.push_back(e));
         self.events = events;
         did_work
     }
@@ -324,6 +346,7 @@ impl GossipHandler {
     fn spin_inner(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,
+        mut data_columns: Option<&mut TProducer>,
         emit: &mut impl FnMut(GossipHandlerEvent),
     ) -> bool {
         let mut did_work = false;
@@ -409,6 +432,7 @@ impl GossipHandler {
                             recv_ts,
                             &mut self.dedup_cache,
                             &mut self.incoming_gossip_publish,
+                            data_columns.as_deref_mut(),
                             &mut self.mcache_publish,
                             emit,
                         ) {
@@ -534,12 +558,42 @@ impl ExtensionTracker {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{TCache, TCacheProducer, ssz_view::SINGLE_ATT_SIZE};
+    use silver_common::{ForkName, TCache, TCacheProducer, ssz_view::SINGLE_ATT_SIZE};
 
     use super::*;
 
     fn v13_stream(peer: usize, stream: u64) -> P2pStreamId {
         P2pStreamId::new(peer, stream, StreamProtocol::GossipSubV13, true)
+    }
+
+    #[test]
+    fn delayed_publications_keep_their_fork_and_digest_domain() {
+        let old = GossipDomain::new([1; 4], ForkName::Fulu);
+        let incoming = TCache::producer("", 1 << 16);
+        let protobuf = TCache::producer("", 1 << 16);
+        let mut output = Box::new(protobuf.cache_ref().random_access("", true).unwrap());
+        let mut handler = GossipHandler::new(
+            incoming.cache_ref().random_access("", true).unwrap(),
+            TCache::producer("", 1 << 16),
+            protobuf,
+            Some(old),
+        )
+        .unwrap();
+        let topic = GossipTopic::DataColumnSidecar(3);
+        for (index, current) in
+            [GossipDomain::new([2; 4], ForkName::Fulu), GossipDomain::new([3; 4], ForkName::Gloas)]
+                .into_iter()
+                .enumerate()
+        {
+            handler.set_domains(current, None);
+            let bytes = [index as u8; 20];
+            let built = handler.publish_in_domain(topic, old, &bytes).unwrap();
+            let read = output.acquire(built.protobuf);
+            let rpc = RPCView::decode_view(read.buffer().unwrap().0).unwrap();
+            let published = rpc.publish.iter().next().unwrap();
+            assert_eq!(published.topic, topic.to_wire("01010101"));
+            assert_eq!(built.msg_id, msg_id_valid_snappy(&topic.to_wire("01010101"), &bytes));
+        }
     }
 
     /// Extensions are stream-scoped: only the first RPC counts, a

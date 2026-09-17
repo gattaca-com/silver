@@ -11,13 +11,15 @@ use flux::{
     tile::Tile,
 };
 use silver_chain_spec::{ForkName, SpecConfig};
-use silver_columns::cell_store::{CellStoreConfig, CommitmentContext, ContextData};
+use silver_columns::cell_store::CellStore;
 use silver_common::{
-    GossipTopic, MessageId, Nanos, P2pStreamId, SilverSpine, StreamProtocol, SubReservationError,
-    TCache, TCacheProducer, TCacheRead, TCacheRef, TRandomAccess,
-    cells::{
-        CellKey, CellOrigin, CellSource, CellStoreEvent, CellValidationOutcome,
-        CellValidationRequest, ColumnRef, RetentionEvent,
+    GossipDomain, GossipTopic, MessageId, Nanos, P2pStreamId, SilverSpine, StreamProtocol,
+    SubReservationError, TCache, TCacheProducer, TCacheRead, TCacheRef, TRandomAccess,
+    TReservation,
+    cell_store::{
+        CellKey, CellOrigin, CellSource, CellStoreConfig, CellStoreEvent, CellValidationOutcome,
+        CellValidationRequest, ColumnRef, CommitmentContext, ContextData, FuluContextSource,
+        RetentionEvent, StoreError,
     },
     column_util::push_data_column_sidecar_prefix,
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
@@ -37,6 +39,7 @@ impl Tile<SilverSpine> for Endpoint {
 
 struct Rig {
     control: CellIngress,
+    store: CellStore,
     columns: Box<TRandomAccess>,
     network: Box<TRandomAccess>,
     adapters: [SpineAdapter<SilverSpine>; 3],
@@ -72,7 +75,8 @@ impl Rig {
             adapter
         });
         Self {
-            control: CellIngress::new(config, producer, 0, now).unwrap(),
+            control: CellIngress::new(config.clone(), producer, 0, now).unwrap(),
+            store: CellStore::new(config, 0, now).unwrap(),
             columns,
             network,
             adapters,
@@ -97,36 +101,43 @@ impl Rig {
         } else {
             ContextData::Gloas { commitments: &[0x33; 96] }
         };
-        assert!(
-            self.control
-                .admit_context(self.context, data, self.now, &self.adapters[0].producers)
-                .unwrap()
-        );
+        let source = if self.context.format == ForkName::Fulu {
+            let mut header =
+                self.control.producer_mut().reserve(data.encoded_len(), false).unwrap();
+            data.write(header.buffer().unwrap());
+            header.flush().unwrap();
+            Some(FuluContextSource::Header(header.read()))
+        } else {
+            None
+        };
+        let domain = GossipDomain::new([0; 4], self.context.format);
+        assert!(self.store.admit_context(self.context, domain, data, source).unwrap());
+        let request = self.store.request_assemblies(&ROOT).unwrap();
+        self.adapters[1].produce(CellStoreEvent::Allocate(request));
+        self.adapters[0].consume(|event: CellStoreEvent, producers| {
+            self.control.handle(event, self.now, producers)
+        });
     }
 
     fn reservations(&mut self) -> Vec<ColumnRef> {
-        let mut columns = Vec::new();
         let mut contexts = 0;
-        self.adapters[1].consume(|event: CellStoreEvent, _| match event {
-            CellStoreEvent::Context { block_root, format, blob_count, ssz, .. } => {
-                assert_eq!(block_root, ROOT);
-                assert_eq!(format, self.context.format);
-                assert_eq!(blob_count, 2);
-                assert!(ptr::eq(&*ssz.cache_ref(), &*self.cache));
+        self.adapters[1].consume(|event: CellStoreEvent, _| {
+            if let CellStoreEvent::Allocated { request, set } = event {
+                assert_eq!(request.context, self.context);
+                self.store.install(set.unwrap(), &mut self.columns).unwrap();
                 contexts += 1;
             }
-            CellStoreEvent::Reservation(column) => {
-                assert!(ptr::eq(&*column.reservation.read().cache_ref(), &*self.cache));
-                columns.push(column);
-            }
-            _ => {}
         });
         assert_eq!(contexts, 1);
-        columns
+        self.store.reservations(&ROOT).collect()
+    }
+
+    fn reserve(&mut self, len: usize) -> Result<TReservation, StoreError> {
+        self.control.producer_mut().reserve(len, false).ok_or(StoreError::CacheFull)
     }
 
     fn write(&mut self, len: usize, byte: u8) -> TCacheRead {
-        let mut write = self.control.store_mut().reserve_full(len).unwrap();
+        let mut write = self.reserve(len).unwrap();
         write.buffer().unwrap().fill(byte);
         write.flush().unwrap();
         write.read()
@@ -134,7 +145,7 @@ impl Rig {
 
     fn fill(&mut self) {
         let mut count = 0;
-        while let Ok(mut write) = self.control.store_mut().reserve_full(8192) {
+        while let Ok(mut write) = self.reserve(8192) {
             write.buffer().unwrap().fill(0xcc);
             write.flush().unwrap();
             count += 1;
@@ -144,6 +155,7 @@ impl Rig {
 
     fn expire(&mut self) -> RetentionEvent {
         self.control.spin(self.now, &self.adapters[0].producers);
+        self.store.advance(self.now, 0, |_| {});
         let mut boundary = None;
         self.adapters[1].consume(|event: RetentionEvent, _| {
             assert!(boundary.is_none());
@@ -189,7 +201,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
         let mut rig = Rig::new(format);
         let expires = rig.start + SLOT;
         let bytes = rig.full_bytes(0);
-        let mut full = rig.control.store_mut().reserve_full(bytes.len()).unwrap();
+        let mut full = rig.reserve(bytes.len()).unwrap();
         full.write_all(&bytes).unwrap();
         full.flush().unwrap();
         let full_read = full.read();
@@ -204,16 +216,16 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
         assert_eq!(validation.buffer().unwrap().0, bytes);
         drop(validation);
         // Cryptographic validation is outside this ownership fixture.
-        rig.control.store_mut().retain_full(&ROOT, 0, full_read).unwrap();
+        rig.store.retain_full(&ROOT, 0, full_read, &mut rig.columns).unwrap();
 
         for row in 0..2 {
             let pending = if row == 0 {
                 rig.control
-                    .store_mut()
                     .stage_cell(
                         CellKey { block_root: ROOT, column: 1, row },
                         &[0x11; BYTES_PER_CELL],
                         &PROOF,
+                        rig.now,
                     )
                     .unwrap()
                     .unwrap()
@@ -237,6 +249,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
                 pending,
                 origin,
                 deadline: expires,
+                domain: GossipDomain::new([0; 4], format),
             }));
         }
 
@@ -257,24 +270,28 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
             }
         });
         assert_eq!(validated, 2);
+        rig.store.refresh_column(&ROOT, 1, &mut rig.columns).unwrap();
+        rig.adapters[1]
+            .produce(CellStoreEvent::Available(rig.store.availability(&ROOT, 1).unwrap()));
         rig.adapters[0].consume(|event: CellStoreEvent, producers| {
             rig.control.handle(event, rig.now, producers);
         });
         let mut available = 0;
         rig.adapters[2].consume(|event: CellStoreEvent, _| {
-            if let CellStoreEvent::Available { cell, .. } = event {
-                assert!(ptr::eq(&*cell.read().cache_ref(), &*rig.cache));
-                let acquired = cell.acquire(&mut rig.network).unwrap();
-                assert_eq!(acquired.proof.as_ref(), PROOF);
-                available += 1;
+            if let CellStoreEvent::Available(column) = event {
+                for row in 0..2 {
+                    let cell = column.cell(row).unwrap();
+                    assert!(ptr::eq(&*cell.read().cache_ref(), &*rig.cache));
+                    let acquired = cell.acquire(&mut rig.network).unwrap();
+                    assert_eq!(acquired.proof.as_ref(), PROOF);
+                    available += 1;
+                }
             }
         });
         assert_eq!(available, 2);
 
-        let full =
-            rig.control.store_mut().cell(CellKey { block_root: ROOT, column: 0, row: 0 }).unwrap();
-        let assembly =
-            rig.control.store_mut().cell(CellKey { block_root: ROOT, column: 1, row: 0 }).unwrap();
+        let full = rig.store.cell(CellKey { block_root: ROOT, column: 0, row: 0 }).unwrap();
+        let assembly = rig.store.cell(CellKey { block_root: ROOT, column: 1, row: 0 }).unwrap();
         assert!(matches!(full.source, CellSource::Full { .. }));
         assert!(matches!(assembly.source, CellSource::Assembly { .. }));
         assert_eq!(full.read().seq(), full_read.seq());
@@ -297,7 +314,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
         let event = rig.expire();
         assert_eq!(event.expired_slot, 0);
         rig.network_boundaries();
-        assert_eq!(rig.control.store_mut().counts().cells, 0);
+        assert_eq!(rig.store.counts().cells, 0);
         assert_eq!(full_send.cell.as_ref(), &[0x11; BYTES_PER_CELL]);
         assert_eq!(assembly_send.cell.as_ref(), &[0x11; BYTES_PER_CELL]);
         assert!(columns[1].reservation.acquire(&mut rig.columns).is_err());
@@ -311,15 +328,17 @@ fn cancellation_cannot_reset_a_retry_or_an_active_validator() {
     let column = rig.reservations()[0];
     let key = CellKey { block_root: ROOT, column: 0, row: 0 };
     let old =
-        rig.control.store_mut().stage_cell(key, &[0x99; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
+        rig.control.stage_cell(key, &[0x99; BYTES_PER_CELL], &PROOF, rig.now).unwrap().unwrap();
     let validation = old.data.acquire(&mut rig.columns).unwrap();
     drop(validation);
     let retry =
-        rig.control.store_mut().stage_cell(key, &[0x11; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
+        rig.control.stage_cell(key, &[0x11; BYTES_PER_CELL], &PROOF, rig.now).unwrap().unwrap();
     assert!(!rig.control.cancel(old, rig.now));
-    rig.adapters[1].produce(CellStoreEvent::Cancel(retry));
-    rig.adapters[0].consume(|event: CellStoreEvent, producers| {
-        rig.control.handle(event, rig.now, producers);
+    rig.adapters[0].produce(CellStoreEvent::Cancel(retry));
+    rig.adapters[1].consume(|event: CellStoreEvent, _| {
+        if let CellStoreEvent::Cancel(pending) = event {
+            assert!(pending.data.cancel(&mut rig.columns).unwrap());
+        }
     });
     let pending =
         column.stage(&mut rig.columns, 0, &[0x11; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
@@ -367,10 +386,10 @@ fn active_writers_validators_and_sends_survive_expiry_without_store_pins() {
     let columns = rig.reservations();
     let key = CellKey { block_root: ROOT, column: 0, row: 0 };
     let pending =
-        rig.control.store_mut().stage_cell(key, &[0x11; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
+        rig.control.stage_cell(key, &[0x11; BYTES_PER_CELL], &PROOF, rig.now).unwrap().unwrap();
     pending.data.acquire(&mut rig.columns).unwrap().accept().unwrap();
-    rig.control.store_mut().refresh_column(&ROOT, 0).unwrap();
-    let send = rig.control.store_mut().cell(key).unwrap().acquire(&mut rig.network).unwrap();
+    rig.store.refresh_column(&ROOT, 0, &mut rig.columns).unwrap();
+    let send = rig.store.cell(key).unwrap().acquire(&mut rig.network).unwrap();
     let pending =
         columns[0].stage(&mut rig.columns, 1, &[0x22; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
     let validation = pending.data.acquire(&mut rig.columns).unwrap();
@@ -383,17 +402,17 @@ fn active_writers_validators_and_sends_survive_expiry_without_store_pins() {
     assert_eq!(send.cell.as_ref(), &[0x11; BYTES_PER_CELL]);
     assert_eq!(validation.buffers()[0], &[0x22; BYTES_PER_CELL]);
     drop(send);
-    assert!(rig.control.store_mut().reserve_full(8192).is_err());
+    assert!(rig.reserve(8192).is_err());
     drop(validation);
     rig.fill();
     rig.now += SLOT;
     rig.expire();
     rig.network_boundaries();
-    assert!(rig.control.store_mut().reserve_full(8192).is_err());
+    assert!(rig.reserve(8192).is_err());
     assert!(matches!(
         writing.write(&[0x33; BYTES_PER_CELL], &PROOF),
         Err(SubReservationError::Closed)
     ));
     drop(writer);
-    assert!(rig.control.store_mut().reserve_full(8192).is_ok());
+    assert!(rig.reserve(8192).is_ok());
 }

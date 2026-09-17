@@ -11,7 +11,8 @@ use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
-    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SilverSpine, cells::RetentionEvent,
+    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine,
+    cell_store::RetentionEvent,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -37,6 +38,7 @@ const PEER_STATS_BATCH: usize = 8;
 pub struct NetworkTile {
     inner: NetworkTileInner<DiscV5>,
     last_peer_stats: Instant,
+    last_fork_epoch: Option<u64>,
 }
 
 impl NetworkTile {
@@ -49,7 +51,7 @@ impl NetworkTile {
     ) -> Result<Self, Error> {
         let inner =
             NetworkTileInner::new(p2p_addr, p2p_endpoint, p2p_context, discv5_addr, discv5)?;
-        Ok(Self { inner, last_peer_stats: Instant::now() })
+        Ok(Self { inner, last_peer_stats: Instant::now(), last_fork_epoch: None })
     }
 
     pub fn p2p_mut(&mut self) -> &mut P2p {
@@ -80,6 +82,9 @@ impl NetworkTile {
                 self.inner.disc_socket.unban(ip);
             }
             PeerControl::DiscoverNodes => self.inner.discovery.find_nodes(),
+            PeerControl::UpdateEnrForkId { epoch, enr_fork_id } => {
+                self.update_enr_fork_id(epoch, enr_fork_id)
+            }
             PeerControl::P2pDial { p2p, enr } => {
                 let addr = enr.quic4_socket().or(enr.quic6_socket());
                 if let Some(addr) = addr {
@@ -99,6 +104,13 @@ impl NetworkTile {
         }
     }
 
+    fn update_enr_fork_id(&mut self, epoch: u64, enr_fork_id: [u8; 16]) {
+        if self.last_fork_epoch.is_none_or(|previous| epoch >= previous) {
+            self.last_fork_epoch = Some(epoch);
+            self.inner.update_enr_fork_id(enr_fork_id);
+        }
+    }
+
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
@@ -112,8 +124,8 @@ impl NetworkTile {
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
-            if let BeaconStateEvent::Status { enr_fork_id, .. } = beacon_event {
-                self.inner.update_enr_fork_id(enr_fork_id);
+            if let BeaconStateEvent::Status { enr_fork_id, wall_slot, .. } = beacon_event {
+                self.update_enr_fork_id(wall_slot / SLOTS_PER_EPOCH, enr_fork_id);
             }
         });
 

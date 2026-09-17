@@ -1302,6 +1302,7 @@ impl BeaconStateTile {
             originator_stream_id: m.stream_id,
             topic: m.topic,
             domain: m.domain,
+            ssz_cache: m.ssz_cache,
             msg_hash: m.msg_hash,
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,

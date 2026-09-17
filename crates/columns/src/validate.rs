@@ -6,15 +6,18 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    IngestionTime, P2pStreamId, TRead, Wheel, column_util as util,
+    GossipDomain, IngestionTime, P2pStreamId, SszCache, TRead, Wheel, column_util as util,
     ssz_view::{
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS, SidecarLayout,
-        SignedBeaconBlockView,
+        BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
+        NUMBER_OF_COLUMNS, SidecarLayout, SignedBeaconBlockView,
     },
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker},
 };
 
 use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
+
+const COMMITMENT_EPOCHS: usize = 4;
+const MAX_COMMITMENT_ROOTS: usize = 2 * COMMITMENT_EPOCHS * SLOTS_PER_EPOCH as usize;
 
 /// A sidecar with the provenance its validation needs. Carrying `recv_ts` is
 /// what lets a column buffered before its block still report its own receive
@@ -22,6 +25,9 @@ use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
 pub(crate) struct PendingColumn {
     pub(crate) stream_id: P2pStreamId,
     pub(crate) sidecar: TRead,
+    /// Which cache `sidecar` lives in, for the persist consumer.
+    pub(crate) ssz_cache: SszCache,
+    pub(crate) domain: Option<GossipDomain>,
     pub(crate) gossip_subnet: Option<u64>,
     pub(crate) recv_ts: IngestionTime,
 }
@@ -30,7 +36,6 @@ pub(crate) enum ColumnOutcome {
     Skip,
     AlreadyHeld {
         block_root: BlockRoot,
-        column_index: u64,
         slot: u64,
     },
     Reject {
@@ -89,7 +94,7 @@ pub(crate) struct ColumnValidator {
     spec: Arc<SpecConfig>,
     ticker: SlotTicker,
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
-    gloas_commitments: Wheel<BlockRoot, GloasBlockCommitments, 4>,
+    gloas_commitments: Wheel<BlockRoot, GloasBlockCommitments, COMMITMENT_EPOCHS>,
     // Blocks past validation (imported, or staged on their columns) and the
     // slot each sits at — parent-seen and parent-slot checks beyond the head
     // fork.
@@ -126,6 +131,7 @@ impl ColumnValidator {
     /// A block the beacon state dropped no longer vouches for its children.
     pub fn note_rejected(&mut self, block_root: &BlockRoot) {
         self.validated_block_roots.remove(block_root);
+        self.gloas_commitments.remove(block_root);
     }
 
     #[cfg(test)]
@@ -134,15 +140,33 @@ impl ColumnValidator {
     }
 
     pub fn gloas_commitments(&self, block_root: &BlockRoot) -> Option<&[u8]> {
+        if !self.validated_block_roots.contains(block_root) {
+            return None;
+        }
         self.gloas_commitments.get(block_root).map(|c| c.commitments.as_ref())
     }
 
+    pub fn domain_at(&self, slot: u64) -> Option<GossipDomain> {
+        self.beacon_state.read(&|v| {
+            GossipDomain::new(
+                self.spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &v.imm.genesis_validators_root),
+                self.spec.fork_at_slot(slot),
+            )
+        })
+    }
+
     pub fn cache_gloas_commitments(&mut self, block_root: BlockRoot, buffer: &[u8]) {
-        if self.gloas_commitments.contains(&block_root) {
+        if self.gloas_commitments.contains(&block_root) ||
+            self.gloas_commitments.len() >= MAX_COMMITMENT_ROOTS
+        {
             return;
         }
         let commitments = SignedBeaconBlockView::gloas_block_commitments(buffer);
-        if !commitments.is_empty() {
+        if !commitments.is_empty() &&
+            commitments.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) &&
+            commitments.len() / BYTES_PER_KZG_COMMITMENT <=
+                self.max_blobs_at(SignedBeaconBlockView::slot(buffer))
+        {
             self.gloas_commitments.insert(block_root, GloasBlockCommitments {
                 slot: SignedBeaconBlockView::slot(buffer),
                 commitments: commitments.to_vec().into_boxed_slice(),
@@ -172,13 +196,14 @@ impl ColumnValidator {
         buffer: &[u8],
         sync_state: &SyncStatus,
         tracker: &mut ColumnTracker,
+        verify_held: bool,
     ) -> Option<(ColumnOutcome, bool)> {
         match SidecarLayout::of(buffer)? {
             SidecarLayout::Gloas => {
-                Some((self.validate_gloas(column, buffer, sync_state, tracker), true))
+                Some((self.validate_gloas(column, buffer, sync_state, tracker, verify_held), true))
             }
             SidecarLayout::Fulu => {
-                Some((self.validate_fulu(column, buffer, sync_state, tracker), false))
+                Some((self.validate_fulu(column, buffer, sync_state, tracker, verify_held), false))
             }
         }
     }
@@ -190,6 +215,7 @@ impl ColumnValidator {
         buffer: &[u8],
         sync_state: &SyncStatus,
         tracker: &mut ColumnTracker,
+        verify_held: bool,
     ) -> ColumnOutcome {
         let PendingColumn { stream_id, gossip_subnet, recv_ts, .. } = *column;
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
@@ -233,8 +259,8 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        if tracker.holds(&block_root, column_index) {
-            return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
+        if !verify_held && tracker.holds(&block_root, column_index) {
+            return ColumnOutcome::AlreadyHeld { block_root, slot };
         }
 
         if !util::verify_data_column_sidecar_fulu(buffer, self.max_blobs_at(slot)) {
@@ -355,6 +381,7 @@ impl ColumnValidator {
         buffer: &[u8],
         sync_state: &SyncStatus,
         tracker: &ColumnTracker,
+        verify_held: bool,
     ) -> ColumnOutcome {
         let PendingColumn { stream_id, gossip_subnet, .. } = *column;
         let slot = DataColumnSidecarGloasView::slot(buffer);
@@ -385,11 +412,15 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        if tracker.holds(&block_root, column_index) {
-            return ColumnOutcome::AlreadyHeld { block_root, column_index, slot };
+        if !verify_held && tracker.holds(&block_root, column_index) {
+            return ColumnOutcome::AlreadyHeld { block_root, slot };
         }
 
-        let Some(block) = self.gloas_commitments.get(&block_root) else {
+        let Some(block) = self
+            .gloas_commitments
+            .get(&block_root)
+            .filter(|_| self.validated_block_roots.contains(&block_root))
+        else {
             return ColumnOutcome::Buffer { block_root };
         };
         if block.slot != slot {

@@ -14,7 +14,7 @@ use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage,
-    ColumnSource, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
+    ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
     GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
     PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine,
     StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
@@ -199,6 +199,7 @@ fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
         topic,
         domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+        ssz_cache: silver_common::SszCache::Gossip,
         msg_hash: MessageId { id: [byte; 20] },
         recv_ts: Nanos::now(),
         // The boundary does not read protobuf, so no encoded payload is needed.
@@ -214,22 +215,22 @@ fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEv
 }
 
 fn validated_column(
-    source: ColumnSource,
+    origin: ColumnOrigin,
     slot: u64,
     byte: u8,
     index: u64,
 ) -> (DataColumnsEvent, SseEvent) {
     let block_root = [byte; 32];
-    let event = DataColumnsEvent::Validated { block_root, column_index: index, slot, source };
+    let event = DataColumnsEvent::Validated { block_root, column_index: index, slot, origin };
     (event, SseEvent::column(slot, &block_root, index))
 }
 
 fn gossip_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
-    validated_column(ColumnSource::Gossip, slot, byte, index)
+    validated_column(ColumnOrigin::Gossip, slot, byte, index)
 }
 
 fn rpc_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
-    validated_column(ColumnSource::Rpc, slot, byte, index)
+    validated_column(ColumnOrigin::Rpc, slot, byte, index)
 }
 
 #[derive(Clone, Debug)]
@@ -1140,14 +1141,16 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
         std::thread::sleep(Duration::from_millis(1));
     };
     let topics = "block_gossip,data_column_sidecar";
-    let early = EventsSubscriber::new(addr, topics, 3, &mut crank);
+    let early = EventsSubscriber::new(addr, topics, 4, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
     let (relay, relayed) = gossip_column(20, 0x11, 3);
+    let (dc_relay, dc_relayed) = gossip_column(20, 0x11, 4);
     let (published, publication) = rpc_column(21, 0x12, 5);
     inj.produce(block);
     inj.produce(relay);
+    inj.produce(dc_relay);
     inj.produce(published);
-    early.assert_topic_sequences(&[relayed_block, relayed, publication], &mut crank);
+    early.assert_topic_sequences(&[relayed_block, relayed, dc_relayed, publication], &mut crank);
     early.client.join().unwrap();
 
     let late = EventsSubscriber::new(addr, topics, 3, &mut crank);

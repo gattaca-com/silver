@@ -157,6 +157,7 @@ pub struct NewGossipMsg {
     pub topic: GossipTopic,
     /// Originating fork domain: fixed at receipt, never rewritten.
     pub domain: GossipDomain,
+    pub ssz_cache: SszCache,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -408,6 +409,7 @@ pub enum PeerEvent {
     /// (requestsPartial implies sending support).
     P2pGossipPartialCaps {
         p2p_peer: usize,
+        digest: [u8; 4],
         subnet: u64,
         requests: bool,
         supports_sending: bool,
@@ -522,6 +524,7 @@ pub enum PeerEvent {
     /// Peer manager fans it out to non-mesh subscribers with acceptable score.
     OutboundIHave {
         topic: GossipTopic,
+        digest: [u8; 4],
         msg_count: usize,
         protobuf: TCacheRead,
     },
@@ -536,6 +539,7 @@ pub enum PeerEvent {
         topic: GossipTopic,
         /// Originating fork domain, carried from `NewGossipMsg`.
         domain: GossipDomain,
+        ssz_cache: SszCache,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
@@ -813,6 +817,10 @@ pub enum PeerControl {
         ip: IpAddr,
     },
     DiscoverNodes,
+    UpdateEnrForkId {
+        epoch: u64,
+        enr_fork_id: [u8; 16],
+    },
     P2pGossipSubscribe {
         p2p: PeerId,
         p2p_connection: usize,
@@ -915,13 +923,23 @@ pub enum BlockSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum ColumnSource {
+pub enum SszCache {
     Gossip,
+    DataColumns,
     Rpc,
     El,
 }
 
-impl ColumnSource {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ColumnOrigin {
+    Gossip,
+    Rpc,
+    El,
+    Assembly,
+}
+
+impl ColumnOrigin {
     pub const fn from_protocol(protocol: StreamProtocol) -> Self {
         if protocol.is_gossip() { Self::Gossip } else { Self::Rpc }
     }
@@ -1329,11 +1347,16 @@ pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
     /// A column passed validation. Once per (block_root, column_index).
-    Validated { block_root: [u8; 32], column_index: u64, slot: u64, source: ColumnSource },
+    Validated { block_root: [u8; 32], column_index: u64, slot: u64, origin: ColumnOrigin },
     /// Bytes for storage to write. A repeat offer is allowed; storage dedups.
     Persist {
         ssz: TCacheRead,
-        source: ColumnSource,
+        origin: ColumnOrigin,
+        ssz_cache: SszCache,
+        /// Retain the validated fork domain when republishing after a fork
+        /// boundary. EL reconstructions without a domain use the
+        /// current gossip domain.
+        domain: Option<GossipDomain>,
         block_root: [u8; 32],
         column_index: u64,
         slot: u64,

@@ -141,7 +141,7 @@ impl Events {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{ColumnSource, PayloadValidationStatus};
+    use silver_common::{ColumnOrigin, PayloadValidationStatus};
 
     use super::{
         trace::tests::{GENESIS_SECS, SLOT_MS, at, event, received},
@@ -165,8 +165,8 @@ mod tests {
     /// them and the arrival fills in when the block lands.
     #[test]
     fn columns_ahead_of_the_block_open_its_trace() {
-        let recv = Stage::ColumnRecv { index: 48, source: ColumnSource::Gossip };
-        let validated = Stage::ColumnValidated { index: 48, source: ColumnSource::Gossip };
+        let recv = Stage::ColumnRecv { index: 48, origin: ColumnOrigin::Gossip };
+        let validated = Stage::ColumnValidated { index: 48, origin: ColumnOrigin::Gossip };
         let traces = fold_all(vec![
             event(recv, at(4, 200), Some(4)),
             event(validated, at(4, 210), Some(4)),
@@ -195,7 +195,7 @@ mod tests {
     /// clock; they must not churn live traces out of the pane.
     #[test]
     fn backfill_columns_open_no_trace() {
-        let recv = Stage::ColumnRecv { index: 3, source: ColumnSource::Rpc };
+        let recv = Stage::ColumnRecv { index: 3, origin: ColumnOrigin::Rpc };
         let traces = fold_all(vec![event(recv, at(900, 0), Some(7))]);
         assert!(traces.is_empty());
     }

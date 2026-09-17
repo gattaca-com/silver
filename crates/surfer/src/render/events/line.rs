@@ -269,8 +269,8 @@ fn attributes(trace: &BlockTrace, node: Node) -> String {
         Node::Span(Span::Da(DaSpan::Custody)) => {
             format!("{}/{NUMBER_OF_COLUMNS} cols", trace.da.columns.len())
         }
-        Node::Span(Span::Da(DaSpan::Cols(source))) => {
-            format!("{} cols", trace.da.of_source(source).count())
+        Node::Span(Span::Da(DaSpan::Cols(origin))) => {
+            format!("{} cols", trace.da.of_origin(origin).count())
         }
         Node::Batch { .. } => {
             let batch = node.batch(trace).expect("displayed batch");
@@ -305,7 +305,7 @@ fn status_label(status: PayloadValidationStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{BlockSource, ColumnSource};
+    use silver_common::{BlockSource, ColumnOrigin};
     use silver_stages::Stage;
 
     use super::*;
@@ -339,7 +339,7 @@ mod tests {
     /// Every row of a fully unfolded block, paired with its cells.
     fn all_rows(block: BlockTrace, theme: &Theme) -> Vec<(DisplayRow, RowCells)> {
         let mut expanded = Expanded::default();
-        for group in [Group::Block, Group::Da, Group::Stf, Group::Cols(ColumnSource::Gossip)] {
+        for group in [Group::Block, Group::Da, Group::Stf, Group::Cols(ColumnOrigin::Gossip)] {
             expanded.toggle(block.block_root, group);
         }
         let traces = BlockTraces::from_iter([block]);
@@ -425,8 +425,8 @@ mod tests {
     #[test]
     fn data_bars_split_at_the_gate() {
         let theme = Theme::default();
-        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
-        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        let recv = |i| Stage::ColumnRecv { index: i, origin: ColumnOrigin::Gossip };
+        let validated = |i| Stage::ColumnValidated { index: i, origin: ColumnOrigin::Gossip };
         let cells = all_rows(
             trace(&[
                 (received(), 300),
