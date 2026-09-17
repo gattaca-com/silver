@@ -1,3 +1,4 @@
+mod attester_duties;
 mod blocks;
 mod config;
 mod duties;
@@ -8,12 +9,13 @@ mod ids;
 mod json;
 mod node_status;
 mod peers;
-mod receipts;
+mod proposer_duties;
 mod response;
 mod router;
 mod routes;
 mod server;
 mod statics;
+mod validator_api;
 mod validators;
 
 pub use node_status::{HeadStatus, NodeStatus};

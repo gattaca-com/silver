@@ -11,20 +11,21 @@ use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
+    attester_duties::{PostedShufflings, post_attester_duties},
     blocks::{block, block_header, block_root},
-    duties::{proposer_duties, proposer_duties_v2},
     events::events,
     ids::is_recognized_id,
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
     peers::{PeerFilter, PeerTable},
-    receipts::{
-        post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
-        post_sync_committee_subscriptions,
-    },
+    proposer_duties::{proposer_duties, proposer_duties_v2},
     response::Response,
     router::{Handler, Method, Request},
     statics::StaticBodies,
+    validator_api::{
+        post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
+        post_sync_committee_subscriptions,
+    },
     validators::{get_state_validators, post_state_validators, state_validator},
 };
 
@@ -61,6 +62,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/beacon_committee_subscriptions",
         post_beacon_committee_subscriptions,
     ),
+    (Method::Post, "/eth/v1/validator/duties/attester/{epoch}", post_attester_duties),
     (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", proposer_duties),
     (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", not_implemented),
     (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
@@ -82,6 +84,7 @@ pub(crate) struct ApiCtx {
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
     pub(crate) peers: PeerTable,
+    pub(crate) shufflings: PostedShufflings,
 }
 
 impl ApiCtx {
@@ -105,6 +108,7 @@ impl ApiCtx {
             state,
             node_status: NodeStatus::at_anchor(head_slot, anchor_root, anchor_epoch),
             peers: PeerTable::new(),
+            shufflings: PostedShufflings::default(),
         }
     }
 

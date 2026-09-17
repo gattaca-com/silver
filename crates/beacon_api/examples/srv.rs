@@ -30,6 +30,7 @@ fn main() {
         B256::default(),
         consumer(),
         consumer(),
+        consumer(),
     );
     println!("serving on {:?}", api.local_addrs());
     loop {

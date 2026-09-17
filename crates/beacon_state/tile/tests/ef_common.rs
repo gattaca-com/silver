@@ -450,6 +450,7 @@ pub fn ef_tile_with_spec(
         rp.cache_ref().random_access("ef_rpc", true).unwrap(),
         ep.cache_ref().random_access("ef_engine", true).unwrap(),
         yp.cache_ref().random_access("ef_replay", true).unwrap(),
+        TCache::producer("ef_beacon_state", 1 << 20),
         false,
         state,
     )

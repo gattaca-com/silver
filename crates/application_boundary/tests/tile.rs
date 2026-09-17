@@ -73,6 +73,7 @@ fn boundary_tile_with_spec(
         resp_p,
         gossip_p.cache_ref().random_access("t_events", true).unwrap(),
         rpc_p.cache_ref().random_access("t_storage", true).unwrap(),
+        rpc_p.cache_ref().random_access("t_beacon_state", true).unwrap(),
     );
     (tile, gossip_p, rpc_p)
 }
