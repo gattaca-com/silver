@@ -11,8 +11,7 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair,
-    PayloadValidationStatus, PeerEvent, ServedBlock, SyncUpdate, TCacheRead, TRandomAccess,
-    block_root,
+    PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheRead, TRandomAccess, block_root,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_httpcore::{
