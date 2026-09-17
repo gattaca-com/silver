@@ -4,8 +4,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, Enr, Identify, Keypair, PeerEvent,
-    SilverSpine, SyncUpdate, TProducer, TRandomAccess,
+    BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, EngineResp, Enr, Identify, Keypair,
+    PeerEvent, SilverSpine, SyncUpdate, TProducer, TRandomAccess,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -91,6 +91,7 @@ impl ApplicationBoundaryTile {
         let Self { beacon, engine, .. } = self;
 
         adapter.consume(|event: BeaconStateEvent, _| beacon.handle_beacon_state_event(event));
+        adapter.consume(|response: EngineResp, _| beacon.handle_engine_resp(response));
         adapter.consume(|event: PeerEvent, _| beacon.handle_peer_event(event));
         adapter.consume(|event: DataColumnsEvent, _| beacon.handle_data_columns_event(event));
         adapter.consume(|update: SyncUpdate, _| beacon.handle_sync_update(update));

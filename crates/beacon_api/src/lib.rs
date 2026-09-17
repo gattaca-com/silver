@@ -1,6 +1,7 @@
 mod blocks;
 mod config;
 mod events;
+mod head_verdict;
 mod identity;
 mod ids;
 mod json;
