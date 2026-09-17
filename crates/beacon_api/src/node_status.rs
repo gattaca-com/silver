@@ -1,4 +1,4 @@
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 use silver_common::{ELSyncStatus, SyncUpdate};
 
 use crate::json::SyncingData;
@@ -6,6 +6,7 @@ use crate::json::SyncingData;
 #[derive(Clone, Copy, Debug)]
 pub struct NodeStatus {
     pub head: HeadStatus,
+    pub head_root: B256,
     pub finalized_epoch: u64,
     /// `None` until the control tile publishes its first target.
     pub target: Option<SyncUpdate>,
@@ -21,9 +22,10 @@ pub(crate) enum Health {
 }
 
 impl NodeStatus {
-    pub fn at_anchor(head_slot: u64, anchor_epoch: u64) -> Self {
+    pub fn at_anchor(head_slot: u64, head_root: B256, anchor_epoch: u64) -> Self {
         Self {
             head: HeadStatus { slot: head_slot, optimistic: false },
+            head_root,
             finalized_epoch: anchor_epoch,
             target: None,
             el: ELSyncStatus::default(),

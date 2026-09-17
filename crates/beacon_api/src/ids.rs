@@ -24,6 +24,12 @@ pub(crate) fn parse_root(text: &str) -> Option<B256> {
     Some(root)
 }
 
+pub(crate) fn is_recognized_id(id: &str) -> bool {
+    matches!(id, "head" | "genesis" | "justified" | "finalized") ||
+        parse_uint64(id).is_some() ||
+        parse_root(id).is_some()
+}
+
 /// Whether `text` spells exactly `bytes` bytes in the `0x`-prefixed hex of the
 /// schemas' `pattern`, either case, for a field a handler checks and discards.
 pub(crate) fn is_hex_bytes(text: &str, bytes: usize) -> bool {

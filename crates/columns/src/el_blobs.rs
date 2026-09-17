@@ -12,7 +12,7 @@ use flux::spine::SpineProducers;
 use silver_common::{
     ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
     MAX_BLOBS_PER_BLOCK, SilverSpineProducers, TCacheProducer, TProducer, TRandomAccess, Wheel,
-    column_util as util,
+    body_root, column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -109,7 +109,7 @@ impl ElBlobFetcher {
         header[8..16].copy_from_slice(&SignedBeaconBlockView::proposer_index(block).to_le_bytes());
         header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(block));
         header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(block));
-        header[80..112].copy_from_slice(&util::body_root(body));
+        header[80..112].copy_from_slice(&body_root(body));
         header[112..208].copy_from_slice(SignedBeaconBlockView::signature(block));
 
         let mut commitments_buf = [0u8; MAX_COMMITMENTS_LEN];

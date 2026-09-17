@@ -9,8 +9,9 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiResponse, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound, RpcRequestInbound,
-    RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound,
+    RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead,
+    TRandomAccess, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -230,7 +231,7 @@ impl WriteQueue {
 
 /// One served file = one response chunk. The unit's resolution (canonical
 /// vs flat store) is decided up-front in `rpc_request`.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum QueryUnit {
     Block { slot: u64 },
     UnfinalizedBlock { slot: u64, parent_root: [u8; 32], block_root: [u8; 32] },
@@ -254,12 +255,16 @@ impl QueryUnit {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct BlockLookupResult {
+    file: QueryUnit,
+    root: B256,
+    canonical: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
 enum RequestSource {
     Peer(P2pStreamId),
-    /// One unit at most, answered by the first served file.
-    Api {
-        request_id: u64,
-    },
+    Api { request_id: u64, root: [u8; 32], canonical: bool },
 }
 
 /// An in-flight read request: the requester and the ordered chunks still to
@@ -316,8 +321,14 @@ impl PendingQuery {
                 self.first_chunk_at.get_or_insert_with(Instant::now);
                 true
             }
-            RequestSource::Api { request_id } => {
-                let block = Some(ServedBlock { slot: unit.slot(), ssz });
+            RequestSource::Api { request_id, root, canonical } => {
+                let block = Some(ServedBlock {
+                    slot: unit.slot(),
+                    root,
+                    finalized: matches!(unit, QueryUnit::Block { .. }),
+                    canonical,
+                    ssz: Some(ssz),
+                });
                 emit(IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block }));
                 false
             }
@@ -352,11 +363,17 @@ impl PendingQuery {
                     elapsed_ms: self.received_at.elapsed().as_millis() as u64,
                 }));
             }
-            RequestSource::Api { request_id } => {
+            RequestSource::Api { request_id, .. } => {
                 emit(IoEvent::ApiResponse(BeaconApiResponse::Block { request_id, block: None }));
             }
         }
     }
+}
+
+/// Truncation removes whole slot groups, so the group holding `earliest_slot`
+/// stays and everything below it goes.
+pub(super) fn first_retained_slot(earliest_slot: u64) -> u64 {
+    earliest_slot - earliest_slot % SLOTS_PER_DIR
 }
 
 pub(super) fn slot_dir(store_dir: &str, payload: Payload, slot: u64) -> PathBuf {
@@ -811,7 +828,7 @@ impl Store {
 
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
-                            match self.block_unit(root) {
+                            match self.block_file(root) {
                                 Some(unit) => units.push_back(unit),
                                 None => tracing::warn!(
                                     block_root = hex::encode(root),
@@ -868,16 +885,62 @@ impl Store {
         self.query_queue.push_back(PendingQuery::new(RequestSource::Peer(stream_id), units));
     }
 
-    /// Answered by `file_io`, with `None` for a root the store does not hold.
-    /// Uncapped: the API's connection cap bounds these.
-    pub(super) fn block_by_root_request(&mut self, request_id: u64, root: &[u8; 32]) {
-        let units = self.block_unit(root).into_iter().collect();
-        self.query_queue.push_back(PendingQuery::new(RequestSource::Api { request_id }, units));
+    pub(super) fn queue_block_request(&mut self, request_id: u64, lookup: BlockLookup) {
+        let located = self.lookup(lookup);
+        let (root, canonical) = located.map_or(([0u8; 32], false), |l| (l.root, l.canonical));
+        let source = RequestSource::Api { request_id, root, canonical };
+        let units = located.map(|l| l.file).into_iter().collect();
+        self.query_queue.push_back(PendingQuery::new(source, units));
+    }
+
+    pub(super) fn block_facts(&self, lookup: BlockLookup) -> Option<ServedBlock> {
+        let BlockLookupResult { file, root, canonical } = self.lookup(lookup)?;
+        Some(ServedBlock {
+            slot: file.slot(),
+            root,
+            finalized: matches!(file, QueryUnit::Block { .. }),
+            canonical,
+            ssz: None,
+        })
+    }
+
+    fn lookup(&self, lookup: BlockLookup) -> Option<BlockLookupResult> {
+        match lookup {
+            BlockLookup::Root(root) => {
+                let file = self.block_file(&root)?;
+                let canonical = match file {
+                    QueryUnit::UnfinalizedBlock { slot, block_root, .. } => {
+                        self.on_head_chain(slot, &block_root)
+                    }
+                    _ => true,
+                };
+                Some(BlockLookupResult { file, root, canonical })
+            }
+            BlockLookup::Slot(slot) if slot <= self.head.finalized_slot => {
+                let root = self.finalized.root_at(slot)?;
+                Some(BlockLookupResult { file: QueryUnit::Block { slot }, root, canonical: true })
+            }
+            BlockLookup::Slot(slot) => {
+                let (parent_root, block_root) = *self
+                    .unfinalized
+                    .canonical_chain_in_range(self.head.root, self.head.slot, slot, slot + 1)
+                    .get(&slot)?;
+                let file = QueryUnit::UnfinalizedBlock { slot, parent_root, block_root };
+                Some(BlockLookupResult { file, root: block_root, canonical: true })
+            }
+        }
+    }
+
+    fn on_head_chain(&self, slot: u64, root: &[u8; 32]) -> bool {
+        self.unfinalized
+            .canonical_chain_in_range(self.head.root, self.head.slot, slot, slot + 1)
+            .get(&slot)
+            .is_some_and(|(_, canonical)| canonical == root)
     }
 
     /// Any block held by root regardless of canonicity: the unfinalized fork
     /// tree first, then the finalized flat store.
-    fn block_unit(&self, root: &[u8; 32]) -> Option<QueryUnit> {
+    fn block_file(&self, root: &[u8; 32]) -> Option<QueryUnit> {
         if let Some((slot, parent_root)) = self.unfinalized.get(root) {
             return Some(QueryUnit::UnfinalizedBlock { slot, parent_root, block_root: *root });
         }

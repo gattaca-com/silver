@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use silver_beacon_api::BeaconApi;
-use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateOwner, SpecConfig};
 use silver_common::{Enr, Identify, Keypair, TCache, TCacheProducer};
 use silver_httpcore::{Bind, Readiness, TokenRange};
 
@@ -27,6 +27,7 @@ fn main() {
         &Identify::default(),
         &SpecConfig::mainnet(),
         state,
+        B256::default(),
         consumer(),
         consumer(),
     );

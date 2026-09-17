@@ -23,7 +23,7 @@ pub use crate::{
     spine::{
         ALL_PROTOCOLS, AcquiredRange, AcquiredRead as TRead, AcquiredSubReservation,
         AcquiredWithOffset, AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent,
-        BlockSource, BlockStage, ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnSource,
+        BlockLookup, BlockSource, BlockStage, ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnSource,
         Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineFcuResp,
         EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
@@ -48,6 +48,7 @@ pub use crate::{
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+mod block_root;
 pub mod cells;
 pub mod column_util;
 mod enr;
@@ -63,6 +64,7 @@ mod gossip;
 mod id;
 mod identity;
 mod spine;
+pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
 pub use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
 #[cfg(feature = "test-util")]

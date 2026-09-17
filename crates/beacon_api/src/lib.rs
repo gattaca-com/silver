@@ -1,3 +1,4 @@
+mod blocks;
 mod config;
 mod events;
 mod identity;

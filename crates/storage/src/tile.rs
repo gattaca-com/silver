@@ -7,7 +7,7 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, ColumnSource,
     DataColumnsEvent, DataKind, Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId,
     RpcInbound, SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy,
-    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, column_util,
+    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -247,7 +247,7 @@ impl StorageTile {
             BeaconStateEvent::Status { ssz, wall_slot, .. } => {
                 latest_status_event = Some((ssz, wall_slot));
             }
-            BeaconStateEvent::PersistBlock { ssz, source, slot, block_root } => {
+            BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
                 let t_read = match source {
                     BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
                     BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
@@ -257,8 +257,7 @@ impl StorageTile {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                        let block_root =
-                            column_util::block_root(buf, self.spec.is_gloas_at_slot(slot));
+                        let block_root = block_root(buf, self.spec.is_gloas_at_slot(slot));
                         self.store.add_block(block_root, t_read, slot, parent_root);
                     }
                     Err(e) => {
@@ -270,7 +269,7 @@ impl StorageTile {
                             "persist block buffer acquire failed"
                         );
                         StorageCounters::PersistAcquireFailed.inc();
-                        needs(SyncNeed::missing_block(block_root, slot));
+                        needs(SyncNeed::missing_block(announced_root, slot));
                     }
                 }
             }
@@ -316,9 +315,15 @@ impl Tile<SilverSpine> for StorageTile {
         self.persist_rpc_consumer.free();
         self.el_column_consumer.free();
 
-        adapter.consume(|request: BeaconApiRequest, _| {
-            if let BeaconApiRequest::BlockByRoot { request_id, block_root } = request {
-                self.store.block_by_root_request(request_id, &block_root);
+        adapter.consume(|request: BeaconApiRequest, producers| {
+            if let BeaconApiRequest::Block { request_id, lookup, with_bytes } = request {
+                if with_bytes {
+                    self.store.queue_block_request(request_id, lookup);
+                } else {
+                    let block = self.store.block_facts(lookup);
+                    let response = BeaconApiResponse::Block { request_id, block };
+                    producers.beacon_api_responses.produce(&response.into());
+                }
             }
         });
 

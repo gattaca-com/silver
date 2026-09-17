@@ -4,7 +4,7 @@
 
 use std::io::Write;
 
-use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
+use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Version};
 
 use crate::{events::HeadEvent, peers::Peer};
 
@@ -162,6 +162,13 @@ pub(crate) struct ReadFlags {
     pub(crate) finalized: bool,
 }
 
+pub(crate) struct SignedHeader {
+    pub(crate) root: B256,
+    pub(crate) canonical: bool,
+    pub(crate) header: BeaconBlockHeader,
+    pub(crate) signature: [u8; 96],
+}
+
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
     pub(crate) fn peers<'p>(&mut self, peers: impl Iterator<Item = &'p Peer>) {
@@ -242,6 +249,40 @@ impl Json<'_> {
         self.hex(&fork.current_version);
         self.key("epoch");
         self.quoted_u64(fork.epoch);
+        self.end_object();
+    }
+
+    pub(crate) fn block_root(&mut self, root: &B256) {
+        self.begin_object();
+        self.key("root");
+        self.hex(root);
+        self.end_object();
+    }
+
+    pub(crate) fn signed_header(&mut self, signed: &SignedHeader) {
+        self.begin_object();
+        self.key("root");
+        self.hex(&signed.root);
+        self.key("canonical");
+        self.bool(signed.canonical);
+        self.key("header");
+        self.begin_object();
+        self.key("message");
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(signed.header.slot);
+        self.key("proposer_index");
+        self.quoted_u64(signed.header.proposer_index);
+        self.key("parent_root");
+        self.hex(&signed.header.parent_root);
+        self.key("state_root");
+        self.hex(&signed.header.state_root);
+        self.key("body_root");
+        self.hex(&signed.header.body_root);
+        self.end_object();
+        self.key("signature");
+        self.hex(&signed.signature);
+        self.end_object();
         self.end_object();
     }
 

@@ -389,6 +389,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &identify,
         &spec,
         beacon_state_tile.reader(),
+        beacon_state_tile.head_block_root(),
         config.engine_config(),
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,

@@ -336,7 +336,7 @@ impl History {
 mod tests {
     use std::io::Write;
 
-    use silver_common::{TCache, TCacheProducer, column_util};
+    use silver_common::{TCache, TCacheProducer, block_root, block_root_fulu};
 
     use super::*;
     use crate::store::backfill::fixtures::{GLOAS_FORK_SLOT, block_bytes, spec};
@@ -347,8 +347,8 @@ mod tests {
     #[test]
     fn gloas_block_links_by_its_gloas_root() {
         let block = block_bytes(GLOAS_FORK_SLOT, [0xCC; 32]);
-        let gloas_root = column_util::block_root(&block, true);
-        let fulu_root = column_util::block_root_fulu(&block);
+        let gloas_root = block_root(&block, true);
+        let fulu_root = block_root_fulu(&block);
         assert_ne!(gloas_root, fulu_root, "layouts must disagree for this to mean anything");
 
         let mut producer = TCache::producer("backfill_gloas_link", 1 << 20);
