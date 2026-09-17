@@ -1,6 +1,5 @@
 use silver_common::{
-    block_root_fulu, block_root_gloas, body_root,
-    GossipDomain,
+    GossipDomain, block_root_fulu, block_root_gloas, body_root,
     cell_store::{CellKey, CellOrigin, CellValidationRequest},
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, EXECUTION_PAYLOAD_BID_MIN},
@@ -193,7 +192,7 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
-    let root = util::block_root_gloas(&block);
+    let root = block_root_gloas(&block);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
     let domain = rig.tile.validator.domain_at(SLOT).unwrap();
@@ -245,7 +244,7 @@ fn fulu_unresolved_proposer_cannot_authorize_serving() {
         });
         let mut allocator = rig.attach_cell_store(slot, CUSTODY_COLUMNS);
         let block = block_around(slot, &fulu_body(&blob.commitment));
-        let root = util::block_root_fulu(&block);
+        let root = block_root_fulu(&block);
         let bytes = blob.fulu_sidecar(3, &block);
         rig.follow(*SignedBeaconBlockView::parent_root(&block));
         rig.tile.tracker.set_signature(root, *DataColumnSidecarFuluView::block_signature(&bytes));
@@ -263,7 +262,7 @@ fn gloas_context_needs_approval_in_either_arrival_order_and_is_revocable() {
     const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
-    let root = util::block_root_gloas(&block);
+    let root = block_root_gloas(&block);
     for approval_first in [false, true] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
         let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
@@ -302,7 +301,7 @@ fn gloas_commitment_capacity_covers_the_retention_window() {
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     for slot in 1..=4 * SLOTS_PER_EPOCH {
         let block = block_around(slot, &body);
-        let root = util::block_root_gloas(&block);
+        let root = block_root_gloas(&block);
         rig.tile.validator.cache_gloas_commitments(root, &block);
         rig.tile.validator.note_validated(root, slot);
         assert_eq!(rig.tile.validator.gloas_commitments(&root), Some(blob.commitment.as_slice()));
@@ -327,7 +326,7 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
             gloas_body(&blob.commitment)
         };
         let block = block_around(SLOT, &body);
-        let root = util::block_root(&block, format == ForkName::Gloas);
+        let root = block_root(&block, format == ForkName::Gloas);
         let domain = rig.tile.validator.domain_at(SLOT).unwrap();
         if format == ForkName::Gloas {
             rig.block(&block);
@@ -444,12 +443,12 @@ fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
     let block_root = block_root_gloas(&block);
-    for (source, following, index) in [
-        (ColumnSource::Gossip, true, 3),
-        (ColumnSource::Gossip, true, 5),
-        (ColumnSource::Rpc, true, 3),
-        (ColumnSource::Rpc, true, 5),
-        (ColumnSource::Rpc, false, 3),
+    for (origin, following, index) in [
+        (ColumnOrigin::Gossip, true, 3),
+        (ColumnOrigin::Gossip, true, 5),
+        (ColumnOrigin::Rpc, true, 3),
+        (ColumnOrigin::Rpc, true, 5),
+        (ColumnOrigin::Rpc, false, 3),
     ] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
         if following {
@@ -571,7 +570,7 @@ fn buffered_gloas_columns_are_processed_without_publication() {
     let blob = BlockBlob::counting();
     let block = block_around(SLOT, &gloas_body(&blob.commitment));
     let block_root = block_root_gloas(&block);
-    for source in [ColumnSource::Gossip, ColumnSource::Rpc] {
+    for origin in [ColumnOrigin::Gossip, ColumnOrigin::Rpc] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
         rig.follow([0xAA; 32]);
         rig.receive_column(origin, 3, &blob.gloas_sidecar(3, SLOT, &block_root));

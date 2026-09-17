@@ -321,14 +321,7 @@ impl Tile<SilverSpine> for Controller {
 
             self.sync_engine.on_peer_event(event, self.peer_manager.our_fork_digest());
 
-            if let PeerEvent::SendGossip {
-                topic,
-                domain,
-                msg_hash,
-                protobuf,
-                ..
-            } = &event
-            {
+            if let PeerEvent::SendGossip { topic, domain, msg_hash, protobuf, .. } = &event {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *domain, *protobuf);
             }
 

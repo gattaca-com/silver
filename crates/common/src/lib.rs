@@ -23,9 +23,9 @@ pub use crate::{
     spine::{
         ALL_PROTOCOLS, AcquiredRange, AcquiredRead as TRead, AcquiredSubReservation,
         AcquiredSubReservationList, AcquiredWithOffset, AgentString, BeaconApiRequest,
-        BeaconApiResponse, BeaconStateEvent, BlockSource, BlockStage, ClusterIn, ClusterMsgIn,
-        ClusterMsgOut, ColumnOrigin, Consumer as TConsumer, DataColumnsEvent, ELSyncStatus,
-        EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+        BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage, ClusterIn,
+        ClusterMsgIn, ClusterMsgOut, ColumnOrigin, Consumer as TConsumer, DataColumnsEvent,
+        ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
         EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
         EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
         EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,

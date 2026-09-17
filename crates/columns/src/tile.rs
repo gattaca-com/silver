@@ -13,7 +13,7 @@ use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
     RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed,
-    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel,
+    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, RetentionEvent, StoreError,
     },
@@ -235,9 +235,9 @@ impl DataColumnsTile {
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => {
-                // cell sourced data columns need revalidation even if the column is already held,
-                // b/c cells can only be served from data columns tcache, not rpc or el
-                // TODO: fix this
+                // cell sourced data columns need revalidation even if the column is already
+                // held, b/c cells can only be served from data columns tcache,
+                // not rpc or el TODO: fix this
                 let verify_held = column.ssz_cache == SszCache::DataColumns &&
                     self.cells.as_ref().is_some_and(|cells| cells.needs_full_validation(buf));
                 self.validator.validate(

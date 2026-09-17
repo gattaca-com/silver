@@ -12,7 +12,7 @@ use flux::spine::SpineProducers;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
     MAX_BLOBS_PER_BLOCK, SilverSpineProducers, SszCache, TCacheProducer, TProducer, TRandomAccess,
-    Wheel, column_util as util,
+    Wheel, body_root, column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,

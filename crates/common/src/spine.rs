@@ -3,7 +3,7 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     AgentString, BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource,
-    BlockStage, ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnSource, DataColumnsEvent,
+    BlockStage, ClusterIn, ClusterMsgIn, ClusterMsgOut, ColumnOrigin, DataColumnsEvent,
     ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
