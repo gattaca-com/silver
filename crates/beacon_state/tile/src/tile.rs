@@ -58,7 +58,7 @@ pub enum Feedback {
     /// The message was accepted; the caller publishes the status.
     Accept,
     /// The block was added to fork choice and its status is published.
-    Imported(B256),
+    BlockImported(B256),
     Ignore,
     /// Carries the failed `block_root` (only) when the reject came from a
     /// post-`body_root`/STF path in block validation, so PM can blacklist
@@ -89,7 +89,7 @@ impl Debug for Feedback {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Accept => f.write_str("Accept"),
-            Self::Imported(r) => write!(f, "Imported(0x{})", hex32(r)),
+            Self::BlockImported(r) => write!(f, "BlockImported(0x{})", hex32(r)),
             Self::Ignore => f.write_str("Ignore"),
             Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
             Self::Reject(None) => f.write_str("Reject(None)"),
@@ -541,7 +541,7 @@ impl BeaconStateTile {
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
         debug_assert!(
             !self.pending_envelopes.contains_key(&head.observation.root),
-            "Status would describe a head whose envelope is still parked"
+            "Status would describe a head whose envelope is still pending"
         );
         let event = self.status_event(head);
         self.emitted_head = Some(head.observation);
@@ -847,7 +847,7 @@ impl BeaconStateTile {
 
     pub fn ef_apply_block(&mut self, ssz: &[u8]) -> Option<B256> {
         match self.try_apply_block(ssz) {
-            Feedback::Imported(r) => Some(r),
+            Feedback::BlockImported(r) => Some(r),
             _ => None,
         }
     }

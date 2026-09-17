@@ -142,7 +142,7 @@ fn case_spec(dir: &Path, is_gloas: bool) -> SpecConfig {
 
 fn outcome(feedback: &Feedback) -> &'static str {
     match feedback {
-        Feedback::Accept | Feedback::Imported(_) => "valid",
+        Feedback::Accept | Feedback::BlockImported(_) => "valid",
         Feedback::Reject(_) => "reject",
         _ => "ignore",
     }

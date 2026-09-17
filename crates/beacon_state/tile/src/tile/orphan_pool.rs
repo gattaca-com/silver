@@ -231,7 +231,7 @@ impl BeaconStateTile {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::Fatal,
             }),
-            Feedback::Imported(_) |
+            Feedback::BlockImported(_) |
             Feedback::AwaitData(_) |
             Feedback::AlreadyKnown(_) |
             Feedback::Ignore => {}

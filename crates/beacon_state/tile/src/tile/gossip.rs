@@ -1289,7 +1289,7 @@ impl BeaconStateTile {
             Feedback::RequestEnvelope { block_root, att_slot } => {
                 producers.produce(SyncNeed::missing_envelope(block_root, att_slot))
             }
-            Feedback::Imported(_) |
+            Feedback::BlockImported(_) |
             Feedback::AwaitData(_) |
             Feedback::AlreadyKnown(_) |
             Feedback::Ignore => {}

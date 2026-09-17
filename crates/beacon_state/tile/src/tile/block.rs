@@ -153,7 +153,7 @@ impl BeaconStateTile {
         let hold = waits_for_columns.then_some((ssz, source));
         let f = self.apply_and_import(parsed, data, hold);
         match f {
-            Feedback::Imported(_) => {
+            Feedback::BlockImported(_) => {
                 self.announce_imported(block_root, slot, data, ssz, source, producers)
             }
             Feedback::AwaitData(_) => {
@@ -264,7 +264,7 @@ impl BeaconStateTile {
             ),
         }
 
-        if matches!(feedback, Feedback::Imported(_)) {
+        if matches!(feedback, Feedback::BlockImported(_)) {
             self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
         }
     }
@@ -343,7 +343,7 @@ impl BeaconStateTile {
             }
             None => {
                 self.import_block(parsed, applied, data);
-                Feedback::Imported(block_root)
+                Feedback::BlockImported(block_root)
             }
         }
     }

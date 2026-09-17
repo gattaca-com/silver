@@ -1333,7 +1333,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let feedback =
         tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
-    let Feedback::Imported(block_root) = feedback else { panic!("{feedback:?}") };
+    let Feedback::BlockImported(block_root) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
