@@ -15,12 +15,13 @@ pub use control::{
     copy_subscribes_to_protobuf_output, copy_unsubscribes_to_protobuf_output,
 };
 pub use handler::GossipHandler;
-pub use partial::{PartialFrame, PartsMetadata};
+pub use partial::{ColumnGroupKey, PartialFrame, PartialMetadataReceived, PartsMetadata};
 use silver_common::{GossipMsgOut, NewGossipMsg, PeerEvent};
 
 /// Events emitted by the GossipHandler.
 #[allow(clippy::large_enum_variant)]
 pub enum GossipHandlerEvent {
+    PartialMetadata(PartialMetadataReceived),
     PeerEvent(PeerEvent),
     NewGossip(NewGossipMsg),
     SendGossip(GossipMsgOut),

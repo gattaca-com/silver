@@ -336,7 +336,15 @@ pub fn copy_subscribes_to_protobuf_output(
     producer: &mut TProducer,
     topics: &[&str],
 ) -> Result<TCacheRead, Error> {
-    encode_sub_opts(producer, topics, true)
+    copy_subscriptions(producer, topics, false)
+}
+
+pub(crate) fn copy_subscriptions(
+    producer: &mut TProducer,
+    topics: &[&str],
+    supports_partial: bool,
+) -> Result<TCacheRead, Error> {
+    encode_sub_opts(producer, topics, true, supports_partial)
 }
 
 /// As `copy_subscribes_to_protobuf_output` but with `subscribe = false`
@@ -345,7 +353,7 @@ pub fn copy_unsubscribes_to_protobuf_output(
     producer: &mut TProducer,
     topics: &[&str],
 ) -> Result<TCacheRead, Error> {
-    encode_sub_opts(producer, topics, false)
+    encode_sub_opts(producer, topics, false, false)
 }
 
 /// Subscribe / unsubscribe share wire shape; only the bool differs.
@@ -353,6 +361,7 @@ fn encode_sub_opts(
     producer: &mut TProducer,
     topics: &[&str],
     subscribe: bool,
+    supports_partial: bool,
 ) -> Result<TCacheRead, Error> {
     // RPC.subscriptions = field 1 (LD, repeated SubOpts).
     // SubOpts.subscribe = field 1 (varint), topic_id = field 2 (string).
@@ -363,7 +372,11 @@ fn encode_sub_opts(
     let total: usize = topics
         .iter()
         .map(|t| {
-            let inner = TAG_LEN + BOOL_LEN + TAG_LEN + string_encoded_len(t);
+            let inner = TAG_LEN +
+                BOOL_LEN +
+                TAG_LEN +
+                string_encoded_len(t) +
+                usize::from(supports_partial) * 4;
             TAG_LEN + varint_len(inner as u64) + inner
         })
         .sum();
@@ -373,7 +386,11 @@ fn encode_sub_opts(
     let mut cursor: &mut [u8] = &mut out[..total];
 
     for topic in topics {
-        let inner = TAG_LEN + BOOL_LEN + TAG_LEN + string_encoded_len(topic);
+        let inner = TAG_LEN +
+            BOOL_LEN +
+            TAG_LEN +
+            string_encoded_len(topic) +
+            usize::from(supports_partial) * 4;
         // RPC.subscriptions (field 1, LD) — one wrap per entry.
         Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
         encode_varint(inner as u64, &mut cursor);
@@ -383,6 +400,12 @@ fn encode_sub_opts(
         // SubOpts.topic_id (field 2, string).
         Tag::new(2, WireType::LengthDelimited).encode(&mut cursor);
         encode_string(topic, &mut cursor);
+        if supports_partial {
+            Tag::new(3, WireType::Varint).encode(&mut cursor);
+            encode_varint(0, &mut cursor);
+            Tag::new(4, WireType::Varint).encode(&mut cursor);
+            encode_varint(1, &mut cursor);
+        }
     }
 
     reservation.increment_offset(total);
@@ -577,6 +600,22 @@ mod tests {
             assert_eq!(s.subscribe, Some(true));
             assert_eq!(s.topic_id, Some(*expect));
         }
+    }
+
+    #[test]
+    fn send_only_subscription_advertises_sending_without_requesting() {
+        let mut producer = TCache::producer("", 1 << 14);
+        let read = copy_subscriptions(
+            &mut producer,
+            &["/eth2/00000000/data_column_sidecar_3/ssz_snappy"],
+            true,
+        )
+        .unwrap();
+        let bytes = read_bytes(read, &producer);
+        let rpc = RPCView::decode_view(&bytes).unwrap();
+        let subscription = rpc.subscriptions.iter().next().unwrap();
+        assert_eq!(subscription.requests_partial, Some(false));
+        assert_eq!(subscription.supports_sending_partial, Some(true));
     }
 
     #[test]

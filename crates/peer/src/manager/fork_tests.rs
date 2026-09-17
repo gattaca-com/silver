@@ -104,13 +104,13 @@ fn mesh_refill_and_ihave_use_exact_domain_subscriptions() {
     let protobuf = reservation.read();
     reservation.increment_offset(1);
     captured.0.clear();
-    manager.on_outbound_ihave(TOPIC, NEW, protobuf, &mut |event| captured.0.push(event));
+    manager.on_outbound_ihave(TOPIC, NEW, protobuf, false, &mut |event| captured.0.push(event));
     assert!(
         matches!(captured.0.as_slice(), [PeerControl::P2pSend(P2pSend::Gossip(message))] if message.peer_id == 1)
     );
     manager.on_unsubscribe(1, TOPIC, NEW, now, &mut |_| {});
     captured.0.clear();
-    manager.on_outbound_ihave(TOPIC, NEW, protobuf, &mut |event| captured.0.push(event));
+    manager.on_outbound_ihave(TOPIC, NEW, protobuf, false, &mut |event| captured.0.push(event));
     assert!(captured.0.is_empty());
 }
 

@@ -11,6 +11,7 @@ use super::tls;
 mod gossip_frame;
 mod leased;
 mod peer;
+mod send_receipts;
 mod stream;
 
 pub(crate) use gossip_frame::{OutboundGossip, SegmentedGossipLimits, SegmentedWriter};

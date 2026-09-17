@@ -4,15 +4,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile, tracing};
+use flux::{
+    spine::{SpineAdapter, SpineProducers},
+    tile::Tile,
+    tracing,
+};
 use flux_profiler::timed;
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
-    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine,
-    cell_store::RetentionEvent,
+    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipFrameOutcome,
+    GossipFrameResult, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
+    RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine, cell_store::RetentionEvent,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -150,6 +154,9 @@ impl NetworkTile {
 
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {
+                NetEvent::GossipFrameResult(result) => {
+                    adapter.produce(PeerEvent::SegmentedGossipResult(result));
+                }
                 NetEvent::PeerConnected { peer, addr, local_dialler } => {
                     let port = addr.port();
                     adapter.produce(PeerEvent::P2pNewConnection {
@@ -236,6 +243,13 @@ impl NetworkTile {
                         self.inner.enqueue_rpc_out(rpc_outbound)
                     },
                 };
+                if result != p2p::SendResult::Ok && let P2pSend::SegmentedGossip { peer_id, frame } = msg {
+                    producers.produce(PeerEvent::SegmentedGossipResult(GossipFrameResult {
+                        p2p_peer: peer_id,
+                        frame_seq: frame.read().seq(),
+                        outcome: GossipFrameOutcome::Dropped,
+                    }));
+                }
                 match result {
                     p2p::SendResult::Ok => {}
                     p2p::SendResult::StreamCreationError | p2p::SendResult::StreamGone => {

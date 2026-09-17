@@ -18,8 +18,9 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId,
-    PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
+    CacheFrameRef, ClusterMsgOut, GossipFrameResult, GossipMsgOut, Identify, Keypair,
+    P2pConnectionStats, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound,
+    RpcRequestOutbound, TCacheRead,
 };
 
 use crate::{
@@ -58,6 +59,7 @@ pub fn p2p_spin<F: FnMut(NetEvent)>(
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum NetEvent {
+    GossipFrameResult(GossipFrameResult),
     /// A peer connection has been established and its PeerId verified.
     PeerConnected {
         peer: RemotePeer,
@@ -364,6 +366,10 @@ impl P2p {
         NetworkCounters::P2pConnections.set(self.peers.len() as u64);
         if let Some(limits) = &self.segmented_limits {
             limits.publish_gauges();
+            while let Some(result) = limits.pop_result() {
+                did_work = true;
+                on_event(NetEvent::GossipFrameResult(result));
+            }
         }
         did_work
     }

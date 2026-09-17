@@ -262,7 +262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Validation only: a non-Off mode fails startup rather than being ignored.
+    // Partial receiving remains gated by configuration validation.
     let partial_columns =
         config.partial_columns().map_err(|error| format!("partial columns config: {error:?}"))?;
 

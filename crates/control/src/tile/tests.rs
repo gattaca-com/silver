@@ -14,6 +14,8 @@ fn test_domain() -> silver_common::GossipDomain {
 
 use super::*;
 
+mod partial;
+
 struct GossipPublications {
     controller: Controller,
     adapter: SpineAdapter<SilverSpine>,

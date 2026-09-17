@@ -1,7 +1,8 @@
 use std::slice;
 
 use silver_common::{
-    GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
+    GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
+    MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
 };
 
 use crate::{
@@ -20,6 +21,7 @@ pub(crate) enum GossipWriteState {
     /// stream recreation restarts from here.
     Announcing {
         written: usize,
+        partial_columns: bool,
     },
     Idle,
     WritingLength {
@@ -64,16 +66,18 @@ impl GossipWriteState {
         p2p_id: &P2pStreamId,
     ) -> Result<Spin, StreamError> {
         match self {
-            Self::Announcing { mut written } => {
-                let n = io.write_to_stream(
-                    p2p_id.stream_id(),
-                    &GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME[written..],
-                )?;
+            Self::Announcing { mut written, partial_columns } => {
+                let announcement: &[u8] = if partial_columns {
+                    GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME
+                } else {
+                    GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME
+                };
+                let n = io.write_to_stream(p2p_id.stream_id(), &announcement[written..])?;
                 written += n;
-                if written == GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME.len() {
+                if written == announcement.len() {
                     Ok(Spin::Next(Self::Idle))
                 } else {
-                    Ok(Spin::Ok(Self::Announcing { written }))
+                    Ok(Spin::Ok(Self::Announcing { written, partial_columns }))
                 }
             }
             Self::Idle => match io.gossip_next() {
@@ -129,6 +133,7 @@ impl GossipWriteState {
                 let n = io.write_chunks(p2p_id.stream_id(), slice::from_mut(chunk))?;
                 let chunk_complete = chunk.is_empty();
                 if frame.written(n) {
+                    frame.complete(*p2p_id);
                     Ok(Spin::Next(Self::Idle))
                 } else if chunk_complete {
                     Ok(Spin::Next(Self::WritingSegments(frame)))
@@ -278,7 +283,7 @@ mod tests {
         };
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, false);
 
-        let mut state = GossipWriteState::Announcing { written: 0 };
+        let mut state = GossipWriteState::Announcing { written: 0, partial_columns: false };
         for _ in 0..64 {
             state = state.spin(&mut io, &p2p_id).unwrap();
         }

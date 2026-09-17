@@ -228,6 +228,11 @@ impl PartialDataColumnPartsMetadataView {
     /// Returns (available, requests); both bitlists must have exactly
     /// the trusted `n_rows` bits.
     pub fn check_size(buf: &[u8], n_rows: usize) -> Option<(u128, u128)> {
+        let (available, requests, rows) = Self::decode(buf)?;
+        (rows == n_rows).then_some((available, requests))
+    }
+
+    pub fn decode(buf: &[u8]) -> Option<(u128, u128, usize)> {
         if buf.len() < 10 {
             return None;
         }
@@ -236,9 +241,9 @@ impl PartialDataColumnPartsMetadataView {
         if o0 != 8 || o1 < o0 || o1 > buf.len() {
             return None;
         }
-        let (available, n) = bitlist_u128(&buf[o0..o1], n_rows)?;
-        let (requests, n_req) = bitlist_u128(&buf[o1..], n_rows)?;
-        (n == n_rows && n_req == n_rows).then_some((available, requests))
+        let (available, n) = bitlist_u128(&buf[o0..o1], 128)?;
+        let (requests, n_req) = bitlist_u128(&buf[o1..], 128)?;
+        (n == n_req).then_some((available, requests, n))
     }
 }
 
