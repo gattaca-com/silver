@@ -180,10 +180,11 @@ at or before that slot.
 
 ### Loss of synced status
 
-Control determines whether the node is synced. When it can no longer follow
-and has no selectable sync target, it replaces a previously published
-`Following` with `SyncUpdate::Stalled`. Repeated evaluations of the same
-stall publish no further update.
+Control determines whether the node is synced. When it cannot follow and
+has no selectable sync target, it enters `Phase::Stalled` and publishes
+`SyncUpdate::Stalled`. This applies after following or syncing, and when
+the first peer observations establish that the node cannot follow.
+Repeated evaluations of the same stall publish no further update.
 
 Without a selectable target, a block gap prevents following when no peer
 claims a head within the configured lag behind ours or ahead. The gap is a
@@ -193,7 +194,7 @@ A known block or proven-empty slot ends the run. Peers claiming heads more
 than the configured lag ahead also prevent following, even when their
 chains cannot be selected.
 
-`Stalled` reports that the node is no longer synced while preserving live
+`Stalled` reports that the node is not synced while preserving live
 processing. Beacon state continues slot ticks, status publication, and
 gossip imports. Columns remain eligible for relay, and storage processes
 history as it does while following. These consumers distinguish a selected
@@ -208,10 +209,16 @@ lag threshold.
 
 Control continues requesting peer statuses while stalled with a block gap.
 A peer claim within the lag or restored block coverage can restore
-`Following`. A selectable target ahead starts syncing. Before `Following`
-has been published, there is no synced status to replace. Entering idle after
-syncing retains the previous sync publication, which already reports
-syncing and keeps beacon state in its syncing loop.
+`Following`. A selectable target ahead starts syncing. Target selection
+reevaluates both paths while stalled. Abandoning the last usable sync target
+enters `Stalled` when following is not possible, allowing gossip imports
+and slot ticks to resume.
+
+Control starts idle until local status and a peer comparison are available.
+Transitions to following or stalled wait for disk replay to finish or be
+skipped. Until then, an already selected sync target remains visible.
+Publication reflects the resulting phase; the previous update is retained
+only to suppress duplicate publications.
 
 The peer comparison uses cached head slots, without expiring claims or
 requiring matching block roots. An equally stale peer can therefore

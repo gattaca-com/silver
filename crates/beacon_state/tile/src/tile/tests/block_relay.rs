@@ -170,6 +170,25 @@ fn an_rpc_block_is_imported_without_a_gossip_notification() {
 }
 
 #[test]
+fn stalled_after_syncing_imports_gossip() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    let expected = fulu_relayed(&block_ssz);
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::SyncingHead {
+        head_slot: 400,
+        head_root: [9; 32],
+    });
+    rig.tile.on_sync_update(SyncUpdate::Stalled);
+    rig.on_gossip(&block_ssz);
+
+    assert!(rig.drain().receipts().contains(&Receipt {
+        slot: expected.slot,
+        block_root: expected.block_root,
+        stage: BlockStage::Applied,
+        source: BlockSource::Gossip,
+    }));
+}
+
+#[test]
 fn a_blob_block_is_relayed_once_across_staging_and_import() {
     let (pre_ssz, block_ssz) = sanity_fixture("one_blob");
     let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);

@@ -344,7 +344,7 @@ fn unavailable_chain_ahead_withdraws_following() {
     e.ctx.peers.mark_unavailable(ahead);
     peer_status(&mut e, PEER, ahead, 100 + 2 * head_lag());
     assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
-    assert!(matches!(e.phase, Phase::Idle));
+    assert_eq!(e.current_target(), Some(SyncUpdate::Stalled));
 }
 
 #[test]
@@ -358,11 +358,8 @@ fn peer_ahead_of_a_stalled_node_is_chased() {
     );
 }
 
-/// Losing the only selectable chain keeps the previous sync publication.
-/// Publishing Following would resume slot advancement while still behind the
-/// peer.
 #[test]
-fn unselectable_chains_with_peers_ahead_stay_idle_not_following() {
+fn unselectable_chains_with_peers_ahead_enter_stalled() {
     let mut e = engine();
     peer_status(&mut e, PEER, HEAD_ROOT, 20_000);
     local_status(&mut e, 0, 20_000);
@@ -371,9 +368,61 @@ fn unselectable_chains_with_peers_ahead_stay_idle_not_following() {
 
     e.ctx.peers.mark_unavailable(HEAD_ROOT);
     e.mark_dirty();
-    assert_eq!(e.advance(), None, "no target published");
-    assert!(matches!(e.phase, Phase::Idle), "behind a peer: Idle, not Following");
-    assert_ne!(e.current_target(), Some(SyncUpdate::Following));
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
+    assert_eq!(e.current_target(), Some(SyncUpdate::Stalled));
+}
+
+#[test]
+fn lost_sync_peer_stalls_until_block_coverage_recovers() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 100, 200);
+    assert_eq!(e.advance(), Some(SyncUpdate::SyncingHead { head_root: HEAD_ROOT, head_slot: 200 }));
+
+    e.on_peer_disconnected(PEER);
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
+    assert_eq!(e.current_target(), Some(SyncUpdate::Stalled));
+    assert!(e.fell_behind());
+
+    local_status(&mut e, 100, 200);
+    assert_eq!(e.advance(), None, "an unchanged stall is not republished");
+
+    block_at(&mut e, 200, Some(100));
+    local_status(&mut e, 200, 200);
+    assert_eq!(e.advance(), Some(SyncUpdate::Following));
+    assert!(e.take_just_synced());
+}
+
+#[test]
+fn replay_completion_allows_following_or_stalled() {
+    for (peer_head, expected) in
+        [(100, SyncUpdate::Following), (100 - head_lag() - 1, SyncUpdate::Stalled)]
+    {
+        let mut e = engine_awaiting_replay();
+        peer_status(&mut e, PEER, HEAD_ROOT, peer_head);
+        local_status(&mut e, 100, 100 + head_lag());
+        assert_eq!(e.advance(), None, "replay still pending");
+        assert_eq!(e.current_target(), None);
+
+        e.on_replay_complete();
+        assert_eq!(e.advance(), Some(expected));
+        assert_eq!(e.current_target(), Some(expected));
+    }
+}
+
+#[test]
+fn lost_sync_peer_during_replay_stalls_after_replay_completes() {
+    let mut e = engine_awaiting_replay();
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 100, 200);
+    assert_eq!(e.advance(), Some(SyncUpdate::SyncingHead { head_root: HEAD_ROOT, head_slot: 200 }));
+
+    e.on_peer_disconnected(PEER);
+    assert_eq!(e.advance(), None, "live processing must wait for replay");
+
+    e.on_replay_complete();
+    assert_eq!(e.advance(), Some(SyncUpdate::Stalled));
+    assert_eq!(e.current_target(), Some(SyncUpdate::Stalled));
 }
 
 #[test]

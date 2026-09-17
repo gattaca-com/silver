@@ -666,7 +666,7 @@ pub enum SyncUpdate {
         head_slot: u64,
     },
     Following,
-    /// No longer synced, without a selected sync target.
+    /// Not synced, without a selected sync target.
     Stalled,
 }
 

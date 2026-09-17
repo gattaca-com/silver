@@ -962,6 +962,9 @@ fn stalled_target_keeps_the_slot_ticker() {
     chasing.tile.on_sync_update(SyncUpdate::SyncingHead { head_root: [9; 32], head_slot: 400 });
     chasing.advance_to_slot(71);
     assert!(chasing.crank().wall_slots().is_empty());
+
+    chasing.tile.on_sync_update(SyncUpdate::Stalled);
+    assert_eq!(chasing.crank().wall_slots(), [71]);
 }
 
 /// Both reorg heads are in epoch 3, with a parent in epoch 2.

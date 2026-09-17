@@ -26,7 +26,7 @@ pub(super) struct Syncing {
 
 impl Syncing {
     pub(super) fn new(target: SyncUpdate, custody_columns: u128) -> Self {
-        debug_assert!(!target.is_following(), "`Syncing` chases a chain; `Following` is not one");
+        debug_assert!(target.is_syncing(), "`Syncing` requires a head or finalized checkpoint");
         Self {
             target,
             ranges: Ranges::new(Origin::Live, BATCH, custody_columns, SETTLE_TIMEOUT),
