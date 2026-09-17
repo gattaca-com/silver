@@ -211,6 +211,7 @@ pub struct ColumnAvailability {
     pub block_root: [u8; 32],
     pub column: usize,
     pub slot: u64,
+    pub blob_count: usize,
     pub domain: GossipDomain,
     pub available: u128,
     pub full: Option<(TCacheRead, usize, usize)>,

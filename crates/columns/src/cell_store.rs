@@ -378,6 +378,7 @@ impl CellStore {
             block_root: *root,
             column,
             slot: context.context.slot,
+            blob_count: context.context.blob_count,
             domain: context.domain,
             available: entry.admitted.0,
             full: entry.full.as_ref().map(|f| (f.read, f.cell_offset, f.proof_offset)),

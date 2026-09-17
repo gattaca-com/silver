@@ -59,9 +59,11 @@ impl GossipDomain {
 
 /// Gossipsub 1.3 extensions announcement, sent as the first RPC on
 /// every stream we write to after negotiating meshsub 1.3. Length
-/// prefix 4, then `RPC { control(3) { extensions(6) {} } }` — empty
-/// because no extension is enabled yet.
+/// prefix 4, then `RPC { control(3) { extensions(6) {} } }` when no
+/// extensions are enabled.
 pub const GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME: &[u8] = &[4, 0x1A, 2, 0x32, 0];
+
+pub const GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME: &[u8] = &[6, 0x1A, 4, 0x32, 2, 0x50, 1];
 
 /// Eth2 gossipsub topic name. Wire topic is
 /// `/eth2/{fork_digest_hex}/{name}/ssz_snappy`; this enum covers the `{name}`
