@@ -115,12 +115,23 @@ impl Held {
 /// The finalized blocks: root → slot, and which slots have a file. A root is
 /// indexed when its promotion is queued and held once its file is down, so a
 /// root indexed at a slot not held is a block that finalized but was never
-/// written. `by_slot` covers held slots alone.
-#[derive(Default)]
+/// written.
 pub(super) struct BlockIndex {
     by_root: FxHashMap<B256, u64>,
     by_slot: FxHashMap<u64, B256>,
     held: Held,
+    floor: u64,
+}
+
+impl Default for BlockIndex {
+    fn default() -> Self {
+        Self {
+            by_root: FxHashMap::default(),
+            by_slot: FxHashMap::default(),
+            held: Held::default(),
+            floor: u64::MAX,
+        }
+    }
 }
 
 impl BlockIndex {
@@ -134,11 +145,12 @@ impl BlockIndex {
 
     pub(super) fn index(&mut self, root: B256, slot: u64) {
         self.by_root.insert(root, slot);
+        self.by_slot.insert(slot, root);
+        self.floor = self.floor.min(slot);
     }
 
     pub(super) fn hold(&mut self, root: B256, slot: u64) {
-        self.by_root.insert(root, slot);
-        self.by_slot.insert(slot, root);
+        self.index(root, slot);
         self.held.set(slot);
     }
 
@@ -163,13 +175,17 @@ impl BlockIndex {
     }
 
     pub(super) fn drop_below(&mut self, first_retained: u64) {
-        self.by_root.retain(|_, slot| *slot >= first_retained);
-        self.by_slot.retain(|slot, _| *slot >= first_retained);
+        for slot in self.floor..first_retained {
+            if let Some(root) = self.by_slot.remove(&slot) {
+                self.by_root.remove(&root);
+            }
+        }
         self.held.clear_below(first_retained);
+        self.floor = self.floor.max(first_retained);
     }
 
     pub(super) fn root_at(&self, slot: u64) -> Option<B256> {
-        self.by_slot.get(&slot).copied()
+        self.held.has(slot).then(|| self.by_slot.get(&slot).copied()).flatten()
     }
 
     /// The block at `slot` is `root`, and its file is down.
@@ -251,6 +267,7 @@ mod tests {
             index.hold([byte; 32], slot);
         }
         index.index([4; 32], 150);
+        assert_eq!(index.root_at(150), None, "indexed but not held");
 
         index.drop_below(256);
         for (root, slot) in [([1; 32], 100), ([2; 32], 200), ([4; 32], 150)] {
@@ -263,6 +280,11 @@ mod tests {
         assert!(index.holds(300));
         assert_eq!(index.held_descending().collect::<Vec<_>>(), vec![300]);
         assert_eq!(index.next_held_above(0), Some(300));
+
+        index.hold([5; 32], 260);
+        index.drop_below(300);
+        assert_eq!(index.slot_of(&[5; 32]), None, "swept from the previous boundary");
+        assert_eq!(index.slot_of(&[3; 32]), Some(300));
     }
 
     #[test]
