@@ -1,10 +1,12 @@
-use std::str;
+use std::{io::Write, str};
 
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
 use crate::{blocks::BlockRequest, events::ChannelSet, json::Json, router::Outcome};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
+
+const CONTENT_LENGTH_WIDTH: usize = u64::MAX.ilog10() as usize + 1;
 
 pub(crate) struct Response<'a> {
     out: &'a mut Vec<u8>,
@@ -42,12 +44,26 @@ impl<'a> Response<'a> {
         self.send(200, Some(JSON_CONTENT_TYPE), &[], body);
     }
 
-    /// Renders a body, then frames it: `Content-Length` precedes the body on
-    /// the wire, so the render cannot go straight into the response buffer.
+    /// Renders the body in place behind its head. `Content-Length` precedes
+    /// the body on the wire, so its field is written as the whitespace RFC
+    /// 9110 allows before a value, wide enough for any length, and the digits
+    /// land once the body is rendered.
     pub(crate) fn json_body(&mut self, render: impl FnOnce(&mut Json<'_>)) {
-        let mut body = Vec::new();
-        render(&mut Json::new(&mut body));
-        self.json(&body);
+        write!(
+            self.out,
+            "HTTP/1.1 200 OK\r\nContent-Type: {JSON_CONTENT_TYPE}\r\nContent-Length: "
+        )
+        .unwrap();
+        let digits_at = self.out.len();
+        self.out.extend_from_slice(&[b' '; CONTENT_LENGTH_WIDTH]);
+        self.out.extend_from_slice(b"\r\n\r\n");
+        let body_start = self.out.len();
+
+        render(&mut Json::new(self.out));
+
+        let length = self.out.len() - body_start;
+        let mut digits = &mut self.out[digits_at..digits_at + CONTENT_LENGTH_WIDTH];
+        write!(digits, "{length:>CONTENT_LENGTH_WIDTH$}").unwrap();
     }
 
     pub(crate) fn empty(&mut self, content_type: &str) {
@@ -137,6 +153,22 @@ mod tests {
         let mut out = Vec::new();
         write(&mut Response::new(&mut out));
         out
+    }
+
+    /// The length field is padded with the whitespace a field value may be
+    /// preceded by, so the body can be rendered in place behind it.
+    #[test]
+    fn json_body_is_framed_once_behind_a_padded_length() {
+        let out = framed(|resp| resp.json_body(|json| json.data_envelope(|json| json.u64(7))));
+        assert_eq!(
+            out,
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+              Content-Length:                   10\r\n\r\n{\"data\":7}"
+        );
+        let mut out = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let earlier = out.len();
+        Response::new(&mut out).json_body(|json| json.begin_array());
+        assert!(out[earlier..].ends_with(b"Content-Length:                    1\r\n\r\n["));
     }
 
     #[test]

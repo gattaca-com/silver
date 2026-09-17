@@ -93,7 +93,7 @@ impl ApiCtx {
         anchor_root: B256,
     ) -> Self {
         let (head_slot, anchor_epoch) = state
-            .read(&|view: StateReadView<'_>| {
+            .read(|view: StateReadView<'_>| {
                 let slot = view.slot.state();
                 (slot.latest_block_header.slot, slot.slot / SLOTS_PER_EPOCH)
             })
@@ -107,8 +107,8 @@ impl ApiCtx {
         }
     }
 
-    pub(crate) fn read_state<R>(&self, read: impl Fn(StateReadView<'_>) -> R) -> R {
-        self.state.read(&read).expect("beacon api needs the anchor state published")
+    pub(crate) fn read_state<R>(&self, read: impl FnMut(StateReadView<'_>) -> R) -> R {
+        self.state.read(read).expect("beacon api needs the anchor state published")
     }
 
     /// Resolves `{state_id}` and reads from the state it names, alongside the
@@ -119,45 +119,53 @@ impl ApiCtx {
         &self,
         req: &Request<'_>,
         resp: &mut Response<'_>,
-        read: impl Fn(StateReadView<'_>) -> R,
+        mut read: impl FnMut(StateReadView<'_>) -> R,
     ) -> Option<StateRead<R>> {
-        let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
-        if state_id != "head" {
-            if is_recognized_id(state_id) {
-                resp.error(404, "state not found");
-            } else {
-                resp.error(400, "invalid state_id");
-            }
+        if !self.serves_state(req, resp) {
             return None;
         }
-
         let node_status = self.node_status;
-        let read = |view: StateReadView<'_>| {
-            let block_slot = view.slot.state().latest_block_header.slot;
-            StateRead {
-                flags: ReadFlags {
-                    execution_optimistic: node_status.execution_optimistic(),
-                    finalized: node_status.is_finalized(block_slot),
-                },
-                data: read(view),
-            }
+        let read = |view: StateReadView<'_>| StateRead {
+            flags: read_flags(node_status, &view),
+            data: read(view),
         };
         Some(self.read_state(read))
     }
 
-    /// A `{state_id}` read whose body is the envelope around `render`, for the
-    /// endpoints that answer whatever the state holds.
-    pub(crate) fn state_response<R>(
+    /// A `{state_id}` read whose body is the envelope around `render`, written
+    /// under the read straight into the response. `render` runs again from an
+    /// empty body on retry.
+    pub(crate) fn state_response(
         &self,
         req: &Request<'_>,
         resp: &mut Response<'_>,
-        read: impl Fn(StateReadView<'_>) -> R,
-        render: impl FnOnce(&mut Json<'_>, &R),
+        mut render: impl FnMut(&StateReadView<'_>, &mut Json<'_>),
     ) {
-        let Some(state) = self.state_read(req, resp, read) else {
+        if !self.serves_state(req, resp) {
             return;
-        };
-        resp.json_body(|json| json.flagged_envelope(state.flags, |json| render(json, &state.data)));
+        }
+        let node_status = self.node_status;
+        resp.json_body(|json| {
+            self.read_state(|view| {
+                json.restart();
+                json.flagged_envelope(read_flags(node_status, &view), |json| render(&view, json));
+            });
+        });
+    }
+
+    /// Whether `{state_id}` names the one state silver serves, having answered
+    /// the request when it does not.
+    fn serves_state(&self, req: &Request<'_>, resp: &mut Response<'_>) -> bool {
+        let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
+        if state_id == "head" {
+            return true;
+        }
+        if is_recognized_id(state_id) {
+            resp.error(404, "state not found");
+        } else {
+            resp.error(400, "invalid state_id");
+        }
+        false
     }
 }
 
@@ -165,6 +173,13 @@ impl ApiCtx {
 pub(crate) struct StateRead<R> {
     pub(crate) flags: ReadFlags,
     pub(crate) data: R,
+}
+
+fn read_flags(node_status: NodeStatus, view: &StateReadView<'_>) -> ReadFlags {
+    ReadFlags {
+        execution_optimistic: node_status.execution_optimistic(),
+        finalized: node_status.is_finalized(view.slot.state().latest_block_header.slot),
+    }
 }
 
 /// The surface a request can name ahead of what silver serves: each of these
@@ -191,23 +206,18 @@ fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
 }
 
 fn state_fork(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    ctx.state_response(req, resp, |view| *view.epoch.fork(), |json, fork| json.fork(fork));
+    ctx.state_response(req, resp, |view, json| json.fork(view.epoch.fork()));
 }
 
 fn state_finality_checkpoints(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    ctx.state_response(
-        req,
-        resp,
-        |view| {
-            let epoch = view.epoch.state();
-            FinalityCheckpoints {
-                previous_justified: epoch.previous_justified_checkpoint,
-                current_justified: epoch.current_justified_checkpoint,
-                finalized: epoch.finalized_checkpoint,
-            }
-        },
-        |json, checkpoints| json.finality_checkpoints(checkpoints),
-    );
+    ctx.state_response(req, resp, |view, json| {
+        let epoch = view.epoch.state();
+        json.finality_checkpoints(&FinalityCheckpoints {
+            previous_justified: epoch.previous_justified_checkpoint,
+            current_justified: epoch.current_justified_checkpoint,
+            finalized: epoch.finalized_checkpoint,
+        })
+    });
 }
 
 fn identity(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {

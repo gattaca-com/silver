@@ -255,7 +255,7 @@ impl ColumnValidator {
         // notional read lock too long otherwise).
         let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
         let validated_parent_slot = self.validated_block_roots.get(parent_root).copied();
-        let checks = self.beacon_state.read(&|v| {
+        let checks = self.beacon_state.read(|v| {
             let state_epoch = v.slot.current_epoch();
             // proposer_lookahead is anchored to `state_epoch` and covers
             // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64).

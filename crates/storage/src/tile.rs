@@ -445,7 +445,7 @@ impl Tile<SilverSpine> for StorageTile {
         // reader has a published state. Feeds the per-slot served fork-digest.
         if self.genesis_validators_root.is_none() {
             self.genesis_validators_root =
-                self.beacon_state.read(&|v| v.imm.genesis_validators_root);
+                self.beacon_state.read(|v| v.imm.genesis_validators_root);
         }
 
         // Run store file i/o (also advances any in-flight checkpoint persist).

@@ -42,6 +42,10 @@ impl<'a> Json<'a> {
         self.out.push(b']');
     }
 
+    pub(crate) fn restart(&mut self) {
+        self.out.truncate(self.start);
+    }
+
     pub(crate) fn key(&mut self, name: &str) {
         debug_assert!(json_safe(name), "field name goes into JSON unescaped");
         self.separate();
@@ -389,14 +393,6 @@ impl Json<'_> {
         self.end_object();
     }
 
-    pub(crate) fn validators(&mut self, records: &[ValidatorRecord]) {
-        self.begin_array();
-        for record in records {
-            self.validator(record);
-        }
-        self.end_array();
-    }
-
     /// `ValidatorResponse` (`apis/beacon/states/validator.yaml`).
     pub(crate) fn validator(&mut self, record: &ValidatorRecord) {
         self.begin_object();
@@ -415,15 +411,15 @@ impl Json<'_> {
         self.key("effective_balance");
         self.quoted_u64(record.effective_balance);
         self.key("slashed");
-        self.bool(record.slashed);
+        self.bool(record.lifecycle.slashed);
         self.key("activation_eligibility_epoch");
-        self.quoted_u64(record.activation_eligibility_epoch);
+        self.quoted_u64(record.lifecycle.activation_eligibility_epoch);
         self.key("activation_epoch");
-        self.quoted_u64(record.activation_epoch);
+        self.quoted_u64(record.lifecycle.activation_epoch);
         self.key("exit_epoch");
-        self.quoted_u64(record.exit_epoch);
+        self.quoted_u64(record.lifecycle.exit_epoch);
         self.key("withdrawable_epoch");
-        self.quoted_u64(record.withdrawable_epoch);
+        self.quoted_u64(record.lifecycle.withdrawable_epoch);
         self.end_object();
         self.end_object();
     }

@@ -1,52 +1,25 @@
 use serde::Deserialize;
 use silver_beacon_state_data::{
-    BLSPubkey, Epoch, FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, StateReadView, ValidatorsView, Withdrawals,
+    BLSPubkey, Epoch, FAR_FUTURE_EPOCH, StateReadView, ValidatorsView, Withdrawals,
 };
 use silver_httpcore::Query;
 
 use crate::{
     ids::{MAX_BODY_IDS, parse_pubkey, parse_uint64},
+    json::Json,
     response::Response,
     router::Request,
     routes::ApiCtx,
 };
 
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let mut selection = Selection::default();
-    for (name, value) in Query::new(req.query) {
-        let admitted = match &*name {
-            "id" => value.split(',').all(|id| selection.push_id(id)),
-            "status" => value.split(',').all(|status| selection.push_status(status)),
-            _ => true,
-        };
-        if !admitted {
-            resp.error(400, "invalid id or status");
-            return;
-        }
-    }
-    respond_selection(req, ctx, resp, selection);
+    respond_selection(req, ctx, resp, Selection::from_query(req.query));
 }
 
 pub(crate) fn post_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let Ok(body) = serde_json::from_slice::<SelectionBody>(req.body) else {
-        resp.error(400, "invalid request body");
-        return;
-    };
-    let ids = body.ids.unwrap_or_default();
-    if ids.len() > MAX_BODY_IDS {
-        resp.error(400, "too many ids in request body");
-        return;
-    }
-    let mut selection = Selection::default();
-    let admitted = ids.into_iter().all(|id| selection.push_id(id)) &&
-        body.statuses
-            .unwrap_or_default()
-            .into_iter()
-            .all(|status| selection.push_status(status));
-    if !admitted {
-        resp.error(400, "invalid id or status in request body");
-        return;
-    }
+    let selection = serde_json::from_slice::<SelectionBody>(req.body)
+        .map_err(|_| "invalid request body")
+        .and_then(|body| Selection::from_body(&body));
     respond_selection(req, ctx, resp, selection);
 }
 
@@ -57,20 +30,22 @@ fn respond_selection(
     req: &Request<'_>,
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
-    mut selection: Selection,
+    selection: Result<Selection, &'static str>,
 ) {
-    if selection.ids.is_empty() {
-        resp.error(400, "at least one id is required");
-        return;
-    }
+    let mut selection = match selection {
+        Ok(selection) if !selection.ids.is_empty() => selection,
+        Ok(_) => {
+            resp.error(400, "at least one id is required");
+            return;
+        }
+        Err(rejection) => {
+            resp.error(400, rejection);
+            return;
+        }
+    };
     selection.ids.sort_unstable();
     selection.ids.dedup();
-    ctx.state_response(
-        req,
-        resp,
-        |view| selection.records(&view),
-        |json, records| json.validators(records),
-    );
+    ctx.state_response(req, resp, |view, json| selection.render(view, json));
 }
 
 pub(crate) fn state_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -80,7 +55,8 @@ pub(crate) fn state_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respon
         return;
     };
     let Some(state) = ctx.state_read(req, resp, |view| {
-        id.resolve(&view.validators).map(|ix| ValidatorRecord::read(&view, ix))
+        id.resolve(&view.validators)
+            .map(|ix| ValidatorRecord::read(&view, view.slot.current_epoch(), ix))
     }) else {
         return;
     };
@@ -109,34 +85,51 @@ struct Selection {
 }
 
 impl Selection {
-    fn push_id(&mut self, text: &str) -> bool {
-        match ValidatorId::parse(text) {
-            Some(id) => {
-                self.ids.push(id);
-                true
+    fn from_query(query: &str) -> Result<Self, &'static str> {
+        let mut selection = Self::default();
+        for (name, value) in Query::new(query) {
+            match &*name {
+                "id" => value.split(',').try_for_each(|id| selection.push_id(id))?,
+                "status" => {
+                    value.split(',').try_for_each(|status| selection.push_status(status))?
+                }
+                _ => {}
             }
-            None => false,
         }
+        Ok(selection)
     }
 
-    fn push_status(&mut self, text: &str) -> bool {
-        match StatusSet::parse(text) {
-            Some(set) => {
-                self.statuses = self.statuses.union(set);
-                true
-            }
-            None => false,
+    fn from_body(body: &SelectionBody<'_>) -> Result<Self, &'static str> {
+        let mut selection = Self::default();
+        body.ids.iter().flatten().try_for_each(|id| selection.push_id(id))?;
+        body.statuses.iter().flatten().try_for_each(|status| selection.push_status(status))?;
+        Ok(selection)
+    }
+
+    fn push_id(&mut self, text: &str) -> Result<(), &'static str> {
+        if self.ids.len() == MAX_BODY_IDS {
+            return Err("too many ids");
         }
+        self.ids.push(ValidatorId::parse(text).ok_or("invalid id")?);
+        Ok(())
+    }
+
+    fn push_status(&mut self, text: &str) -> Result<(), &'static str> {
+        self.statuses = self.statuses.union(StatusSet::parse(text).ok_or("invalid status")?);
+        Ok(())
     }
 
     /// Ids that name no validator are dropped, as the schema asks.
-    fn records(&self, view: &StateReadView<'_>) -> Vec<ValidatorRecord> {
-        self.ids
-            .iter()
-            .filter_map(|id| id.resolve(&view.validators))
-            .map(|ix| ValidatorRecord::read(view, ix))
-            .filter(|record| self.statuses.admits(record.status))
-            .collect()
+    fn render(&self, view: &StateReadView<'_>, json: &mut Json<'_>) {
+        let current_epoch = view.slot.current_epoch();
+        json.begin_array();
+        for ix in self.ids.iter().filter_map(|id| id.resolve(&view.validators)) {
+            let record = ValidatorRecord::read(view, current_epoch, ix);
+            if self.statuses.admits(record.status) {
+                json.validator(&record);
+            }
+        }
+        json.end_array();
     }
 }
 
@@ -174,6 +167,29 @@ pub(crate) struct ValidatorRecord {
     pub(crate) pubkey: BLSPubkey,
     pub(crate) withdrawal_credentials: Withdrawals,
     pub(crate) effective_balance: u64,
+    pub(crate) lifecycle: Lifecycle,
+}
+
+impl ValidatorRecord {
+    fn read(view: &StateReadView<'_>, current_epoch: Epoch, ix: usize) -> Self {
+        let validators = &view.validators;
+        let balance = view.balances.get(ix);
+        let lifecycle = Lifecycle::read(validators, ix);
+        Self {
+            index: ix as u64,
+            balance,
+            status: lifecycle.status(current_epoch, balance),
+            pubkey: *validators.pubkey(ix),
+            withdrawal_credentials: *validators.credentials(ix),
+            effective_balance: validators.effective_balance(ix),
+            lifecycle,
+        }
+    }
+}
+
+/// The fields the status specification `types/api.yaml` links derives a
+/// status from, beside the epoch and balance it is asked at.
+pub(crate) struct Lifecycle {
     pub(crate) slashed: bool,
     pub(crate) activation_eligibility_epoch: Epoch,
     pub(crate) activation_epoch: Epoch,
@@ -181,44 +197,17 @@ pub(crate) struct ValidatorRecord {
     pub(crate) withdrawable_epoch: Epoch,
 }
 
-impl ValidatorRecord {
-    fn read(view: &StateReadView<'_>, ix: usize) -> Self {
-        let validators = &view.validators;
-        let balance = view.balances.get(ix);
-        let lifecycle = Lifecycle {
+impl Lifecycle {
+    fn read(validators: &ValidatorsView<'_>, ix: usize) -> Self {
+        Self {
             slashed: validators.is_slashed(ix),
             activation_eligibility_epoch: validators.activation_eligibility_epoch(ix),
             activation_epoch: validators.activation_epoch(ix),
             exit_epoch: validators.exit_epoch(ix),
             withdrawable_epoch: validators.withdrawable_epoch(ix),
-        };
-        Self {
-            index: ix as u64,
-            balance,
-            status: lifecycle.status(view.slot.state().slot / SLOTS_PER_EPOCH, balance),
-            pubkey: *validators.pubkey(ix),
-            withdrawal_credentials: *validators.credentials(ix),
-            effective_balance: validators.effective_balance(ix),
-            slashed: lifecycle.slashed,
-            activation_eligibility_epoch: lifecycle.activation_eligibility_epoch,
-            activation_epoch: lifecycle.activation_epoch,
-            exit_epoch: lifecycle.exit_epoch,
-            withdrawable_epoch: lifecycle.withdrawable_epoch,
         }
     }
-}
 
-/// The fields the status specification `types/api.yaml` links derives a
-/// status from, beside the epoch and balance it is asked at.
-struct Lifecycle {
-    slashed: bool,
-    activation_eligibility_epoch: Epoch,
-    activation_epoch: Epoch,
-    exit_epoch: Epoch,
-    withdrawable_epoch: Epoch,
-}
-
-impl Lifecycle {
     fn status(&self, current_epoch: Epoch, balance: u64) -> ValidatorStatus {
         if current_epoch < self.activation_epoch {
             if self.activation_eligibility_epoch == FAR_FUTURE_EPOCH {
@@ -321,7 +310,7 @@ impl StatusSet {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, BeaconStateOwner, EpochStateFinalized, SpecConfig, ValSeed,
+        BeaconState, BeaconStateOwner, EpochStateFinalized, SLOTS_PER_EPOCH, SpecConfig, ValSeed,
     };
     use silver_httpcore::ParsedRequest;
 
