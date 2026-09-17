@@ -28,7 +28,7 @@ use crate::{
         attestation_pool::AttestationPool,
         attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots,
-        held_blocks::HeldBlocks,
+        held_blocks::{HeldBlocks, StagedVerdict},
         precomputed_epochs::PrecomputedEpochs,
         seen_aggregates::SeenAggregates,
         seen_validators::{SeenIndices, SeenValidators},
@@ -647,22 +647,22 @@ impl BeaconStateTile {
     fn handle_engine_response(&mut self, eng_resp: EngineResp, producers: &mut Producers) {
         match eng_resp {
             EngineResp::NewPayload(r) => {
-                // A staged block is not in fork choice yet, so its INVALID must
-                // be caught here or it imports optimistic once its columns arrive.
-                if r.status == PayloadValidationStatus::Invalid &&
-                    let Some(source) = self.held.reject_staged(&r.block_root)
-                {
-                    tracing::warn!(
-                        block = hex32(&r.block_root),
-                        "EL rejected a staged block; dropped"
-                    );
-                    producers.produce(BeaconStateEvent::BlockRejected {
-                        block_root: r.block_root,
-                        source,
-                    });
-                    return;
+                match self.held.on_payload_verdict(&r.block_root, r.status) {
+                    StagedVerdict::Rejected(source) => {
+                        tracing::warn!(
+                            block = hex32(&r.block_root),
+                            "EL rejected a staged block; dropped"
+                        );
+                        producers.produce(BeaconStateEvent::BlockRejected {
+                            block_root: r.block_root,
+                            source,
+                        });
+                    }
+                    StagedVerdict::Kept => {}
+                    StagedVerdict::NotStaged => {
+                        self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+                    }
                 }
-                self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
             }
             EngineResp::Fcu(r) => {
                 self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);

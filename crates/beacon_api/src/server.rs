@@ -24,6 +24,7 @@ use crate::{
     HeadStatus, NodeStatus,
     blocks::Kind,
     events::{self, Channel, ChannelSet, HeadEvent},
+    head_verdict::HeadVerdict,
     json::Json,
     peers::Peer,
     response::Response,
@@ -350,7 +351,7 @@ pub struct BeaconApi {
     /// Blocks storage serves, in the `outgoing_rpc` tcache.
     storage: TRandomAccess,
     next_request_id: u64,
-    last_head: Option<HeadEvent>,
+    head_verdict: HeadVerdict,
 }
 
 impl BeaconApi {
@@ -409,7 +410,7 @@ impl BeaconApi {
             relayed_gossip,
             storage,
             next_request_id: 0,
-            last_head: None,
+            head_verdict: HeadVerdict::default(),
         }
     }
 
@@ -434,9 +435,15 @@ impl BeaconApi {
                 ..
             } => {
                 let block_root = *StatusView::head_root(&ssz);
-                self.ctx.node_status.head =
-                    HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
-                self.ctx.node_status.head_root = *StatusView::head_root(&ssz);
+                // The tile recomputes its head on the same verdict; the
+                // replacement Status is already on its way.
+                let verdict = self.head_verdict.verdict(&block_root);
+                if verdict == Some(PayloadValidationStatus::Invalid) {
+                    return;
+                }
+                let optimistic = head_optimistic && verdict.is_none();
+                self.ctx.node_status.head = HeadStatus { slot: latest_block_slot, optimistic };
+                self.ctx.node_status.head_root = block_root;
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
                     return;
@@ -448,19 +455,10 @@ impl BeaconApi {
                     roots: head_roots,
                     payload: head_payload,
                     epoch_transition,
-                    execution_optimistic: head_optimistic,
+                    execution_optimistic: optimistic,
                 };
-                if head_change == HeadChange::Head {
-                    let already = self
-                        .last_head
-                        .is_some_and(|h| h.block_root == block_root && !h.execution_optimistic);
-                    self.last_head = Some(head);
-                    // TODO(xatu): remove when Xatu will add filtering by optimistic flag
-                    if !head_optimistic && !already {
-                        self.publish_head(&head);
-                    }
-                } else {
-                    self.last_head = None;
+                if let Some(head) = self.head_verdict.on_head(head) {
+                    self.publish_head(&head);
                 }
                 self.publish_head_v2(&head);
             }
@@ -476,16 +474,10 @@ impl BeaconApi {
 
     pub fn handle_engine_resp(&mut self, resp: EngineResp) {
         let EngineResp::NewPayload(r) = resp else { return };
-        if r.status != PayloadValidationStatus::Valid || !self.ctx.node_status.is_following() {
+        if !self.ctx.node_status.is_following() {
             return;
         }
-        let Some(head) =
-            self.last_head.filter(|h| h.block_root == r.block_root && h.execution_optimistic)
-        else {
-            return;
-        };
-        let head = HeadEvent { execution_optimistic: false, ..head };
-        self.last_head = Some(head);
+        let Some(head) = self.head_verdict.on_verdict(r.block_root, r.status) else { return };
         self.ctx.node_status.head.optimistic = false;
         self.publish_head(&head);
     }
@@ -1677,6 +1669,53 @@ mod tests {
         assert_eq!(events[0].topic, "head");
         assert_eq!(events[0].data["slot"], "10");
         assert_eq!(events[0].data["execution_optimistic"], false);
+    }
+
+    #[test]
+    fn el_valid_before_status_emits_legacy_head() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: [0xab; 32],
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0; 32],
+        }));
+        server.api.handle_beacon_state_event(status(10, 0xab, true));
+        assert!(!server.api.node_status().head.optimistic);
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "overlay frame and marker");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["execution_optimistic"], false);
+    }
+
+    #[test]
+    fn el_invalid_before_status_drops_the_stale_head() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head_v2");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_beacon_state_event(status(9, 0xaa, false));
+        server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: [0xab; 32],
+            status: PayloadValidationStatus::Invalid,
+            latest_valid_hash: [0; 32],
+        }));
+        server.api.handle_beacon_state_event(status(10, 0xab, true));
+        assert_eq!(server.api.node_status().head.slot, 9);
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "one frame and marker");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["data"]["slot"], "9");
     }
 
     #[test]

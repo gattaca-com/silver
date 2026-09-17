@@ -3796,6 +3796,25 @@ fn el_invalid_drops_staged_block() {
     assert_eq!(rejected, [S_ROOT], "the peer that served it is told");
 }
 
+#[test]
+fn el_valid_is_kept_on_a_staged_block() {
+    const S_ROOT: B256 = [0x05; 32];
+    let mut forks = ThreeForks::new();
+    let (_spine, mut adapter) = spine_adapter(&forks.tile);
+    let mut producer = TCache::producer("test_el_valid_staged", 1 << 12);
+    forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+
+    let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
+        block_root: S_ROOT,
+        status: PayloadValidationStatus::Valid,
+        latest_valid_hash: [0u8; 32],
+    });
+    forks.tile.handle_engine_response(verdict, &mut adapter.producers);
+    assert!(forks.tile.held.is_staged(&S_ROOT), "Valid does not drop the hold");
+    let staged = forks.tile.held.mark_available(S_ROOT, 3).expect("released");
+    assert!(staged.el_valid);
+}
+
 /// Once dropped, an EL-invalid staged block is nowhere: not in fork choice,
 /// not staged. Without a memory of the rejection its next child would chase
 /// it by root, the re-fetched copy would stage and fail the EL again, and

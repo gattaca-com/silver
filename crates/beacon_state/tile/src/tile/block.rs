@@ -51,6 +51,7 @@ pub(super) struct StagedBlock {
     applied: AppliedBlock,
     pub(super) ssz: TCacheRead,
     pub(super) source: BlockSource,
+    pub(super) el_valid: bool,
 }
 
 impl StagedBlock {
@@ -74,7 +75,7 @@ impl StagedBlock {
             bid_block_hash: [0u8; 32],
             votes: stf::BlockVotes::default(),
         };
-        Self { parsed, applied, ssz, source }
+        Self { parsed, applied, ssz, source, el_valid: false }
     }
 }
 
@@ -337,7 +338,7 @@ impl BeaconStateTile {
         let block_root = parsed.block_root;
         match hold {
             Some((ssz, source)) => {
-                self.held.stage(StagedBlock { parsed, applied, ssz, source });
+                self.held.stage(StagedBlock { parsed, applied, ssz, source, el_valid: false });
                 Feedback::AwaitData(block_root)
             }
             None => {
@@ -378,7 +379,7 @@ impl BeaconStateTile {
             tracing::debug!(block = hex32(&block_root), slot, "DataColumnsAvailable received");
             return;
         };
-        let StagedBlock { parsed, applied, ssz, source } = staged;
+        let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;
 
         let acquired = self.block_consumer(source).acquire(ssz);
         let Ok((data, _)) = acquired.buffer() else {
@@ -393,6 +394,9 @@ impl BeaconStateTile {
         };
 
         self.import_block(parsed, applied, data);
+        if el_valid {
+            self.fork_choice.on_payload_valid(&block_root);
+        }
         self.announce_imported(block_root, slot, data, ssz, source, producers);
     }
 
