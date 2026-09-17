@@ -3,14 +3,65 @@ use std::time::Instant;
 use flux::spine::SpineProducers;
 use fxhash::FxHashMap;
 use silver_common::{
-    SilverSpineProducers, TProducer,
+    ColumnOrigin, DataColumnsEvent, GossipTopic, PeerControl, SilverSpineProducers, SszCache,
+    TProducer, TRandomAccess,
     cell_store::{
         CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, PendingCell, StoreError,
     },
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
+use silver_gossip::GossipHandler;
+use silver_peer::PeerManager;
 
 use crate::cell_allocator::CellAllocator;
+
+pub(super) fn handle_data_column_event<F>(
+    event: DataColumnsEvent,
+    rpc_ssz_consumer: &mut TRandomAccess,
+    el_ssz_consumer: &mut TRandomAccess,
+    cell_ingress: Option<&mut CellIngress>,
+    gossip_handler: &mut GossipHandler,
+    peer_manager: &mut PeerManager,
+    handle_peer_control: &mut F,
+) where
+    F: FnMut(PeerControl, &mut GossipHandler),
+{
+    let DataColumnsEvent::Persist { ssz, origin, ssz_cache, domain, column_index, .. } = event
+    else {
+        return;
+    };
+    if origin == ColumnOrigin::Gossip {
+        return;
+    }
+    let read = match ssz_cache {
+        SszCache::Rpc => Some(rpc_ssz_consumer.acquire(ssz)),
+        SszCache::El => Some(el_ssz_consumer.acquire(ssz)),
+        SszCache::DataColumns => None,
+        SszCache::Gossip => return,
+    };
+    let bytes = match read.as_ref() {
+        Some(read) => read.buffer().map(|(bytes, _)| bytes),
+        None => {
+            let Some(ingress) = cell_ingress else { return };
+            ingress.producer_mut().read_buffer(ssz)
+        }
+    };
+    let topic = GossipTopic::DataColumnSidecar(column_index);
+    match bytes {
+        Ok(bytes) => {
+            let published = match domain {
+                Some(domain) => gossip_handler.publish_in_domain(topic, domain, bytes),
+                None => gossip_handler.publish(topic, bytes),
+            };
+            if let Some(published) = published {
+                peer_manager.publish_local(topic, published, &mut |evt| {
+                    handle_peer_control(evt, gossip_handler)
+                });
+            }
+        }
+        Err(e) => tracing::warn!(?e, ?topic, "publish column ssz read failed"),
+    }
+}
 
 pub struct CellIngress {
     allocator: CellAllocator,
