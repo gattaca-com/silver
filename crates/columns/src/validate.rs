@@ -147,7 +147,7 @@ impl ColumnValidator {
     }
 
     pub fn domain_at(&self, slot: u64) -> Option<GossipDomain> {
-        self.beacon_state.read(&|v| {
+        self.beacon_state.read(|v| {
             GossipDomain::new(
                 self.spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &v.imm.genesis_validators_root),
                 self.spec.fork_at_slot(slot),
@@ -281,7 +281,7 @@ impl ColumnValidator {
         // notional read lock too long otherwise).
         let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
         let validated_parent_slot = self.validated_block_roots.get(parent_root).copied();
-        let checks = self.beacon_state.read(&|v| {
+        let checks = self.beacon_state.read(|v| {
             let state_epoch = v.slot.current_epoch();
             // proposer_lookahead is anchored to `state_epoch` and covers
             // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64).

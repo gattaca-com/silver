@@ -181,9 +181,9 @@ impl BeaconStateReader {
     /// longtail bases are realloc-prone `Vec`s — reading their CONTENT here
     /// can race a finalize realloc; those reads need the lock-guarded path.
     #[timed]
-    pub fn read<F, R>(&self, reader: &F) -> Option<R>
+    pub fn read<F, R>(&self, mut reader: F) -> Option<R>
     where
-        F: Fn(StateReadView<'_>) -> R,
+        F: FnMut(StateReadView<'_>) -> R,
     {
         loop {
             // `Err(Empty)` = never written; `state_id: None` = a pre-publish
