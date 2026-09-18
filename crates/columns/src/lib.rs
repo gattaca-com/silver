@@ -1,13 +1,12 @@
 mod availability;
 mod batch;
 pub mod cell_store;
-pub mod counters;
 mod el_blobs;
 mod sync;
 pub mod tile;
 mod validate;
 
-pub use counters::DataColumnCounters;
+pub use silver_common::cell_store::DataColumnCounters;
 
 /// SSZ `hash_tree_root(BeaconBlockHeader)` — the same value carried as
 /// `head_root` in Status RPC and `block_root` in

@@ -233,6 +233,15 @@ impl ServerConnection {
         ChunkedResponse::new(self.write_buf, self.read_buf, now)
     }
 
+    /// For an answer framed after the handler returned without one. The
+    /// buffer is empty at that point. `dispatch` runs the handler on a new
+    /// connection, or after `after_response` has cleared the last answer.
+    pub fn write_buf_mut(&mut self) -> &mut Vec<u8> {
+        debug_assert!(self.write_buf.is_empty(), "a response is already framed");
+        debug_assert!(self.write_pos == 0, "a response is mid-write");
+        &mut self.write_buf
+    }
+
     pub fn pending_write(&self) -> &[u8] {
         &self.write_buf[self.write_pos..]
     }
@@ -643,6 +652,28 @@ mod tests {
 
         assert!(!conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete body must not dispatch")));
         assert!(conn.pending_write().is_empty());
+    }
+
+    /// A handler that writes nothing has consumed its request; the answer
+    /// framed later takes the same path out, and only then is the request
+    /// pipelined behind it dispatched.
+    #[test]
+    fn deferred_answer_holds_the_pipelined_request_until_it_is_framed() {
+        let mut conn = ServerConnection::new();
+        feed(
+            &mut conn,
+            b"GET /first HTTP/1.1\r\nHost: x\r\n\r\nGET /second HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+
+        assert!(conn.dispatch(&|_, _: &mut Vec<u8>| {}));
+        assert!(conn.pending_write().is_empty());
+
+        frame_response(conn.write_buf_mut(), "200 OK", None, b"/first");
+        assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
+
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::ResponsePending);
+        assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n/second");
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
     }
 
     #[test]

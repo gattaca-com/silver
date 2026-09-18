@@ -7,11 +7,13 @@ use std::{
 };
 
 use mio::{Events, Interest, Registry, Token, event::Event};
-use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, ELSyncStatus, Enr, GossipTopic, HeadChange, Identify, Keypair,
-    PeerEvent, SyncUpdate, TCacheRead, TRandomAccess, TRead,
-    column_util::{SidecarIdentity, block_root, kzg_commitments_from_sidecar},
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
+    ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair,
+    PayloadValidationStatus, PeerEvent, SszCache, SyncUpdate, TCacheRead, TRandomAccess,
+    block_root,
+    column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_httpcore::{
@@ -21,10 +23,13 @@ use silver_httpcore::{
 
 use crate::{
     HeadStatus, NodeStatus,
+    blocks::Kind,
     events::{self, Channel, ChannelSet, HeadEvent},
+    head_verdict::HeadVerdict,
     json::Json,
     peers::Peer,
-    router::{Router, Served},
+    response::Response,
+    router::{Outcome, Router},
     routes::{ApiCtx, ROUTES},
 };
 
@@ -71,6 +76,7 @@ struct Requests {
     http: ServerConnection,
     last_activity: Instant,
     linger_since: Option<Instant>,
+    pending: Option<(u64, Kind)>,
 }
 
 struct Subscription {
@@ -81,6 +87,21 @@ struct Subscription {
 impl Connection {
     fn new(stream: Stream, now: Instant) -> Self {
         Self { stream, state: State::Requests(Requests::new(now)) }
+    }
+
+    fn requests_mut(&mut self) -> Option<&mut Requests> {
+        match &mut self.state {
+            State::Requests(requests) => Some(requests),
+            State::Subscription(_) => None,
+        }
+    }
+
+    fn awaits(&self, request_id: u64) -> bool {
+        matches!(
+            self.state,
+            State::Requests(Requests { pending: Some((id, .. )), .. })
+                if id == request_id
+        )
     }
 
     /// Buffered requests behind the subscription are abandoned; subsequent
@@ -128,7 +149,12 @@ impl Connection {
 
 impl Requests {
     fn new(now: Instant) -> Self {
-        Self { http: ServerConnection::new(), last_activity: now, linger_since: None }
+        Self {
+            http: ServerConnection::new(),
+            last_activity: now,
+            linger_since: None,
+            pending: None,
+        }
     }
 
     /// A lingering connection has answered already, so it lives by the linger
@@ -308,18 +334,6 @@ impl IdleSweep {
     }
 }
 
-pub struct ApiConsumers {
-    pub gossip: TRandomAccess,
-    pub rpc: TRandomAccess,
-}
-
-impl ApiConsumers {
-    fn free(&mut self) {
-        self.gossip.free();
-        self.rpc.free();
-    }
-}
-
 pub struct BeaconApi {
     registry: Registry,
     tokens: TokenRange,
@@ -334,7 +348,11 @@ pub struct BeaconApi {
     frame: Vec<u8>,
     router: Router,
     ctx: ApiCtx,
-    consumers: ApiConsumers,
+    ssz_consumers: HashMap<SszCache, TRandomAccess>,
+    /// Blocks storage serves, in the `outgoing_rpc` tcache.
+    storage: TRandomAccess,
+    next_request_id: u64,
+    head_verdict: HeadVerdict,
 }
 
 impl BeaconApi {
@@ -350,7 +368,9 @@ impl BeaconApi {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
-        consumers: ApiConsumers,
+        anchor_root: B256,
+        ssz_consumers: HashMap<SszCache, TRandomAccess>,
+        storage: TRandomAccess,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let tokens_needed = binds.len().checked_add(max_connections);
@@ -387,8 +407,11 @@ impl BeaconApi {
             connections: HashMap::new(),
             frame: Vec::new(),
             router: Router::new(ROUTES),
-            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
-            consumers,
+            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, anchor_root),
+            ssz_consumers,
+            storage,
+            next_request_id: 0,
+            head_verdict: HeadVerdict::default(),
         }
     }
 
@@ -405,6 +428,7 @@ impl BeaconApi {
             BeaconStateEvent::Status {
                 ssz,
                 latest_block_slot,
+                wall_slot,
                 head_optimistic,
                 head_roots,
                 head_payload,
@@ -412,8 +436,17 @@ impl BeaconApi {
                 epoch_transition,
                 ..
             } => {
-                self.ctx.node_status.head =
-                    HeadStatus { slot: latest_block_slot, optimistic: head_optimistic };
+                let block_root = *StatusView::head_root(&ssz);
+                // The tile recomputes its head on the same verdict; the
+                // replacement Status is already on its way.
+                let verdict = self.head_verdict.verdict(&block_root);
+                if verdict == Some(PayloadValidationStatus::Invalid) {
+                    return;
+                }
+                let optimistic = head_optimistic && verdict.is_none();
+                self.ctx.node_status.head = HeadStatus { slot: latest_block_slot, optimistic };
+                self.ctx.node_status.head_root = block_root;
+                self.ctx.node_status.wall_slot = wall_slot;
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
                     return;
@@ -421,14 +454,13 @@ impl BeaconApi {
 
                 let head = HeadEvent {
                     slot: StatusView::head_slot(&ssz),
-                    block_root: *StatusView::head_root(&ssz),
+                    block_root,
                     roots: head_roots,
                     payload: head_payload,
                     epoch_transition,
-                    execution_optimistic: head_optimistic,
+                    execution_optimistic: optimistic,
                 };
-
-                if head_change == HeadChange::Head {
+                if let Some(head) = self.head_verdict.on_head(head) {
                     self.publish_head(&head);
                 }
                 self.publish_head_v2(&head);
@@ -441,6 +473,16 @@ impl BeaconApi {
             } => self.publish_block(slot, &block_root),
             _ => {}
         }
+    }
+
+    pub fn handle_engine_resp(&mut self, resp: EngineResp) {
+        let EngineResp::NewPayload(r) = resp else { return };
+        if !self.ctx.node_status.is_following() {
+            return;
+        }
+        let Some(head) = self.head_verdict.on_verdict(r.block_root, r.status) else { return };
+        self.ctx.node_status.head.optimistic = false;
+        self.publish_head(&head);
     }
 
     pub fn handle_sync_update(&mut self, update: SyncUpdate) {
@@ -461,20 +503,16 @@ impl BeaconApi {
             PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
                 self.publish_relayed_block(ssz)
             }
-            PeerEvent::SendGossip { topic: GossipTopic::DataColumnSidecar(_), ssz, .. } => {
-                let sidecar = self.consumers.gossip.acquire(ssz);
-                self.publish_sidecar(sidecar)
-            }
-            PeerEvent::PublishDataColumn { ssz, .. } => {
-                let sidecar = self.consumers.rpc.acquire(ssz);
-                self.publish_sidecar(sidecar)
-            }
             _ => {}
         }
     }
 
     fn publish_relayed_block(&mut self, ssz: TCacheRead) {
-        let block = self.consumers.gossip.acquire(ssz);
+        let block = self
+            .ssz_consumers
+            .get_mut(&SszCache::Gossip)
+            .expect("configured gossip cache")
+            .acquire(ssz);
         match block.buffer() {
             Ok((buf, _)) => {
                 let slot = SignedBeaconBlockView::slot(buf);
@@ -485,20 +523,24 @@ impl BeaconApi {
         }
     }
 
-    fn publish_sidecar(&mut self, sidecar: TRead) {
-        match sidecar.buffer() {
-            Ok((bytes, _)) => match SidecarIdentity::of(bytes) {
-                Some(column) => self.publish_data_column_sidecar(
-                    &column.block_root,
-                    column.column_index,
-                    column.slot,
+    pub fn handle_data_columns_event(&mut self, event: DataColumnsEvent) {
+        if let DataColumnsEvent::Validated {
+            block_root, column_index, slot, ssz, ssz_cache, ..
+        } = event
+        {
+            let sidecar =
+                self.ssz_consumers.get_mut(&ssz_cache).expect("configured SSZ cache").acquire(ssz);
+            match sidecar.buffer() {
+                Ok((bytes, _)) => self.publish_data_column_sidecar(
+                    &block_root,
+                    column_index,
+                    slot,
                     kzg_commitments_from_sidecar(bytes),
                 ),
-                None => {
-                    tracing::warn!("published sidecar fits no layout data_column_sidecar reads")
+                Err(e) => {
+                    tracing::warn!(?e, "validated sidecar unavailable to data_column_sidecar")
                 }
-            },
-            Err(e) => tracing::warn!(?e, "published sidecar unavailable to data_column_sidecar"),
+            }
         }
     }
 
@@ -591,8 +633,45 @@ impl BeaconApi {
         pushed
     }
 
-    pub fn pump(&mut self, events: &Events) -> bool {
-        self.consumers.free();
+    /// The block a handler deferred to storage for: framed into the waiting
+    /// connection, or dropped if that connection closed meanwhile.
+    pub fn handle_response(&mut self, response: BeaconApiResponse) {
+        let BeaconApiResponse::Block { request_id, block } = response else { return };
+        let Some(token) = self.token_awaiting(request_id) else {
+            tracing::debug!(request_id, "block served to a connection already closed");
+            return;
+        };
+
+        let Self { connections, storage, ctx, .. } = self;
+        let requests = connections
+            .get_mut(&token)
+            .and_then(Connection::requests_mut)
+            .expect("found awaiting above");
+        let (_, kind) = requests.pending.take().expect("awaiting above");
+        let mut resp = Response::new(requests.http.write_buf_mut());
+        kind.respond(&mut resp, block, storage, ctx);
+
+        self.resume_writing(token);
+    }
+
+    fn token_awaiting(&self, request_id: u64) -> Option<Token> {
+        self.connections.iter().find_map(|(token, conn)| conn.awaits(request_id).then_some(*token))
+    }
+
+    fn resume_writing(&mut self, token: Token) {
+        let conn = self.connections.get_mut(&token).expect("connection exists");
+        if let Err(e) = self.registry.reregister(&mut conn.stream, token, Interest::WRITABLE) {
+            tracing::warn!("beacon api connection lost: {e}");
+            let _ = self.registry.deregister(&mut conn.stream);
+            self.connections.remove(&token);
+        }
+    }
+
+    pub fn pump(&mut self, events: &Events, emit: &mut impl FnMut(BeaconApiRequest)) -> bool {
+        for consumer in self.ssz_consumers.values_mut() {
+            consumer.free();
+        }
+        self.storage.free();
         let now = Instant::now();
 
         let mut did_work = false;
@@ -603,7 +682,7 @@ impl BeaconApi {
             did_work |= if offset < self.listeners.len() {
                 self.accept_all(offset, now)
             } else {
-                self.serve(event, now)
+                self.serve(event, now, emit)
             };
         }
 
@@ -648,22 +727,33 @@ impl BeaconApi {
         did_work
     }
 
-    fn serve(&mut self, event: &Event, now: Instant) -> bool {
+    fn serve(
+        &mut self,
+        event: &Event,
+        now: Instant,
+        emit: &mut impl FnMut(BeaconApiRequest),
+    ) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
-        let subscribed = Cell::new(None);
+        let dispatched = Cell::new(Outcome::Response);
         let outcome = conn.handle_event(&self.registry, event, now, &|req, out| {
-            if let Served::Stream(channels) = self.router.dispatch(req, &self.ctx, out) {
-                subscribed.set(Some(channels));
-            }
+            dispatched.set(self.router.dispatch(req, &self.ctx, out));
         });
         match outcome {
-            Ok(false) => {
-                if let Some(channels) = subscribed.get() {
+            Ok(false) => match dispatched.get() {
+                Outcome::Response => {}
+                Outcome::Stream(channels) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
                     self.connections.insert(token, conn.subscribed(channels, now));
                 }
-            }
+                Outcome::AwaitingBlock(block) => {
+                    let requests = conn.requests_mut().expect("only a request handler defers");
+                    let request_id = self.next_request_id;
+                    self.next_request_id += 1;
+                    requests.pending = Some((request_id, block.kind));
+                    emit(block.storage_request(request_id));
+                }
+            },
             Ok(true) => {
                 let _ = self.registry.deregister(&mut conn.stream);
                 self.connections.remove(&token);
@@ -747,7 +837,14 @@ mod tests {
 
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
-    use silver_common::{HeadRoots, PayloadResolution, TCache, TCacheProducer};
+    use silver_common::{
+        BlockLookup, ColumnOrigin, EngineNewPayloadResp, HeadRoots, PayloadResolution, ServedBlock,
+        TCache, TCacheProducer, TProducer, body_root,
+        ssz_view::{
+            BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
+            DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
+        },
+    };
     use silver_httpcore::Readiness;
 
     use super::*;
@@ -760,6 +857,10 @@ mod tests {
     struct Server {
         readiness: Readiness,
         api: BeaconApi,
+        /// Stands in for the `outgoing_rpc` tcache storage serves from.
+        served: TProducer,
+        /// Stands in for the `beacon_api_requests` queue.
+        requests: Vec<BeaconApiRequest>,
     }
 
     impl Server {
@@ -772,7 +873,7 @@ mod tests {
             let readiness = Readiness::new(1024);
             let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
             let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-            let cache = TCache::producer("beacon_api_test", 1 << 12);
+            let cache = TCache::producer("beacon_api_test", 1 << 16);
             let consumer = || cache.cache_ref().random_access("beacon_api_test", true).unwrap();
             let api = BeaconApi::new(
                 readiness.registry(),
@@ -785,14 +886,32 @@ mod tests {
                 &Identify::default(),
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::published_empty_test(0).reader(),
-                ApiConsumers { gossip: consumer(), rpc: consumer() },
+                B256::default(),
+                [SszCache::Gossip, SszCache::Rpc, SszCache::El, SszCache::DataColumns]
+                    .into_iter()
+                    .map(|source| (source, consumer()))
+                    .collect(),
+                consumer(),
             );
-            Self { readiness, api }
+            Self { readiness, api, served: cache, requests: Vec::new() }
+        }
+
+        /// A finalized, canonical block; empty `bytes` answer the facts alone.
+        fn serve_block(&mut self, request_id: u64, slot: u64, root: [u8; 32], bytes: &[u8]) {
+            let ssz = (!bytes.is_empty()).then(|| {
+                let mut reservation = self.served.reserve(bytes.len(), true).unwrap();
+                reservation.write_all(bytes).unwrap();
+                reservation.flush().unwrap();
+                reservation.read()
+            });
+            let block = Some(ServedBlock { slot, root, finalized: true, canonical: true, ssz });
+            self.api.handle_response(BeaconApiResponse::Block { request_id, block });
         }
 
         fn pump(&mut self) -> bool {
             self.readiness.wait(Duration::ZERO);
-            self.api.pump(self.readiness.events())
+            let Self { readiness, api, requests, .. } = self;
+            api.pump(readiness.events(), &mut |request| requests.push(request))
         }
     }
 
@@ -1457,6 +1576,24 @@ mod tests {
         }
     }
 
+    fn status(slot: u64, root: u8, optimistic: bool) -> BeaconStateEvent {
+        let head = head_event(slot, &[root; 32], optimistic);
+        let mut ssz = [0u8; STATUS_V2_SIZE];
+        ssz[44..76].copy_from_slice(&head.block_root);
+        ssz[76..84].copy_from_slice(&slot.to_le_bytes());
+        BeaconStateEvent::Status {
+            ssz,
+            latest_block_slot: slot,
+            wall_slot: slot,
+            head_optimistic: optimistic,
+            enr_fork_id: [0; 16],
+            head_roots: head.roots,
+            head_payload: head.payload,
+            head_change: HeadChange::Head,
+            epoch_transition: false,
+        }
+    }
+
     struct SseEvent {
         topic: String,
         data: Value,
@@ -1515,6 +1652,115 @@ mod tests {
     }
 
     #[test]
+    fn validated_columns_read_commitments_from_each_source_cache() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut sources = [
+            (
+                SszCache::Gossip,
+                ColumnOrigin::Gossip,
+                TCache::producer("api_columns_gossip", 1 << 16),
+            ),
+            (SszCache::Rpc, ColumnOrigin::Rpc, TCache::producer("api_columns_rpc", 1 << 16)),
+            (SszCache::El, ColumnOrigin::El, TCache::producer("api_columns_el", 1 << 16)),
+            (
+                SszCache::DataColumns,
+                ColumnOrigin::Assembly,
+                TCache::producer("api_columns_cells", 1 << 16),
+            ),
+        ];
+        server.api.ssz_consumers = sources
+            .iter()
+            .map(|(cache, _, producer)| {
+                (*cache, producer.cache_ref().random_access("api_columns", true).unwrap())
+            })
+            .collect();
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "data_column_sidecar");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let mut expected = Vec::new();
+        for (index, (cache, origin, producer)) in sources.iter_mut().enumerate() {
+            let byte = index as u8 + 1;
+            let commitments =
+                [[byte; BYTES_PER_KZG_COMMITMENT], [!byte; BYTES_PER_KZG_COMMITMENT]].concat();
+            for fulu in [true, false] {
+                // Field extraction fixtures; consensus validation belongs to the producer.
+                let mut bytes = if fulu {
+                    let mut bytes = vec![0; DATA_COLUMN_SIDECAR_MIN];
+                    for offset in [8, 12] {
+                        bytes[offset..offset + 4]
+                            .copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
+                    }
+                    bytes[16..20].copy_from_slice(
+                        &((DATA_COLUMN_SIDECAR_MIN + commitments.len()) as u32).to_le_bytes(),
+                    );
+                    bytes.extend_from_slice(&commitments);
+                    bytes
+                } else {
+                    let mut bytes = vec![0; DATA_COLUMN_SIDECAR_GLOAS_MIN];
+                    for offset in [8, 12] {
+                        bytes[offset..offset + 4]
+                            .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
+                    }
+                    bytes
+                };
+                bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                let mut reservation = producer.reserve(bytes.len(), true).unwrap();
+                reservation.write_all(&bytes).unwrap();
+                reservation.flush().unwrap();
+                let ssz = reservation.read();
+                let block_root = [byte; 32];
+                let slot = 40 + index as u64;
+                server
+                    .api
+                    .handle_data_columns_event(DataColumnsEvent::Available { block_root, slot });
+                server.api.handle_data_columns_event(DataColumnsEvent::Persist {
+                    block_root,
+                    column_index: index as u64,
+                    slot,
+                    origin: *origin,
+                    ssz,
+                    ssz_cache: *cache,
+                    domain: None,
+                });
+                server.api.handle_data_columns_event(DataColumnsEvent::Validated {
+                    block_root,
+                    column_index: index as u64,
+                    slot,
+                    origin: *origin,
+                    ssz,
+                    ssz_cache: *cache,
+                });
+                expected.push((
+                    block_root,
+                    slot,
+                    index,
+                    fulu.then(|| {
+                        commitments
+                            .chunks_exact(BYTES_PER_KZG_COMMITMENT)
+                            .map(|value| format!("0x{}", hex::encode(value)))
+                            .collect::<Vec<_>>()
+                    }),
+                ));
+            }
+        }
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "column events and marker");
+        assert_eq!(events.len(), expected.len(), "only validation receipts produce events");
+        for (event, (root, slot, index, commitments)) in events.iter().zip(expected) {
+            assert_eq!(event.topic, "data_column_sidecar");
+            assert_eq!(event.data["block_root"], format!("0x{}", hex::encode(root)));
+            assert_eq!(event.data["slot"], slot.to_string());
+            assert_eq!(event.data["index"], index.to_string());
+            match commitments {
+                Some(list) => assert_eq!(event.data["kzg_commitments"], serde_json::json!(list)),
+                None => assert!(event.data.get("kzg_commitments").is_none()),
+            }
+        }
+    }
+
+    #[test]
     fn head_v2_names_the_fork_at_the_head_slot() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut client = connect(tcp_addr(&server));
@@ -1537,6 +1783,79 @@ mod tests {
             assert_eq!(event.data["data"]["slot"], slot.to_string());
             assert_eq!(event.data["data"]["payload_status"], "full");
         }
+    }
+
+    #[test]
+    fn el_valid_emits_legacy_head() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_beacon_state_event(status(10, 0xab, true));
+        server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: [0xab; 32],
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0; 32],
+        }));
+        assert!(!server.api.node_status().head.optimistic);
+
+        server.api.handle_beacon_state_event(status(10, 0xab, false));
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "overlay frame and marker");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "head");
+        assert_eq!(events[0].data["slot"], "10");
+        assert_eq!(events[0].data["execution_optimistic"], false);
+    }
+
+    #[test]
+    fn el_valid_before_status_emits_legacy_head() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: [0xab; 32],
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0; 32],
+        }));
+        server.api.handle_beacon_state_event(status(10, 0xab, true));
+        assert!(!server.api.node_status().head.optimistic);
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "overlay frame and marker");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["execution_optimistic"], false);
+    }
+
+    #[test]
+    fn el_invalid_before_status_drops_the_stale_head() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "head_v2");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_beacon_state_event(status(9, 0xaa, false));
+        server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: [0xab; 32],
+            status: PayloadValidationStatus::Invalid,
+            latest_valid_hash: [0; 32],
+        }));
+        server.api.handle_beacon_state_event(status(10, 0xab, true));
+        assert_eq!(server.api.node_status().head.slot, 9);
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "one frame and marker");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["data"]["slot"], "9");
     }
 
     #[test]
@@ -1708,6 +2027,213 @@ mod tests {
             server.api.connections.is_empty()
         });
         drop(client);
+    }
+
+    fn get(mut stream: impl Write, path: &str) {
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: x\r\n\
+             Accept: application/octet-stream\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+    }
+
+    fn root_hex(byte: u8) -> String {
+        format!("0x{}", hex::encode([byte; 32]))
+    }
+
+    /// Passes the layout check; `byte` fills the state root.
+    fn block_bytes(slot: u64, byte: u8) -> Vec<u8> {
+        let mut block = vec![0u8; SIGNED_BEACON_BLOCK_MIN];
+        block[0..4].copy_from_slice(&100u32.to_le_bytes());
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[108..116].copy_from_slice(&7u64.to_le_bytes());
+        block[148..180].copy_from_slice(&[byte; 32]);
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
+        block.extend_from_slice(&[0u8; BEACON_BLOCK_BODY_FIXED]);
+        block
+    }
+
+    fn body(response: &[u8]) -> &[u8] {
+        let blank = response.windows(4).position(|w| w == b"\r\n\r\n").expect("a head");
+        &response[blank + 4..]
+    }
+
+    fn deferred_request(server: &mut Server) -> BeaconApiRequest {
+        pump_until(server, "the block request was deferred", |s| !s.requests.is_empty());
+        server.requests.remove(0)
+    }
+
+    fn request_id(request: &BeaconApiRequest) -> u64 {
+        match request {
+            BeaconApiRequest::Block { request_id, .. } => *request_id,
+            BeaconApiRequest::LocalAttestation { .. } => panic!("not a block request"),
+        }
+    }
+
+    #[test]
+    fn block_by_root_waits_for_storage_then_answers_ssz() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        get(&mut client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xab)));
+        let BeaconApiRequest::Block { request_id, lookup, with_bytes: true } =
+            deferred_request(&mut server)
+        else {
+            panic!("the body needs the bytes");
+        };
+        assert_eq!(lookup, BlockLookup::Root([0xab; 32]));
+        client.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let mut probe = [0u8; 1];
+        assert!(
+            matches!(client.read(&mut probe), Err(e) if would_block(&e)),
+            "nothing is written before storage answers"
+        );
+
+        let block = block_bytes(0, 0xab);
+        server.serve_block(request_id, 0, [0xab; 32], &block);
+        client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "block response");
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+             Eth-Consensus-Version: phase0\r\nContent-Length: {}\r\n\r\n",
+            block.len()
+        );
+        assert!(response.starts_with(head.as_bytes()), "{}", String::from_utf8_lossy(&response));
+        assert_eq!(body(&response), block);
+    }
+
+    #[test]
+    fn block_root_and_header_answer_json_from_the_served_bytes() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let root_client = connect(tcp_addr(&server));
+        get(&root_client, &format!("/eth/v1/beacon/blocks/{}/root", root_hex(0xcd)));
+        let BeaconApiRequest::Block { request_id: root_id, with_bytes: false, .. } =
+            deferred_request(&mut server)
+        else {
+            panic!("the root needs no bytes");
+        };
+        let header_client = connect(tcp_addr(&server));
+        get(&header_client, &format!("/eth/v1/beacon/headers/{}", root_hex(0xcd)));
+        let BeaconApiRequest::Block { request_id: header_id, with_bytes: true, .. } =
+            deferred_request(&mut server)
+        else {
+            panic!("the header needs the bytes");
+        };
+
+        let block = block_bytes(10, 0xef);
+        server.serve_block(root_id, 10, [0xcd; 32], &[]);
+        server.serve_block(header_id, 10, [0xcd; 32], &block);
+        let root_reader = std::thread::spawn(move || read_to_eof(root_client));
+        let header_reader = std::thread::spawn(move || read_to_eof(header_client));
+        let (root_response, header_response) =
+            serve_both(&mut server, root_reader, header_reader, "json block answers");
+
+        assert!(
+            root_response.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
+        );
+        assert_eq!(
+            std::str::from_utf8(body(&root_response)).unwrap(),
+            format!(
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"{}\"}}}}",
+                root_hex(0xcd)
+            )
+        );
+
+        assert!(
+            header_response.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
+        );
+        let body_root = hex::encode(body_root(&block[SIGNED_BEACON_BLOCK_MIN..]));
+        assert_eq!(
+            std::str::from_utf8(body(&header_response)).unwrap(),
+            format!(
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"{}\",\
+                 \"canonical\":true,\"header\":{{\"message\":{{\"slot\":\"10\",\"proposer_index\":\"7\",\
+                 \"parent_root\":\"{}\",\"state_root\":\"{}\",\"body_root\":\"0x{body_root}\"}},\
+                 \"signature\":\"0x{}\"}}}}}}",
+                root_hex(0xcd),
+                root_hex(0x00),
+                root_hex(0xef),
+                "00".repeat(96)
+            )
+        );
+    }
+
+    /// `head` resolves in the API from the last `Status`; a slot is resolved
+    /// by storage, which names the root it found.
+    #[test]
+    fn head_and_slot_ids_resolve_to_the_block_they_name() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.node_status.head_root = [0x77; 32];
+        let head_client = connect(tcp_addr(&server));
+        get(&head_client, "/eth/v1/beacon/headers/head");
+        let BeaconApiRequest::Block { request_id: head_id, lookup, with_bytes: true } =
+            deferred_request(&mut server)
+        else {
+            panic!("the header needs the bytes");
+        };
+        assert_eq!(lookup, BlockLookup::Root([0x77; 32]));
+
+        let slot_client = connect(tcp_addr(&server));
+        get(&slot_client, "/eth/v1/beacon/blocks/10/root");
+        let BeaconApiRequest::Block { request_id: slot_id, lookup, with_bytes: false } =
+            deferred_request(&mut server)
+        else {
+            panic!("the root needs no bytes");
+        };
+        assert_eq!(lookup, BlockLookup::Slot(10));
+
+        server.serve_block(head_id, 10, [0x77; 32], &block_bytes(10, 0xef));
+        server.serve_block(slot_id, 10, [0x99; 32], &[]);
+        let head_reader = std::thread::spawn(move || read_to_eof(head_client));
+        let slot_reader = std::thread::spawn(move || read_to_eof(slot_client));
+        let (head_response, slot_response) =
+            serve_both(&mut server, head_reader, slot_reader, "resolved id answers");
+
+        let head_body = std::str::from_utf8(body(&head_response)).unwrap();
+        assert!(head_body.contains(&format!("\"root\":\"{}\"", root_hex(0x77))), "{head_body}");
+        assert_eq!(
+            std::str::from_utf8(body(&slot_response)).unwrap(),
+            format!(
+                "{{\"execution_optimistic\":false,\"finalized\":true,\"data\":{{\"root\":\"{}\"}}}}",
+                root_hex(0x99)
+            )
+        );
+    }
+
+    #[test]
+    fn block_storage_does_not_hold_is_a_404() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client = connect(tcp_addr(&server));
+        get(&client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xcd)));
+        let request_id = request_id(&deferred_request(&mut server));
+        server.api.handle_response(BeaconApiResponse::Block { request_id, block: None });
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "404 response");
+        assert!(response.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{response:?}");
+    }
+
+    #[test]
+    fn block_for_a_closed_connection_is_dropped() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client = connect(tcp_addr(&server));
+        get(&client, &format!("/eth/v2/beacon/blocks/{}", root_hex(0xef)));
+        let request_id = request_id(&deferred_request(&mut server));
+        drop(client);
+        server.api.idle.timeout = Duration::ZERO;
+        pump_until(&mut server, "idle connection reaped", |s| s.api.connections.is_empty());
+
+        let other = connect(tcp_addr(&server));
+        pump_until(&mut server, "other accepted", |s| s.api.connections.len() == 1);
+        server.serve_block(request_id, 0, [0x01; 32], &block_bytes(0, 0x01));
+        assert!(
+            server.api.connections.values().all(|conn| matches!(
+                &conn.state,
+                State::Requests(requests) if requests.http.pending_write().is_empty()
+            )),
+            "a late answer must not land on the connection that took the token"
+        );
+        drop(other);
     }
 
     #[test]

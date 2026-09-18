@@ -143,23 +143,23 @@ impl AttestationClusterHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        match request {
-            BeaconApiRequest::LocalAttestation { request_id, validator_pubkey, subnet, ssz } => {
-                let slot = SingleAttestationView::slot(&ssz);
-                self.handle_local_attestation(
-                    PendingAttestation {
-                        request_id,
-                        command: AttestationLockCommand {
-                            key: AttestationKey { validator_pubkey, slot },
-                            subnet,
-                            ssz,
-                        },
+        if let BeaconApiRequest::LocalAttestation { request_id, validator_pubkey, subnet, ssz } =
+            request
+        {
+            let slot = SingleAttestationView::slot(&ssz);
+            self.handle_local_attestation(
+                PendingAttestation {
+                    request_id,
+                    command: AttestationLockCommand {
+                        key: AttestationKey { validator_pubkey, slot },
+                        subnet,
+                        ssz,
                     },
-                    now,
-                    gossip_handler,
-                    producers,
-                );
-            }
+                },
+                now,
+                gossip_handler,
+                producers,
+            );
         }
     }
 
@@ -542,6 +542,7 @@ mod tests {
                 BeaconApiResponse::LocalAttestationResponse { request_id, response } => {
                     responses.push((request_id, response));
                 }
+                BeaconApiResponse::Block { .. } => {}
             });
             responses
         }
@@ -576,6 +577,7 @@ mod tests {
                 originator_stream_id: message.stream_id,
                 topic: message.topic,
                 domain: message.domain,
+                ssz_cache: message.ssz_cache,
                 msg_hash: message.msg_hash,
                 recv_ts: message.recv_ts,
                 protobuf: message.protobuf,

@@ -1,5 +1,5 @@
 use flux::timing::Nanos;
-use silver_common::{BlockSource, ColumnSource, PayloadValidationStatus};
+use silver_common::{BlockSource, ColumnOrigin, PayloadValidationStatus};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
@@ -9,13 +9,13 @@ pub enum Stage {
     },
     ColumnRecv {
         index: u64,
-        source: ColumnSource,
+        origin: ColumnOrigin,
     },
     /// The same sidecar past validation; the gap from `ColumnRecv` is the
     /// columns tile's queue delay.
     ColumnValidated {
         index: u64,
-        source: ColumnSource,
+        origin: ColumnOrigin,
     },
     /// `NewPayload` publish: CL validated, dispatched to the EL
     ElSent {

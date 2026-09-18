@@ -2,206 +2,235 @@
 status: accepted
 ---
 
-# Synchronous handlers, materialized responses, no streaming
+# Synchronous handlers, materialized responses, and SSE subscriptions
 
-Beacon-api handlers are synchronous compute — no I/O, no blocking — invoked
-only once a request has fully arrived; responses are materialized in the
-connection's write buffer and drained incrementally. All transport pumps are
-non-blocking (`poll(Duration::ZERO)`), so serving and engine traffic
-interleave per readiness event: a slow API consumer never stalls engine
-calls, and vice versa.
+Consolidated 2026-09-16. This document describes the accepted design;
+Git history retains the earlier decisions and amendments.
 
-This holds for every request/response endpoint in the targeted surface:
-verified against the beacon-APIs spec and five validator clients (Teku,
-Lighthouse, Nimbus, Prysm, Vouch), nothing a validator client
-requires streams or long-polls except the `/eth/v1/events` SSE stream.
+## Request handling and shared I/O
 
-Amended 2026-08-18: SSE is in scope — validator clients will not be asked
-to poll. It will be served in-process as an explicit subscription-mode
-carve-out on the server connection machine (a long-lived, mostly idle
-connection with small appended writes — deliberately outside this ADR's
-bounded-buffer model), fed from a spine events queue produced by the
-beacon-state tile. Implementation is scheduled after the initial endpoint
-surface; the 404 served for `/eth/v1/events` today is interim behavior,
-not the decision, and the previously-floated out-of-process serving option
-is no longer the plan of record. Everything else stays materialized in a
-bounded buffer by construction — the SSE carve-out is the single
-sanctioned exception, and its design round amends this ADR with the
-concrete mechanism.
+Beacon API handlers run synchronously after a request has fully arrived.
+They perform no I/O. Immediate responses are materialized in the connection's
+write buffer, which the transport drains incrementally. Block-by-root
+requests instead wait for a storage response before materialization.
 
-Amended 2026-08-20: the bounded-buffer claim is not universal. A validator
-registry response is bounded only by the registry — ~1GiB at mainnet scale —
-because the beacon-APIs schema requires an empty filter to return every
-validator, and refusing that answer is a compatibility wall: validator
-clients submit their whole key set in one request, and go-eth2-client
-deactivates a beacon node that answers 5xx. Serving it costs ~0.9s of
-synchronous render on the tile, so the interleaving guarantee above holds
-for I/O but not for compute: a handler that materializes a large body does
-delay engine traffic, however non-blocking the transport beneath it. Both
-follow from serving a request/response API on the thread that drives the
-execution client, not from any one endpoint, and neither is bounded by the
-connection write buffer, which releases its capacity after each response.
+The application boundary hosts the beacon API server and engine API client
+on one thread. Both register sockets with a shared `Poll`, using disjoint
+token ranges. Non-blocking transport lets the tile interleave their I/O.
+Slow socket consumers do not require blocking writes, but synchronous
+handler computation still delays other work on the tile.
 
-Amended 2026-08-21: `poll(Duration::ZERO)` is the busy-spin build's mechanism, not
-the decision. Under `flux/park` a tile that reports no work parks unless it has
-registered an `mio::Waker` with the flux work signal, and that signal fires on
-spine publishes alone, so a parked tile would sleep through an inbound request. A
-park build therefore needs the waker and a non-zero timeout, and both need one
-readiness loop, since blocking in either of two would starve the other. The tile
-serves the beacon-api server and the engine-api client from a single `Poll`, each
-registering through its own share of the token space, so the interleaving above
-follows from that loop rather than from the timeout being zero. The waker and the
-timeout are what remain.
+The tile uses `poll(Duration::ZERO)`. Supporting parked API tiles requires
+socket readiness to wake the tile, rather than relying only on spine
+publications. A shared readiness loop remains necessary so waiting for
+one API's sockets does not starve the other.
 
-Amended 2026-08-24: the endpoints the 2026-08-20 amendment measured are not
-served for now. The validator registry, duties, liveness, per-block reads and
-peer counts answer 501: each needs data the node does not yet keep, or a
-render that outruns the synchronous model above, and each is deferred to its
-own PR rather than served from the wrong data. The ~1GiB/~0.9s registry
-figures stand as the recorded cost a bounded-render design has to answer
-before that endpoint returns.
+## Storage-backed block requests
 
-Amended 2026-09-07: `ChunkedResponse` in `silver_httpcore` owns the HTTP chunk
-framing and pending output for a subscription. The handler queues the response
-head, then the connection replaces its `ServerConnection` with this machine.
-Each SSE frame occupies one HTTP chunk. Closing the connection ends the stream
-without a terminal chunk.
+`/eth/v2/beacon/blocks/{block_id}` serves blocks by root as SSZ. The handler
+queues a storage request and leaves the connection waiting with a request ID.
+Storage replies through `beacon_api_responses`; the API then frames the
+response into that connection. Requests travel through `beacon_api_requests`.
+Only one request waits per connection. A connection without a storage reply
+closes on the idle timeout. Block-root and header routes remain 501 stubs.
 
-Subscriptions are exempt from the request idle timeout. After attempting to drain
-existing output, a push that would take pending output past 512 KiB closes the
-connection. The expiry sweep also closes connections whose pending output has
-made no socket write progress for over 30 seconds. This measures writes accepted
-by the socket, not reads by the peer.
-The pump queues keep-alive comments every 15 seconds, including when no events
-are published.
+## Materialization limits
 
-`beacon_api` owns SSE framing, topic selection, and delivery to subscribers.
-The tile calls `publish_block` without accessing connections. `/eth/v1/events`
-serves `block` and rejects other topics with 400. Further topics and
-silver-specific SSE routes can use the same subscription mechanism.
+Materializing a response does not by itself bound its size or rendering
+cost. The 2026-08-20 investigation measured approximately 1 GiB and 0.9 seconds
+for an unfiltered mainnet validator registry response. These are historical
+measurements, not bounds on supported responses. Such rendering would delay
+engine traffic on the shared thread.
 
-Amended 2026-09-08: `/eth/v1/events` also serves the legacy `head` topic.
-`BeaconStateEvent::Status` carries the selected block's declared state root
-and both duty-dependent roots from its fork's history.
+The validator registry, duties, liveness, and configured per-block read
+routes remain 501 stubs. Serving them requires the missing data or a design
+that addresses rendering cost. The route table defines the exact surface.
 
-Status describes an observation. Each consumer decides which fields require
-action. Existing publications remain, and an end-of-loop check covers changes
-to the selected head or its execution optimism since the last Status.
-The publication marker is separate from the reorg marker, so an earlier
-Status cannot hide a reorg notification. Replay can emit intermediate
-observations; completion still requires `ReplayComplete`.
+Peer listing and peer counts are served. Their inventory tracks established
+connections through connection and disconnection events. Other connection
+state counts are zero, and peer ENRs are returned as `null`.
 
-The application boundary publishes a head event when a complete observation
-changes the head root or optimism. The first complete observation establishes
-a baseline. Incomplete metadata, including overwritten checkpoint history,
-leaves that baseline unchanged. Node-status updates continue independently.
+## SSE transport and ownership
 
-`epoch_transition` compares consecutive complete observations and is true
-only when the head epoch advances. Same-block validation updates and backward
-reorgs report false. New subscriptions receive future changes without an
-initial snapshot.
+`/eth/v1/events` serves `block`, `head`, `head_v2`, `block_gossip`, and
+`data_column_sidecar`. Unsupported topics reject the subscription with 400.
+Subscriptions receive future events without an initial snapshot or replay.
 
-Amended 2026-09-09: `/eth/v1/events` also serves `head_v2`. Status carries
-fork choice's empty/full resolution of the selected block's own payload.
-The end-of-loop check publishes an updated Status when this resolution
-changes, even if the root and optimism stay the same.
+`beacon_api` owns event selection, JSON rendering, SSE framing, and delivery.
+The application boundary forwards spine events and sync updates; it holds
+no head-observation state. The API reuses a frame buffer across publications.
 
-The boundary publishes `head_v2` when the root, optimism or resolution
-changes, including both empty-to-full and full-to-empty transitions. Legacy
-`head` retains its root-and-optimism filter. Both topics use the same
-complete observation. The v2 `version` names the configured fork at the head
-block's slot; selected pre-Gloas blocks report `full`.
+`ChunkedResponse` in `silver_httpcore` owns HTTP chunk framing and pending
+subscription output. After queuing the response head, the connection
+replaces its `ServerConnection` with this machine. Each SSE frame occupies
+one HTTP chunk. Closing the connection ends the stream without a terminal
+chunk.
 
-Amended 2026-09-10: `/eth/v1/events` also serves `block_gossip` for block
-publication requests following silver's gossip checks. A request precedes
-payload notification, state transition, and import; it does not guarantee
-delivery to peers. This deliberately narrows the Beacon API's validation
-contract: RPC block imports remain silent because they do not request relay.
-The topic follows silver's relay policy, keeping its promise tied to gossip
-publication without duplicating an observation on the spine. The boundary
-selects `SendGossip` requests on the block topic. It reads the slot and
-computes the block root from the relayed block's SSZ bytes. The `block` topic
-still follows `Applied` import receipts. These queues establish no shared ordering.
-Repeated requests for one root are not deduplicated, and late subscribers
-receive no replay. Subscribers to both topics can reach the existing send
-cap sooner.
+### Backpressure and timeouts
 
-Amended 2026-09-10: `/eth/v1/events` also serves `data_column_sidecar` for
-column publication requests following silver's gossip checks, including KZG.
-This deliberately narrows the Beacon API's validation contract: validation
-without a publication request produces no event. The boundary selects
-`SendGossip` requests on column topics and every `PublishDataColumn`. It
-derives the slot, block root and column index from Fulu or Gloas sidecar
-bytes, without filtering by custody. Control's converted request stays off the
-spine, avoiding a second notification. These events acknowledge requests,
-including RPC requests that can fail before encoding; they do not guarantee
-delivery to peers.
-Buffered copies, RPC columns processed while syncing, held copies, and EL
-reconstruction remain silent under the existing publication policy.
-`Persist` and `Available` retain their existing meaning and selection.
-Repeated requests are not deduplicated, and late subscribers receive no
-replay. The `beacon_events` and `peer_events` queues establish no shared
-ordering. Additional subscriptions can reach the existing send cap sooner.
+Delivery first drains existing output, then checks whether the new chunk
+fits within the 512 KiB pending-output cap. The cap includes HTTP framing
+and the pending response head. If the chunk fits, delivery queues it and
+tries to drain again; otherwise, the connection closes.
 
-Amended 2026-09-14: publication requests carry handles to decompressed SSZ
-bytes so API consumers can derive event fields without adding API-specific
-metadata to those requests. The boundary reads `SendGossip` objects from
-the gossip cache and `PublishDataColumn` objects from the RPC cache.
-It computes each block root, including the body hash, even when no clients
-subscribe to `block_gossip`. For Fulu sidecars, it computes the block root
-from the five header fields. Gloas sidecars contain the block root directly.
-If the cache has overwritten an object's bytes, the boundary logs a warning
-and emits no event for that request. It also skips sidecars whose length
-and column offset identify neither supported layout. These failures do not
-cancel the publication request.
+Each drain writes until the buffer is empty or the socket returns
+`WouldBlock`. Unrecoverable write errors close the connection. Successful
+writes reset the send deadline while output remains pending; draining it
+clears the deadline. Progress means kernel acceptance, not peer consumption.
 
-Amended 2026-09-11: `head` and `head_v2` describe changes observed while
-Control reports following. Disk restoration, the wait for a replay strategy
-and network catch-up produce no head notifications. Following is a sync
-mode, not a guarantee of zero sync distance or execution validation.
+Subscriptions are exempt from the request idle timeout. The expiry sweep
+closes a connection after pending output makes no write progress for over
+30 seconds. The pump queues keep-alive comments every 15 seconds, including
+when no events are published.
 
-The boundary keeps every complete observation as its baseline in every mode
-and reports a change only while following. A following period therefore
-starts from the head the node already has, and its first change is reported.
-Status and sync updates travel on separate queues; the boundary reads the
-mode once per iteration after draining beacon events, so an observation
-drained in the same iteration as a mode change follows the earlier mode, and
-one queued between the two drains is reported in the next iteration. The
-imprecision is bounded by one iteration. Node-status updates and block
-notifications remain independent of the mode.
+Each subscription reserves its output buffer at construction and retains
+it until closing. At 64 subscriptions, the pending-output allowance totals
+32 MiB. A full drain reuses the buffer from its beginning; partial drains
+can advance through the allocation. Bursts across several subscribed topics
+share the same cap and can exhaust it.
+
+## Head observations and notifications
+
+`BeaconStateEvent::Status` carries the selected block's declared state root,
+duty-dependent roots, execution optimism, and empty/full payload resolution.
+An end-of-loop check publishes changes in the selected root, optimism, or
+payload resolution since the last Status. The publication marker is separate
+from the reorg marker, so an earlier Status cannot hide a reorg notification.
+Replay can publish intermediate observations; completion still requires
+`ReplayComplete`.
+
+Beacon-state classifies each Status against its last published head.
+With complete head roots and a prior observation, `head_change` is `Head`
+when the root or optimism differs. It is `Payload` when only the payload
+resolution differs, and `None` otherwise. The first Status and any Status
+with incomplete head roots carry `None`. Every published Status becomes
+the baseline, including incomplete observations. Overwritten checkpoint
+history can make dependent roots unavailable.
+
+`epoch_transition` compares the head block's epoch with its parent's epoch.
+It is true when the head's epoch is later, and false when no parent is
+available. A reorg between heads in the same epoch can therefore carry
+`true` when the new head's parent belongs to an earlier epoch.
+
+The beacon API publishes `head` for `Head`, and `head_v2` for `Head` and
+`Payload`, only while its latest sync update reports following.
+Payload changes include both empty-to-full and full-to-empty transitions.
+The v2 `version` names the configured fork at the head block's slot;
+selected pre-Gloas blocks report `full`.
 
 Control waits for disk replay to finish or be skipped before reporting
-following; previously the gate held only network requests, and disk replay
-is chosen exactly when peers look comparable, so following could be announced
-during replay. Completion re-evaluates the target. Beacon-state's Status
-publications are unchanged.
+following. The API suppresses head notifications while its latest sync
+update indicates restoration or network catch-up. Following is a sync mode;
+it does not guarantee execution validation or a block at the current slot.
 
-Amended 2026-09-15: delivery first attempts to drain the subscription's existing
-output, then checks whether the new chunk, including its HTTP framing, fits
-under the 512 KiB pending-output cap. This lets socket capacity that became
-available since the last write attempt free room before rejecting the chunk,
-without waiting for the next writable-readiness event. If the chunk still does
-not fit, the connection closes. Otherwise, delivery queues it and attempts to
-drain again. The pending response head also counts against the cap.
+Status and sync updates travel on separate queues. The boundary drains
+beacon events before sync updates, so observations drained alongside a mode
+change use the earlier mode. An observation queued between those drains
+uses the updated mode in the next iteration. This introduces one iteration
+of imprecision around mode changes. Node-status updates and block
+notifications remain independent of the mode.
 
-Each drain writes until the buffer is empty or the socket returns `WouldBlock`;
-unrecoverable write errors close the connection. Successful writes reset the
-send deadline while output remains pending; draining it clears the deadline.
-Progress means kernel acceptance, not peer consumption.
+## Block and sidecar notifications
 
-Amended 2026-09-14: the send cap is 512 KiB. This accommodates one block's
-128 `data_column_sidecar` events with 21 commitments each, estimated at
-290 KiB, even when the socket accepts no bytes. Earlier pending events or
-repeated publications can still exhaust the allowance.
+The `block` topic follows `BlockReceived` receipts at stage `Applied`.
+These notifications can precede payload validation, so events are marked
+optimistic. Repeated notifications are not deduplicated.
 
-At 64 subscriptions, the pending-output allowance totals 32 MiB. Each
-subscription reserves its buffer at construction and retains the allocation
-until it closes. A full drain reuses the buffer from its beginning without
-releasing it. Partial drains can advance through the entire allocation.
+`block_gossip` follows `SendGossip` requests on the beacon-block topic after
+Silver's gossip checks. Requests precede payload notification, state
+transition, and import. RPC imports remain silent because they do not
+request relay. This deliberately narrows the Beacon API's validation
+contract to Silver's publication policy.
 
-Amended 2026-09-14: Fulu `data_column_sidecar` events include the sidecar's
-ordered commitment list as `kzg_commitments`. Each 48-byte commitment is
-encoded as a 0x-prefixed string of 96 hexadecimal digits. This follows the
+`data_column_sidecar` follows `DataColumnsEvent::Validated`, emitted once per
+validated block root and column index. The API uses the receipt's slot,
+block root, and column index directly. It reads sidecar bytes through the
+receipt's SSZ handle and cache identity to extract commitments. Gossip, RPC,
+EL reconstruction, and partial-column assembly share this path. Neither
+`Available` nor `Persist` triggers a sidecar event.
+
+Fulu events include the sidecar's ordered commitment list as `kzg_commitments`.
+Each 48-byte commitment is encoded as a 0x-prefixed string of 96 hexadecimal
+digits. This follows the
 [beacon-APIs v4.0.0 event format](https://github.com/ethereum/beacon-APIs/blob/v4.0.0/apis/eventstream/index.yaml).
 Gloas sidecars carry no commitments, so their events omit the field, matching
 [v5.0.0-alpha.2](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/eventstream/index.yaml).
+If sidecar bytes are unavailable, the API logs a warning and emits no event.
+
+Block gossip events acknowledge publication requests; they do not guarantee
+delivery to peers. Sidecar events acknowledge validation, not completed disk
+writes or peer delivery. The API does not deduplicate repeated receipts.
+The beacon, peer, and data-column event queues establish no shared ordering.
+
+### Reading block publication data
+
+Block publication requests carry handles to decompressed SSZ bytes in the
+gossip cache. The API computes block roots, including body hashes, even
+when no clients subscribe to `block_gossip`. If the cache has overwritten
+a block's bytes, the API logs a warning and emits no event for that request.
+This does not cancel the publication request.
+
+## Node status
+
+API construction requires a published anchor and seeds node status from it.
+The health endpoint has no separate uninitialized response: before the first
+sync update, it returns the syncing code, which defaults to 206.
+The anchor is reported as not optimistic, matching fork choice's trusted
+anchor. `is_syncing` is true until a sync update arrives, then reflects
+whether the latest update reports following.
+
+`sync_distance` measures slots from the imported head to Control's sync
+target. While stalled, it measures slots from the imported head to the wall
+slot in the latest `Status`. Both distances saturate at zero. It is zero
+while following and `u64::MAX` before the first sync update.
+
+The `finalized` envelope flag compares the served state's latest block slot
+with the cached finalized epoch's first slot. It is true when the block is
+at or before that slot.
+
+### Loss of synced status
+
+Control determines whether the node is synced. When it cannot follow and
+has no selectable sync target, it enters `Phase::Stalled` and publishes
+`SyncUpdate::Stalled`. This applies after following or syncing, and when
+the first peer observations establish that the node cannot follow.
+Repeated evaluations of the same stall publish no further update.
+
+Without a selectable target, a block gap prevents following when no peer
+claims a head within the configured lag behind ours or ahead. The gap is a
+consecutive run of unknown block slots after the sync window's covered
+tail, bounded by the wall slot. It must reach `head_lag_threshold_slots`.
+A known block or proven-empty slot ends the run. Peers claiming heads more
+than the configured lag ahead also prevent following, even when their
+chains cannot be selected.
+
+`Stalled` reports that the node is not synced while preserving live
+processing. Beacon state continues slot ticks, status publication, and
+gossip imports. Columns remain eligible for relay, and storage processes
+history as it does while following. These consumers distinguish a selected
+sync target through `is_syncing()`.
+
+The API uses `is_following()` to determine whether the node is synced and
+to gate head-event publication.
+While stalled, it reports `is_syncing: true`, returns the syncing health
+code, and suppresses `head` and `head_v2` events. Slot updates keep Control's
+wall slot and the API's distance current. The API applies no independent
+lag threshold.
+
+Control continues requesting peer statuses while stalled with a block gap.
+A peer claim within the lag or restored block coverage can restore
+`Following`. A selectable target ahead starts syncing. Target selection
+reevaluates both paths while stalled. Abandoning the last usable sync target
+enters `Stalled` when following is not possible, allowing gossip imports
+and slot ticks to resume.
+
+Control starts idle until local status and a peer comparison are available.
+Transitions to following or stalled wait for disk replay to finish or be
+skipped. Until then, an already selected sync target remains visible.
+Publication reflects the resulting phase; the previous update is retained
+only to suppress duplicate publications.
+
+The peer comparison uses cached head slots, without expiring claims or
+requiring matching block roots. An equally stale peer can therefore
+preserve synced status indefinitely. This policy permits following through a
+quiet chain but does not distinguish it from peers that stall together.

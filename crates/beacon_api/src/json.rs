@@ -4,10 +4,10 @@
 
 use std::io::Write;
 
-use silver_beacon_state_data::{B256, Checkpoint, Fork, Version};
+use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Version};
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
-use crate::{events::HeadEvent, peers::Peer};
+use crate::{events::HeadEvent, peers::Peer, validators::ValidatorRecord};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -41,6 +41,10 @@ impl<'a> Json<'a> {
 
     pub(crate) fn end_array(&mut self) {
         self.out.push(b']');
+    }
+
+    pub(crate) fn restart(&mut self) {
+        self.out.truncate(self.start);
     }
 
     pub(crate) fn key(&mut self, name: &str) {
@@ -163,6 +167,13 @@ pub(crate) struct ReadFlags {
     pub(crate) finalized: bool,
 }
 
+pub(crate) struct SignedHeader {
+    pub(crate) root: B256,
+    pub(crate) canonical: bool,
+    pub(crate) header: BeaconBlockHeader,
+    pub(crate) signature: [u8; 96],
+}
+
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
     pub(crate) fn peers<'p>(&mut self, peers: impl Iterator<Item = &'p Peer>) {
@@ -243,6 +254,40 @@ impl Json<'_> {
         self.hex(&fork.current_version);
         self.key("epoch");
         self.quoted_u64(fork.epoch);
+        self.end_object();
+    }
+
+    pub(crate) fn block_root(&mut self, root: &B256) {
+        self.begin_object();
+        self.key("root");
+        self.hex(root);
+        self.end_object();
+    }
+
+    pub(crate) fn signed_header(&mut self, signed: &SignedHeader) {
+        self.begin_object();
+        self.key("root");
+        self.hex(&signed.root);
+        self.key("canonical");
+        self.bool(signed.canonical);
+        self.key("header");
+        self.begin_object();
+        self.key("message");
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(signed.header.slot);
+        self.key("proposer_index");
+        self.quoted_u64(signed.header.proposer_index);
+        self.key("parent_root");
+        self.hex(&signed.header.parent_root);
+        self.key("state_root");
+        self.hex(&signed.header.state_root);
+        self.key("body_root");
+        self.hex(&signed.header.body_root);
+        self.end_object();
+        self.key("signature");
+        self.hex(&signed.signature);
+        self.end_object();
         self.end_object();
     }
 
@@ -356,6 +401,37 @@ impl Json<'_> {
             }
             self.end_array();
         }
+        self.end_object();
+    }
+
+    /// `ValidatorResponse` (`apis/beacon/states/validator.yaml`).
+    pub(crate) fn validator(&mut self, record: &ValidatorRecord) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(record.index);
+        self.key("balance");
+        self.quoted_u64(record.balance);
+        self.key("status");
+        self.string(record.status.name());
+        self.key("validator");
+        self.begin_object();
+        self.key("pubkey");
+        self.hex(&record.pubkey);
+        self.key("withdrawal_credentials");
+        self.hex(&record.withdrawal_credentials.0);
+        self.key("effective_balance");
+        self.quoted_u64(record.effective_balance);
+        self.key("slashed");
+        self.bool(record.lifecycle.slashed);
+        self.key("activation_eligibility_epoch");
+        self.quoted_u64(record.lifecycle.activation_eligibility_epoch);
+        self.key("activation_epoch");
+        self.quoted_u64(record.lifecycle.activation_epoch);
+        self.key("exit_epoch");
+        self.quoted_u64(record.lifecycle.exit_epoch);
+        self.key("withdrawable_epoch");
+        self.quoted_u64(record.lifecycle.withdrawable_epoch);
+        self.end_object();
         self.end_object();
     }
 

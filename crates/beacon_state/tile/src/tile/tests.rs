@@ -12,8 +12,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID, MessageId,
     P2pStreamId, PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed,
-    TCache, TCacheProducer, TCacheRead, TProducer,
-    column_util::block_root_fulu,
+    TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -187,6 +186,7 @@ fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconBlock,
         domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+        ssz_cache: silver_common::SszCache::Gossip,
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,
@@ -571,6 +571,26 @@ impl Published {
             .collect()
     }
 
+    fn wall_slots(&self) -> Vec<Slot> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Status { wall_slot, .. } => Some(*wall_slot),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn transitions(&self) -> Vec<bool> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Status { epoch_transition, .. } => Some(*epoch_transition),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn reorgs(&self) -> Vec<Slot> {
         self.0
             .iter()
@@ -759,7 +779,7 @@ impl HeadRig {
         self.tile.last_applied = state_id;
         self.tile.last_applied_block_root = block_root;
         self.tile.recompute_head();
-        self.tile.on_accept(Some(block_root), &mut self.adapter.producers);
+        self.tile.publish_status(&mut self.adapter.producers);
         state_id
     }
 
@@ -929,6 +949,50 @@ fn head_change_is_classified_against_the_last_complete_status() {
     assert_eq!(rig.drain().changes(), [HeadChange::None]);
 }
 
+/// Stalled nodes keep publishing slot updates for Control's clock and the API's
+/// distance. A selected sync target suppresses these updates.
+#[test]
+fn stalled_target_keeps_the_slot_ticker() {
+    let mut stalled = HeadRig::new();
+    stalled.tile.on_sync_update(SyncUpdate::Stalled);
+    stalled.advance_to_slot(71);
+    assert_eq!(stalled.crank().wall_slots(), [71]);
+
+    let mut chasing = HeadRig::new();
+    chasing.tile.on_sync_update(SyncUpdate::SyncingHead { head_root: [9; 32], head_slot: 400 });
+    chasing.advance_to_slot(71);
+    assert!(chasing.crank().wall_slots().is_empty());
+
+    chasing.tile.on_sync_update(SyncUpdate::Stalled);
+    assert_eq!(chasing.crank().wall_slots(), [71]);
+}
+
+/// Both reorg heads are in epoch 3, with a parent in epoch 2.
+/// The flag stays true even though the observed head epoch does not advance.
+#[test]
+fn epoch_transition_follows_the_parent_through_a_reorg() {
+    let mut same_epoch = HeadRig::new();
+    same_epoch.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    assert_eq!(same_epoch.crank().transitions(), [false]);
+
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 96, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 97, B_PREVIOUS, B_CURRENT);
+    let events = rig.crank();
+    assert_eq!(events.last_head().root, A_ROOT);
+    assert!(events.transitions().iter().all(|&t| t), "epoch 3 heads over the epoch 2 anchor");
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let events = rig.crank();
+    assert_eq!(events.reorgs(), [70], "the head left A's branch for its sibling");
+    assert_eq!(events.last_head().root, B_ROOT);
+    assert_eq!(
+        events.transitions().last(),
+        Some(&true),
+        "B's parent is in epoch 2 although the previous head was in epoch 3"
+    );
+}
+
 #[test]
 fn an_import_is_not_republished_by_idle_iterations() {
     let mut rig = HeadRig::new();
@@ -1084,7 +1148,7 @@ fn a_status_that_already_named_the_new_head_does_not_hide_the_reorg() {
 
     rig.vote_for(B_ROOT, 0..8);
     rig.tile.recompute_head();
-    rig.tile.on_accept(None, &mut rig.adapter.producers);
+    rig.tile.publish_status(&mut rig.adapter.producers);
     let events = rig.crank();
     assert_eq!(events.reorgs(), [70], "the reorg is reported anyway");
     assert_eq!(events.last_head(), head_b(true));
@@ -1298,7 +1362,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let feedback =
         tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
-    let Feedback::Accept(Some(block_root)) = feedback else { panic!("{feedback:?}") };
+    let Feedback::BlockImported(block_root) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
@@ -1756,7 +1820,7 @@ fn lapped_orphan_is_re_requested_on_replay() {
     lap_rpc_ring(&mut tile, &mut rp, &mut adapter.producers);
     assert!(missing_blocks(&mut sink).is_empty(), "junk asks for nothing");
 
-    tile.on_accept(Some(parent_root), &mut adapter.producers);
+    tile.replay_orphans(parent_root, &mut adapter.producers);
 
     assert_eq!(
         missing_blocks(&mut sink),
@@ -2263,7 +2327,7 @@ fn attestation_updates_vote_tracker() {
     // the offsets), verifying the vote fold self-consistently.
     let want_root = *SingleAttestationView::beacon_block_root(&buf);
     let want_epoch = SingleAttestationView::target_epoch(&buf);
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, want_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
 }
@@ -2278,6 +2342,7 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic,
         domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+        ssz_cache: silver_common::SszCache::Gossip,
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz,
@@ -2308,6 +2373,7 @@ fn gossip_att_msg(
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconAttestation(subnet),
         domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+        ssz_cache: silver_common::SszCache::Gossip,
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,
@@ -2636,8 +2702,8 @@ fn sync_contribution_dedup_is_per_subcommittee() {
 
     let first = test_signing::sign_contribution_and_proof(0, 0, slot, first_sub, 3, 0, bbr, &imm);
     let second = test_signing::sign_contribution_and_proof(0, 0, slot, second_sub, 3, 0, bbr, &imm);
-    assert!(matches!(tile.handle_sync_contribution(&first), Feedback::Accept(None)));
-    assert!(matches!(tile.handle_sync_contribution(&second), Feedback::Accept(None)));
+    assert!(matches!(tile.handle_sync_contribution(&first), Feedback::Accept));
+    assert!(matches!(tile.handle_sync_contribution(&second), Feedback::Accept));
 }
 
 #[test]
@@ -2833,7 +2899,7 @@ fn current_slot_vote_deferred_until_drain() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
     // Deferred: not yet folded into the tracker, and a drain within the same
     // slot keeps it deferred.
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
@@ -2866,7 +2932,7 @@ fn single_att_wrong_subnet_rejected() {
     );
     assert_eq!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Reject(None));
     // The reject must not have marked the attester seen.
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
 }
 
 /// Spec [IGNORE]: at most one attestation per (attester, target epoch) —
@@ -2889,7 +2955,7 @@ fn single_att_repeat_attester_epoch_ignored() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
     let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     let first = tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap();
 
@@ -2939,7 +3005,7 @@ fn single_att_failed_validation_does_not_mark_seen() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&honest, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&honest, subnet), Feedback::Accept);
 }
 
 /// An accepted single attestation lands in the pool: participant bit at
@@ -2963,7 +3029,7 @@ fn single_att_accept_inserts_into_pool() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
 
     let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     let out =
@@ -3110,7 +3176,7 @@ fn single_att_accept_with_nonzero_genesis_validators_root() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&good, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&good, subnet), Feedback::Accept);
 }
 
 /// The root memo is keyed on AttestationData alone, so the single and
@@ -3133,11 +3199,11 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&single, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&single, subnet), Feedback::Accept);
     assert_eq!(tile.attestation_root_memo.len(), 1);
 
     let agg = build_agg_for_vi0(&tile);
-    assert_eq!(tile.handle_aggregate_and_proof(&agg), Feedback::Accept(None));
+    assert_eq!(tile.handle_aggregate_and_proof(&agg), Feedback::Accept);
     assert_eq!(tile.attestation_root_memo.len(), 1);
 }
 
@@ -3171,7 +3237,7 @@ fn agg_respects_epoch_monotonicity() {
 
     let buf = build_agg_for_vi0(&tile);
     assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
 
     // Older-epoch aggregate must not overwrite the newer vote.
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, preset_root);
@@ -3242,7 +3308,7 @@ fn agg_repeat_aggregator_epoch_ignored() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
 }
 
@@ -3256,7 +3322,7 @@ fn agg_failed_validation_does_not_mark_aggregator() {
     let mut forged = buf.clone();
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
     assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject(None));
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
 }
 
 /// First committee (skipping the wall slot) holding two members whose
@@ -3313,7 +3379,7 @@ fn pool_single_then_aggregate(
     );
     let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     let subnet = expected_subnet(tile, slot, ci);
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
     tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).expect("pooled aggregate")
 }
 
@@ -3332,7 +3398,7 @@ fn pool_aggregate_accepted_by_aggregate_and_proof_path() {
     // Accept requires verify_aggregate_and_proof_sigs: selection proof,
     // outer signature, and the pooled aggregate signature against the two
     // participants' aggregated registry pubkeys.
-    assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept(None));
+    assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept);
 }
 
 /// First-seen keys on (aggregator, target epoch), not message bytes: a
@@ -3346,10 +3412,7 @@ fn agg_repeat_keys_on_aggregator_not_bytes() {
     let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)), Feedback::Accept);
 
     // A second participant grows the pooled aggregate: different bytes,
     // fully valid, same (aggregator, target epoch).
@@ -3369,16 +3432,10 @@ fn agg_distinct_aggregators_same_data_both_accept() {
     let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)), Feedback::Accept);
 
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)), Feedback::Accept);
 }
 
 /// Spec [IGNORE]: bits ⊆ an already-seen valid aggregate's — equal or
@@ -3393,10 +3450,7 @@ fn agg_subset_from_other_aggregator_ignored() {
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)), Feedback::Accept);
 
     // Both from an aggregator the epoch has not seen, so only the
     // coverage rule can be what ignores them.
@@ -3417,10 +3471,7 @@ fn agg_superset_gate_precedes_signature_verify() {
 
     let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)), Feedback::Accept);
 
     let mut forged = wrap_by(&imm, vi_b, &agg_one);
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
@@ -3444,10 +3495,7 @@ fn agg_union_covered_still_relays() {
     // {a} from aggregator a, then {b} alone from aggregator b: disjoint
     // patterns whose union is {a, b}.
     let agg_a = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_a)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_a)), Feedback::Accept);
     let agg_b_only = test_signing::sign_aggregate_and_proof(
         vi_b as usize % 3,
         vi_b as u64,
@@ -3460,14 +3508,11 @@ fn agg_union_covered_still_relays() {
         committee.len(),
         &imm,
     );
-    assert_eq!(tile.handle_aggregate_and_proof(&agg_b_only), Feedback::Accept(None));
+    assert_eq!(tile.handle_aggregate_and_proof(&agg_b_only), Feedback::Accept);
 
     // {a, b} from a third aggregator: within the union, inside neither.
     let agg_ab = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
-    assert_eq!(
-        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_c, &agg_ab)),
-        Feedback::Accept(None)
-    );
+    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_c, &agg_ab)), Feedback::Accept);
 }
 
 // ── finalization (deposit append lands on the delta, not the base) ──
@@ -3780,6 +3825,25 @@ fn el_invalid_drops_staged_block() {
         }
     });
     assert_eq!(rejected, [S_ROOT], "the peer that served it is told");
+}
+
+#[test]
+fn el_valid_is_kept_on_a_staged_block() {
+    const S_ROOT: B256 = [0x05; 32];
+    let mut forks = ThreeForks::new();
+    let (_spine, mut adapter) = spine_adapter(&forks.tile);
+    let mut producer = TCache::producer("test_el_valid_staged", 1 << 12);
+    forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
+
+    let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
+        block_root: S_ROOT,
+        status: PayloadValidationStatus::Valid,
+        latest_valid_hash: [0u8; 32],
+    });
+    forks.tile.handle_engine_response(verdict, &mut adapter.producers);
+    assert!(forks.tile.held.is_staged(&S_ROOT), "Valid does not drop the hold");
+    let staged = forks.tile.held.mark_available(S_ROOT, 3).expect("released");
+    assert!(staged.el_valid);
 }
 
 /// Once dropped, an EL-invalid staged block is nowhere: not in fork choice,

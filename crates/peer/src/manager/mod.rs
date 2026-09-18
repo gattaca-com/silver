@@ -18,7 +18,7 @@ use silver_config::{ScoreParams, SyncingConfig};
 use crate::{
     database::{PeerDatabase, PeerRecord},
     scoring,
-    state::{ArchivedState, IpPrefix, MsgIdMap, PeerState},
+    state::{ArchivedState, IpPrefix, MsgIdMap, PartialCapabilities, PeerState},
 };
 
 pub(crate) mod admission;
@@ -28,6 +28,9 @@ pub(crate) mod peers;
 pub(crate) mod promises;
 pub(crate) mod rpc;
 pub(crate) mod sync;
+
+#[cfg(test)]
+mod fork_tests;
 
 pub use sync::RejectedRoots;
 
@@ -103,6 +106,10 @@ pub struct PeerManager {
     /// on `DiscNodeFound` (useful for tests; production should always set
     /// it). Compared against the leading 4 bytes of an ENR's `eth2` field.
     our_fork_digest: Option<[u8; 4]>,
+
+    /// Current and optional neighbouring gossip domain, independent of
+    /// discovery history.
+    active_gossip_digests: [Option<[u8; 4]>; 2],
 
     /// The digest we advertised before the last fork.
     previous_fork_digest: Option<[u8; 4]>,
@@ -243,6 +250,7 @@ impl PeerManager {
             banned_peers: HashMap::with_capacity(128),
             remote_banned_peers: HashMap::with_capacity(128),
             our_fork_digest: Some(fork_digest),
+            active_gossip_digests: [Some(fork_digest), None],
             previous_fork_digest: None,
             rejected,
             syncing,
@@ -378,20 +386,21 @@ impl PeerManager {
                     peer.partial_extensions = partial_messages;
                 }
             }
-            PeerEvent::P2pGossipPartialCaps { p2p_peer, subnet, requests, supports_sending } => {
+            PeerEvent::P2pGossipPartialCaps {
+                p2p_peer,
+                digest,
+                subnet,
+                requests,
+                supports_sending,
+            } => {
                 if let Some(peer) = self.peers.get_mut(&p2p_peer) &&
-                    subnet < 128
+                    let Some(caps) = peer
+                        .subscriptions
+                        .get_mut(&(digest, GossipTopic::DataColumnSidecar(subnet)))
                 {
-                    let bit = 1u128 << subnet;
-                    peer.partial_requests = if requests {
-                        peer.partial_requests | bit
-                    } else {
-                        peer.partial_requests & !bit
-                    };
-                    peer.partial_supports_sending = if supports_sending {
-                        peer.partial_supports_sending | bit
-                    } else {
-                        peer.partial_supports_sending & !bit
+                    *caps = PartialCapabilities {
+                        requests,
+                        supports_sending: requests || supports_sending,
                     };
                 }
             }
@@ -435,12 +444,9 @@ impl PeerManager {
             PeerEvent::NewGossip { p2p_peer, topic, msg_hash, recv_ts, idontwant } => {
                 self.on_new_gossip(p2p_peer, topic, msg_hash, recv_ts, idontwant, emit);
             }
-            PeerEvent::OutboundIHave { topic, msg_count: _, protobuf } => {
-                self.on_outbound_ihave(topic, protobuf, emit);
+            PeerEvent::OutboundIHave { topic, digest, msg_count: _, protobuf } => {
+                self.on_outbound_ihave(topic, digest, protobuf, emit);
             }
-            // Consumed by the control tile (gossip republish); PM sees only
-            // the SendGossip it turns into.
-            PeerEvent::PublishDataColumn { .. } => {}
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
                 self.on_outbound_iwant(p2p_peer, iwant, emit);
             }
@@ -448,6 +454,7 @@ impl PeerManager {
                 originator_stream_id,
                 topic,
                 domain,
+                ssz_cache: _,
                 msg_hash,
                 recv_ts: _,
                 protobuf,
@@ -556,10 +563,12 @@ impl PeerManager {
         let mut pending_goodbyes = 0;
 
         for (&conn, peer) in self.peers.iter_mut() {
-            for topic in &peer.topics {
+            let mut counted = [false; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
+            for (_, topic) in peer.subscriptions.keys() {
                 let slot = topic.counter_slot();
-                if ours[slot] {
+                if ours[slot] && !counted[slot] {
                     subs[slot] = subs[slot].saturating_add(1);
+                    counted[slot] = true;
                 }
             }
 

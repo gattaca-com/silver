@@ -17,17 +17,16 @@ use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_columns::{
-    cell_store::CellStoreConfig,
-    tile::{ColumnConsumers, DataColumnsTile},
-};
+use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer,
-    cells::GOSSIP_DELIVERY_RETENTION, profiler::enable_profiler, tracing::initialise_tracing_log,
+    APP_NAME, Enr, ProtoIdentify, SilverSpine, SszCache, TCache, TCacheProducer,
+    cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
+    profiler::enable_profiler,
+    tracing::initialise_tracing_log,
 };
-use silver_config::Config;
+use silver_config::{Config, PartialColumnsMode};
 use silver_control::{Controller, cluster::AttestationClusterConfig, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
@@ -110,10 +109,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
     let persist_rpc_consumer_dc =
         incoming_rpc_producer.cache_ref().random_access("dc_persist_incoming_rpc", true)?;
-    let incoming_rpc_consumer_eng =
-        incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
     let incoming_rpc_consumer_api =
         incoming_rpc_producer.cache_ref().random_access("api_incoming_rpc", true)?;
+    let incoming_rpc_consumer_eng =
+        incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
     let incoming_rpc_consumer_ctl =
         incoming_rpc_producer.cache_ref().random_access("ctl_incoming_rpc", true)?;
     let incoming_engine_resp_producer = TCache::producer(
@@ -138,13 +137,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     // rpc producer
     let outgoing_rpc_producer =
         TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
+    let outgoing_rpc_consumer_api =
+        outgoing_rpc_producer.cache_ref().random_access("api_outgoing_rpc", true)?;
     let replay_blocks_producer = TCache::producer("replay_blocks", 1 << 25);
     let replay_blocks_consumer =
         replay_blocks_producer.cache_ref().random_access("bs_replay", true)?;
 
     // engine producer
     let el_producer = TCache::producer("el_data_columns", 1 << 25);
+    let el_columns_consumer_api = el_producer.cache_ref().random_access("api_el_columns", true)?;
     let el_columns_consumer = el_producer.cache_ref().random_access("el_data_columns", true)?;
+    let el_columns_consumer_ctl =
+        el_producer.cache_ref().random_access("ctl_el_data_columns", true)?;
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -254,17 +258,31 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Validation only: a non-Off mode fails startup rather than being ignored.
-    let _partial_columns =
+    let partial_columns =
         config.partial_columns().map_err(|error| format!("partial columns config: {error:?}"))?;
 
-    let cell_config =
-        CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
-            .map_err(|error| format!("cell store configuration: {error:?}"))?;
-    let data_columns_producer = TCache::producer("data_columns", cell_config.cache_capacity());
-    let columns_consumer =
-        data_columns_producer.cache_ref().retained_random_access("columns_cells")?;
-    p2p_context.data_columns_consumer =
-        Some(Box::new(data_columns_producer.cache_ref().retained_random_access("network_cells")?));
+    let cell_config = (partial_columns != PartialColumnsMode::Off)
+        .then(|| CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION))
+        .transpose()
+        .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let data_columns_producer = TCache::producer(
+        "data_columns",
+        cell_config.as_ref().map_or(1 << 16, CellStoreConfig::cache_capacity),
+    );
+    let columns_consumer = cell_config
+        .as_ref()
+        .map(|_| data_columns_producer.cache_ref().retained_random_access("columns_cells"))
+        .transpose()?;
+    let api_data_columns_consumer =
+        data_columns_producer.cache_ref().random_access("api_data_columns", true)?;
+    let storage_data_columns_consumer =
+        data_columns_producer.cache_ref().random_access("storage_cells", true)?;
+    p2p_context.data_columns_consumer = cell_config
+        .as_ref()
+        .map(|_| {
+            data_columns_producer.cache_ref().retained_random_access("network_cells").map(Box::new)
+        })
+        .transpose()?;
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
 
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
@@ -298,6 +316,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_handler,
         outgoing_rpc_producer.clone(),
         incoming_rpc_consumer_ctl,
+        el_columns_consumer_ctl,
         cluster_outbound_producer,
         cluster_inbound_consumer,
         cluster_config,
@@ -309,9 +328,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         spec.clone(),
     )?;
-    control_tile = control_tile
-        .with_data_columns_cache(cell_config, data_columns_producer, cell_slot, cell_slot_start)
-        .map_err(|error| format!("cell store construction: {error:?}"))?;
+    if let Some(cell_config) = &cell_config {
+        control_tile = control_tile
+            .with_data_columns_cache(
+                cell_config.clone(),
+                data_columns_producer,
+                cell_slot,
+                cell_slot_start,
+            )
+            .map_err(|error| format!("cell store construction: {error:?}"))?;
+    }
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
             .map(silver_common::GossipTopic::BeaconAttestation)
@@ -327,6 +353,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // crashes the boot rather than running an inert node.
     let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
         .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
+    control_tile.set_gossip_clock(ticker.clone(), &state.immutable.genesis_validators_root);
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         spec.clone(),
@@ -342,6 +369,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let storage_tile = StorageTile::new(
         ssz_persist_gossip_consumer_ds,
+        storage_data_columns_consumer,
         incoming_rpc_consumer_ds,
         persist_rpc_consumer_ds,
         el_columns_consumer,
@@ -355,7 +383,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let state_reader = beacon_state_tile.reader();
-    let data_columns_tile = DataColumnsTile::new(
+    let mut data_columns_tile = DataColumnsTile::new(
         ColumnConsumers {
             gossip: ssz_gossip_consumer_dc,
             persist_gossip: ssz_persist_gossip_consumer_dc,
@@ -372,8 +400,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),
-    )
-    .with_data_columns_consumer(columns_consumer);
+    );
+    if let (Some(config), Some(consumer)) = (cell_config, columns_consumer) {
+        data_columns_tile = data_columns_tile
+            .with_data_columns_cache(config, consumer, cell_slot, cell_slot_start)
+            .map_err(|error| format!("cell store construction: {error:?}"))?;
+    }
 
     let beacon_api_binds =
         config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
@@ -386,12 +418,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         &identify,
         &spec,
         beacon_state_tile.reader(),
+        beacon_state_tile.head_block_root(),
         config.engine_config(),
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
-        ssz_gossip_consumer_api,
-        incoming_rpc_consumer_api,
+        [
+            (SszCache::Gossip, ssz_gossip_consumer_api),
+            (SszCache::Rpc, incoming_rpc_consumer_api),
+            (SszCache::El, el_columns_consumer_api),
+            (SszCache::DataColumns, api_data_columns_consumer),
+        ]
+        .into_iter()
+        .collect(),
+        outgoing_rpc_consumer_api,
     );
 
     // Spine

@@ -204,7 +204,7 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         self.commit_attestation(&prepared);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     /// Everything up to (but excluding) the pairing: structural checks,
@@ -442,7 +442,7 @@ impl BeaconStateTile {
         }
 
         if accepted {
-            self.on_accept(None, producers);
+            self.publish_status(producers);
         }
     }
 
@@ -625,7 +625,7 @@ impl BeaconStateTile {
 
         self.seen_aggregates.record(slot, subcommittee, block_root, bits);
         self.seen_contribution_aggregators[subcommittee as usize].mark(slot, aggregator as usize);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
@@ -658,7 +658,7 @@ impl BeaconStateTile {
         }
 
         self.record_attester_votes(data, n);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     fn record_attester_votes(&mut self, data: AttestationDataView<'_>, validator_count: usize) {
@@ -785,7 +785,7 @@ impl BeaconStateTile {
             parsed.aggregation_bits,
         );
         self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     pub(super) fn validate_execution_payload_envelope(&self, ssz: &[u8]) -> EnvelopeCheck {
@@ -849,7 +849,7 @@ impl BeaconStateTile {
                 block = hex32(&block_root),
                 "envelope withdrawals are not the expected ones"
             );
-            return Feedback::Accept(None);
+            return Feedback::Accept;
         }
         let slot_state = rv.slot;
 
@@ -880,7 +880,7 @@ impl BeaconStateTile {
         self.drain_awaiting_payload(block_root, producers);
         self.recompute_head();
 
-        Feedback::Accept(Some(block_root))
+        Feedback::Accept
     }
 
     fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
@@ -1078,7 +1078,7 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         self.seen_exits.mark(vi);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     pub(super) fn handle_proposer_slashing(&mut self, data: &[u8]) -> Feedback {
@@ -1122,7 +1122,7 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         self.seen_proposer_slashings.mark(proposer_index);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     pub(super) fn handle_attester_slashing(&mut self, data: &[u8]) -> Feedback {
@@ -1146,13 +1146,13 @@ impl BeaconStateTile {
                         slashed,
                         &mut self.sig_batch,
                     );
-                    if valid { Feedback::Accept(None) } else { Feedback::Reject(None) }
+                    if valid { Feedback::Accept } else { Feedback::Reject(None) }
                 }
             }
         };
         // Mark the equivocators (spec `on_attester_slashing`) so fork choice
         // excludes them. Idempotent; removes any live LMD weight next recompute.
-        if matches!(feedback, Feedback::Accept(_)) {
+        if feedback == Feedback::Accept {
             for &idx in slashed.iter() {
                 self.fork_choice.mark_equivocating(idx as usize);
                 self.seen_attester_slashed.mark(idx as usize);
@@ -1202,7 +1202,7 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         self.seen_bls_changes.mark(vi);
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 
     /// False when the ring lapped `read` before it could be handled.
@@ -1218,7 +1218,7 @@ impl BeaconStateTile {
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
 
         let feedback = match m.topic {
-            GossipTopic::BeaconBlock if !self.sync_target.is_following() => {
+            GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
                 match self.parse_and_verify_block(data, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, producers)
@@ -1271,11 +1271,11 @@ impl BeaconStateTile {
                 topic: m.topic,
                 hash: m.msg_hash,
             }),
-            Feedback::Accept(block_root) => {
+            Feedback::Accept => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.on_accept(block_root, producers);
+                self.publish_status(producers);
             }
             Feedback::RequestParent { .. } => {
                 self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers)
@@ -1289,7 +1289,10 @@ impl BeaconStateTile {
             Feedback::RequestEnvelope { block_root, att_slot } => {
                 producers.produce(SyncNeed::missing_envelope(block_root, att_slot))
             }
-            Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
+            Feedback::BlockImported(_) |
+            Feedback::AwaitData(_) |
+            Feedback::AlreadyKnown(_) |
+            Feedback::Ignore => {}
         }
         true
     }
@@ -1299,6 +1302,7 @@ impl BeaconStateTile {
             originator_stream_id: m.stream_id,
             topic: m.topic,
             domain: m.domain,
+            ssz_cache: m.ssz_cache,
             msg_hash: m.msg_hash,
             recv_ts: m.recv_ts,
             protobuf: m.protobuf,
@@ -1378,6 +1382,6 @@ impl BeaconStateTile {
             PreparedVote::Ptc(p) => self.commit_ptc(p),
         }
         self.recompute_head();
-        Feedback::Accept(None)
+        Feedback::Accept
     }
 }

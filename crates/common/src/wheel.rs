@@ -43,6 +43,20 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         self.buckets.iter().any(|b| b.contains_key(key))
     }
 
+    pub fn len(&self) -> usize {
+        self.buckets.iter().map(FxHashMap::len).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.iter().all(FxHashMap::is_empty)
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        for bucket in &mut self.buckets {
+            bucket.retain(&mut keep);
+        }
+    }
+
     pub fn get(&self, key: &K) -> Option<&V> {
         // tail first iteration
         let mut i = (self.head + 1) & (N - 1);

@@ -10,7 +10,7 @@ pub(crate) struct SyncStatus {
 
 impl SyncStatus {
     pub(crate) fn is_synced(&self) -> bool {
-        self.sync_target.is_following()
+        !self.sync_target.is_syncing()
     }
 
     pub(crate) fn finalized_slot(&self) -> u64 {

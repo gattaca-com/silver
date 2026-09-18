@@ -1,4 +1,4 @@
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 use silver_common::{ELSyncStatus, SyncUpdate};
 
 use crate::json::SyncingData;
@@ -6,6 +6,8 @@ use crate::json::SyncingData;
 #[derive(Clone, Copy, Debug)]
 pub struct NodeStatus {
     pub head: HeadStatus,
+    pub head_root: B256,
+    pub wall_slot: u64,
     pub finalized_epoch: u64,
     /// `None` until the control tile publishes its first target.
     pub target: Option<SyncUpdate>,
@@ -21,9 +23,11 @@ pub(crate) enum Health {
 }
 
 impl NodeStatus {
-    pub fn at_anchor(head_slot: u64, anchor_epoch: u64) -> Self {
+    pub fn at_anchor(head_slot: u64, head_root: B256, anchor_epoch: u64) -> Self {
         Self {
             head: HeadStatus { slot: head_slot, optimistic: false },
+            head_root,
+            wall_slot: 0,
             finalized_epoch: anchor_epoch,
             target: None,
             el: ELSyncStatus::default(),
@@ -60,10 +64,16 @@ impl NodeStatus {
         self.target.is_some_and(SyncUpdate::is_following)
     }
 
-    /// Slots to the sync target while chasing one
+    /// Distance from the imported head to the sync target, or to the wall slot
+    /// while stalled.
     fn sync_distance(&self) -> u64 {
-        let Some(target) = self.target else { return u64::MAX };
-        target.target_slot().map_or(0, |slot| slot.saturating_sub(self.head.slot))
+        match self.target {
+            None => u64::MAX,
+            Some(SyncUpdate::Stalled) => self.wall_slot.saturating_sub(self.head.slot),
+            Some(target) => {
+                target.target_slot().map_or(0, |slot| slot.saturating_sub(self.head.slot))
+            }
+        }
     }
 
     fn el_offline(&self) -> bool {

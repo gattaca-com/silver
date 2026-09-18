@@ -1376,7 +1376,11 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![topic], params);
         for conn in 1..=3usize {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
-            mgr.peers.get_mut(&conn).unwrap().topics.insert(topic);
+            mgr.peers
+                .get_mut(&conn)
+                .unwrap()
+                .subscriptions
+                .insert(([0; 4], topic), Default::default());
         }
         cap.0.clear();
 

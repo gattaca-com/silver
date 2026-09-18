@@ -291,6 +291,10 @@ impl PublisherStack {
             .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
             rpc_in_ctl,
+            TCache::producer("ctl_el_in_dummy_a", 32)
+                .cache_ref()
+                .random_access("ctl_stack_el", true)
+                .expect("ctl el ra"),
             cluster_out_producer,
             cluster_in_consumer,
             None,
@@ -428,6 +432,10 @@ impl EchoStack {
                 .cache_ref()
                 .random_access("ctl_e2e", true)
                 .expect("ctl rpc ra"),
+            TCache::producer("ctl_el_in_dummy", 32)
+                .cache_ref()
+                .random_access("ctl_e2e_el", true)
+                .expect("ctl el ra"),
             cluster_out_producer,
             cluster_in_consumer,
             None,

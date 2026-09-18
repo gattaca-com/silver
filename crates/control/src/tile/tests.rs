@@ -1,9 +1,10 @@
-use std::{io::Write, sync::Arc};
+use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    GossipMsgIn, GossipMsgOut, IpBytes, Keypair, MessageId, P2pStreamId, PeerId, StreamProtocol,
-    TCache, TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
+    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, Keypair,
+    MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
+    TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -19,6 +20,7 @@ struct GossipPublications {
     observer: SpineAdapter<SilverSpine>,
     incoming: TProducer,
     rpc: TProducer,
+    el: TProducer,
     payload: TCacheRead,
     outbound: TRandomAccess,
     _spine: Box<SilverSpine>,
@@ -35,6 +37,7 @@ impl GossipPublications {
         let incoming = TCache::producer("publication_in", 1 << 16);
         let cluster_in = TCache::producer("publication_cluster_in", 1 << 16);
         let rpc = TCache::producer("publication_rpc", 1 << 16);
+        let el = TCache::producer("publication_el", 1 << 16);
         let mut protobuf = TCache::producer("publication_out", 1 << 16);
         let payload = write_bytes(&mut protobuf, bytes);
         let outbound = protobuf.cache_ref().random_access("publication_observer", true).unwrap();
@@ -58,6 +61,7 @@ impl GossipPublications {
             .unwrap(),
             TCache::multi_producer("publication_rpc_out", 1 << 16),
             rpc.cache_ref().random_access("publication_rpc", true).unwrap(),
+            el.cache_ref().random_access("publication_el", true).unwrap(),
             TCache::producer("publication_cluster_out", 1 << 16),
             cluster_in.cache_ref().random_access("publication_cluster", true).unwrap(),
             None,
@@ -76,6 +80,7 @@ impl GossipPublications {
             observer,
             incoming,
             rpc,
+            el,
             payload,
             outbound,
             _spine: spine,
@@ -103,6 +108,40 @@ impl GossipPublications {
 
     fn crank(&mut self) {
         self.controller.loop_body(&mut self.adapter);
+    }
+
+    fn persist_column(&mut self, origin: ColumnOrigin, bytes: &[u8]) {
+        let (ssz, ssz_cache, domain) = match origin {
+            ColumnOrigin::Rpc => {
+                (write_bytes(&mut self.rpc, bytes), SszCache::Rpc, Some(test_domain()))
+            }
+            ColumnOrigin::El => (write_bytes(&mut self.el, bytes), SszCache::El, None),
+            ColumnOrigin::Assembly => {
+                let config =
+                    CellStoreConfig::new(self.controller.spec.clone(), 1 << 5, Duration::ZERO)
+                        .unwrap();
+                let producer = TCache::producer("publication_columns", config.cache_capacity());
+                let ingress = self
+                    .controller
+                    .cell_ingress
+                    .insert(CellIngress::new(config, producer, 9, Instant::now()).unwrap());
+                (
+                    write_bytes(ingress.producer_mut(), bytes),
+                    SszCache::DataColumns,
+                    Some(test_domain()),
+                )
+            }
+            ColumnOrigin::Gossip => unreachable!(),
+        };
+        self.observer.produce(DataColumnsEvent::Persist {
+            ssz,
+            origin,
+            ssz_cache,
+            domain,
+            block_root: [0x51; 32],
+            column_index: 5,
+            slot: 9,
+        });
     }
 
     fn sent(&mut self) -> Vec<(usize, Vec<u8>)> {
@@ -137,6 +176,115 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
 }
 
 #[test]
+fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_retirement() {
+    let topic = GossipTopic::DataColumnSidecar(5);
+    let bytes = b"validated gossip frame";
+    let mut capture = GossipPublications::new(topic, bytes);
+    capture.observer.consume(|_: PeerControl, _| {});
+    let mut spec = SpecConfig::mainnet();
+    spec.fulu_fork_epoch = 0;
+    spec.gloas_fork_epoch = 10;
+    spec.blob_schedule.clear();
+    let old = GossipDomain::new(spec.fork_digest_at(9, &[0; 32]), ForkName::Fulu);
+    let new = GossipDomain::new(spec.fork_digest_at(10, &[0; 32]), ForkName::Gloas);
+    capture.controller.spec = Arc::new(spec);
+    let mut ticker = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(3));
+    ticker.set_current_slot(9 * SLOTS_PER_EPOCH);
+    capture.controller.set_gossip_clock(ticker, &[0; 32]);
+    capture.crank();
+    assert_eq!(capture.controller.gossip_handler.current_domain(), Some(old));
+    let mut subscriptions = Vec::new();
+    capture.observer.consume(|event: PeerControl, _| {
+        if let PeerControl::P2pGossipSubscribe { digest, .. } = event {
+            subscriptions.push(digest);
+        }
+    });
+    assert_eq!(subscriptions.iter().filter(|digest| **digest == old.digest()).count(), 2);
+    assert_eq!(subscriptions.iter().filter(|digest| **digest == new.digest()).count(), 2);
+    for peer in [1, 2] {
+        for domain in [old, new] {
+            capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: peer,
+                topic,
+                digest: domain.digest(),
+            });
+        }
+    }
+    capture.crank();
+    capture.sent();
+
+    capture
+        .controller
+        .gossip_schedule
+        .as_mut()
+        .unwrap()
+        .ticker
+        .set_current_slot(10 * SLOTS_PER_EPOCH);
+    let mut old_status = [0; STATUS_V2_SIZE];
+    old_status[..4].copy_from_slice(&old.digest());
+    capture.observer.produce(BeaconStateEvent::Status {
+        ssz: old_status,
+        latest_block_slot: 0,
+        wall_slot: 9 * SLOTS_PER_EPOCH,
+        head_optimistic: false,
+        enr_fork_id: [0; 16],
+        head_roots: HeadRoots::default(),
+        head_payload: PayloadResolution::Full,
+        head_change: HeadChange::None,
+        epoch_transition: false,
+    });
+    capture.crank();
+    assert_eq!(capture.controller.gossip_handler.current_domain(), Some(new));
+    assert_eq!(capture.controller.peer_manager.our_fork_digest(), Some(new.digest()));
+    assert_eq!(
+        StatusView::fork_digest(capture.controller.peer_manager.status().unwrap()),
+        &new.digest()
+    );
+    let mut cutover_enr = false;
+    capture.observer.consume(|event: PeerControl, _| {
+        if let PeerControl::UpdateEnrForkId { epoch: 10, enr_fork_id } = event {
+            assert_eq!(&enr_fork_id[..4], &new.digest());
+            cutover_enr = true;
+        }
+    });
+    assert!(cutover_enr);
+    capture.sent();
+
+    let ssz = write_bytes(&mut capture.rpc, b"validated sidecar");
+    for (index, domain) in [old, new].into_iter().enumerate() {
+        capture.observer.produce(PeerEvent::SendGossip {
+            originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+            topic,
+            domain,
+            ssz_cache: SszCache::Gossip,
+            msg_hash: MessageId { id: [0xCD + index as u8; 20] },
+            recv_ts: Nanos::now(),
+            protobuf: capture.payload,
+            ssz,
+        });
+        capture.crank();
+        assert_eq!(capture.sent(), [(2, bytes.to_vec())]);
+    }
+
+    capture
+        .controller
+        .gossip_schedule
+        .as_mut()
+        .unwrap()
+        .ticker
+        .set_current_slot(12 * SLOTS_PER_EPOCH);
+    capture.crank();
+    let mut retired = Vec::new();
+    capture.observer.consume(|event: PeerControl, _| {
+        if let PeerControl::P2pGossipUnsubscribe { digest, .. } = event {
+            retired.push(digest);
+        }
+    });
+    assert_eq!(retired, [old.digest(); 2]);
+    assert_eq!(capture.controller.gossip_handler.current_domain(), Some(new));
+}
+
+#[test]
 fn relay_requests_preserve_routing_and_iwant_service() {
     // Distinct payloads expose confusion between the encoded and decompressed
     // handles.
@@ -149,6 +297,7 @@ fn relay_requests_preserve_routing_and_iwant_service() {
             originator_stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic,
             domain: test_domain(),
+            ssz_cache: silver_common::SszCache::Gossip,
             msg_hash: hash,
             recv_ts: Nanos::now(),
             protobuf: capture.payload,
@@ -168,23 +317,39 @@ fn relay_requests_preserve_routing_and_iwant_service() {
 
 #[test]
 fn column_publication_encodes_and_routes_without_another_spine_request() {
+    for origin in [ColumnOrigin::Rpc, ColumnOrigin::El, ColumnOrigin::Assembly] {
+        assert_column_publication(origin);
+    }
+}
+
+fn assert_column_publication(origin: ColumnOrigin) {
     let topic = GossipTopic::DataColumnSidecar(5);
     // Transport decoding checks payload size; consensus validation is outside this
     // fixture.
     let bytes = vec![0x42; topic.min_uncompressed_size()];
     let mut capture = GossipPublications::new(topic, &[]);
     capture.observer.consume(|_: PeerEvent, _| {});
-    let ssz = write_bytes(&mut capture.rpc, &bytes);
-    capture.observer.produce(PeerEvent::PublishDataColumn {
-        originator: P2pStreamId::new(1, 0, StreamProtocol::DataColumnSidecarsByRoot, true),
-        topic,
-        ssz,
-    });
+    capture.controller.peer_manager.set_sync_target(SyncUpdate::Following);
+    if origin != ColumnOrigin::El {
+        // These columns were validated before the fork domain changed.
+        capture
+            .controller
+            .gossip_handler
+            .set_domains(GossipDomain::new([1; 4], ForkName::Gloas), None);
+    }
+    capture.persist_column(origin, &bytes);
     capture.crank();
     let sent = capture.sent();
-    let [(peer, encoded)] = sent.as_slice() else { panic!("expected one gossip publication") };
-    assert_eq!(*peer, 2, "the sender is excluded");
+    let frames_to = |peer: usize| {
+        let mut frames: Vec<_> =
+            sent.iter().filter(|(to, _)| *to == peer).map(|(_, frame)| frame.clone()).collect();
+        frames.sort();
+        frames
+    };
+    assert_eq!(frames_to(1), frames_to(2), "a local origin excludes no mesh peer");
+    assert_eq!(frames_to(2).len(), 2, "the message and one control frame: {sent:?}");
 
+    // Decode what peer 2 received as peer 2 would.
     let decoded = TCache::producer("publication_decoded", 1 << 16);
     let mut decoded_reader =
         decoded.cache_ref().random_access("publication_decoded", true).unwrap();
@@ -196,34 +361,65 @@ fn column_publication_encodes_and_routes_without_another_spine_request() {
     )
     .unwrap();
     let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
-    receiver.spin(&mut receiver_adapter);
+    receiver.spin(&mut receiver_adapter, None);
     let stream = P2pStreamId::new(2, 0, StreamProtocol::GossipSub, true);
-    let mut packet = stream.as_ref().to_vec();
-    packet.extend_from_slice(encoded);
-    let tcache = write_bytes(&mut capture.incoming, &packet);
-    capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
-    receiver.spin(&mut receiver_adapter);
-    // The first RPC on a peer stream reports its (absent) extension state.
-    let Some(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipExtensions {
-        partial_messages: false,
-        ..
-    })) = receiver.pop_event()
-    else {
-        panic!("first RPC must report extension state")
-    };
-    let Some(GossipHandlerEvent::NewGossip(message)) = receiver.pop_event() else {
-        panic!("publication must decode as a gossip message")
-    };
+    let mut message = None;
+    let mut dontwant = None;
+    let mut encoded = Vec::new();
+    for frame in frames_to(2) {
+        let mut packet = stream.as_ref().to_vec();
+        packet.extend_from_slice(&frame);
+        let tcache = write_bytes(&mut capture.incoming, &packet);
+        capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
+        receiver.spin(&mut receiver_adapter, None);
+        while let Some(event) = receiver.pop_event() {
+            match event {
+                GossipHandlerEvent::NewGossip(received) => {
+                    encoded = frame.clone();
+                    message = Some(received);
+                }
+                GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipDontWant { hash, .. }) => {
+                    dontwant = Some(hash);
+                }
+                // The first RPC on a peer stream reports its (absent) extension
+                // state; a decoded message also notifies the peer manager.
+                GossipHandlerEvent::PeerEvent(
+                    PeerEvent::P2pGossipExtensions { .. } | PeerEvent::NewGossip { .. },
+                ) => {}
+                _ => panic!("unexpected event from the receiver"),
+            }
+        }
+    }
+    let message = message.expect("publication must decode as a gossip message");
     assert_eq!(message.topic, topic);
     assert_eq!(decoded_reader.acquire(message.ssz).buffer().unwrap().0, bytes);
+    assert_eq!(dontwant, Some(message.msg_hash), "the mesh is told not to send it back");
 
     capture.iwant(1, message.msg_hash);
-    assert_eq!(capture.sent(), [(1, encoded.clone())]);
-    let mut publications = 0;
-    capture.observer.consume(|event: PeerEvent, _| match event {
-        PeerEvent::PublishDataColumn { .. } => publications += 1,
-        PeerEvent::SendGossip { .. } => panic!("column conversion must stay local"),
-        _ => {}
+    assert_eq!(capture.sent(), [(1, encoded)], "the publication populated the message cache");
+    capture.observer.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { .. } = event {
+            panic!("column conversion must stay local");
+        }
     });
-    assert_eq!(publications, 1);
+}
+
+#[test]
+fn a_syncing_node_republishes_no_columns() {
+    for origin in [ColumnOrigin::Rpc, ColumnOrigin::El, ColumnOrigin::Assembly] {
+        assert_no_syncing_publication(origin);
+    }
+}
+
+fn assert_no_syncing_publication(origin: ColumnOrigin) {
+    let topic = GossipTopic::DataColumnSidecar(5);
+    let bytes = vec![0x42; topic.min_uncompressed_size()];
+    let mut capture = GossipPublications::new(topic, &[]);
+    capture
+        .controller
+        .peer_manager
+        .set_sync_target(SyncUpdate::SyncingHead { head_root: [0x33; 32], head_slot: 900 });
+    capture.persist_column(origin, &bytes);
+    capture.crank();
+    assert!(capture.sent().is_empty(), "peers ahead of us already hold the column");
 }

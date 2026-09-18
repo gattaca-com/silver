@@ -13,16 +13,13 @@ use std::{
 
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{
-    DataKind, Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound,
-    TCacheProducer, TCacheRead, TMultiProducer, hex32,
-};
+use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TMultiProducer, hex32};
 
 use super::{
     Payload, PendingWrite, QueryUnit, Store, backfill::BlockFacts, block_path, column_path,
-    envelope_path, slot_dir, unfinalized::PayloadKey,
+    envelope_path, first_retained_slot, slot_dir, unfinalized::PayloadKey,
 };
-use crate::{StorageCounters, store::SLOTS_PER_DIR, tile::IoEvent};
+use crate::{StorageCounters, tile::IoEvent};
 
 /// Per-loop op budgets. Disk I/O on regular files is synchronous —
 /// O_NONBLOCK has no effect there — so each op blocks the tile until done;
@@ -107,7 +104,7 @@ impl Store {
                         finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
                     let dir =
                         PathBuf::new().join(&self.store_dir).join(payload.finalized_dir_name());
-                    remove_subdirs(dir, earliest_slot)?;
+                    remove_subdirs(dir, first_retained_slot(earliest_slot))?;
                     self.finalized.truncated(payload, earliest_slot);
                 }
                 PendingWrite::BackfillBlock { block, ssz } => {
@@ -193,12 +190,7 @@ impl Store {
                 break;
             };
             let Some(unit) = query.units.pop_front() else {
-                // Request fully served — terminate the stream and drop it.
-                emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                    stream_id: query.stream_id,
-                    response: RpcResponse::Complete,
-                }))));
-                emit(IoEvent::PeerEvent(query.outcome(false)));
+                query.finish(false, emit);
                 continue;
             };
             reads += 1;
@@ -208,34 +200,11 @@ impl Store {
                     // Context fork-digest for the served object's own slot's fork
                     // (a request can span a fork boundary).
                     let fork_digest = fork_digest_at(unit.slot());
-                    let response = match unit {
-                        QueryUnit::Block { .. } | QueryUnit::UnfinalizedBlock { .. } => {
-                            RpcResponse::BeaconBlock { fork_digest, ssz: read }
-                        }
-                        QueryUnit::Column { .. } | QueryUnit::UnfinalizedColumn { .. } => {
-                            RpcResponse::DataColumnSidecar { fork_digest, ssz: read }
-                        }
-                        QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. } => {
-                            RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz: read }
-                        }
-                    };
-                    emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
-                        RpcResponseOutbound { stream_id: query.stream_id, response },
-                    ))));
-                    query.units_sent += 1;
-                    query.first_chunk_at.get_or_insert_with(Instant::now);
-                    self.query_queue.push_back(query);
+                    if query.deliver(&unit, read, fork_digest, emit) {
+                        self.query_queue.push_back(query);
+                    }
                 }
-                ServeResult::Missing => {
-                    let error = "resource unavailable".as_bytes();
-                    let mut msg = [0u8; 256];
-                    msg[..error.len()].copy_from_slice(error);
-                    let response = RpcResponse::Error { error: 3, msg, len: error.len() };
-                    emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
-                        RpcResponseOutbound { stream_id: query.stream_id, response },
-                    ))));
-                    emit(IoEvent::PeerEvent(query.outcome(true)));
-                }
+                ServeResult::Missing => query.finish(true, emit),
                 ServeResult::ProducerFull => {
                     // Tcache full — un-consume and retry this request first
                     // next loop; trying others would fail too.
@@ -274,7 +243,7 @@ impl Store {
         if self.head.root != [0u8; 32] && self.write_queue.landing() == 0 {
             self.history.step(
                 self.head,
-                self.sync_target.is_following(),
+                !self.sync_target.is_syncing(),
                 &self.store_dir,
                 &mut self.finalized,
                 &self.unfinalized,
@@ -438,7 +407,7 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Error> {
+fn remove_subdirs<P: AsRef<Path>>(dir: P, first_retained: u64) -> Result<(), Error> {
     let contents = std::fs::read_dir(dir)?;
     for entry in contents {
         let entry = entry?;
@@ -446,7 +415,7 @@ fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Erro
         if let Ok(dir_number) =
             dir_entry.to_str().ok_or(Error::other("unparsable dir name"))?.parse::<u64>()
         {
-            if dir_number + SLOTS_PER_DIR < earliest_slot {
+            if dir_number < first_retained {
                 // `entry.path()` is the full path; `file_name()` alone would
                 // resolve relative to CWD, not `dir`.
                 std::fs::remove_dir_all(entry.path())?;

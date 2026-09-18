@@ -21,6 +21,7 @@ pub use sub_reservation::{
     AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
     SubReservationRef, SubReservationView, SubValidation, SubWrite,
 };
+pub use sub_reservation_list::{AcquiredSubReservationList, SubReservationList};
 use thiserror::Error;
 
 use crate::spine::tcache::consumer::Buckets;
@@ -49,6 +50,7 @@ mod consumer;
 mod metrics;
 mod producer;
 mod sub_reservation;
+mod sub_reservation_list;
 
 use metrics::TCacheMetrics;
 

@@ -5,26 +5,27 @@ use std::{
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
-use silver_columns::cell_store::{CellStoreConfig, StoreError};
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, GossipDomain, GossipTopic, LOCAL_GOSSIP_STREAM_ID, Nanos,
-    P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest,
-    RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
+    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
+    LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
     SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
-    cells::CellStoreEvent,
+    cell_store::{CellStoreConfig, CellStoreEvent, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
+    ticker::SlotTicker,
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
 use silver_peer::PeerManager;
 
-use self::attestation_cluster::AttestationClusterHandler;
+use self::{attestation_cluster::AttestationClusterHandler, gossip_schedule::GossipSchedule};
 use crate::{
-    cell_ingress::CellIngress,
+    cell_ingress::{CellIngress, handle_data_column_event},
     cluster::{AttestationClusterConfig, ClusterError},
     sync_engine::{SyncAction, SyncEngine},
 };
 
 mod attestation_cluster;
+mod gossip_schedule;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -39,9 +40,10 @@ pub struct Controller {
     /// (peer-pick, caps, send) and owns column sync.
     sync_engine: SyncEngine,
     rpc_producer: TMultiProducer,
-    /// Reads `incoming_rpc` sidecar payloads referenced by
-    /// `PeerEvent::PublishDataColumn`.
+    /// Validated sidecars this node did not receive over gossip are
+    /// republished from the cache their `Persist` names.
     rpc_ssz_consumer: TRandomAccess,
+    el_ssz_consumer: TRandomAccess,
     attestation_cluster: AttestationClusterHandler,
     last_tick: Instant,
     last_ping: Instant,
@@ -63,6 +65,7 @@ pub struct Controller {
     /// Chain schedule, used to resolve the active gossip fork domain from
     /// the wall slot.
     spec: Arc<SpecConfig>,
+    gossip_schedule: Option<GossipSchedule>,
 }
 
 impl Controller {
@@ -75,6 +78,7 @@ impl Controller {
         gossip_handler: GossipHandler,
         rpc_producer: TMultiProducer,
         rpc_ssz_consumer: TRandomAccess,
+        el_ssz_consumer: TRandomAccess,
         cluster_outbound_producer: TProducer,
         cluster_inbound_consumer: TRandomAccess,
         cluster_config: Option<AttestationClusterConfig>,
@@ -95,6 +99,7 @@ impl Controller {
             sync_engine,
             rpc_producer,
             rpc_ssz_consumer,
+            el_ssz_consumer,
             attestation_cluster,
             last_tick: now,
             last_ping: now,
@@ -104,6 +109,7 @@ impl Controller {
             pending_subnet_topics: Vec::new(),
             cell_ingress: None,
             spec,
+            gossip_schedule: None,
         })
     }
 
@@ -122,7 +128,41 @@ impl Controller {
         self.pending_subnet_topics = topics;
     }
 
-    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
+    pub fn set_gossip_clock(&mut self, ticker: SlotTicker, genesis_validators_root: &[u8; 32]) {
+        self.gossip_schedule =
+            Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
+    }
+
+    fn advance_gossip_domains(&mut self, producers: &mut SilverSpineProducers) {
+        let Some(update) = self.gossip_schedule.as_mut().and_then(GossipSchedule::advance) else {
+            return;
+        };
+        if self.gossip_handler.current_domain() != Some(update.current) {
+            tracing::info!(domain = ?update.current, "fork digest changed; gossip subscriptions updated");
+        }
+        self.gossip_handler.set_domains(update.current, update.other);
+        self.peer_manager.set_active_domains(
+            update.current.digest(),
+            update.other.map(|domain| domain.digest()),
+            &mut |event| {
+                handle_peer_control(
+                    &mut self.gossip_handler,
+                    &mut self.rpc_producer,
+                    event,
+                    producers,
+                )
+            },
+        );
+        producers.peer_control.produce(
+            &PeerControl::UpdateEnrForkId { epoch: update.epoch, enr_fork_id: update.enr_fork_id }
+                .into(),
+        );
+    }
+
+    pub fn set_status(&mut self, mut status: [u8; STATUS_V2_SIZE]) {
+        if let Some(schedule) = &self.gossip_schedule {
+            status[..4].copy_from_slice(&schedule.current().digest());
+        }
         self.peer_manager.set_status(status);
     }
 
@@ -139,20 +179,41 @@ impl Controller {
         &self.peer_manager
     }
 
-    fn handle_latest_status(&mut self, latest_status_event: Option<([u8; 92], u64, u64)>) -> bool {
-        if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
+    fn handle_latest_status(
+        &mut self,
+        latest_status_event: Option<([u8; 92], u64, u64)>,
+        producers: &mut SilverSpineProducers,
+    ) {
+        if let Some((mut ssz, latest_block_slot, wall_slot)) = latest_status_event {
             if let Some(ingress) = &mut self.cell_ingress {
                 ingress.set_min_slot(StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH);
             }
             tracing::debug!(wall_slot, latest_block_slot, "new status set");
             // PM still tracks our Status (peer-Status validation) + applied head
             // (custody-peer eligibility); the wall slot is the engine's only.
-            let fork_digest_changed = self.peer_manager.set_status(ssz);
-            let domain = GossipDomain::new(
-                *StatusView::fork_digest(&ssz),
-                self.spec.fork_at_slot(wall_slot),
-            );
-            self.gossip_handler.set_domains(domain, None);
+            if let Some(schedule) = &self.gossip_schedule {
+                // Delayed status cannot roll back a wall-clock transition.
+                ssz[..4].copy_from_slice(&schedule.current().digest());
+            } else {
+                // Clockless test harnesses drive the domain through status.
+                let domain = GossipDomain::new(
+                    *StatusView::fork_digest(&ssz),
+                    self.spec.fork_at_slot(wall_slot),
+                );
+                if self.gossip_handler.current_domain() != Some(domain) {
+                    tracing::info!(?domain, "fork digest changed; gossip subscriptions updated");
+                }
+                self.gossip_handler.set_domains(domain, None);
+                self.peer_manager.set_active_domains(domain.digest(), None, &mut |event| {
+                    handle_peer_control(
+                        &mut self.gossip_handler,
+                        &mut self.rpc_producer,
+                        event,
+                        producers,
+                    );
+                });
+            }
+            self.peer_manager.set_status(ssz);
             self.peer_manager.set_local_head_imported(latest_block_slot);
             self.sync_engine.on_local_status(
                 latest_block_slot,
@@ -160,11 +221,7 @@ impl Controller {
                 *StatusView::finalized_root(&ssz),
                 wall_slot,
             );
-
-            return fork_digest_changed;
         }
-
-        false
     }
 
     fn msg_served_for(rpc: &RpcInbound) -> Option<u64> {
@@ -188,7 +245,9 @@ impl Controller {
 impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let now = Instant::now();
+        self.advance_gossip_domains(&mut adapter.producers);
         self.rpc_ssz_consumer.free();
+        self.el_ssz_consumer.free();
         self.attestation_cluster.free();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
@@ -231,58 +290,23 @@ impl Tile<SilverSpine> for Controller {
 
         adapter.consume(|need: SyncNeed, _producers| self.sync_engine.on_sync_need(need, now));
 
-        let fork_digest_changed = self.handle_latest_status(latest_status_event);
-        if fork_digest_changed {
-            tracing::info!("fork digest changed; re-announcing gossip subscriptions");
-            self.peer_manager.fan_out_subscriptions(&mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
-        }
+        self.handle_latest_status(latest_status_event, &mut adapter.producers);
+
+        adapter.consume(|event: DataColumnsEvent, producers| {
+            handle_data_column_event(
+                event,
+                &mut self.rpc_ssz_consumer,
+                &mut self.el_ssz_consumer,
+                self.cell_ingress.as_mut(),
+                &mut self.gossip_handler,
+                &mut self.peer_manager,
+                &mut |evt, gossip_handler| {
+                    handle_peer_control(gossip_handler, &mut self.rpc_producer, evt, producers)
+                },
+            );
+        });
 
         adapter.consume(|event: PeerEvent, producers| {
-            if let PeerEvent::PublishDataColumn { originator, topic, ssz } = event {
-                let read = self.rpc_ssz_consumer.acquire(ssz);
-                match read.buffer() {
-                    Ok((bytes, _)) => {
-                        if let Some((msg_hash, protobuf)) =
-                            self.gossip_handler.publish(topic, bytes)
-                        {
-                            let domain = self
-                                .gossip_handler
-                                .current_domain()
-                                .expect("publish succeeded so a domain is set");
-                            self.peer_manager.handle_event(
-                                PeerEvent::SendGossip {
-                                    originator_stream_id: originator,
-                                    topic,
-                                    domain,
-                                    msg_hash,
-                                    recv_ts: Nanos::now(),
-                                    protobuf,
-                                    ssz,
-                                },
-                                now,
-                                &mut |evt| {
-                                    handle_peer_control(
-                                        &mut self.gossip_handler,
-                                        &mut self.rpc_producer,
-                                        evt,
-                                        producers,
-                                    )
-                                },
-                            );
-                        }
-                    }
-                    Err(e) => tracing::warn!(?e, ?topic, "publish column ssz read failed"),
-                }
-                return;
-            }
-
             // Beacon State uses the synthetic local stream for a terminal
             // local validation failure. Complete the API request without
             // counting that failure against a (non-existent) network peer.
@@ -297,16 +321,7 @@ impl Tile<SilverSpine> for Controller {
 
             self.sync_engine.on_peer_event(event, self.peer_manager.our_fork_digest());
 
-            if let PeerEvent::SendGossip {
-                originator_stream_id: _,
-                topic,
-                domain,
-                msg_hash,
-                recv_ts: _,
-                protobuf,
-                ssz: _,
-            } = &event
-            {
+            if let PeerEvent::SendGossip { topic, domain, msg_hash, protobuf, .. } = &event {
                 self.gossip_handler.mcache_insert(*msg_hash, *topic, *domain, *protobuf);
             }
 
@@ -487,7 +502,8 @@ impl Tile<SilverSpine> for Controller {
             });
         }
 
-        if self.gossip_handler.spin(adapter) {
+        let data_columns = self.cell_ingress.as_mut().map(|i| i.producer_mut());
+        if self.gossip_handler.spin(adapter, data_columns) {
             adapter.mark_work();
         }
         while let Some(event) = self.gossip_handler.pop_event() {

@@ -1,5 +1,7 @@
+mod blocks;
 mod config;
 mod events;
+mod head_verdict;
 mod identity;
 mod ids;
 mod json;
@@ -11,6 +13,7 @@ mod router;
 mod routes;
 mod server;
 mod statics;
+mod validators;
 
 pub use node_status::{HeadStatus, NodeStatus};
-pub use server::{ApiConsumers, BeaconApi};
+pub use server::BeaconApi;

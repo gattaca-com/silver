@@ -1,40 +1,34 @@
 use silver_common::{
-    GossipDomain, GossipTopic, IngestionTime, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
+    GossipDomain, IngestionTime, MessageId, P2pStreamId, SszCache, TCacheRead, TRead,
     column_util::KzgBatchEntry,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
 
 use crate::{BlockRoot, availability::ColumnTracker, validate::ColumnValidator};
 
-/// Relay owed to the network once a batched sidecar verifies: forwarding for
-/// gossip-origin sidecars, publish for RPC-fetched ones. Deferred with the
-/// KZG check so nothing unverified is ever relayed.
-pub(crate) enum RelayMeta {
-    None,
-    Gossip {
-        topic: GossipTopic,
-        domain: GossipDomain,
-        msg_hash: MessageId,
-        recv_ts: Nanos,
-        protobuf: TCacheRead,
-    },
-    Rpc {
-        ssz: TCacheRead,
-    },
+/// The gossip frame a sidecar arrived in, kept until KZG passes so the mesh
+/// receives that exact frame, on the fork domain it came from, and never an
+/// unverified one.
+pub(crate) struct GossipSidecarFrame {
+    pub domain: GossipDomain,
+    pub msg_hash: MessageId,
+    pub protobuf: TCacheRead,
 }
 
 /// A sidecar that passed every per-sidecar check and awaits the end-of-pass
 /// KZG batch. Holds its `TRead` so the buffer stays acquired until flush.
 pub(crate) struct PendingKzg {
     pub sidecar: TRead,
+    pub ssz_cache: SszCache,
+    pub domain: Option<GossipDomain>,
+    pub context_eligible: bool,
     pub stream_id: P2pStreamId,
     pub recv_ts: IngestionTime,
     pub block_root: BlockRoot,
     pub column_index: u64,
-    pub bitmask: u128,
     pub slot: u64,
     pub is_gloas: bool,
-    pub relay: RelayMeta,
+    pub frame: Option<GossipSidecarFrame>,
 }
 
 /// Columns collected within one `loop_body` pass for a single combined
@@ -57,7 +51,7 @@ impl KzgBatch {
         let queued = self
             .pending
             .iter()
-            .any(|p| p.bitmask == entry.bitmask && p.block_root == entry.block_root);
+            .any(|p| p.column_index == entry.column_index && p.block_root == entry.block_root);
         if queued {
             return false;
         }
@@ -76,7 +70,7 @@ impl KzgBatch {
         let mut held = 0;
         for (i, p) in self.pending.iter().enumerate() {
             if p.block_root == root {
-                held |= p.bitmask;
+                held |= 1u128 << p.column_index;
             }
             if tracker.becomes_available(&root, held) {
                 return i + 1;

@@ -6,7 +6,7 @@
 //! Counters are interpreted by position — append before `_Count`, do
 //! not reorder.
 
-silver_common::declare_counters! {
+crate::declare_counters! {
     pub DataColumnCounters => "columns" {
         // store side
         DataColumnsAvailableEmitted,

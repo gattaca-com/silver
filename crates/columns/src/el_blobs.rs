@@ -10,9 +10,9 @@ use std::{
 
 use flux::spine::SpineProducers;
 use silver_common::{
-    ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
-    MAX_BLOBS_PER_BLOCK, SilverSpineProducers, TCacheProducer, TProducer, TRandomAccess, Wheel,
-    column_util as util,
+    ColumnOrigin, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
+    MAX_BLOBS_PER_BLOCK, SilverSpineProducers, SszCache, TCacheProducer, TProducer, TRandomAccess,
+    Wheel, body_root, column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -109,7 +109,7 @@ impl ElBlobFetcher {
         header[8..16].copy_from_slice(&SignedBeaconBlockView::proposer_index(block).to_le_bytes());
         header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(block));
         header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(block));
-        header[80..112].copy_from_slice(&util::body_root(body));
+        header[80..112].copy_from_slice(&body_root(body));
         header[112..208].copy_from_slice(SignedBeaconBlockView::signature(block));
 
         let mut commitments_buf = [0u8; MAX_COMMITMENTS_LEN];
@@ -225,7 +225,6 @@ impl ElBlobFetcher {
             }
             debug_assert_eq!(self.sidecar_buffer.len(), util::data_column_sidecar_len(n));
 
-            // TODO(republish): maybe gossip these EL-reconstructed columns to peers?
             match column_producer.reserve(self.sidecar_buffer.len(), true) {
                 Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
                     Ok(_) => {
@@ -235,13 +234,24 @@ impl ElBlobFetcher {
                             column_index = j,
                             "EL data column recv"
                         );
+                        producers.produce(DataColumnsEvent::Validated {
+                            block_root,
+                            column_index: j,
+                            slot: pending.slot,
+                            origin: ColumnOrigin::El,
+                            ssz: reservation.read(),
+                            ssz_cache: SszCache::El,
+                        });
                         producers.produce(DataColumnsEvent::Persist {
                             ssz: reservation.read(),
-                            source: ColumnSource::El,
+                            origin: ColumnOrigin::El,
+                            ssz_cache: SszCache::El,
+                            domain: None,
                             block_root,
                             column_index: j,
                             slot: pending.slot,
                         });
+                        built |= bit;
                     }
                     Err(e) => tracing::error!(?e, "failed to write el sidecar to tcache"),
                 },
@@ -249,8 +259,6 @@ impl ElBlobFetcher {
                     tracing::error!("failed to allocation cache space for el data column");
                 }
             }
-
-            built |= bit;
         }
 
         if built == 0 {

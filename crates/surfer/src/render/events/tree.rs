@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use silver_common::ColumnSource;
+use silver_common::ColumnOrigin;
 
 use crate::sources::events::{Batch, BlockTrace, BlockTraces, DaSpan, Interval, Span, StfSpan};
 
@@ -13,10 +13,10 @@ use crate::sources::events::{Batch, BlockTrace, BlockTraces, DaSpan, Interval, S
 pub enum Group {
     Block,
     Da,
-    Cols(ColumnSource),
-    /// Position in the source's `DataAvailability::batches`.
+    Cols(ColumnOrigin),
+    /// Position in the origin's `DataAvailability::batches`.
     Batch {
-        source: ColumnSource,
+        origin: ColumnOrigin,
         batch: usize,
     },
     Stf,
@@ -35,9 +35,9 @@ impl Group {
                 Span::El,
             ],
             Self::Da => &[
-                Span::Da(DaSpan::Cols(ColumnSource::Gossip)),
-                Span::Da(DaSpan::Cols(ColumnSource::El)),
-                Span::Da(DaSpan::Cols(ColumnSource::Rpc)),
+                Span::Da(DaSpan::Cols(ColumnOrigin::Gossip)),
+                Span::Da(DaSpan::Cols(ColumnOrigin::El)),
+                Span::Da(DaSpan::Cols(ColumnOrigin::Rpc)),
             ],
             Self::Cols(_) | Self::Batch { .. } => &[],
             Self::Stf => &[
@@ -53,8 +53,8 @@ impl Group {
         match self {
             Self::Block => Node::Span(Span::Strip),
             Self::Da => Node::Span(Span::Da(DaSpan::Root)),
-            Self::Cols(source) => Node::Span(Span::Da(DaSpan::Cols(source))),
-            Self::Batch { source, batch } => Node::Batch { source, batch },
+            Self::Cols(origin) => Node::Span(Span::Da(DaSpan::Cols(origin))),
+            Self::Batch { origin, batch } => Node::Batch { origin, batch },
             Self::Stf => Node::Span(Span::Stf(StfSpan::Root)),
         }
     }
@@ -97,7 +97,7 @@ impl Span {
 
     fn hidden(self, trace: &BlockTrace) -> bool {
         match self {
-            Self::Da(DaSpan::Cols(source)) => !trace.da.has_source(source),
+            Self::Da(DaSpan::Cols(origin)) => !trace.da.has_origin(origin),
             Self::Da(DaSpan::Custody) => !trace.da.has_columns(),
             Self::Stf(StfSpan::DaWait) => !trace.stf.parked(),
             _ => false,
@@ -110,7 +110,7 @@ impl DaSpan {
         match self {
             Self::Root => SpanSpec::new("data available", Some(Group::Da)),
             Self::Custody => SpanSpec::new("custody", Some(Group::Da)),
-            Self::Cols(source) => SpanSpec::new(cols_label(source), Some(Group::Cols(source))),
+            Self::Cols(origin) => SpanSpec::new(cols_label(origin), Some(Group::Cols(origin))),
         }
     }
 }
@@ -126,11 +126,12 @@ impl StfSpan {
     }
 }
 
-fn cols_label(source: ColumnSource) -> &'static str {
-    match source {
-        ColumnSource::Gossip => "gossip cols",
-        ColumnSource::Rpc => "rpc cols",
-        ColumnSource::El => "el cols",
+fn cols_label(origin: ColumnOrigin) -> &'static str {
+    match origin {
+        ColumnOrigin::Gossip => "gossip cols",
+        ColumnOrigin::Rpc => "rpc cols",
+        ColumnOrigin::El => "el cols",
+        ColumnOrigin::Assembly => "assembled cols",
     }
 }
 
@@ -139,13 +140,13 @@ pub enum Node {
     Span(Span),
     /// Columns validated together; a batch of one is shown as its column.
     Batch {
-        source: ColumnSource,
+        origin: ColumnOrigin,
         batch: usize,
     },
     Col {
         /// Position in the trace's `da.columns`.
         index: usize,
-        /// 1-based position in the source's persist order.
+        /// 1-based position in the origin's persist order.
         rank: usize,
     },
 }
@@ -154,7 +155,7 @@ impl Node {
     pub fn opens(self) -> Option<Group> {
         match self {
             Self::Span(span) => span.spec().opens,
-            Self::Batch { source, batch } => Some(Group::Batch { source, batch }),
+            Self::Batch { origin, batch } => Some(Group::Batch { origin, batch }),
             Self::Col { .. } => None,
         }
     }
@@ -163,24 +164,24 @@ impl Node {
     pub fn parent(self, trace: &BlockTrace) -> Option<Group> {
         match self {
             Self::Span(span) => span.parent(),
-            Self::Batch { source, .. } => Some(Group::Cols(source)),
+            Self::Batch { origin, .. } => Some(Group::Cols(origin)),
             Self::Col { index, .. } => {
-                let source = trace.da.columns[index].source;
-                let batches = trace.da.batches(source);
+                let origin = trace.da.columns[index].origin;
+                let batches = trace.da.batches(origin);
                 let batch = batches.iter().position(|b| b.contains(index));
                 Some(match batch {
-                    Some(batch) if !batches[batch].is_single() => Group::Batch { source, batch },
-                    _ => Group::Cols(source),
+                    Some(batch) if !batches[batch].is_single() => Group::Batch { origin, batch },
+                    _ => Group::Cols(origin),
                 })
             }
         }
     }
 
     pub fn batch(self, trace: &BlockTrace) -> Option<Batch> {
-        let Self::Batch { source, batch } = self else {
+        let Self::Batch { origin, batch } = self else {
             return None;
         };
-        trace.da.batches(source).into_iter().nth(batch)
+        trace.da.batches(origin).into_iter().nth(batch)
     }
 
     pub fn interval(self, trace: &BlockTrace) -> Option<Interval> {
@@ -285,23 +286,23 @@ impl Walk<'_> {
                 self.push_span(child, depth + 1);
             }
         }
-        if let Group::Cols(source) = group {
-            self.push_columns(source, depth + 1);
+        if let Group::Cols(origin) = group {
+            self.push_columns(origin, depth + 1);
         }
     }
 
     /// One row per batch in validation order; a batch of one is its column,
     /// a larger one folds its columns in rank order.
-    fn push_columns(&mut self, source: ColumnSource, depth: u8) {
+    fn push_columns(&mut self, origin: ColumnOrigin, depth: u8) {
         let root = self.trace.block_root;
-        for (batch, columns) in self.trace.da.batches(source).iter().enumerate() {
+        for (batch, columns) in self.trace.da.batches(origin).iter().enumerate() {
             let mut col_depth = depth;
             if !columns.is_single() {
-                let open = self.expanded.is_open(root, Group::Batch { source, batch });
+                let open = self.expanded.is_open(root, Group::Batch { origin, batch });
                 let fold = if open { Fold::Open } else { Fold::Closed };
                 self.out.push(DisplayRow {
                     root,
-                    node: Node::Batch { source, batch },
+                    node: Node::Batch { origin, batch },
                     depth,
                     fold,
                 });
@@ -339,8 +340,8 @@ mod tests {
 
     /// Two columns validated a round apart, so each is a batch of one.
     fn with_columns() -> BlockTrace {
-        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
-        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        let recv = |i| Stage::ColumnRecv { index: i, origin: ColumnOrigin::Gossip };
+        let validated = |i| Stage::ColumnValidated { index: i, origin: ColumnOrigin::Gossip };
         trace(&[
             (received(), 300),
             (recv(7), 250),
@@ -375,7 +376,7 @@ mod tests {
             Node::Span(Span::Strip),
             Node::Span(DA),
             Node::Span(Span::Da(DaSpan::Custody)),
-            Node::Span(cols(ColumnSource::Gossip)),
+            Node::Span(cols(ColumnOrigin::Gossip)),
             Node::Span(STF),
             Node::Span(VALIDATE),
             Node::Span(APPLY),
@@ -426,7 +427,7 @@ mod tests {
     fn column_rows_follow_their_group_in_persist_order() {
         let block = with_columns();
         let mut expanded = Expanded::default();
-        for group in [Group::Block, Group::Da, Group::Cols(ColumnSource::Gossip)] {
+        for group in [Group::Block, Group::Da, Group::Cols(ColumnOrigin::Gossip)] {
             expanded.toggle(block.block_root, group);
         }
 
@@ -447,10 +448,10 @@ mod tests {
         assert_eq!(Node::Span(APPLY).parent(&block), Some(Group::Stf));
         assert_eq!(Node::Span(Span::El).parent(&block), Some(Group::Block));
         let col = Node::Col { index: 0, rank: 1 };
-        assert_eq!(col.parent(&block), Some(Group::Cols(ColumnSource::Gossip)));
+        assert_eq!(col.parent(&block), Some(Group::Cols(ColumnOrigin::Gossip)));
         assert_eq!(
-            Group::Cols(ColumnSource::Gossip).opener(),
-            Node::Span(cols(ColumnSource::Gossip))
+            Group::Cols(ColumnOrigin::Gossip).opener(),
+            Node::Span(cols(ColumnOrigin::Gossip))
         );
         let custody = Node::Span(Span::Da(DaSpan::Custody));
         assert_eq!(custody.opens(), Some(Group::Da), "custody opens the column list it heads");
@@ -460,8 +461,8 @@ mod tests {
     /// stays a column row, and a column folds back into its batch.
     #[test]
     fn batches_fold_their_columns() {
-        let recv = |i| Stage::ColumnRecv { index: i, source: ColumnSource::Gossip };
-        let validated = |i| Stage::ColumnValidated { index: i, source: ColumnSource::Gossip };
+        let recv = |i| Stage::ColumnRecv { index: i, origin: ColumnOrigin::Gossip };
+        let validated = |i| Stage::ColumnValidated { index: i, origin: ColumnOrigin::Gossip };
         let batched = || {
             trace(&[
                 (received(), 300),
@@ -473,12 +474,12 @@ mod tests {
                 (validated(1), 260),
             ])
         };
-        let source = ColumnSource::Gossip;
+        let origin = ColumnOrigin::Gossip;
         let mut expanded = Expanded::default();
-        for group in [Group::Block, Group::Da, Group::Cols(source)] {
+        for group in [Group::Block, Group::Da, Group::Cols(origin)] {
             expanded.toggle([1u8; 32], group);
         }
-        let batch = Node::Batch { source, batch: 0 };
+        let batch = Node::Batch { origin, batch: 0 };
         let lone = Node::Col { index: 2, rank: 3 };
         let under_cols = |display: &[DisplayRow]| {
             display
@@ -491,7 +492,7 @@ mod tests {
         let display = display_rows(&rows_of(batched()), &expanded);
         assert_eq!(under_cols(&display), [(batch, 3, Fold::Closed), (lone, 3, Fold::Leaf)]);
 
-        expanded.toggle([1u8; 32], Group::Batch { source, batch: 0 });
+        expanded.toggle([1u8; 32], Group::Batch { origin, batch: 0 });
         let display = display_rows(&rows_of(batched()), &expanded);
         assert_eq!(under_cols(&display), [
             (batch, 3, Fold::Open),
@@ -503,14 +504,14 @@ mod tests {
         let block = batched();
         assert_eq!(
             Node::Col { index: 0, rank: 1 }.parent(&block),
-            Some(Group::Batch { source, batch: 0 })
+            Some(Group::Batch { origin, batch: 0 })
         );
         assert_eq!(
             lone.parent(&block),
-            Some(Group::Cols(source)),
-            "a lone column folds the source"
+            Some(Group::Cols(origin)),
+            "a lone column folds the origin"
         );
-        assert_eq!(batch.parent(&block), Some(Group::Cols(source)));
+        assert_eq!(batch.parent(&block), Some(Group::Cols(origin)));
     }
 
     #[test]

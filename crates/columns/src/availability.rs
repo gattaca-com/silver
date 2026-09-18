@@ -1,8 +1,12 @@
 use std::time::{Duration, Instant};
 
-use silver_common::{Wheel, ssz_view::NUMBER_OF_COLUMNS};
+use flux::spine::SpineProducers;
+use silver_common::{
+    DataColumnsEvent, DataKind, IngestionTime, SilverSpineProducers, SyncNeed, Wheel,
+    ssz_view::NUMBER_OF_COLUMNS,
+};
 
-use crate::BlockRoot;
+use crate::{BlockRoot, DataColumnCounters};
 
 #[derive(Clone, Copy)]
 struct Custody(u128);
@@ -66,6 +70,32 @@ impl ColumnTracker {
         )
     }
 
+    /// The only place `Available` and custody completion are announced; both
+    /// fire on their threshold edge, so each lands once per block.
+    pub(crate) fn record_and_notify(
+        &mut self,
+        block_root: BlockRoot,
+        slot: u64,
+        columns: u128,
+        recv_ts: IngestionTime,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let (available, custody_complete) = self.record(block_root, columns);
+        if available {
+            DataColumnCounters::DataColumnsAvailableEmitted.inc();
+            tracing::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
+            producers
+                .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
+        }
+        if custody_complete {
+            tracing::info!(block = hex::encode(block_root), slot, "custody set complete");
+            producers.produce_with_ingestion(
+                SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns },
+                recv_ts,
+            );
+        }
+    }
+
     pub(crate) fn becomes_available(&self, root: &BlockRoot, columns: u128) -> bool {
         self.custody.becomes_available(self.validated(root), columns)
     }
@@ -80,13 +110,12 @@ impl ColumnTracker {
         self.custody.is_covered_by(self.validated(root))
     }
 
-    /// Whether any of `columns` is ours to keep.
-    pub(crate) fn wants(&self, columns: u128) -> bool {
-        self.custody.contains_any(columns)
+    pub(crate) fn is_custody(&self, column: u64) -> bool {
+        self.custody.contains_any(1u128 << column)
     }
 
-    pub(crate) fn has_any(&self, root: &BlockRoot, columns: u128) -> bool {
-        self.blocks.get(root).is_some_and(|b| b.validated & columns != 0)
+    pub(crate) fn holds(&self, root: &BlockRoot, column: u64) -> bool {
+        self.blocks.get(root).is_some_and(|b| b.validated & (1u128 << column) != 0)
     }
 
     pub(crate) fn signature_verified(&self, root: &BlockRoot, signature: &[u8; 96]) -> bool {

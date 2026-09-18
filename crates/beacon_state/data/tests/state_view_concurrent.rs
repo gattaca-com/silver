@@ -68,7 +68,7 @@ fn fuzz_concurrent_reads_observe_consistent_state() {
             std::thread::spawn(move || {
                 // Deterministic: the writer publishes only after the barrier.
                 assert!(
-                    reader.read(&|_| ()).is_none(),
+                    reader.read(|_| ()).is_none(),
                     "read returned a view before the first publish"
                 );
                 start.wait();
@@ -79,7 +79,7 @@ fn fuzz_concurrent_reads_observe_consistent_state() {
                 // so waiting for one accepted read always converges.
                 let mut validated = false;
                 while !validated || !stop.load(Ordering::Acquire) {
-                    let Some((errs, has_delta, promoted)) = reader.read(&|v| {
+                    let Some((errs, has_delta, promoted)) = reader.read(|v| {
                         let fin_slot = v.slot.base_state().slot;
                         let head_slot = v.slot.slot_number();
                         let mut errs = 0usize;

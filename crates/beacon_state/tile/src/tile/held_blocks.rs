@@ -1,6 +1,10 @@
+use std::collections::hash_map::Entry;
+
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot, StateId};
-use silver_common::{BlockSource, NewGossipMsg, P2pStreamId, TCacheRead, hex32};
+use silver_common::{
+    BlockSource, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TCacheRead, hex32,
+};
 use silver_config::PendingBounds;
 
 use super::block::StagedBlock;
@@ -89,6 +93,12 @@ struct Rejected {
     reason: RejectReason,
 }
 
+pub(super) enum StagedVerdict {
+    NotStaged,
+    Kept,
+    Rejected(BlockSource),
+}
+
 /// Every block held for a dependency, and what travels with it. Orphans wait on
 /// a parent (or its payload envelope); staged blocks wait on their data
 /// columns. A staged root is in at most one of `staged` / `available` at rest.
@@ -153,15 +163,31 @@ impl HeldBlocks {
         self.staged.remove(&block_root)
     }
 
-    /// The EL declared a staged block invalid: it is remembered as rejected so
-    /// neither a re-fetch nor a child's parent chase runs it again.
-    pub(super) fn reject_staged(&mut self, block_root: &B256) -> Option<BlockSource> {
-        let staged = self.staged.remove(block_root)?;
-        let slot = staged.parsed.header.slot;
-        let reason = RejectReason::InvalidPayload;
-        self.rejected.insert(*block_root, Rejected { slot, reason });
-        self.orphans.drop_children(block_root);
-        Some(staged.source)
+    /// A staged block is not in fork choice yet, so its verdict lands here.
+    /// Valid waits on the hold and is replayed at import; Invalid drops the
+    /// hold and is remembered as rejected so neither a re-fetch nor a child's
+    /// parent chase runs the block again.
+    pub(super) fn on_payload_verdict(
+        &mut self,
+        block_root: &B256,
+        status: PayloadValidationStatus,
+    ) -> StagedVerdict {
+        let Entry::Occupied(mut staged) = self.staged.entry(*block_root) else {
+            return StagedVerdict::NotStaged;
+        };
+        match status {
+            PayloadValidationStatus::Valid => staged.get_mut().el_valid = true,
+            PayloadValidationStatus::Invalid => {
+                let staged = staged.remove();
+                let slot = staged.parsed.header.slot;
+                let reason = RejectReason::InvalidPayload;
+                self.rejected.insert(*block_root, Rejected { slot, reason });
+                self.orphans.drop_children(block_root);
+                return StagedVerdict::Rejected(staged.source);
+            }
+            PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted => {}
+        }
+        StagedVerdict::Kept
     }
 
     /// Finalization pruned fork choice; staged blocks whose parent went with

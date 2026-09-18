@@ -28,6 +28,17 @@ pub struct GossipMsgOut {
     pub tcache: TCacheRead,
 }
 
+/// A gossip message this node built rather than received from the mesh, after
+/// encoding: the frame for the mesh and the IDONTWANT that stops the mesh
+/// sending it back. The payload may be self-built, EL-built or RPC-fetched.
+#[derive(Clone, Copy, Debug)]
+pub struct SelfBuiltGossip {
+    pub msg_id: MessageId,
+    pub domain: GossipDomain,
+    pub protobuf: TCacheRead,
+    pub idontwant: TCacheRead,
+}
+
 // Consumed by controller tile.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -77,13 +88,37 @@ pub enum BeaconApiRequest {
         subnet: u64,
         ssz: [u8; SINGLE_ATT_SIZE],
     },
+    Block {
+        request_id: u64,
+        lookup: BlockLookup,
+        with_bytes: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, u8)]
+pub enum BlockLookup {
+    Root([u8; 32]),
+    Slot(u64),
 }
 
 /// Completion of work submitted through [`BeaconApiRequest`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
     LocalAttestationResponse { request_id: u64, response: LocalAttestationResult },
+    Block { request_id: u64, block: Option<ServedBlock> },
+}
+
+/// `ssz` points into the `outgoing_rpc` tcache.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ServedBlock {
+    pub slot: u64,
+    pub root: [u8; 32],
+    pub finalized: bool,
+    pub canonical: bool,
+    pub ssz: Option<TCacheRead>,
 }
 
 /// Final result for one locally submitted attestation. `Success` is emitted
@@ -122,6 +157,7 @@ pub struct NewGossipMsg {
     pub topic: GossipTopic,
     /// Originating fork domain: fixed at receipt, never rewritten.
     pub domain: GossipDomain,
+    pub ssz_cache: SszCache,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -373,6 +409,7 @@ pub enum PeerEvent {
     /// (requestsPartial implies sending support).
     P2pGossipPartialCaps {
         p2p_peer: usize,
+        digest: [u8; 4],
         subnet: u64,
         requests: bool,
         supports_sending: bool,
@@ -487,18 +524,13 @@ pub enum PeerEvent {
     /// Peer manager fans it out to non-mesh subscribers with acceptable score.
     OutboundIHave {
         topic: GossipTopic,
+        digest: [u8; 4],
         msg_count: usize,
         protobuf: TCacheRead,
     },
     OutboundIWant {
         p2p_peer: usize,
         iwant: TCacheRead,
-    },
-    /// The SSZ handle refers to incoming RPC bytes, before gossip encoding.
-    PublishDataColumn {
-        originator: P2pStreamId,
-        topic: GossipTopic,
-        ssz: TCacheRead,
     },
     /// Emitted in order to trigger sending of a gossip message.
     /// Peer manager will generate select peers to send to.
@@ -507,6 +539,7 @@ pub enum PeerEvent {
         topic: GossipTopic,
         /// Originating fork domain, carried from `NewGossipMsg`.
         domain: GossipDomain,
+        ssz_cache: SszCache,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
@@ -608,6 +641,10 @@ impl SyncNeed {
         Self::live_missing(DataKind::Columns, root, slot, columns)
     }
 
+    pub fn missing_column(root: [u8; 32], slot: u64, column: u64) -> Self {
+        Self::missing_columns(root, slot, 1u128 << column)
+    }
+
     fn live_missing(kind: DataKind, root: [u8; 32], slot: u64, columns: u128) -> Self {
         Self::Missing { root, slot, kind, columns, origin: Origin::Live }
     }
@@ -629,6 +666,8 @@ pub enum SyncUpdate {
         head_slot: u64,
     },
     Following,
+    /// Not synced, without a selected sync target.
+    Stalled,
 }
 
 impl Default for SyncUpdate {
@@ -642,10 +681,16 @@ impl SyncUpdate {
         matches!(self, SyncUpdate::Following)
     }
 
+    /// A head or finalized checkpoint is selected for syncing.
+    /// `Following` and `Stalled` both allow gossip imports.
+    pub fn is_syncing(self) -> bool {
+        matches!(self, Self::SyncingFinalized { .. } | Self::SyncingHead { .. })
+    }
+
     pub fn data_availability_floor(self, local_finalized_slot: u64) -> u64 {
         let settled_by_target = match self {
             Self::SyncingFinalized { target_epoch, .. } => target_epoch * SLOTS_PER_EPOCH,
-            Self::SyncingHead { .. } | Self::Following => 0,
+            Self::SyncingHead { .. } | Self::Following | Self::Stalled => 0,
         };
         local_finalized_slot.max(settled_by_target)
     }
@@ -654,7 +699,7 @@ impl SyncUpdate {
         match self {
             Self::SyncingFinalized { target_epoch, .. } => Some(target_epoch * SLOTS_PER_EPOCH),
             Self::SyncingHead { head_slot, .. } => Some(head_slot),
-            Self::Following => None,
+            Self::Following | Self::Stalled => None,
         }
     }
 
@@ -665,13 +710,13 @@ impl SyncUpdate {
                 target_epoch.saturating_add(EPOCHS_TO_FINALIZE).saturating_mul(SLOTS_PER_EPOCH)
             }
             Self::SyncingHead { head_slot, .. } => head_slot,
-            Self::Following => 0,
+            Self::Following | Self::Stalled => 0,
         }
     }
 
     pub fn same_target_as(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Following, Self::Following) => true,
+            (Self::Following, Self::Following) | (Self::Stalled, Self::Stalled) => true,
             (
                 Self::SyncingFinalized { target_epoch: e1, target_root: r1 },
                 Self::SyncingFinalized { target_epoch: e2, target_root: r2 },
@@ -685,7 +730,7 @@ impl SyncUpdate {
 
     pub fn is_served_by(&self, peer_status: &[u8]) -> bool {
         match self {
-            Self::Following => true,
+            Self::Following | Self::Stalled => true,
             Self::SyncingFinalized { target_epoch, .. } => {
                 *target_epoch <= StatusView::finalized_epoch(peer_status)
             }
@@ -709,6 +754,7 @@ impl core::fmt::Debug for SyncUpdate {
                 .field("head_root", &format_args!("0x{}", hex32(head_root)))
                 .finish(),
             Self::Following => f.write_str("Following"),
+            Self::Stalled => f.write_str("Stalled"),
         }
     }
 }
@@ -780,6 +826,10 @@ pub enum PeerControl {
         ip: IpAddr,
     },
     DiscoverNodes,
+    UpdateEnrForkId {
+        epoch: u64,
+        enr_fork_id: [u8; 16],
+    },
     P2pGossipSubscribe {
         p2p: PeerId,
         p2p_connection: usize,
@@ -882,10 +932,26 @@ pub enum BlockSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum ColumnSource {
+pub enum SszCache {
+    Gossip,
+    DataColumns,
+    Rpc,
+    El,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ColumnOrigin {
     Gossip,
     Rpc,
     El,
+    Assembly,
+}
+
+impl ColumnOrigin {
+    pub const fn from_protocol(protocol: StreamProtocol) -> Self {
+        if protocol.is_gossip() { Self::Gossip } else { Self::Rpc }
+    }
 }
 
 /// A zero `state_root` marks all three roots unavailable. This can occur
@@ -1289,10 +1355,24 @@ impl BeaconStateEvent {
 pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
-    /// Message sent when a data column has been validated.
+    /// A column passed validation. Once per (block_root, column_index).
+    Validated {
+        block_root: [u8; 32],
+        column_index: u64,
+        slot: u64,
+        origin: ColumnOrigin,
+        ssz: TCacheRead,
+        ssz_cache: SszCache,
+    },
+    /// Bytes for storage to write. A repeat offer is allowed; storage dedups.
     Persist {
         ssz: TCacheRead,
-        source: ColumnSource,
+        origin: ColumnOrigin,
+        ssz_cache: SszCache,
+        /// Retain the validated fork domain when republishing after a fork
+        /// boundary. EL reconstructions without a domain use the
+        /// current gossip domain.
+        domain: Option<GossipDomain>,
         block_root: [u8; 32],
         column_index: u64,
         slot: u64,

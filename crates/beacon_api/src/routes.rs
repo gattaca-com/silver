@@ -3,14 +3,17 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
+use silver_beacon_state_data::{
+    B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView,
+};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
+    blocks::{block, block_header, block_root},
     events::events,
-    ids::{parse_root, parse_uint64},
+    ids::is_recognized_id,
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
     peers::{PeerFilter, PeerTable},
@@ -21,6 +24,7 @@ use crate::{
     response::Response,
     router::{Handler, Method, Request},
     statics::StaticBodies,
+    validators::{get_state_validators, post_state_validators, state_validator},
 };
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -29,18 +33,18 @@ const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const DEFAULT_SYNCING_STATUS: u16 = 206;
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
-    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", not_implemented),
+    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
-    (Method::Get, "/eth/v1/beacon/headers/{block_id}", not_implemented),
+    (Method::Get, "/eth/v1/beacon/headers/{block_id}", block_header),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
         state_finality_checkpoints,
     ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
-    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
-    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", not_implemented),
-    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", not_implemented),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", get_state_validators),
+    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", post_state_validators),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", state_validator),
     (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
     (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
     (Method::Get, "/eth/v1/config/spec", spec),
@@ -66,6 +70,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/sync_committee_subscriptions",
         post_sync_committee_subscriptions,
     ),
+    (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
     (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", not_implemented),
     (Method::Get, "/metrics", metrics),
 ];
@@ -85,9 +90,10 @@ impl ApiCtx {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        anchor_root: B256,
     ) -> Self {
         let (head_slot, anchor_epoch) = state
-            .read(&|view: StateReadView<'_>| {
+            .read(|view: StateReadView<'_>| {
                 let slot = view.slot.state();
                 (slot.latest_block_header.slot, slot.slot / SLOTS_PER_EPOCH)
             })
@@ -96,13 +102,13 @@ impl ApiCtx {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             spec: spec.clone(),
             state,
-            node_status: NodeStatus::at_anchor(head_slot, anchor_epoch),
+            node_status: NodeStatus::at_anchor(head_slot, anchor_root, anchor_epoch),
             peers: PeerTable::new(),
         }
     }
 
-    pub(crate) fn read_state<R>(&self, read: impl Fn(StateReadView<'_>) -> R) -> R {
-        self.state.read(&read).expect("beacon api needs the anchor state published")
+    pub(crate) fn read_state<R>(&self, read: impl FnMut(StateReadView<'_>) -> R) -> R {
+        self.state.read(read).expect("beacon api needs the anchor state published")
     }
 
     /// Resolves `{state_id}` and reads from the state it names, alongside the
@@ -113,45 +119,53 @@ impl ApiCtx {
         &self,
         req: &Request<'_>,
         resp: &mut Response<'_>,
-        read: impl Fn(StateReadView<'_>) -> R,
+        mut read: impl FnMut(StateReadView<'_>) -> R,
     ) -> Option<StateRead<R>> {
-        let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
-        if state_id != "head" {
-            if is_recognized_state_id(state_id) {
-                resp.error(404, "state not found");
-            } else {
-                resp.error(400, "invalid state_id");
-            }
+        if !self.serves_state(req, resp) {
             return None;
         }
-
         let node_status = self.node_status;
-        let read = |view: StateReadView<'_>| {
-            let block_slot = view.slot.state().latest_block_header.slot;
-            StateRead {
-                flags: ReadFlags {
-                    execution_optimistic: node_status.execution_optimistic(),
-                    finalized: node_status.is_finalized(block_slot),
-                },
-                data: read(view),
-            }
+        let read = |view: StateReadView<'_>| StateRead {
+            flags: read_flags(node_status, &view),
+            data: read(view),
         };
         Some(self.read_state(read))
     }
 
-    /// A `{state_id}` read whose body is the envelope around `render`, for the
-    /// endpoints that answer whatever the state holds.
-    pub(crate) fn state_response<R>(
+    /// A `{state_id}` read whose body is the envelope around `render`, written
+    /// under the read straight into the response. `render` runs again from an
+    /// empty body on retry.
+    pub(crate) fn state_response(
         &self,
         req: &Request<'_>,
         resp: &mut Response<'_>,
-        read: impl Fn(StateReadView<'_>) -> R,
-        render: impl FnOnce(&mut Json<'_>, &R),
+        mut render: impl FnMut(&StateReadView<'_>, &mut Json<'_>),
     ) {
-        let Some(state) = self.state_read(req, resp, read) else {
+        if !self.serves_state(req, resp) {
             return;
-        };
-        resp.json_body(|json| json.flagged_envelope(state.flags, |json| render(json, &state.data)));
+        }
+        let node_status = self.node_status;
+        resp.json_body(|json| {
+            self.read_state(|view| {
+                json.restart();
+                json.flagged_envelope(read_flags(node_status, &view), |json| render(&view, json));
+            });
+        });
+    }
+
+    /// Whether `{state_id}` names the one state silver serves, having answered
+    /// the request when it does not.
+    fn serves_state(&self, req: &Request<'_>, resp: &mut Response<'_>) -> bool {
+        let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
+        if state_id == "head" {
+            return true;
+        }
+        if is_recognized_id(state_id) {
+            resp.error(404, "state not found");
+        } else {
+            resp.error(400, "invalid state_id");
+        }
+        false
     }
 }
 
@@ -161,19 +175,16 @@ pub(crate) struct StateRead<R> {
     pub(crate) data: R,
 }
 
-/// Whether `state_id` is one of the forms the schemas define — the `head`,
-/// `genesis`, `justified` and `finalized` keywords, a slot, or a state root.
-/// Anything else identifies no state at all, which the schemas answer 400,
-/// where a recognized form silver cannot serve is a 404.
-fn is_recognized_state_id(state_id: &str) -> bool {
-    matches!(state_id, "head" | "genesis" | "justified" | "finalized") ||
-        parse_uint64(state_id).is_some() ||
-        parse_root(state_id).is_some()
+fn read_flags(node_status: NodeStatus, view: &StateReadView<'_>) -> ReadFlags {
+    ReadFlags {
+        execution_optimistic: node_status.execution_optimistic(),
+        finalized: node_status.is_finalized(view.slot.state().latest_block_header.slot),
+    }
 }
 
 /// The surface a request can name ahead of what silver serves: each of these
-/// routes needs data the node does not yet keep (a block store, the validator
-/// registry, duty shuffling, liveness tracking), so
+/// routes needs data the node does not yet keep (a block store, duty
+/// shuffling, liveness tracking), so
 /// the honest answer is the 501 that tells the client to look elsewhere,
 /// rather than a partial answer assembled from the wrong data.
 fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -195,23 +206,18 @@ fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
 }
 
 fn state_fork(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    ctx.state_response(req, resp, |view| *view.epoch.fork(), |json, fork| json.fork(fork));
+    ctx.state_response(req, resp, |view, json| json.fork(view.epoch.fork()));
 }
 
 fn state_finality_checkpoints(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    ctx.state_response(
-        req,
-        resp,
-        |view| {
-            let epoch = view.epoch.state();
-            FinalityCheckpoints {
-                previous_justified: epoch.previous_justified_checkpoint,
-                current_justified: epoch.current_justified_checkpoint,
-                finalized: epoch.finalized_checkpoint,
-            }
-        },
-        |json, checkpoints| json.finality_checkpoints(checkpoints),
-    );
+    ctx.state_response(req, resp, |view, json| {
+        let epoch = view.epoch.state();
+        json.finality_checkpoints(&FinalityCheckpoints {
+            previous_justified: epoch.previous_justified_checkpoint,
+            current_justified: epoch.current_justified_checkpoint,
+            finalized: epoch.finalized_checkpoint,
+        })
+    });
 }
 
 fn identity(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -288,7 +294,7 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
     let enr = Enr::builder().build(keypair.secret_key()).unwrap();
     let mut identify = Identify::default();
     identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-    ApiCtx::new(&keypair, &enr, &identify, spec, state)
+    ApiCtx::new(&keypair, &enr, &identify, spec, state, B256::default())
 }
 
 #[cfg(test)]
@@ -304,7 +310,7 @@ mod tests {
     use crate::{
         HeadStatus,
         peers::Peer,
-        router::{Router, Served},
+        router::{Outcome, Router},
     };
 
     /// Wire bytes the pre-table implementation produced for these exact
@@ -328,7 +334,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(router.dispatch(&req, ctx, &mut out), Served::Response);
+        assert_eq!(router.dispatch(&req, ctx, &mut out), Outcome::Response);
         out
     }
 
@@ -380,6 +386,8 @@ mod tests {
     fn ready() -> NodeStatus {
         NodeStatus {
             head: HeadStatus { slot: 100, optimistic: false },
+            head_root: [0x11; 32],
+            wall_slot: 100,
             finalized_epoch: 12_343,
             target: Some(SyncUpdate::Following),
             el: ELSyncStatus::Synced,
@@ -539,6 +547,30 @@ mod tests {
         assert_eq!(syncing_data(reached)["sync_distance"], "0", "target below the head");
     }
 
+    /// Stalled distance uses the wall slot; sync status still comes from
+    /// Control.
+    #[test]
+    fn stalled_is_syncing_at_the_distance_to_the_wall_clock() {
+        let stalled = NodeStatus { target: Some(SyncUpdate::Stalled), wall_slot: 130, ..ready() };
+        let data = syncing_data(stalled);
+        assert_eq!(data["is_syncing"], true);
+        assert_eq!(data["sync_distance"], "30");
+
+        assert_eq!(
+            health_response(stalled, ""),
+            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n"
+        );
+        assert!(health_response(stalled, "syncing_status=200").starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+        let following = NodeStatus { wall_slot: 130, ..ready() };
+        assert_eq!(
+            syncing_data(following)["is_syncing"],
+            false,
+            "wall lag does not override Following"
+        );
+        assert_eq!(syncing_data(following)["sync_distance"], "0");
+    }
+
     /// Every stubbed route answers 501 whatever the node's state: routed, so
     /// a client can tell "this node does not serve it" (501) from "no such
     /// endpoint exists" (404).
@@ -547,11 +579,6 @@ mod tests {
         let router = Router::new(ROUTES);
         let ctx = anchor_ctx();
         for (method, path) in [
-            ("GET", "/eth/v1/beacon/blocks/head/root"),
-            ("GET", "/eth/v1/beacon/headers/head"),
-            ("GET", "/eth/v1/beacon/states/head/validators"),
-            ("POST", "/eth/v1/beacon/states/head/validators"),
-            ("GET", "/eth/v1/beacon/states/head/validators/0"),
             ("GET", "/eth/v1/validator/duties/proposer/0"),
             ("POST", "/eth/v1/validator/duties/sync/0"),
             ("POST", "/eth/v1/validator/liveness/0"),
@@ -569,7 +596,7 @@ mod tests {
                 version: 1,
                 keep_alive: true,
             };
-            assert_eq!(router.dispatch(&req, &ctx, &mut out), Served::Response);
+            assert_eq!(router.dispatch(&req, &ctx, &mut out), Outcome::Response);
             assert!(out.starts_with(b"HTTP/1.1 501 Not Implemented\r\n"), "{method} {path}");
             assert_eq!(
                 body(&out),

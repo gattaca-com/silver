@@ -142,14 +142,6 @@ impl BeaconStateTile {
         }
     }
 
-    pub(super) fn on_accept(&mut self, block_root: Option<B256>, producers: &mut Producers) {
-        if let Some(root) = block_root {
-            self.replay_orphans(root, producers);
-            self.drain_pending_envelope(root, producers);
-        }
-        self.publish_status(producers);
-    }
-
     pub(super) fn park_block(
         &mut self,
         feedback: Feedback,
@@ -235,12 +227,14 @@ impl BeaconStateTile {
         let feedback =
             self.apply_block(data, read, BlockSource::Rpc, pre_verified, producers, |_| {});
         match feedback {
-            Feedback::Accept(block_root) => self.on_accept(block_root, producers),
             Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::Fatal,
             }),
-            Feedback::AwaitData(_) | Feedback::AlreadyKnown(_) | Feedback::Ignore => {}
+            Feedback::BlockImported(_) |
+            Feedback::AwaitData(_) |
+            Feedback::AlreadyKnown(_) |
+            Feedback::Ignore => {}
             _ => self.park_block(feedback, BlockSourceMsg::Rpc(sender, read), data, producers),
         }
         true

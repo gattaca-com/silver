@@ -4,10 +4,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockSource, ColumnSource, DataColumnsEvent, DataKind, Origin, P2pSend,
-    PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine, SilverSpineProducers,
-    SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer,
-    TRandomAccess, column_util,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
+    Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
+    SilverSpineProducers, SszCache, SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer,
+    TMultiProducer, TProducer, TRandomAccess, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -36,6 +36,7 @@ const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
 pub struct StorageTile {
     // bit set of our custody group columns.
     persist_gossip_consumer: TRandomAccess,
+    persist_data_columns_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
     persist_rpc_consumer: TRandomAccess,
     el_column_consumer: TRandomAccess,
@@ -72,6 +73,7 @@ impl StorageTile {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         persist_gossip_consumer: TRandomAccess,
+        persist_data_columns_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         persist_rpc_consumer: TRandomAccess,
         el_column_consumer: TRandomAccess,
@@ -105,6 +107,7 @@ impl StorageTile {
 
         Self {
             persist_gossip_consumer,
+            persist_data_columns_consumer,
             rpc_consumer,
             persist_rpc_consumer,
             el_column_consumer,
@@ -247,7 +250,7 @@ impl StorageTile {
             BeaconStateEvent::Status { ssz, wall_slot, .. } => {
                 latest_status_event = Some((ssz, wall_slot));
             }
-            BeaconStateEvent::PersistBlock { ssz, source, slot, block_root } => {
+            BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
                 let t_read = match source {
                     BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
                     BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
@@ -257,8 +260,7 @@ impl StorageTile {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                        let block_root =
-                            column_util::block_root(buf, self.spec.is_gloas_at_slot(slot));
+                        let block_root = block_root(buf, self.spec.is_gloas_at_slot(slot));
                         self.store.add_block(block_root, t_read, slot, parent_root);
                     }
                     Err(e) => {
@@ -270,7 +272,7 @@ impl StorageTile {
                             "persist block buffer acquire failed"
                         );
                         StorageCounters::PersistAcquireFailed.inc();
-                        needs(SyncNeed::missing_block(block_root, slot));
+                        needs(SyncNeed::missing_block(announced_root, slot));
                     }
                 }
             }
@@ -314,7 +316,20 @@ impl Tile<SilverSpine> for StorageTile {
         self.rpc_consumer.free();
         self.persist_gossip_consumer.free();
         self.persist_rpc_consumer.free();
+        self.persist_data_columns_consumer.free();
         self.el_column_consumer.free();
+
+        adapter.consume(|request: BeaconApiRequest, producers| {
+            if let BeaconApiRequest::Block { request_id, lookup, with_bytes } = request {
+                if with_bytes {
+                    self.store.queue_block_request(request_id, lookup);
+                } else {
+                    let block = self.store.block_facts(lookup);
+                    let response = BeaconApiResponse::Block { request_id, block };
+                    producers.beacon_api_responses.produce(&response.into());
+                }
+            }
+        });
 
         // Check for data columns and incoming blocks via RPC.
         adapter.consume(|rpc: RpcInbound, producers| match rpc {
@@ -372,13 +387,21 @@ impl Tile<SilverSpine> for StorageTile {
         });
 
         adapter.consume(|dc_event: DataColumnsEvent, producers| {
-            if let DataColumnsEvent::Persist { ssz, source, block_root, column_index, slot } =
-                dc_event
+            if let DataColumnsEvent::Persist {
+                ssz,
+                origin,
+                ssz_cache,
+                block_root,
+                column_index,
+                slot,
+                ..
+            } = dc_event
             {
-                let sidecar_ssz = match source {
-                    ColumnSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    ColumnSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                    ColumnSource::El => self.el_column_consumer.acquire(ssz),
+                let sidecar_ssz = match ssz_cache {
+                    SszCache::DataColumns => self.persist_data_columns_consumer.acquire(ssz),
+                    SszCache::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    SszCache::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                    SszCache::El => self.el_column_consumer.acquire(ssz),
                 };
                 match sidecar_ssz.buffer() {
                     Ok(_) => self.store.add_data_column(
@@ -392,15 +415,14 @@ impl Tile<SilverSpine> for StorageTile {
                         tracing::error!(
                             ?e,
                             seq = sidecar_ssz.seq(),
-                            ?source,
+                            ?origin,
                             slot,
                             column_index,
                             "persist data column buffer acquire failed"
                         );
                         StorageCounters::PersistAcquireFailed.inc();
                         producers.sync_needs.produce(
-                            &SyncNeed::missing_columns(block_root, slot, 1u128 << column_index)
-                                .into(),
+                            &SyncNeed::missing_column(block_root, slot, column_index).into(),
                         );
                     }
                 }
@@ -435,7 +457,7 @@ impl Tile<SilverSpine> for StorageTile {
         // reader has a published state. Feeds the per-slot served fork-digest.
         if self.genesis_validators_root.is_none() {
             self.genesis_validators_root =
-                self.beacon_state.read(&|v| v.imm.genesis_validators_root);
+                self.beacon_state.read(|v| v.imm.genesis_validators_root);
         }
 
         // Run store file i/o (also advances any in-flight checkpoint persist).
@@ -450,6 +472,7 @@ impl Tile<SilverSpine> for StorageTile {
                 IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
                 IoEvent::Need(need) => adapter.produce(need),
+                IoEvent::ApiResponse(response) => adapter.produce(response),
             })
         {
             tracing::error!(
@@ -462,10 +485,12 @@ impl Tile<SilverSpine> for StorageTile {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
     Need(SyncNeed),
+    ApiResponse(BeaconApiResponse),
 }
 
 impl IoEvent {
@@ -474,12 +499,17 @@ impl IoEvent {
             IoEvent::P2pSend(send) => producers.p2p_send.produce(&send.into()),
             IoEvent::PeerEvent(event) => producers.peer_events.produce(&event.into()),
             IoEvent::Need(need) => producers.sync_needs.produce(&need.into()),
+            IoEvent::ApiResponse(response) => {
+                producers.beacon_api_responses.produce(&response.into())
+            }
         };
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{io::Write, thread, time::Duration};
+
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{DataColumnsEvent, TCache, TCacheProducer, test_util::ShmemDir};
     use tempfile::TempDir;
@@ -511,11 +541,13 @@ mod tests {
 
     fn empty_tile(store_dir: &str) -> StorageTile {
         let pg = TCache::producer("st_pg", 1 << 16);
+        let dc = TCache::producer("st_dc", 1 << 16);
         let rpc = TCache::producer("st_rpc", 1 << 16);
         let pr = TCache::producer("st_pr", 1 << 16);
         let el = TCache::producer("st_el", 1 << 16);
         StorageTile::new(
             pg.cache_ref().random_access("st_pg", true).unwrap(),
+            dc.cache_ref().random_access("st_dc", true).unwrap(),
             rpc.cache_ref().random_access("st_rpc", true).unwrap(),
             pr.cache_ref().random_access("st_pr", true).unwrap(),
             el.cache_ref().random_access("st_el", true).unwrap(),
@@ -527,6 +559,28 @@ mod tests {
             store_dir.to_string(),
             true,
         )
+    }
+
+    #[test]
+    fn idle_storage_releases_the_data_columns_cache_without_persist_events() {
+        let directory = TempDir::new().unwrap();
+        let mut tile = empty_tile(directory.path().to_str().unwrap());
+        let mut producer = TCache::producer("", 1 << 16);
+        tile.persist_data_columns_consumer = producer.cache_ref().random_access("", true).unwrap();
+        let base = ShmemDir::new().unwrap();
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+        let mut adapter = SpineAdapter::connect_tile(&tile, &mut spine);
+        tile.loop_body(&mut adapter);
+        let mut written = 0;
+        while let Some(mut reservation) = producer.reserve(1024, false) {
+            reservation.write_all(&[0; 1024]).unwrap();
+            reservation.flush().unwrap();
+            written += 1;
+            assert!(written < 1000);
+        }
+        thread::sleep(Duration::from_millis(5100));
+        tile.loop_body(&mut adapter);
+        assert!(producer.reserve(1024, false).is_some());
     }
 
     /// Private scheduling state substitutes for a checkpoint writer here;
@@ -596,12 +650,14 @@ mod tests {
         std::fs::write(cols.join(format!("34_{root_b}_3.ssz")), b"c").unwrap(); // partial
 
         let pg_tc = TCache::producer("pg", 1 << 20);
+        let dc_tc = TCache::producer("dc", 1 << 20);
         let rpc_tc = TCache::producer("r", 1 << 20);
         let pr_tc = TCache::producer("pr", 1 << 20);
         let el_tc = TCache::producer("pr", 1 << 20);
 
         let mut tile = StorageTile::new(
             pg_tc.cache_ref().random_access("pg", true).unwrap(),
+            dc_tc.cache_ref().random_access("dc", true).unwrap(),
             rpc_tc.cache_ref().random_access("r", true).unwrap(),
             pr_tc.cache_ref().random_access("pr", true).unwrap(),
             el_tc.cache_ref().random_access("el_column_consumer", true).unwrap(),

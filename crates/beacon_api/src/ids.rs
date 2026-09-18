@@ -3,7 +3,7 @@
 //! root is a form those two parameters alone also take. Each endpoint's
 //! keywords are its own.
 
-use silver_beacon_state_data::B256;
+use silver_beacon_state_data::{B256, BLSPubkey};
 
 /// How many validators one POST body may name. No schema that takes a list of
 /// them sets a `maxItems`, and an unbounded list turns a 16 MiB body into
@@ -19,9 +19,23 @@ pub(crate) fn parse_uint64(text: &str) -> Option<u64> {
 }
 
 pub(crate) fn parse_root(text: &str) -> Option<B256> {
-    let mut root = B256::default();
-    hex::decode_to_slice(text.strip_prefix("0x")?, &mut root).ok()?;
-    Some(root)
+    parse_hex(text)
+}
+
+pub(crate) fn parse_pubkey(text: &str) -> Option<BLSPubkey> {
+    parse_hex(text)
+}
+
+fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+    let mut bytes = [0u8; N];
+    hex::decode_to_slice(text.strip_prefix("0x")?, &mut bytes).ok()?;
+    Some(bytes)
+}
+
+pub(crate) fn is_recognized_id(id: &str) -> bool {
+    matches!(id, "head" | "genesis" | "justified" | "finalized") ||
+        parse_uint64(id).is_some() ||
+        parse_root(id).is_some()
 }
 
 /// Whether `text` spells exactly `bytes` bytes in the `0x`-prefixed hex of the

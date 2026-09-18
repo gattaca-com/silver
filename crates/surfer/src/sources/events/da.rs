@@ -1,4 +1,4 @@
-use silver_common::{ColumnSource, Nanos};
+use silver_common::{ColumnOrigin, Nanos};
 
 use super::trace::Interval;
 
@@ -8,13 +8,13 @@ pub enum DaSpan {
     Root,
     /// First sidecar arrival → the node's custody set complete.
     Custody,
-    /// One source's columns: first arrival → last validation.
-    Cols(ColumnSource),
+    /// One origin's columns: first arrival → last validation.
+    Cols(ColumnOrigin),
 }
 
 pub struct Column {
     pub index: u64,
-    pub source: ColumnSource,
+    pub origin: ColumnOrigin,
     pub received_at: Nanos,
     pub validated_at: Option<Nanos>,
 }
@@ -34,9 +34,9 @@ pub struct DataAvailability {
 }
 
 impl DataAvailability {
-    pub(super) fn column_received(&mut self, index: u64, source: ColumnSource, ts: Nanos) {
+    pub(super) fn column_received(&mut self, index: u64, origin: ColumnOrigin, ts: Nanos) {
         if self.columns.iter().all(|c| c.index != index) {
-            self.columns.push(Column { index, source, received_at: ts, validated_at: None });
+            self.columns.push(Column { index, origin, received_at: ts, validated_at: None });
         }
     }
 
@@ -62,12 +62,12 @@ impl DataAvailability {
         !self.columns.is_empty()
     }
 
-    pub fn of_source(&self, source: ColumnSource) -> impl Iterator<Item = (usize, &Column)> {
-        self.columns.iter().enumerate().filter(move |(_, c)| c.source == source)
+    pub fn of_origin(&self, origin: ColumnOrigin) -> impl Iterator<Item = (usize, &Column)> {
+        self.columns.iter().enumerate().filter(move |(_, c)| c.origin == origin)
     }
 
-    pub fn has_source(&self, source: ColumnSource) -> bool {
-        self.of_source(source).next().is_some()
+    pub fn has_origin(&self, origin: ColumnOrigin) -> bool {
+        self.of_origin(origin).next().is_some()
     }
 
     pub fn first_column_at(&self) -> Option<Nanos> {
@@ -85,9 +85,9 @@ impl DataAvailability {
                 Interval { start, end }
             }
             DaSpan::Custody => Interval { start: self.first_column_at()?, end: self.custody_done? },
-            DaSpan::Cols(source) => {
-                let start = self.of_source(source).map(|(_, c)| c.received_at).min()?;
-                let end = self.of_source(source).map(|(_, c)| c.interval().end).max()?;
+            DaSpan::Cols(origin) => {
+                let start = self.of_origin(origin).map(|(_, c)| c.received_at).min()?;
+                let end = self.of_origin(origin).map(|(_, c)| c.interval().end).max()?;
                 Interval { start, end }
             }
         };

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_common::cells::GOSSIP_DELIVERY_RETENTION;
+use silver_common::cell_store::GOSSIP_DELIVERY_RETENTION;
 
 /// End-to-end age after which outbound gossip delivery is stale, measured from
 /// enqueue until Quinn releases every owner after ACK or teardown. Expiry is

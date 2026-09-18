@@ -7,14 +7,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_beacon_state_data::{ForkName, SpecConfig};
-use silver_columns::cell_store::{
-    CellKey, CellStore, CellStoreConfig, CommitmentContext, ContextData,
-};
+use silver_chain_spec::{ForkName, SpecConfig};
+use silver_columns::cell_store::CellStore;
 use silver_common::{
-    TCache, TCacheProducer,
+    GossipDomain, TCache, TCacheProducer,
+    cell_store::{CellKey, CellStoreConfig, CommitmentContext, ContextData, FuluContextSource},
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
+use silver_control::cell_allocator::CellAllocator;
 
 thread_local! {
     static ALLOCATION_EVENTS: Cell<u64> = const { Cell::new(0) };
@@ -60,7 +60,8 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
     let mut writer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
     let mut network = Box::new(producer.cache_ref().retained_random_access("").unwrap());
     let now = Instant::now();
-    let mut store = CellStore::new(config, producer, 0, now).unwrap();
+    let mut allocator = CellAllocator::new(config.clone(), producer, 0, now).unwrap();
+    let mut store = CellStore::new(config, 0, now).unwrap();
     let cell = [0x11; BYTES_PER_CELL];
     let proof = [0x22; BYTES_PER_KZG_PROOF];
     let before = ALLOCATION_EVENTS.with(Cell::get);
@@ -68,7 +69,9 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
 
     for slot in 0u64..512 {
         store.advance(now + Duration::from_secs(slot), slot.saturating_sub(63), |_| {});
-        if let Some(event) = store.take_retention_event() {
+        if let Some(event) =
+            allocator.advance(now + Duration::from_secs(slot), slot.saturating_sub(63))
+        {
             writer.advance_retention(event.retain_from);
             network.advance_retention(event.retain_from);
         }
@@ -82,20 +85,33 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
             inclusion_proof: &[0x33; 128],
             commitments: &[0x33; 2 * 48],
         };
-        assert!(store.admit_context(context, data).unwrap());
+        let domain = GossipDomain::new([0; 4], context.format);
+        let mut header = allocator.producer_mut().reserve(data.encoded_len(), false).unwrap();
+        data.write(header.buffer().unwrap());
+        header.flush().unwrap();
+        let source = Some(FuluContextSource::Header(header.read()));
+        assert!(store.admit_context(context, domain, data, source).unwrap());
+        let request = store.request_assemblies(&block_root).unwrap();
+        let set = allocator.allocate(request).unwrap();
+        store.install(set, &mut writer).unwrap();
         for column in 0..2 {
             let reservation = store.reservations(&block_root).nth(column).unwrap();
             for row in 0..2 {
                 let key = CellKey { block_root, column, row };
-                let pending = store.stage_cell(key, &cell, &proof).unwrap().unwrap();
+                let pending = allocator.stage(key, &cell, &proof).unwrap().unwrap();
                 drop(pending.data.acquire(&mut writer).unwrap());
                 let retry = reservation.stage(&mut writer, row, &cell, &proof).unwrap().unwrap();
-                assert!(!store.cancel_pending(pending).unwrap());
+                assert!(!allocator.cancel(pending).unwrap());
                 let validation = retry.data.acquire(&mut writer).unwrap();
                 black_box(validation.buffers());
                 validation.accept().unwrap();
+                store.mark_changed(&block_root, column);
+                store.mark_changed(&block_root, column);
                 assert_eq!(
-                    store.refresh_column(&block_root, column).unwrap().column_completed,
+                    store
+                        .refresh_column(&block_root, column, &mut writer)
+                        .unwrap()
+                        .column_completed,
                     row == 1
                 );
                 assert!(reservation.stage(&mut writer, row, &cell, &proof).unwrap().is_none());
@@ -103,16 +119,26 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
                 black_box(acquired.cell.as_ref());
                 black_box(acquired.proof.as_ref());
             }
-            let completed =
-                store.refresh_column(&block_root, column).unwrap().complete_read.unwrap();
+            assert_eq!(store.next_changed(), Some((block_root, column)));
+            assert!(store.next_changed().is_none());
+            let completed = store
+                .refresh_column(&block_root, column, &mut writer)
+                .unwrap()
+                .complete_read
+                .unwrap();
             let assembly = writer.acquire_strict(completed).unwrap();
             let bytes = assembly.buffer().unwrap().0;
-            let mut full = store.reserve_full(bytes.len()).unwrap();
+            let mut full = allocator.producer_mut().reserve(bytes.len(), false).unwrap();
             full.write_all(bytes).unwrap();
             full.flush().unwrap();
             let read = full.read();
             drop(full);
-            assert!(!store.retain_full(&block_root, column, read).unwrap().column_completed);
+            assert!(
+                !store
+                    .retain_full(&block_root, column, read, &mut writer)
+                    .unwrap()
+                    .column_completed
+            );
             let cell = store.cell(CellKey { block_root, column, row: 0 }).unwrap();
             let send = cell.acquire(&mut network).unwrap();
             black_box(send.cell.as_ref());
@@ -121,7 +147,7 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
         black_box(store.column(&block_root, 0).unwrap());
     }
     store.advance(now + Duration::from_secs(512), 512, |_| {});
-    let event = store.take_retention_event().unwrap();
+    let event = allocator.advance(now + Duration::from_secs(512), 512).unwrap();
     writer.advance_retention(event.retain_from);
     network.advance_retention(event.retain_from);
     assert_eq!(store.counts().cells, 0);

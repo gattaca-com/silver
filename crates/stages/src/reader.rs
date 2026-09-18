@@ -126,21 +126,22 @@ impl StageReader {
     /// on the wire, publish the moment it passed validation.
     fn on_data_columns(&mut self, m: &InternalMessage<DataColumnsEvent>) {
         match *m.data() {
-            DataColumnsEvent::Persist { block_root, column_index, slot, source, .. } => {
+            DataColumnsEvent::Validated { block_root, column_index, slot, origin, .. } => {
                 self.roots.entry(block_root).or_insert(Tracked::new(slot));
                 let recv = StageEvent {
-                    stage: Stage::ColumnRecv { index: column_index, source },
+                    stage: Stage::ColumnRecv { index: column_index, origin },
                     ts: m.ingestion_time().real(),
                     block_root,
                     slot: Some(slot),
                 };
                 self.out.push(recv);
                 self.out.push(StageEvent {
-                    stage: Stage::ColumnValidated { index: column_index, source },
+                    stage: Stage::ColumnValidated { index: column_index, origin },
                     ts: m.tracking_timestamp().publish_t(),
                     ..recv
                 });
             }
+            DataColumnsEvent::Persist { .. } => {}
             DataColumnsEvent::Available { block_root, slot } => {
                 self.out.push(StageEvent {
                     stage: Stage::DaAvailable,
@@ -171,8 +172,8 @@ impl StageReader {
 mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        BlockSource, BlockStage, ColumnSource, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
-        PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, ColumnOrigin, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
+        PayloadValidationStatus, SszCache, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -237,13 +238,14 @@ mod tests {
         })
     }
 
-    fn persist(root: [u8; 32], slot: u64, column_index: u64) -> DataColumnsEvent {
-        DataColumnsEvent::Persist {
-            ssz: unread_payload(),
-            source: ColumnSource::Gossip,
+    fn validated(root: [u8; 32], slot: u64, column_index: u64) -> DataColumnsEvent {
+        DataColumnsEvent::Validated {
             block_root: root,
             column_index,
             slot,
+            origin: ColumnOrigin::Gossip,
+            ssz: unread_payload(),
+            ssz_cache: SszCache::Gossip,
         }
     }
 
@@ -407,7 +409,7 @@ mod tests {
         let mut reader = StageReader::default();
         let root = [7u8; 32];
 
-        reader.on_data_columns(&msg(persist(root, 3, 48), at(3, 1_400)));
+        reader.on_data_columns(&msg(validated(root, 3, 48), at(3, 1_400)));
         reader.on_data_columns(&msg(
             DataColumnsEvent::Available { block_root: root, slot: 3 },
             at(3, 1_500),
@@ -419,7 +421,7 @@ mod tests {
         let recv = find(&reader.out, "column_recv");
         assert!(matches!(recv.stage, Stage::ColumnRecv {
             index: 48,
-            source: ColumnSource::Gossip
+            origin: ColumnOrigin::Gossip
         }));
         assert_eq!(recv.ts, at(3, 1_400), "arrival is the ingestion clock");
 

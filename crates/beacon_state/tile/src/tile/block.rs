@@ -49,8 +49,9 @@ struct AppliedBlock {
 pub(super) struct StagedBlock {
     pub(super) parsed: ParsedBlock,
     applied: AppliedBlock,
-    pub(super) read: TCacheRead,
+    pub(super) ssz: TCacheRead,
     pub(super) source: BlockSource,
+    pub(super) el_valid: bool,
 }
 
 impl StagedBlock {
@@ -62,7 +63,7 @@ impl StagedBlock {
     pub(super) fn with_state_id(
         parsed: ParsedBlock,
         id: StateId,
-        read: TCacheRead,
+        ssz: TCacheRead,
         source: BlockSource,
     ) -> Self {
         let applied = AppliedBlock {
@@ -74,14 +75,14 @@ impl StagedBlock {
             bid_block_hash: [0u8; 32],
             votes: stf::BlockVotes::default(),
         };
-        Self { parsed, applied, read, source }
+        Self { parsed, applied, ssz, source, el_valid: false }
     }
 }
 
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
         match self.parse_and_verify_block(data, false) {
-            Ok(parsed) => self.apply_and_import(parsed, data),
+            Ok(parsed) => self.apply_and_import(parsed, data, None),
             Err(err) => err.feedback(),
         }
     }
@@ -92,7 +93,7 @@ impl BeaconStateTile {
     pub(super) fn apply_block(
         &mut self,
         data: &[u8],
-        read: TCacheRead,
+        ssz: TCacheRead,
         source: BlockSource,
         pre_verified: bool,
         producers: &mut Producers,
@@ -103,7 +104,7 @@ impl BeaconStateTile {
             return e.feedback();
         }
 
-        let block_slot = SignedBeaconBlockView::slot(data);
+        let slot = SignedBeaconBlockView::slot(data);
         let parsed = match self.parse_and_verify_block(data, pre_verified) {
             Ok(parsed) => {
                 if parsed.relay_eligible {
@@ -121,7 +122,12 @@ impl BeaconStateTile {
                         source,
                         producers,
                     );
-                    Self::emit_persist_block(read, source, block_slot, block_root, producers);
+                    producers.produce(BeaconStateEvent::PersistBlock {
+                        ssz,
+                        source,
+                        slot,
+                        block_root,
+                    });
                 }
                 return f;
             }
@@ -137,47 +143,31 @@ impl BeaconStateTile {
         }
 
         producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
-            data: read,
+            data: ssz,
             block_root: parsed.block_root,
-            slot: block_slot,
+            slot,
             block_source: source,
         }));
 
-        let f = if waits_for_columns {
-            match self.apply_or_reject(&parsed, data) {
-                Ok(applied) => Feedback::AwaitData(self.held.stage(StagedBlock {
-                    parsed,
-                    applied,
-                    read,
-                    source,
-                })),
-                Err(f) => f,
-            }
-        } else {
-            self.apply_and_import(parsed, data)
-        };
+        let block_root = parsed.block_root;
+        let hold = waits_for_columns.then_some((ssz, source));
+        let f = self.apply_and_import(parsed, data, hold);
         match f {
-            Feedback::Accept(Some(block_root)) => {
-                self.announce_imported(data, block_root, read, source, producers);
+            Feedback::BlockImported(_) => {
+                self.announce_imported(block_root, slot, data, ssz, source, producers)
             }
-            Feedback::AwaitData(block_root) => {
-                self.emit_block_received(
-                    data,
-                    block_root,
-                    BlockStage::AwaitData,
-                    source,
-                    producers,
-                );
+            Feedback::AwaitData(_) => {
+                self.emit_block_received(data, block_root, BlockStage::AwaitData, source, producers)
             }
-            Feedback::Reject(Some(block_root)) => {
-                producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
+            Feedback::Reject(_) => {
+                producers.produce(BeaconStateEvent::BlockRejected { block_root, source })
             }
             _ => {}
         }
         tracing::info!(
             ?source,
             head_slot = self.head_state_slot(),
-            block_slot,
+            slot,
             wall_slot = self.ticker.current_slot(),
             time_into_slot = ?self.ticker.slot_time_elapsed(),
             "applied block: {:?}",
@@ -187,19 +177,22 @@ impl BeaconStateTile {
     }
 
     /// Everything the rest of the node learns from an import, in the order it
-    /// needs it: the stage, the bytes to persist, the FCU, then the work the
-    /// next block would do inline, warmed off the new head.
-    pub(super) fn announce_imported(
+    /// needs it: the stage, the bytes to persist, the FCU, the head, the
+    /// blocks that waited on this one, and last the work the next block would
+    /// otherwise do inline. A parked envelope decides the head's payload
+    /// resolution, so it is applied before the Status that carries it; orphans
+    /// only extend beyond the head, so they follow it.
+    fn announce_imported(
         &mut self,
-        data: &[u8],
         block_root: B256,
-        read: TCacheRead,
+        slot: Slot,
+        data: &[u8],
+        ssz: TCacheRead,
         source: BlockSource,
         producers: &mut Producers,
     ) {
-        let block_slot = SignedBeaconBlockView::slot(data);
         self.emit_block_received(data, block_root, BlockStage::Applied, source, producers);
-        Self::emit_persist_block(read, source, block_slot, block_root, producers);
+        producers.produce(BeaconStateEvent::PersistBlock { ssz, source, slot, block_root });
 
         let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
         producers.produce(EngineReq::Fcu(EngineFcuReq {
@@ -209,12 +202,17 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
-        self.precompute_for_next_block(block_slot);
+        self.drain_pending_envelope(block_root, producers);
+        self.publish_status(producers);
+
+        self.replay_orphans(block_root, producers);
+        self.precompute_for_next_block();
     }
 
-    /// Work the next block would otherwise do inline, run while nothing waits
-    /// on the tile.
-    fn precompute_for_next_block(&mut self, block_slot: Slot) {
+    /// Work the next block would otherwise do inline, run off the newest
+    /// applied block once every consumer has been told about it.
+    fn precompute_for_next_block(&mut self) {
+        let block_slot = self.last_applied_block_slot();
         self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
         self.epoch_start_state(self.last_applied_block_root, self.last_applied, block_slot + 1);
     }
@@ -228,16 +226,6 @@ impl BeaconStateTile {
         let view = self.state.read_view(self.last_applied);
         self.shuffling_cache.ensure_window(&view, block_epoch + 1);
         self.shuffling_cache.try_cache_committee_aggs(&view, block_epoch + 1);
-    }
-
-    fn emit_persist_block(
-        read: TCacheRead,
-        source: BlockSource,
-        slot: u64,
-        block_root: B256,
-        producers: &mut Producers,
-    ) {
-        producers.produce(BeaconStateEvent::PersistBlock { ssz: read, source, slot, block_root });
     }
 
     pub(super) fn da_required(&self) -> bool {
@@ -260,10 +248,7 @@ impl BeaconStateTile {
         }
 
         let block_slot = SignedBeaconBlockView::slot(data);
-        let feedback = match self.parse_and_verify_block(data, false) {
-            Ok(parsed) => self.apply_and_import(parsed, data),
-            Err(err) => err.feedback(),
-        };
+        let feedback = self.try_apply_block(data);
 
         match feedback {
             Feedback::Reject(block_root) => tracing::error!(
@@ -279,7 +264,7 @@ impl BeaconStateTile {
             ),
         }
 
-        if matches!(feedback, Feedback::Accept(_)) {
+        if matches!(feedback, Feedback::BlockImported(_)) {
             self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
         }
     }
@@ -336,16 +321,31 @@ impl BeaconStateTile {
         Ok(parsed)
     }
 
+    /// The STF, then the fork-choice import, unless the block still waits for
+    /// its data columns: then its applied state is staged under `hold` until
+    /// they arrive.
     #[timed]
-    pub(super) fn apply_and_import(&mut self, parsed: ParsedBlock, data: &[u8]) -> Feedback {
+    pub(super) fn apply_and_import(
+        &mut self,
+        parsed: ParsedBlock,
+        data: &[u8],
+        hold: Option<(TCacheRead, BlockSource)>,
+    ) -> Feedback {
         let applied = match self.apply_or_reject(&parsed, data) {
             Ok(applied) => applied,
             Err(feedback) => return feedback,
         };
         let block_root = parsed.block_root;
-        self.import_block(parsed, applied, data);
-
-        Feedback::Accept(Some(block_root))
+        match hold {
+            Some((ssz, source)) => {
+                self.held.stage(StagedBlock { parsed, applied, ssz, source, el_valid: false });
+                Feedback::AwaitData(block_root)
+            }
+            None => {
+                self.import_block(parsed, applied, data);
+                Feedback::BlockImported(block_root)
+            }
+        }
     }
 
     #[timed]
@@ -379,9 +379,9 @@ impl BeaconStateTile {
             tracing::debug!(block = hex32(&block_root), slot, "DataColumnsAvailable received");
             return;
         };
-        let StagedBlock { parsed, applied, read, source } = staged;
+        let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;
 
-        let acquired = self.block_consumer(source).acquire(read);
+        let acquired = self.block_consumer(source).acquire(ssz);
         let Ok((data, _)) = acquired.buffer() else {
             tracing::error!(
                 block = hex32(&block_root),
@@ -394,8 +394,10 @@ impl BeaconStateTile {
         };
 
         self.import_block(parsed, applied, data);
-        self.announce_imported(data, block_root, read, source, producers);
-        self.on_accept(Some(block_root), producers);
+        if el_valid {
+            self.fork_choice.on_payload_valid(&block_root);
+        }
+        self.announce_imported(block_root, slot, data, ssz, source, producers);
     }
 
     fn block_consumer(&mut self, source: BlockSource) -> &mut TRandomAccess {

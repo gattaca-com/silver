@@ -1,10 +1,11 @@
 use silver_httpcore::{ParsedRequest, frame_response};
 
-use crate::{events::ChannelSet, response::Response, routes::ApiCtx};
+use crate::{blocks::BlockRequest, events::ChannelSet, response::Response, routes::ApiCtx};
 
 const MAX_PARAMS: usize = 4;
 
 const JSON_MEDIA_TYPE: &str = "application/json";
+pub(crate) const SSZ_MEDIA_TYPE: &str = "application/octet-stream";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Method {
@@ -25,10 +26,11 @@ impl Method {
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[must_use = "Stream requires switching the connection to the subscription machine"]
-pub(crate) enum Served {
+#[must_use = "Stream and AwaitingBlock leave the connection waiting on the caller"]
+pub(crate) enum Outcome {
     Response,
     Stream(ChannelSet),
+    AwaitingBlock(BlockRequest),
 }
 
 // `method` and `path` become live with a handler that answers on more than the
@@ -39,11 +41,23 @@ pub(crate) struct Request<'a> {
     pub(crate) path: &'a str,
     pub(crate) params: Params<'a>,
     pub(crate) query: &'a str,
+    pub(crate) accept: Option<&'a str>,
     pub(crate) content_type: Option<&'a str>,
     pub(crate) body: &'a [u8],
 }
 
 impl Request<'_> {
+    pub(crate) fn accepts_ssz(&self) -> bool {
+        self.accept.unwrap_or_default().split(',').any(|media_range| {
+            media_range
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case(SSZ_MEDIA_TYPE)
+        })
+    }
+
     /// Whether the body is one this API will read as JSON — a request naming
     /// no media type included. The schemas that declare a 415 are the ones
     /// that also take an SSZ body, and a client sending SSZ says so: an
@@ -137,7 +151,7 @@ impl Router {
         req: &ParsedRequest<'_>,
         ctx: &ApiCtx,
         out: &mut Vec<u8>,
-    ) -> Served {
+    ) -> Outcome {
         let method = Method::parse(req.method);
         let mut path_known = false;
         for route in &self.routes {
@@ -151,12 +165,13 @@ impl Router {
                 path: req.path,
                 params,
                 query: req.query,
+                accept: req.accept,
                 content_type: req.content_type,
                 body: req.body,
             };
             let mut response = Response::new(out);
             (route.handler)(&request, ctx, &mut response);
-            return response.served();
+            return response.outcome();
         }
         if path_known {
             Response::new(out).error(405, "method not allowed");
@@ -164,7 +179,7 @@ impl Router {
             tracing::warn!("unknown path: {}", req.path);
             frame_response(out, "404 Not Found", None, b"");
         }
-        Served::Response
+        Outcome::Response
     }
 }
 
@@ -221,7 +236,7 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(
             router.dispatch(&request(method, path), &anchor_ctx(), &mut out),
-            Served::Response
+            Outcome::Response
         );
         out
     }
@@ -271,7 +286,7 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(router.dispatch(&req, &anchor_ctx(), &mut out), Served::Response);
+        assert_eq!(router.dispatch(&req, &anchor_ctx(), &mut out), Outcome::Response);
         out
     }
 

@@ -181,6 +181,7 @@ impl Node {
             stream_id: P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
             topic: GossipTopic::DataColumnSidecar(index),
             domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+            ssz_cache: silver_common::SszCache::Gossip,
             msg_hash: MessageId { id },
             recv_ts: Nanos::now(),
             ssz,
@@ -200,7 +201,8 @@ impl Node {
     fn drain(&mut self) -> (u128, bool, bool) {
         let (mut validated, mut available, mut custody_complete) = (0u128, false, false);
         self.inj.consume(|ev: DataColumnsEvent, _| match ev {
-            DataColumnsEvent::Persist { column_index, .. } => validated |= 1u128 << column_index,
+            DataColumnsEvent::Validated { column_index, .. } => validated |= 1u128 << column_index,
+            DataColumnsEvent::Persist { .. } => {}
             DataColumnsEvent::Available { .. } => available = true,
         });
         self.inj.consume(|need: SyncNeed, _| {
