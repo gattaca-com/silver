@@ -1426,7 +1426,7 @@ mod tests {
     #[test]
     fn el_column_that_fails_to_write_is_not_recorded() {
         let block_bytes = blob_block_bytes(42);
-        let block_root = util::block_root_fulu(&block_bytes);
+        let block_root = block_root_fulu(&block_bytes);
         // Keep the cache power-of-two sized but too small for one sidecar.
         let too_small = util::data_column_sidecar_len(1).next_power_of_two() / 2;
         let custody_count = CUSTODY_COLUMNS.count_ones() as usize;
