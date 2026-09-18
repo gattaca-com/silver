@@ -15,6 +15,9 @@ use silver_peer::PeerManager;
 
 use crate::cell_allocator::CellAllocator;
 
+mod partial;
+use partial::PartialBudget;
+
 pub(super) fn handle_data_column_event<F>(
     event: DataColumnsEvent,
     rpc_ssz_consumer: &mut TRandomAccess,
@@ -68,6 +71,7 @@ pub struct CellIngress {
     available: FxHashMap<([u8; 32], usize), ColumnAvailability>,
     capacity: usize,
     min_slot: u64,
+    partial_budget: PartialBudget,
 }
 
 impl CellIngress {
@@ -78,11 +82,13 @@ impl CellIngress {
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
         let capacity = config.column_capacity();
+        let partial_budget = PartialBudget::new(&config);
         Ok(Self {
             allocator: CellAllocator::new(config, producer, slot, slot_start)?,
             available: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             capacity,
             min_slot: 0,
+            partial_budget,
         })
     }
 
@@ -91,9 +97,13 @@ impl CellIngress {
     }
 
     pub fn spin(&mut self, now: Instant, producers: &SilverSpineProducers) {
+        let expired = now >= self.allocator.slot_window().1;
         if let Some(event) = self.allocator.advance(now, self.min_slot) {
             self.available.clear();
             producers.produce(event);
+        }
+        if expired {
+            self.partial_budget.clear();
         }
     }
 

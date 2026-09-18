@@ -86,6 +86,11 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
             commitments: &[0x33; 2 * 48],
         };
         let domain = GossipDomain::new([0; 4], context.format);
+        let candidate = allocator.optimistic(context, domain, None, 1).unwrap();
+        let staged = allocator
+            .stage(CellKey { block_root, column: 0, row: 0 }, &cell, &proof)
+            .unwrap()
+            .unwrap();
         let mut header = allocator.producer_mut().reserve(data.encoded_len(), false).unwrap();
         data.write(header.buffer().unwrap());
         header.flush().unwrap();
@@ -93,7 +98,14 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
         assert!(store.admit_context(context, domain, data, source).unwrap());
         let request = store.request_assemblies(&block_root).unwrap();
         let set = allocator.allocate(request).unwrap();
+        assert_eq!(
+            set.reservations.view(allocator.producer()).unwrap().next().unwrap().read().seq(),
+            candidate.reservations.view(allocator.producer()).unwrap().next().unwrap().read().seq()
+        );
         store.install(set, &mut writer).unwrap();
+        let validation = staged.data.acquire(&mut writer).unwrap();
+        assert_eq!(validation.buffers(), [cell.as_slice(), proof.as_slice()]);
+        drop(validation);
         for column in 0..2 {
             let reservation = store.reservations(&block_root).nth(column).unwrap();
             for row in 0..2 {

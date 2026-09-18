@@ -1,7 +1,7 @@
 use std::{
     marker::PhantomData,
     ptr, slice,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use super::{
@@ -15,6 +15,8 @@ const WRITING: u64 = 1;
 const PENDING: u64 = 2;
 const VALIDATING: u64 = 3;
 const VERIFIED: u64 = 4;
+const INITIALIZING: u8 = 1;
+const INITIALIZED: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubReservationError {
@@ -66,6 +68,7 @@ impl SubLayout {
 struct Header {
     ready: [AtomicU64; 2],
     closed: AtomicBool,
+    initialization: AtomicU8,
     parts: u32,
     first_offset: u32,
     first_len: u32,
@@ -107,8 +110,8 @@ impl SubReservationRef {
     pub(super) fn new(
         mut reservation: Reservation,
         layout: SubLayout,
-        prefix: &[u8],
-        middle: &[u8],
+        prefix_len: usize,
+        middle_len: usize,
     ) -> Self {
         let read = reservation.read();
         let cache = read.tcache;
@@ -117,23 +120,21 @@ impl SubReservationRef {
         unsafe {
             let slot = &mut *slot_ptr;
             let payload = cache.data_ptr().add(slot.data_start as usize);
-            let first_end = prefix.len() + layout.parts * layout.first_len;
+            let first_end = prefix_len + layout.parts * layout.first_len;
             ptr::write(payload.cast::<Header>(), Header {
                 ready: [AtomicU64::new(0), AtomicU64::new(0)],
                 closed: AtomicBool::new(false),
+                initialization: AtomicU8::new(0),
                 parts: layout.parts as u32,
-                first_offset: prefix.len() as u32,
+                first_offset: prefix_len as u32,
                 first_len: layout.first_len as u32,
-                second_offset: (first_end + middle.len()) as u32,
+                second_offset: (first_end + middle_len) as u32,
                 second_len: layout.second_len as u32,
             });
             let states = payload.add(size_of::<Header>()).cast::<AtomicU64>();
             for part in 0..layout.parts {
                 ptr::write(states.add(part), AtomicU64::new(0));
             }
-            let data = payload.add(layout.header_bytes());
-            ptr::copy_nonoverlapping(prefix.as_ptr(), data, prefix.len());
-            ptr::copy_nonoverlapping(middle.as_ptr(), data.add(first_end), middle.len());
             slot.data_start += layout.header_bytes() as u32;
             slot.skip.store(INCOMPLETE, Ordering::Relaxed);
             slot.seq.store(read.seq, Ordering::Release);
@@ -321,6 +322,32 @@ impl<'a> SubReservationView<'a> {
         self.len() == 0
     }
 
+    pub fn initialize(&self, prefix: &[u8], middle: &[u8]) -> Result<(), SubReservationError> {
+        let header = self.header();
+        let first_end =
+            header.first_offset as usize + header.parts as usize * header.first_len as usize;
+        if prefix.len() != header.first_offset as usize ||
+            middle.len() != header.second_offset as usize - first_end
+        {
+            return Err(SubReservationError::InvalidLayout);
+        }
+        if header.closed.load(Ordering::Acquire) {
+            return Err(SubReservationError::Closed);
+        }
+        header
+            .initialization
+            .compare_exchange(0, INITIALIZING, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| SubReservationError::Published)?;
+        // These regions are disjoint from every cell writer. Validation and full
+        // reads remain disabled until this one-time initialization is published.
+        unsafe {
+            ptr::copy_nonoverlapping(prefix.as_ptr(), self.data(), prefix.len());
+            ptr::copy_nonoverlapping(middle.as_ptr(), self.data().add(first_end), middle.len());
+        }
+        header.initialization.store(INITIALIZED, Ordering::Release);
+        Ok(())
+    }
+
     pub fn claim(self, part: usize) -> Result<SubWrite<'a>, SubReservationError> {
         let header = self.header();
         if part >= header.parts as usize {
@@ -355,7 +382,7 @@ impl<'a> SubReservationView<'a> {
         if header.closed.load(Ordering::Acquire) {
             return Err(SubReservationError::Closed);
         }
-        if !header.complete() {
+        if header.initialization.load(Ordering::Acquire) != INITIALIZED || !header.complete() {
             return Err(SubReservationError::Incomplete);
         }
         let read = self.reference.read;
@@ -470,6 +497,9 @@ impl PendingSubReservation {
         consumer: &mut RandomAccessConsumer,
     ) -> Result<SubValidation, SubReservationError> {
         let acquired = self.reservation.acquire(consumer)?;
+        if acquired.view().header().initialization.load(Ordering::Acquire) != INITIALIZED {
+            return Err(SubReservationError::Incomplete);
+        }
         acquired
             .view()
             .state(self.part)

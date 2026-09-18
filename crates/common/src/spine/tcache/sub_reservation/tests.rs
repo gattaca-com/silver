@@ -9,6 +9,62 @@ use super::{
 };
 use crate::TCache;
 
+#[test]
+fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_bytes() {
+    let mut producer = TCache::producer("", 1 << 16);
+    let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+    let reference = producer
+        .uninitialized_sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, 3, 5)
+        .unwrap();
+    let pending = producer
+        .view_sub_reservation(reference)
+        .unwrap()
+        .claim(0)
+        .unwrap()
+        .write(b"cell", b"pf")
+        .unwrap();
+    assert!(matches!(pending.acquire(&mut consumer), Err(SubReservationError::Incomplete)));
+    let acquired = reference.acquire(&mut consumer).unwrap();
+    assert_eq!(acquired.finish().unwrap_err(), SubReservationError::Incomplete);
+    assert!(acquired.ranges(0).is_none());
+    let read = consumer.acquire_strict(reference.read()).unwrap();
+    assert!(read.buffer().is_err());
+    assert!(read.with_range(0, 3).is_none());
+    let view = producer.view_sub_reservation(reference).unwrap();
+    assert_eq!(
+        view.initialize(b"bad size", b"proof").unwrap_err(),
+        SubReservationError::InvalidLayout
+    );
+    view.initialize(b"hdr", b"comms").unwrap();
+    let validation = pending.acquire(&mut consumer).unwrap();
+    assert_eq!(validation.buffers(), [b"cell".as_slice(), b"pf".as_slice()]);
+    validation.accept().unwrap();
+    acquired.finish().unwrap();
+    assert_eq!(read.buffer().unwrap().0, b"hdrcellcommspf");
+    assert_eq!(view.initialize(b"new", b"other").unwrap_err(), SubReservationError::Published);
+    assert_eq!(read.buffer().unwrap().0, b"hdrcellcommspf");
+}
+
+#[test]
+fn closing_a_deferred_reservation_denies_initialization_and_validation() {
+    let mut producer = TCache::producer("", 1 << 16);
+    let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+    let reference = producer
+        .uninitialized_sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, 3, 0)
+        .unwrap();
+    let pending = producer
+        .view_sub_reservation(reference)
+        .unwrap()
+        .claim(0)
+        .unwrap()
+        .write(b"cell", b"pf")
+        .unwrap();
+    let view = producer.view_sub_reservation(reference).unwrap();
+    view.close();
+    assert_eq!(view.initialize(b"hdr", b"").unwrap_err(), SubReservationError::Closed);
+    assert!(matches!(pending.acquire(&mut consumer), Err(SubReservationError::Closed)));
+}
+
 struct Harness {
     owner: Option<SubReservation>,
     consumer: Box<RandomAccessConsumer>,

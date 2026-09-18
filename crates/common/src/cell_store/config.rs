@@ -81,10 +81,12 @@ impl CellStoreConfig {
             .checked_mul(column_count)
             .and_then(|n| n.checked_mul(full_column_bytes))
             .ok_or(StoreError::CapacityOverflow)?;
-        // Full sidecars and assemblies share one ring. Headroom covers ingress
-        // duplicates, reservation headers, wrap padding, and bucket rounding.
-        let payload_bytes =
-            payload_bytes.checked_add(full_payload_bytes).ok_or(StoreError::CapacityOverflow)?;
+        // Speculative sets cannot spend the space needed for trusted replacements.
+        // Extra headroom covers ingress duplicates, wrap padding, and bucket rounding.
+        let payload_bytes = payload_bytes
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(full_payload_bytes))
+            .ok_or(StoreError::CapacityOverflow)?;
         let cache_bytes = payload_bytes
             .checked_add(payload_bytes / 2)
             .and_then(|n| n.checked_add(64 * 1024))
