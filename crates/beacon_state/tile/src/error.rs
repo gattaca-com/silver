@@ -307,8 +307,6 @@ pub enum AttestationError {
     IndexNonZero { idx: u64 },
     #[error("attestations list bad offsets: start={start} end={end} parent_len={parent_len}")]
     BadOffsets { start: usize, end: usize, parent_len: usize },
-    #[error("no shuffling supplied")]
-    MissingShuffling,
     #[error("gloas attestation processed without the block's parent slot")]
     MissingParentSlot,
     #[error("empty shuffling or zero committees_per_slot")]

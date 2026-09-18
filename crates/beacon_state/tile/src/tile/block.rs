@@ -20,7 +20,8 @@ use crate::{
     bls,
     error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
-    ssz_hash, stf,
+    ssz_hash::{self, PayloadRoots},
+    stf::{self, BlockInput},
 };
 
 pub(super) struct ParsedBlock {
@@ -31,6 +32,7 @@ pub(super) struct ParsedBlock {
     pub(super) is_gloas: bool,
     pub(super) parent_payload_status: PayloadStatus,
     pub(super) relay_eligible: bool,
+    pub(super) payload_roots: Option<PayloadRoots>,
 }
 
 struct AppliedBlock {
@@ -441,15 +443,19 @@ impl BeaconStateTile {
 
         let mut fork = self.state.apply_block_view(parent);
         let mut votes = self.stf_scratch.votes.take();
+        let input = BlockInput {
+            header: &parsed.header,
+            body: SignedBeaconBlockView::body(data),
+            payload_roots: parsed.payload_roots,
+            shuffling: &sref,
+        };
         let transition = stf::apply_block(
             &self.spec,
             &mut fork,
-            data,
-            &parsed.header,
-            Some(&sref),
+            &input,
             &mut self.stf_scratch,
-            &mut votes,
             &mut self.sig_batch,
+            &mut votes,
         );
         if let Err(e) = transition {
             self.stf_scratch.votes.recycle(votes);
@@ -613,7 +619,7 @@ impl BeaconStateTile {
             .and_then(|offsets| offsets.validate())
             .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
 
-        let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
+        let (body_root, payload_roots) = ssz_hash::hash_tree_root_body_with_roots(body, is_gloas);
 
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -730,6 +736,7 @@ impl BeaconStateTile {
             is_gloas,
             parent_payload_status,
             relay_eligible,
+            payload_roots,
         })
     }
 

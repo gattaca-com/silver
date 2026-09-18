@@ -27,12 +27,24 @@ impl FixedContainer for WithdrawalView {
     }
 }
 
+/// Most of a payload's hashing cost; surfaced so the STF's payload header
+/// reuses them instead of hashing the same bytes twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayloadRoots {
+    pub transactions: B256,
+    pub withdrawals: B256,
+}
+
 /// hash_tree_root for ExecutionPayload from raw SSZ bytes.
 /// 17 fields → 32 leaves.
-#[timed]
 pub fn hash_execution_payload(data: &[u8]) -> B256 {
+    hash_execution_payload_with_roots(data).0
+}
+
+#[timed]
+pub fn hash_execution_payload_with_roots(data: &[u8]) -> (B256, Option<PayloadRoots>) {
     if data.len() < 528 {
-        return ZERO_HASH;
+        return (ZERO_HASH, None);
     }
 
     let b256 = |off: usize| -> B256 { data[off..off + 32].try_into().unwrap() };
@@ -87,7 +99,8 @@ pub fn hash_execution_payload(data: &[u8]) -> B256 {
         uint64_chunk(u64le(512)),
         uint64_chunk(u64le(520)),
     ];
-    merkleize(&fields)
+    let roots = PayloadRoots { transactions: transactions_root, withdrawals: withdrawals_root };
+    (merkleize(&fields), Some(roots))
 }
 
 /// hash_tree_root for List[Transaction, MAX_TRANSACTIONS_PER_PAYLOAD].

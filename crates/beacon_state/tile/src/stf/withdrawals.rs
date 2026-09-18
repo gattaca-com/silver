@@ -8,7 +8,7 @@ use silver_common::ssz_view::{ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalV
 
 use crate::{
     error::{ExecutionPayloadError, Result, WithdrawalRecord, WithdrawalsError},
-    ssz_hash,
+    ssz_hash::{self, PayloadRoots},
     stf::MIN_ACTIVATION_BALANCE,
     validate,
 };
@@ -24,12 +24,20 @@ pub fn process_execution_payload(
     cfg: &SpecConfig,
     payload_bytes: &[u8],
     block_slot: Slot,
+    payload_roots: Option<PayloadRoots>,
 ) -> Result<(), ExecutionPayloadError> {
     if payload_bytes.len() < 528 {
         return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
     }
 
     validate::validate_execution_payload(cfg, view, payload_bytes, block_slot)?;
+
+    let roots = payload_roots.unwrap_or_else(|| PayloadRoots {
+        transactions: ssz_hash::hash_transactions_from_payload(payload_bytes),
+        withdrawals: ssz_hash::hash_withdrawals_from_payload(payload_bytes),
+    });
+    debug_assert_eq!(roots.transactions, ssz_hash::hash_transactions_from_payload(payload_bytes));
+    debug_assert_eq!(roots.withdrawals, ssz_hash::hash_withdrawals_from_payload(payload_bytes));
 
     let slot = &mut view.slot;
 
@@ -62,8 +70,8 @@ pub fn process_execution_payload(
         extra_data,
         base_fee_per_gas: *ExecutionPayloadView::base_fee_per_gas(payload_bytes),
         block_hash: *ExecutionPayloadView::block_hash(payload_bytes),
-        transactions_root: ssz_hash::hash_transactions_from_payload(payload_bytes),
-        withdrawals_root: ssz_hash::hash_withdrawals_from_payload(payload_bytes),
+        transactions_root: roots.transactions,
+        withdrawals_root: roots.withdrawals,
         blob_gas_used: ExecutionPayloadView::blob_gas_used(payload_bytes),
         excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
     };

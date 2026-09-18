@@ -10,7 +10,7 @@ use silver_beacon_state::{
     bls::SigBatch,
     stf::{self, ShufflingRef},
 };
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{BeaconBlockHeader, SLOTS_PER_EPOCH};
 
 fn operations_handler(
     handler_name: &str,
@@ -209,7 +209,7 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
             &p.validators.reader(),
             &list,
             block_slot,
-            Some(&sref),
+            &sref,
             &mut batch,
         )
         .is_err()
@@ -233,7 +233,7 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
             block_slot,
             parent_slot,
             proposer_index,
-            Some(&sref),
+            &sref,
             &mut votes_sink,
             &mut active_scratch,
         )
@@ -372,7 +372,7 @@ fn fulu_execution_payload() {
             let payload = &op[exec_off..bls_off];
             let block_slot = s.slot();
             s.with_view(|view| {
-                let _ = stf::process_execution_payload(view, &cfg, payload, block_slot);
+                let _ = stf::process_execution_payload(view, &cfg, payload, block_slot, None);
                 let _ = stf::process_withdrawals_fulu(view, payload);
             });
         }
@@ -551,8 +551,13 @@ fn fulu_block_header() {
         let body_off = u32::from_le_bytes(op[80..84].try_into().unwrap()) as usize;
         let body = if body_off <= op.len() { &op[body_off..] } else { &[] };
         let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body_fulu(body);
-        s.with_view_and_epoch(|view, e| {
-            stf::process_block_header(view, e, slot, proposer_index, parent_root, body_root).is_ok()
-        })
+        let header = BeaconBlockHeader {
+            slot,
+            proposer_index,
+            parent_root,
+            state_root: [0u8; 32],
+            body_root,
+        };
+        s.with_view_and_epoch(|view, e| stf::process_block_header(view, e, &header).is_ok())
     });
 }

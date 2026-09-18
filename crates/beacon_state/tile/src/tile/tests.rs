@@ -3687,6 +3687,7 @@ impl ThreeForks {
             is_gloas: false,
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
+            payload_roots: None,
         };
         self.tile.held.stage(StagedBlock::with_state_id(parsed, id, msg.ssz, BlockSource::Gossip));
         id
