@@ -494,6 +494,13 @@ pub enum PeerEvent {
         topic: GossipTopic,
         hash: MessageId,
     },
+    ColumnVerdict {
+        p2p_peer: usize,
+        block_root: [u8; 32],
+        column: u64,
+        recv_ts: Nanos,
+        accepted: bool,
+    },
     P2pGossipInvalidControl {
         p2p_peer: usize,
     },

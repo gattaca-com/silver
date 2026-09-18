@@ -19,6 +19,9 @@ use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
 const COMMITMENT_EPOCHS: usize = 4;
 const MAX_COMMITMENT_ROOTS: usize = 2 * COMMITMENT_EPOCHS * SLOTS_PER_EPOCH as usize;
 
+mod partial;
+pub(crate) use partial::HeaderOutcome;
+
 /// A sidecar with the provenance its validation needs. Carrying `recv_ts` is
 /// what lets a column buffered before its block still report its own receive
 /// time rather than the drain's.
@@ -99,6 +102,7 @@ pub(crate) struct ColumnValidator {
     // slot each sits at — parent-seen and parent-slot checks beyond the head
     // fork.
     validated_block_roots: Wheel<BlockRoot, u64, 16>,
+    partial_parents: partial::PartialParents,
 }
 
 impl ColumnValidator {
@@ -114,6 +118,7 @@ impl ColumnValidator {
             ticker,
             gloas_commitments: Wheel::new(epoch_duration),
             validated_block_roots: Wheel::new(epoch_duration),
+            partial_parents: partial::PartialParents::new(epoch_duration * 2),
         }
     }
 
@@ -132,6 +137,11 @@ impl ColumnValidator {
     pub fn note_rejected(&mut self, block_root: &BlockRoot) {
         self.validated_block_roots.remove(block_root);
         self.gloas_commitments.remove(block_root);
+        self.partial_parents.remember(*block_root, None);
+    }
+
+    pub fn cache_parent_state_root(&mut self, block_root: BlockRoot, buffer: &[u8]) {
+        self.partial_parents.remember(block_root, Some(*SignedBeaconBlockView::state_root(buffer)));
     }
 
     #[cfg(test)]
@@ -186,6 +196,7 @@ impl ColumnValidator {
     }
 
     pub fn rotate(&mut self, now: Instant) {
+        self.partial_parents.prune(now);
         self.gloas_commitments.maybe_rotate(now);
         self.validated_block_roots.maybe_rotate(now);
     }

@@ -30,5 +30,12 @@ crate::declare_counters! {
         CellStoreExpired,
         CellStoreFull,
         CellStoreCacheFull,
+        PartialCellsQueued,
+        PartialCellsAccepted,
+        PartialCellsRejected,
+        PartialCellsIgnored,
+        PartialHeadersQueued,
+        PartialHeadersAccepted,
+        PartialHeadersRejected,
     }
 }

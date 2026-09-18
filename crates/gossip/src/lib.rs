@@ -15,7 +15,10 @@ pub use control::{
     copy_subscribes_to_protobuf_output, copy_unsubscribes_to_protobuf_output,
 };
 pub use handler::GossipHandler;
-pub use partial::{ColumnGroupKey, PartialFrame, PartialMetadataReceived, PartsMetadata};
+pub use partial::{
+    ColumnGroupKey, ColumnIngress, PartialFrame, PartialInbound, PartialMetadataReceived,
+    PartsMetadata,
+};
 use silver_common::{GossipMsgOut, NewGossipMsg, PeerEvent};
 
 /// Events emitted by the GossipHandler.

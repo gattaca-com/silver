@@ -1,8 +1,8 @@
 use std::str;
 
+pub use silver_common::cell_store::ColumnGroupKey;
 use silver_common::{
-    ForkName, GossipDomain, GossipTopic, P2pStreamId,
-    cell_store::ColumnAvailability,
+    ForkName, GossipTopic, P2pStreamId,
     ssz_view::partial_column::{
         FULU_GROUP_ID_SIZE, GLOAS_GROUP_ID_SIZE, PARTIAL_COLUMNS_VERSION_BYTE,
         PartialDataColumnPartsMetadataView,
@@ -12,17 +12,9 @@ use silver_common::{
 use super::PartsMetadata;
 use crate::{generated::PartialMessagesExtensionView, handler::ActiveDomains};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ColumnGroupKey {
-    pub domain: GossipDomain,
-    pub block_root: [u8; 32],
-    pub column: u64,
-}
-
-impl From<ColumnAvailability> for ColumnGroupKey {
-    fn from(column: ColumnAvailability) -> Self {
-        Self { domain: column.domain, block_root: column.block_root, column: column.column as u64 }
-    }
+pub(super) struct PartialGroup {
+    pub group: ColumnGroupKey,
+    pub slot: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -37,6 +29,23 @@ impl PartialMetadataReceived {
     pub(crate) fn decode(
         partial: &PartialMessagesExtensionView<'_>,
         stream_id: P2pStreamId,
+        domains: &ActiveDomains,
+    ) -> Option<Self> {
+        let PartialGroup { group, slot } = PartialGroup::decode(partial, domains)?;
+        let (available, requests, n_rows) =
+            PartialDataColumnPartsMetadataView::decode(partial.parts_metadata?)?;
+        Some(Self {
+            stream_id,
+            group,
+            slot,
+            metadata: PartsMetadata { available, requests, n_rows },
+        })
+    }
+}
+
+impl PartialGroup {
+    pub(super) fn decode(
+        partial: &PartialMessagesExtensionView<'_>,
         domains: &ActiveDomains,
     ) -> Option<Self> {
         let (topic, domain) = domains.parse(str::from_utf8(partial.topic_id?).ok()?).ok()?;
@@ -55,13 +64,9 @@ impl PartialMetadataReceived {
             }
             _ => return None,
         };
-        let (available, requests, n_rows) =
-            PartialDataColumnPartsMetadataView::decode(partial.parts_metadata?)?;
         Some(Self {
-            stream_id,
             group: ColumnGroupKey { domain, block_root: group_id[1..33].try_into().ok()?, column },
             slot,
-            metadata: PartsMetadata { available, requests, n_rows },
         })
     }
 }
@@ -69,7 +74,7 @@ impl PartialMetadataReceived {
 #[cfg(test)]
 mod tests {
     use silver_common::{
-        StreamProtocol,
+        GossipDomain, StreamProtocol,
         ssz_view::partial_column::{
             fulu_group_id, gloas_group_id, parts_metadata_len, write_parts_metadata,
         },

@@ -125,7 +125,11 @@ impl PeerManager {
         peer.msg_cache_insert(hash);
     }
 
-    fn credit_mesh_delivery(&mut self, conn: usize, topic: GossipTopic) -> Option<PeerId> {
+    pub(super) fn credit_mesh_delivery(
+        &mut self,
+        conn: usize,
+        topic: GossipTopic,
+    ) -> Option<PeerId> {
         if !self.mesh.get(&topic).is_some_and(|meshes| meshes.contains(conn)) {
             return None;
         }
@@ -184,16 +188,20 @@ impl PeerManager {
         // we just got another copy from someone else first.
         self.promises.remove(&msg_hash);
 
-        if let Some(peer) = self.peers.get_mut(&sender_conn) {
+        if !matches!(topic, GossipTopic::DataColumnSidecar(_)) &&
+            let Some(peer) = self.peers.get_mut(&sender_conn)
+        {
             let t = peer.topic_stats.entry(topic).or_default();
             // P2 — first-delivery credit (capped + weighted in `compute_score`).
             t.first_deliveries += 1.0;
         }
 
-        let credited_peer = self.credit_mesh_delivery(sender_conn, topic);
-        if scoring::p3_scored(&topic) {
-            self.recent_deliveries
-                .insert(msg_hash, RecentDelivery::new(topic, recv_ts, credited_peer));
+        if !matches!(topic, GossipTopic::DataColumnSidecar(_)) {
+            let credited_peer = self.credit_mesh_delivery(sender_conn, topic);
+            if scoring::p3_scored(&topic) {
+                self.recent_deliveries
+                    .insert(msg_hash, RecentDelivery::new(topic, recv_ts, credited_peer));
+            }
         }
 
         self.fan_out_idontwant(topic, sender_conn, idontwant, emit);
@@ -352,6 +360,7 @@ impl PeerManager {
     }
 
     pub(super) fn heartbeat(&mut self, now: Instant) {
+        self.column_deliveries.expire(now);
         // Reset per-heartbeat rate-limit counters on every live peer.
         for peer in self.peers.values_mut() {
             peer.ihaves_received = 0;

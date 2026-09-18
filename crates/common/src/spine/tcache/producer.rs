@@ -96,11 +96,22 @@ impl Producer {
         prefix: &[u8],
         middle: &[u8],
     ) -> Result<SubReservationRef, SubReservationError> {
+        let reference = self.uninitialized_sub_reservation(layout, prefix.len(), middle.len())?;
+        self.view_sub_reservation(reference)?.initialize(prefix, middle)?;
+        Ok(reference)
+    }
+
+    pub fn uninitialized_sub_reservation(
+        &mut self,
+        layout: SubLayout,
+        prefix_len: usize,
+        middle_len: usize,
+    ) -> Result<SubReservationRef, SubReservationError> {
         let length = layout
-            .reservation_bytes(prefix.len(), middle.len())
+            .reservation_bytes(prefix_len, middle_len)
             .ok_or(SubReservationError::InvalidLayout)?;
         let reservation = self.reserve(length, false).ok_or(SubReservationError::CacheFull)?;
-        Ok(SubReservationRef::new(reservation, layout, prefix, middle))
+        Ok(SubReservationRef::new(reservation, layout, prefix_len, middle_len))
     }
 }
 
