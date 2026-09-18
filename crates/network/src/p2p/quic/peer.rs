@@ -163,7 +163,7 @@ impl Peer {
         &mut self,
         msg: TRead,
         rpc_codec_pool: &mut RpcCodecPool,
-    ) -> SendResult {
+    ) -> SendResult<OutboundGossip> {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
@@ -178,10 +178,11 @@ impl Peer {
     pub(crate) fn send_segmented_gossip(
         &mut self,
         frame: CacheFrameRef,
+        partial_cells: Option<u8>,
         context: &mut Context,
         limits: &SegmentedGossipLimits,
         rpc_codec_pool: &mut RpcCodecPool,
-    ) -> SendResult {
+    ) -> SendResult<OutboundGossip> {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
@@ -193,14 +194,15 @@ impl Peer {
             .acquire(&mut context.gossip_consumer, now)
             .ok()
             .and_then(|view| limits.acquire(view, context, &self.outbound_lease_wheel, now));
-        let Some(frame) = acquired else {
+        let Some(mut acquired) = acquired else {
             crate::NetworkCounters::CacheSegmentedRejected.inc();
-            return SendResult::MessageDropped;
+            return SendResult::Dropped(None);
         };
-        self.queue_gossip(OutboundGossip::Segmented(frame))
+        acquired.partial_cells = partial_cells;
+        self.queue_gossip(OutboundGossip::Segmented(acquired))
     }
 
-    fn queue_gossip(&mut self, msg: OutboundGossip) -> SendResult {
+    fn queue_gossip(&mut self, msg: OutboundGossip) -> SendResult<OutboundGossip> {
         self.dirty = true;
         let stream_id = match self.outbound_gossip {
             Some(id) => id,
@@ -216,7 +218,7 @@ impl Peer {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
                 stream.needs_spin = true;
-                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+                return dropped.map_or(SendResult::Ok, |msg| SendResult::Dropped(Some(msg)));
             }
         }
         SendResult::StreamCreationError
@@ -250,7 +252,7 @@ impl Peer {
             if let OutboundBuffer::Cluster(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
                 stream.needs_spin = true;
-                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+                return dropped.map_or(SendResult::Ok, |_| SendResult::Dropped(None));
             }
         }
         SendResult::StreamCreationError
@@ -273,7 +275,7 @@ impl Peer {
         false
     }
 
-    pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult {
+    pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult<AcquiredRpcOutbound> {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
@@ -306,7 +308,7 @@ impl Peer {
         if let OutboundBuffer::Rpc(buffer) = &mut stream.out_buffer {
             let dropped = buffer.add_msg(msg);
             stream.needs_spin = true;
-            return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
+            return dropped.map_or(SendResult::Ok, |msg| SendResult::Dropped(Some(msg)));
         }
         SendResult::StreamCreationError
     }
@@ -1215,18 +1217,15 @@ impl<T> OutBuffer<T> {
         seq & (self.len - 1)
     }
 
-    /// Returns `true` if adding the new message dropped the oldest queued
-    /// message.
-    fn add_msg(&mut self, msg: T) -> bool {
-        let dropped = self.head - self.tail == self.msgs.len();
-        if dropped {
+    fn add_msg(&mut self, msg: T) -> Option<T> {
+        if self.head - self.tail == self.msgs.len() {
             // Full: pos(head) == pos(tail), so the overwrite below replaces
             // the oldest message. Advance tail with it — otherwise head/tail
             // desync and is_empty() reports non-empty while pop() yields
             // None, leaving the stream flagged needs_spin forever.
             self.tail += 1;
         }
-        self.msgs[self.pos(self.head)].replace(msg);
+        let dropped = self.msgs[self.pos(self.head)].replace(msg);
         self.head += 1;
         dropped
     }
@@ -1261,7 +1260,8 @@ mod tests {
     use mio::{Poll, Token};
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
     use silver_common::{
-        CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, Keypair, TCache, TCacheProducer,
+        CacheFrameError, CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut,
+        Keypair, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCache, TCacheProducer,
         TConsumer, TProducer,
     };
 
@@ -1282,12 +1282,12 @@ mod tests {
 
         let mut buf = OutBuffer::new(4);
         for i in 0..4usize {
-            assert!(!buf.add_msg(Item(i)));
+            assert!(buf.add_msg(Item(i)).is_none());
         }
 
         // Two overwrites drop the two oldest messages.
-        assert!(buf.add_msg(Item(4)));
-        assert!(buf.add_msg(Item(5)));
+        assert_eq!(buf.add_msg(Item(4)).map(|item| item.0), Some(0));
+        assert_eq!(buf.add_msg(Item(5)).map(|item| item.0), Some(1));
         assert_eq!(buf.len(), 4);
 
         let drained: Vec<_> = std::iter::from_fn(|| buf.pop()).map(|u| u.0).collect();
@@ -1296,7 +1296,7 @@ mod tests {
         assert!(buf.pop().is_none());
 
         // Buffer must remain usable after an overflow episode.
-        assert!(!buf.add_msg(Item(6)));
+        assert!(buf.add_msg(Item(6)).is_none());
         assert_eq!(buf.pop().map(|u| u.0), Some(6));
         assert!(buf.is_empty());
     }
@@ -1390,12 +1390,15 @@ mod tests {
         let wheel = Box::new(OutboundLeaseWheel::new(t0));
         let mut buffer = OutBuffer::new(2);
 
-        assert!(!buffer.add_msg(wheel.leased(1u8, t0)));
-        assert!(!buffer.add_msg(wheel.leased(2u8, t0)));
+        assert!(buffer.add_msg(wheel.leased(1u8, t0)).is_none());
+        assert!(buffer.add_msg(wheel.leased(2u8, t0)).is_none());
         assert_eq!(wheel.active_count(), 2);
 
-        assert!(buffer.add_msg(wheel.leased(3u8, t0)));
-        assert_eq!(wheel.active_count(), 2, "overwrite must drop the oldest root lease");
+        let evicted = buffer.add_msg(wheel.leased(3u8, t0)).unwrap();
+        assert_eq!(*evicted, 1);
+        assert_eq!(wheel.active_count(), 3);
+        drop(evicted);
+        assert_eq!(wheel.active_count(), 2, "dropping the evicted message releases its lease");
 
         drop(buffer);
         assert_eq!(wheel.active_count(), 0);
@@ -1501,6 +1504,13 @@ mod tests {
     }
 
     impl PeerPair {
+        fn into_client(self) -> P2p {
+            let keypair = Keypair::from_secret(&[2u8; 32]).unwrap();
+            let mut endpoint = P2p::new(keypair, self.client_ep, 16, FxHashSet::default());
+            endpoint.peers.insert(self.client_peer.handle, self.client_peer);
+            endpoint
+        }
+
         fn new() -> Self {
             let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
             let client_addr: SocketAddr = "127.0.0.1:5001".parse().unwrap();
@@ -1813,7 +1823,7 @@ mod tests {
         let mut pair = PeerPair::new();
         let now = Instant::now();
 
-        assert_eq!(client_h.send_cluster(b"first", &mut pair.client_peer), SendResult::Ok);
+        assert!(matches!(client_h.send_cluster(b"first", &mut pair.client_peer), SendResult::Ok));
         let stream = pair.client_peer.cluster_stream.unwrap();
         assert_eq!(pair.client_peer.outbound_lease_wheel.active_count(), 1);
 
@@ -1834,7 +1844,7 @@ mod tests {
         assert_eq!(pair.client_peer.cluster_stream, None);
         assert_eq!(pair.client_peer.outbound_lease_wheel.active_count(), 0);
 
-        assert_eq!(client_h.send_cluster(b"second", &mut pair.client_peer), SendResult::Ok);
+        assert!(matches!(client_h.send_cluster(b"second", &mut pair.client_peer), SendResult::Ok));
         let replacement = pair.client_peer.cluster_stream.unwrap();
         assert_ne!(replacement, stream);
         assert!(pair.client_peer.streams.contains_key(&replacement));
@@ -2223,15 +2233,16 @@ mod tests {
             .into_iter(),
         )
         .unwrap();
-        assert_eq!(
+        assert!(matches!(
             pair.client_peer.send_segmented_gossip(
                 frame,
+                None,
                 &mut client_h.context,
                 &limits,
                 &mut client_h.rpc_codec_pool
             ),
             SendResult::Ok
-        );
+        ));
         client_h
             .context
             .data_columns_consumer
@@ -2240,7 +2251,9 @@ mod tests {
             .advance_retention(columns.next_seq());
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         let wire: Vec<_> = server_h.received.values().flatten().copied().collect();
-        assert_eq!(wire, announced(payload));
+        let mut expected = vec![0x1a, 4, 0x32, 2, 0x50, 1];
+        expected.extend_from_slice(payload);
+        assert_eq!(wire, expected);
         let now = Instant::now();
         for i in 0..200 {
             if pair.client_peer.outbound_lease_wheel.active_count() == 0 {
@@ -2272,22 +2285,208 @@ mod tests {
         )
         .unwrap();
         let peer = &mut pair.client_peer;
-        assert_eq!(
-            peer.send_segmented_gossip(frame, &mut h.context, &limits, &mut h.rpc_codec_pool),
+        assert!(matches!(
+            peer.send_segmented_gossip(frame, None, &mut h.context, &limits, &mut h.rpc_codec_pool),
             SendResult::Ok
-        );
+        ));
         let id = peer.outbound_gossip.unwrap();
         peer.streams.get_mut(&id).unwrap().out_buffer = OutboundBuffer::Gossip(OutBuffer::new(1));
         assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
-        for expected in [SendResult::Ok, SendResult::MessageDropped, SendResult::MessageDropped] {
-            assert_eq!(
-                peer.send_segmented_gossip(frame, &mut h.context, &limits, &mut h.rpc_codec_pool),
-                expected
+        let mut previous = frame;
+        for i in 0..3 {
+            let frame = CacheFrameRef::write(
+                &mut h.gossip_out_producer,
+                Instant::now() + Duration::from_secs(1),
+                b"payload",
+                [CacheSegment::Framing { offset: 0, length: 7 }].into_iter(),
+            )
+            .unwrap();
+            let result = peer.send_segmented_gossip(
+                frame,
+                None,
+                &mut h.context,
+                &limits,
+                &mut h.rpc_codec_pool,
             );
+            if i == 0 {
+                assert!(matches!(result, SendResult::Ok));
+            } else {
+                let SendResult::Dropped(Some(dropped)) = result else {
+                    panic!("expected the evicted segmented frame");
+                };
+                let P2pSend::SegmentedGossip { frame: dropped, .. } =
+                    dropped.into_message(peer.handle.0)
+                else {
+                    panic!("expected a segmented message");
+                };
+                assert_eq!(dropped.read().seq(), previous.read().seq());
+            }
             assert_eq!(peer.outbound_lease_wheel.active_count(), 1);
+            previous = frame;
         }
         peer.clear_streams(&mut h.rpc_codec_pool);
         assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn endpoint_gossip_overflow_returns_the_evicted_variant_and_descriptor() {
+        let mut h = PeerHarness::new();
+        h.context.gossip_consumer =
+            h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        let pair = PeerPair::new();
+        let handle = pair.client_peer.handle;
+        let mut endpoint = pair.into_client();
+        let peer = endpoint.peers.get_mut(&handle).unwrap();
+        let stream = peer.open_stream(StreamProtocol::GossipSubV13).unwrap();
+        peer.outbound_gossip = Some(stream);
+        peer.streams.get_mut(&stream).unwrap().out_buffer =
+            OutboundBuffer::Gossip(OutBuffer::new(1));
+
+        let mut reservation = h.gossip_out_producer.reserve(5, true).unwrap();
+        reservation.write_all(b"first").unwrap();
+        let first = GossipMsgOut { peer_id: handle.0, tcache: reservation.read() };
+        assert!(matches!(endpoint.enqueue_gossip(first, &mut h.context), SendResult::Ok));
+
+        let expires = Instant::now() + Duration::from_secs(1);
+        let frame = CacheFrameRef::write(
+            &mut h.gossip_out_producer,
+            expires,
+            b"second",
+            [CacheSegment::Framing { offset: 0, length: 6 }].into_iter(),
+        )
+        .unwrap();
+        let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) =
+            endpoint.enqueue_segmented_gossip(handle.0, frame, Some(7), &mut h.context)
+        else {
+            panic!("expected the evicted contiguous message");
+        };
+        assert_eq!(dropped.peer_id, handle.0);
+        assert_eq!(dropped.tcache.seq(), first.tcache.seq());
+
+        let mut reservation = h.gossip_out_producer.reserve(5, true).unwrap();
+        reservation.write_all(b"third").unwrap();
+        let third = GossipMsgOut { peer_id: handle.0, tcache: reservation.read() };
+        let SendResult::Dropped(Some(P2pSend::SegmentedGossip {
+            peer_id,
+            frame: dropped,
+            partial_cells,
+        })) = endpoint.enqueue_gossip(third, &mut h.context)
+        else {
+            panic!("expected the evicted segmented message");
+        };
+        assert_eq!(peer_id, handle.0);
+        assert_eq!(partial_cells, Some(7));
+        assert_eq!(dropped.read().seq(), frame.read().seq());
+        assert!(matches!(
+            dropped.acquire(&mut h.context.gossip_consumer, expires),
+            Err(CacheFrameError::Expired)
+        ));
+
+        let peer = endpoint.peers.get_mut(&handle).unwrap();
+        assert_eq!(peer.outbound_lease_wheel.active_count(), 1);
+        let OutboundBuffer::Gossip(buffer) = &mut peer.streams.get_mut(&stream).unwrap().out_buffer
+        else {
+            panic!("expected gossip buffer");
+        };
+        let P2pSend::Gossip(queued) = buffer.pop().unwrap().into_message(handle.0) else {
+            panic!("expected the replacement message to remain queued");
+        };
+        assert_eq!(queued.tcache.seq(), third.tcache.seq());
+        assert!(buffer.is_empty());
+        assert_eq!(peer.outbound_lease_wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn endpoint_rejected_gossip_returns_the_attempted_message() {
+        let mut h = PeerHarness::new();
+        h.context.gossip_consumer =
+            h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        let pair = PeerPair::new();
+        let handle = pair.client_peer.handle;
+        let mut endpoint = pair.into_client();
+
+        let mut reservation = h.gossip_out_producer.reserve(5, false).unwrap();
+        reservation.write_all(b"first").unwrap();
+        let msg = GossipMsgOut { peer_id: handle.0, tcache: reservation.read() };
+        let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) =
+            endpoint.enqueue_gossip(msg, &mut h.context)
+        else {
+            panic!("expected rejection of the incomplete message");
+        };
+        assert_eq!(dropped.peer_id, handle.0);
+        assert_eq!(dropped.tcache.seq(), msg.tcache.seq());
+
+        let frame = CacheFrameRef::write(
+            &mut h.gossip_out_producer,
+            Instant::now(),
+            b"expired",
+            [CacheSegment::Framing { offset: 0, length: 7 }].into_iter(),
+        )
+        .unwrap();
+        let SendResult::Dropped(Some(P2pSend::SegmentedGossip {
+            peer_id,
+            frame: dropped,
+            partial_cells,
+        })) = endpoint.enqueue_segmented_gossip(handle.0, frame, Some(3), &mut h.context)
+        else {
+            panic!("expected rejection of the expired frame");
+        };
+        assert_eq!(peer_id, handle.0);
+        assert_eq!(partial_cells, Some(3));
+        assert_eq!(dropped.read().seq(), frame.read().seq());
+        assert!(endpoint.peers[&handle].outbound_gossip.is_none());
+        assert_eq!(endpoint.peers[&handle].outbound_lease_wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn endpoint_rpc_overflow_returns_the_evicted_response() {
+        let mut h = PeerHarness::new();
+        let mut producer = TCache::producer("", TCACHE_BYTES);
+        h.context.rpc_consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let pair = PeerPair::new();
+        let handle = pair.client_peer.handle;
+        let mut endpoint = pair.into_client();
+        let peer = endpoint.peers.get_mut(&handle).unwrap();
+        let stream = peer.open_stream(StreamProtocol::BeaconBlocksByRoot).unwrap();
+        peer.streams.get_mut(&stream).unwrap().out_buffer = OutboundBuffer::Rpc(OutBuffer::new(1));
+        let stream_id =
+            P2pStreamId::new(handle.0, stream.into(), StreamProtocol::BeaconBlocksByRoot, false);
+
+        let mut reservation = producer.reserve(5, true).unwrap();
+        reservation.write_all(b"block").unwrap();
+        let read = reservation.read();
+        let first = RpcOutbound::Response(RpcResponseOutbound {
+            stream_id,
+            response: RpcResponse::BeaconBlock { fork_digest: [1; 4], ssz: read },
+        });
+        assert!(matches!(endpoint.enqueue_rpc_out(first, &mut h.context), SendResult::Ok));
+
+        let complete = RpcOutbound::Response(RpcResponseOutbound {
+            stream_id,
+            response: RpcResponse::Complete,
+        });
+        let SendResult::Dropped(Some(P2pSend::Rpc(RpcOutbound::Response(dropped)))) =
+            endpoint.enqueue_rpc_out(complete, &mut h.context)
+        else {
+            panic!("expected the evicted RPC response");
+        };
+        assert_eq!(dropped.stream_id, stream_id);
+        let RpcResponse::BeaconBlock { fork_digest, ssz } = dropped.response else {
+            panic!("expected the old block response, not its terminator");
+        };
+        assert_eq!(fork_digest, [1; 4]);
+        assert_eq!(ssz.seq(), read.seq());
+
+        let peer = endpoint.peers.get_mut(&handle).unwrap();
+        let OutboundBuffer::Rpc(buffer) = &mut peer.streams.get_mut(&stream).unwrap().out_buffer
+        else {
+            panic!("expected RPC buffer");
+        };
+        assert!(matches!(
+            buffer.pop().unwrap().into_message(handle.0),
+            RpcOutbound::Response(RpcResponseOutbound { response: RpcResponse::Complete, .. })
+        ));
+        assert!(buffer.is_empty());
     }
 
     #[test]

@@ -4,7 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile, tracing};
+use flux::{
+    spine::{SpineAdapter, SpineProducers},
+    tile::Tile,
+    tracing,
+};
 use flux_profiler::timed;
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
@@ -215,17 +219,16 @@ impl NetworkTile {
             }
 
             if !adapter.consume_one(|msg: P2pSend, producers| {
-                let rpc_request = matches!(&msg, P2pSend::Rpc(RpcOutbound::Request(_)));
                 let result = match msg {
                     P2pSend::Gossip(gossip_msg_out) => {
                         gossips += 1;
                         tracing::debug!(peer=gossip_msg_out.peer_id, "send gossip");
                         self.inner.enqueue_gossip(gossip_msg_out)
                     },
-                    P2pSend::SegmentedGossip { peer_id, frame } => {
+                    P2pSend::SegmentedGossip { peer_id, frame, partial_cells } => {
                         gossips += 1;
                         self.inner.p2p_endpoint.enqueue_segmented_gossip(
-                            peer_id, frame, &mut self.inner.context,
+                            peer_id, frame, partial_cells, &mut self.inner.context,
                         )
                     }
                     P2pSend::Identify(peer) => {
@@ -236,40 +239,45 @@ impl NetworkTile {
                         self.inner.enqueue_rpc_out(rpc_outbound)
                     },
                 };
-                match result {
-                    p2p::SendResult::Ok => {}
-                    p2p::SendResult::StreamCreationError | p2p::SendResult::StreamGone => {
-                        producers.peer_events.produce(
-                            &(PeerEvent::P2pCannotCreateStream {
-                                p2p_peer: msg.peer_id(),
-                                protocol: msg.protocol(),
-                                rpc_request,
-                                stream_gone: matches!(result, p2p::SendResult::StreamGone),
-                            }
-                            .into()),
+                let dropped = match result {
+                    SendResult::Ok => None,
+                    SendResult::Dropped(Some(msg)) => Some(msg),
+                    SendResult::Dropped(None) => {
+                        tracing::error!(
+                            peer = msg.peer_id(),
+                            protocol = ?msg.protocol(),
+                            "endpoint dropped a message without identifying it"
                         );
+                        None
                     }
-                    p2p::SendResult::MessageDropped => {
-                        producers.peer_events.produce(
-                            &(PeerEvent::P2pOutboundMessageDropped {
-                                p2p_peer: msg.peer_id(),
-                                protocol: msg.protocol(),
-                                rpc_request,
-                            }
-                            .into()),
-                        );
+                    SendResult::StreamCreationError | SendResult::StreamGone => {
+                        producers.produce(PeerEvent::P2pCannotCreateStream {
+                            p2p_peer: msg.peer_id(),
+                            protocol: msg.protocol(),
+                            stream_gone: matches!(result, SendResult::StreamGone),
+                        });
+                        Some(msg)
                     }
-                    p2p::SendResult::ConnectionClosing => {
+                    SendResult::ConnectionClosing => {
                         tracing::debug!(
                             peer = msg.peer_id(),
                             protocol = ?msg.protocol(),
                             "send refused: connection closing"
                         );
+                        Some(msg)
                     }
-                    p2p::SendResult::UnknownPeer => {
+                    SendResult::UnknownPeer => {
                         // Can happen if peer has disconnected.
                         tracing::debug!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");
-                    },
+                        Some(msg)
+                    }
+                };
+                if let Some(msg) = dropped {
+                    producers.produce(PeerEvent::P2pOutboundMessageDropped {
+                        p2p_peer: msg.peer_id(),
+                        protocol: msg.protocol(),
+                        msg,
+                    });
                 }
             }) {
                 break;

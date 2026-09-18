@@ -417,9 +417,6 @@ pub enum PeerEvent {
     P2pCannotCreateStream {
         p2p_peer: usize,
         protocol: StreamProtocol,
-        /// Failed send was an outbound RPC request: the PM must release the
-        /// `outbound_in_flight` slot admitted for it, else it leaks.
-        rpc_request: bool,
         /// Response targeted a stream already closed/reset, as opposed to
         /// stream-credit exhaustion opening a new request stream.
         stream_gone: bool,
@@ -440,10 +437,12 @@ pub enum PeerEvent {
         first_chunk_ms: u64,
         elapsed_ms: u64,
     },
+    /// A send was rejected or an older queued message was evicted.
+    /// This event owns send-failure accounting; stream errors are diagnostics.
     P2pOutboundMessageDropped {
         p2p_peer: usize,
         protocol: StreamProtocol,
-        rpc_request: bool,
+        msg: P2pSend,
     },
     P2pGossipTopicSubscribe {
         p2p_peer: usize,
@@ -787,7 +786,13 @@ pub enum RpcSeverity {
 #[allow(clippy::large_enum_variant)]
 pub enum P2pSend {
     Gossip(GossipMsgOut),
-    SegmentedGossip { peer_id: usize, frame: CacheFrameRef },
+    SegmentedGossip {
+        peer_id: usize,
+        frame: CacheFrameRef,
+        /// Count cells when Network finishes writing a partial response.
+        /// None for generic frames and best-effort availability withdrawals.
+        partial_cells: Option<u8>,
+    },
     Identify(usize),
     Rpc(RpcOutbound),
 }

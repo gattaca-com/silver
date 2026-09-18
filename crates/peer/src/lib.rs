@@ -4,7 +4,7 @@ mod manager;
 mod scoring;
 mod state;
 
-pub use manager::{PeerManager, RejectedRoots};
+pub use manager::{PartialPeer, PeerManager, RejectedRoots};
 pub use silver_config::SyncingConfig;
 
 silver_common::declare_counters! {

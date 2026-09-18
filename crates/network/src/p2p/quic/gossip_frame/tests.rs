@@ -257,7 +257,8 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     let warm = h.acquire(reference).unwrap();
     drop(warm);
     let before = ALLOCATIONS.with(Cell::get);
-    let frame = h.acquire(reference).unwrap();
+    let mut frame = h.acquire(reference).unwrap();
+    frame.partial_cells = Some(1);
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     let cell_ptr = assembly
         .acquire(h.context.data_columns_consumer.as_deref_mut().unwrap())

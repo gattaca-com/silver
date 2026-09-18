@@ -2,7 +2,8 @@ use std::{cell::Cell, ptr::NonNull, time::Instant};
 
 use bytes::Bytes;
 use silver_common::{
-    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, TRead,
+    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, GossipMsgOut, P2pSend,
+    TRead,
 };
 
 use super::{Leased, leased::OutboundLeaseWheel};
@@ -15,6 +16,19 @@ const MAX_RETAINED_OWNERS: usize = 8 * 1024;
 pub(crate) enum OutboundGossip {
     Contiguous(Leased<TRead>),
     Segmented(SegmentedFrame),
+}
+
+impl OutboundGossip {
+    pub(crate) fn into_message(self, peer_id: usize) -> P2pSend {
+        match self {
+            Self::Contiguous(read) => P2pSend::Gossip(GossipMsgOut { peer_id, tcache: read.read }),
+            Self::Segmented(frame) => P2pSend::SegmentedGossip {
+                peer_id,
+                frame: frame.segments.reference(),
+                partial_cells: frame.partial_cells,
+            },
+        }
+    }
 }
 
 pub(crate) struct SegmentedGossipLimits {
@@ -70,7 +84,7 @@ impl SegmentedGossipLimits {
         )?;
         NetworkCounters::CacheSegmentedAdmitted.inc();
         NetworkCounters::CacheSegmentedSegments.add(frame.segment_count() as u64);
-        Some(SegmentedFrame { segments: wheel.leased(frame, now), budget })
+        Some(SegmentedFrame { segments: wheel.leased(frame, now), budget, partial_cells: None })
     }
 
     pub(crate) fn publish_gauges(&self) {
@@ -90,6 +104,7 @@ impl Drop for SegmentedGossipLimits {
 
 #[derive(Debug)]
 pub(crate) struct SegmentedFrame {
+    pub(crate) partial_cells: Option<u8>,
     segments: Leased<AcquiredCacheFrame>,
     budget: FrameBudget,
 }
@@ -116,7 +131,7 @@ pub(crate) struct SegmentedWriter {
 impl SegmentedWriter {
     pub(crate) fn chunk(&mut self) -> Option<&mut Bytes> {
         if self.current.is_empty() {
-            let SegmentedFrame { segments, budget } = &mut self.frame;
+            let SegmentedFrame { segments, budget, .. } = &mut self.frame;
             self.current = match segments.take_next()? {
                 AcquiredCacheSegment::Framing(range) => {
                     if self.descriptor.is_empty() {
@@ -134,6 +149,17 @@ impl SegmentedWriter {
         assert!(bytes <= self.remaining);
         self.remaining -= bytes;
         self.remaining == 0
+    }
+
+    pub(crate) fn complete(&mut self) {
+        assert_eq!(self.remaining, 0);
+        if let Some(cells) = self.frame.partial_cells.take() {
+            NetworkCounters::PartialFramesWritten.inc();
+            if cells != 0 {
+                NetworkCounters::PartialResponsesSent.inc();
+                NetworkCounters::PartialCellsServed.add(cells as u64);
+            }
+        }
     }
 }
 
