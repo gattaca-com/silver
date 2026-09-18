@@ -156,18 +156,19 @@ impl PartialExchange {
             self.columns & (1u128 << group.column) == 0 ||
             message.metadata.n_rows == 0 ||
             message.metadata.n_rows > self.max_rows ||
-            message.slot.is_some_and(|s| s != slot) ||
-            peers
-                .partial_peer(
-                    message.stream_id.peer(),
-                    GossipTopic::DataColumnSidecar(group.column),
-                    group.domain.digest(),
-                )
-                .is_none()
+            message.slot.is_some_and(|s| s != slot)
         {
             ControlCounters::PartialMetadataIgnored.inc();
             return;
         }
+        let Some(peer) = peers.partial_peer(
+            message.stream_id.peer(),
+            GossipTopic::DataColumnSidecar(group.column),
+            group.domain.digest(),
+        ) else {
+            ControlCounters::PartialMetadataIgnored.inc();
+            return;
+        };
         let column = ingress.availability(&group.block_root, group.column as usize, now);
         if column.is_some_and(|c| {
             c.domain != group.domain ||
@@ -185,7 +186,10 @@ impl PartialExchange {
         if exchange.remote.is_some() {
             ControlCounters::PartialMetadataReplaced.inc();
         }
-        exchange.replace(message.metadata, message.slot);
+        let requested = exchange.replace(message.metadata, message.slot);
+        if peer.requests && requested != 0 {
+            ControlCounters::PartialCellsRequested.add(requested as u64);
+        }
         if column.is_some() && group.domain.format() == ForkName::Fulu {
             self.headers.known(key.peer, group);
         }
