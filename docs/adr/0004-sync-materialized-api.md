@@ -142,15 +142,25 @@ transition, and import. RPC imports remain silent because they do not
 request relay. This deliberately narrows the Beacon API's validation
 contract to Silver's publication policy.
 
-`data_column_sidecar` follows `DataColumnsEvent::Persist`. The API uses the
-receipt's slot, block root, and column index directly. It does not read
-sidecar bytes or require a separate gossip publication request. `Available`
-does not trigger a sidecar event.
+`data_column_sidecar` follows `DataColumnsEvent::Validated`, emitted once per
+validated block root and column index. The API uses the receipt's slot,
+block root, and column index directly. It reads sidecar bytes through the
+receipt's SSZ handle and cache identity to extract commitments. Gossip, RPC,
+EL reconstruction, and partial-column assembly share this path. Neither
+`Available` nor `Persist` triggers a sidecar event.
+
+Fulu events include the sidecar's ordered commitment list as `kzg_commitments`.
+Each 48-byte commitment is encoded as a 0x-prefixed string of 96 hexadecimal
+digits. This follows the
+[beacon-APIs v4.0.0 event format](https://github.com/ethereum/beacon-APIs/blob/v4.0.0/apis/eventstream/index.yaml).
+Gloas sidecars carry no commitments, so their events omit the field, matching
+[v5.0.0-alpha.2](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/eventstream/index.yaml).
+If sidecar bytes are unavailable, the API logs a warning and emits no event.
 
 Block gossip events acknowledge publication requests; they do not guarantee
-delivery to peers. Sidecar events acknowledge persistence requests, not
-completed disk writes. Repeated notifications are not deduplicated. The
-beacon, peer, and data-column event queues establish no shared ordering.
+delivery to peers. Sidecar events acknowledge validation, not completed disk
+writes or peer delivery. The API does not deduplicate repeated receipts.
+The beacon, peer, and data-column event queues establish no shared ordering.
 
 ### Reading block publication data
 

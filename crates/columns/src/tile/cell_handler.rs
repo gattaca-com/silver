@@ -276,6 +276,8 @@ impl CellHandler {
                     column_index: column as u64,
                     slot: available.slot,
                     origin: ColumnOrigin::Assembly,
+                    ssz,
+                    ssz_cache: SszCache::DataColumns,
                 },
                 recv_ts,
             );

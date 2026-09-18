@@ -239,6 +239,8 @@ impl ElBlobFetcher {
                             column_index: j,
                             slot: pending.slot,
                             origin: ColumnOrigin::El,
+                            ssz: reservation.read(),
+                            ssz_cache: SszCache::El,
                         });
                         producers.produce(DataColumnsEvent::Persist {
                             ssz: reservation.read(),

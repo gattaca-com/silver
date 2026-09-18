@@ -21,7 +21,7 @@ use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer,
+    APP_NAME, Enr, ProtoIdentify, SilverSpine, SszCache, TCache, TCacheProducer,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
@@ -109,6 +109,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
     let persist_rpc_consumer_dc =
         incoming_rpc_producer.cache_ref().random_access("dc_persist_incoming_rpc", true)?;
+    let incoming_rpc_consumer_api =
+        incoming_rpc_producer.cache_ref().random_access("api_incoming_rpc", true)?;
     let incoming_rpc_consumer_eng =
         incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
     let incoming_rpc_consumer_ctl =
@@ -143,6 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // engine producer
     let el_producer = TCache::producer("el_data_columns", 1 << 25);
+    let el_columns_consumer_api = el_producer.cache_ref().random_access("api_el_columns", true)?;
     let el_columns_consumer = el_producer.cache_ref().random_access("el_data_columns", true)?;
     let el_columns_consumer_ctl =
         el_producer.cache_ref().random_access("ctl_el_data_columns", true)?;
@@ -270,6 +273,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .as_ref()
         .map(|_| data_columns_producer.cache_ref().retained_random_access("columns_cells"))
         .transpose()?;
+    let api_data_columns_consumer =
+        data_columns_producer.cache_ref().random_access("api_data_columns", true)?;
     let storage_data_columns_consumer =
         data_columns_producer.cache_ref().random_access("storage_cells", true)?;
     p2p_context.data_columns_consumer = cell_config
@@ -418,7 +423,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
-        ssz_gossip_consumer_api,
+        [
+            (SszCache::Gossip, ssz_gossip_consumer_api),
+            (SszCache::Rpc, incoming_rpc_consumer_api),
+            (SszCache::El, el_columns_consumer_api),
+            (SszCache::DataColumns, api_data_columns_consumer),
+        ]
+        .into_iter()
+        .collect(),
         outgoing_rpc_consumer_api,
     );
 

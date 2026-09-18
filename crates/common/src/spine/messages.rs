@@ -1356,7 +1356,14 @@ pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
     /// A column passed validation. Once per (block_root, column_index).
-    Validated { block_root: [u8; 32], column_index: u64, slot: u64, origin: ColumnOrigin },
+    Validated {
+        block_root: [u8; 32],
+        column_index: u64,
+        slot: u64,
+        origin: ColumnOrigin,
+        ssz: TCacheRead,
+        ssz_cache: SszCache,
+    },
     /// Bytes for storage to write. A repeat offer is allowed; storage dedups.
     Persist {
         ssz: TCacheRead,
