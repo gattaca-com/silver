@@ -859,8 +859,8 @@ mod tests {
         TCacheProducer, TCacheRead, block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
-            DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, NUMBER_OF_COLUMNS,
-            SIGNED_BEACON_BLOCK_MIN,
+            BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
+            NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN,
         },
         test_util::ShmemDir,
     };
@@ -886,6 +886,8 @@ mod tests {
         _dir: ShmemDir,
     }
 
+    const TCACHE_LEN: usize = 1024 * 1024;
+
     struct Injector;
 
     impl Tile<SilverSpine> for Injector {
@@ -908,18 +910,36 @@ mod tests {
             Self::with_state(custody, state.reader(), spec)
         }
 
+        fn with_el_cache(custody: u128, el_cache_len: usize) -> Self {
+            Self::build(
+                custody,
+                BeaconStateOwner::empty_test(0).reader(),
+                SpecConfig::mainnet(),
+                el_cache_len,
+            )
+        }
+
         fn with_state(custody: u128, beacon_state: BeaconStateReader, spec: SpecConfig) -> Self {
+            Self::build(custody, beacon_state, spec, TCACHE_LEN)
+        }
+
+        fn build(
+            custody: u128,
+            beacon_state: BeaconStateReader,
+            spec: SpecConfig,
+            el_cache_len: usize,
+        ) -> Self {
             let gossip_p = TCache::producer("gossip_blocks", 1024 * 1024);
             let gossip_consumer = gossip_p.cache_ref().random_access("gossip_cons", true).unwrap();
 
-            let persist_gossip_tc = TCache::producer("persist_gossip_blocks", 1024 * 1024);
+            let persist_gossip_tc = TCache::producer("persist_gossip_blocks", TCACHE_LEN);
             let persist_gossip_consumer =
                 persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
 
             let rpc_p = TCache::producer("rpc_blocks", 1024 * 1024);
             let rpc_consumer = rpc_p.cache_ref().random_access("rpc_cons", true).unwrap();
 
-            let persist_rpc_tc = TCache::producer("persist_rpc_blocks", 1024 * 1024);
+            let persist_rpc_tc = TCache::producer("persist_rpc_blocks", TCACHE_LEN);
             let persist_rpc_consumer =
                 persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
 
@@ -938,7 +958,7 @@ mod tests {
                 custody,
                 Arc::new(spec),
                 engine_resp_consumer,
-                TCache::producer("el_columns", 1024 * 1024),
+                TCache::producer("el_columns", el_cache_len),
                 SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
             );
 
@@ -1106,16 +1126,29 @@ mod tests {
         }
     }
 
-    /// Minimal fulu `SignedBeaconBlock` carrying blob commitments: message at
-    /// offset 100, body at 184, commitments spanning body[400..500).
+    /// Synthetic Fulu block for layout parsing, with one placeholder
+    /// commitment.
     fn blob_block_bytes(slot: u64) -> Vec<u8> {
         let mut block_bytes = vec![0u8; 784];
         block_bytes[0..4].copy_from_slice(&100u32.to_le_bytes());
         block_bytes[100..108].copy_from_slice(&slot.to_le_bytes());
         block_bytes[180..184].copy_from_slice(&84u32.to_le_bytes());
         block_bytes[184 + 388..184 + 392].copy_from_slice(&400u32.to_le_bytes());
-        block_bytes[184 + 392..184 + 396].copy_from_slice(&500u32.to_le_bytes());
+        block_bytes[184 + 392..184 + 396].copy_from_slice(&448u32.to_le_bytes());
         block_bytes
+    }
+
+    /// The zero blob supports cell computation. Its placeholder proofs are
+    /// copied into sidecars without verification on the EL reconstruction path.
+    fn el_blobs_frame() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.push(1);
+        out.push(NUMBER_OF_COLUMNS as u8);
+        out.resize(out.len() + NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF, 0);
+        out.extend_from_slice(&(c_kzg::BYTES_PER_BLOB as u32).to_le_bytes());
+        out.resize(out.len() + c_kzg::BYTES_PER_BLOB, 0);
+        out
     }
 
     /// Callers `acquire` the returned handle themselves: a `TRead` points back
@@ -1384,6 +1417,55 @@ mod tests {
             assert_eq!(slot, 42, "the need carries the slot the engine suppresses against");
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
             assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
+        }
+    }
+
+    /// A refused EL sidecar reservation must leave the column missing from the
+    /// tracker, without persistence, availability, or custody-completion
+    /// events.
+    #[test]
+    fn el_column_that_fails_to_write_is_not_recorded() {
+        let block_bytes = blob_block_bytes(42);
+        let block_root = util::block_root_fulu(&block_bytes);
+        // Keep the cache power-of-two sized but too small for one sidecar.
+        let too_small = util::data_column_sidecar_len(1).next_power_of_two() / 2;
+        let custody_count = CUSTODY_COLUMNS.count_ones() as usize;
+
+        for (el_cache_len, want_built, cache) in
+            [(too_small, false, "el_fail_block"), (TCACHE_LEN, true, "el_ok_block")]
+        {
+            let mut rig = Rig::with_el_cache(CUSTODY_COLUMNS, el_cache_len);
+            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
+            // Initialize channel cursors before publishing the response so it
+            // is not skipped on the first read.
+            rig.tile.loop_body(&mut rig.conn);
+            let (mut consumer, ssz) = produce_block(&block_bytes, cache);
+            let read = consumer.acquire(ssz);
+            rig.tile.beacon_block(
+                P2pStreamId::new(2, 2, StreamProtocol::GossipSub, true),
+                read,
+                &mut rig.conn.producers,
+            );
+            assert_eq!(
+                rig.drain().engine,
+                1,
+                "el_cache_len={el_cache_len}: expected a blob request"
+            );
+
+            rig.engine_blobs(block_root, 42, &el_blobs_frame());
+            rig.turn();
+            let out = rig.drain();
+
+            let (persisted, announced, still_owed) =
+                if want_built { (custody_count, 1, 0) } else { (0, 0, CUSTODY_COLUMNS) };
+            assert_eq!(out.receipts.len(), persisted, "el_cache_len={el_cache_len}");
+            assert_eq!(out.available, announced, "el_cache_len={el_cache_len}");
+            assert_eq!(out.custody_complete, announced, "el_cache_len={el_cache_len}");
+            assert_eq!(
+                rig.tile.tracker.to_request(&block_root),
+                still_owed,
+                "el_cache_len={el_cache_len}: the tracker holds only what was written"
+            );
         }
     }
 
