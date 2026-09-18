@@ -49,6 +49,12 @@ impl PeerView {
         self.claims.values().any(|c| c.head_slot > our_head_slot + cfg.head_lag_threshold_slots)
     }
 
+    /// Whether a peer claims a head at most the configured lag behind ours, or
+    /// ahead.
+    pub(super) fn any_peer_level_with(&self, our_head_slot: u64, cfg: &SyncingConfig) -> bool {
+        self.claims.values().any(|c| c.head_slot + cfg.head_lag_threshold_slots >= our_head_slot)
+    }
+
     pub(super) fn claims_span(&self, peer: usize, span: RangeInclusive<Slot>) -> bool {
         self.claims.get(&peer).is_some_and(|c| {
             c.head_slot >= *span.end() && c.earliest_available_slot <= *span.start()

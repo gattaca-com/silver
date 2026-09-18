@@ -387,6 +387,7 @@ mod tests {
         NodeStatus {
             head: HeadStatus { slot: 100, optimistic: false },
             head_root: [0x11; 32],
+            wall_slot: 100,
             finalized_epoch: 12_343,
             target: Some(SyncUpdate::Following),
             el: ELSyncStatus::Synced,
@@ -544,6 +545,30 @@ mod tests {
         assert_eq!(syncing_data(to_finalized)["sync_distance"], "28");
         let reached = NodeStatus { target: chasing(90), ..at_head(100) };
         assert_eq!(syncing_data(reached)["sync_distance"], "0", "target below the head");
+    }
+
+    /// Stalled distance uses the wall slot; sync status still comes from
+    /// Control.
+    #[test]
+    fn stalled_is_syncing_at_the_distance_to_the_wall_clock() {
+        let stalled = NodeStatus { target: Some(SyncUpdate::Stalled), wall_slot: 130, ..ready() };
+        let data = syncing_data(stalled);
+        assert_eq!(data["is_syncing"], true);
+        assert_eq!(data["sync_distance"], "30");
+
+        assert_eq!(
+            health_response(stalled, ""),
+            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n"
+        );
+        assert!(health_response(stalled, "syncing_status=200").starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+        let following = NodeStatus { wall_slot: 130, ..ready() };
+        assert_eq!(
+            syncing_data(following)["is_syncing"],
+            false,
+            "wall lag does not override Following"
+        );
+        assert_eq!(syncing_data(following)["sync_distance"], "0");
     }
 
     /// Every stubbed route answers 501 whatever the node's state: routed, so

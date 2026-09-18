@@ -208,7 +208,7 @@ impl PeerManager {
         built: SelfBuiltGossip,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.current_sync_target().is_following() {
+        if self.current_sync_target().is_syncing() {
             return;
         }
         let local = LOCAL_GOSSIP_STREAM_ID.peer();
@@ -372,9 +372,9 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{io::Write as _, time::Duration};
 
-    use silver_common::{PeerEvent, TCacheProducer};
+    use silver_common::{PeerEvent, SyncUpdate, TCache, TCacheProducer};
     use silver_config::ScoreParams;
 
     use super::*;
@@ -390,6 +390,59 @@ mod tests {
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();
         reservation.read()
+    }
+
+    #[test]
+    fn stalled_after_syncing_resumes_local_gossip_publication() {
+        let now = Instant::now();
+        let topic = GossipTopic::DataColumnSidecar(0);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
+            now,
+            &mut |event| cap.0.push(event),
+        );
+
+        let mut producer = TCache::producer("local_gossip", 1 << 14);
+        let payloads = [b"column".as_slice(), b"idontwant".as_slice()];
+        let [protobuf, idontwant] = payloads.map(|bytes| {
+            let mut reservation = producer.reserve(bytes.len(), true).unwrap();
+            reservation.write_all(bytes).unwrap();
+            reservation.read()
+        });
+        let built = SelfBuiltGossip {
+            msg_id: MessageId { id: [7; 20] },
+            domain: test_domain(),
+            protobuf,
+            idontwant,
+        };
+
+        for (target, should_publish) in [
+            (SyncUpdate::SyncingHead { head_slot: 200, head_root: [9; 32] }, false),
+            (SyncUpdate::Stalled, true),
+        ] {
+            mgr.set_sync_target(target);
+            cap.0.clear();
+            mgr.publish_local(topic, built, &mut |event| cap.0.push(event));
+            let sent: Vec<_> = cap
+                .0
+                .iter()
+                .filter_map(|event| match event {
+                    PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: 1, tcache })) => {
+                        Some(producer.read_buffer(*tcache).unwrap())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if should_publish {
+                for payload in payloads {
+                    assert!(sent.contains(&payload), "missing {payload:?} while {target:?}");
+                }
+            } else {
+                assert!(sent.is_empty());
+            }
+        }
     }
 
     #[test]

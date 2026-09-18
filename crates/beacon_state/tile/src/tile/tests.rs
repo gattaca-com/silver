@@ -571,6 +571,16 @@ impl Published {
             .collect()
     }
 
+    fn wall_slots(&self) -> Vec<Slot> {
+        self.0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::Status { wall_slot, .. } => Some(*wall_slot),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn transitions(&self) -> Vec<bool> {
         self.0
             .iter()
@@ -937,6 +947,24 @@ fn head_change_is_classified_against_the_last_complete_status() {
 
     rig.tile.publish_status(&mut rig.adapter.producers);
     assert_eq!(rig.drain().changes(), [HeadChange::None]);
+}
+
+/// Stalled nodes keep publishing slot updates for Control's clock and the API's
+/// distance. A selected sync target suppresses these updates.
+#[test]
+fn stalled_target_keeps_the_slot_ticker() {
+    let mut stalled = HeadRig::new();
+    stalled.tile.on_sync_update(SyncUpdate::Stalled);
+    stalled.advance_to_slot(71);
+    assert_eq!(stalled.crank().wall_slots(), [71]);
+
+    let mut chasing = HeadRig::new();
+    chasing.tile.on_sync_update(SyncUpdate::SyncingHead { head_root: [9; 32], head_slot: 400 });
+    chasing.advance_to_slot(71);
+    assert!(chasing.crank().wall_slots().is_empty());
+
+    chasing.tile.on_sync_update(SyncUpdate::Stalled);
+    assert_eq!(chasing.crank().wall_slots(), [71]);
 }
 
 /// Both reorg heads are in epoch 3, with a parent in epoch 2.

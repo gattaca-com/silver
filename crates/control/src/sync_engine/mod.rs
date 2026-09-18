@@ -149,6 +149,7 @@ enum Phase {
     Idle,
     Syncing(Syncing),
     Following,
+    Stalled,
 }
 
 impl Phase {
@@ -157,6 +158,7 @@ impl Phase {
             Self::Idle => None,
             Self::Syncing(s) => Some(s.target()),
             Self::Following => Some(SyncUpdate::Following),
+            Self::Stalled => Some(SyncUpdate::Stalled),
         }
     }
 
@@ -167,7 +169,7 @@ impl Phase {
     fn column_claim(&self) -> Option<(u64, u64)> {
         match self {
             Self::Syncing(s) => s.inflight_span(DataKind::Columns),
-            Self::Idle | Self::Following => None,
+            Self::Idle | Self::Following | Self::Stalled => None,
         }
     }
 
@@ -222,7 +224,7 @@ impl Phase {
                 ctx.backfill.drive(ctx.custody_columns, &mut ctx.next_request_id, now, emit);
                 false
             }
-            Self::Idle => false,
+            Self::Idle | Self::Stalled => false,
         }
     }
 }
@@ -288,7 +290,7 @@ impl SyncEngine {
         let deciding_for = self.replay.deciding_for(now)?;
         let strategy =
             match select::select_target(&self.ctx, self.has_block_gap(), self.phase.target()) {
-                SyncUpdate::SyncingFinalized { .. } => SyncingStrategy::SyncFromPeers,
+                Some(SyncUpdate::SyncingFinalized { .. }) => SyncingStrategy::SyncFromPeers,
                 _ if deciding_for >= SYNCING_STRATEGY_TIMEOUT_WINDOW => SyncingStrategy::ReplayDisk,
                 _ => return None,
             };
@@ -306,7 +308,9 @@ impl SyncEngine {
     }
 
     pub fn fell_behind(&self) -> bool {
-        self.phase.is_following() && self.ctx.local.have_status && self.has_block_gap()
+        matches!(self.phase, Phase::Following | Phase::Stalled) &&
+            self.ctx.local.have_status &&
+            self.has_block_gap()
     }
 
     pub fn take_just_synced(&mut self) -> bool {
@@ -517,11 +521,13 @@ impl SyncEngine {
         Some(target)
     }
 
-    fn enter_phase_for(&mut self, chosen: SyncUpdate) {
-        let resolved = self.resolve(chosen);
+    fn enter_phase_for(&mut self, chosen: Option<SyncUpdate>) {
+        if self.replay.is_pending() && !chosen.is_some_and(SyncUpdate::is_syncing) {
+            return;
+        }
 
         if let Phase::Syncing(s) = &mut self.phase &&
-            let Some(target) = resolved &&
+            let Some(target) = chosen &&
             s.target().same_target_as(target)
         {
             s.repin(target);
@@ -529,10 +535,11 @@ impl SyncEngine {
         }
 
         self.just_synced |=
-            matches!(resolved, Some(SyncUpdate::Following)) && !self.phase.is_following();
-        self.phase = match resolved {
+            matches!(chosen, Some(SyncUpdate::Following)) && !self.phase.is_following();
+        self.phase = match chosen {
             None => Phase::Idle,
             Some(SyncUpdate::Following) => Phase::Following,
+            Some(SyncUpdate::Stalled) => Phase::Stalled,
             Some(target) => {
                 // Coverage above the imported head came from gossip on the
                 // chain we are leaving; the new target is chased from the head.
@@ -542,19 +549,6 @@ impl SyncEngine {
                 Phase::Syncing(Syncing::new(target, self.ctx.custody_columns))
             }
         };
-    }
-
-    fn resolve(&self, chosen: SyncUpdate) -> Option<SyncUpdate> {
-        if !chosen.is_following() {
-            return Some(chosen);
-        }
-        let local = &self.ctx.local;
-        let comparable = !self.replay.is_pending() &&
-            local.have_status &&
-            (self.phase.target().is_some() || self.ctx.peers.received_statuses());
-        let peers_are_ahead =
-            self.ctx.peers.any_peer_ahead_of(local.head_imported_slot, &self.ctx.cfg);
-        (comparable && !peers_are_ahead).then_some(SyncUpdate::Following)
     }
 
     pub fn drive_requests(&mut self, now: Instant, emit: &mut impl FnMut(SyncAction) -> bool) {
