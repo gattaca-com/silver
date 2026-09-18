@@ -239,6 +239,55 @@ impl Rig {
 }
 
 #[test]
+fn missing_scheduled_exchange_is_discarded_without_sending() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    assert!(rig.spin().is_empty());
+    let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 1).group };
+    rig.exchange.ready.push_back(key);
+    let seq = rig.output.next_seq();
+
+    assert!(rig.spin().is_empty());
+    assert!(rig.exchange.ready.is_empty());
+    assert_eq!(rig.output.next_seq(), seq);
+}
+
+#[test]
+fn missing_peer_budget_prevents_sends_and_withdrawals() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.publish(0);
+    rig.request(1, 0, 1);
+    assert_eq!(rig.spin().len(), 1);
+    rig.request(1, 0, 2);
+    rig.exchange.peer_exchanges.remove(&1);
+    let seq = rig.output.next_seq();
+
+    assert!(rig.spin().is_empty());
+    let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 2).group };
+    assert_eq!(rig.exchange.exchanges[&key].sent, 0);
+    rig.exchange.expire(1, &rig.peers, &mut rig.output, rig.now, &mut |_| {
+        panic!("missing budget must not permit a withdrawal")
+    });
+    assert!(rig.exchange.exchanges.is_empty());
+    assert!(rig.exchange.ready.is_empty());
+    assert_eq!(rig.output.next_seq(), seq);
+}
+
+#[test]
+fn removing_exchange_without_peer_budget_clears_queued_work() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.publish(0);
+    rig.request(1, 0, 1);
+    assert!(!rig.exchange.exchanges.is_empty());
+    rig.exchange.peer_exchanges.remove(&1);
+
+    rig.exchange.remove_peer(1);
+    assert!(rig.exchange.exchanges.is_empty());
+    assert!(rig.exchange.ready.is_empty());
+}
+
+#[test]
 fn retained_full_columns_serve_requested_rows_for_both_forks_and_non_mesh_peers() {
     for format in [ForkName::Fulu, ForkName::Gloas] {
         let mut rig = Rig::new(format);
@@ -648,7 +697,7 @@ fn subscription_changes_and_slot_expiry_cannot_reset_the_heartbeat_budget() {
     assert_eq!(rig.exchange.peer_exchanges[&1].remaining_bytes(), 0);
     // Old-slot drops must not reset new exchange state or schedule a retry.
     let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 0).group };
-    rig.exchange.admit(key, 1, ROWS, rig.now + Duration::from_secs(12), rig.now);
+    assert!(rig.exchange.admit(key, 1, ROWS, rig.now + Duration::from_secs(12), rig.now).is_some());
     rig.dropped(1, frame);
     assert_eq!(rig.exchange.exchanges[&key].retry_at, rig.now);
     assert!(rig.exchange.ready.is_empty());

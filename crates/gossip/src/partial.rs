@@ -105,7 +105,6 @@ impl PartialFrame<'_> {
         }
 
         let ssz_len = self.plan.map_or(0, |plan| plan.ssz_len());
-        let meta_len = self.metadata.as_ref().map(|meta| parts_metadata_len(meta.n_rows));
         let (fields_len, tail) = self.field_lengths();
         let ext_len = fields_len + ssz_len + tail;
 
@@ -142,7 +141,7 @@ impl PartialFrame<'_> {
         }
         if let Some(meta) = &self.metadata {
             let mut buf = [0u8; parts_metadata_len(128)];
-            let bytes = &mut buf[..meta_len.unwrap()];
+            let bytes = &mut buf[..parts_metadata_len(meta.n_rows)];
             write_parts_metadata(meta.available, meta.requests, meta.n_rows, bytes);
             Tag::new(4, WireType::LengthDelimited).encode(&mut cursor);
             encode_bytes(bytes, &mut cursor);

@@ -779,6 +779,16 @@ mod tests {
         });
         for (msg, remaining) in [(response, 2), (request, 1)] {
             mgr.handle_event(
+                PeerEvent::P2pCannotCreateStream {
+                    p2p_peer: 1,
+                    protocol,
+                    stream_gone: matches!(msg, RpcOutbound::Response(_)),
+                },
+                now,
+                &mut |control| cap.0.push(control),
+            );
+            assert_eq!(mgr.peers[&1].outbound_in_flight[index], 2);
+            mgr.handle_event(
                 PeerEvent::P2pOutboundMessageDropped {
                     p2p_peer: 1,
                     protocol,

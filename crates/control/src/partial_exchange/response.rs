@@ -39,8 +39,9 @@ impl PartialResponse {
             "/eth2/{:02x}{:02x}{:02x}{:02x}/data_column_sidecar_{}/ssz_snappy",
             digest[0], digest[1], digest[2], digest[3], self.group.column
         )
-        .unwrap();
-        let topic = str::from_utf8(&topic.get_ref()[..topic.position() as usize]).unwrap();
+        .map_err(|_| CacheFrameError::TooLarge)?;
+        let topic = str::from_utf8(&topic.get_ref()[..topic.position() as usize])
+            .map_err(|_| CacheFrameError::InvalidDescriptor)?;
         let fulu = self.group.domain.format() == ForkName::Fulu;
         let mut group = gloas_group_id(&self.group.block_root, self.slot);
         let group = if fulu {
