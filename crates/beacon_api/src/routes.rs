@@ -22,6 +22,7 @@ use crate::{
     response::Response,
     router::{Handler, Method, Request},
     statics::StaticBodies,
+    sync_duties::post_sync_duties,
     validator_api::{
         post_beacon_committee_subscriptions, post_prepare_beacon_proposer, post_register_validator,
         post_sync_committee_subscriptions,
@@ -64,7 +65,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     ),
     (Method::Post, "/eth/v1/validator/duties/attester/{epoch}", post_attester_duties),
     (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", proposer_duties),
-    (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", post_sync_duties),
     (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
     (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),
     (Method::Post, "/eth/v1/validator/register_validator", post_register_validator),
@@ -558,9 +559,7 @@ mod tests {
     fn stubbed_routes_answer_501_not_404() {
         let router = Router::new(ROUTES);
         let ctx = anchor_ctx();
-        for (method, path) in
-            [("POST", "/eth/v1/validator/duties/sync/0"), ("POST", "/eth/v1/validator/liveness/0")]
-        {
+        for (method, path) in [("POST", "/eth/v1/validator/liveness/0")] {
             let mut out = Vec::new();
             let req = ParsedRequest {
                 method,

@@ -8,7 +8,7 @@ use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Versio
 
 use crate::{
     attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuties,
-    validators::ValidatorRecord,
+    sync_duties::SyncDuty, validators::ValidatorRecord,
 };
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
@@ -436,6 +436,29 @@ impl Json<'_> {
                 json.quoted_u64(duty.validator_committee_index);
                 json.key("slot");
                 json.quoted_u64(duty.slot);
+                json.end_object();
+            }
+        });
+    }
+
+    pub(crate) fn sync_duties<'a>(
+        &mut self,
+        execution_optimistic: bool,
+        duties: impl Iterator<Item = SyncDuty<'a>>,
+    ) {
+        self.duties_envelope(None, execution_optimistic, |json| {
+            for duty in duties {
+                json.begin_object();
+                json.key("pubkey");
+                json.hex(&duty.pubkey);
+                json.key("validator_index");
+                json.quoted_u64(duty.validator_index);
+                json.key("validator_sync_committee_indices");
+                json.begin_array();
+                for position in duty.positions() {
+                    json.quoted_u64(position);
+                }
+                json.end_array();
                 json.end_object();
             }
         });
