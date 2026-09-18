@@ -37,6 +37,7 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
 fn serving_and_feedback_allocate_nothing_after_construction() {
+    ControlCounters::init().unwrap();
     for format in [ForkName::Fulu, ForkName::Gloas] {
         let mut rig = Rig::new(format);
         rig.connect(1, true, true);
