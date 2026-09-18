@@ -23,5 +23,8 @@ silver_common::declare_counters! {
         _Reserved_PartialResponsesSent,
         PartialCellsRequested,
         PartialRateLimited,
+        PartialCellsRequestedOutbound,
+        PartialRequestsTimedOut,
+        PartialFullFallbacks,
     }
 }

@@ -51,8 +51,10 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
     bytes.extend_from_slice(&[0x44; BYTES_PER_KZG_PROOF]);
     let full = write_bytes(&mut columns, &bytes);
     capture.controller.spec = spec;
-    capture.controller =
-        capture.controller.with_data_columns_cache(config, columns, 0, now).unwrap();
+    capture.controller = capture
+        .controller
+        .with_data_columns_cache(config, columns, 0, now, PartialColumnsMode::SendOnly)
+        .unwrap();
     let domain = GossipDomain::new([0; 4], ForkName::Gloas);
     capture.controller.gossip_handler.set_domains(domain, None);
     capture.crank();
@@ -152,8 +154,10 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
         let cache = columns.cache_ref();
         let _reader = cache.retained_random_access("").unwrap();
         capture.controller.spec = spec;
-        capture.controller =
-            capture.controller.with_data_columns_cache(config, columns, 0, now).unwrap();
+        capture.controller = capture
+            .controller
+            .with_data_columns_cache(config, columns, 0, now, PartialColumnsMode::SendOnly)
+            .unwrap();
         capture.controller.gossip_handler.set_domains(GossipDomain::new([0; 4], format), None);
         capture.observer.consume(|_: CellStoreEvent, _| {});
         capture.crank();
@@ -182,13 +186,14 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
             }),
             ..Default::default()
         };
-        for (enabled, protocol, expected) in [
-            (false, StreamProtocol::GossipSubV13, 0),
-            (true, StreamProtocol::GossipSub, 0),
-            (true, StreamProtocol::GossipSubV13, 1),
-            (true, StreamProtocol::GossipSubV13, 0),
+        for (mode, protocol, expected) in [
+            (PartialColumnsMode::Off, StreamProtocol::GossipSubV13, 0),
+            (PartialColumnsMode::SendOnly, StreamProtocol::GossipSubV13, 0),
+            (PartialColumnsMode::Enabled, StreamProtocol::GossipSub, 0),
+            (PartialColumnsMode::Enabled, StreamProtocol::GossipSubV13, 1),
+            (PartialColumnsMode::Enabled, StreamProtocol::GossipSubV13, 0),
         ] {
-            capture.controller.gossip_handler.set_receive_partial_columns(enabled);
+            capture.controller.gossip_handler.set_partial_columns_mode(mode);
             let stream = P2pStreamId::new(1, 3, protocol, true);
             let mut incoming = stream.as_ref().to_vec();
             incoming.extend_from_slice(&rpc.encode_to_vec());
@@ -208,6 +213,74 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
                 }
             });
             assert_eq!(count, expected);
+        }
+    }
+}
+
+#[test]
+fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
+    let topic = GossipTopic::DataColumnSidecar(0);
+    let mut capture = GossipPublications::new(topic, &[]);
+    let spec = Arc::new(SpecConfig {
+        fulu_fork_epoch: 0,
+        gloas_fork_epoch: 10,
+        blob_schedule: Vec::new(),
+        ..SpecConfig::mainnet()
+    });
+    let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
+    let columns = TCache::producer("", config.cache_capacity());
+    let _reader = columns.cache_ref().retained_random_access("").unwrap();
+    capture.controller.spec = spec.clone();
+    capture.controller = capture
+        .controller
+        .with_data_columns_cache(config, columns, 0, Instant::now(), PartialColumnsMode::Enabled)
+        .unwrap();
+    let mut ticker = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(3));
+    ticker.set_current_slot(8 * SLOTS_PER_EPOCH);
+    capture.controller.set_gossip_clock(ticker, &[0; 32]);
+    for epoch in [8, 9, 10] {
+        capture
+            .controller
+            .gossip_schedule
+            .as_mut()
+            .unwrap()
+            .ticker
+            .set_current_slot(epoch * SLOTS_PER_EPOCH);
+        capture.crank();
+        let mut subscriptions = 0;
+        for (_, bytes) in capture.sent() {
+            let rpc = protobuf::RPCView::decode_view(&bytes).unwrap();
+            for subscription in &rpc.subscriptions {
+                if subscription.subscribe != Some(true) {
+                    continue;
+                }
+                subscriptions += 1;
+                assert_eq!(subscription.requests_partial, Some(true));
+                assert_eq!(subscription.supports_sending_partial, Some(true));
+            }
+        }
+        if epoch < 10 {
+            assert!(subscriptions != 0);
+        }
+        assert_eq!(
+            capture.controller.gossip_handler.current_domain().unwrap().format(),
+            if epoch < 10 { ForkName::Fulu } else { ForkName::Gloas }
+        );
+    }
+    capture.controller.gossip_handler.handle_peer_control(PeerControl::P2pGossipSubscribe {
+        p2p: PeerId::default(),
+        p2p_connection: 1,
+        topic: GossipTopic::BeaconBlock,
+        digest: [0; 4],
+    });
+    while let Some(event) = capture.controller.gossip_handler.pop_event() {
+        if let GossipHandlerEvent::SendGossip(message) = event {
+            let read = capture.outbound.acquire(message.tcache);
+            let bytes = read.buffer().unwrap().0;
+            let rpc = protobuf::RPCView::decode_view(bytes).unwrap();
+            let subscription = rpc.subscriptions.iter().next().unwrap();
+            assert_eq!(subscription.requests_partial, None);
+            assert_eq!(subscription.supports_sending_partial, None);
         }
     }
 }

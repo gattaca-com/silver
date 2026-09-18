@@ -6,7 +6,7 @@ use silver_common::{
     Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
     SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
-    TRandomAccess, msg_id_valid_snappy,
+    TRandomAccess, cell_store::PartialColumnsMode, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -48,8 +48,7 @@ pub struct GossipHandler {
     snap_scratch: Vec<u8>,
 
     extensions: ExtensionTracker,
-    send_partial_columns: bool,
-    receive_partial_columns: bool,
+    partial_columns: PartialColumnsMode,
 
     events: VecDeque<GossipHandlerEvent>,
 }
@@ -73,8 +72,7 @@ impl GossipHandler {
             mcache_publish: protobuf_gossip_publish,
             mcache,
             extensions: ExtensionTracker::default(),
-            send_partial_columns: false,
-            receive_partial_columns: false,
+            partial_columns: PartialColumnsMode::Off,
             iwant_buffer: Vec::with_capacity(256),
             snap_encoder: snap::raw::Encoder::new(),
             snap_scratch: Vec::new(),
@@ -268,8 +266,8 @@ impl GossipHandler {
         self.events.pop_front()
     }
 
-    pub fn enable_partial_sending(&mut self) {
-        self.send_partial_columns = true;
+    pub fn set_partial_columns_mode(&mut self, mode: PartialColumnsMode) {
+        self.partial_columns = mode;
     }
 
     fn handle_peer_control_inner(
@@ -280,11 +278,14 @@ impl GossipHandler {
         match peer_control {
             PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic, digest } => {
                 let wire = topic.to_wire(&hex::encode(digest));
-                if let Ok(tcache) = control::copy_subscriptions(
-                    &mut self.mcache_publish,
-                    &[&wire],
-                    self.send_partial_columns && matches!(topic, GossipTopic::DataColumnSidecar(_)),
-                ) {
+                let mode = if matches!(topic, GossipTopic::DataColumnSidecar(_)) {
+                    self.partial_columns
+                } else {
+                    PartialColumnsMode::Off
+                };
+                if let Ok(tcache) =
+                    control::copy_subscriptions(&mut self.mcache_publish, &[&wire], mode)
+                {
                     tracing::debug!(p2p_connection, ?topic, "Emit new gossip subscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
@@ -350,10 +351,6 @@ impl GossipHandler {
         self.spin_columns(adapter, data_columns)
     }
 
-    pub fn set_receive_partial_columns(&mut self, enabled: bool) {
-        self.receive_partial_columns = enabled;
-    }
-
     pub fn spin_columns<I: ColumnIngress>(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,
@@ -416,7 +413,7 @@ impl GossipHandler {
                 }
                 handle_subscriptions(stream_id, gossip_proto.subscriptions, &self.domains, emit);
 
-                if self.send_partial_columns &&
+                if self.partial_columns.supports_sending() &&
                     let Some(partial) = gossip_proto.partial.as_option() &&
                     let Some(metadata) =
                         PartialMetadataReceived::decode(partial, *stream_id, &self.domains)
@@ -424,7 +421,7 @@ impl GossipHandler {
                     emit(GossipHandlerEvent::PartialMetadata(metadata));
                 }
 
-                if self.receive_partial_columns &&
+                if self.partial_columns.requests() &&
                     stream_id.protocol() == StreamProtocol::GossipSubV13 &&
                     let Some(partial) = gossip_proto.partial.as_option() &&
                     let Some(message) =
