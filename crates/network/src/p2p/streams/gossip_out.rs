@@ -133,7 +133,7 @@ impl GossipWriteState {
                 let n = io.write_chunks(p2p_id.stream_id(), slice::from_mut(chunk))?;
                 let chunk_complete = chunk.is_empty();
                 if frame.written(n) {
-                    frame.complete(*p2p_id);
+                    frame.complete();
                     Ok(Spin::Next(Self::Idle))
                 } else if chunk_complete {
                     Ok(Spin::Next(Self::WritingSegments(frame)))

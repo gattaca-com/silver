@@ -35,6 +35,10 @@ fn copy_handle_round_trips_framing_and_source_ranges() {
     )
     .unwrap();
     let view = frame.acquire(&mut consumer, now).unwrap();
+    let restored = view.reference();
+    assert_eq!(restored.read().seq(), frame.read().seq());
+    assert_eq!(restored.read().cache_ref().cache, frame.read().cache_ref().cache);
+    assert_eq!(restored.expires, frame.expires);
     assert_eq!(view.wire_len(), 8);
     assert_eq!(view.segment_count(), 3);
     let descriptor = view.descriptor_range();

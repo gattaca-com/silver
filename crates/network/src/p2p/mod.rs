@@ -18,9 +18,9 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    CacheFrameRef, ClusterMsgOut, GossipFrameResult, GossipMsgOut, Identify, Keypair,
-    P2pConnectionStats, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound,
-    RpcRequestOutbound, TCacheRead,
+    CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pSend,
+    P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound,
+    TCacheRead,
 };
 
 use crate::{
@@ -59,7 +59,6 @@ pub fn p2p_spin<F: FnMut(NetEvent)>(
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum NetEvent {
-    GossipFrameResult(GossipFrameResult),
     /// A peer connection has been established and its PeerId verified.
     PeerConnected {
         peer: RemotePeer,
@@ -366,50 +365,59 @@ impl P2p {
         NetworkCounters::P2pConnections.set(self.peers.len() as u64);
         if let Some(limits) = &self.segmented_limits {
             limits.publish_gauges();
-            while let Some(result) = limits.pop_result() {
-                did_work = true;
-                on_event(NetEvent::GossipFrameResult(result));
-            }
         }
         did_work
     }
 
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
-        match context.gossip_consumer.acquire_strict(msg.into()) {
+        let result = match context.gossip_consumer.acquire_strict(msg.into()) {
             Some(acquired) => match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
                 Some(peer) => peer.send_gossip(acquired, &mut self.rpc_codec_pool),
                 None => SendResult::UnknownPeer,
             },
-            None => SendResult::MessageDropped,
-        }
+            None => SendResult::Dropped(None),
+        };
+        result.map_dropped(|dropped| {
+            dropped.map_or(P2pSend::Gossip(msg), |old| old.into_message(msg.peer_id))
+        })
     }
 
     pub fn enqueue_segmented_gossip(
         &mut self,
         peer_id: usize,
         frame: CacheFrameRef,
+        partial_cells: Option<u8>,
         context: &mut Context,
     ) -> SendResult {
-        match self.peers.get_mut(&ConnectionHandle(peer_id)) {
+        let result = match self.peers.get_mut(&ConnectionHandle(peer_id)) {
             Some(peer) => peer.send_segmented_gossip(
                 frame,
+                partial_cells,
                 context,
                 self.segmented_limits.get_or_insert_with(Box::default),
                 &mut self.rpc_codec_pool,
             ),
             None => SendResult::UnknownPeer,
-        }
+        };
+        result.map_dropped(|dropped| {
+            dropped.map_or(P2pSend::SegmentedGossip { peer_id, frame, partial_cells }, |old| {
+                old.into_message(peer_id)
+            })
+        })
     }
 
     pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound, context: &mut Context) -> SendResult {
-        match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
+        let result = match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
             Some(peer) => {
                 tracing::debug!(protocol=?msg.protocol(), peer=msg.peer_id(), "enqueue outbound rpc request");
                 let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.rpc_consumer));
                 peer.send_rpc(acquired_msg)
             }
             None => SendResult::UnknownPeer,
-        }
+        };
+        result.map_dropped(|dropped| {
+            P2pSend::Rpc(dropped.map_or(msg, |old| old.into_message(msg.peer_id())))
+        })
     }
 
     pub fn enqueue_cluster_out(&mut self, msg: ClusterMsgOut, context: &mut Context) -> SendResult {
@@ -419,7 +427,7 @@ impl P2p {
         {
             Some(peer) => match context.cluster_outbound_consumer.acquire_strict(msg.data) {
                 Some(acquired) => peer.send_cluster(acquired, &mut self.rpc_codec_pool),
-                None => SendResult::MessageDropped,
+                None => SendResult::Dropped(None),
             },
             None => SendResult::UnknownPeer,
         }

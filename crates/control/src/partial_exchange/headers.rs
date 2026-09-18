@@ -1,5 +1,5 @@
 use fxhash::FxHashMap;
-use silver_common::{GossipDomain, P2pStreamId};
+use silver_common::GossipDomain;
 use silver_gossip::ColumnGroupKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -11,8 +11,7 @@ struct HeaderKey {
 
 #[derive(Clone, Copy)]
 enum HeaderState {
-    Queued(u64),
-    Written(P2pStreamId),
+    Sent,
     Known,
 }
 
@@ -37,10 +36,10 @@ impl HeaderTracker {
         !self.entries.contains_key(&Self::key(peer, group))
     }
 
-    pub fn queued(&mut self, peer: usize, group: ColumnGroupKey, seq: u64) {
+    pub fn sent(&mut self, peer: usize, group: ColumnGroupKey) {
         let key = Self::key(peer, group);
         if self.entries.len() < self.capacity || self.entries.contains_key(&key) {
-            self.entries.insert(key, HeaderState::Queued(seq));
+            self.entries.entry(key).or_insert(HeaderState::Sent);
         }
     }
 
@@ -51,26 +50,15 @@ impl HeaderTracker {
         }
     }
 
-    pub fn complete(
-        &mut self,
-        peer: usize,
-        group: ColumnGroupKey,
-        seq: u64,
-        stream: Option<P2pStreamId>,
-    ) {
+    pub fn forget_sent(&mut self, peer: usize, group: ColumnGroupKey) {
         let key = Self::key(peer, group);
-        if matches!(self.entries.get(&key), Some(HeaderState::Queued(pending)) if *pending == seq) {
-            if let Some(stream) = stream {
-                self.entries.insert(key, HeaderState::Written(stream));
-            } else {
-                self.entries.remove(&key);
-            }
+        if matches!(self.entries.get(&key), Some(HeaderState::Sent)) {
+            self.entries.remove(&key);
         }
     }
 
-    pub fn reset_stream(&mut self, stream: P2pStreamId) {
-        self.entries
-            .retain(|_, state| !matches!(state, HeaderState::Written(sent) if *sent == stream));
+    pub fn retry_peer(&mut self, peer: usize) {
+        self.entries.retain(|key, state| key.peer != peer || matches!(state, HeaderState::Known));
     }
 
     pub fn remove_peer(&mut self, peer: usize) {

@@ -5,7 +5,7 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    ForkName, GossipFrameOutcome, GossipFrameResult, GossipTopic, P2pSend, PeerEvent, TProducer,
+    ForkName, GossipTopic, P2pSend, PeerEvent, TProducer,
     cell_store::{CellStoreConfig, ColumnAvailability},
 };
 use silver_gossip::{ColumnGroupKey, PartialMetadataReceived, PartsMetadata};
@@ -14,33 +14,26 @@ use silver_peer::PeerManager;
 use self::{
     headers::HeaderTracker,
     peer_column::{ExchangeKey, PeerColumnExchange},
+    peer_exchange::PeerExchange,
     response::PartialResponse,
 };
 use crate::{ControlCounters, cell_ingress::CellIngress};
 
 mod headers;
 mod peer_column;
+mod peer_exchange;
 mod response;
 #[cfg(test)]
 mod tests;
 
 const WORK_PER_SPIN: usize = 64;
-const MAX_PENDING: usize = 128;
 const MAX_FRAMES_PER_GROUP: u8 = 32;
 const HEARTBEAT: Duration = Duration::from_millis(500);
 const RETRY: Duration = Duration::from_millis(100);
 
-struct PendingPartialSend {
-    key: ExchangeKey,
-    rows: u128,
-    available: u128,
-    header: bool,
-}
-
 pub(crate) struct PartialExchange {
     exchanges: FxHashMap<ExchangeKey, PeerColumnExchange>,
-    peer_counts: FxHashMap<usize, usize>,
-    pending: FxHashMap<(usize, u64), PendingPartialSend>,
+    peer_exchanges: FxHashMap<usize, PeerExchange>,
     headers: HeaderTracker,
     ready: VecDeque<ExchangeKey>,
     capacity: usize,
@@ -57,8 +50,7 @@ impl PartialExchange {
         let capacity = (peer_capacity * 32).min(8192);
         Self {
             exchanges: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
-            peer_counts: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
-            pending: FxHashMap::with_capacity_and_hasher(MAX_PENDING, Default::default()),
+            peer_exchanges: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             headers: HeaderTracker::new(capacity),
             ready: VecDeque::with_capacity(capacity),
             capacity,
@@ -81,13 +73,16 @@ impl PartialExchange {
         if self.exchanges.contains_key(&key) {
             return true;
         }
-        let count = self.peer_counts.get(&key.peer).copied().unwrap_or(0);
-        if self.exchanges.len() >= self.capacity || count >= self.peer_capacity {
+        let peer = self.peer_exchanges.get(&key.peer);
+        if self.exchanges.len() >= self.capacity ||
+            peer.is_some_and(|p| p.columns >= self.peer_capacity) ||
+            (peer.is_none() && self.peer_exchanges.len() >= self.capacity)
+        {
             ControlCounters::PartialStateLimited.inc();
             return false;
         }
         self.exchanges.insert(key, PeerColumnExchange::new(slot, rows, expires, now));
-        self.peer_counts.insert(key.peer, count + 1);
+        self.peer_exchanges.entry(key.peer).or_default().columns += 1;
         true
     }
 
@@ -198,9 +193,28 @@ impl PartialExchange {
 
     pub fn peer_event(&mut self, event: &PeerEvent, now: Instant) {
         match *event {
-            PeerEvent::SegmentedGossipResult(result) => self.completed(result, now),
-            PeerEvent::P2pDisconnect { p2p_peer, .. } |
-            PeerEvent::P2pGossipExtensions { p2p_peer, .. } => self.remove_peer(p2p_peer),
+            PeerEvent::P2pOutboundMessageDropped {
+                msg: P2pSend::SegmentedGossip { peer_id, frame, partial_cells },
+                ..
+            } => {
+                if partial_cells.is_some() {
+                    ControlCounters::PartialFramesDropped.inc();
+                }
+                // Only inspect the descriptor's sequence: its TCache bytes may
+                // already have expired. One failure resets this peer's batch.
+                if self
+                    .peer_exchanges
+                    .get_mut(&peer_id)
+                    .is_some_and(|peer| peer.dropped(frame.read().seq()))
+                {
+                    self.retry_peer(peer_id, now);
+                }
+            }
+            PeerEvent::P2pDisconnect { p2p_peer, .. } => self.remove_peer(p2p_peer),
+            PeerEvent::P2pGossipExtensions { p2p_peer, .. } => {
+                self.remove_where(|key| key.peer == p2p_peer);
+                self.headers.remove_peer(p2p_peer);
+            }
             PeerEvent::P2pNewConnection { p2p_peer_id, .. } => self.remove_peer(p2p_peer_id),
             PeerEvent::P2pGossipTopicUnsubscribe {
                 p2p_peer,
@@ -215,39 +229,30 @@ impl PartialExchange {
                 });
             }
             PeerEvent::P2pStreamClosed { stream_id } if stream_id.protocol().is_gossip() => {
-                self.headers.reset_stream(stream_id);
-                self.remove_peer(stream_id.peer());
+                self.retry_peer(stream_id.peer(), now);
             }
             _ => {}
         }
     }
 
-    fn completed(&mut self, result: GossipFrameResult, now: Instant) {
-        let Some(pending) = self.pending.remove(&(result.p2p_peer, result.frame_seq)) else {
-            return
-        };
-        let written = match result.outcome {
-            GossipFrameOutcome::Written { stream_id } => Some(stream_id),
-            GossipFrameOutcome::Dropped => None,
-        };
-        if pending.header {
-            self.headers.complete(result.p2p_peer, pending.key.group, result.frame_seq, written);
+    fn retry_peer(&mut self, peer: usize, now: Instant) {
+        self.headers.retry_peer(peer);
+        if let Some(exchange) = self.peer_exchanges.get_mut(&peer) {
+            exchange.reset_sends();
         }
-        if let Some(exchange) = self.exchanges.get_mut(&pending.key) {
-            exchange.pending = false;
-            if written.is_some() {
-                exchange.sent |= pending.rows;
-                exchange.advertised = Some(pending.available);
-                ControlCounters::PartialFramesWritten.inc();
-                if pending.rows != 0 {
-                    ControlCounters::PartialResponsesSent.inc();
-                    ControlCounters::PartialCellsServed.add(pending.rows.count_ones() as u64);
-                }
-            } else {
-                exchange.retry_at = now + RETRY;
-                ControlCounters::PartialFramesDropped.inc();
+        for (key, exchange) in &mut self.exchanges {
+            if key.peer != peer {
+                continue;
             }
-            self.schedule(pending.key);
+            // Preserve the latest remote requests, but no longer assume our
+            // availability, cells or headers reached this peer. No quota refund.
+            exchange.sent = 0;
+            exchange.advertised = None;
+            exchange.retry_at = now + RETRY;
+            if !exchange.scheduled {
+                exchange.scheduled = true;
+                self.ready.push_back(*key);
+            }
         }
     }
 
@@ -256,20 +261,10 @@ impl PartialExchange {
             if !predicate(key) {
                 return true;
             }
-            let count = self.peer_counts.get_mut(&key.peer).unwrap();
-            *count -= 1;
-            if *count == 0 {
-                self.peer_counts.remove(&key.peer);
-            }
-            false
-        });
-        self.pending.retain(|&(peer, seq), pending| {
-            if self.exchanges.contains_key(&pending.key) {
-                return true;
-            }
-            if pending.header {
-                self.headers.complete(peer, pending.key.group, seq, None);
-            }
+            // Keep the spent per-peer budget until the next heartbeat, even
+            // when unsubscribing removes the peer's last column exchange.
+            self.peer_exchanges.get_mut(&key.peer).unwrap().columns -= 1;
+            self.headers.forget_sent(key.peer, key.group);
             false
         });
         self.ready.retain(|key| self.exchanges.contains_key(key));
@@ -278,6 +273,7 @@ impl PartialExchange {
     fn remove_peer(&mut self, peer: usize) {
         self.remove_where(|key| key.peer == peer);
         self.headers.remove_peer(peer);
+        self.peer_exchanges.remove(&peer);
     }
 
     pub fn reject(&mut self, root: &[u8; 32]) {
@@ -300,34 +296,17 @@ impl PartialExchange {
         emit: &mut impl FnMut(P2pSend),
     ) -> bool {
         self.advance_slot(ingress, peers, producer, now, emit);
-        if now >= self.next_heartbeat {
-            self.next_heartbeat = now + HEARTBEAT;
-            self.remove_where(|key| {
-                peers
-                    .partial_peer(
-                        key.peer,
-                        GossipTopic::DataColumnSidecar(key.group.column),
-                        key.group.domain.digest(),
-                    )
-                    .is_none()
-            });
-            for column in ingress.columns(now) {
-                self.available(column, peers, now, true);
-            }
-        }
         let mut did_work = false;
         for _ in 0..self.ready.len().min(WORK_PER_SPIN) {
-            if self.pending.len() >= MAX_PENDING {
-                break;
-            }
             let key = self.ready.pop_front().unwrap();
             let exchange = self.exchanges.get_mut(&key).unwrap();
             exchange.scheduled = false;
-            if exchange.pending ||
-                now < exchange.retry_at ||
-                now >= exchange.expires ||
-                exchange.frames_sent >= MAX_FRAMES_PER_GROUP
-            {
+            if now < exchange.retry_at {
+                exchange.scheduled = true;
+                self.ready.push_back(key);
+                continue;
+            }
+            if now >= exchange.expires || exchange.frames_sent >= MAX_FRAMES_PER_GROUP {
                 continue;
             }
             let Some(peer) = peers.partial_peer(
@@ -368,32 +347,37 @@ impl PartialExchange {
                 rows,
                 header,
             };
-            let frame = match response.write(producer, column.expires) {
-                Ok(frame) => frame,
-                Err(_) => {
-                    exchange.retry_at = now + RETRY;
-                    ControlCounters::PartialFramesDropped.inc();
-                    continue;
-                }
-            };
+            let budget = self.peer_exchanges.get_mut(&key.peer).unwrap();
+            let (frame, bytes) =
+                match response.write(producer, column.expires, budget.remaining_bytes()) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => {
+                        ControlCounters::PartialRateLimited.inc();
+                        continue;
+                    }
+                    Err(_) => {
+                        exchange.retry_at = now + RETRY;
+                        ControlCounters::PartialFramesDropped.inc();
+                        continue;
+                    }
+                };
             let seq = frame.read().seq();
-            exchange.pending = true;
+            budget.record(seq, bytes);
+            exchange.sent |= rows;
+            exchange.advertised = Some(column.available);
             exchange.frames_sent += 1;
-            self.pending.insert((key.peer, seq), PendingPartialSend {
-                key,
-                rows,
-                available: column.available,
-                header,
-            });
             if header {
-                self.headers.queued(key.peer, key.group, seq);
+                self.headers.sent(key.peer, key.group);
             }
             ControlCounters::PartialFramesQueued.inc();
-            emit(P2pSend::SegmentedGossip { peer_id: key.peer, frame });
+            emit(P2pSend::SegmentedGossip {
+                peer_id: key.peer,
+                frame,
+                partial_cells: Some(rows.count_ones() as u8),
+            });
             did_work = true;
         }
         ControlCounters::PartialExchanges.set(self.exchanges.len() as u64);
-        ControlCounters::PartialPendingFrames.set(self.pending.len() as u64);
         did_work
     }
 
@@ -405,9 +389,31 @@ impl PartialExchange {
         now: Instant,
         emit: &mut impl FnMut(P2pSend),
     ) {
+        let heartbeat = now >= self.next_heartbeat;
+        if heartbeat {
+            self.next_heartbeat = now + HEARTBEAT;
+            self.peer_exchanges.retain(|_, peer| {
+                peer.heartbeat();
+                peer.columns != 0
+            });
+        }
         let (slot, _) = ingress.slot_window();
         if slot != self.slot {
             self.expire(slot, peers, producer, now, emit);
+        }
+        if heartbeat {
+            self.remove_where(|key| {
+                peers
+                    .partial_peer(
+                        key.peer,
+                        GossipTopic::DataColumnSidecar(key.group.column),
+                        key.group.domain.digest(),
+                    )
+                    .is_none()
+            });
+            for column in ingress.columns(now) {
+                self.available(column, peers, now, true);
+            }
         }
     }
 
@@ -443,17 +449,22 @@ impl PartialExchange {
                 rows: 0,
                 header: false,
             };
-            if let Ok(frame) = response.write(producer, now + RETRY) {
-                emit(P2pSend::SegmentedGossip { peer_id: key.peer, frame });
+            let budget = self.peer_exchanges.get_mut(&key.peer).unwrap();
+            if let Ok(Some((frame, bytes))) =
+                response.write(producer, now + RETRY, budget.remaining_bytes())
+            {
+                budget.record(frame.read().seq(), bytes);
+                emit(P2pSend::SegmentedGossip { peer_id: key.peer, frame, partial_cells: None });
                 ControlCounters::PartialWithdrawals.inc();
             }
         }
         self.exchanges.clear();
-        self.peer_counts.clear();
-        self.pending.clear();
+        for peer in self.peer_exchanges.values_mut() {
+            peer.columns = 0;
+            peer.reset_sends();
+        }
         self.headers.clear();
         self.ready.clear();
         self.slot = slot;
-        self.next_heartbeat = now;
     }
 }

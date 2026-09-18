@@ -1,6 +1,5 @@
 use buffa::{Message, MessageView};
 use silver_common::{
-    GossipFrameOutcome, GossipFrameResult,
     cell_store::{CellStoreEvent, ColumnAvailability},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF,
@@ -102,8 +101,9 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
     capture.crank();
     let mut sent = None;
     capture.observer.consume(|event: P2pSend, _| {
-        if let P2pSend::SegmentedGossip { peer_id, frame } = event {
+        if let P2pSend::SegmentedGossip { peer_id, frame, partial_cells } = event {
             assert_eq!(peer_id, 1);
+            assert_eq!(partial_cells, Some(1));
             assert!(sent.replace(frame).is_none());
         }
     });
@@ -125,13 +125,7 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
     assert_eq!(PartialDataColumnSidecarGloasView::check_size(payload, 2), Some(2));
     assert_eq!(PartialDataColumnSidecarGloasView::cells(payload), &[0x22; BYTES_PER_CELL]);
     assert_eq!(PartialDataColumnSidecarGloasView::proofs(payload), &[0x44; BYTES_PER_KZG_PROOF]);
-    capture.observer.produce(PeerEvent::SegmentedGossipResult(GossipFrameResult {
-        p2p_peer: 1,
-        frame_seq: frame.read().seq(),
-        outcome: GossipFrameOutcome::Written {
-            stream_id: P2pStreamId::new(1, 4, StreamProtocol::GossipSubV13, false),
-        },
-    }));
+    // No successful-send feedback is needed to suppress duplicate responses.
     capture.crank();
     capture
         .observer

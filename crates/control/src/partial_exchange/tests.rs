@@ -202,7 +202,7 @@ impl Rig {
     fn spin(&mut self) -> Vec<(usize, CacheFrameRef)> {
         let mut frames = Vec::new();
         self.exchange.spin(&self.ingress, &self.peers, &mut self.output, self.now, &mut |event| {
-            let P2pSend::SegmentedGossip { peer_id, frame } = event else {
+            let P2pSend::SegmentedGossip { peer_id, frame, .. } = event else {
                 panic!("unexpected send")
             };
             frames.push((peer_id, frame));
@@ -226,19 +226,13 @@ impl Rig {
         wire
     }
 
-    fn complete(&mut self, peer: usize, frame: CacheFrameRef, written: bool) {
+    fn dropped(&mut self, peer: usize, frame: CacheFrameRef) {
         self.exchange.peer_event(
-            &PeerEvent::SegmentedGossipResult(GossipFrameResult {
+            &PeerEvent::P2pOutboundMessageDropped {
                 p2p_peer: peer,
-                frame_seq: frame.read().seq(),
-                outcome: if written {
-                    GossipFrameOutcome::Written {
-                        stream_id: P2pStreamId::new(peer, 4, StreamProtocol::GossipSubV13, false),
-                    }
-                } else {
-                    GossipFrameOutcome::Dropped
-                },
-            }),
+                protocol: StreamProtocol::GossipSub,
+                msg: P2pSend::SegmentedGossip { peer_id: peer, frame, partial_cells: Some(0) },
+            },
             self.now,
         );
     }
@@ -277,9 +271,8 @@ fn retained_full_columns_serve_requested_rows_for_both_forks_and_non_mesh_peers(
         assert_eq!(&cells[BYTES_PER_CELL..], &[3; BYTES_PER_CELL]);
         assert_eq!(&proofs[..BYTES_PER_KZG_PROOF], &[0x11; BYTES_PER_KZG_PROOF]);
         assert_eq!(&proofs[BYTES_PER_KZG_PROOF..], &[0x13; BYTES_PER_KZG_PROOF]);
-        rig.complete(1, frames[0].1, true);
         rig.request(1, 0b0101, 0b1111);
-        assert!(rig.spin().is_empty(), "repeated request must not resend written rows");
+        assert!(rig.spin().is_empty(), "repeated request must not resend submitted rows");
     }
 }
 
@@ -300,7 +293,6 @@ fn snapshots_replace_and_available_request_bits_do_not_request_data() {
         ),
         Some(0b0010)
     );
-    rig.complete(1, frames[0].1, true);
     rig.request(1, 0b0100, 0b0100);
     assert!(rig.spin().is_empty());
 }
@@ -336,16 +328,28 @@ fn fulu_header_is_shared_across_topics_and_failed_send_is_retried() {
         let rpc = protobuf::RPCView::decode_view(&wire).unwrap();
         let has_header = rpc.partial.as_option().unwrap().partial_message.is_some();
         headers += usize::from(has_header);
-        rig.complete(peer, frame, !has_header);
+        if has_header {
+            rig.dropped(peer, frame);
+        }
     }
     assert_eq!(headers, 1);
-    rig.now += HEARTBEAT;
+    rig.now += RETRY;
     let frames = rig.spin();
-    assert_eq!(frames.len(), 1);
-    let wire = rig.wire(frames[0].1);
-    let rpc = protobuf::RPCView::decode_view(&wire).unwrap();
-    assert!(rpc.partial.as_option().unwrap().partial_message.is_some());
-    rig.complete(1, frames[0].1, true);
+    assert_eq!(frames.len(), 2, "a drop resets all optimistic state for this peer");
+    let headers = frames
+        .into_iter()
+        .filter(|(_, frame)| {
+            let wire = rig.wire(*frame);
+            protobuf::RPCView::decode_view(&wire)
+                .unwrap()
+                .partial
+                .as_option()
+                .unwrap()
+                .partial_message
+                .is_some()
+        })
+        .count();
+    assert_eq!(headers, 1);
     rig.publish(0);
     rig.publish(1);
     assert!(rig.spin().is_empty());
@@ -381,8 +385,7 @@ fn expiry_withdraws_without_reading_expired_payloads() {
     rig.connect(1, true, false);
     rig.publish(0);
     rig.request(1, 0, 1);
-    let frames = rig.spin();
-    rig.complete(1, frames[0].1, true);
+    assert_eq!(rig.spin().len(), 1);
     rig.now += Duration::from_secs(12);
     let event = rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
     rig.network.advance_retention(event.retain_from);
@@ -398,11 +401,11 @@ fn expiry_withdraws_without_reading_expired_payloads() {
         Some((0, 0))
     );
     assert!(rig.exchange.exchanges.is_empty());
-    assert!(rig.exchange.pending.is_empty());
+    assert!(rig.exchange.ready.is_empty());
 }
 
 #[test]
-fn disconnect_clears_pending_state_and_late_results_cannot_mark_a_header_sent() {
+fn disconnect_clears_state_and_late_drops_do_not_restore_it() {
     let mut rig = Rig::new(ForkName::Fulu);
     rig.connect(1, true, true);
     rig.publish(0);
@@ -412,13 +415,14 @@ fn disconnect_clears_pending_state_and_late_results_cannot_mark_a_header_sent() 
     assert!(!rig.exchange.headers.needed(1, group));
     rig.exchange
         .peer_event(&PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: PeerId::default() }, rig.now);
-    assert!(rig.exchange.pending.is_empty());
-    rig.complete(1, frames[0].1, true);
+    assert!(rig.exchange.exchanges.is_empty());
+    assert!(rig.exchange.peer_exchanges.is_empty());
+    rig.dropped(1, frames[0].1);
     assert!(rig.exchange.headers.needed(1, group));
 }
 
 #[test]
-fn withdrawn_capabilities_discard_pending_headers_and_late_feedback() {
+fn withdrawn_capabilities_discard_sent_headers_and_late_drops() {
     let mut rig = Rig::new(ForkName::Fulu);
     rig.connect(1, true, true);
     rig.publish(0);
@@ -432,7 +436,7 @@ fn withdrawn_capabilities_discard_pending_headers_and_late_feedback() {
     };
     rig.exchange.peer_event(&event, rig.now);
     rig.peers.handle_event(event, rig.now, &mut |_| {});
-    rig.complete(1, frames[0].1, true);
+    rig.dropped(1, frames[0].1);
     assert!(rig.exchange.headers.needed(1, rig.message(1, 0, 0).group));
     rig.request(1, 0, 1);
     assert!(rig.spin().is_empty());
@@ -446,8 +450,7 @@ fn stale_requests_after_an_ignored_withdrawal_never_revive_expired_cells() {
         rig.connect(1, true, false);
         rig.publish(0);
         rig.request(1, 0, 1);
-        let frames = rig.spin();
-        rig.complete(1, frames[0].1, true);
+        assert_eq!(rig.spin().len(), 1);
         rig.now += Duration::from_secs(12);
         rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
         assert_eq!(rig.spin().len(), 1);
@@ -459,7 +462,7 @@ fn stale_requests_after_an_ignored_withdrawal_never_revive_expired_cells() {
             assert!(rig.spin().is_empty());
         }
         assert_eq!(rig.ingress.producer_mut().next_seq(), seq);
-        assert!(rig.exchange.pending.is_empty());
+        assert!(rig.exchange.ready.is_empty());
     }
 }
 
@@ -488,4 +491,165 @@ fn queued_frames_keep_their_original_domain_across_fork_and_digest_changes() {
     rig.now += HEARTBEAT;
     assert!(rig.spin().is_empty());
     assert!(rig.exchange.exchanges.is_empty());
+}
+
+#[test]
+fn drops_retry_latest_requests_only_and_coalesce_without_disturbing_other_peers() {
+    let mut rig = Rig::new(ForkName::Fulu);
+    rig.connect(1, true, false);
+    rig.connect(2, true, false);
+    rig.publish(0);
+    rig.request(1, 0, 1);
+    rig.request(2, 0, 1);
+    let first = rig.spin();
+    assert_eq!(first.len(), 2);
+    let dropped = first.iter().find(|(peer, _)| *peer == 1).unwrap().1;
+    rig.request(1, 0, 2);
+    let second = rig.spin();
+    assert_eq!(second.len(), 1);
+
+    rig.dropped(1, dropped);
+    assert!(rig.spin().is_empty(), "retry waits for its backoff");
+    rig.now += RETRY;
+    let retried = rig.spin();
+    assert_eq!(retried.len(), 1);
+    assert_eq!(retried[0].0, 1);
+    let wire = rig.wire(retried[0].1);
+    let rpc = protobuf::RPCView::decode_view(&wire).unwrap();
+    let payload = rpc.partial.as_option().unwrap().partial_message.unwrap();
+    assert_eq!(PartialDataColumnSidecarFuluView::check_size(payload, ROWS), Some(2));
+    assert!(
+        PartialDataColumnSidecarFuluView::header(payload).is_empty(),
+        "known headers survive retries"
+    );
+
+    rig.dropped(1, second[0].1);
+    rig.now += RETRY;
+    assert!(
+        rig.spin().is_empty(),
+        "another drop from the old batch must not reset its replacement"
+    );
+    rig.request(2, 0, 1);
+    assert!(rig.spin().is_empty());
+
+    rig.dropped(1, retried[0].1);
+    rig.now += RETRY;
+    assert_eq!(rig.spin().len(), 1, "a dropped replacement still triggers recovery");
+}
+
+#[test]
+fn stream_closure_preserves_requests_for_the_replacement_stream() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.publish(0);
+    rig.request(1, 0, 3);
+    let first = rig.spin();
+    assert_eq!(first.len(), 1);
+    rig.exchange.peer_event(
+        &PeerEvent::P2pStreamClosed {
+            stream_id: P2pStreamId::new(1, 4, StreamProtocol::GossipSubV13, false),
+        },
+        rig.now,
+    );
+    rig.now += RETRY;
+    let retried = rig.spin();
+    assert_eq!(retried.len(), 1);
+    assert_eq!(rig.wire(first[0].1), rig.wire(retried[0].1));
+    rig.dropped(1, first[0].1);
+    rig.now += RETRY;
+    assert!(rig.spin().is_empty());
+}
+
+#[test]
+fn heartbeat_frame_quota_is_per_peer_and_drops_do_not_refund_it() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.publish(0);
+    let mut last = None;
+    for attempt in 0..16 {
+        rig.request(1, 0, 1 << (attempt % ROWS));
+        let frames = rig.spin();
+        assert_eq!(frames.len(), 1);
+        last = Some(frames[0].1);
+    }
+    rig.request(1, 0, 1);
+    let seq = rig.output.next_seq();
+    assert!(rig.spin().is_empty());
+    assert_eq!(
+        rig.output.next_seq(),
+        seq,
+        "rate limiting must happen before reserving a descriptor"
+    );
+
+    rig.connect(2, true, false);
+    rig.request(2, 0, 1);
+    let frames = rig.spin();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].0, 2);
+
+    rig.dropped(1, last.unwrap());
+    rig.now += RETRY;
+    assert!(rig.spin().is_empty());
+    rig.now += HEARTBEAT - RETRY;
+    let frames = rig.spin();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].0, 1);
+}
+
+#[test]
+fn heartbeat_byte_quota_checks_the_entire_frame_before_writing() {
+    for format in [ForkName::Fulu, ForkName::Gloas] {
+        let mut rig = Rig::new(format);
+        rig.connect(1, true, false);
+        rig.publish(0);
+        rig.request(1, 0, 1);
+        let frame = rig.spin()[0].1;
+        let wire_len = rig.wire(frame).len();
+        let budget = rig.exchange.peer_exchanges.get_mut(&1).unwrap();
+        budget.record(frame.read().seq(), budget.remaining_bytes() - wire_len + 1);
+        rig.request(1, 0, 2);
+        let seq = rig.output.next_seq();
+        assert!(rig.spin().is_empty());
+        assert_eq!(rig.output.next_seq(), seq);
+        let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 0).group };
+        assert_eq!(rig.exchange.exchanges[&key].sent, 0);
+
+        rig.now += HEARTBEAT;
+        let frames = rig.spin();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(rig.wire(frames[0].1).len(), wire_len);
+    }
+}
+
+#[test]
+fn subscription_changes_and_slot_expiry_cannot_reset_the_heartbeat_budget() {
+    let mut rig = Rig::new(ForkName::Gloas);
+    rig.connect(1, true, false);
+    rig.publish(0);
+    rig.request(1, 0, 1);
+    let frame = rig.spin()[0].1;
+    let budget = rig.exchange.peer_exchanges.get_mut(&1).unwrap();
+    budget.record(frame.read().seq(), budget.remaining_bytes());
+    for event in [
+        PeerEvent::P2pGossipTopicUnsubscribe {
+            p2p_peer: 1,
+            topic: GossipTopic::DataColumnSidecar(0),
+            digest: rig.domain.digest(),
+        },
+        PeerEvent::P2pGossipExtensions { p2p_peer: 1, partial_messages: true },
+    ] {
+        rig.exchange.peer_event(&event, rig.now);
+        rig.request(1, 0, 1);
+        assert!(rig.spin().is_empty());
+        assert_eq!(rig.exchange.peer_exchanges[&1].remaining_bytes(), 0);
+    }
+    rig.exchange
+        .expire(1, &rig.peers, &mut rig.output, rig.now, &mut |_| panic!("no remaining quota"));
+    assert_eq!(rig.exchange.peer_exchanges[&1].remaining_bytes(), 0);
+    // Old-slot drops must not reset new exchange state or schedule a retry.
+    let key = ExchangeKey { peer: 1, group: rig.message(1, 0, 0).group };
+    rig.exchange.admit(key, 1, ROWS, rig.now + Duration::from_secs(12), rig.now);
+    rig.dropped(1, frame);
+    assert_eq!(rig.exchange.exchanges[&key].retry_at, rig.now);
+    assert!(rig.exchange.ready.is_empty());
 }

@@ -761,6 +761,37 @@ mod tests {
     use crate::manager::{attempts::OutboundAttempt, fixture::*};
 
     #[test]
+    fn dropped_message_releases_only_rpc_request_capacity() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let protocol = StreamProtocol::Ping;
+        let index = protocol.ordinal() as usize;
+        mgr.peers.get_mut(&1).unwrap().outbound_in_flight[index] = 2;
+        let response = RpcOutbound::Response(RpcResponseOutbound {
+            stream_id: P2pStreamId::new(1, 3, protocol, true),
+            response: RpcResponse::Ping([0; 8]),
+        });
+        let request = RpcOutbound::Request(RpcRequestOutbound {
+            application_id: 7,
+            peer: 1,
+            request: RpcRequest::Ping([0; 8]),
+        });
+        for (msg, remaining) in [(response, 2), (request, 1)] {
+            mgr.handle_event(
+                PeerEvent::P2pOutboundMessageDropped {
+                    p2p_peer: 1,
+                    protocol,
+                    msg: P2pSend::Rpc(msg),
+                },
+                now,
+                &mut |control| cap.0.push(control),
+            );
+            assert_eq!(mgr.peers[&1].outbound_in_flight[index], remaining);
+        }
+    }
+
+    #[test]
     fn invalid_request_is_low_tolerance() {
         // Same severity for any protocol — peer claims our request was bad.
         assert!(matches!(
