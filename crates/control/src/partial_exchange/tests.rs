@@ -6,8 +6,8 @@ use silver_columns::cell_store::CellStore;
 use silver_common::{
     CacheFrameRef, GossipDomain, Keypair, P2pStreamId, PeerId, StreamProtocol, TCache,
     TCacheProducer, TRandomAccess,
-    cell_store::{CommitmentContext, ContextData, FuluContextSource},
-    column_util::push_data_column_sidecar_prefix,
+    cell_store::{AssemblyRequest, CommitmentContext, ContextData, FuluContextSource},
+    column_util::{columns_of, push_data_column_sidecar_prefix},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF, METADATA_SIZE,
         partial_column::{
@@ -25,12 +25,15 @@ use super::*;
 #[rustfmt::skip]
 mod protobuf;
 
+mod acquisition;
 mod allocations;
 
 const ROOT: [u8; 32] = [7; 32];
 const ROWS: usize = 4;
 
 struct Rig {
+    config: CellStoreConfig,
+    request: AssemblyRequest,
     columns: Box<TRandomAccess>,
     network: Box<TRandomAccess>,
     outbound: Box<TRandomAccess>,
@@ -45,23 +48,27 @@ struct Rig {
 
 impl Rig {
     fn new(format: ForkName) -> Self {
+        Self::with_columns(format, 3)
+    }
+
+    fn with_columns(format: ForkName, column_mask: u128) -> Self {
         let now = Instant::now();
         let spec = Arc::new(SpecConfig {
             fulu_fork_epoch: 0,
-            gloas_fork_epoch: if format == ForkName::Gloas { 0 } else { u64::MAX },
+            gloas_fork_epoch: if format == ForkName::Gloas { 0 } else { 1 },
             max_blobs_per_block_electra: ROWS as u64,
             blob_schedule: Vec::new(),
             ..SpecConfig::mainnet()
         });
-        let config = CellStoreConfig::new(spec, 3, Duration::from_secs(11)).unwrap();
+        let config = CellStoreConfig::new(spec, column_mask, Duration::from_secs(11)).unwrap();
         let producer = TCache::producer("", config.cache_capacity());
         let columns = Box::new(producer.cache_ref().retained_random_access("").unwrap());
         let network = Box::new(producer.cache_ref().retained_random_access("").unwrap());
         let output = TCache::producer("", 1 << 20);
         let outbound = Box::new(output.cache_ref().strict_random_access("", true).unwrap());
-        let exchange = PartialExchange::new(&config, 0, now);
+        let exchange = PartialExchange::new(&config, 0, now, PartialColumnsMode::SendOnly);
         let mut ingress = CellIngress::new(config.clone(), producer, 0, now).unwrap();
-        let mut store = CellStore::new(config, 0, now).unwrap();
+        let mut store = CellStore::new(config.clone(), 0, now).unwrap();
         let domain = GossipDomain::new([0; 4], format);
         let header = [0; 208];
         let proof = [0x33; 128];
@@ -118,14 +125,27 @@ impl Rig {
         let peers = PeerManager::new(
             PeerId::default(),
             vec![],
-            vec![GossipTopic::DataColumnSidecar(0), GossipTopic::DataColumnSidecar(1)],
+            columns_of(column_mask).map(GossipTopic::DataColumnSidecar).collect(),
             Default::default(),
             SyncingConfig::default(),
             [0; 4],
             [0; METADATA_SIZE],
-            3,
+            column_mask,
         );
-        Self { columns, network, outbound, store, ingress, output, exchange, peers, domain, now }
+        Self {
+            config,
+            request,
+            columns,
+            network,
+            outbound,
+            store,
+            ingress,
+            output,
+            exchange,
+            peers,
+            domain,
+            now,
+        }
     }
 
     fn connect(&mut self, peer: usize, requests: bool, mesh: bool) {
@@ -143,7 +163,7 @@ impl Rig {
         for event in events {
             self.peers.handle_event(event, self.now, &mut |_| {});
         }
-        for column in 0..2 {
+        for column in columns_of(self.config.columns()) {
             self.peers.handle_event(
                 PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: peer,
@@ -201,12 +221,28 @@ impl Rig {
 
     fn spin(&mut self) -> Vec<(usize, CacheFrameRef)> {
         let mut frames = Vec::new();
-        self.exchange.spin(&self.ingress, &self.peers, &mut self.output, self.now, &mut |event| {
+        let mut emit = |event| {
             let P2pSend::SegmentedGossip { peer_id, frame, .. } = event else {
                 panic!("unexpected send")
             };
             frames.push((peer_id, frame));
-        });
+        };
+        self.exchange.advance(
+            &self.ingress,
+            &self.peers,
+            &mut self.output,
+            self.now,
+            &mut emit,
+            &mut |_| panic!("unexpected full recovery"),
+        );
+        self.exchange.spin(
+            &self.ingress,
+            &self.peers,
+            &mut self.output,
+            self.now,
+            &mut emit,
+            &mut |_| panic!("unexpected full recovery"),
+        );
         frames
     }
 

@@ -12,6 +12,7 @@ pub(super) struct PeerColumnExchange {
     pub remote: Option<PartsMetadata>,
     pub remote_slot: Option<u64>,
     pub advertised: Option<u128>,
+    pub advertised_requests: u128,
     pub sent: u128,
     pub scheduled: bool,
     pub retry_at: Instant,
@@ -27,6 +28,7 @@ impl PeerColumnExchange {
             remote: None,
             remote_slot: None,
             advertised: None,
+            advertised_requests: 0,
             sent: 0,
             scheduled: false,
             retry_at: now,
@@ -51,6 +53,11 @@ impl PeerColumnExchange {
     pub fn requested(&self, available: u128) -> u128 {
         self.remote.map_or(0, |remote| available & remote.requests & !remote.available & !self.sent)
     }
+
+    pub fn remote_matches(&self, slot: u64, n_rows: usize) -> bool {
+        self.remote.is_none_or(|remote| remote.n_rows == n_rows) &&
+            self.remote_slot.is_none_or(|remote_slot| remote_slot == slot)
+    }
 }
 
 #[cfg(test)]
@@ -64,6 +71,19 @@ mod tests {
 
     fn metadata(available: u128, requests: u128) -> PartsMetadata {
         PartsMetadata { available, requests, n_rows: 128 }
+    }
+
+    #[test]
+    fn remote_compatibility_checks_rows_and_optional_slot() {
+        let mut exchange = exchange();
+        assert!(exchange.remote_matches(1, 64));
+        exchange.replace(metadata(0, 0), None);
+        assert!(exchange.remote_matches(1, 128));
+        assert!(!exchange.remote_matches(1, 64));
+        exchange.replace(metadata(0, 0), Some(1));
+        assert!(exchange.remote_matches(1, 128));
+        assert!(!exchange.remote_matches(0, 128));
+        assert!(!exchange.remote_matches(1, 64));
     }
 
     #[test]
