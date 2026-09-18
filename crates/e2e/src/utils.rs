@@ -146,6 +146,7 @@ impl PmBsHarness {
             rpc_c,
             engine_resp_c,
             replay_c,
+            TCache::producer("test_beacon_state", 1 << 25),
             // Replays a committed fixture whose anchor is intentionally old; the
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,

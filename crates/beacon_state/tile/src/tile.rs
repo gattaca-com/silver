@@ -13,7 +13,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
     HeadRoots, NewGossipMsg, Origin, PayloadResolution, ReplayBlock, RequestId, RpcInbound,
-    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
+    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheProducer, TProducer,
+    TRandomAccess, TRead, hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -137,6 +138,7 @@ pub struct BeaconStateTile {
 
     fork_choice: ForkChoice,
     shuffling_cache: Box<ShufflingCache>,
+    events_producer: TProducer,
     seen_attesters: SeenValidators,
     seen_aggregators: SeenValidators,
     seen_aggregates: SeenAggregates,
@@ -212,6 +214,7 @@ impl BeaconStateTile {
         rpc_consumer: TRandomAccess,
         incoming_engine_resp_consumer: TRandomAccess,
         replay_consumer: TRandomAccess,
+        events_producer: TProducer,
         verify_weak_subjectivity: bool,
         state: BeaconState,
     ) -> Self {
@@ -225,6 +228,7 @@ impl BeaconStateTile {
             state: owner,
             fork_choice: ForkChoice::default(),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
+            events_producer,
             seen_attesters: SeenValidators::new(val_cap),
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
@@ -542,6 +546,15 @@ impl BeaconStateTile {
         producers.produce(event);
     }
 
+    fn post_shufflings(&mut self, producers: &mut Producers) {
+        let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
+        let producer = &mut self.events_producer;
+        self.shuffling_cache.post_fresh(head_epoch, |epoch, shuffling| {
+            shuffling.post(epoch, producer, |event| producers.produce(event))
+        });
+        producer.publish_head();
+    }
+
     /// Covers changes since the last Status, including execution verdicts.
     fn publish_status_on_head_change(&mut self, producers: &mut Producers) {
         let head = self.selected_head();
@@ -619,14 +632,14 @@ impl BeaconStateTile {
     /// Per-slot fork-choice tick (spec `on_tick_per_slot`): advance the head
     /// state across empty slots, then run the fork-choice tick. Returns whether
     /// a state advance occurred.
-    fn slot_tick(&mut self, slot: Slot) -> bool {
+    fn slot_tick(&mut self, slot: Slot, producers: &mut Producers) -> bool {
         let advanced = self.on_slot_start(slot);
         if advanced {
             // Head-derived epoch, never the wall clock (wall-clock epochs
             // diverge from the head during sync and poison the cache).
             // Covers epochs with no blocks, where no post-apply hook fired.
             let state_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
-            self.precompute_next_epoch_shuffling(state_epoch);
+            self.precompute_next_epoch_shuffling(state_epoch, producers);
         }
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
@@ -692,7 +705,7 @@ impl BeaconStateTile {
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
                 let prev_head = self.fork_choice.find_head();
-                let advanced = self.slot_tick(slot);
+                let advanced = self.slot_tick(slot, &mut adapter.producers);
                 if advanced || self.fork_choice.find_head() != prev_head {
                     self.publish_status(&mut adapter.producers);
                 }
@@ -806,7 +819,7 @@ impl BeaconStateTile {
     fn on_replay(&mut self, m: ReplayBlock, producers: &mut Producers) {
         match m {
             ReplayBlock::Block { ssz } => {
-                self.replay_block(ssz);
+                self.replay_block(ssz, producers);
             }
             ReplayBlock::Envelope { ssz } => {
                 self.replay_envelope(ssz);
@@ -976,6 +989,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         if !self.initial_status_emitted {
             tracing::info!("producing initial status");
             self.publish_status(&mut adapter.producers);
+            self.post_shufflings(&mut adapter.producers);
             self.initial_status_emitted = true;
         }
 
