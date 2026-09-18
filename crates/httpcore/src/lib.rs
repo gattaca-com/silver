@@ -1,3 +1,4 @@
+mod chunked_decoder;
 mod chunked_response;
 mod client;
 mod query;
