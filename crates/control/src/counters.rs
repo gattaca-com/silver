@@ -20,5 +20,6 @@ silver_common::declare_counters! {
         PartialExchanges,
         PartialPendingFrames,
         PartialResponsesSent,
+        PartialCellsRequested,
     }
 }
