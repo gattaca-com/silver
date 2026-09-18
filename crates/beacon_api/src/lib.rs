@@ -16,6 +16,8 @@ mod routes;
 mod server;
 mod statics;
 mod sync_duties;
+#[cfg(test)]
+mod testing;
 mod validator_api;
 mod validators;
 
