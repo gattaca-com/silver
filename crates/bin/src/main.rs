@@ -26,7 +26,7 @@ use silver_common::{
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
 };
-use silver_config::{Config, PartialColumnsMode};
+use silver_config::Config;
 use silver_control::{Controller, cluster::AttestationClusterConfig, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
@@ -254,10 +254,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let partial_columns =
-        config.partial_columns().map_err(|error| format!("partial columns config: {error:?}"))?;
+    let partial_columns = config.partial_columns();
 
-    let cell_config = (partial_columns != PartialColumnsMode::Off)
+    let cell_config = partial_columns
+        .supports_sending()
         .then(|| CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION))
         .transpose()
         .map_err(|error| format!("cell store configuration: {error:?}"))?;
@@ -329,6 +329,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 data_columns_producer,
                 cell_slot,
                 cell_slot_start,
+                partial_columns,
             )
             .map_err(|error| format!("cell store construction: {error:?}"))?;
     }

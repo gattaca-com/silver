@@ -13,6 +13,7 @@ pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_chain_spec::ForkName;
+pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
     Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
     SUBNETS_PER_NODE, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
@@ -105,17 +106,6 @@ fn anchor_genesis(path: &str) -> Result<(u64, [u8; 32]), Error> {
     })?;
     let genesis_unix_secs = u64::from_le_bytes(head[..8].try_into().unwrap());
     Ok((genesis_unix_secs, head[8..].try_into().unwrap()))
-}
-
-/// Partial data-column exchange mode. `SendOnly` advertises and serves
-/// partials while requesting full sidecars; `Enabled` also requests them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PartialColumnsMode {
-    #[default]
-    Off,
-    SendOnly,
-    Enabled,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -546,13 +536,8 @@ impl Config {
         self.attestation_subnet_count
     }
 
-    /// Receiving partial columns remains disabled until validation and request
-    /// scheduling are connected.
-    pub fn partial_columns(&self) -> Result<PartialColumnsMode, Error> {
-        match self.partial_columns {
-            PartialColumnsMode::Off | PartialColumnsMode::SendOnly => Ok(self.partial_columns),
-            mode => Err(Error::ConfigError(format!("partial_columns {mode:?} is not supported"))),
-        }
+    pub fn partial_columns(&self) -> PartialColumnsMode {
+        self.partial_columns
     }
 
     pub fn trusted_peers(&self) -> &[Enr] {
@@ -595,7 +580,7 @@ mod tests {
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
-        assert_eq!(cfg.partial_columns().unwrap(), PartialColumnsMode::Off);
+        assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
     }
 
     #[test]
@@ -607,10 +592,9 @@ mod tests {
         "#;
         let cfg: Config =
             toml::from_str(&format!("{base}partial_columns = \"send_only\"")).unwrap();
-        assert_eq!(cfg.partial_columns().unwrap(), PartialColumnsMode::SendOnly);
+        assert_eq!(cfg.partial_columns(), PartialColumnsMode::SendOnly);
         let cfg: Config = toml::from_str(&format!("{base}partial_columns = \"enabled\"")).unwrap();
-        let err = format!("{:?}", cfg.partial_columns().unwrap_err());
-        assert!(err.contains("not supported"), "{err}");
+        assert_eq!(cfg.partial_columns(), PartialColumnsMode::Enabled);
     }
 
     /// A devnet copying mainnet's `CONFIG_NAME` still runs — `from_file`

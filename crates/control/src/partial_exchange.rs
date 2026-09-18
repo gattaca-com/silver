@@ -5,13 +5,14 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    ForkName, GossipTopic, P2pSend, PeerEvent, TProducer,
-    cell_store::{CellStoreConfig, ColumnAvailability},
+    DataColumnsEvent, ForkName, GossipTopic, P2pSend, PeerEvent, SyncNeed, TProducer,
+    cell_store::{AssemblyRequest, CellStoreConfig, ColumnAvailability, PartialColumnsMode},
 };
 use silver_gossip::{ColumnGroupKey, PartialMetadataReceived, PartsMetadata};
 use silver_peer::PeerManager;
 
 use self::{
+    acquisition::Acquisition,
     headers::HeaderTracker,
     peer_column::{ExchangeKey, PeerColumnExchange},
     peer_exchange::PeerExchange,
@@ -19,6 +20,7 @@ use self::{
 };
 use crate::{ControlCounters, cell_ingress::CellIngress};
 
+mod acquisition;
 mod headers;
 mod peer_column;
 mod peer_exchange;
@@ -42,10 +44,16 @@ pub(crate) struct PartialExchange {
     columns: u128,
     slot: u64,
     next_heartbeat: Instant,
+    acquisition: Option<Acquisition>,
 }
 
 impl PartialExchange {
-    pub fn new(config: &CellStoreConfig, slot: u64, now: Instant) -> Self {
+    pub fn new(
+        config: &CellStoreConfig,
+        slot: u64,
+        now: Instant,
+        mode: PartialColumnsMode,
+    ) -> Self {
         let peer_capacity = config.column_capacity().max(16);
         let capacity = (peer_capacity * 32).min(8192);
         Self {
@@ -59,6 +67,40 @@ impl PartialExchange {
             columns: config.columns(),
             slot,
             next_heartbeat: now,
+            acquisition: mode.requests().then(|| Acquisition::new(config, slot, now)),
+        }
+    }
+
+    pub fn context(&mut self, request: AssemblyRequest, expires: Instant, now: Instant) {
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.context(request, expires, now);
+        }
+    }
+
+    pub fn validated(&mut self, event: DataColumnsEvent, now: Instant) {
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.validated(event, now);
+        }
+    }
+
+    pub fn acquire(
+        &mut self,
+        ingress: &CellIngress,
+        peers: &PeerManager,
+        now: Instant,
+        recover: &mut impl FnMut(SyncNeed),
+    ) {
+        let Some(acquisition) = &mut self.acquisition else { return };
+        acquisition.drive(ingress, peers, &self.exchanges, now, recover);
+        while let Some(key) = self.acquisition.as_mut().and_then(Acquisition::pop_changed) {
+            let Some(column) =
+                ingress.availability(&key.group.block_root, key.group.column as usize, now)
+            else {
+                continue
+            };
+            if self.admit(key, column.slot, column.blob_count, column.expires, now).is_some() {
+                self.schedule(key);
+            }
         }
     }
 
@@ -107,6 +149,9 @@ impl PartialExchange {
         if now >= column.expires || column.slot != self.slot {
             return;
         }
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.wake(now);
+        }
         let group = ColumnGroupKey::from(column);
         let topic = GossipTopic::DataColumnSidecar(group.column);
         let mut lazy_remaining = if lazy { peers.lazy_gossip_limit() } else { 0 };
@@ -126,9 +171,7 @@ impl PartialExchange {
             exchange.slot = column.slot;
             exchange.n_rows = column.blob_count;
             exchange.expires = column.expires;
-            if exchange.remote.is_some_and(|remote| remote.n_rows != column.blob_count) ||
-                exchange.remote_slot.is_some_and(|slot| slot != column.slot)
-            {
+            if !exchange.remote_matches(column.slot, column.blob_count) {
                 exchange.remote = None;
                 exchange.remote_slot = None;
                 ControlCounters::PartialMetadataIgnored.inc();
@@ -191,6 +234,9 @@ impl PartialExchange {
             self.headers.known(key.peer, group);
         }
         self.schedule(key);
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.wake(now);
+        }
     }
 
     pub fn peer_event(&mut self, event: &PeerEvent, now: Instant) {
@@ -283,6 +329,9 @@ impl PartialExchange {
     }
 
     pub fn reject(&mut self, root: &[u8; 32]) {
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.reject(root);
+        }
         self.remove_where(|key| &key.group.block_root == root);
         self.headers.remove_root(root);
     }
@@ -300,9 +349,13 @@ impl PartialExchange {
         producer: &mut TProducer,
         now: Instant,
         emit: &mut impl FnMut(P2pSend),
+        recover: &mut impl FnMut(SyncNeed),
     ) -> bool {
-        self.advance_slot(ingress, peers, producer, now, emit);
         let mut did_work = false;
+        self.acquire(ingress, peers, now, &mut |need| {
+            did_work = true;
+            recover(need);
+        });
         for _ in 0..self.ready.len().min(WORK_PER_SPIN) {
             let Some(key) = self.ready.pop_front() else { break };
             let Some(exchange) = self.exchanges.get_mut(&key) else {
@@ -331,17 +384,21 @@ impl PartialExchange {
             else {
                 continue;
             };
-            if exchange.remote.is_some_and(|r| r.n_rows != column.blob_count) ||
-                exchange.remote_slot.is_some_and(|s| s != column.slot)
-            {
+            if !exchange.remote_matches(column.slot, column.blob_count) {
                 continue;
             }
             let rows = if peer.requests { exchange.requested(column.available) } else { 0 };
+            let requests =
+                self.acquisition.as_ref().map_or(0, |acquisition| acquisition.requests(key));
             let header = peer.requests &&
                 key.group.domain.format() == ForkName::Fulu &&
                 column.header.is_some() &&
                 self.headers.needed(key.peer, key.group);
-            if rows == 0 && !header && exchange.advertised == Some(column.available) {
+            if rows == 0 &&
+                !header &&
+                exchange.advertised == Some(column.available) &&
+                exchange.advertised_requests == requests
+            {
                 continue;
             }
             let response = PartialResponse {
@@ -349,7 +406,7 @@ impl PartialExchange {
                 slot: column.slot,
                 metadata: PartsMetadata {
                     available: column.available,
-                    requests: 0,
+                    requests,
                     n_rows: column.blob_count,
                 },
                 column: Some(column),
@@ -377,6 +434,9 @@ impl PartialExchange {
             budget.record(seq, bytes);
             exchange.sent |= rows;
             exchange.advertised = Some(column.available);
+            ControlCounters::PartialCellsRequestedOutbound
+                .add((requests & !exchange.advertised_requests).count_ones() as u64);
+            exchange.advertised_requests = requests;
             exchange.frames_sent += 1;
             if header {
                 self.headers.sent(key.peer, key.group);
@@ -393,13 +453,16 @@ impl PartialExchange {
         did_work
     }
 
-    pub fn advance_slot(
+    /// Advance the slot and heartbeat before processing this loop's incoming
+    /// events.
+    pub fn advance(
         &mut self,
         ingress: &CellIngress,
         peers: &PeerManager,
         producer: &mut TProducer,
         now: Instant,
         emit: &mut impl FnMut(P2pSend),
+        recover: &mut impl FnMut(SyncNeed),
     ) {
         let heartbeat = now >= self.next_heartbeat;
         if heartbeat {
@@ -410,6 +473,9 @@ impl PartialExchange {
             });
         }
         let (slot, _) = ingress.slot_window();
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.advance_slot(slot, now, recover);
+        }
         if slot != self.slot {
             self.expire(slot, peers, producer, now, emit);
         }
@@ -440,7 +506,7 @@ impl PartialExchange {
         for (key, exchange) in self
             .exchanges
             .iter()
-            .filter(|(_, e)| e.advertised.is_some_and(|a| a != 0))
+            .filter(|(_, e)| e.advertised.is_some_and(|a| a != 0) || e.advertised_requests != 0)
             .take(WORK_PER_SPIN)
         {
             if peers

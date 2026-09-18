@@ -5,7 +5,7 @@ use buffa::{
 };
 use silver_common::{
     Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, TCacheProducer,
-    TCacheRead, TProducer,
+    TCacheRead, TProducer, cell_store::PartialColumnsMode,
 };
 
 use crate::{
@@ -336,15 +336,15 @@ pub fn copy_subscribes_to_protobuf_output(
     producer: &mut TProducer,
     topics: &[&str],
 ) -> Result<TCacheRead, Error> {
-    copy_subscriptions(producer, topics, false)
+    copy_subscriptions(producer, topics, PartialColumnsMode::Off)
 }
 
 pub(crate) fn copy_subscriptions(
     producer: &mut TProducer,
     topics: &[&str],
-    supports_partial: bool,
+    mode: PartialColumnsMode,
 ) -> Result<TCacheRead, Error> {
-    encode_sub_opts(producer, topics, true, supports_partial)
+    encode_sub_opts(producer, topics, true, mode)
 }
 
 /// As `copy_subscribes_to_protobuf_output` but with `subscribe = false`
@@ -353,7 +353,7 @@ pub fn copy_unsubscribes_to_protobuf_output(
     producer: &mut TProducer,
     topics: &[&str],
 ) -> Result<TCacheRead, Error> {
-    encode_sub_opts(producer, topics, false, false)
+    encode_sub_opts(producer, topics, false, PartialColumnsMode::Off)
 }
 
 /// Subscribe / unsubscribe share wire shape; only the bool differs.
@@ -361,8 +361,9 @@ fn encode_sub_opts(
     producer: &mut TProducer,
     topics: &[&str],
     subscribe: bool,
-    supports_partial: bool,
+    mode: PartialColumnsMode,
 ) -> Result<TCacheRead, Error> {
+    let supports_partial = mode.supports_sending();
     // RPC.subscriptions = field 1 (LD, repeated SubOpts).
     // SubOpts.subscribe = field 1 (varint), topic_id = field 2 (string).
     // All field numbers ≤ 15 → 1-byte tags. Bool encodes as 1-byte varint.
@@ -402,7 +403,7 @@ fn encode_sub_opts(
         encode_string(topic, &mut cursor);
         if supports_partial {
             Tag::new(3, WireType::Varint).encode(&mut cursor);
-            encode_varint(0, &mut cursor);
+            encode_varint(u64::from(mode.requests()), &mut cursor);
             Tag::new(4, WireType::Varint).encode(&mut cursor);
             encode_varint(1, &mut cursor);
         }
@@ -599,6 +600,8 @@ mod tests {
         for (s, expect) in subs.iter().zip(topics.iter()) {
             assert_eq!(s.subscribe, Some(true));
             assert_eq!(s.topic_id, Some(*expect));
+            assert_eq!(s.requests_partial, None);
+            assert_eq!(s.supports_sending_partial, None);
         }
     }
 
@@ -608,13 +611,29 @@ mod tests {
         let read = copy_subscriptions(
             &mut producer,
             &["/eth2/00000000/data_column_sidecar_3/ssz_snappy"],
-            true,
+            PartialColumnsMode::SendOnly,
         )
         .unwrap();
         let bytes = read_bytes(read, &producer);
         let rpc = RPCView::decode_view(&bytes).unwrap();
         let subscription = rpc.subscriptions.iter().next().unwrap();
         assert_eq!(subscription.requests_partial, Some(false));
+        assert_eq!(subscription.supports_sending_partial, Some(true));
+    }
+
+    #[test]
+    fn requesting_subscription_always_advertises_support_for_sending() {
+        let mut producer = TCache::producer("", 1 << 14);
+        let read = copy_subscriptions(
+            &mut producer,
+            &["/eth2/00000000/data_column_sidecar_3/ssz_snappy"],
+            PartialColumnsMode::Enabled,
+        )
+        .unwrap();
+        let bytes = read_bytes(read, &producer);
+        let rpc = RPCView::decode_view(&bytes).unwrap();
+        let subscription = rpc.subscriptions.iter().next().unwrap();
+        assert_eq!(subscription.requests_partial, Some(true));
         assert_eq!(subscription.supports_sending_partial, Some(true));
     }
 

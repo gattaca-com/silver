@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::{Deserialize, Serialize};
 use silver_beacon_state_data::ForkName;
 
 use crate::{
@@ -24,6 +25,29 @@ pub use counters::DataColumnCounters;
 
 pub const CELL_RECORD_BYTES: usize = BYTES_PER_CELL + BYTES_PER_KZG_PROOF;
 pub const MAX_CONTEXT_BYTES: usize = PARTIAL_HEADER_FIXED + 128 * BYTES_PER_KZG_COMMITMENT;
+
+/// `SendOnly` serves partials while requesting full sidecars; `Enabled` also
+/// requests partials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartialColumnsMode {
+    #[default]
+    Off,
+    SendOnly,
+    Enabled,
+}
+
+impl PartialColumnsMode {
+    #[inline]
+    pub const fn supports_sending(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    #[inline]
+    pub const fn requests(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {
