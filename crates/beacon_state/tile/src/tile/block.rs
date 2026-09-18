@@ -1,16 +1,13 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Checkpoint, Epoch,
-    SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot,
+    StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
     SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, hex32,
-    ssz_view::{
-        self, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView,
-        SignedBeaconBlockView,
-    },
+    ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
 
 use super::{
@@ -20,8 +17,8 @@ use crate::{
     bls,
     error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
-    ssz_hash::{self, PayloadRoots},
-    stf::{self, BlockInput},
+    ssz_hash,
+    stf::{self, BlockFork, BlockInput},
 };
 
 pub(super) struct ParsedBlock {
@@ -29,10 +26,9 @@ pub(super) struct ParsedBlock {
     pub(super) block_root: B256,
     pub(super) has_data_columns: bool,
     pub(super) parent_state_id: StateId,
-    pub(super) is_gloas: bool,
+    pub(super) fork: BlockFork,
     pub(super) parent_payload_status: PayloadStatus,
     pub(super) relay_eligible: bool,
-    pub(super) payload_roots: Option<PayloadRoots>,
 }
 
 struct AppliedBlock {
@@ -446,7 +442,7 @@ impl BeaconStateTile {
         let input = BlockInput {
             header: &parsed.header,
             body: SignedBeaconBlockView::body(data),
-            payload_roots: parsed.payload_roots,
+            fork: parsed.fork,
             shuffling: &sref,
         };
         let transition = stf::apply_block(
@@ -499,7 +495,7 @@ impl BeaconStateTile {
             votes,
         } = applied;
 
-        let is_gloas = parsed.is_gloas;
+        let is_gloas = parsed.fork.is_gloas();
         let (parent_payload_status, bid_block_hash, payload_verified) = if is_gloas {
             (parsed.parent_payload_status, bid_block_hash, false)
         } else {
@@ -613,13 +609,10 @@ impl BeaconStateTile {
             return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
         }
 
-        let fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
-        BodyOffsets::new(body, fork)
-            .ok_or(BlockBodyError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
-            .and_then(|offsets| offsets.validate())
+        let body_fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
+        let offsets = BodyOffsets::validated(body, body_fork)
             .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
-
-        let (body_root, payload_roots) = ssz_hash::hash_tree_root_body_with_roots(body, is_gloas);
+        let (body_root, fork) = stf::hash_body(&offsets);
 
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -733,10 +726,9 @@ impl BeaconStateTile {
             block_root,
             has_data_columns,
             parent_state_id,
-            is_gloas,
+            fork,
             parent_payload_status,
             relay_eligible,
-            payload_roots,
         })
     }
 
@@ -751,15 +743,11 @@ impl BeaconStateTile {
         rv: &StateReadView<'_>,
         block_root: B256,
     ) -> Result<(), PrecheckError> {
-        let Some(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
+        let Ok(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
             return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
         };
-        let payload = offsets.payload();
-        if payload.len() < ssz_view::EXECUTION_PAYLOAD_FIXED {
-            return Err(PrecheckError::NonCanonicalBody { block_slot, body_len: body.len() });
-        }
         let expected = rv.imm.genesis_time + block_slot * self.spec.seconds_per_slot();
-        let got = ssz_view::ExecutionPayloadView::timestamp(payload);
+        let got = ssz_view::ExecutionPayloadView::timestamp(offsets.payload().bytes());
         if got != expected {
             return Err(PrecheckError::PayloadTimestamp { expected, got, block_root });
         }

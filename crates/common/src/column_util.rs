@@ -590,15 +590,24 @@ mod tests {
     /// `blob_kzg_commitments`, so its body_root + inclusion proof are
     /// self-consistent for the encoded sidecar.
     fn synth_body_with_commitments(commitments: &[u8]) -> Vec<u8> {
+        use silver_common::ssz_view::EXECUTION_PAYLOAD_FIXED;
         const FIXED: usize = 396;
-        let mut body = vec![0u8; FIXED + commitments.len()];
-        // All variable fields empty (offset = FIXED) except blob_kzg_commitments.
-        for pos in [200usize, 204, 208, 212, 216, 380, 384, 388] {
+        // Empty lists, a bare fixed-prefix payload, then the commitments.
+        let payload_end = FIXED + EXECUTION_PAYLOAD_FIXED;
+        let mut body = vec![0u8; payload_end + commitments.len()];
+        for pos in [200usize, 204, 208, 212, 216, 380] {
             body[pos..pos + 4].copy_from_slice(&(FIXED as u32).to_le_bytes());
         }
-        // execution_requests starts after the commitments list.
-        body[392..396].copy_from_slice(&((FIXED + commitments.len()) as u32).to_le_bytes());
-        body[FIXED..].copy_from_slice(commitments);
+        for pos in [384usize, 388] {
+            body[pos..pos + 4].copy_from_slice(&(payload_end as u32).to_le_bytes());
+        }
+        let body_end = body.len() as u32;
+        body[392..396].copy_from_slice(&body_end.to_le_bytes());
+        for pos in [436usize, 504, 508] {
+            let at = FIXED + pos;
+            body[at..at + 4].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED as u32).to_le_bytes());
+        }
+        body[payload_end..].copy_from_slice(commitments);
         body
     }
 

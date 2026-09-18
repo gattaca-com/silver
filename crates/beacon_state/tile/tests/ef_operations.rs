@@ -8,9 +8,10 @@ use ef_common::{
 };
 use silver_beacon_state::{
     bls::SigBatch,
+    ssz_hash::PayloadRoots,
     stf::{self, ShufflingRef},
 };
-use silver_beacon_state_data::{BeaconBlockHeader, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{BeaconBlockHeader, Payload, SLOTS_PER_EPOCH};
 
 fn operations_handler(
     handler_name: &str,
@@ -354,7 +355,10 @@ fn fulu_consolidation_request() {
 #[test]
 fn fulu_withdrawals() {
     operations_handler("withdrawals", "execution_payload", true, |s, op| {
-        s.with_view(|view| stf::process_withdrawals_fulu(view, op).is_ok())
+        s.with_view(|view| {
+            Payload::new(op)
+                .is_ok_and(|payload| stf::process_withdrawals_fulu(view, payload).is_ok())
+        })
     });
 }
 
@@ -368,11 +372,14 @@ fn fulu_execution_payload() {
         let off = |pos: usize| u32::from_le_bytes(op[pos..pos + 4].try_into().unwrap()) as usize;
         let exec_off = off(380);
         let bls_off = off(384);
-        if exec_off < bls_off && bls_off <= op.len() {
-            let payload = &op[exec_off..bls_off];
+        if exec_off < bls_off &&
+            bls_off <= op.len() &&
+            let Ok(payload) = Payload::new(&op[exec_off..bls_off])
+        {
             let block_slot = s.slot();
             s.with_view(|view| {
-                let _ = stf::process_execution_payload(view, &cfg, payload, block_slot, None);
+                let roots = PayloadRoots::of(payload);
+                let _ = stf::process_execution_payload(view, &cfg, payload, block_slot, roots);
                 let _ = stf::process_withdrawals_fulu(view, payload);
             });
         }

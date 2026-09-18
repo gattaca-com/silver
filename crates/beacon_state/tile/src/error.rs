@@ -433,8 +433,6 @@ impl core::fmt::Display for WithdrawalRecord {
 
 #[derive(Debug, Error)]
 pub enum WithdrawalsError {
-    #[error("execution payload too short for withdrawals: len={len} min={min}")]
-    PayloadTooShort { len: usize, min: usize },
     #[error("withdrawals_offset {withdrawals_off} > payload_len {payload_len}")]
     BadOffsets { withdrawals_off: usize, payload_len: usize },
     #[error("withdrawals payload count {count} > max {max}")]
@@ -449,8 +447,6 @@ pub enum WithdrawalsError {
 
 #[derive(Debug, Error)]
 pub enum ExecutionPayloadError {
-    #[error("execution payload too short: len={len} min={min}")]
-    TooShort { len: usize, min: usize },
     #[error("parent_hash mismatch: expected=0x{} got=0x{}", b256_hex(expected), b256_hex(got))]
     ParentHashMismatch { expected: B256, got: B256 },
     #[error("timestamp mismatch: expected={expected} got={got}")]

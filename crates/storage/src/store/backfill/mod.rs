@@ -100,7 +100,7 @@ pub(in crate::store) mod fixtures {
         TCache, TCacheProducer, TRead, body_root, column_util,
         merkle::B256,
         ssz_hash::kzg_commitments_inclusion_proof,
-        ssz_view::{EXECUTION_PAYLOAD_FIXED_GLOAS, NUMBER_OF_COLUMNS},
+        ssz_view::{EXECUTION_PAYLOAD_FIXED, EXECUTION_PAYLOAD_FIXED_GLOAS, NUMBER_OF_COLUMNS},
     };
 
     pub(in crate::store) const GLOAS_FORK_EPOCH: u64 = 1;
@@ -188,12 +188,22 @@ pub(in crate::store) mod fixtures {
         parent_root: B256,
         commitments: &[u8],
     ) -> Vec<u8> {
-        let mut body = vec![0u8; BODY_FIXED + commitments.len()];
-        for pos in [200usize, 204, 208, 212, 216, 380, 384, 388] {
+        // Empty lists, a bare fixed-prefix payload, then the commitments.
+        let payload_end = BODY_FIXED + EXECUTION_PAYLOAD_FIXED;
+        let mut body = vec![0u8; payload_end + commitments.len()];
+        for pos in [200usize, 204, 208, 212, 216, 380] {
             body[pos..pos + 4].copy_from_slice(&(BODY_FIXED as u32).to_le_bytes());
         }
-        body[392..396].copy_from_slice(&((BODY_FIXED + commitments.len()) as u32).to_le_bytes());
-        body[BODY_FIXED..].copy_from_slice(commitments);
+        for pos in [384usize, 388] {
+            body[pos..pos + 4].copy_from_slice(&(payload_end as u32).to_le_bytes());
+        }
+        let body_end = body.len() as u32;
+        body[392..396].copy_from_slice(&body_end.to_le_bytes());
+        for pos in [436usize, 504, 508] {
+            let at = BODY_FIXED + pos;
+            body[at..at + 4].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED as u32).to_le_bytes());
+        }
+        body[payload_end..].copy_from_slice(commitments);
 
         let mut block = vec![0u8; 184];
         block[0..4].copy_from_slice(&100u32.to_le_bytes());

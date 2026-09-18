@@ -5,6 +5,7 @@ use super::{
     hash_execution_requests_fulu,
 };
 use crate::{
+    body_offsets::{BodyFork, BodyOffsets},
     merkle::{
         B256, FixedContainer, MerkleStack, ZERO_HASH, hash_concat, hash_fixed_bytes, hash_list,
         hash_variable_list, merkleize, uint64_chunk,
@@ -32,30 +33,24 @@ pub fn hash_sync_aggregate(data: &[u8]) -> B256 {
 }
 
 pub fn hash_tree_root_body(body: &[u8], is_gloas: bool) -> B256 {
-    hash_tree_root_body_with_roots(body, is_gloas).0
-}
-
-/// A Gloas body carries a bid, not a payload, so its roots are always `None`.
-pub fn hash_tree_root_body_with_roots(body: &[u8], is_gloas: bool) -> (B256, Option<PayloadRoots>) {
     if is_gloas {
-        (BeaconBlockBodyGloasView::hash_tree_root(body), None)
+        BeaconBlockBodyGloasView::hash_tree_root(body)
     } else {
-        hash_tree_root_body_fulu_with_roots(body)
+        hash_tree_root_body_fulu(body)
     }
 }
 
 /// Compute hash_tree_root of a fulu BeaconBlockBody from raw SSZ bytes.
-/// 13 fields → 16 leaves.
+/// 13 fields → 16 leaves. Zero when a fixed prefix is missing.
 pub fn hash_tree_root_body_fulu(body: &[u8]) -> B256 {
-    hash_tree_root_body_fulu_with_roots(body).0
+    BodyOffsets::new(body, BodyFork::Fulu)
+        .map_or(ZERO_HASH, |offsets| hash_tree_root_body_fulu_with_roots(&offsets).0)
 }
 
 #[timed]
-pub fn hash_tree_root_body_fulu_with_roots(body: &[u8]) -> (B256, Option<PayloadRoots>) {
-    match field_roots(body) {
-        Some(roots) => (merkleize(&roots.fields), roots.payload),
-        None => (ZERO_HASH, None),
-    }
+pub fn hash_tree_root_body_fulu_with_roots(offsets: &BodyOffsets<'_>) -> (B256, PayloadRoots) {
+    let roots = field_roots(offsets);
+    (merkleize(&roots.fields), roots.payload)
 }
 
 /// Generate the `kzg_commitments_inclusion_proof` carried by a
@@ -64,13 +59,14 @@ pub fn hash_tree_root_body_fulu_with_roots(body: &[u8]) -> (B256, Option<Payload
 /// `BeaconBlockBody` tree) sits under `body_root`. Generates the inclusion
 /// branch the data-column-sidecar verifier checks.
 ///
-/// Returns all-zero bytes when `body` is below the fixed prefix size (mirrors
+/// All-zero bytes when a fixed prefix is missing (mirrors
 /// `hash_tree_root_body_fulu`'s fallback).
 #[timed]
 pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
-    let Some(roots) = field_roots(body) else {
+    let Ok(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
         return [0u8; 128];
     };
+    let roots = field_roots(&offsets);
 
     // The 16 leaves of the body tree (13 fields + 3 zero-padding).
     let mut layer = [ZERO_HASH; 16];
@@ -98,13 +94,12 @@ pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
 /// 11), so the layout is defined once.
 struct BodyFieldRoots {
     fields: [B256; 13],
-    payload: Option<PayloadRoots>,
+    payload: PayloadRoots,
 }
 
-fn field_roots(body: &[u8]) -> Option<BodyFieldRoots> {
-    if body.len() < 396 {
-        return None;
-    }
+fn field_roots(body_offsets: &BodyOffsets<'_>) -> BodyFieldRoots {
+    debug_assert_eq!(body_offsets.fork(), BodyFork::Fulu);
+    let body = body_offsets.body();
 
     let randao = hash_fixed_bytes(&body[0..96]);
     let eth1 = hash_eth1_data_bytes(&body[96..168]);
@@ -130,7 +125,7 @@ fn field_roots(body: &[u8]) -> Option<BodyFieldRoots> {
     let attestations = hash_variable_list(MerkleStack::new(8), var_field(2), hash_attestation);
     let deposits = DepositView::hash_list(MerkleStack::new(16), var_field(3));
     let voluntary_exits = SignedVoluntaryExitView::hash_list(MerkleStack::new(16), var_field(4));
-    let (execution_payload, payload) = hash_execution_payload_with_roots(var_field(5));
+    let (execution_payload, payload) = hash_execution_payload_with_roots(body_offsets.payload());
     let bls_changes = SignedBlsToExecutionChangeView::hash_list(MerkleStack::new(16), var_field(6));
     let blob_commitments =
         hash_list(MerkleStack::new(4096), var_field(7).chunks_exact(48).map(hash_fixed_bytes));
@@ -151,5 +146,5 @@ fn field_roots(body: &[u8]) -> Option<BodyFieldRoots> {
         blob_commitments,
         execution_requests,
     ];
-    Some(BodyFieldRoots { fields, payload })
+    BodyFieldRoots { fields, payload }
 }

@@ -1,3 +1,4 @@
+pub mod body_offsets;
 pub mod merkle;
 pub mod progressive;
 pub mod scalar;

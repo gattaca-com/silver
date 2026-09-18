@@ -1,4 +1,3 @@
-pub use beacon_block_body::{BlockBodyError, BodyFork, BodyOffsets, OperationKind};
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use column::{
     Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, BlockRoots,
@@ -29,6 +28,7 @@ pub use pending::{
 };
 pub use ring::{Id, Reset};
 pub use silver_chain_spec::{BlobParameters, ForkName, SpecConfig};
+pub use silver_ssz::body_offsets::{BlockBodyError, BodyFork, BodyOffsets, OperationKind, Payload};
 pub(crate) use silver_ssz::{merkle, progressive};
 pub use slot_state::{
     EpochBalances, EpochBalancesRow, SlotStateFinalized, SlotStateGroup, SlotStateId,
@@ -41,7 +41,6 @@ pub use validators::{
 };
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
-mod beacon_block_body;
 mod builders;
 mod column;
 mod decompose;

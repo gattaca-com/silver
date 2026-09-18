@@ -18,8 +18,8 @@ pub use attestation::{
 #[cfg(feature = "ef_tests")]
 pub use block::apply_signed_block_debug;
 pub use block::{
-    BlockInput, apply_block, collect_sigs_randao, process_block_body, process_block_header,
-    process_slot, process_slots,
+    BlockFork, BlockInput, apply_block, collect_sigs_randao, hash_body, process_block_body,
+    process_block_header, process_slot, process_slots,
 };
 pub use common::{AttestationVote, BlockVotes, StfScratch};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};

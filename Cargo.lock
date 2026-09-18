@@ -5126,6 +5126,7 @@ dependencies = [
  "hashtree-rs",
  "sha2",
  "sha2-const-stable",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

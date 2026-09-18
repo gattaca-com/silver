@@ -1,14 +1,14 @@
 use core::cmp::min;
 
 use silver_beacon_state_data::{
-    ExecutionPayloadHeader, FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView,
-    Withdrawal,
+    ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, SLOTS_PER_EPOCH, Slot, SpecConfig,
+    StateWriterView, Withdrawal,
 };
 use silver_common::ssz_view::{ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView};
 
 use crate::{
     error::{ExecutionPayloadError, Result, WithdrawalRecord, WithdrawalsError},
-    ssz_hash::{self, PayloadRoots},
+    ssz_hash::PayloadRoots,
     stf::MIN_ACTIVATION_BALANCE,
     validate,
 };
@@ -22,22 +22,13 @@ const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: usize = 8;
 pub fn process_execution_payload(
     view: &mut StateWriterView,
     cfg: &SpecConfig,
-    payload_bytes: &[u8],
+    payload: Payload<'_>,
     block_slot: Slot,
-    payload_roots: Option<PayloadRoots>,
+    roots: PayloadRoots,
 ) -> Result<(), ExecutionPayloadError> {
-    if payload_bytes.len() < 528 {
-        return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
-    }
-
-    validate::validate_execution_payload(cfg, view, payload_bytes, block_slot)?;
-
-    let roots = payload_roots.unwrap_or_else(|| PayloadRoots {
-        transactions: ssz_hash::hash_transactions_from_payload(payload_bytes),
-        withdrawals: ssz_hash::hash_withdrawals_from_payload(payload_bytes),
-    });
-    debug_assert_eq!(roots.transactions, ssz_hash::hash_transactions_from_payload(payload_bytes));
-    debug_assert_eq!(roots.withdrawals, ssz_hash::hash_withdrawals_from_payload(payload_bytes));
+    debug_assert_eq!(roots, PayloadRoots::of(payload));
+    validate::validate_execution_payload(cfg, view, payload, block_slot)?;
+    let payload_bytes = payload.bytes();
 
     let slot = &mut view.slot;
 
@@ -218,11 +209,9 @@ fn payload_record(withdrawals_data: &[u8], i: usize) -> WithdrawalRecord {
 /// then apply and advance the cursors.
 pub fn process_withdrawals_fulu(
     view: &mut StateWriterView,
-    payload_bytes: &[u8],
+    payload: Payload<'_>,
 ) -> Result<(), WithdrawalsError> {
-    if payload_bytes.len() < 528 {
-        return Err(WithdrawalsError::PayloadTooShort { len: payload_bytes.len(), min: 528 });
-    }
+    let payload_bytes = payload.bytes();
     let withdrawals_off = ExecutionPayloadView::withdrawals_offset(payload_bytes) as usize;
     if withdrawals_off > payload_bytes.len() {
         return Err(WithdrawalsError::BadOffsets {

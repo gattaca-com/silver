@@ -2816,6 +2816,24 @@ impl ExecutionPayloadView {
         u32_le(buf, 508)
     }
 
+    /// Empty when the offset table is out of order or out of bounds.
+    pub fn extra_data(buf: &[u8]) -> &[u8] {
+        Self::bounded(buf, Self::extra_data_offset(buf), Self::transactions_offset(buf))
+    }
+
+    pub fn transactions(buf: &[u8]) -> &[u8] {
+        Self::bounded(buf, Self::transactions_offset(buf), Self::withdrawals_offset(buf))
+    }
+
+    pub fn withdrawals(buf: &[u8]) -> &[u8] {
+        Self::bounded(buf, Self::withdrawals_offset(buf), buf.len() as u32)
+    }
+
+    fn bounded(buf: &[u8], start: u32, end: u32) -> &[u8] {
+        let (start, end) = (start as usize, end as usize);
+        if start <= end && end <= buf.len() { &buf[start..end] } else { &[] }
+    }
+
     pub fn check_canonical(buf: &[u8]) -> bool {
         const OFFSETS: [usize; 3] = [436, 504, 508];
         if buf.len() < EXECUTION_PAYLOAD_FIXED ||

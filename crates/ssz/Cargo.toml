@@ -11,6 +11,7 @@ flux-profiler.workspace = true
 sha2.workspace = true
 sha2-const-stable.workspace = true
 hashtree-rs.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

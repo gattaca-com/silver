@@ -3684,10 +3684,9 @@ impl ThreeForks {
             block_root: root,
             has_data_columns: true,
             parent_state_id: parent,
-            is_gloas: false,
+            fork: stf::BlockFork::Fulu { payload_roots: Default::default() },
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
-            payload_roots: None,
         };
         self.tile.held.stage(StagedBlock::with_state_id(parsed, id, msg.ssz, BlockSource::Gossip));
         id

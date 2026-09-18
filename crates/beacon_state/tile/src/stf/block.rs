@@ -3,12 +3,12 @@ use flux_profiler::timed;
 #[cfg(feature = "ef_tests")]
 use silver_beacon_state_data::ValidatorsView;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochView,
-    EpochWriteView, Eth1Data, Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId,
-    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView, SlotStateWriteView,
-    SpecConfig, StateReadView, StateWriterView,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Epoch, EpochView, EpochWriteView, Eth1Data,
+    Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId, SLOTS_PER_EPOCH,
+    SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateReadView,
+    StateWriterView,
 };
-use silver_common::ssz_view::{BEACON_BLOCK_BODY_FIXED, Eth1DataView};
+use silver_common::ssz_view::{BeaconBlockBodyGloasView, Eth1DataView};
 #[cfg(feature = "ef_tests")]
 use silver_common::ssz_view::{SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView};
 
@@ -31,10 +31,29 @@ use crate::{
     },
 };
 
+#[derive(Clone, Copy)]
+pub enum BlockFork {
+    Fulu { payload_roots: PayloadRoots },
+    Gloas,
+}
+
+impl BlockFork {
+    pub fn is_gloas(self) -> bool {
+        matches!(self, Self::Gloas)
+    }
+
+    fn body_fork(self) -> BodyFork {
+        match self {
+            Self::Fulu { .. } => BodyFork::Fulu,
+            Self::Gloas => BodyFork::Gloas,
+        }
+    }
+}
+
 pub struct BlockInput<'a> {
     pub header: &'a BeaconBlockHeader,
     pub body: &'a [u8],
-    pub payload_roots: Option<PayloadRoots>,
+    pub fork: BlockFork,
     pub shuffling: &'a ShufflingRef<'a>,
 }
 
@@ -47,14 +66,20 @@ impl<'a> BlockInput<'a> {
         Error::invalid_block(self.header.state_root, kind)
     }
 
-    fn offsets(&self, is_gloas: bool) -> Result<BodyOffsets<'a>> {
-        let fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
-        let offsets = BodyOffsets::new(self.body, fork).ok_or_else(|| {
-            let len = self.body.len();
-            self.invalid(BlockBodyError::BodyTooShort { len, min: BEACON_BLOCK_BODY_FIXED }.into())
-        })?;
-        offsets.validate().map_err(|e| self.invalid(e.into()))?;
-        Ok(offsets)
+    fn offsets(&self) -> Result<BodyOffsets<'a>> {
+        BodyOffsets::validated(self.body, self.fork.body_fork()).map_err(|e| self.invalid(e.into()))
+    }
+}
+
+pub fn hash_body(offsets: &BodyOffsets<'_>) -> (B256, BlockFork) {
+    match offsets.fork() {
+        BodyFork::Gloas => {
+            (BeaconBlockBodyGloasView::hash_tree_root(offsets.body()), BlockFork::Gloas)
+        }
+        BodyFork::Fulu => {
+            let (root, payload_roots) = ssz_hash::hash_tree_root_body_fulu_with_roots(offsets);
+            (root, BlockFork::Fulu { payload_roots })
+        }
     }
 }
 
@@ -146,10 +171,13 @@ pub fn apply_signed_block_debug(
     // epoch view, so a block at the fork boundary uses the upgraded fork (Gloas
     // body layout / signing version), not the parent's.
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let (body_root, payload_roots) = ssz_hash::hash_tree_root_body_with_roots(
-        body,
-        epoch_view.is_gloas(view.imm.gloas_fork_version),
-    );
+    let body_fork = if epoch_view.is_gloas(view.imm.gloas_fork_version) {
+        BodyFork::Gloas
+    } else {
+        BodyFork::Fulu
+    };
+    let offsets = BodyOffsets::validated(body, body_fork).map_err(|e| wrap(e.into()))?;
+    let (body_root, block_fork) = hash_body(&offsets);
     if !verify_block_sig(
         view.imm,
         &epoch_view,
@@ -176,7 +204,7 @@ pub fn apply_signed_block_debug(
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
-    let input = BlockInput { header: &header, body, payload_roots, shuffling: &sref };
+    let input = BlockInput { header: &header, body, fork: block_fork, shuffling: &sref };
     process_block_body(cfg, fork, &input, &mut scratch, &mut sig_batch, &mut votes)?;
 
     let actual = ssz_hash::hash_tree_root_state(&fork.read());
@@ -410,8 +438,12 @@ pub fn process_block_body(
     sig_batch: &mut SigBatch,
     out: &mut BlockVotes,
 ) -> Result<()> {
-    let is_gloas = fork.epoch_view().is_gloas(fork.view.imm.gloas_fork_version);
-    let offsets = input.offsets(is_gloas)?;
+    debug_assert_eq!(
+        input.fork.is_gloas(),
+        fork.epoch_view().is_gloas(fork.view.imm.gloas_fork_version),
+        "body parsed for one fork, state on another",
+    );
+    let offsets = input.offsets()?;
 
     let proposer_index = input.proposer_index();
     let count = fork.view.validators.count();
@@ -441,23 +473,26 @@ fn apply_block_body(
     let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
     let epoch = epoch.view_opt(*epoch_idx);
     let longtail = longtail.view_opt(*longtail_idx);
-    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
+    let is_gloas = input.fork.is_gloas();
     let block_slot = input.header.slot;
     let proposer_index = input.proposer_index();
     let body = offsets.body();
-    let payload = offsets.payload();
 
-    let parent_slot = if is_gloas {
-        process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
-        process_withdrawals_gloas(&mut *view);
-        match offsets.signed_bid() {
-            Some(bid) => Some(process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?),
-            None => None,
+    let parent_slot = match input.fork {
+        BlockFork::Gloas => {
+            process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
+            process_withdrawals_gloas(&mut *view);
+            match offsets.signed_bid() {
+                Some(bid) => Some(process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?),
+                None => None,
+            }
         }
-    } else {
-        process_withdrawals_fulu(&mut *view, payload)?;
-        process_execution_payload(&mut *view, cfg, payload, block_slot, input.payload_roots)?;
-        None
+        BlockFork::Fulu { payload_roots } => {
+            let payload = offsets.payload();
+            process_withdrawals_fulu(&mut *view, payload)?;
+            process_execution_payload(&mut *view, cfg, payload, block_slot, payload_roots)?;
+            None
+        }
     };
 
     process_randao(view, body, block_slot / SLOTS_PER_EPOCH);
@@ -557,7 +592,7 @@ fn collect_sigs_block_body(
         collect_sigs_bls_to_execution_changes(imm, &validators, section, sig_batch)?;
     }
 
-    if rv.is_gloas() {
+    if input.fork.is_gloas() {
         let current_epoch = block_slot / SLOTS_PER_EPOCH;
         if let Some(bid) = offsets.signed_bid() {
             collect_sigs_execution_payload_bid(
