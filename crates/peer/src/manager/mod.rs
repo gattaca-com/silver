@@ -322,10 +322,7 @@ impl PeerManager {
                     self.database.dial_failed(&peer_id, now + DIAL_FAILURE_BACKOFF);
                 }
             }
-            PeerEvent::P2pCannotCreateStream { p2p_peer, protocol, rpc_request, stream_gone } => {
-                if rpc_request {
-                    self.release_outbound_in_flight(p2p_peer, protocol);
-                }
+            PeerEvent::P2pCannotCreateStream { p2p_peer, stream_gone, .. } => {
                 if stream_gone {
                     // Their teardown raced our (possibly late) response —
                     // not peer misbehaviour. Counted, not penalised.
@@ -334,13 +331,11 @@ impl PeerManager {
                     crate::PeerCounters::StreamCreditExhausted.inc();
                     self.add_behaviour_penalty(p2p_peer, 1.0, "stream credit exhausted");
                 }
-                self.disconnect_after_failed_goodbye(p2p_peer, protocol, emit);
             }
             PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, msg } => {
-                // Local outbound-ring overflow — a backpressure signal, often
-                // ours (blocked socket), not peer misbehaviour. No P7: a
-                // stalled connection drops in bursts and the squared penalty
-                // would graylist the whole mesh on a local uplink stall.
+                // Rejections and queue evictions release request capacity here.
+                // Drops alone aren't peer misbehaviour: squared P7 penalties
+                // would graylist the mesh during a local uplink stall.
                 let rpc_request = matches!(msg, P2pSend::Rpc(RpcOutbound::Request(_)));
                 if rpc_request {
                     self.release_outbound_in_flight(p2p_peer, protocol);

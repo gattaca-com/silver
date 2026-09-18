@@ -1408,29 +1408,43 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.peers.get_mut(&1).unwrap().goodbye_sent = true;
 
-        for event in [
-            PeerEvent::P2pCannotCreateStream {
-                p2p_peer: 1,
-                protocol: StreamProtocol::Goodbye,
-                rpc_request: true,
-                stream_gone: false,
-            },
-            PeerEvent::P2pOutboundMessageDropped {
-                p2p_peer: 1,
-                protocol: StreamProtocol::Goodbye,
-                msg: P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                    application_id: 0,
-                    peer: 1,
-                    request: RpcRequest::Goodbye(GOODBYE_TOO_MANY_PEERS.to_le_bytes()),
-                })),
-            },
-        ] {
+        for stream_creation_error in [false, true] {
             cap.0.clear();
-            mgr.handle_event(event, now, &mut |control| cap.0.push(control));
-            assert!(cap.0.iter().any(|control| matches!(control, PeerControl::P2pDisconnect {
-                p2p_connection: 1,
-                ..
-            })));
+            if stream_creation_error {
+                mgr.handle_event(
+                    PeerEvent::P2pCannotCreateStream {
+                        p2p_peer: 1,
+                        protocol: StreamProtocol::Goodbye,
+                        stream_gone: false,
+                    },
+                    now,
+                    &mut |control| cap.0.push(control),
+                );
+                assert!(cap.0.is_empty(), "stream diagnostics must not duplicate teardown");
+            }
+            mgr.handle_event(
+                PeerEvent::P2pOutboundMessageDropped {
+                    p2p_peer: 1,
+                    protocol: StreamProtocol::Goodbye,
+                    msg: P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                        application_id: 0,
+                        peer: 1,
+                        request: RpcRequest::Goodbye(GOODBYE_TOO_MANY_PEERS.to_le_bytes()),
+                    })),
+                },
+                now,
+                &mut |control| cap.0.push(control),
+            );
+            assert_eq!(
+                cap.0
+                    .iter()
+                    .filter(|control| matches!(control, PeerControl::P2pDisconnect {
+                        p2p_connection: 1,
+                        ..
+                    }))
+                    .count(),
+                1
+            );
         }
     }
 

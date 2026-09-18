@@ -417,9 +417,6 @@ pub enum PeerEvent {
     P2pCannotCreateStream {
         p2p_peer: usize,
         protocol: StreamProtocol,
-        /// Failed send was an outbound RPC request: the PM must release the
-        /// `outbound_in_flight` slot admitted for it, else it leaks.
-        rpc_request: bool,
         /// Response targeted a stream already closed/reset, as opposed to
         /// stream-credit exhaustion opening a new request stream.
         stream_gone: bool,
@@ -440,6 +437,8 @@ pub enum PeerEvent {
         first_chunk_ms: u64,
         elapsed_ms: u64,
     },
+    /// A send was rejected or an older queued message was evicted.
+    /// This event owns send-failure accounting; stream errors are diagnostics.
     P2pOutboundMessageDropped {
         p2p_peer: usize,
         protocol: StreamProtocol,

@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque, hash_map::Entry},
     time::{Duration, Instant},
 };
 
@@ -69,21 +69,23 @@ impl PartialExchange {
         rows: usize,
         expires: Instant,
         now: Instant,
-    ) -> bool {
-        if self.exchanges.contains_key(&key) {
-            return true;
+    ) -> Option<&mut PeerColumnExchange> {
+        let full = self.exchanges.len() >= self.capacity;
+        match self.exchanges.entry(key) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let peer = self.peer_exchanges.get(&key.peer);
+                if full ||
+                    peer.is_some_and(|p| p.columns >= self.peer_capacity) ||
+                    (peer.is_none() && self.peer_exchanges.len() >= self.capacity)
+                {
+                    ControlCounters::PartialStateLimited.inc();
+                    return None;
+                }
+                self.peer_exchanges.entry(key.peer).or_default().columns += 1;
+                Some(entry.insert(PeerColumnExchange::new(slot, rows, expires, now)))
+            }
         }
-        let peer = self.peer_exchanges.get(&key.peer);
-        if self.exchanges.len() >= self.capacity ||
-            peer.is_some_and(|p| p.columns >= self.peer_capacity) ||
-            (peer.is_none() && self.peer_exchanges.len() >= self.capacity)
-        {
-            ControlCounters::PartialStateLimited.inc();
-            return false;
-        }
-        self.exchanges.insert(key, PeerColumnExchange::new(slot, rows, expires, now));
-        self.peer_exchanges.entry(key.peer).or_default().columns += 1;
-        true
     }
 
     fn schedule(&mut self, key: ExchangeKey) {
@@ -116,10 +118,11 @@ impl PartialExchange {
                 }
                 lazy_remaining -= 1;
             }
-            if !self.admit(key, column.slot, column.blob_count, column.expires, now) {
+            let Some(exchange) =
+                self.admit(key, column.slot, column.blob_count, column.expires, now)
+            else {
                 continue;
-            }
-            let exchange = self.exchanges.get_mut(&key).unwrap();
+            };
             exchange.slot = column.slot;
             exchange.n_rows = column.blob_count;
             exchange.expires = column.expires;
@@ -174,10 +177,9 @@ impl PartialExchange {
             return;
         }
         let key = ExchangeKey { peer: message.stream_id.peer(), group };
-        if !self.admit(key, slot, message.metadata.n_rows, expires, now) {
+        let Some(exchange) = self.admit(key, slot, message.metadata.n_rows, expires, now) else {
             return;
-        }
-        let exchange = self.exchanges.get_mut(&key).unwrap();
+        };
         if exchange.remote.is_some() {
             ControlCounters::PartialMetadataReplaced.inc();
         }
@@ -263,7 +265,11 @@ impl PartialExchange {
             }
             // Keep the spent per-peer budget until the next heartbeat, even
             // when unsubscribing removes the peer's last column exchange.
-            self.peer_exchanges.get_mut(&key.peer).unwrap().columns -= 1;
+            if let Some(peer) = self.peer_exchanges.get_mut(&key.peer) {
+                peer.columns = peer.columns.saturating_sub(1);
+            } else {
+                tracing::error!(?key, "partial exchange has no peer budget during removal");
+            }
             self.headers.forget_sent(key.peer, key.group);
             false
         });
@@ -298,8 +304,11 @@ impl PartialExchange {
         self.advance_slot(ingress, peers, producer, now, emit);
         let mut did_work = false;
         for _ in 0..self.ready.len().min(WORK_PER_SPIN) {
-            let key = self.ready.pop_front().unwrap();
-            let exchange = self.exchanges.get_mut(&key).unwrap();
+            let Some(key) = self.ready.pop_front() else { break };
+            let Some(exchange) = self.exchanges.get_mut(&key) else {
+                tracing::error!(?key, "scheduled partial exchange is missing");
+                continue;
+            };
             exchange.scheduled = false;
             if now < exchange.retry_at {
                 exchange.scheduled = true;
@@ -347,7 +356,10 @@ impl PartialExchange {
                 rows,
                 header,
             };
-            let budget = self.peer_exchanges.get_mut(&key.peer).unwrap();
+            let Some(budget) = self.peer_exchanges.get_mut(&key.peer) else {
+                tracing::error!(?key, "partial exchange has no peer budget; skipping send");
+                continue;
+            };
             let (frame, bytes) =
                 match response.write(producer, column.expires, budget.remaining_bytes()) {
                     Ok(Some(frame)) => frame,
@@ -449,7 +461,10 @@ impl PartialExchange {
                 rows: 0,
                 header: false,
             };
-            let budget = self.peer_exchanges.get_mut(&key.peer).unwrap();
+            let Some(budget) = self.peer_exchanges.get_mut(&key.peer) else {
+                tracing::error!(?key, "partial exchange has no peer budget; skipping withdrawal");
+                continue;
+            };
             if let Ok(Some((frame, bytes))) =
                 response.write(producer, now + RETRY, budget.remaining_bytes())
             {
