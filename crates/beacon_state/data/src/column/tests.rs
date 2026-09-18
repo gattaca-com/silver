@@ -477,12 +477,12 @@ fn duty_dependent_roots_read_the_slots_below_the_two_epoch_starts() {
     let reader = g.view(id);
 
     assert_eq!(
-        reader.duty_dependent_root(2, 70, HEAD, 70),
+        reader.duty_dependent_root(2, HEAD, 71),
         Some([0x3C; 32]),
         "epoch 2 decides at slot 63, an empty slot holding slot 60's block"
     );
     assert_eq!(
-        reader.duty_dependent_root(1, 70, HEAD, 70),
+        reader.duty_dependent_root(1, HEAD, 71),
         Some([0x1F; 32]),
         "epoch 1 decides at slot 31"
     );
@@ -503,7 +503,7 @@ fn early_epochs_saturate_the_decision_slot_to_genesis() {
     };
     let reader = g.view(id);
 
-    let at = |epoch, head_slot| reader.duty_dependent_root(epoch, head_slot, HEAD, head_slot);
+    let at = |epoch, state_slot| reader.duty_dependent_root(epoch, HEAD, state_slot);
     assert_eq!(at(0, 5), Some(GENESIS), "epoch 0 decides at slot 0");
     assert_eq!(at(1, 40), Some([0x1F; 32]), "epoch 1 decides at slot 31");
     assert_eq!(at(0, 40), Some(GENESIS), "epoch 0 stays at slot 0");
@@ -516,26 +516,26 @@ fn a_head_at_slot_zero_decides_its_own_shuffling() {
     let id = g.roll_fresh().commit();
     let reader = g.view(id);
 
-    assert_eq!(reader.duty_dependent_root(0, 0, HEAD, 0), Some(HEAD));
+    assert_eq!(reader.duty_dependent_root(0, HEAD, 0), Some(HEAD));
     assert_ne!(HEAD, reader.at_slot(0), "the ring holds nothing at slot 0 yet");
 }
 
-#[cfg(debug_assertions)]
+/// The ring is written up to the slot below the state's, so a decision slot
+/// at or above it has no entry yet and the head answers for it.
 #[test]
-#[should_panic(expected = "past the head")]
-fn a_decision_slot_above_the_head_is_a_bug() {
+fn decision_slots_the_state_has_not_reached_answer_with_the_head() {
+    const HEAD: B256 = [0x46; 32];
     let mut g = BlockRootsGroup::zeroed_vector();
-    let id = g.roll_fresh().commit();
-    g.view(id).duty_dependent_root(3, 70, [0x46; 32], 70);
-}
+    let id = {
+        let mut wv = g.roll_fresh();
+        wv.set(63, [0x3C; 32]);
+        wv.commit()
+    };
+    let reader = g.view(id);
 
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "behind its head")]
-fn a_state_behind_its_head_is_a_bug() {
-    let mut g = BlockRootsGroup::zeroed_vector();
-    let id = g.roll_fresh().commit();
-    g.view(id).duty_dependent_root(2, 70, [0x46; 32], 69);
+    assert_eq!(reader.duty_dependent_root(2, HEAD, 64), Some([0x3C; 32]), "slot 63 is written");
+    assert_eq!(reader.duty_dependent_root(2, HEAD, 63), Some(HEAD), "the state is at slot 63");
+    assert_eq!(reader.duty_dependent_root(3, HEAD, 64), Some(HEAD), "slot 95 is ahead");
 }
 
 /// At state slot S, the oldest retained slot is S − 8192, inclusive.
@@ -553,8 +553,8 @@ fn a_decision_slot_is_available_until_the_state_moves_a_ring_past_it() {
     // oldest slot.
     let edge = SLOTS_PER_HISTORICAL_ROOT as u64 + 31;
 
-    assert_eq!(reader.duty_dependent_root(1, 70, HEAD, edge), Some([0x1F; 32]));
-    assert_eq!(reader.duty_dependent_root(1, 70, HEAD, edge + 1), None, "overwritten a slot later");
+    assert_eq!(reader.duty_dependent_root(1, HEAD, edge), Some([0x1F; 32]));
+    assert_eq!(reader.duty_dependent_root(1, HEAD, edge + 1), None, "overwritten a slot later");
 }
 
 /// A block's reveal accumulates into the current epoch's bucket; the boundary
