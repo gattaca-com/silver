@@ -4,10 +4,10 @@
 
 use std::io::Write;
 
-use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Version};
+use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Checkpoint, Fork, Version};
 
 use crate::{
-    attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuties,
+    attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuty,
     sync_duties::SyncDuty, validators::ValidatorRecord,
 };
 
@@ -397,17 +397,18 @@ impl Json<'_> {
     }
 
     /// `GetProposerDutiesResponse` (`apis/validator/duties/proposer.yaml`).
-    pub(crate) fn proposer_duties(&mut self, duties: &ProposerDuties, execution_optimistic: bool) {
-        self.duties_envelope(Some(duties.dependent_root), execution_optimistic, |json| {
-            for duty in &duties.duties {
-                json.begin_object();
-                json.key("pubkey");
-                json.hex(&duty.pubkey);
-                json.key("validator_index");
-                json.quoted_u64(duty.validator_index);
-                json.key("slot");
-                json.quoted_u64(duty.slot);
-                json.end_object();
+    pub(crate) fn proposer_duties<'a>(
+        &mut self,
+        dependent_root: B256,
+        execution_optimistic: bool,
+        duties: impl Iterator<Item = &'a ProposerDuty>,
+    ) {
+        self.duties_envelope(Some(dependent_root), execution_optimistic, |json| {
+            for duty in duties {
+                json.duty(&duty.pubkey, duty.validator_index, |json| {
+                    json.key("slot");
+                    json.quoted_u64(duty.slot);
+                });
             }
         });
     }
@@ -421,22 +422,18 @@ impl Json<'_> {
     ) {
         self.duties_envelope(Some(dependent_root), execution_optimistic, |json| {
             for duty in duties {
-                json.begin_object();
-                json.key("pubkey");
-                json.hex(&duty.pubkey);
-                json.key("validator_index");
-                json.quoted_u64(duty.validator_index);
-                json.key("committee_index");
-                json.quoted_u64(duty.committee_index);
-                json.key("committee_length");
-                json.quoted_u64(duty.committee_length);
-                json.key("committees_at_slot");
-                json.quoted_u64(duty.committees_at_slot);
-                json.key("validator_committee_index");
-                json.quoted_u64(duty.validator_committee_index);
-                json.key("slot");
-                json.quoted_u64(duty.slot);
-                json.end_object();
+                json.duty(&duty.pubkey, duty.validator_index, |json| {
+                    json.key("committee_index");
+                    json.quoted_u64(duty.committee_index);
+                    json.key("committee_length");
+                    json.quoted_u64(duty.committee_length);
+                    json.key("committees_at_slot");
+                    json.quoted_u64(duty.committees_at_slot);
+                    json.key("validator_committee_index");
+                    json.quoted_u64(duty.validator_committee_index);
+                    json.key("slot");
+                    json.quoted_u64(duty.slot);
+                });
             }
         });
     }
@@ -448,20 +445,26 @@ impl Json<'_> {
     ) {
         self.duties_envelope(None, execution_optimistic, |json| {
             for duty in duties {
-                json.begin_object();
-                json.key("pubkey");
-                json.hex(&duty.pubkey);
-                json.key("validator_index");
-                json.quoted_u64(duty.validator_index);
-                json.key("validator_sync_committee_indices");
-                json.begin_array();
-                for position in duty.positions() {
-                    json.quoted_u64(position);
-                }
-                json.end_array();
-                json.end_object();
+                json.duty(&duty.pubkey, duty.validator_index, |json| {
+                    json.key("validator_sync_committee_indices");
+                    json.begin_array();
+                    for position in duty.positions() {
+                        json.quoted_u64(position);
+                    }
+                    json.end_array();
+                });
             }
         });
+    }
+
+    fn duty(&mut self, pubkey: &BLSPubkey, validator_index: u64, rest: impl FnOnce(&mut Self)) {
+        self.begin_object();
+        self.key("pubkey");
+        self.hex(pubkey);
+        self.key("validator_index");
+        self.quoted_u64(validator_index);
+        rest(self);
+        self.end_object();
     }
 
     fn duties_envelope(

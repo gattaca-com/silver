@@ -158,8 +158,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::{Outcome, Router},
-        routes::{ROUTES, anchor_ctx},
+        router::Outcome,
+        routes::anchor_ctx,
+        testing::{dispatch, request},
     };
 
     const ROOT: B256 = [0xab; 32];
@@ -169,20 +170,7 @@ mod tests {
     }
 
     fn get_from(ctx: &ApiCtx, path: &str, accept: Option<&str>) -> (Outcome, Vec<u8>) {
-        let req = ParsedRequest {
-            method: "GET",
-            path,
-            query: "",
-            body: b"",
-            accept,
-            content_type: None,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        let mut out = Vec::new();
-        let outcome = Router::new(ROUTES).dispatch(&req, ctx, &mut out);
-        (outcome, out)
+        dispatch(ctx, &ParsedRequest { accept, ..request("GET", path) })
     }
 
     fn routes(block_id: &str) -> [(String, Kind); 3] {

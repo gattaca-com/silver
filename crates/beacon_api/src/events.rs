@@ -98,8 +98,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::{Outcome, Router},
-        routes::{ROUTES, anchor_ctx},
+        router::Outcome,
+        routes::anchor_ctx,
+        testing::{dispatch, request},
     };
 
     fn set(of: &[Channel]) -> ChannelSet {
@@ -114,21 +115,13 @@ mod tests {
         set(&[Channel::Block])
     }
 
-    fn dispatch(query: &str) -> (Outcome, Vec<u8>) {
+    fn subscribe(query: &str) -> (Outcome, Vec<u8>) {
         let req = ParsedRequest {
-            method: "GET",
-            path: "/eth/v1/events",
             query,
-            body: b"",
             accept: Some("text/event-stream"),
-            content_type: None,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
+            ..request("GET", "/eth/v1/events")
         };
-        let mut out = Vec::new();
-        let outcome = Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out);
-        (outcome, out)
+        dispatch(&anchor_ctx(), &req)
     }
 
     fn bad_request(message_json: &str) -> Vec<u8> {
@@ -201,7 +194,7 @@ mod tests {
 
     #[test]
     fn subscribing_frames_the_stream_head_and_hands_the_connection_over() {
-        let (outcome, out) = dispatch("topics=block");
+        let (outcome, out) = subscribe("topics=block");
         assert_eq!(outcome, Outcome::Stream(block_only()));
         assert_eq!(
             out,
@@ -212,7 +205,7 @@ mod tests {
     #[test]
     fn no_topic_is_a_400() {
         for query in ["", "other=block"] {
-            let (outcome, out) = dispatch(query);
+            let (outcome, out) = subscribe(query);
             assert_eq!(outcome, Outcome::Response, "{query}");
             assert_eq!(out, bad_request("no topics"), "{query}");
         }

@@ -175,8 +175,8 @@ mod tests {
     use super::*;
     use crate::{
         ids::MAX_BODY_IDS,
-        router::{Outcome, Router},
-        routes::{ROUTES, anchor_ctx},
+        routes::anchor_ctx,
+        testing::{answer, posting},
     };
 
     const REGISTER: &str = "/eth/v1/validator/register_validator";
@@ -216,25 +216,8 @@ mod tests {
         ]
     }
 
-    fn dispatch(method: &str, path: &str, content_type: Option<&str>, body: &str) -> Vec<u8> {
-        let mut out = Vec::new();
-        let req = ParsedRequest {
-            method,
-            path,
-            query: "",
-            body: body.as_bytes(),
-            accept: None,
-            content_type,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        assert_eq!(Router::new(ROUTES).dispatch(&req, &anchor_ctx(), &mut out), Outcome::Response);
-        out
-    }
-
     fn post(path: &str, content_type: Option<&str>, body: &str) -> Vec<u8> {
-        dispatch("POST", path, content_type, body)
+        answer(&anchor_ctx(), &ParsedRequest { content_type, ..posting(path, body) })
     }
 
     fn json_post(path: &str, body: &str) -> Vec<u8> {

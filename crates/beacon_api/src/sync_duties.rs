@@ -17,8 +17,7 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     let Some(indices) = requested_indices(req, resp) else {
         return;
     };
-    if !ctx.node_status.is_following() {
-        resp.error(503, "api unavailable while the node is syncing");
+    if !ctx.follows_chain(resp) {
         return;
     }
     let Some(seats) = ctx.read_state(|view| {
@@ -149,8 +148,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        duties::test_state::{field, indices_body, json, post_duties, pubkey, status_code},
         routes::test_ctx,
+        testing::{answer, field, indices_body, json, posting, pubkey, status_code},
     };
 
     const VALIDATORS: u64 = 6;
@@ -199,7 +198,7 @@ mod tests {
     }
 
     fn post(ctx: &ApiCtx, epoch: u64, body: &str) -> Vec<u8> {
-        post_duties(ctx, &format!("/eth/v1/validator/duties/sync/{epoch}"), body)
+        answer(ctx, &posting(&format!("/eth/v1/validator/duties/sync/{epoch}"), body))
     }
 
     fn next_period_epoch() -> u64 {
