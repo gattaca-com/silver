@@ -5,12 +5,14 @@ use silver_beacon_state_data::{
 use silver_httpcore::Query;
 
 use crate::{
-    ids::{MAX_BODY_IDS, parse_pubkey, parse_uint64},
+    ids::{parse_pubkey, parse_uint64},
     json::Json,
     response::Response,
     router::Request,
     routes::ApiCtx,
 };
+
+const MAX_VALIDATOR_IDS: usize = 32 * 1024;
 
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     respond_selection(req, ctx, resp, Selection::from_query(req.query));
@@ -18,9 +20,20 @@ pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
 
 pub(crate) fn post_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let selection = serde_json::from_slice::<SelectionBody>(req.body)
-        .map_err(|_| "invalid request body")
+        .map_err(|_| Rejection::bad_request("invalid request body"))
         .and_then(|body| Selection::from_body(&body));
     respond_selection(req, ctx, resp, selection);
+}
+
+struct Rejection {
+    code: u16,
+    message: &'static str,
+}
+
+impl Rejection {
+    fn bad_request(message: &'static str) -> Self {
+        Self { code: 400, message }
+    }
 }
 
 /// The whole registry is a valid selection the schema allows and no validator
@@ -30,7 +43,7 @@ fn respond_selection(
     req: &Request<'_>,
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
-    selection: Result<Selection, &'static str>,
+    selection: Result<Selection, Rejection>,
 ) {
     let mut selection = match selection {
         Ok(selection) if !selection.ids.is_empty() => selection,
@@ -39,7 +52,7 @@ fn respond_selection(
             return;
         }
         Err(rejection) => {
-            resp.error(400, rejection);
+            resp.error(rejection.code, rejection.message);
             return;
         }
     };
@@ -82,11 +95,12 @@ struct SelectionBody<'a> {
 struct Selection {
     ids: Vec<ValidatorId>,
     statuses: StatusSet,
+    over_limit: u16,
 }
 
 impl Selection {
-    fn from_query(query: &str) -> Result<Self, &'static str> {
-        let mut selection = Self::default();
+    fn from_query(query: &str) -> Result<Self, Rejection> {
+        let mut selection = Self { over_limit: 414, ..Self::default() };
         for (name, value) in Query::new(query) {
             match &*name {
                 "id" => value.split(',').try_for_each(|id| selection.push_id(id))?,
@@ -99,23 +113,25 @@ impl Selection {
         Ok(selection)
     }
 
-    fn from_body(body: &SelectionBody<'_>) -> Result<Self, &'static str> {
-        let mut selection = Self::default();
+    fn from_body(body: &SelectionBody<'_>) -> Result<Self, Rejection> {
+        let mut selection = Self { over_limit: 400, ..Self::default() };
         body.ids.iter().flatten().try_for_each(|id| selection.push_id(id))?;
         body.statuses.iter().flatten().try_for_each(|status| selection.push_status(status))?;
         Ok(selection)
     }
 
-    fn push_id(&mut self, text: &str) -> Result<(), &'static str> {
-        if self.ids.len() == MAX_BODY_IDS {
-            return Err("too many ids");
+    fn push_id(&mut self, text: &str) -> Result<(), Rejection> {
+        if self.ids.len() == MAX_VALIDATOR_IDS {
+            return Err(Rejection { code: self.over_limit, message: "too many ids" });
         }
-        self.ids.push(ValidatorId::parse(text).ok_or("invalid id")?);
+        let id = ValidatorId::parse(text).ok_or(Rejection::bad_request("invalid id"))?;
+        self.ids.push(id);
         Ok(())
     }
 
-    fn push_status(&mut self, text: &str) -> Result<(), &'static str> {
-        self.statuses = self.statuses.union(StatusSet::parse(text).ok_or("invalid status")?);
+    fn push_status(&mut self, text: &str) -> Result<(), Rejection> {
+        let parsed = StatusSet::parse(text).ok_or(Rejection::bad_request("invalid status"))?;
+        self.statuses = self.statuses.union(parsed);
         Ok(())
     }
 
@@ -484,6 +500,24 @@ mod tests {
         for query in ["id=0&status=running", "id=abc", "id=0&id=0x12", "status=active", ""] {
             assert_eq!(status_code(&get(path, query)), "400", "{query:?}");
         }
+    }
+
+    #[test]
+    fn id_lists_past_the_cap_are_414_on_the_query_and_400_in_the_body() {
+        let path = "/eth/v1/beacon/states/head/validators";
+        let ids = |count: usize| (0..count).map(|id| id.to_string()).collect::<Vec<_>>();
+        let body = |count| format!("{{\"ids\":[\"{}\"]}}", ids(count).join("\",\""));
+
+        assert_eq!(
+            status_code(&get(path, &format!("id={}", ids(MAX_VALIDATOR_IDS).join(",")))),
+            "200"
+        );
+        assert_eq!(
+            status_code(&get(path, &format!("id={}", ids(MAX_VALIDATOR_IDS + 1).join(",")))),
+            "414"
+        );
+        assert_eq!(status_code(&post(&body(MAX_VALIDATOR_IDS))), "200");
+        assert_eq!(status_code(&post(&body(MAX_VALIDATOR_IDS + 1))), "400");
     }
 
     #[test]

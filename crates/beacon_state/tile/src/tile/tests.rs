@@ -900,6 +900,10 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
 
             tile.loop_body(&mut adapter);
 
+            // `for_test` jumps to `state_slot` without the `process_slot`
+            // calls that fill the ring, so only a state still at slot zero
+            // has its decision slot answered by the head.
+            let dependent = if state_slot == 0 { root } else { [0; 32] };
             assert_eq!(
                 Published::drain(&mut sink).last_head(),
                 StatusHead {
@@ -908,8 +912,8 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
                     optimistic: false,
                     roots: HeadRoots {
                         state_root,
-                        previous_duty_dependent_root: root,
-                        current_duty_dependent_root: root,
+                        previous_duty_dependent_root: dependent,
+                        current_duty_dependent_root: dependent,
                     },
                     payload: if is_gloas {
                         PayloadResolution::Empty
