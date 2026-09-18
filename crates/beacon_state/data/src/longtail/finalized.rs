@@ -109,7 +109,7 @@ impl LongtailState {
 
         lt.committees.set_indices(std::array::from_fn(|i| {
             let pk = &lt.committees.current().pubkeys[i];
-            validators.find_by_pubkey(pk).map_or(u32::MAX, |i| i as u32)
+            validators.find_by_pubkey(pk).map_or(SyncCommittees::unresolved(), |i| i as u32)
         }));
 
         Ok(lt)

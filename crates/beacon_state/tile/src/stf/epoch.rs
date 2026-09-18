@@ -7,8 +7,8 @@ use silver_beacon_state_data::{
     Epoch, EpochBalances, EpochView, EpochWriteView, Eth1WriteView, HistoricalSummary,
     LongtailGroup, LongtailId, LongtailWriteView, MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS,
     PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, SlotStateWriteView, SpecConfig, StateWriterView, TIMELY_TARGET_FLAG,
-    ValidatorsView,
+    SYNC_COMMITTEE_SIZE, SlotStateWriteView, SpecConfig, StateWriterView, SyncCommittees,
+    TIMELY_TARGET_FLAG, ValidatorsView,
 };
 
 use crate::{
@@ -761,7 +761,9 @@ pub fn process_sync_committee_updates(
     // validator index only (the committee pubkeys were committed at a prior
     // boundary).
     let indices = std::array::from_fn(|i| {
-        view.validators.find_by_finalized_pubkey(&new_committee.pubkeys[i]).unwrap_or(u32::MAX)
+        view.validators
+            .find_by_finalized_pubkey(&new_committee.pubkeys[i])
+            .unwrap_or(SyncCommittees::unresolved())
     });
 
     let mut sampler = seed.sampler(active_scratch.len());

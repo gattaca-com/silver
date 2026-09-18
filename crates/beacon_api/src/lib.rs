@@ -15,6 +15,7 @@ mod router;
 mod routes;
 mod server;
 mod statics;
+mod sync_duties;
 mod validator_api;
 mod validators;
 

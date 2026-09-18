@@ -7,7 +7,7 @@ use silver_beacon_state_data::{
     BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
     Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
-    StateReadView, ValSeed, Withdrawals,
+    SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID, MessageId,
@@ -273,8 +273,16 @@ fn arm_tile_state(
     start_slot: Slot,
 ) {
     // Anchor each tier's fork at the base (the slot tier at `start_slot`);
-    // epoch/longtail stay lazy. Rolled before the owner wraps the state.
-    let anchor = bs.roll_fresh();
+    // epoch stays lazy. Rolled before the owner wraps the state.
+    let mut anchor = bs.roll_fresh();
+
+    // An unrotated bundle names no seat holder, so the sync paths need the
+    // seeding a real state gets from `decompose` or a period rotation. Every
+    // seat goes to validator zero, whose key the signed-object builders use.
+    let mut longtail = bs.longtail.roll_fresh();
+    longtail.rotate_sync_committees(&SyncCommittee::default(), [0; SYNC_COMMITTEE_SIZE]);
+    anchor.longtail_idx = Some(longtail.commit());
+
     let mut owner = BeaconStateOwner::new(bs);
     owner.publish_state_id(anchor);
 

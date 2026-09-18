@@ -177,25 +177,20 @@ mod tests {
         SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed, committee_range,
     };
     use silver_common::SyncUpdate;
-    use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
-        duties::test_state::{block_roots_ring, ring_root},
-        router::{Outcome, Router},
-        routes::{ROUTES, test_ctx},
+        duties::test_state::{
+            block_roots_ring, field, indices_body, json, post_duties, pubkey, ring_root,
+            status_code,
+        },
+        routes::test_ctx,
     };
 
     const ACTIVE: u64 = 8192;
     const STATE_EPOCH: u64 = 300;
     const STATE_SLOT: u64 = STATE_EPOCH * SLOTS_PER_EPOCH + 5;
     const HEAD_SLOT: u64 = STATE_SLOT - 2;
-
-    fn pubkey(index: u64) -> BLSPubkey {
-        let mut pubkey = [0u8; 48];
-        pubkey[..8].copy_from_slice(&index.to_le_bytes());
-        pubkey
-    }
 
     /// The posted order for `epoch`: the active set reversed, rotated by the
     /// epoch so the two epochs differ.
@@ -232,40 +227,7 @@ mod tests {
     }
 
     fn post(ctx: &ApiCtx, epoch: &str, body: &str) -> Vec<u8> {
-        let path = format!("/eth/v1/validator/duties/attester/{epoch}");
-        let req = ParsedRequest {
-            method: "POST",
-            path: &path,
-            query: "",
-            body: body.as_bytes(),
-            accept: None,
-            content_type: Some("application/json"),
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        let mut out = Vec::new();
-        assert_eq!(Router::new(ROUTES).dispatch(&req, ctx, &mut out), Outcome::Response);
-        out
-    }
-
-    fn indices_body(indices: impl Iterator<Item = u64>) -> String {
-        let quoted: Vec<_> = indices.map(|i| format!("\"{i}\"")).collect();
-        format!("[{}]", quoted.join(","))
-    }
-
-    fn status_code(response: &[u8]) -> &str {
-        std::str::from_utf8(response).unwrap().split(' ').nth(1).unwrap()
-    }
-
-    fn json(response: &[u8]) -> serde_json::Value {
-        let text = std::str::from_utf8(response).unwrap();
-        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
-        serde_json::from_str(&text[text.find("\r\n\r\n").unwrap() + 4..]).unwrap()
-    }
-
-    fn field(duty: &serde_json::Value, name: &str) -> u64 {
-        duty[name].as_str().unwrap().parse().unwrap()
+        post_duties(ctx, &format!("/eth/v1/validator/duties/attester/{epoch}"), body)
     }
 
     /// Every posted validator sits in exactly one committee of the epoch, at
