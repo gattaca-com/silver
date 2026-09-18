@@ -131,6 +131,57 @@ fn no_el() -> EngineConfig {
     EngineConfig { unsafe_no_el: true, ..EngineConfig::default() }
 }
 
+#[test]
+fn peers_include_connections_published_before_boundary_starts() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_startup_gossip",
+        "cs_startup_rpc",
+        "cs_startup_resp",
+    ]);
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let peer_id = Keypair::from_secret(&[2; 32]).unwrap().peer_id();
+
+    let response = std::thread::scope(|scope| {
+        let mut scoped =
+            flux::spine::ScopedSpine { spine: &mut *spine, scope, stop_flag: Default::default() };
+        let run = flux::tile::tile_runner(
+            tile,
+            &mut scoped,
+            flux::tile::TileConfig::background(None, None).without_metrics(),
+        );
+        let mut inj = SpineAdapter::connect_tile_with_stop_flag(
+            &Injector,
+            scoped.spine,
+            scoped.stop_flag.clone(),
+        );
+        inj.produce(PeerEvent::P2pNewConnection {
+            p2p_peer_id: 1,
+            peer_id_full: peer_id,
+            ip: IpBytes::V4([127, 0, 0, 1]),
+            port: 9000,
+            local_dial: false,
+        });
+        let worker = scope.spawn(run);
+        let response = (|| -> Result<Value, Box<dyn std::error::Error>> {
+            let response = ureq::get(&format!("http://{addr}/eth/v1/node/peers"))
+                .timeout(Duration::from_secs(10))
+                .call()?;
+            Ok(serde_json::from_reader(response.into_reader())?)
+        })();
+        inj.request_stop_scope();
+        worker.join().unwrap();
+        response.unwrap()
+    });
+
+    let peers = response["data"].as_array().unwrap();
+    assert_eq!(peers.len(), 1);
+    let peer_addr = silver_common::Eth2Addr::PeerId(peer_id).to_string();
+    assert_eq!(peers[0]["peer_id"], peer_addr.strip_prefix("/p2p/").unwrap());
+    assert_eq!(peers[0]["state"], "connected");
+}
+
 fn http_get(mut stream: impl Read + Write, path: &str) -> String {
     write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
     stream.flush().unwrap();
