@@ -168,6 +168,7 @@ impl DataColumnsTile {
         tracing::info!(slot, has_columns, "beacon block recv");
 
         let block_root = block_root(buffer, is_gloas);
+        self.validator.cache_parent_state_root(block_root, buffer);
 
         // Trivial coverage: no commitments, so no columns are owed.
         if !has_columns {
@@ -508,18 +509,31 @@ impl DataColumnsTile {
     /// edge does not wait on them.
     #[timed]
     fn flush_kzg_batch(&mut self, producers: &mut SilverSpineProducers) {
-        debug_assert!(!self.kzg_batch.is_empty());
-
-        let count = self.kzg_batch.columns_until_available(&self.tracker);
-        self.verify_kzg_batch(count, producers);
+        let mut cells = match self.cells.as_mut() {
+            Some(cells) => cells.prepare_cells(Instant::now(), producers),
+            None => std::array::from_fn(|_| None),
+        };
+        let count = if self.kzg_batch.is_empty() {
+            0
+        } else {
+            self.kzg_batch.columns_until_available(&self.tracker)
+        };
+        if count != 0 || cells.iter().any(Option::is_some) {
+            self.verify_kzg_batch(count, &mut cells, producers);
+        }
         if !self.kzg_batch.is_empty() {
-            self.verify_kzg_batch(self.kzg_batch.pending.len(), producers);
+            self.verify_kzg_batch(self.kzg_batch.pending.len(), &mut cells, producers);
         }
     }
 
     /// One pairing check over the first `count` queued sidecars; on failure
     /// each re-verifies alone so the reject lands on the culpable peer only.
-    fn verify_kzg_batch(&mut self, count: usize, producers: &mut SilverSpineProducers) {
+    fn verify_kzg_batch(
+        &mut self,
+        count: usize,
+        cells: &mut batch::PreparedCells,
+        producers: &mut SilverSpineProducers,
+    ) {
         DataColumnCounters::KzgBatchesVerified.inc();
         DataColumnCounters::KzgBatchColumns.add(count as u64);
 
@@ -528,10 +542,24 @@ impl DataColumnsTile {
             util::kzg_verify_batch_multi(
                 self.kzg_batch.pending[..count]
                     .iter()
-                    .filter_map(|p| batch::kzg_entry(p, validator)),
+                    .filter_map(|p| batch::kzg_entry(p, validator))
+                    .chain(
+                        cells
+                            .iter()
+                            .flatten()
+                            .filter_map(|p| p.entry(self.cells.as_ref()?.store())),
+                    ),
                 &mut self.kzg_scratch,
             )
         };
+
+        for pending in cells.iter_mut().filter_map(Option::take) {
+            let Some(handler) = &mut self.cells else { continue };
+            let Some(entry) = pending.entry(handler.store()) else { continue };
+            let valid = all_ok ||
+                util::kzg_verify_batch_multi(std::iter::once(entry), &mut self.kzg_scratch);
+            handler.resolve_cell(pending, valid, producers);
+        }
 
         // Back to front, so each swap pulls in an element at or past `i`, never
         // one still to be removed.
@@ -562,6 +590,13 @@ impl DataColumnsTile {
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
         if let Some(GossipSidecarFrame { domain, msg_hash, protobuf }) = p.frame.take() {
+            producers.produce(PeerEvent::ColumnVerdict {
+                p2p_peer: p.stream_id.peer(),
+                block_root: p.block_root,
+                column: p.column_index,
+                recv_ts: p.recv_ts.into(),
+                accepted: true,
+            });
             producers.produce(PeerEvent::SendGossip {
                 originator_stream_id: p.stream_id,
                 topic: GossipTopic::DataColumnSidecar(p.column_index),
@@ -704,6 +739,7 @@ impl DataColumnsTile {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let block_root = block_root(buf, self.spec.is_gloas_at_slot(slot));
+                        self.validator.cache_parent_state_root(block_root, buf);
 
                         if self.spec.is_gloas_at_slot(slot) {
                             self.validator.cache_gloas_commitments(block_root, buf);
@@ -742,7 +778,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
         adapter.consume(|event: CellStoreEvent, producers| {
             if let Some(cells) = &mut self.cells {
-                cells.handle_event(event, Instant::now(), &mut self.kzg_scratch, producers);
+                cells.handle_event(event, Instant::now(), producers);
             } else if let CellStoreEvent::Validate(request) = event {
                 producers.produce(CellStoreEvent::Validation {
                     request,
@@ -811,7 +847,15 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
         // Verified before the EL response is read, so `to_request` excludes
         // columns that arrived this iteration and no column is recorded twice.
-        if !self.kzg_batch.is_empty() {
+        if let Some(cells) = &mut self.cells {
+            cells.verify_headers(
+                &self.validator,
+                &self.sync_state,
+                Instant::now(),
+                &adapter.producers,
+            );
+        }
+        if !self.kzg_batch.is_empty() || self.cells.as_ref().is_some_and(CellHandler::has_pending) {
             self.flush_kzg_batch(&mut adapter.producers);
         }
 

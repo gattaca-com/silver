@@ -545,8 +545,7 @@ impl Tile<SilverSpine> for Controller {
             });
         }
 
-        let data_columns = self.cell_ingress.as_mut().map(|i| i.producer_mut());
-        if self.gossip_handler.spin(adapter, data_columns) {
+        if self.gossip_handler.spin_columns(adapter, self.cell_ingress.as_mut()) {
             adapter.mark_work();
         }
         while let Some(event) = self.gossip_handler.pop_event() {

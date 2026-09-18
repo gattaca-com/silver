@@ -7,6 +7,7 @@ use super::{
     BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, MAX_BLOB_COMMITMENTS_PER_BLOCK,
     u32_le,
 };
+use crate::merkle::bitlist_len;
 
 pub const PARTIAL_COLUMNS_VERSION_BYTE: u8 = 0x00;
 pub const FULU_GROUP_ID_SIZE: usize = 33;
@@ -95,38 +96,80 @@ pub fn write_bitlist_u128(mask: u128, n_bits: usize, out: &mut [u8]) {
 // header SSZ; an omitted header is an empty list (zero bytes).
 pub struct PartialDataColumnSidecarFuluView;
 
+#[derive(Clone, Copy, Debug)]
+pub struct PartialColumnView<'a> {
+    pub rows: u128,
+    pub n_rows: usize,
+    pub cells: &'a [u8],
+    pub proofs: &'a [u8],
+    pub header: Option<&'a [u8]>,
+}
+
+impl<'a> PartialColumnView<'a> {
+    fn parse(buf: &'a [u8], fulu: bool) -> Option<Self> {
+        let (fixed, maximum) = if fulu {
+            (PARTIAL_SIDECAR_FIXED_FULU, MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE_FULU)
+        } else {
+            (PARTIAL_SIDECAR_FIXED_GLOAS, MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE_GLOAS)
+        };
+        if buf.len() < fixed + 1 || buf.len() > maximum {
+            return None;
+        }
+        let bitmap = u32_le(buf, 0) as usize;
+        let cells = u32_le(buf, 4) as usize;
+        let proofs = u32_le(buf, 8) as usize;
+        let end = if fulu { u32_le(buf, 12) as usize } else { buf.len() };
+        if bitmap != fixed || cells < bitmap || proofs < cells || end < proofs || end > buf.len() {
+            return None;
+        }
+        let bitmap = &buf[bitmap..cells];
+        let (rows, n_rows) = bitlist_u128(bitmap, 128).or_else(|| {
+            // Header-only payloads do not constrain their bitmap to the commitment count.
+            let (&last, rest) = bitmap.split_last()?;
+            let n_rows = bitlist_len(bitmap);
+            (fulu &&
+                cells == proofs &&
+                proofs == end &&
+                end < buf.len() &&
+                n_rows <= MAX_BLOB_COMMITMENTS_PER_BLOCK &&
+                last.is_power_of_two() &&
+                rest.iter().all(|&byte| byte == 0))
+            .then_some((0, n_rows))
+        })?;
+        let count = rows.count_ones() as usize;
+        if proofs - cells != count * BYTES_PER_CELL || end - proofs != count * BYTES_PER_KZG_PROOF {
+            return None;
+        }
+        let header = if end < buf.len() {
+            let list = &buf[end..];
+            if list.len() < 4 ||
+                u32_le(list, 0) != 4 ||
+                !PartialDataColumnHeaderView::check_size(&list[4..])
+            {
+                return None;
+            }
+            Some(&list[4..])
+        } else {
+            None
+        };
+        if count == 0 && header.is_none() {
+            return None;
+        }
+        Some(Self { rows, n_rows, cells: &buf[cells..proofs], proofs: &buf[proofs..end], header })
+    }
+}
+
 impl PartialDataColumnSidecarFuluView {
+    pub fn parse(buf: &[u8]) -> Option<PartialColumnView<'_>> {
+        PartialColumnView::parse(buf, true)
+    }
     /// Full structural check; returns the row mask. The bitmap must
     /// have exactly the trusted `n_rows` bits, cell/proof region
     /// lengths must match its popcount, and a cell-less sidecar is
     /// only valid when it carries a header.
     pub fn check_size(buf: &[u8], n_rows: usize) -> Option<u128> {
-        if buf.len() < PARTIAL_SIDECAR_FIXED_FULU + 1 ||
-            buf.len() > MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE_FULU
-        {
-            return None;
-        }
-        let o0 = u32_le(buf, 0) as usize;
-        let o1 = u32_le(buf, 4) as usize;
-        let o2 = u32_le(buf, 8) as usize;
-        let o3 = u32_le(buf, 12) as usize;
-        if o0 != PARTIAL_SIDECAR_FIXED_FULU || o1 < o0 || o2 < o1 || o3 < o2 || o3 > buf.len() {
-            return None;
-        }
-        let (rows, n) = bitlist_u128(&buf[o0..o1], n_rows)?;
-        let k = rows.count_ones() as usize;
-        if n != n_rows || o2 - o1 != k * BYTES_PER_CELL || o3 - o2 != k * BYTES_PER_KZG_PROOF {
-            return None;
-        }
-        let header = &buf[o3..];
-        if header.is_empty() {
-            (k > 0).then_some(rows)
-        } else {
-            if header.len() < 4 || u32_le(header, 0) != 4 {
-                return None;
-            }
-            PartialDataColumnHeaderView::check_size(&header[4..]).then_some(rows)
-        }
+        let view = Self::parse(buf)?;
+        (view.n_rows == n_rows).then_some(view.rows)
     }
 
     #[inline]
@@ -154,29 +197,13 @@ impl PartialDataColumnSidecarFuluView {
 pub struct PartialDataColumnSidecarGloasView;
 
 impl PartialDataColumnSidecarGloasView {
+    pub fn parse(buf: &[u8]) -> Option<PartialColumnView<'_>> {
+        PartialColumnView::parse(buf, false)
+    }
     /// As Fulu, but a partial payload must contain at least one cell.
     pub fn check_size(buf: &[u8], n_rows: usize) -> Option<u128> {
-        if buf.len() < PARTIAL_SIDECAR_FIXED_GLOAS + 1 ||
-            buf.len() > MAX_PARTIAL_DATA_COLUMN_SIDECAR_SIZE_GLOAS
-        {
-            return None;
-        }
-        let o0 = u32_le(buf, 0) as usize;
-        let o1 = u32_le(buf, 4) as usize;
-        let o2 = u32_le(buf, 8) as usize;
-        if o0 != PARTIAL_SIDECAR_FIXED_GLOAS || o1 < o0 || o2 < o1 || o2 > buf.len() {
-            return None;
-        }
-        let (rows, n) = bitlist_u128(&buf[o0..o1], n_rows)?;
-        let k = rows.count_ones() as usize;
-        if n != n_rows ||
-            k == 0 ||
-            o2 - o1 != k * BYTES_PER_CELL ||
-            buf.len() - o2 != k * BYTES_PER_KZG_PROOF
-        {
-            return None;
-        }
-        Some(rows)
+        let view = Self::parse(buf)?;
+        (view.n_rows == n_rows).then_some(view.rows)
     }
 
     #[inline]
@@ -479,6 +506,30 @@ mod tests {
         buf[12..16].copy_from_slice(&17u32.to_le_bytes());
         buf[16] = 0b100; // n = 2, no rows set
         assert!(PartialDataColumnSidecarFuluView::check_size(&buf, 2).is_none());
+    }
+
+    #[test]
+    fn header_only_bitmap_length_is_independent_of_supported_cell_rows() {
+        let header = test_header(2);
+        for n_rows in [0, 129, MAX_BLOB_COMMITMENTS_PER_BLOCK] {
+            let end = 16 + bitlist_bytes(n_rows);
+            let mut bytes = vec![0; end];
+            bytes[..4].copy_from_slice(&16u32.to_le_bytes());
+            for offset in [4, 8, 12] {
+                bytes[offset..offset + 4].copy_from_slice(&(end as u32).to_le_bytes());
+            }
+            bytes[end - 1] = 1 << (n_rows % 8);
+            bytes.extend_from_slice(&4u32.to_le_bytes());
+            bytes.extend_from_slice(&header);
+            let parsed = PartialDataColumnSidecarFuluView::parse(&bytes).unwrap();
+            assert_eq!(parsed.rows, 0);
+            assert_eq!(parsed.n_rows, n_rows);
+            assert_eq!(parsed.header, Some(header.as_slice()));
+            bytes[16] |= 1;
+            if n_rows != 0 {
+                assert!(PartialDataColumnSidecarFuluView::parse(&bytes).is_none());
+            }
+        }
     }
 
     #[test]

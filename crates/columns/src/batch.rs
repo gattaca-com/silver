@@ -1,10 +1,36 @@
 use silver_common::{
-    GossipDomain, IngestionTime, MessageId, P2pStreamId, SszCache, TCacheRead, TRead,
+    GossipDomain, IngestionTime, MessageId, P2pStreamId, SszCache, SubValidation, TCacheRead,
+    TRead,
+    cell_store::CellValidationRequest,
     column_util::KzgBatchEntry,
-    ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
+    ssz_view::{
+        BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
+        NUMBER_OF_COLUMNS,
+    },
 };
 
-use crate::{BlockRoot, availability::ColumnTracker, validate::ColumnValidator};
+use crate::{
+    BlockRoot, availability::ColumnTracker, cell_store::CellStore, validate::ColumnValidator,
+};
+
+pub(crate) struct PendingCellKzg {
+    pub request: CellValidationRequest,
+    pub validation: SubValidation,
+}
+
+impl PendingCellKzg {
+    pub fn entry<'a>(&'a self, store: &'a CellStore) -> Option<KzgBatchEntry<'a>> {
+        let key = self.request.pending.key;
+        let (_, data) = store.context(&key.block_root)?;
+        let commitments = data
+            .commitments()
+            .get(key.row * BYTES_PER_KZG_COMMITMENT..(key.row + 1) * BYTES_PER_KZG_COMMITMENT)?;
+        let [column, proofs] = self.validation.buffers();
+        Some(KzgBatchEntry { column, commitments, proofs, index: key.column as u64 })
+    }
+}
+
+pub(crate) type PreparedCells = [Option<PendingCellKzg>; 128];
 
 /// The gossip frame a sidecar arrived in, kept until KZG passes so the mesh
 /// receives that exact frame, on the fork domain it came from, and never an

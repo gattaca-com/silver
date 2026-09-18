@@ -9,6 +9,8 @@ use silver_control::cell_allocator::CellAllocator;
 
 use super::*;
 
+mod partial;
+
 struct BlockBlob {
     commitment: [u8; 48],
     blob: c_kzg::Blob,
@@ -21,10 +23,14 @@ impl BlockBlob {
     /// swapped proofs. Counting field elements keeps columns
     /// distinguishable.
     fn counting() -> Self {
+        Self::starting_at(0)
+    }
+
+    fn starting_at(start: u16) -> Self {
         let settings = c_kzg::ethereum_kzg_settings(0);
         let mut bytes = [0u8; c_kzg::BYTES_PER_BLOB];
         for (i, element) in bytes.chunks_exact_mut(32).enumerate() {
-            element[30..32].copy_from_slice(&(i as u16).to_be_bytes());
+            element[30..32].copy_from_slice(&(start + i as u16).to_be_bytes());
         }
         let blob = c_kzg::Blob::new(bytes);
         let commitment = settings.blob_to_kzg_commitment(&blob).unwrap().to_bytes().into_inner();
@@ -129,7 +135,6 @@ impl Rig {
                 self.tile.cells.as_mut().unwrap().handle_event(
                     CellStoreEvent::Allocated { request, set: Some(set) },
                     Instant::now(),
-                    &mut self.tile.kzg_scratch,
                     &mut self.conn.producers,
                 );
             }
@@ -308,18 +313,34 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
             assert!(allocator.stage(key, &[0; c_kzg::BYTES_PER_CELL], &proof).unwrap().is_none());
             let request = CellValidationRequest {
                 pending,
+                slot: SLOT,
                 domain,
                 deadline: rig.tile.cells.as_ref().unwrap().store().slot_end(),
                 origin: CellOrigin::El { request_id: 0 },
             };
-            assert!(matches!(
-                rig.tile.cells.as_mut().unwrap().validate_cell(
-                    request,
-                    Instant::now(),
-                    &mut rig.tile.kzg_scratch
-                ),
-                CellValidationOutcome::Accepted
-            ));
+            rig.tile.cells.as_mut().unwrap().handle_event(
+                CellStoreEvent::Validate(request),
+                Instant::now(),
+                &mut rig.conn.producers,
+            );
+        }
+        rig.tile.flush_kzg_batch(&mut rig.conn.producers);
+        let mut outcomes = Vec::new();
+        rig.inj.consume(|event: CellStoreEvent, _| {
+            if let CellStoreEvent::Validation { request, outcome } = event {
+                outcomes.push((request.pending.key.column, outcome));
+            }
+        });
+        assert_eq!(outcomes.len(), 2);
+        for (column, outcome) in outcomes {
+            assert_eq!(
+                outcome,
+                if format == ForkName::Fulu && column == 3 {
+                    CellValidationOutcome::Ignored
+                } else {
+                    CellValidationOutcome::Accepted
+                }
+            );
         }
         rig.tile
             .cells

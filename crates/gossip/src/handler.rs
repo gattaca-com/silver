@@ -10,7 +10,7 @@ use silver_common::{
 };
 
 use crate::{
-    GossipHandlerEvent, PartialMetadataReceived,
+    ColumnIngress, GossipHandlerEvent, PartialInbound, PartialMetadataReceived,
     control::{
         self, copy_idontwants_to_protobuf_output, copy_ihaves_to_protobuf_output, handle_grafts,
         handle_idontwants, handle_ihaves, handle_iwants, handle_prunes, handle_subscriptions,
@@ -49,6 +49,7 @@ pub struct GossipHandler {
 
     extensions: ExtensionTracker,
     send_partial_columns: bool,
+    receive_partial_columns: bool,
 
     events: VecDeque<GossipHandlerEvent>,
 }
@@ -73,6 +74,7 @@ impl GossipHandler {
             mcache,
             extensions: ExtensionTracker::default(),
             send_partial_columns: false,
+            receive_partial_columns: false,
             iwant_buffer: Vec::with_capacity(256),
             snap_encoder: snap::raw::Encoder::new(),
             snap_scratch: Vec::new(),
@@ -345,16 +347,28 @@ impl GossipHandler {
         adapter: &mut SpineAdapter<SilverSpine>,
         data_columns: Option<&mut TProducer>,
     ) -> bool {
+        self.spin_columns(adapter, data_columns)
+    }
+
+    pub fn set_receive_partial_columns(&mut self, enabled: bool) {
+        self.receive_partial_columns = enabled;
+    }
+
+    pub fn spin_columns<I: ColumnIngress>(
+        &mut self,
+        adapter: &mut SpineAdapter<SilverSpine>,
+        data_columns: Option<&mut I>,
+    ) -> bool {
         let mut events = std::mem::take(&mut self.events);
         let did_work = self.spin_inner(adapter, data_columns, &mut |e| events.push_back(e));
         self.events = events;
         did_work
     }
 
-    fn spin_inner(
+    fn spin_inner<I: ColumnIngress>(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,
-        mut data_columns: Option<&mut TProducer>,
+        mut data_columns: Option<&mut I>,
         emit: &mut impl FnMut(GossipHandlerEvent),
     ) -> bool {
         let mut did_work = false;
@@ -364,7 +378,7 @@ impl GossipHandler {
         self.generate_ihave_messages(now, emit);
         self.incoming_gossip.free();
 
-        adapter.consume(|msg: GossipMsgIn, _producers| {
+        adapter.consume(|msg: GossipMsgIn, producers| {
             did_work = true;
 
             let acquired = self.incoming_gossip.acquire(msg.tcache);
@@ -410,6 +424,16 @@ impl GossipHandler {
                     emit(GossipHandlerEvent::PartialMetadata(metadata));
                 }
 
+                if self.receive_partial_columns &&
+                    stream_id.protocol() == StreamProtocol::GossipSubV13 &&
+                    let Some(partial) = gossip_proto.partial.as_option() &&
+                    let Some(message) =
+                        PartialInbound::decode(partial, *stream_id, recv_ts, &self.domains) &&
+                    let Some(ingress) = data_columns.as_deref_mut()
+                {
+                    ingress.receive_partial(message, producers);
+                }
+
                 if let Some(control) = gossip_proto.control.as_option() {
                     handle_grafts(stream_id, &control.graft, &self.domains, emit);
                     handle_prunes(stream_id, &control.prune, &self.domains, emit);
@@ -448,7 +472,7 @@ impl GossipHandler {
                             recv_ts,
                             &mut self.dedup_cache,
                             &mut self.incoming_gossip_publish,
-                            data_columns.as_deref_mut(),
+                            data_columns.as_deref_mut().map(ColumnIngress::producer_mut),
                             &mut self.mcache_publish,
                             emit,
                         ) {

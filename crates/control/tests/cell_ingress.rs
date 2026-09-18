@@ -13,7 +13,7 @@ use flux::{
 use silver_chain_spec::{ForkName, SpecConfig};
 use silver_columns::cell_store::CellStore;
 use silver_common::{
-    GossipDomain, GossipTopic, MessageId, Nanos, P2pStreamId, SilverSpine, StreamProtocol,
+    GossipDomain, GossipTopic, Nanos, P2pStreamId, SilverSpine, StreamProtocol,
     SubReservationError, TCache, TCacheProducer, TCacheRead, TCacheRef, TRandomAccess,
     TReservation,
     cell_store::{
@@ -30,6 +30,9 @@ use tempfile::TempDir;
 const ROOT: [u8; 32] = [1; 32];
 const PROOF: [u8; BYTES_PER_KZG_PROOF] = [0x22; BYTES_PER_KZG_PROOF];
 const SLOT: Duration = Duration::from_secs(12);
+
+#[path = "cell_ingress/partial.rs"]
+mod partial;
 
 struct Endpoint;
 
@@ -239,7 +242,6 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
                 CellOrigin::Gossip {
                     stream_id: P2pStreamId::new(42, 7, StreamProtocol::GossipSub, true),
                     topic: GossipTopic::DataColumnSidecar(1),
-                    message_id: MessageId::default(),
                     received: Nanos::now(),
                 }
             } else {
@@ -247,6 +249,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
             };
             rig.adapters[row].produce(CellStoreEvent::Validate(CellValidationRequest {
                 pending,
+                slot: rig.context.slot,
                 origin,
                 deadline: expires,
                 domain: GossipDomain::new([0; 4], format),

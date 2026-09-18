@@ -141,12 +141,22 @@ pub fn verify_data_column_sidecar_gloas(
 #[timed]
 pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
     let commitments = DataColumnSidecarFuluView::kzg_commitments(sidecar);
+    verify_commitments_inclusion_proof(
+        commitments,
+        DataColumnSidecarFuluView::inclusion_proof(sidecar),
+        DataColumnSidecarFuluView::body_root(sidecar),
+    )
+}
+
+pub fn verify_commitments_inclusion_proof(
+    commitments: &[u8],
+    branch: &[u8; 128],
+    body_root: &B256,
+) -> bool {
     let leaf = hash_list(
         MerkleStack::new(MAX_BLOB_COMMITMENTS_PER_BLOCK),
         commitments.chunks_exact(BYTES_PER_KZG_COMMITMENT).map(hash_fixed_bytes),
     );
-    let branch = DataColumnSidecarFuluView::inclusion_proof(sidecar);
-    let body_root = DataColumnSidecarFuluView::body_root(sidecar);
     is_valid_merkle_branch(
         &leaf,
         branch,
@@ -335,15 +345,28 @@ pub fn verify_proposer_signature(
     fork_version: [u8; 4],
     genesis_validators_root: &B256,
 ) -> bool {
+    verify_header_signature(
+        &block_root_from_sidecar(sidecar),
+        DataColumnSidecarFuluView::block_signature(sidecar),
+        proposer_pubkey,
+        fork_version,
+        genesis_validators_root,
+    )
+}
+
+pub fn verify_header_signature(
+    header_root: &B256,
+    sig_bytes: &[u8; 96],
+    proposer_pubkey: &PublicKey,
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+) -> bool {
     let fork_data_root = hash_tree_root_fork_data(fork_version, genesis_validators_root);
     let mut domain = [0u8; 32];
     domain[..4].copy_from_slice(&DOMAIN_BEACON_PROPOSER);
     domain[4..].copy_from_slice(&fork_data_root[..28]);
 
-    let header_root = block_root_from_sidecar(sidecar);
-    let signing_root = hash_concat(&header_root, &domain);
-
-    let sig_bytes = DataColumnSidecarFuluView::block_signature(sidecar);
+    let signing_root = hash_concat(header_root, &domain);
     let Ok(signature) = blst::min_pk::Signature::from_bytes(sig_bytes) else {
         return false;
     };
