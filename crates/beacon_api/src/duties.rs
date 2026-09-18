@@ -8,22 +8,27 @@ pub(crate) fn proposer_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respon
     respond(req, ctx, resp, 0);
 }
 
-/// The v2 dependent root is one epoch earlier: with the proposer lookahead,
-/// the proposers of an epoch are fixed before the epoch before it begins.
+/// `proposer.v2.yaml` decides one epoch earlier than `proposer.yaml`: with the
+/// proposer lookahead, an epoch's proposers are fixed before the epoch before
+/// it begins.
 pub(crate) fn proposer_duties_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    respond(req, ctx, resp, MIN_SEED_LOOKAHEAD);
+    respond(req, ctx, resp, 1);
 }
 
-fn respond(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>, dependent_lookahead: u64) {
+fn respond(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>, epochs_back: u64) {
     let epoch = req.params.get("epoch").expect("{epoch} in the route pattern");
     let Some(epoch) = parse_uint64(epoch) else {
         resp.error(400, "invalid epoch");
         return;
     };
+    if !ctx.node_status.is_following() {
+        resp.error(503, "api is unavailable while the node is syncing");
+        return;
+    }
 
     let head_root = ctx.node_status.head_root;
     let duties = ctx.read_state(|view| {
-        ProposerDuties::read(&view, epoch, epoch.saturating_sub(dependent_lookahead), head_root)
+        ProposerDuties::read(&view, epoch, epoch.saturating_sub(epochs_back), head_root)
     });
     match duties {
         Some(duties) => resp.json_body(|json| {
@@ -80,14 +85,8 @@ impl ProposerDuties {
             slot: start_slot + offset as u64,
         });
 
-        let head_slot = slot_state.latest_block_header.slot;
-        let decision_slot = (dependent_epoch * SLOTS_PER_EPOCH).saturating_sub(1);
-        let dependent_root = if decision_slot >= head_slot {
-            head_root
-        } else {
-            view.block_roots.at_slot(decision_slot)
-        };
-
+        let dependent_root =
+            view.block_roots.duty_dependent_root(dependent_epoch, head_root, slot_state.slot)?;
         Some(Self { dependent_root, duties })
     }
 }
@@ -99,6 +98,7 @@ mod tests {
         EpochStateFinalized, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_HISTORICAL_ROOT, SlotState,
         SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed,
     };
+    use silver_common::SyncUpdate;
     use silver_httpcore::ParsedRequest;
 
     use super::*;
@@ -119,9 +119,13 @@ mod tests {
         root
     }
 
+    fn ctx() -> ApiCtx {
+        ctx_at(STATE_SLOT, HEAD_SLOT)
+    }
+
     /// Three validators; the lookahead rotates through them so each slot's
     /// proposer is `slot % 3`.
-    fn ctx() -> ApiCtx {
+    fn ctx_at(state_slot: Slot, head_slot: Slot) -> ApiCtx {
         let seeds: Vec<_> =
             (0..3u8).map(|i| ValSeed { pubkey: [0xa0 + i; 48], ..ValSeed::default() }).collect();
         let epoch = EpochState {
@@ -131,15 +135,15 @@ mod tests {
             ..Default::default()
         };
         let mut state =
-            BeaconState::for_test(EpochStateFinalized::from_state(epoch), &seeds, STATE_SLOT);
+            BeaconState::for_test(EpochStateFinalized::from_state(epoch), &seeds, state_slot);
         state.slot_states = SlotStateGroup::new(SlotStateFinalized::new(SlotState {
-            slot: STATE_SLOT,
-            latest_block_header: BeaconBlockHeader { slot: HEAD_SLOT, ..Default::default() },
+            slot: state_slot,
+            latest_block_header: BeaconBlockHeader { slot: head_slot, ..Default::default() },
             ..Default::default()
         }));
-        let roots: Vec<u8> = (0..SLOTS_PER_HISTORICAL_ROOT as u64)
-            .flat_map(|i| ring_root(STATE_SLOT - STATE_SLOT % SLOTS_PER_HISTORICAL_ROOT as u64 + i))
-            .collect();
+        let ring_len = SLOTS_PER_HISTORICAL_ROOT as u64;
+        let roots: Vec<u8> =
+            (0..ring_len).flat_map(|i| ring_root(state_slot - state_slot % ring_len + i)).collect();
         state.block_roots = BlockRootsGroup::vector(&roots).unwrap();
 
         let mut owner = BeaconStateOwner::new(state);
@@ -147,10 +151,15 @@ mod tests {
         owner.publish_state_id(anchor);
         let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status.head_root = HEAD_ROOT;
+        ctx.node_status.target = Some(SyncUpdate::Following);
         ctx
     }
 
     fn get(path: &str) -> Vec<u8> {
+        get_from(&ctx(), path)
+    }
+
+    fn get_from(ctx: &ApiCtx, path: &str) -> Vec<u8> {
         let req = ParsedRequest {
             method: "GET",
             path,
@@ -163,7 +172,7 @@ mod tests {
             keep_alive: true,
         };
         let mut out = Vec::new();
-        assert_eq!(Router::new(ROUTES).dispatch(&req, &ctx(), &mut out), Outcome::Response);
+        assert_eq!(Router::new(ROUTES).dispatch(&req, ctx, &mut out), Outcome::Response);
         out
     }
 
@@ -237,6 +246,14 @@ mod tests {
                 assert_eq!(status_code(&get(&path)), "400", "{path}");
             }
         }
+    }
+
+    #[test]
+    fn decision_slots_below_the_state_read_the_ring_not_the_head() {
+        let state_slot = STATE_EPOCH * SLOTS_PER_EPOCH;
+        let ctx = ctx_at(state_slot, state_slot - 6);
+        let path = format!("/eth/v1/validator/duties/proposer/{STATE_EPOCH}");
+        assert_eq!(body(&get_from(&ctx, &path)), expected(ring_root(state_slot - 1), STATE_EPOCH));
     }
 
     #[test]

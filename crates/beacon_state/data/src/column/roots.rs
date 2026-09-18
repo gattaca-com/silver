@@ -39,29 +39,19 @@ impl RootsView<'_, BlockRoots> {
         self.get(slot as usize % SLOTS_PER_HISTORICAL_ROOT)
     }
 
-    /// Root at the slot before `epoch` starts, saturating to slot zero.
+    /// Root at the slot before `epoch` starts, saturating to slot zero, which
+    /// is what duties for `epoch` depend on.
     ///
-    /// A head at the decision slot supplies its own root without a history
-    /// read. Otherwise, availability is measured from `state_slot`: a
-    /// checkpoint state can be ahead of its latest block. Returns `None`
-    /// for overwritten history.
+    /// The ring holds a root for every slot below `state_slot` and none at or
+    /// above it.
     pub fn duty_dependent_root(
         &self,
         epoch: Epoch,
-        head_slot: Slot,
         head_root: B256,
         state_slot: Slot,
     ) -> Option<B256> {
         let decision_slot = (epoch * SLOTS_PER_EPOCH).saturating_sub(1);
-        debug_assert!(
-            decision_slot <= head_slot,
-            "epoch {epoch} decides at slot {decision_slot}, past the head at {head_slot}"
-        );
-        debug_assert!(
-            head_slot <= state_slot,
-            "the state at {state_slot} is behind its head at {head_slot}"
-        );
-        if head_slot == decision_slot {
+        if decision_slot >= state_slot {
             return Some(head_root);
         }
         (state_slot - decision_slot <= SLOTS_PER_HISTORICAL_ROOT as u64)

@@ -484,14 +484,8 @@ impl BeaconStateTile {
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(node.state_id);
         let state_slot = view.slot.state().slot;
-        let dependent = |epoch| {
-            view.block_roots.duty_dependent_root(
-                epoch,
-                node.slot,
-                head.observation.root,
-                state_slot,
-            )
-        };
+        let dependent =
+            |epoch| view.block_roots.duty_dependent_root(epoch, head.observation.root, state_slot);
         match (dependent(epoch.saturating_sub(1)), dependent(epoch)) {
             (Some(previous), Some(current)) => HeadRoots {
                 state_root: node.state_root,
