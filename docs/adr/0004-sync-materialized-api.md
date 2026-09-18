@@ -142,15 +142,25 @@ transition, and import. RPC imports remain silent because they do not
 request relay. This deliberately narrows the Beacon API's validation
 contract to Silver's publication policy.
 
-`data_column_sidecar` follows `DataColumnsEvent::Persist`. The API uses the
-receipt's slot, block root, and column index directly. It does not read
-sidecar bytes or require a separate gossip publication request. `Available`
-does not trigger a sidecar event.
+`data_column_sidecar` follows `DataColumnsEvent::Validated`, emitted once per
+validated block root and column index. The API uses the receipt's slot,
+block root, and column index directly. It reads sidecar bytes through the
+receipt's SSZ handle and cache identity to extract commitments. Gossip, RPC,
+EL reconstruction, and partial-column assembly share this path. Neither
+`Available` nor `Persist` triggers a sidecar event.
+
+Fulu events include the sidecar's ordered commitment list as `kzg_commitments`.
+Each 48-byte commitment is encoded as a 0x-prefixed string of 96 hexadecimal
+digits. This follows the
+[beacon-APIs v4.0.0 event format](https://github.com/ethereum/beacon-APIs/blob/v4.0.0/apis/eventstream/index.yaml).
+Gloas sidecars carry no commitments, so their events omit the field, matching
+[v5.0.0-alpha.2](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/eventstream/index.yaml).
+If sidecar bytes are unavailable, the API logs a warning and emits no event.
 
 Block gossip events acknowledge publication requests; they do not guarantee
-delivery to peers. Sidecar events acknowledge persistence requests, not
-completed disk writes. Repeated notifications are not deduplicated. The
-beacon, peer, and data-column event queues establish no shared ordering.
+delivery to peers. Sidecar events acknowledge validation, not completed disk
+writes or peer delivery. The API does not deduplicate repeated receipts.
+The beacon, peer, and data-column event queues establish no shared ordering.
 
 ### Reading block publication data
 
@@ -159,6 +169,25 @@ gossip cache. The API computes block roots, including body hashes, even
 when no clients subscribe to `block_gossip`. If the cache has overwritten
 a block's bytes, the API logs a warning and emits no event for that request.
 This does not cancel the publication request.
+
+## Peer inventory
+
+`/eth/v1/node/peers` and `/eth/v1/node/peer_count` list and count unique peer
+identities from the API's observed connection events. Every listed peer is
+`connected`; the other state counts are zero. The inventory does not track
+disconnected, connecting or disconnecting peers. The `enr` field is `null`,
+as permitted by the [peer schema](https://github.com/ethereum/beacon-APIs/blob/master/types/p2p.yaml).
+
+Multiple connections can share an identity while QUIC drains a duplicate.
+The API retains each connection until its disconnect event. Removing one
+connection leaves the peer listed while another remains. Among retained
+connections, the most recently observed supplies the peer's direction and
+`last_seen_p2p_address`, a QUIC multiaddr. Connections are grouped by identity
+and kept in arrival order; handle values do not establish that order.
+
+Connection events published before the API's first read are missed. A peer
+absent for this reason remains absent until the API observes another
+connection for that identity.
 
 ## Node status
 

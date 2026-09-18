@@ -8,9 +8,7 @@ fn default_max_connections() -> usize {
     32
 }
 
-// Clears every engine-api per-method minimum-wait floor (the highest is
-// getPayloadBodiesBy* at 10 s) with margin: this deadline breaks wedged
-// connections, it is not a latency target.
+// The deadline breaks wedged connections; it is not a latency target.
 fn default_request_timeout_secs() -> u64 {
     12
 }

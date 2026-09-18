@@ -126,7 +126,7 @@ impl StageReader {
     /// on the wire, publish the moment it passed validation.
     fn on_data_columns(&mut self, m: &InternalMessage<DataColumnsEvent>) {
         match *m.data() {
-            DataColumnsEvent::Validated { block_root, column_index, slot, origin } => {
+            DataColumnsEvent::Validated { block_root, column_index, slot, origin, .. } => {
                 self.roots.entry(block_root).or_insert(Tracked::new(slot));
                 let recv = StageEvent {
                     stage: Stage::ColumnRecv { index: column_index, origin },
@@ -173,7 +173,7 @@ mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
         BlockSource, BlockStage, ColumnOrigin, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
-        PayloadValidationStatus, TCache, TCacheProducer, TCacheRead,
+        PayloadValidationStatus, SszCache, TCache, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -244,6 +244,8 @@ mod tests {
             column_index,
             slot,
             origin: ColumnOrigin::Gossip,
+            ssz: unread_payload(),
+            ssz_cache: SszCache::Gossip,
         }
     }
 

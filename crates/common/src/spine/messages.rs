@@ -1082,9 +1082,6 @@ pub enum SyncingStrategy {
 /// evolves).
 pub const MAX_BLOBS_PER_BLOCK: usize = 21;
 
-/// Maximum number of block hashes in a single `getPayloadBodiesByHash` request.
-pub const MAX_PAYLOAD_BODIES_PER_REQ: usize = 128;
-
 /// Execution-payload validation result returned by the EL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -1254,38 +1251,6 @@ impl EngineGetBlobsResp {
     }
 }
 
-/// `engine_getPayloadBodiesByHashV1` request.
-/// `hashes[..hash_count]` are the execution block hashes to fetch bodies for.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct EngineGetPayloadBodiesByHashReq {
-    pub id: u64,
-    pub hash_count: u8,
-    pub hashes: [[u8; 32]; MAX_PAYLOAD_BODIES_PER_REQ],
-}
-
-/// `engine_getPayloadBodiesByRangeV1` request. Fully inline.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct EngineGetPayloadBodiesByRangeReq {
-    pub id: u64,
-    pub start: u64,
-    pub count: u64,
-}
-
-/// Response to either `getPayloadBodiesByHash` or `getPayloadBodiesByRange`.
-/// When `ok` is true, `data` is a TCache slot with binary-encoded bodies:
-/// `[u32 count] ([u8 present] [u32 tx_count] ([u32 tx_len][tx bytes])* [u32
-/// withdrawal_count] ([u32 index][u32 validator_index][20B address][u64
-/// amount])*)*` `present == 0` means the entry is null (block missing).
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct EngineGetPayloadBodiesResp {
-    pub id: u64,
-    pub ok: bool,
-    pub data: TCacheRead,
-}
-
 /// Multiplexed engine request. A single spine queue carries FCU,
 /// new-payload, and raw passthrough requests, preserving strict FIFO ordering.
 #[derive(Clone, Copy, Debug)]
@@ -1298,8 +1263,6 @@ pub enum EngineReq {
     PreparePayload(EnginePreparePayloadReq),
     GetPayload(EngineGetPayloadReq),
     GetBlobs(EngineGetBlobsReq),
-    GetPayloadBodiesByHash(EngineGetPayloadBodiesByHashReq),
-    GetPayloadBodiesByRange(EngineGetPayloadBodiesByRangeReq),
 }
 
 /// Multiplexed engine response.
@@ -1311,7 +1274,6 @@ pub enum EngineResp {
     NewPayload(EngineNewPayloadResp),
     GetPayload(EngineGetPayloadResp),
     GetBlobs(EngineGetBlobsResp),
-    GetPayloadBodies(EngineGetPayloadBodiesResp),
 }
 
 /// Sync status of the attached execution layer.
@@ -1356,7 +1318,14 @@ pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
     Available { block_root: [u8; 32], slot: u64 },
     /// A column passed validation. Once per (block_root, column_index).
-    Validated { block_root: [u8; 32], column_index: u64, slot: u64, origin: ColumnOrigin },
+    Validated {
+        block_root: [u8; 32],
+        column_index: u64,
+        slot: u64,
+        origin: ColumnOrigin,
+        ssz: TCacheRead,
+        ssz_cache: SszCache,
+    },
     /// Bytes for storage to write. A repeat offer is allowed; storage dedups.
     Persist {
         ssz: TCacheRead,

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{B256, BeaconStateOwner, SpecConfig};
-use silver_common::{Enr, Identify, Keypair, TCache, TCacheProducer};
+use silver_common::{Enr, Identify, Keypair, SszCache, TCache, TCacheProducer};
 use silver_httpcore::{Bind, Readiness, TokenRange};
 
 fn main() {
@@ -28,7 +28,10 @@ fn main() {
         &SpecConfig::mainnet(),
         state,
         B256::default(),
-        consumer(),
+        [SszCache::Gossip, SszCache::Rpc, SszCache::El, SszCache::DataColumns]
+            .into_iter()
+            .map(|source| (source, consumer()))
+            .collect(),
         consumer(),
     );
     println!("serving on {:?}", api.local_addrs());

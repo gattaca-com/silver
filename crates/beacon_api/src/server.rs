@@ -11,7 +11,9 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair,
-    PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheRead, TRandomAccess, block_root,
+    PayloadValidationStatus, PeerEvent, SszCache, SyncUpdate, TCacheRead, TRandomAccess,
+    block_root,
+    column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_httpcore::{
@@ -346,7 +348,7 @@ pub struct BeaconApi {
     frame: Vec<u8>,
     router: Router,
     ctx: ApiCtx,
-    relayed_gossip: TRandomAccess,
+    ssz_consumers: HashMap<SszCache, TRandomAccess>,
     /// Blocks storage serves, in the `outgoing_rpc` tcache.
     storage: TRandomAccess,
     next_request_id: u64,
@@ -367,7 +369,7 @@ impl BeaconApi {
         spec: &SpecConfig,
         state: BeaconStateReader,
         anchor_root: B256,
-        relayed_gossip: TRandomAccess,
+        ssz_consumers: HashMap<SszCache, TRandomAccess>,
         storage: TRandomAccess,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
@@ -406,7 +408,7 @@ impl BeaconApi {
             frame: Vec::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, anchor_root),
-            relayed_gossip,
+            ssz_consumers,
             storage,
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
@@ -497,7 +499,9 @@ impl BeaconApi {
                 let peer = Peer { id: peer_id_full, ip, port, inbound: !local_dial };
                 self.ctx.peers.insert(p2p_peer_id, peer);
             }
-            PeerEvent::P2pDisconnect { p2p_peer, .. } => self.ctx.peers.remove(p2p_peer),
+            PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
+                self.ctx.peers.remove(peer_id, p2p_peer)
+            }
             PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
                 self.publish_relayed_block(ssz)
             }
@@ -506,7 +510,11 @@ impl BeaconApi {
     }
 
     fn publish_relayed_block(&mut self, ssz: TCacheRead) {
-        let block = self.relayed_gossip.acquire(ssz);
+        let block = self
+            .ssz_consumers
+            .get_mut(&SszCache::Gossip)
+            .expect("configured gossip cache")
+            .acquire(ssz);
         match block.buffer() {
             Ok((buf, _)) => {
                 let slot = SignedBeaconBlockView::slot(buf);
@@ -518,8 +526,23 @@ impl BeaconApi {
     }
 
     pub fn handle_data_columns_event(&mut self, event: DataColumnsEvent) {
-        if let DataColumnsEvent::Validated { block_root, column_index, slot, .. } = event {
-            self.publish_data_column_sidecar(&block_root, column_index, slot);
+        if let DataColumnsEvent::Validated {
+            block_root, column_index, slot, ssz, ssz_cache, ..
+        } = event
+        {
+            let sidecar =
+                self.ssz_consumers.get_mut(&ssz_cache).expect("configured SSZ cache").acquire(ssz);
+            match sidecar.buffer() {
+                Ok((bytes, _)) => self.publish_data_column_sidecar(
+                    &block_root,
+                    column_index,
+                    slot,
+                    kzg_commitments_from_sidecar(bytes),
+                ),
+                Err(e) => {
+                    tracing::warn!(?e, "validated sidecar unavailable to data_column_sidecar")
+                }
+            }
         }
     }
 
@@ -551,9 +574,10 @@ impl BeaconApi {
         block_root: &[u8; 32],
         column_index: u64,
         slot: u64,
+        kzg_commitments: Option<&[u8]>,
     ) {
         self.publish(Channel::DataColumnSidecar, "data_column_sidecar", |json| {
-            json.data_column_sidecar_event(block_root, column_index, slot)
+            json.data_column_sidecar_event(block_root, column_index, slot, kzg_commitments)
         });
     }
 
@@ -646,7 +670,9 @@ impl BeaconApi {
     }
 
     pub fn pump(&mut self, events: &Events, emit: &mut impl FnMut(BeaconApiRequest)) -> bool {
-        self.relayed_gossip.free();
+        for consumer in self.ssz_consumers.values_mut() {
+            consumer.free();
+        }
         self.storage.free();
         let now = Instant::now();
 
@@ -814,9 +840,12 @@ mod tests {
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
-        BlockLookup, EngineNewPayloadResp, HeadRoots, PayloadResolution, ServedBlock, TCache,
-        TCacheProducer, TProducer, body_root,
-        ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE},
+        BlockLookup, ColumnOrigin, EngineNewPayloadResp, HeadRoots, PayloadResolution, ServedBlock,
+        TCache, TCacheProducer, TProducer, body_root,
+        ssz_view::{
+            BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
+            DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
+        },
     };
     use silver_httpcore::Readiness;
 
@@ -860,7 +889,10 @@ mod tests {
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::published_empty_test(0).reader(),
                 B256::default(),
-                consumer(),
+                [SszCache::Gossip, SszCache::Rpc, SszCache::El, SszCache::DataColumns]
+                    .into_iter()
+                    .map(|source| (source, consumer()))
+                    .collect(),
                 consumer(),
             );
             Self { readiness, api, served: cache, requests: Vec::new() }
@@ -1619,6 +1651,115 @@ mod tests {
     // frames without relying on a quiet socket or cross-topic ordering.
     fn finish_events(server: &mut Server) {
         server.api.fan_out(None, b"event: test_end\ndata: {}\n\n", Instant::now());
+    }
+
+    #[test]
+    fn validated_columns_read_commitments_from_each_source_cache() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut sources = [
+            (
+                SszCache::Gossip,
+                ColumnOrigin::Gossip,
+                TCache::producer("api_columns_gossip", 1 << 16),
+            ),
+            (SszCache::Rpc, ColumnOrigin::Rpc, TCache::producer("api_columns_rpc", 1 << 16)),
+            (SszCache::El, ColumnOrigin::El, TCache::producer("api_columns_el", 1 << 16)),
+            (
+                SszCache::DataColumns,
+                ColumnOrigin::Assembly,
+                TCache::producer("api_columns_cells", 1 << 16),
+            ),
+        ];
+        server.api.ssz_consumers = sources
+            .iter()
+            .map(|(cache, _, producer)| {
+                (*cache, producer.cache_ref().random_access("api_columns", true).unwrap())
+            })
+            .collect();
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "data_column_sidecar");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let mut expected = Vec::new();
+        for (index, (cache, origin, producer)) in sources.iter_mut().enumerate() {
+            let byte = index as u8 + 1;
+            let commitments =
+                [[byte; BYTES_PER_KZG_COMMITMENT], [!byte; BYTES_PER_KZG_COMMITMENT]].concat();
+            for fulu in [true, false] {
+                // Field extraction fixtures; consensus validation belongs to the producer.
+                let mut bytes = if fulu {
+                    let mut bytes = vec![0; DATA_COLUMN_SIDECAR_MIN];
+                    for offset in [8, 12] {
+                        bytes[offset..offset + 4]
+                            .copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
+                    }
+                    bytes[16..20].copy_from_slice(
+                        &((DATA_COLUMN_SIDECAR_MIN + commitments.len()) as u32).to_le_bytes(),
+                    );
+                    bytes.extend_from_slice(&commitments);
+                    bytes
+                } else {
+                    let mut bytes = vec![0; DATA_COLUMN_SIDECAR_GLOAS_MIN];
+                    for offset in [8, 12] {
+                        bytes[offset..offset + 4]
+                            .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
+                    }
+                    bytes
+                };
+                bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                let mut reservation = producer.reserve(bytes.len(), true).unwrap();
+                reservation.write_all(&bytes).unwrap();
+                reservation.flush().unwrap();
+                let ssz = reservation.read();
+                let block_root = [byte; 32];
+                let slot = 40 + index as u64;
+                server
+                    .api
+                    .handle_data_columns_event(DataColumnsEvent::Available { block_root, slot });
+                server.api.handle_data_columns_event(DataColumnsEvent::Persist {
+                    block_root,
+                    column_index: index as u64,
+                    slot,
+                    origin: *origin,
+                    ssz,
+                    ssz_cache: *cache,
+                    domain: None,
+                });
+                server.api.handle_data_columns_event(DataColumnsEvent::Validated {
+                    block_root,
+                    column_index: index as u64,
+                    slot,
+                    origin: *origin,
+                    ssz,
+                    ssz_cache: *cache,
+                });
+                expected.push((
+                    block_root,
+                    slot,
+                    index,
+                    fulu.then(|| {
+                        commitments
+                            .chunks_exact(BYTES_PER_KZG_COMMITMENT)
+                            .map(|value| format!("0x{}", hex::encode(value)))
+                            .collect::<Vec<_>>()
+                    }),
+                ));
+            }
+        }
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "column events and marker");
+        assert_eq!(events.len(), expected.len(), "only validation receipts produce events");
+        for (event, (root, slot, index, commitments)) in events.iter().zip(expected) {
+            assert_eq!(event.topic, "data_column_sidecar");
+            assert_eq!(event.data["block_root"], format!("0x{}", hex::encode(root)));
+            assert_eq!(event.data["slot"], slot.to_string());
+            assert_eq!(event.data["index"], index.to_string());
+            match commitments {
+                Some(list) => assert_eq!(event.data["kzg_commitments"], serde_json::json!(list)),
+                None => assert!(event.data.get("kzg_commitments").is_none()),
+            }
+        }
     }
 
     #[test]

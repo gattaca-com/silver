@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, EngineResp, Enr, Identify, Keypair,
-    PeerEvent, SilverSpine, SyncUpdate, TProducer, TRandomAccess,
+    PeerEvent, SilverSpine, SszCache, SyncUpdate, TProducer, TRandomAccess,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -24,6 +24,10 @@ pub struct ApplicationBoundaryTile {
 }
 
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
+    fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.subscribe_broadcast::<PeerEvent>();
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.engine.intake(adapter);
         self.readiness.wait(Duration::ZERO);
@@ -52,7 +56,7 @@ impl ApplicationBoundaryTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         resp_producer: TProducer,
-        relayed_gossip: TRandomAccess,
+        ssz_consumers: HashMap<SszCache, TRandomAccess>,
         outgoing_rpc: TRandomAccess,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
@@ -73,7 +77,7 @@ impl ApplicationBoundaryTile {
             spec,
             state,
             anchor_root,
-            relayed_gossip,
+            ssz_consumers,
             outgoing_rpc,
         );
         let engine = EngineApi::new(

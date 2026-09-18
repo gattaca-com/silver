@@ -89,9 +89,9 @@ silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "5402c63afc122293f04ea69cd9ae295d7d011c8f"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "5402c63afc122293f04ea69cd9ae295d7d011c8f", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "5402c63afc122293f04ea69cd9ae295d7d011c8f"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "c877c5edfdedcc03d3d37af9977624793e821fe3"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "c877c5edfdedcc03d3d37af9977624793e821fe3", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "c877c5edfdedcc03d3d37af9977624793e821fe3"}
 
 # External
 backtrace = "0.3"
@@ -144,6 +144,7 @@ rcgen = "0.14.7"
 ring = "0.17"
 rustc-hash = "2"
 secp256k1 = { version = "0.30", features = ["global-context", "rand", "hashes"] }
+smallvec = "1.15.2"
 rustls = "0.23.37"
 serde = { version = "1.0.228", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }

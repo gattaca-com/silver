@@ -16,9 +16,14 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage,
     ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
     GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
-    PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine, SszCache,
     StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
-    ssz_view::{BEACON_BLOCK_BODY_FIXED, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE},
+    column_util::block_root_from_sidecar,
+    ssz_view::{
+        BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
+        DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, SIGNED_BEACON_BLOCK_MIN,
+        STATUS_V2_SIZE,
+    },
     test_util::ShmemDir,
 };
 use silver_config::EngineConfig;
@@ -71,7 +76,14 @@ fn boundary_tile_with_spec(
         gossip_p.cache_ref().random_access("t", true).unwrap(),
         rpc_p.cache_ref().random_access("t", true).unwrap(),
         resp_p,
-        gossip_p.cache_ref().random_access("t_events", true).unwrap(),
+        [
+            (SszCache::Gossip, gossip_p.cache_ref().random_access("t_events", true).unwrap()),
+            (SszCache::Rpc, rpc_p.cache_ref().random_access("t_columns", true).unwrap()),
+            (SszCache::El, rpc_p.cache_ref().random_access("t_el", true).unwrap()),
+            (SszCache::DataColumns, rpc_p.cache_ref().random_access("t_cells", true).unwrap()),
+        ]
+        .into_iter()
+        .collect(),
         rpc_p.cache_ref().random_access("t_storage", true).unwrap(),
     );
     (tile, gossip_p, rpc_p)
@@ -117,6 +129,57 @@ fn whole_response(received: &[u8]) -> bool {
 
 fn no_el() -> EngineConfig {
     EngineConfig { unsafe_no_el: true, ..EngineConfig::default() }
+}
+
+#[test]
+fn peers_include_connections_published_before_boundary_starts() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
+        "cs_startup_gossip",
+        "cs_startup_rpc",
+        "cs_startup_resp",
+    ]);
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
+    let peer_id = Keypair::from_secret(&[2; 32]).unwrap().peer_id();
+
+    let response = std::thread::scope(|scope| {
+        let mut scoped =
+            flux::spine::ScopedSpine { spine: &mut *spine, scope, stop_flag: Default::default() };
+        let run = flux::tile::tile_runner(
+            tile,
+            &mut scoped,
+            flux::tile::TileConfig::background(None, None).without_metrics(),
+        );
+        let mut inj = SpineAdapter::connect_tile_with_stop_flag(
+            &Injector,
+            scoped.spine,
+            scoped.stop_flag.clone(),
+        );
+        inj.produce(PeerEvent::P2pNewConnection {
+            p2p_peer_id: 1,
+            peer_id_full: peer_id,
+            ip: IpBytes::V4([127, 0, 0, 1]),
+            port: 9000,
+            local_dial: false,
+        });
+        let worker = scope.spawn(run);
+        let response = (|| -> Result<Value, Box<dyn std::error::Error>> {
+            let response = ureq::get(&format!("http://{addr}/eth/v1/node/peers"))
+                .timeout(Duration::from_secs(10))
+                .call()?;
+            Ok(serde_json::from_reader(response.into_reader())?)
+        })();
+        inj.request_stop_scope();
+        worker.join().unwrap();
+        response.unwrap()
+    });
+
+    let peers = response["data"].as_array().unwrap();
+    assert_eq!(peers.len(), 1);
+    let peer_addr = silver_common::Eth2Addr::PeerId(peer_id).to_string();
+    assert_eq!(peers[0]["peer_id"], peer_addr.strip_prefix("/p2p/").unwrap());
+    assert_eq!(peers[0]["state"], "connected");
 }
 
 fn http_get(mut stream: impl Read + Write, path: &str) -> String {
@@ -194,6 +257,39 @@ fn block_bytes(slot: u64, byte: u8) -> Vec<u8> {
     block
 }
 
+/// Contains two distinct commitments for field extraction, without
+/// consensus-valid column or proof lists.
+fn fulu_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
+    let commitments =
+        [[byte; BYTES_PER_KZG_COMMITMENT], [!byte; BYTES_PER_KZG_COMMITMENT]].concat();
+    let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_MIN];
+    sidecar[0..8].copy_from_slice(&index.to_le_bytes());
+    let proofs = DATA_COLUMN_SIDECAR_MIN + commitments.len();
+    for (offset, start) in
+        [(8, DATA_COLUMN_SIDECAR_MIN), (12, DATA_COLUMN_SIDECAR_MIN), (16, proofs)]
+    {
+        sidecar[offset..offset + 4].copy_from_slice(&(start as u32).to_le_bytes());
+    }
+    sidecar[20..28].copy_from_slice(&slot.to_le_bytes());
+    sidecar[68..100].copy_from_slice(&[byte; 32]);
+    sidecar.extend_from_slice(&commitments);
+    sidecar
+}
+
+/// Empty Gloas sidecar for field extraction; consensus validation is outside
+/// this fixture.
+fn gloas_sidecar_bytes(slot: u64, byte: u8, index: u64) -> Vec<u8> {
+    let mut sidecar = vec![0u8; DATA_COLUMN_SIDECAR_GLOAS_MIN];
+    sidecar[0..8].copy_from_slice(&index.to_le_bytes());
+    for offset in [8, 12] {
+        sidecar[offset..offset + 4]
+            .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
+    }
+    sidecar[16..24].copy_from_slice(&slot.to_le_bytes());
+    sidecar[24..56].copy_from_slice(&[byte; 32]);
+    sidecar
+}
+
 fn send_gossip(topic: GossipTopic, byte: u8, ssz: TCacheRead) -> PeerEvent {
     PeerEvent::SendGossip {
         originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
@@ -214,29 +310,51 @@ fn block_relay(gossip: &mut TProducer, slot: u64, byte: u8) -> (PeerEvent, SseEv
     (event, SseEvent::block_gossip(slot, &block_root_fulu(&block)))
 }
 
-fn validated_column(
-    origin: ColumnOrigin,
+fn gossip_column(
+    gossip: &mut TProducer,
     slot: u64,
     byte: u8,
     index: u64,
 ) -> (DataColumnsEvent, SseEvent) {
-    let block_root = [byte; 32];
-    let event = DataColumnsEvent::Validated { block_root, column_index: index, slot, origin };
-    (event, SseEvent::column(slot, &block_root, index))
+    let sidecar = fulu_sidecar_bytes(slot, byte, index);
+    let commitments = DataColumnSidecarFuluView::kzg_commitments(&sidecar);
+    assert_eq!(commitments.len(), 2 * BYTES_PER_KZG_COMMITMENT, "the fixture carries two");
+    let block_root = block_root_from_sidecar(&sidecar);
+    let event = DataColumnsEvent::Validated {
+        block_root,
+        column_index: index,
+        slot,
+        origin: ColumnOrigin::Gossip,
+        ssz: write_object(gossip, &sidecar),
+        ssz_cache: SszCache::Gossip,
+    };
+    (event, SseEvent::column(slot, &block_root, index, Some(commitments)))
 }
 
-fn gossip_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
-    validated_column(ColumnOrigin::Gossip, slot, byte, index)
+fn rpc_column(
+    rpc: &mut TProducer,
+    slot: u64,
+    byte: u8,
+    index: u64,
+) -> (DataColumnsEvent, SseEvent) {
+    let event = DataColumnsEvent::Validated {
+        block_root: [byte; 32],
+        column_index: index,
+        slot,
+        origin: ColumnOrigin::Rpc,
+        ssz: write_object(rpc, &gloas_sidecar_bytes(slot, byte, index)),
+        ssz_cache: SszCache::Rpc,
+    };
+    (event, SseEvent::column(slot, &[byte; 32], index, None))
 }
 
-fn rpc_column(slot: u64, byte: u8, index: u64) -> (DataColumnsEvent, SseEvent) {
-    validated_column(ColumnOrigin::Rpc, slot, byte, index)
-}
-
+/// Expected fields are matched individually; additional fields are allowed
+/// unless listed in `absent`.
 #[derive(Clone, Debug)]
 struct SseEvent {
     name: String,
     data: Value,
+    absent: Vec<&'static str>,
 }
 
 impl SseEvent {
@@ -244,6 +362,7 @@ impl SseEvent {
         Self {
             name: "block".to_owned(),
             data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode([byte; 32]))}),
+            absent: Vec::new(),
         }
     }
 
@@ -251,20 +370,38 @@ impl SseEvent {
         Self {
             name: "block_gossip".to_owned(),
             data: json!({"slot": slot.to_string(), "block": format!("0x{}", hex::encode(block_root))}),
+            absent: Vec::new(),
         }
     }
 
-    fn column(slot: u64, block_root: &[u8; 32], index: u64) -> Self {
-        Self {
-            name: "data_column_sidecar".to_owned(),
-            data: json!({"block_root": format!("0x{}", hex::encode(block_root)), "index": index.to_string(), "slot": slot.to_string()}),
+    fn column(
+        slot: u64,
+        block_root: &[u8; 32],
+        index: u64,
+        kzg_commitments: Option<&[u8]>,
+    ) -> Self {
+        let mut data = json!({"block_root": format!("0x{}", hex::encode(block_root)), "index": index.to_string(), "slot": slot.to_string()});
+        let mut absent = Vec::new();
+        match kzg_commitments {
+            Some(commitments) => {
+                let list: Vec<_> = commitments
+                    .chunks_exact(BYTES_PER_KZG_COMMITMENT)
+                    .map(|commitment| format!("0x{}", hex::encode(commitment)))
+                    .collect();
+                data["kzg_commitments"] = json!(list);
+            }
+            None => absent.push("kzg_commitments"),
         }
+        Self { name: "data_column_sidecar".to_owned(), data, absent }
     }
 
     fn assert_matches(&self, expected: &Self) {
         assert_eq!(self.name, expected.name);
         for (key, value) in expected.data.as_object().unwrap() {
             assert_eq!(self.data.get(key), Some(value), "field {key} in {}", self.name);
+        }
+        for key in &expected.absent {
+            assert!(self.data.get(key).is_none(), "field {key} present in {}", self.name);
         }
     }
 
@@ -301,6 +438,7 @@ impl EventsSubscriber {
                         send.send(SseEvent {
                             name: if name.is_empty() { "message".to_owned() } else { name.clone() },
                             data: serde_json::from_str(&data).expect("event data is JSON"),
+                            absent: Vec::new(),
                         })
                         .unwrap();
                         received += 1;
@@ -624,7 +762,7 @@ fn pool_cap_gates_spine_intake() {
 /// after that intake: a request reaches the EL in the iteration that took it,
 /// not the one after.
 #[test]
-fn an_engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
+fn engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut el, endpoint) = FakeEl::tcp();
@@ -998,7 +1136,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 }
 
 #[test]
-fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
+fn applied_block_on_the_spine_reaches_an_events_subscriber() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
@@ -1033,7 +1171,7 @@ fn an_applied_block_on_the_spine_reaches_an_events_subscriber() {
 fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let (mut tile, mut gossip, _rpc) =
+    let (mut tile, mut gossip, mut rpc) =
         boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
             "cs_subscriptions_gossip",
             "cs_subscriptions_rpc",
@@ -1062,8 +1200,8 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
     inj.produce(send_gossip(GossipTopic::BeaconAttestation(0), 0xaf, unrelated));
     inj.produce(PeerEvent::EarliestSlot(99));
 
-    let (relay, relayed) = gossip_column(10, 0xac, 3);
-    let (published, publication) = rpc_column(11, 0xad, 5);
+    let (relay, relayed) = gossip_column(&mut gossip, 10, 0xac, 3);
+    let (published, publication) = rpc_column(&mut rpc, 11, 0xad, 5);
     let (block_relayed, relayed_block) = block_relay(&mut gossip, 12, 0xae);
     inj.produce(relay);
     inj.produce(relay);
@@ -1086,7 +1224,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
         &mut crank,
     );
     inj.produce(relay);
-    let (sentinel, sentinel_publication) = rpc_column(14, 0xaf, 7);
+    let (sentinel, sentinel_publication) = rpc_column(&mut rpc, 14, 0xaf, 7);
     inj.produce(sentinel);
     let (last_block, last_relayed_block) = block_relay(&mut gossip, 15, 0xb0);
     inj.produce(last_block);
@@ -1120,10 +1258,10 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
 }
 
 #[test]
-fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
+fn late_subscriber_receives_only_relay_requests_published_after_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let (mut tile, mut gossip, _rpc) =
+    let (mut tile, mut gossip, mut rpc) =
         boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
             "cs_late_gossip",
             "cs_late_rpc",
@@ -1143,9 +1281,9 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
     let topics = "block_gossip,data_column_sidecar";
     let early = EventsSubscriber::new(addr, topics, 4, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 20, 0x11);
-    let (relay, relayed) = gossip_column(20, 0x11, 3);
-    let (dc_relay, dc_relayed) = gossip_column(20, 0x11, 4);
-    let (published, publication) = rpc_column(21, 0x12, 5);
+    let (relay, relayed) = gossip_column(&mut gossip, 20, 0x11, 3);
+    let (dc_relay, dc_relayed) = gossip_column(&mut gossip, 20, 0x11, 4);
+    let (published, publication) = rpc_column(&mut rpc, 21, 0x12, 5);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(dc_relay);
@@ -1155,8 +1293,8 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 
     let late = EventsSubscriber::new(addr, topics, 3, &mut crank);
     let (block, relayed_block) = block_relay(&mut gossip, 22, 0x22);
-    let (relay, relayed) = gossip_column(22, 0x22, 7);
-    let (published, publication) = rpc_column(23, 0x23, 9);
+    let (relay, relayed) = gossip_column(&mut gossip, 22, 0x22, 7);
+    let (published, publication) = rpc_column(&mut rpc, 23, 0x23, 9);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);
@@ -1165,7 +1303,7 @@ fn a_late_subscriber_receives_only_relay_requests_published_after_it() {
 }
 
 #[test]
-fn an_idle_boundary_lets_the_object_rings_evict_its_consumers() {
+fn idle_boundary_lets_the_object_rings_evict_its_consumers() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
@@ -1211,7 +1349,7 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
         max_connections: capacity,
         ..EngineConfig::default()
     };
-    let (mut tile, mut gossip, _rpc) =
+    let (mut tile, mut gossip, mut rpc) =
         boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), config, [
             "cs_gsat_gossip",
             "cs_gsat_rpc",
@@ -1252,8 +1390,8 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
     };
     let client = EventsSubscriber::new(addr, "block_gossip,data_column_sidecar", 3, &mut pump);
     let (block, relayed_block) = block_relay(&mut gossip, 30, 0x33);
-    let (relay, relayed) = gossip_column(31, 0x34, 7);
-    let (published, publication) = rpc_column(32, 0x35, 9);
+    let (relay, relayed) = gossip_column(&mut gossip, 31, 0x34, 7);
+    let (published, publication) = rpc_column(&mut rpc, 32, 0x35, 9);
     inj.produce(block);
     inj.produce(relay);
     inj.produce(published);

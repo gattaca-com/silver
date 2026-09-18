@@ -390,7 +390,14 @@ impl DataColumnsTile {
 
         let origin = ColumnOrigin::from_protocol(stream_id.protocol());
         producers.produce_with_ingestion(
-            DataColumnsEvent::Validated { block_root, column_index, slot, origin },
+            DataColumnsEvent::Validated {
+                block_root,
+                column_index,
+                slot,
+                origin,
+                ssz: sidecar.read,
+                ssz_cache,
+            },
             recv_ts,
         );
         if self.tracker.is_custody(column_index) {

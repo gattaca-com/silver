@@ -436,6 +436,40 @@ fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
 }
 
 #[test]
+fn fulu_columns_are_not_accepted_at_or_after_gloas_activation() {
+    let blob = BlockBlob::counting();
+    let spec = SpecConfig { fulu_fork_epoch: 0, gloas_fork_epoch: 1, ..SpecConfig::mainnet() };
+    let activation_slot = spec.gloas_fork_epoch * SLOTS_PER_EPOCH;
+    for slot in [activation_slot - 1, activation_slot, activation_slot + 1] {
+        for source in [ColumnOrigin::Gossip, ColumnOrigin::Rpc] {
+            let block = block_around(slot, &fulu_body(&blob.commitment));
+            let block_root = block_root_fulu(&block);
+            let sidecar = blob.fulu_sidecar(3, &block);
+            let mut rig = Rig::with_spec(CUSTODY_COLUMNS, spec.clone());
+            rig.follow(*SignedBeaconBlockView::parent_root(&block));
+            // The empty registry cannot verify signatures. Cache the signature to
+            // isolate the layout gate while exercising shape, inclusion and KZG checks.
+            rig.tile
+                .tracker
+                .set_signature(block_root, *DataColumnSidecarFuluView::block_signature(&sidecar));
+
+            rig.receive_column(source, 3, &sidecar);
+            rig.turn();
+            let out = rig.drain();
+            if slot < activation_slot {
+                assert!(out.persisted(block_root, 3), "{source:?} at slot {slot}");
+                assert_eq!(out.validated, 1 << 3, "{source:?} at slot {slot}");
+                assert_eq!(out.publications.is_empty(), source != ColumnOrigin::Gossip);
+            } else {
+                assert_eq!(out.validated, 0, "{source:?} at slot {slot}");
+                assert!(out.receipts.is_empty(), "{source:?} at slot {slot}");
+                assert!(out.publications.is_empty(), "{source:?} at slot {slot}");
+            }
+        }
+    }
+}
+
+#[test]
 fn fulu_column_publication_requires_a_resolved_proposer() {
     let blob = BlockBlob::counting();
     // The empty state's lookahead covers the current and next epochs.

@@ -796,67 +796,6 @@ pub(crate) fn json_get_blobs_to_tcache(
 }
 
 // ---------------------------------------------------------------------------
-// Zero-alloc JSON → TCache frame converter for
-// engine_getPayloadBodiesByHashV1 / ByRangeV1
-//
-// Wire layout: [u32 count] [u8 present] [u32 tx_count] [u32 len][tx bytes]...
-// [u32 withdrawal_count] [44B each]
-// ---------------------------------------------------------------------------
-
-pub(crate) fn json_get_payload_bodies_to_tcache(
-    raw: &mut [u8],
-    out: &mut Vec<u8>,
-) -> Result<(), crate::EngineError> {
-    use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
-
-    let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
-    let items =
-        root.get("result").and_then(|v| v.as_array()).ok_or(crate::EngineError::MissingResult)?;
-
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    for item in items {
-        if item.is_null() {
-            out.push(0);
-            continue;
-        }
-        out.push(1);
-
-        let txs = item
-            .get("transactions")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| crate::EngineError::Ssz("missing transactions".into()))?;
-        out.extend_from_slice(&(txs.len() as u32).to_le_bytes());
-        for tx in txs {
-            let s = tx.as_str().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
-            let s = s.strip_prefix("0x").unwrap_or(s);
-            let len = s.len() / 2;
-            out.extend_from_slice(&(len as u32).to_le_bytes());
-            let base = out.len();
-            out.resize(base + len, 0);
-            hex::decode_to_slice(s, &mut out[base..])
-                .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
-        }
-
-        let withdrawals: &[simd_json::BorrowedValue<'_>] =
-            item.get("withdrawals").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
-        out.extend_from_slice(&(withdrawals.len() as u32).to_le_bytes());
-        for w in withdrawals {
-            let index = parse_quantity(fstr(w, "index")?)?;
-            let validator_index = parse_quantity(fstr(w, "validatorIndex")?)?;
-            let address = hex_to_fixed::<20>(fstr(w, "address")?)?;
-            let amount = parse_quantity(fstr(w, "amount")?)?;
-            out.extend_from_slice(&index.to_le_bytes());
-            out.extend_from_slice(&validator_index.to_le_bytes());
-            out.extend_from_slice(&address);
-            out.extend_from_slice(&amount.to_le_bytes());
-        }
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1561,58 +1500,5 @@ mod tests {
     fn json_get_blobs_missing_result() {
         let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
         assert!(json_get_blobs_to_tcache(&mut json, &mut Vec::new()).is_err());
-    }
-
-    // ---------------------------------------------------------------------------
-    // json_get_payload_bodies_to_tcache
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn json_get_payload_bodies_with_items() {
-        let mut json = br#"{"result":[{"transactions":["0xdeadbeef","0xcafe"],"withdrawals":[{"index":"0x1","validatorIndex":"0x2","address":"0x1234567890123456789012345678901234567890","amount":"0xa"}]},null]}"#.to_vec();
-        let mut out = Vec::new();
-        json_get_payload_bodies_to_tcache(&mut json, &mut out).unwrap();
-
-        let mut pos = 0usize;
-        assert_eq!(u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()), 2);
-        pos += 4;
-
-        // item 0
-        assert_eq!(out[pos], 1);
-        pos += 1;
-        assert_eq!(u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()), 2); // tx_count
-        pos += 4;
-        let tx0_len = u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        assert_eq!(tx0_len, 4);
-        assert_eq!(&out[pos..pos + 4], &[0xde, 0xad, 0xbe, 0xef]);
-        pos += tx0_len;
-        let tx1_len = u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        assert_eq!(tx1_len, 2);
-        assert_eq!(&out[pos..pos + 2], &[0xca, 0xfe]);
-        pos += tx1_len;
-        assert_eq!(u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()), 1); // wd_count
-        pos += 4;
-        assert_eq!(u64::from_le_bytes(out[pos..pos + 8].try_into().unwrap()), 1); // index
-        pos += 8;
-        assert_eq!(u64::from_le_bytes(out[pos..pos + 8].try_into().unwrap()), 2); // validator_index
-        pos += 8;
-        assert_eq!(
-            &out[pos..pos + 20],
-            hex::decode("1234567890123456789012345678901234567890").unwrap().as_slice()
-        );
-        pos += 20;
-        assert_eq!(u64::from_le_bytes(out[pos..pos + 8].try_into().unwrap()), 10); // amount
-        pos += 8;
-
-        // item 1: null
-        assert_eq!(out[pos], 0);
-    }
-
-    #[test]
-    fn json_get_payload_bodies_missing_result() {
-        let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
-        assert!(json_get_payload_bodies_to_tcache(&mut json, &mut Vec::new()).is_err());
     }
 }
