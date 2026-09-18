@@ -18,8 +18,7 @@ pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
     let Some(indices) = requested_indices(req, resp) else {
         return;
     };
-    if !ctx.node_status.is_following() {
-        resp.error(503, "duties are unavailable while the node is syncing");
+    if !ctx.follows_chain(resp) {
         return;
     }
     let state_epoch = ctx.read_state(|view| view.slot.current_epoch());
@@ -180,11 +179,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        duties::test_state::{
-            block_roots_ring, field, indices_body, json, post_duties, pubkey, ring_root,
+        routes::test_ctx,
+        testing::{
+            answer, block_roots_ring, field, indices_body, json, posting, pubkey, ring_root,
             status_code,
         },
-        routes::test_ctx,
     };
 
     const ACTIVE: u64 = 8192;
@@ -227,7 +226,7 @@ mod tests {
     }
 
     fn post(ctx: &ApiCtx, epoch: &str, body: &str) -> Vec<u8> {
-        post_duties(ctx, &format!("/eth/v1/validator/duties/attester/{epoch}"), body)
+        answer(ctx, &posting(&format!("/eth/v1/validator/duties/attester/{epoch}"), body))
     }
 
     /// Every posted validator sits in exactly one committee of the epoch, at

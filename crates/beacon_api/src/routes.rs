@@ -159,6 +159,14 @@ impl ApiCtx {
         });
     }
 
+    pub(crate) fn follows_chain(&self, resp: &mut Response<'_>) -> bool {
+        if self.node_status.is_following() {
+            return true;
+        }
+        resp.error(503, "api unavailable while the node is syncing");
+        false
+    }
+
     /// Whether `{state_id}` names the one state silver serves, having answered
     /// the request when it does not.
     fn serves_state(&self, req: &Request<'_>, resp: &mut Response<'_>) -> bool {
@@ -316,50 +324,30 @@ mod tests {
     use crate::{
         HeadStatus,
         peers::Peer,
-        router::{Outcome, Router},
+        testing::{answer, body, posting, request},
     };
 
     /// Wire bytes the pre-table implementation produced for these exact
     /// inputs (captured before the table dispatch landed).
     const GOLDEN_IDENTITY: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 478\r\n\r\n{\"data\":{\"peer_id\":\"16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi\",\"enr\":\"enr:-HW4QFVim6voTojjE-JbeUF0GPFRcqmWxgqgJ8-tXE5hh9PFTQSCwUJPHY_61U3Wvzi6OGrvJfb6KNjNpw4Q18sNL_sBgmlkgnY0iXNlY3AyNTZrMaEDG4TFVnsSZECZXT7VqroFZdceGDRgSBn_nBf16dXdB48\",\"p2p_addresses\":[\"/ip4/1.2.3.4/tcp/9000/p2p/16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi\"],\"discovery_addresses\":[],\"metadata\":{\"seq_number\":\"1\",\"attnets\":\"0x0000000000000000\",\"syncnets\":\"0x00\",\"custody_group_count\":\"4\"}}}";
 
-    fn get(router: &Router, ctx: &ApiCtx, path: &str) -> Vec<u8> {
-        query_get(router, ctx, path, "")
+    fn get(ctx: &ApiCtx, path: &str) -> Vec<u8> {
+        query_get(ctx, path, "")
     }
 
-    fn query_get(router: &Router, ctx: &ApiCtx, path: &str, query: &str) -> Vec<u8> {
-        let mut out = Vec::new();
-        let req = ParsedRequest {
-            method: "GET",
-            path,
-            query,
-            body: b"",
-            accept: None,
-            content_type: None,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        assert_eq!(router.dispatch(&req, ctx, &mut out), Outcome::Response);
-        out
-    }
-
-    fn body(response: &[u8]) -> &[u8] {
-        let s = std::str::from_utf8(response).unwrap();
-        &response[s.find("\r\n\r\n").unwrap() + 4..]
+    fn query_get(ctx: &ApiCtx, path: &str, query: &str) -> Vec<u8> {
+        answer(ctx, &ParsedRequest { query, ..request("GET", path) })
     }
 
     #[test]
     fn identity_wire_bytes_match_pre_table_implementation() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/identity");
+        let resp = get(&anchor_ctx(), "/eth/v1/node/identity");
         assert_eq!(std::str::from_utf8(&resp).unwrap(), GOLDEN_IDENTITY);
     }
 
     #[test]
     fn version_body_carries_this_build_s_agent_version() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &anchor_ctx(), "/eth/v1/node/version");
+        let resp = get(&anchor_ctx(), "/eth/v1/node/version");
         assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"));
         assert_eq!(
             std::str::from_utf8(body(&resp)).unwrap(),
@@ -372,13 +360,12 @@ mod tests {
     /// syncing.
     #[test]
     fn config_endpoints_answer_before_bootstrap() {
-        let router = Router::new(ROUTES);
         for path in [
             "/eth/v1/config/spec",
             "/eth/v1/config/fork_schedule",
             "/eth/v1/config/deposit_contract",
         ] {
-            let resp = get(&router, &anchor_ctx(), path);
+            let resp = get(&anchor_ctx(), path);
             assert!(
                 resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
                 "{path}"
@@ -411,7 +398,7 @@ mod tests {
     fn health_response(status: NodeStatus, query: &str) -> Vec<u8> {
         let mut ctx = anchor_ctx();
         ctx.node_status = status;
-        query_get(&Router::new(ROUTES), &ctx, "/eth/v1/node/health", query)
+        query_get(&ctx, "/eth/v1/node/health", query)
     }
 
     #[test]
@@ -460,7 +447,7 @@ mod tests {
     fn status_body(status: NodeStatus, path: &str) -> String {
         let mut ctx = anchor_ctx();
         ctx.node_status = status;
-        let resp = get(&Router::new(ROUTES), &ctx, path);
+        let resp = get(&ctx, path);
         assert!(
             resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
             "{path}: {}",
@@ -582,22 +569,9 @@ mod tests {
     /// endpoint exists" (404).
     #[test]
     fn stubbed_routes_answer_501_not_404() {
-        let router = Router::new(ROUTES);
         let ctx = anchor_ctx();
         for (method, path) in [("POST", "/eth/v1/validator/liveness/0")] {
-            let mut out = Vec::new();
-            let req = ParsedRequest {
-                method,
-                path,
-                query: "",
-                body: b"[]",
-                accept: None,
-                content_type: Some("application/json"),
-                eth_consensus_version: None,
-                version: 1,
-                keep_alive: true,
-            };
-            assert_eq!(router.dispatch(&req, &ctx, &mut out), Outcome::Response);
+            let out = answer(&ctx, &ParsedRequest { method, ..posting(path, "[]") });
             assert!(out.starts_with(b"HTTP/1.1 501 Not Implemented\r\n"), "{method} {path}");
             assert_eq!(
                 body(&out),
@@ -625,7 +599,7 @@ mod tests {
     }
 
     fn peers_response(ctx: &ApiCtx, query: &str) -> Vec<u8> {
-        query_get(&Router::new(ROUTES), ctx, "/eth/v1/node/peers", query)
+        query_get(ctx, "/eth/v1/node/peers", query)
     }
 
     fn json_ok(resp: &[u8]) -> serde_json::Value {
@@ -641,7 +615,7 @@ mod tests {
     }
 
     fn peer_count_json(ctx: &ApiCtx) -> serde_json::Value {
-        json_ok(&get(&Router::new(ROUTES), ctx, "/eth/v1/node/peer_count"))
+        json_ok(&get(ctx, "/eth/v1/node/peer_count"))
     }
 
     fn address(listed: &serde_json::Value) -> &str {
@@ -800,8 +774,7 @@ mod tests {
 
     #[test]
     fn metrics_response_valid_prometheus_format() {
-        let router = Router::new(ROUTES);
-        let resp = get(&router, &anchor_ctx(), "/metrics");
+        let resp = get(&anchor_ctx(), "/metrics");
         let s = std::str::from_utf8(&resp).unwrap();
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
@@ -856,7 +829,7 @@ mod tests {
     }
 
     fn state_body(ctx: &ApiCtx, path: &str) -> String {
-        let resp = get(&Router::new(ROUTES), ctx, path);
+        let resp = get(ctx, path);
         assert!(
             resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
             "{path}: {}",
@@ -908,7 +881,7 @@ mod tests {
 
     fn assert_state_not_found(ctx: &ApiCtx, state_id: &str) {
         for path in state_paths(state_id) {
-            let resp = get(&Router::new(ROUTES), ctx, &path);
+            let resp = get(ctx, &path);
             assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{path}");
             assert_eq!(body(&resp), br#"{"code":404,"message":"state not found"}"#, "{path}");
         }
@@ -951,7 +924,7 @@ mod tests {
             ["current", "banana", "", "-1", "+5", "0x", "1.5", &short_root, &unhex_root, "HEAD"]
         {
             for path in state_paths(state_id) {
-                let resp = get(&Router::new(ROUTES), &ctx, &path);
+                let resp = get(&ctx, &path);
                 assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
                 assert_eq!(body(&resp), br#"{"code":400,"message":"invalid state_id"}"#, "{path}");
             }
@@ -962,7 +935,7 @@ mod tests {
     #[test]
     fn an_invalid_state_id_is_answered_before_the_state_is_read() {
         for path in state_paths("banana") {
-            let resp = get(&Router::new(ROUTES), &anchor_ctx(), &path);
+            let resp = get(&anchor_ctx(), &path);
             assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
         }
     }
