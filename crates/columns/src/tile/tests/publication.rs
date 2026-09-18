@@ -2,7 +2,8 @@ use silver_common::{
     GossipDomain, block_root_fulu, block_root_gloas, body_root,
     cell_store::{CellKey, CellOrigin, CellValidationRequest},
     ssz_hash::kzg_commitments_inclusion_proof,
-    ssz_view::{BEACON_BLOCK_BODY_FIXED, DATA_COLUMN_SIDECAR_GLOAS_MIN, EXECUTION_PAYLOAD_BID_MIN},
+    ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN,
+    test_util::{SynthBid, SynthBlock},
 };
 use silver_control::cell_allocator::CellAllocator;
 
@@ -93,49 +94,6 @@ impl BlockBlob {
     }
 }
 
-fn block_around(slot: u64, body: &[u8]) -> Vec<u8> {
-    let mut block = vec![0u8; SIGNED_BEACON_BLOCK_MIN + body.len()];
-    block[0..4].copy_from_slice(&100u32.to_le_bytes());
-    block[100..108].copy_from_slice(&slot.to_le_bytes());
-    block[180..184].copy_from_slice(&84u32.to_le_bytes());
-    block[SIGNED_BEACON_BLOCK_MIN..].copy_from_slice(body);
-    block
-}
-
-fn fulu_body(commitments: &[u8]) -> Vec<u8> {
-    const FIXED: usize = BEACON_BLOCK_BODY_FIXED;
-    let mut body = vec![0u8; FIXED + commitments.len()];
-    for off in [200usize, 204, 208, 212, 216, 380, 384, 388] {
-        body[off..off + 4].copy_from_slice(&(FIXED as u32).to_le_bytes());
-    }
-    body[392..396].copy_from_slice(&((FIXED + commitments.len()) as u32).to_le_bytes());
-    body[FIXED..].copy_from_slice(commitments);
-    body
-}
-
-/// Gloas carries commitments in the payload bid.
-fn gloas_body(commitments: &[u8]) -> Vec<u8> {
-    const FIXED: usize = BEACON_BLOCK_BODY_FIXED;
-    let mut bid = vec![0u8; EXECUTION_PAYLOAD_BID_MIN + commitments.len()];
-    bid[188..192].copy_from_slice(&(EXECUTION_PAYLOAD_BID_MIN as u32).to_le_bytes());
-    bid[EXECUTION_PAYLOAD_BID_MIN..].copy_from_slice(commitments);
-
-    let mut signed_bid = vec![0u8; 100];
-    signed_bid[0..4].copy_from_slice(&100u32.to_le_bytes());
-    signed_bid.extend_from_slice(&bid);
-
-    let end = FIXED + signed_bid.len();
-    let mut body = vec![0u8; end];
-    for off in [200usize, 204, 208, 212, 216, 380, 384] {
-        body[off..off + 4].copy_from_slice(&(FIXED as u32).to_le_bytes());
-    }
-    for off in [388usize, 392] {
-        body[off..off + 4].copy_from_slice(&(end as u32).to_le_bytes());
-    }
-    body[FIXED..].copy_from_slice(&signed_bid);
-    body
-}
-
 impl Rig {
     fn attach_cell_store(&mut self, slot: u64, columns: u128) -> CellAllocator {
         let start = Instant::now();
@@ -191,7 +149,7 @@ impl Rig {
 fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &gloas_body(&blob.commitment));
+    let block = SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment)).into_bytes();
     let root = block_root_gloas(&block);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
@@ -243,7 +201,7 @@ fn fulu_unresolved_proposer_cannot_authorize_serving() {
             ..SpecConfig::mainnet()
         });
         let mut allocator = rig.attach_cell_store(slot, CUSTODY_COLUMNS);
-        let block = block_around(slot, &fulu_body(&blob.commitment));
+        let block = SynthBlock::fulu(slot, &blob.commitment).into_bytes();
         let root = block_root_fulu(&block);
         let bytes = blob.fulu_sidecar(3, &block);
         rig.follow(*SignedBeaconBlockView::parent_root(&block));
@@ -261,7 +219,7 @@ fn fulu_unresolved_proposer_cannot_authorize_serving() {
 fn gloas_context_needs_approval_in_either_arrival_order_and_is_revocable() {
     const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &gloas_body(&blob.commitment));
+    let block = SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment)).into_bytes();
     let root = block_root_gloas(&block);
     for approval_first in [false, true] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
@@ -297,10 +255,9 @@ fn gloas_context_needs_approval_in_either_arrival_order_and_is_revocable() {
 #[test]
 fn gloas_commitment_capacity_covers_the_retention_window() {
     let blob = BlockBlob::counting();
-    let body = gloas_body(&blob.commitment);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     for slot in 1..=4 * SLOTS_PER_EPOCH {
-        let block = block_around(slot, &body);
+        let block = SynthBlock::gloas(slot, SynthBid::new(&blob.commitment)).into_bytes();
         let root = block_root_gloas(&block);
         rig.tile.validator.cache_gloas_commitments(root, &block);
         rig.tile.validator.note_validated(root, slot);
@@ -320,12 +277,12 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
         });
         let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
         rig.follow([0; 32]);
-        let body = if format == ForkName::Fulu {
-            fulu_body(&blob.commitment)
+        let block = if format == ForkName::Fulu {
+            SynthBlock::fulu(SLOT, &blob.commitment)
         } else {
-            gloas_body(&blob.commitment)
-        };
-        let block = block_around(SLOT, &body);
+            SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment))
+        }
+        .into_bytes();
         let root = block_root(&block, format == ForkName::Gloas);
         let domain = rig.tile.validator.domain_at(SLOT).unwrap();
         if format == ForkName::Gloas {
@@ -441,7 +398,7 @@ fn strict_ingress_rejects_below_tail_and_expiry_releases_parked_columns() {
 fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &gloas_body(&blob.commitment));
+    let block = SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment)).into_bytes();
     let block_root = block_root_gloas(&block);
     for (origin, following, index) in [
         (ColumnOrigin::Gossip, true, 3),
@@ -483,7 +440,7 @@ fn fulu_column_publication_requires_a_resolved_proposer() {
     let blob = BlockBlob::counting();
     // The empty state's lookahead covers the current and next epochs.
     for (slot, relay_eligible) in [(7, true), (2 * SLOTS_PER_EPOCH + 1, false)] {
-        let block = block_around(slot, &fulu_body(&blob.commitment));
+        let block = SynthBlock::fulu(slot, &blob.commitment).into_bytes();
         let block_root = block_root_fulu(&block);
         let mut rig = Rig::new(CUSTODY_COLUMNS);
         rig.follow(*SignedBeaconBlockView::parent_root(&block));
@@ -517,7 +474,7 @@ fn fulu_column_publication_requires_a_resolved_proposer() {
 fn held_columns_do_not_request_publication_again() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &gloas_body(&blob.commitment));
+    let block = SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment)).into_bytes();
     let block_root = block_root_gloas(&block);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     rig.follow([0xAA; 32]);
@@ -545,7 +502,7 @@ fn held_columns_do_not_request_publication_again() {
 fn only_columns_with_valid_kzg_proofs_request_publication() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &gloas_body(&blob.commitment));
+    let block = SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment)).into_bytes();
     let block_root = block_root_gloas(&block);
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     rig.follow([0xAA; 32]);
@@ -568,7 +525,7 @@ fn only_columns_with_valid_kzg_proofs_request_publication() {
 fn buffered_gloas_columns_are_processed_without_publication() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &gloas_body(&blob.commitment));
+    let block = SynthBlock::gloas(SLOT, SynthBid::new(&blob.commitment)).into_bytes();
     let block_root = block_root_gloas(&block);
     for origin in [ColumnOrigin::Gossip, ColumnOrigin::Rpc] {
         let mut rig = Rig::gloas(CUSTODY_COLUMNS);
@@ -589,7 +546,7 @@ fn buffered_gloas_columns_are_processed_without_publication() {
 fn reconstructed_columns_do_not_request_publication() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &fulu_body(&blob.commitment));
+    let block = SynthBlock::fulu(SLOT, &blob.commitment).into_bytes();
     let block_root = block_root_fulu(&block);
     let mut rig = Rig::new(CUSTODY_COLUMNS);
     rig.turn();
@@ -616,7 +573,7 @@ fn reconstructed_columns_do_not_request_publication() {
 fn gossip_and_el_copies_validate_once() {
     const SLOT: u64 = 40;
     let blob = BlockBlob::counting();
-    let block = block_around(SLOT, &fulu_body(&blob.commitment));
+    let block = SynthBlock::fulu(SLOT, &blob.commitment).into_bytes();
     let block_root = block_root_fulu(&block);
     let mut rig = Rig::new(CUSTODY_COLUMNS);
     rig.turn();

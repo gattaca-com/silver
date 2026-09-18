@@ -100,7 +100,8 @@ pub(in crate::store) mod fixtures {
         TCache, TCacheProducer, TRead, body_root, column_util,
         merkle::B256,
         ssz_hash::kzg_commitments_inclusion_proof,
-        ssz_view::{EXECUTION_PAYLOAD_FIXED, EXECUTION_PAYLOAD_FIXED_GLOAS, NUMBER_OF_COLUMNS},
+        ssz_view::{EXECUTION_PAYLOAD_FIXED_GLOAS, NUMBER_OF_COLUMNS},
+        test_util::{SynthBid, SynthBlock},
     };
 
     pub(in crate::store) const GLOAS_FORK_EPOCH: u64 = 1;
@@ -110,13 +111,6 @@ pub(in crate::store) mod fixtures {
     pub(in crate::store) const BID_PREV_RANDAO: B256 = [0xD1; 32];
     pub(in crate::store) const BID_GAS_LIMIT: u64 = 30_000_000;
     pub(in crate::store) const BID_BUILDER_INDEX: u64 = 77;
-
-    const BODY_FIXED: usize = 396;
-    const BID_FIXED: usize = 224;
-    /// The bid message inside a `gloas_block_bytes` block: body at 184, the
-    /// signed bid at the end of the fixed part, its message after the
-    /// 100-byte signed prefix.
-    const BID_AT: usize = 184 + BODY_FIXED + 100;
 
     pub(in crate::store) fn spec() -> Arc<SpecConfig> {
         crate::store::test_spec(GLOAS_FORK_EPOCH)
@@ -133,40 +127,16 @@ pub(in crate::store) mod fixtures {
         b
     }
 
-    /// Gloas block carrying `commitments` in its bid: body offsets place a
-    /// `SignedExecutionPayloadBid` (fixed 100 + bid fixed 224 + commitments)
-    /// between `signed_execution_payload_bid_offset` and
-    /// `payload_attestations_offset`.
+    fn gloas_bid(commitments: &[u8]) -> SynthBid {
+        SynthBid::new(commitments)
+            .block_hash(BID_BLOCK_HASH)
+            .prev_randao(BID_PREV_RANDAO)
+            .gas_limit(BID_GAS_LIMIT)
+            .builder_index(BID_BUILDER_INDEX)
+    }
+
     pub(in crate::store) fn gloas_block_bytes(slot: u64, commitments: &[u8]) -> Vec<u8> {
-        let mut bid = vec![0u8; BID_FIXED];
-        bid[188..192].copy_from_slice(&(BID_FIXED as u32).to_le_bytes());
-        bid[64..96].copy_from_slice(&BID_BLOCK_HASH); // block_hash
-        bid[96..128].copy_from_slice(&BID_PREV_RANDAO); // prev_randao
-        bid[148..156].copy_from_slice(&BID_GAS_LIMIT.to_le_bytes()); // gas_limit
-        bid[156..164].copy_from_slice(&BID_BUILDER_INDEX.to_le_bytes()); // builder_index
-        bid.extend_from_slice(commitments);
-
-        let mut signed_bid = vec![0u8; 100];
-        signed_bid[0..4].copy_from_slice(&100u32.to_le_bytes());
-        signed_bid.extend_from_slice(&bid);
-
-        let mut body = vec![0u8; BODY_FIXED];
-        let after_bid = BODY_FIXED + signed_bid.len();
-        for at in [200usize, 204, 208, 212, 216, 380] {
-            body[at..at + 4].copy_from_slice(&(BODY_FIXED as u32).to_le_bytes());
-        }
-        body[384..388].copy_from_slice(&(BODY_FIXED as u32).to_le_bytes());
-        for at in [388usize, 392] {
-            body[at..at + 4].copy_from_slice(&(after_bid as u32).to_le_bytes());
-        }
-        body.extend_from_slice(&signed_bid);
-
-        let mut b = vec![0u8; 184];
-        b[0..4].copy_from_slice(&100u32.to_le_bytes());
-        b[100..108].copy_from_slice(&slot.to_le_bytes());
-        b[180..184].copy_from_slice(&84u32.to_le_bytes());
-        b.extend_from_slice(&body);
-        b
+        SynthBlock::gloas(slot, gloas_bid(commitments)).into_bytes()
     }
 
     /// A gloas block in a chain: its parent is `parent_root`, and its bid
@@ -177,10 +147,9 @@ pub(in crate::store) mod fixtures {
         parent_root: B256,
         commitments: &[u8],
     ) -> Vec<u8> {
-        let mut b = gloas_block_bytes(slot, commitments);
-        b[116..148].copy_from_slice(&parent_root);
-        b[BID_AT..BID_AT + 32].copy_from_slice(&BID_BLOCK_HASH);
-        b
+        SynthBlock::gloas(slot, gloas_bid(commitments).parent_block_hash(BID_BLOCK_HASH))
+            .parent_root(parent_root)
+            .into_bytes()
     }
 
     pub(in crate::store) fn fulu_blob_block(
@@ -188,30 +157,7 @@ pub(in crate::store) mod fixtures {
         parent_root: B256,
         commitments: &[u8],
     ) -> Vec<u8> {
-        // Empty lists, a bare fixed-prefix payload, then the commitments.
-        let payload_end = BODY_FIXED + EXECUTION_PAYLOAD_FIXED;
-        let mut body = vec![0u8; payload_end + commitments.len()];
-        for pos in [200usize, 204, 208, 212, 216, 380] {
-            body[pos..pos + 4].copy_from_slice(&(BODY_FIXED as u32).to_le_bytes());
-        }
-        for pos in [384usize, 388] {
-            body[pos..pos + 4].copy_from_slice(&(payload_end as u32).to_le_bytes());
-        }
-        let body_end = body.len() as u32;
-        body[392..396].copy_from_slice(&body_end.to_le_bytes());
-        for pos in [436usize, 504, 508] {
-            let at = BODY_FIXED + pos;
-            body[at..at + 4].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED as u32).to_le_bytes());
-        }
-        body[payload_end..].copy_from_slice(commitments);
-
-        let mut block = vec![0u8; 184];
-        block[0..4].copy_from_slice(&100u32.to_le_bytes());
-        block[100..108].copy_from_slice(&slot.to_le_bytes());
-        block[116..148].copy_from_slice(&parent_root);
-        block[180..184].copy_from_slice(&84u32.to_le_bytes());
-        block.extend_from_slice(&body);
-        block
+        SynthBlock::fulu(slot, commitments).parent_root(parent_root).into_bytes()
     }
 
     /// Two zero blobs through c-kzg once: their commitments, and per column

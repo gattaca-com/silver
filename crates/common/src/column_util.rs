@@ -402,6 +402,7 @@ mod tests {
     const MAX_BLOBS: usize = 128;
 
     use super::*;
+    use crate::test_util::SynthBlock;
 
     /// Build a synthetic sidecar byte buffer with the given index and
     /// `n` parallel-list elements. Header + body_root + inclusion_proof
@@ -586,31 +587,6 @@ mod tests {
         assert!(!verify_data_column_sidecar_kzg_proofs_fulu(&buf));
     }
 
-    /// Build a minimal BeaconBlockBody whose only non-empty variable field is
-    /// `blob_kzg_commitments`, so its body_root + inclusion proof are
-    /// self-consistent for the encoded sidecar.
-    fn synth_body_with_commitments(commitments: &[u8]) -> Vec<u8> {
-        use silver_common::ssz_view::EXECUTION_PAYLOAD_FIXED;
-        const FIXED: usize = 396;
-        // Empty lists, a bare fixed-prefix payload, then the commitments.
-        let payload_end = FIXED + EXECUTION_PAYLOAD_FIXED;
-        let mut body = vec![0u8; payload_end + commitments.len()];
-        for pos in [200usize, 204, 208, 212, 216, 380] {
-            body[pos..pos + 4].copy_from_slice(&(FIXED as u32).to_le_bytes());
-        }
-        for pos in [384usize, 388] {
-            body[pos..pos + 4].copy_from_slice(&(payload_end as u32).to_le_bytes());
-        }
-        let body_end = body.len() as u32;
-        body[392..396].copy_from_slice(&body_end.to_le_bytes());
-        for pos in [436usize, 504, 508] {
-            let at = FIXED + pos;
-            body[at..at + 4].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED as u32).to_le_bytes());
-        }
-        body[payload_end..].copy_from_slice(commitments);
-        body
-    }
-
     /// End-to-end: reconstruct sidecars from blobs exactly as the EL-blob path
     /// does (commitments + cells + cell proofs from c-kzg, inclusion proof from
     /// the body) and assert they pass all three sidecar verifications.
@@ -633,10 +609,11 @@ mod tests {
             proofs.push(ps);
         }
 
-        let body = synth_body_with_commitments(&commitments);
+        let block = SynthBlock::fulu(0, &commitments);
+        let body = block.body();
         let mut header = [0u8; 208];
-        header[80..112].copy_from_slice(&crate::body_root(&body));
-        let inclusion_proof = kzg_commitments_inclusion_proof(&body);
+        header[80..112].copy_from_slice(&crate::body_root(body));
+        let inclusion_proof = kzg_commitments_inclusion_proof(body);
 
         // A representative spread of column indices (full sweep is redundant).
         for j in [0u64, 1, 63, 127] {
@@ -668,9 +645,10 @@ mod tests {
     fn zero_blob_sidecar_off_a_blobless_block_is_refused_by_shape_alone() {
         use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
 
-        let body = synth_body_with_commitments(&[]);
+        let block = SynthBlock::fulu(0, &[]);
+        let body = block.body();
         let mut header = [0u8; 208];
-        header[80..112].copy_from_slice(&crate::body_root(&body));
+        header[80..112].copy_from_slice(&crate::body_root(body));
 
         let mut out = Vec::with_capacity(data_column_sidecar_len(0));
         push_data_column_sidecar_prefix(
@@ -678,7 +656,7 @@ mod tests {
             0,
             0,
             &header,
-            &kzg_commitments_inclusion_proof(&body),
+            &kzg_commitments_inclusion_proof(body),
         );
         assert_eq!(out.len(), data_column_sidecar_len(0));
 
