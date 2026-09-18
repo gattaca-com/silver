@@ -1,11 +1,11 @@
-use silver_ssz::{
+use crate::{
     ssz_hash_gloas::{ExecutionRequestsView, RequestCountOutOfBounds},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE,
-        MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTER_SLASHINGS_ELECTRA, MAX_BLS_TO_EXECUTION_CHANGES,
-        MAX_DEPOSITS, MAX_PAYLOAD_ATTESTATIONS, MAX_PROPOSER_SLASHINGS, MAX_VOLUNTARY_EXITS,
-        PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE,
+        EXECUTION_PAYLOAD_FIXED, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTER_SLASHINGS_ELECTRA,
+        MAX_BLS_TO_EXECUTION_CHANGES, MAX_DEPOSITS, MAX_PAYLOAD_ATTESTATIONS,
+        MAX_PROPOSER_SLASHINGS, MAX_VOLUNTARY_EXITS, PAYLOAD_ATTESTATION_SIZE,
+        PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
     },
 };
 
@@ -39,6 +39,8 @@ impl core::fmt::Display for OperationKind {
 pub enum BlockBodyError {
     #[error("block body too short: len={len} min={min}")]
     BodyTooShort { len: usize, min: usize },
+    #[error("execution payload too short: len={len} min={min}")]
+    PayloadTooShort { len: usize, min: usize },
     #[error("{op} count {count} exceeds max {max}")]
     OperationCountOutOfBounds { op: OperationKind, count: usize, max: usize },
     #[error("parent {kind} request count {count} exceeds max {max}")]
@@ -55,7 +57,7 @@ pub enum BlockBodyError {
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyFork {
     Fulu,
     Gloas,
@@ -67,15 +69,59 @@ impl From<RequestCountOutOfBounds> for BlockBodyError {
     }
 }
 
+/// Payload bytes with the fixed prefix present, so every `ExecutionPayloadView`
+/// accessor is in bounds.
+#[derive(Clone, Copy)]
+pub struct Payload<'a>(&'a [u8]);
+
+impl<'a> Payload<'a> {
+    pub fn new(bytes: &'a [u8]) -> Result<Self, BlockBodyError> {
+        if bytes.len() < EXECUTION_PAYLOAD_FIXED {
+            return Err(BlockBodyError::PayloadTooShort {
+                len: bytes.len(),
+                min: EXECUTION_PAYLOAD_FIXED,
+            });
+        }
+        Ok(Self(bytes))
+    }
+
+    #[inline]
+    pub fn bytes(self) -> &'a [u8] {
+        self.0
+    }
+}
+
 pub struct BodyOffsets<'a> {
     body: &'a [u8],
     fork: BodyFork,
 }
 
 impl<'a> BodyOffsets<'a> {
+    /// Checks the payload's fixed prefix too, so every fixed-field accessor is
+    /// in bounds.
+    pub fn new(body: &'a [u8], fork: BodyFork) -> Result<Self, BlockBodyError> {
+        if body.len() < BEACON_BLOCK_BODY_FIXED {
+            return Err(BlockBodyError::BodyTooShort {
+                len: body.len(),
+                min: BEACON_BLOCK_BODY_FIXED,
+            });
+        }
+        let offsets = Self { body, fork };
+        if fork == BodyFork::Fulu {
+            Payload::new(offsets.payload_bytes())?;
+        }
+        Ok(offsets)
+    }
+
+    pub fn validated(body: &'a [u8], fork: BodyFork) -> Result<Self, BlockBodyError> {
+        let offsets = Self::new(body, fork)?;
+        offsets.validate()?;
+        Ok(offsets)
+    }
+
     #[inline]
-    pub fn new(body: &'a [u8], fork: BodyFork) -> Option<Self> {
-        (body.len() >= BEACON_BLOCK_BODY_FIXED).then_some(Self { body, fork })
+    pub fn fork(&self) -> BodyFork {
+        self.fork
     }
 
     #[inline]
@@ -147,7 +193,12 @@ impl<'a> BodyOffsets<'a> {
     }
 
     #[inline]
-    pub fn payload(&self) -> &'a [u8] {
+    pub fn payload(&self) -> Payload<'a> {
+        debug_assert_eq!(self.fork, BodyFork::Fulu);
+        Payload(self.payload_bytes())
+    }
+
+    fn payload_bytes(&self) -> &'a [u8] {
         self.slice(
             BeaconBlockBodyFuluView::execution_payload_offset(self.body),
             BeaconBlockBodyFuluView::bls_to_execution_changes_offset(self.body),
@@ -245,13 +296,6 @@ impl<'a> BodyOffsets<'a> {
     /// forbids eth1 deposits and caps payload attestations.
     pub fn validate(&self) -> Result<(), BlockBodyError> {
         let body_len = self.body.len();
-        if body_len < BEACON_BLOCK_BODY_FIXED {
-            return Err(BlockBodyError::BodyTooShort {
-                len: body_len,
-                min: BEACON_BLOCK_BODY_FIXED,
-            });
-        }
-
         let table = self.variable_offsets();
         for (i, &(field, off)) in table.iter().enumerate() {
             let next_off = table.get(i + 1).map(|&(_, o)| o);

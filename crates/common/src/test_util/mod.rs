@@ -1,6 +1,9 @@
+mod synth_block;
+
 use std::{io, path::Path};
 
 use flux::communication::cleanup_shmem;
+pub use synth_block::{SynthBid, SynthBlock};
 use tempfile::TempDir;
 
 /// Removing a Flux link file alone leaves its POSIX shared-memory object

@@ -3684,7 +3684,7 @@ impl ThreeForks {
             block_root: root,
             has_data_columns: true,
             parent_state_id: parent,
-            is_gloas: false,
+            fork: stf::BlockFork::Fulu { payload_roots: Default::default() },
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };

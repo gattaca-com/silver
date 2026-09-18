@@ -1,9 +1,9 @@
 use silver_beacon_state_data::{
-    Epoch, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView, ValidatorsView,
+    Epoch, Payload, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
-    ATTESTATION_FIXED, AttestationView, EXECUTION_PAYLOAD_FIXED, ExecutionPayloadView,
-    PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+    ATTESTATION_FIXED, AttestationView, ExecutionPayloadView, PROPOSER_SLASHING_SIZE,
+    ProposerSlashingView,
 };
 
 use crate::{
@@ -153,15 +153,10 @@ pub fn validate_bls_to_execution_change(
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
     view: &StateWriterView,
-    payload: &[u8],
+    payload: Payload<'_>,
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
-    if payload.len() < EXECUTION_PAYLOAD_FIXED {
-        return Err(ExecutionPayloadError::TooShort {
-            len: payload.len(),
-            min: EXECUTION_PAYLOAD_FIXED,
-        });
-    }
+    let payload = payload.bytes();
     let slot = view.slot.reader();
     let header = &slot.state().latest_execution_payload_header;
     let expected_randao = view.randao_mixes.reader().at_epoch(block_slot / SLOTS_PER_EPOCH);

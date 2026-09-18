@@ -29,7 +29,7 @@ pub fn collect_sigs_attestations(
     validators: &ValidatorsView,
     attestation_data: &[u8],
     block_slot: Slot,
-    shuffling: Option<&ShufflingRef<'_>>,
+    shuffling: &ShufflingRef<'_>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttestationError> {
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
@@ -85,12 +85,11 @@ impl<'a> AttestedCommittees<'a> {
 
     pub fn resolve(
         att: &'a [u8],
-        shuffling: Option<&'a ShufflingRef<'a>>,
+        shuffling: &'a ShufflingRef<'a>,
         is_current: bool,
         validators_count: usize,
     ) -> Result<Self, AttestationError> {
-        let epoch_shuffling =
-            shuffling.ok_or(AttestationError::MissingShuffling)?.for_target(is_current);
+        let epoch_shuffling = shuffling.for_target(is_current);
         if epoch_shuffling.is_empty() {
             return Err(AttestationError::EmptyShuffling);
         }
@@ -220,7 +219,7 @@ pub fn collect_sigs_single_attestation(
     validators: &ValidatorsView,
     att: &[u8],
     current_epoch: Epoch,
-    shuffling: Option<&ShufflingRef<'_>>,
+    shuffling: &ShufflingRef<'_>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttestationError> {
     let (fork_epoch, prev_v, curr_v) = epoch.fork_descriptor();
@@ -254,7 +253,7 @@ pub fn process_attestations(
     block_slot: Slot,
     parent_slot: Option<Slot>,
     proposer_index: u32,
-    shuffling: Option<&ShufflingRef<'_>>,
+    shuffling: &ShufflingRef<'_>,
     votes_sink: &mut Vec<AttestationVote>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
@@ -311,7 +310,7 @@ pub fn process_single_attestation(
     previous_epoch: Epoch,
     parent_slot: Option<Slot>,
     total_active: u64,
-    shuffling: Option<&ShufflingRef<'_>>,
+    shuffling: &ShufflingRef<'_>,
     votes_sink: &mut Vec<AttestationVote>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<u64, AttestationError> {
@@ -532,7 +531,7 @@ fn compute_attestation_flags(
 fn collect_attestation_participants(
     validators: &ValidatorsView,
     att: &[u8],
-    shuffling: Option<&ShufflingRef<'_>>,
+    shuffling: &ShufflingRef<'_>,
     is_current: bool,
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {

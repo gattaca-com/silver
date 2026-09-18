@@ -1,13 +1,14 @@
 use flux_profiler::timed;
 
 use crate::{
+    body_offsets::Payload,
     merkle::{
         B256, FixedContainer, MerkleStack, ZERO_HASH, hash_bytelist, hash_fixed_bytes, merkleize,
         merkleize_bytes, mix_in_length, uint64_chunk,
     },
     ssz_view::{
-        MAX_BYTES_PER_TRANSACTION, MAX_TRANSACTIONS_PER_PAYLOAD, MAX_WITHDRAWALS_PER_PAYLOAD,
-        WITHDRAWAL_SIZE, WithdrawalView,
+        ExecutionPayloadView, MAX_BYTES_PER_TRANSACTION, MAX_TRANSACTIONS_PER_PAYLOAD,
+        MAX_WITHDRAWALS_PER_PAYLOAD, WITHDRAWAL_SIZE, WithdrawalView,
     },
 };
 
@@ -27,46 +28,42 @@ impl FixedContainer for WithdrawalView {
     }
 }
 
+/// Most of a payload's hashing cost; surfaced so the STF's payload header
+/// reuses them instead of hashing the same bytes twice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PayloadRoots {
+    pub transactions: B256,
+    pub withdrawals: B256,
+}
+
+impl PayloadRoots {
+    pub fn of(payload: Payload<'_>) -> Self {
+        let bytes = payload.bytes();
+        Self {
+            transactions: hash_transactions(ExecutionPayloadView::transactions(bytes)),
+            withdrawals: hash_withdrawals(ExecutionPayloadView::withdrawals(bytes)),
+        }
+    }
+}
+
 /// hash_tree_root for ExecutionPayload from raw SSZ bytes.
 /// 17 fields → 32 leaves.
 #[timed]
-pub fn hash_execution_payload(data: &[u8]) -> B256 {
-    if data.len() < 528 {
-        return ZERO_HASH;
-    }
+pub fn hash_execution_payload_with_roots(payload: Payload<'_>) -> (B256, PayloadRoots) {
+    let data = payload.bytes();
 
     let b256 = |off: usize| -> B256 { data[off..off + 32].try_into().unwrap() };
     let u64le = |off: usize| -> u64 { u64::from_le_bytes(data[off..off + 8].try_into().unwrap()) };
-    let off32 = |pos: usize| -> usize {
-        u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize
-    };
 
     let mut fee_recipient = ZERO_HASH;
     fee_recipient[..20].copy_from_slice(&data[32..52]);
 
-    let extra_data_off = off32(436);
-    let transactions_off = off32(504);
-    let withdrawals_off = off32(508);
-
-    let extra_data_bytes = if extra_data_off < transactions_off && transactions_off <= data.len() {
-        &data[extra_data_off..transactions_off]
-    } else {
-        &[]
-    };
+    let extra_data_bytes = ExecutionPayloadView::extra_data(data);
     // ByteList[32] → max 1 chunk.
     let extra_data_root =
         mix_in_length(&merkleize_bytes(extra_data_bytes, 1), extra_data_bytes.len());
 
-    let txns_bytes = if transactions_off < withdrawals_off && withdrawals_off <= data.len() {
-        &data[transactions_off..withdrawals_off]
-    } else {
-        &[]
-    };
-    let transactions_root = hash_transactions(txns_bytes);
-
-    let withdrawals_bytes =
-        if withdrawals_off <= data.len() { &data[withdrawals_off..] } else { &[] };
-    let withdrawals_root = hash_withdrawals(withdrawals_bytes);
+    let roots = PayloadRoots::of(payload);
 
     let fields: [B256; 17] = [
         b256(0),
@@ -82,17 +79,17 @@ pub fn hash_execution_payload(data: &[u8]) -> B256 {
         extra_data_root,
         b256(440),
         b256(472),
-        transactions_root,
-        withdrawals_root,
+        roots.transactions,
+        roots.withdrawals,
         uint64_chunk(u64le(512)),
         uint64_chunk(u64le(520)),
     ];
-    merkleize(&fields)
+    (merkleize(&fields), roots)
 }
 
 /// hash_tree_root for List[Transaction, MAX_TRANSACTIONS_PER_PAYLOAD].
 #[timed]
-pub fn hash_transactions(data: &[u8]) -> B256 {
+fn hash_transactions(data: &[u8]) -> B256 {
     const EMPTY_LIST_ROOT: B256 = MerkleStack::empty_root(MAX_TRANSACTIONS_PER_PAYLOAD);
     let tx_chunk_capacity = MAX_BYTES_PER_TRANSACTION.div_ceil(32);
 
@@ -128,41 +125,6 @@ pub fn hash_transactions(data: &[u8]) -> B256 {
 
 /// hash_tree_root for List[Withdrawal, 16].
 #[timed]
-pub fn hash_withdrawals(data: &[u8]) -> B256 {
+fn hash_withdrawals(data: &[u8]) -> B256 {
     WithdrawalView::hash_list(MerkleStack::new(MAX_WITHDRAWALS_PER_PAYLOAD), data)
-}
-
-/// Extract and hash transactions from ExecutionPayload SSZ bytes.
-#[timed]
-pub fn hash_transactions_from_payload(payload: &[u8]) -> B256 {
-    if payload.len() < 528 {
-        return ZERO_HASH;
-    }
-    let off32 = |pos: usize| -> usize {
-        u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap()) as usize
-    };
-    let txns_off = off32(504);
-    let withdrawals_off = off32(508);
-    if txns_off <= withdrawals_off && withdrawals_off <= payload.len() {
-        hash_transactions(&payload[txns_off..withdrawals_off])
-    } else {
-        ZERO_HASH
-    }
-}
-
-/// Extract and hash withdrawals from ExecutionPayload SSZ bytes.
-#[timed]
-pub fn hash_withdrawals_from_payload(payload: &[u8]) -> B256 {
-    if payload.len() < 528 {
-        return ZERO_HASH;
-    }
-    let off32 = |pos: usize| -> usize {
-        u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap()) as usize
-    };
-    let withdrawals_off = off32(508);
-    if withdrawals_off <= payload.len() {
-        hash_withdrawals(&payload[withdrawals_off..])
-    } else {
-        ZERO_HASH
-    }
 }

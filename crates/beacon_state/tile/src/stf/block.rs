@@ -1,22 +1,24 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
+#[cfg(feature = "ef_tests")]
+use silver_beacon_state_data::ValidatorsView;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochView,
-    EpochWriteView, Eth1Data, Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId,
-    LongtailView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView,
-    SlotStateWriteView, SpecConfig, StateReadView, StateWriterView, ValidatorsView,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Epoch, EpochView, EpochWriteView, Eth1Data,
+    Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId, SLOTS_PER_EPOCH,
+    SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateReadView,
+    StateWriterView,
 };
-use silver_common::ssz_view::{
-    BEACON_BLOCK_BODY_FIXED, Eth1DataView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
-};
+use silver_common::ssz_view::{BeaconBlockBodyGloasView, Eth1DataView};
+#[cfg(feature = "ef_tests")]
+use silver_common::ssz_view::{SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView};
 
 use crate::{
     bls::{self, SigBatch},
     error::{BlockError, Error, Result},
     merkle,
-    ssz_hash::{self, hash_tree_root_block_header},
+    ssz_hash::{self, PayloadRoots, hash_tree_root_block_header},
     stf::{
-        AttestationVote, BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
+        BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
         collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_execution_payload_bid,
         collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
@@ -29,80 +31,94 @@ use crate::{
     },
 };
 
+#[derive(Clone, Copy)]
+pub enum BlockFork {
+    Fulu { payload_roots: PayloadRoots },
+    Gloas,
+}
+
+impl BlockFork {
+    pub fn is_gloas(self) -> bool {
+        matches!(self, Self::Gloas)
+    }
+
+    fn body_fork(self) -> BodyFork {
+        match self {
+            Self::Fulu { .. } => BodyFork::Fulu,
+            Self::Gloas => BodyFork::Gloas,
+        }
+    }
+}
+
+pub struct BlockInput<'a> {
+    pub header: &'a BeaconBlockHeader,
+    pub body: &'a [u8],
+    pub fork: BlockFork,
+    pub shuffling: &'a ShufflingRef<'a>,
+}
+
+impl<'a> BlockInput<'a> {
+    pub fn proposer_index(&self) -> u32 {
+        self.header.proposer_index as u32
+    }
+
+    pub fn invalid(&self, kind: BlockError) -> Error {
+        Error::invalid_block(self.header.state_root, kind)
+    }
+
+    fn offsets(&self) -> Result<BodyOffsets<'a>> {
+        BodyOffsets::validated(self.body, self.fork.body_fork()).map_err(|e| self.invalid(e.into()))
+    }
+}
+
+pub fn hash_body(offsets: &BodyOffsets<'_>) -> (B256, BlockFork) {
+    match offsets.fork() {
+        BodyFork::Gloas => {
+            (BeaconBlockBodyGloasView::hash_tree_root(offsets.body()), BlockFork::Gloas)
+        }
+        BodyFork::Fulu => {
+            let (root, payload_roots) = ssz_hash::hash_tree_root_body_fulu_with_roots(offsets);
+            (root, BlockFork::Fulu { payload_roots })
+        }
+    }
+}
+
 #[timed]
-#[allow(clippy::too_many_arguments)]
 pub fn apply_block(
     cfg: &SpecConfig,
     fork: &mut ForkWriter,
-    block_bytes: &[u8],
-    header: &BeaconBlockHeader,
-    shuffling: Option<&ShufflingRef<'_>>,
+    input: &BlockInput<'_>,
     scratch: &mut StfScratch,
-    out: &mut BlockVotes,
     sig_batch: &mut SigBatch,
+    out: &mut BlockVotes,
 ) -> Result<()> {
-    let block_slot = header.slot;
-    let proposer_index = header.proposer_index as u32;
-    let block_state_root = header.state_root;
-    let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
-
-    check_slot_after_header(&fork.view.slot.reader(), block_slot).map_err(wrap)?;
+    let block_slot = input.header.slot;
+    check_slot_after_header(&fork.view.slot.reader(), block_slot).map_err(|e| input.invalid(e))?;
     let head_slot = fork.view.slot.state().slot;
-    check_proposer_lookahead(&fork.epoch_view(), block_slot, head_slot, proposer_index)
-        .map_err(wrap)?;
+    check_proposer_lookahead(&fork.epoch_view(), block_slot, head_slot, input.proposer_index())
+        .map_err(|e| input.invalid(e))?;
 
     if block_slot > head_slot {
         process_slots(cfg, fork, block_slot, scratch);
     }
 
-    let body = if block_bytes.len() > SIGNED_BEACON_BLOCK_MIN {
-        SignedBeaconBlockView::body(block_bytes)
-    } else {
-        &[]
-    };
-    // Resolve the boundary tiers AFTER process_slots (it may have rolled
-    // them). process_block can't change them, so the hash reuses these.
-    let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
-    let epoch_view = epoch.view_opt(*epoch_idx);
-    let longtail_view = longtail.view_opt(*longtail_idx);
-    process_block_header(
-        view,
-        &epoch_view,
-        block_slot,
-        header.proposer_index,
-        header.parent_root,
-        header.body_root,
-    )
-    .map_err(wrap)?;
-    process_block_body(
-        cfg,
-        view,
-        &epoch_view,
-        &longtail_view,
-        &mut scratch.active,
-        sig_batch,
-        body,
-        block_state_root,
-        block_slot,
-        proposer_index,
-        shuffling,
-        &mut out.votes,
-        &mut out.slashed,
-    )?;
+    // process_slots may have rolled the epoch tier.
+    let epoch_view = fork.epoch.view_opt(fork.epoch_idx);
+    process_block_header(&mut fork.view, &epoch_view, input.header)
+        .map_err(|e| input.invalid(e))?;
+    process_block_body(cfg, fork, input, scratch, sig_batch, out)?;
 
-    let rv = view.read(epoch_view, longtail_view);
-    let actual = ssz_hash::hash_tree_root_state(&rv);
-    if actual != block_state_root {
-        return Err(wrap(BlockError::PostStateRootMismatch {
-            expected: block_state_root,
-            got: actual,
-        }));
+    let actual = ssz_hash::hash_tree_root_state(&fork.read());
+    let expected = input.header.state_root;
+    if actual != expected {
+        return Err(input.invalid(BlockError::PostStateRootMismatch { expected, got: actual }));
     }
     Ok(())
 }
 
-/// Test-only full-block apply: decompose, shuffle, STF, then check the
-/// post-state root. Production path is `apply_block`.
+/// Full-block apply for the EF spec suites: verifies the proposer signature
+/// and builds the shuffling itself. Production path is `apply_block`.
+#[cfg(feature = "ef_tests")]
 #[timed]
 pub fn apply_signed_block_debug(
     cfg: &SpecConfig,
@@ -123,6 +139,8 @@ pub fn apply_signed_block_debug(
     let state_root: B256 = *SignedBeaconBlockView::state_root(block_bytes);
     let body = SignedBeaconBlockView::body(block_bytes);
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
+    let mut sig_batch = SigBatch::new();
+    let mut votes = BlockVotes::default();
 
     if block_slot <= head_block_header_slot {
         return Err(wrap(BlockError::SlotNotAfterHeader {
@@ -153,8 +171,13 @@ pub fn apply_signed_block_debug(
     // epoch view, so a block at the fork boundary uses the upgraded fork (Gloas
     // body layout / signing version), not the parent's.
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let body_root =
-        ssz_hash::hash_tree_root_body(body, epoch_view.is_gloas(view.imm.gloas_fork_version));
+    let body_fork = if epoch_view.is_gloas(view.imm.gloas_fork_version) {
+        BodyFork::Gloas
+    } else {
+        BodyFork::Fulu
+    };
+    let offsets = BodyOffsets::validated(body, body_fork).map_err(|e| wrap(e.into()))?;
+    let (body_root, block_fork) = hash_body(&offsets);
     if !verify_block_sig(
         view.imm,
         &epoch_view,
@@ -167,42 +190,24 @@ pub fn apply_signed_block_debug(
         return Err(Error::InvalidBlockSig);
     }
 
-    process_block_header(
-        view,
-        &epoch_view,
-        block_slot,
-        proposer_index as u64,
+    let header = BeaconBlockHeader {
+        slot: block_slot,
+        proposer_index: proposer_index as u64,
         parent_root,
+        state_root,
         body_root,
-    )
-    .map_err(wrap)?;
+    };
+    process_block_header(view, &epoch_view, &header).map_err(wrap)?;
 
     let mut curr = Vec::new();
     let mut prev = Vec::new();
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
-    let mut votes_sink: Vec<AttestationVote> = Vec::new();
-    let mut slashed_sink: Vec<u32> = Vec::new();
-    let mut sig_batch = SigBatch::new();
-    process_block_body(
-        cfg,
-        view,
-        &epoch_view,
-        &longtail_view,
-        &mut scratch.active,
-        &mut sig_batch,
-        body,
-        state_root,
-        block_slot,
-        proposer_index,
-        Some(&sref),
-        &mut votes_sink,
-        &mut slashed_sink,
-    )?;
+    let input = BlockInput { header: &header, body, fork: block_fork, shuffling: &sref };
+    process_block_body(cfg, fork, &input, &mut scratch, &mut sig_batch, &mut votes)?;
 
-    let rv = view.read(epoch_view, longtail_view);
-    let actual = ssz_hash::hash_tree_root_state(&rv);
+    let actual = ssz_hash::hash_tree_root_state(&fork.read());
     if actual != state_root {
         return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
@@ -244,6 +249,7 @@ fn check_proposer_lookahead(
     Ok(())
 }
 
+#[cfg(feature = "ef_tests")]
 fn verify_block_sig(
     imm: &Immutable,
     epoch: &EpochView,
@@ -357,14 +363,14 @@ pub fn process_slot(
     }
 }
 
+/// `header.state_root` is ignored: `latest_block_header` stores it zeroed.
 pub fn process_block_header(
     view: &mut StateWriterView,
     epoch: &EpochView,
-    block_slot: Slot,
-    proposer_index: u64,
-    parent_root: B256,
-    body_root: B256,
+    header: &BeaconBlockHeader,
 ) -> Result<(), BlockError> {
+    let BeaconBlockHeader { slot: block_slot, proposer_index, parent_root, body_root, .. } =
+        *header;
     let current_slot = view.slot.state().slot;
     if block_slot != current_slot {
         return Err(BlockError::SlotStateMismatch { block: block_slot, state: current_slot });
@@ -424,96 +430,69 @@ pub fn process_block_header(
 /// data + state-dependent validation and mutation, returning `Err` on any
 /// spec-assertion failure.
 #[timed]
-#[allow(clippy::too_many_arguments)]
 pub fn process_block_body(
     cfg: &SpecConfig,
-    view: &mut StateWriterView,
-    epoch: &EpochView,
-    longtail: &LongtailView,
-    active_scratch: &mut Vec<u32>,
+    fork: &mut ForkWriter,
+    input: &BlockInput<'_>,
+    scratch: &mut StfScratch,
     sig_batch: &mut SigBatch,
-    body: &[u8],
-    state_root: B256,
-    block_slot: Slot,
-    proposer_index: u32,
-    shuffling: Option<&ShufflingRef<'_>>,
-    attestation_votes: &mut Vec<AttestationVote>,
-    slashed_sink: &mut Vec<u32>,
+    out: &mut BlockVotes,
 ) -> Result<()> {
-    let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
-    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
-    let fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
-    let offsets = BodyOffsets::new(body, fork).ok_or_else(|| {
-        wrap(BlockBodyError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED }.into())
-    })?;
+    debug_assert_eq!(
+        input.fork.is_gloas(),
+        fork.epoch_view().is_gloas(fork.view.imm.gloas_fork_version),
+        "body parsed for one fork, state on another",
+    );
+    let offsets = input.offsets()?;
 
-    let count = view.validators.count();
+    let proposer_index = input.proposer_index();
+    let count = fork.view.validators.count();
     if (proposer_index as usize) >= count {
-        return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index as u64, count }));
+        let idx = proposer_index as u64;
+        return Err(input.invalid(BlockError::ProposerOutOfRange { idx, count }));
     }
-    offsets.validate().map_err(|e| wrap(e.into()))?;
 
     sig_batch.clear();
     // Pass 1 is read-only: hand it the read-only sibling over the same fork.
-    let rv = view.read(*epoch, *longtail);
-    collect_sigs_block_body(
-        &rv,
-        active_scratch,
-        sig_batch,
-        &offsets,
-        block_slot,
-        proposer_index,
-        shuffling,
-    )?;
+    collect_sigs_block_body(&fork.read(), &mut scratch.active, sig_batch, &offsets, input)?;
     if !sig_batch.verify_all() {
         return Err(Error::SigBatchFailed);
     }
 
-    apply_block_body(
-        cfg,
-        view,
-        *epoch,
-        *longtail,
-        active_scratch,
-        &offsets,
-        block_slot,
-        proposer_index,
-        shuffling,
-        attestation_votes,
-        slashed_sink,
-        is_gloas,
-    )
+    apply_block_body(cfg, fork, &offsets, input, &mut scratch.active, out)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_block_body(
     cfg: &SpecConfig,
-    view: &mut StateWriterView,
-    epoch: EpochView,
-    longtail: LongtailView,
-    active_scratch: &mut Vec<u32>,
+    fork: &mut ForkWriter,
     offsets: &BodyOffsets<'_>,
-    block_slot: Slot,
-    proposer_index: u32,
-    shuffling: Option<&ShufflingRef<'_>>,
-    attestation_votes: &mut Vec<AttestationVote>,
-    slashed_sink: &mut Vec<u32>,
-    is_gloas: bool,
+    input: &BlockInput<'_>,
+    active_scratch: &mut Vec<u32>,
+    out: &mut BlockVotes,
 ) -> Result<()> {
+    let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
+    let epoch = epoch.view_opt(*epoch_idx);
+    let longtail = longtail.view_opt(*longtail_idx);
+    let is_gloas = input.fork.is_gloas();
+    let block_slot = input.header.slot;
+    let proposer_index = input.proposer_index();
     let body = offsets.body();
-    let payload = offsets.payload();
 
-    let parent_slot = if is_gloas {
-        process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
-        process_withdrawals_gloas(&mut *view);
-        match offsets.signed_bid() {
-            Some(bid) => Some(process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?),
-            None => None,
+    let parent_slot = match input.fork {
+        BlockFork::Gloas => {
+            process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
+            process_withdrawals_gloas(&mut *view);
+            match offsets.signed_bid() {
+                Some(bid) => Some(process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?),
+                None => None,
+            }
         }
-    } else {
-        process_withdrawals_fulu(&mut *view, payload)?;
-        process_execution_payload(&mut *view, cfg, payload, block_slot)?;
-        None
+        BlockFork::Fulu { payload_roots } => {
+            let payload = offsets.payload();
+            process_withdrawals_fulu(&mut *view, payload)?;
+            process_execution_payload(&mut *view, cfg, payload, block_slot, payload_roots)?;
+            None
+        }
     };
 
     process_randao(view, body, block_slot / SLOTS_PER_EPOCH);
@@ -523,7 +502,7 @@ fn apply_block_body(
         process_proposer_slashings(&mut *view, epoch, cfg, section)?;
     }
     if let Some(section) = offsets.attester_slashings() {
-        process_attester_slashings(&mut *view, epoch, cfg, section, slashed_sink)?;
+        process_attester_slashings(&mut *view, epoch, cfg, section, &mut out.slashed)?;
     }
     if let Some(section) = offsets.attestations() {
         process_attestations(
@@ -533,8 +512,8 @@ fn apply_block_body(
             block_slot,
             parent_slot,
             proposer_index,
-            shuffling,
-            attestation_votes,
+            input.shuffling,
+            &mut out.votes,
             active_scratch,
         )?;
     }
@@ -564,16 +543,16 @@ fn apply_block_body(
 }
 
 #[timed]
-#[allow(clippy::too_many_arguments)]
 fn collect_sigs_block_body(
     rv: &StateReadView,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     offsets: &BodyOffsets<'_>,
-    block_slot: Slot,
-    proposer_index: u32,
-    shuffling: Option<&ShufflingRef<'_>>,
+    input: &BlockInput<'_>,
 ) -> Result<()> {
+    let block_slot = input.header.slot;
+    let proposer_index = input.proposer_index();
+    let shuffling = input.shuffling;
     let body = offsets.body();
     let imm = rv.imm;
     let validators = rv.validators;
@@ -613,7 +592,7 @@ fn collect_sigs_block_body(
         collect_sigs_bls_to_execution_changes(imm, &validators, section, sig_batch)?;
     }
 
-    if rv.is_gloas() {
+    if input.fork.is_gloas() {
         let current_epoch = block_slot / SLOTS_PER_EPOCH;
         if let Some(bid) = offsets.signed_bid() {
             collect_sigs_execution_payload_bid(

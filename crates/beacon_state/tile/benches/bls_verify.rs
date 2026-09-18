@@ -183,7 +183,7 @@ fn build_ef_block() -> SigBatch {
         &validators,
         &body[att..dep],
         block_slot,
-        Some(&sref),
+        &sref,
         &mut batch,
     );
 

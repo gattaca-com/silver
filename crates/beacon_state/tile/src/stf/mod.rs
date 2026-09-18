@@ -15,8 +15,10 @@ pub use attestation::{
     AttestedCommittees, collect_sigs_attestations, collect_sigs_single_attestation,
     process_attestations, process_single_attestation,
 };
+#[cfg(feature = "ef_tests")]
+pub use block::apply_signed_block_debug;
 pub use block::{
-    apply_block, apply_signed_block_debug, collect_sigs_randao, process_block_body,
+    BlockFork, BlockInput, apply_block, collect_sigs_randao, hash_body, process_block_body,
     process_block_header, process_slot, process_slots,
 };
 pub use common::{AttestationVote, BlockVotes, StfScratch};
