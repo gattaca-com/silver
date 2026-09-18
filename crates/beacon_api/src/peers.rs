@@ -6,6 +6,7 @@ use std::{
 use rustc_hash::FxHashMap;
 use silver_common::{Eth2Addr, IpBytes, PeerId};
 use silver_httpcore::Query;
+use smallvec::SmallVec;
 
 pub(crate) struct Peer {
     pub(crate) id: PeerId,
@@ -39,7 +40,7 @@ struct Connection {
 
 #[derive(Default)]
 pub(crate) struct PeerTable {
-    peers: FxHashMap<PeerId, Vec<Connection>>,
+    peers: FxHashMap<PeerId, SmallVec<[Connection; 2]>>,
 }
 
 impl PeerTable {
