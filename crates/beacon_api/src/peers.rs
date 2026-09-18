@@ -45,7 +45,8 @@ pub(crate) struct PeerTable {
 
 impl PeerTable {
     pub(crate) fn new() -> Self {
-        Self { peers: FxHashMap::with_capacity_and_hasher(256, Default::default()) }
+        // 600 is the default Config::max_connections; preallocate to avoid rehashing.
+        Self { peers: FxHashMap::with_capacity_and_hasher(600, Default::default()) }
     }
 
     pub(crate) fn insert(&mut self, connection: usize, peer: Peer) {
