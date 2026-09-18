@@ -1,7 +1,6 @@
 use flux::spine::FluxSpine;
 use silver_common::{
     BlockSource, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
-    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
     EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus,
     SilverSpine, TCacheRead, TProducer, TRandomAccess,
@@ -9,10 +8,7 @@ use silver_common::{
 
 use crate::{
     EngineClient, EngineError,
-    client::{
-        get_blobs, get_payload, get_payload_bodies_by_hash, get_payload_bodies_by_range, send_fcu,
-        send_new_payload, send_new_payload_envelope,
-    },
+    client::{get_blobs, get_payload, send_fcu, send_new_payload, send_new_payload_envelope},
     resp_handlers::write_tcache,
     types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
 };
@@ -36,14 +32,12 @@ pub(crate) fn handle_request(
         EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r),
         EngineReq::GetPayload(r) => handle_get_payload(client, *r),
         EngineReq::GetBlobs(r) => handle_get_blobs(client, r),
-        EngineReq::GetPayloadBodiesByHash(r) => handle_get_payload_bodies_by_hash(client, r),
-        EngineReq::GetPayloadBodiesByRange(r) => handle_get_payload_bodies_by_range(client, r),
     }
 }
 
 /// Unsafe no-EL testing mode: answer each request with a synthetic VALID
-/// response without contacting an execution client. Built payloads and payload
-/// bodies can't be fabricated, so those return `ok: false`; blob fetches answer
+/// response without contacting an execution client. Built payloads can't be
+/// fabricated, so those return `ok: false`; blob fetches answer
 /// as a healthy EL that simply holds none of the requested blobs.
 #[inline]
 pub(crate) fn handle_request_no_el(
@@ -93,20 +87,6 @@ pub(crate) fn handle_request_no_el(
             }),
             None => EngineResp::GetBlobs(EngineGetBlobsResp::failed(r.block_root, r.slot)),
         },
-        EngineReq::GetPayloadBodiesByHash(r) => {
-            EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
-                id: r.id,
-                ok: false,
-                data: unsafe { std::mem::zeroed() },
-            })
-        }
-        EngineReq::GetPayloadBodiesByRange(r) => {
-            EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
-                id: r.id,
-                ok: false,
-                data: unsafe { std::mem::zeroed() },
-            })
-        }
     };
     producers.engine_resps.produce(&resp.into());
 }
@@ -209,27 +189,6 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
     let hashes: Vec<String> =
         r.hashes[..n].iter().map(|h| format!("0x{}", hex::encode(h))).collect();
     get_blobs(client, simd_json::json!([hashes]), r.block_root, r.slot);
-}
-
-#[inline]
-fn handle_get_payload_bodies_by_hash(
-    client: &mut EngineClient,
-    r: &EngineGetPayloadBodiesByHashReq,
-) {
-    let n = r.hash_count as usize;
-    let hashes: Vec<String> =
-        r.hashes[..n].iter().map(|h| format!("0x{}", hex::encode(h))).collect();
-    get_payload_bodies_by_hash(client, simd_json::json!([hashes]), r.id);
-}
-
-#[inline]
-fn handle_get_payload_bodies_by_range(
-    client: &mut EngineClient,
-    r: &EngineGetPayloadBodiesByRangeReq,
-) {
-    let start_hex = format!("0x{:x}", r.start);
-    let count_hex = format!("0x{:x}", r.count);
-    get_payload_bodies_by_range(client, simd_json::json!([start_hex, count_hex]), r.id);
 }
 
 #[inline]

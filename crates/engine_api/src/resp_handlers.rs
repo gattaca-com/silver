@@ -1,9 +1,9 @@
 use flux::spine::SpineAdapter;
 use serde::Deserialize;
 use silver_common::{
-    ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadBodiesResp,
-    EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadResp, EngineResp,
-    PayloadValidationStatus, SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
+    ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
+    EngineNewPayloadResp, EngineResp, PayloadValidationStatus, SilverSpine, TCacheProducer,
+    TCacheRead, TProducer, merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
@@ -11,7 +11,7 @@ use crate::{
     EngineError,
     types::{
         ForkchoiceUpdatedResult, PayloadStatus, json_get_blobs_to_tcache,
-        json_get_payload_bodies_to_tcache, json_get_payload_to_tcache,
+        json_get_payload_to_tcache,
     },
 };
 
@@ -64,12 +64,6 @@ pub(crate) fn handle_capabilities_response(
     }
     if !has("engine_newPayloadV4") {
         tracing::warn!("EL does not support engine_newPayloadV4");
-    }
-    if !has("engine_getPayloadBodiesByHashV1") {
-        tracing::warn!("EL does not support engine_getPayloadBodiesByHashV1");
-    }
-    if !has("engine_getPayloadBodiesByRangeV1") {
-        tracing::warn!("EL does not support engine_getPayloadBodiesByRangeV1");
     }
     let method = if has("engine_getPayloadV4") { "engine_getPayloadV4" } else { FALLBACK };
     tracing::info!("capabilities negotiated, using {method}");
@@ -321,35 +315,6 @@ impl<'a> Responses<'a> {
         };
         self.adapter.produce(EngineResp::GetBlobs(resp));
     }
-
-    #[inline]
-    pub(crate) fn payload_bodies(
-        &mut self,
-        spine_id: u64,
-        response: Result<&mut [u8], EngineError>,
-    ) {
-        let resp = match response {
-            Ok(raw) => match self.encode(raw, json_get_payload_bodies_to_tcache) {
-                Ok(Some(((), data))) => {
-                    tracing::info!(id = spine_id, "getPayloadBodies ok");
-                    EngineGetPayloadBodiesResp { id: spine_id, ok: true, data }
-                }
-                Ok(None) => {
-                    tracing::warn!("getPayloadBodies TCache full");
-                    get_payload_bodies_error(spine_id)
-                }
-                Err(e) => {
-                    tracing::warn!("getPayloadBodies parse error: {e}");
-                    get_payload_bodies_error(spine_id)
-                }
-            },
-            Err(e) => {
-                tracing::warn!("getPayloadBodies error: {e}");
-                get_payload_bodies_error(spine_id)
-            }
-        };
-        self.adapter.produce(EngineResp::GetPayloadBodies(resp));
-    }
 }
 
 #[inline]
@@ -388,11 +353,6 @@ pub(crate) fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCac
 #[inline]
 fn get_payload_error(id: u64) -> EngineGetPayloadResp {
     EngineGetPayloadResp { id, ok: false, data: unsafe { std::mem::zeroed() } }
-}
-
-#[inline]
-fn get_payload_bodies_error(id: u64) -> EngineGetPayloadBodiesResp {
-    EngineGetPayloadBodiesResp { id, ok: false, data: unsafe { std::mem::zeroed() } }
 }
 
 #[inline]

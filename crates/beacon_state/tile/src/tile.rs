@@ -673,10 +673,6 @@ impl BeaconStateTile {
             // column validation/availability), not here; see the TODO at its
             // column-request path.
             EngineResp::GetBlobs(_) => {}
-            // Payload-body reconstruction is unneeded: the store persists and
-            // serves full SignedBeaconBlocks, so there is nothing to rebuild
-            // from EL bodies.
-            EngineResp::GetPayloadBodies(_) => {}
         }
     }
 

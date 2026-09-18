@@ -25,8 +25,6 @@ const OUR_CAPABILITIES: &[&str] = &[
     "engine_getPayloadV3",
     "engine_getPayloadV4",
     "engine_getBlobsV2",
-    "engine_getPayloadBodiesByHashV1",
-    "engine_getPayloadBodiesByRangeV1",
     "engine_getClientVersionV1",
 ];
 
@@ -39,8 +37,6 @@ pub enum ReqKind {
     NewPayload(B256), // block root
     GetPayloadFetch(u64),
     GetBlobs { block_root: B256, slot: u64 },
-    GetPayloadBodiesByHash(u64),
-    GetPayloadBodiesByRange(u64),
 }
 
 pub struct EngineClient {
@@ -252,26 +248,6 @@ pub fn get_blobs(c: &mut EngineClient, params: simd_json::OwnedValue, block_root
     let (id, body) = make_rpc_body(&mut c.id, "engine_getBlobsV2", params);
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetBlobs { block_root, slot });
-}
-
-pub fn get_payload_bodies_by_hash(
-    c: &mut EngineClient,
-    params: simd_json::OwnedValue,
-    req_id: u64,
-) {
-    let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadBodiesByHashV1", params);
-    enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::GetPayloadBodiesByHash(req_id));
-}
-
-pub fn get_payload_bodies_by_range(
-    c: &mut EngineClient,
-    params: simd_json::OwnedValue,
-    req_id: u64,
-) {
-    let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadBodiesByRangeV1", params);
-    enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::GetPayloadBodiesByRange(req_id));
 }
 
 pub fn get_sync_status(c: &mut EngineClient) {

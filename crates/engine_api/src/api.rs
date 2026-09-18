@@ -154,10 +154,6 @@ impl EngineApi {
                 ReqKind::NewPayload(block_root) => out.new_payload(block_root, response),
                 ReqKind::GetPayloadFetch(spine_id) => out.get_payload(spine_id, response),
                 ReqKind::GetBlobs { block_root, slot } => out.get_blobs(block_root, slot, response),
-                ReqKind::GetPayloadBodiesByHash(spine_id) |
-                ReqKind::GetPayloadBodiesByRange(spine_id) => {
-                    out.payload_bodies(spine_id, response)
-                }
             });
         }
 
