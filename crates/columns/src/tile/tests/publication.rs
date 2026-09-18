@@ -442,7 +442,7 @@ fn fulu_columns_are_not_accepted_at_or_after_gloas_activation() {
     let activation_slot = spec.gloas_fork_epoch * SLOTS_PER_EPOCH;
     for slot in [activation_slot - 1, activation_slot, activation_slot + 1] {
         for source in [ColumnOrigin::Gossip, ColumnOrigin::Rpc] {
-            let block = block_around(slot, &fulu_body(&blob.commitment));
+            let block = SynthBlock::fulu(slot, &blob.commitment).into_bytes();
             let block_root = block_root_fulu(&block);
             let sidecar = blob.fulu_sidecar(3, &block);
             let mut rig = Rig::with_spec(CUSTODY_COLUMNS, spec.clone());
