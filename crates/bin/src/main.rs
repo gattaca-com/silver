@@ -254,7 +254,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Partial receiving remains gated by configuration validation.
     let partial_columns =
         config.partial_columns().map_err(|error| format!("partial columns config: {error:?}"))?;
 

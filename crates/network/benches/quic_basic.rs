@@ -201,7 +201,7 @@ pub fn broadcast(c: &mut Criterion) {
                                         let Some(msg) = msgs.last()
                                     {
                                         let result = client.enqueue_gossip(*msg);
-                                        if result == SendResult::Ok {
+                                        if matches!(result, SendResult::Ok) {
                                             msgs.pop();
                                             //println!("enqueue_gossip failed:
                                             // {result:?}");

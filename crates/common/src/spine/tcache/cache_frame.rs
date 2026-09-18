@@ -167,7 +167,14 @@ impl CacheFrameRef {
             return Err(CacheFrameError::InvalidDescriptor);
         }
         let descriptor_len = buffer.len();
-        let view = CacheFrameView { read, count, wire_len, framing_start, descriptor_len };
+        let view = CacheFrameView {
+            read,
+            expires: self.expires,
+            count,
+            wire_len,
+            framing_start,
+            descriptor_len,
+        };
         let mut total = 0usize;
         for segment in view.segments() {
             if segment.length == 0 ||
@@ -192,6 +199,7 @@ impl CacheFrameRef {
 #[derive(Debug)]
 pub struct CacheFrameView {
     read: AcquiredRead,
+    expires: Instant,
     count: usize,
     wire_len: usize,
     framing_start: usize,
@@ -199,6 +207,10 @@ pub struct CacheFrameView {
 }
 
 impl CacheFrameView {
+    pub fn reference(&self) -> CacheFrameRef {
+        CacheFrameRef { descriptor: self.read.read, expires: self.expires }
+    }
+
     pub fn wire_len(&self) -> usize {
         self.wire_len
     }

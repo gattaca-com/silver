@@ -30,7 +30,8 @@ impl PartialResponse {
         &self,
         producer: &mut TProducer,
         expires: Instant,
-    ) -> Result<CacheFrameRef, CacheFrameError> {
+        max_bytes: usize,
+    ) -> Result<Option<(CacheFrameRef, usize)>, CacheFrameError> {
         let mut topic = Cursor::new([0u8; 96]);
         let digest = self.group.domain.digest();
         write!(
@@ -84,12 +85,17 @@ impl PartialResponse {
             }),
             metadata: Some(self.metadata),
         };
-        frame.write(
+        let wire_len = frame.wire_len();
+        if wire_len > max_bytes {
+            return Ok(None);
+        }
+        let frame = frame.write(
             producer,
             CellSegments { column: self.column, rows: self.rows, proof: false },
             CellSegments { column: self.column, rows: self.rows, proof: true },
             expires,
-        )
+        )?;
+        Ok(Some((frame, wire_len)))
     }
 }
 

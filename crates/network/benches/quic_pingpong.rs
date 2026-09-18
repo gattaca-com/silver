@@ -103,11 +103,13 @@ pub fn broadcast(c: &mut Criterion) {
                                         reservation
                                             .write_all(&read[size_of::<P2pStreamId>()..])
                                             .unwrap();
-                                        if server_tile.enqueue_gossip(GossipMsgOut {
-                                            peer_id: id.peer(),
-                                            tcache: reservation.read(),
-                                        }) != SendResult::Ok
-                                        {
+                                        if !matches!(
+                                            server_tile.enqueue_gossip(GossipMsgOut {
+                                                peer_id: id.peer(),
+                                                tcache: reservation.read(),
+                                            }),
+                                            SendResult::Ok
+                                        ) {
                                             println!("send failed!");
                                         }
                                         break;

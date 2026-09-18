@@ -5,6 +5,9 @@ mod reservation;
 mod response_in;
 mod response_out;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use pool::{RpcCodecDirection, RpcCodecPool};
 pub use request_in::RpcReadRequest;
 pub use request_out::RpcWriteRequest;
@@ -12,7 +15,8 @@ use reservation::{Rpc, RpcReservation, alloc_incoming_rpc};
 pub use response_in::RpcReadResponse;
 pub use response_out::RpcWriteResponse;
 use silver_common::{
-    P2pStreamId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TRandomAccess, TRead,
+    P2pStreamId, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseOutbound,
+    StreamProtocol, TRandomAccess, TRead,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -50,7 +54,7 @@ pub enum RpcOut {
 }
 
 // Consumer acquired wrapper for rpc outbound messages
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AcquiredRpcOutbound {
     Request(AcquiredRpcRequestOutbound),
@@ -58,6 +62,20 @@ pub(crate) enum AcquiredRpcOutbound {
 }
 
 impl AcquiredRpcOutbound {
+    pub(crate) fn into_message(self, peer: usize) -> RpcOutbound {
+        match self {
+            Self::Request(req) => RpcOutbound::Request(RpcRequestOutbound {
+                application_id: req.application_id,
+                peer,
+                request: req.request.into(),
+            }),
+            Self::Response(rsp) => RpcOutbound::Response(RpcResponseOutbound {
+                stream_id: rsp.stream_id,
+                response: rsp.response.into(),
+            }),
+        }
+    }
+
     pub fn protocol(&self) -> StreamProtocol {
         match self {
             Self::Request(req) => req.request.protocol(),
@@ -66,13 +84,13 @@ impl AcquiredRpcOutbound {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct AcquiredRpcRequestOutbound {
     pub(crate) application_id: u64,
     pub(crate) request: AcquiredRpcRequest,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct AcquiredRpcResponseOutbound {
     pub(crate) stream_id: P2pStreamId,
     pub(crate) response: AcquiredRpcResponse,
@@ -137,6 +155,28 @@ impl From<(RpcResponse, &mut TRandomAccess)> for AcquiredRpcResponse {
             }
             RpcResponse::Error { error, msg, len } => Self::Error { error, msg, len },
             RpcResponse::Complete => Self::Complete,
+        }
+    }
+}
+
+impl From<AcquiredRpcResponse> for RpcResponse {
+    fn from(rsp: AcquiredRpcResponse) -> Self {
+        match rsp {
+            AcquiredRpcResponse::StatusV1(b) => Self::StatusV1(b),
+            AcquiredRpcResponse::StatusV2(b) => Self::StatusV2(b),
+            AcquiredRpcResponse::Ping(b) => Self::Ping(b),
+            AcquiredRpcResponse::MetaData(b) => Self::MetaData(b),
+            AcquiredRpcResponse::BeaconBlock { fork_digest, ssz } => {
+                Self::BeaconBlock { fork_digest, ssz: ssz.read }
+            }
+            AcquiredRpcResponse::DataColumnSidecar { fork_digest, ssz } => {
+                Self::DataColumnSidecar { fork_digest, ssz: ssz.read }
+            }
+            AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz } => {
+                Self::ExecutionPayloadEnvelope { fork_digest, ssz: ssz.read }
+            }
+            AcquiredRpcResponse::Error { error, msg, len } => Self::Error { error, msg, len },
+            AcquiredRpcResponse::Complete => Self::Complete,
         }
     }
 }
@@ -207,6 +247,30 @@ impl From<(RpcRequest, &mut TRandomAccess)> for AcquiredRpcRequest {
             RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => {
                 let acquired = consumer.acquire(tcache_read);
                 Self::ExecutionPayloadEnvelopesByRoot(acquired)
+            }
+        }
+    }
+}
+
+impl From<AcquiredRpcRequest> for RpcRequest {
+    fn from(req: AcquiredRpcRequest) -> Self {
+        match req {
+            AcquiredRpcRequest::StatusV1(b) => Self::StatusV1(b),
+            AcquiredRpcRequest::StatusV2(b) => Self::StatusV2(b),
+            AcquiredRpcRequest::Ping(b) => Self::Ping(b),
+            AcquiredRpcRequest::Goodbye(b) => Self::Goodbye(b),
+            AcquiredRpcRequest::MetaData => Self::MetaData,
+            AcquiredRpcRequest::BlocksByRange(b) => Self::BlocksByRange(b),
+            AcquiredRpcRequest::BlockByRoot(read) => Self::BlockByRoot(read.read),
+            AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
+                Self::DataColumnsByRange { ssz, len }
+            }
+            AcquiredRpcRequest::DataColumnsByRoot(read) => Self::DataColumnsByRoot(read.read),
+            AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(b) => {
+                Self::ExecutionPayloadEnvelopesByRange(b)
+            }
+            AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
+                Self::ExecutionPayloadEnvelopesByRoot(read.read)
             }
         }
     }

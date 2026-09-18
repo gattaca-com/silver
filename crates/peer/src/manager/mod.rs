@@ -9,8 +9,8 @@ use std::{
 };
 
 use silver_common::{
-    AgentString, Enr, GossipTopic, PeerControl, PeerEvent, PeerId, RpcSeverity, StreamProtocol,
-    SyncUpdate,
+    AgentString, Enr, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId, RpcOutbound,
+    RpcSeverity, StreamProtocol, SyncUpdate,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -309,7 +309,6 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         match event {
-            PeerEvent::SegmentedGossipResult(_) => {}
             PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
             }
@@ -337,11 +336,12 @@ impl PeerManager {
                 }
                 self.disconnect_after_failed_goodbye(p2p_peer, protocol, emit);
             }
-            PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, rpc_request } => {
+            PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, msg } => {
                 // Local outbound-ring overflow — a backpressure signal, often
                 // ours (blocked socket), not peer misbehaviour. No P7: a
                 // stalled connection drops in bursts and the squared penalty
                 // would graylist the whole mesh on a local uplink stall.
+                let rpc_request = matches!(msg, P2pSend::Rpc(RpcOutbound::Request(_)));
                 if rpc_request {
                     self.release_outbound_in_flight(p2p_peer, protocol);
                 }

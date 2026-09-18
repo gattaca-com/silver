@@ -1418,7 +1418,11 @@ mod tests {
             PeerEvent::P2pOutboundMessageDropped {
                 p2p_peer: 1,
                 protocol: StreamProtocol::Goodbye,
-                rpc_request: true,
+                msg: P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                    application_id: 0,
+                    peer: 1,
+                    request: RpcRequest::Goodbye(GOODBYE_TOO_MANY_PEERS.to_le_bytes()),
+                })),
             },
         ] {
             cap.0.clear();

@@ -14,9 +14,9 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipFrameOutcome,
-    GossipFrameResult, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
-    RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine, cell_store::RetentionEvent,
+    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
+    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine,
+    cell_store::RetentionEvent,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -154,9 +154,6 @@ impl NetworkTile {
 
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {
-                NetEvent::GossipFrameResult(result) => {
-                    adapter.produce(PeerEvent::SegmentedGossipResult(result));
-                }
                 NetEvent::PeerConnected { peer, addr, local_dialler } => {
                     let port = addr.port();
                     adapter.produce(PeerEvent::P2pNewConnection {
@@ -229,10 +226,10 @@ impl NetworkTile {
                         tracing::debug!(peer=gossip_msg_out.peer_id, "send gossip");
                         self.inner.enqueue_gossip(gossip_msg_out)
                     },
-                    P2pSend::SegmentedGossip { peer_id, frame } => {
+                    P2pSend::SegmentedGossip { peer_id, frame, partial_cells } => {
                         gossips += 1;
                         self.inner.p2p_endpoint.enqueue_segmented_gossip(
-                            peer_id, frame, &mut self.inner.context,
+                            peer_id, frame, partial_cells, &mut self.inner.context,
                         )
                     }
                     P2pSend::Identify(peer) => {
@@ -243,12 +240,18 @@ impl NetworkTile {
                         self.inner.enqueue_rpc_out(rpc_outbound)
                     },
                 };
-                if result != p2p::SendResult::Ok && let P2pSend::SegmentedGossip { peer_id, frame } = msg {
-                    producers.produce(PeerEvent::SegmentedGossipResult(GossipFrameResult {
-                        p2p_peer: peer_id,
-                        frame_seq: frame.read().seq(),
-                        outcome: GossipFrameOutcome::Dropped,
-                    }));
+                let dropped = match result {
+                    p2p::SendResult::Ok => None,
+                    p2p::SendResult::Dropped(msg) => Some(msg.expect("endpoint must identify dropped P2p messages")),
+                    _ if matches!(msg, P2pSend::SegmentedGossip { .. }) => Some(msg),
+                    _ => None,
+                };
+                if let Some(msg) = dropped {
+                    producers.produce(PeerEvent::P2pOutboundMessageDropped {
+                        p2p_peer: msg.peer_id(),
+                        protocol: msg.protocol(),
+                        msg,
+                    });
                 }
                 match result {
                     p2p::SendResult::Ok => {}
@@ -263,16 +266,7 @@ impl NetworkTile {
                             .into()),
                         );
                     }
-                    p2p::SendResult::MessageDropped => {
-                        producers.peer_events.produce(
-                            &(PeerEvent::P2pOutboundMessageDropped {
-                                p2p_peer: msg.peer_id(),
-                                protocol: msg.protocol(),
-                                rpc_request,
-                            }
-                            .into()),
-                        );
-                    }
+                    p2p::SendResult::Dropped(_) => {}
                     p2p::SendResult::ConnectionClosing => {
                         tracing::debug!(
                             peer = msg.peer_id(),

@@ -4,14 +4,13 @@ use quinn_proto::{
     ClientConfig, Endpoint, EndpointConfig, ServerConfig,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
 };
-use silver_common::{Keypair, PeerId};
+use silver_common::{Keypair, P2pSend, PeerId};
 
 use super::tls;
 
 mod gossip_frame;
 mod leased;
 mod peer;
-mod send_receipts;
 mod stream;
 
 pub(crate) use gossip_frame::{OutboundGossip, SegmentedGossipLimits, SegmentedWriter};
@@ -65,16 +64,31 @@ pub fn create_server_config(keypair: &Keypair) -> Result<ServerConfig, Error> {
     Ok(config)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SendResult {
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum SendResult<T = P2pSend> {
     Ok,
     StreamCreationError,
     /// RPC response targeted a stream no longer in the map (closed/reset
     /// before the response was enqueued).
     StreamGone,
-    MessageDropped,
+    /// Evicting an older message does not reject the newly enqueued message.
+    Dropped(Option<T>),
     UnknownPeer,
     /// Connection is closing/draining: nothing sent on it can be delivered,
     /// and opening a stream would misreport as credit exhaustion.
     ConnectionClosing,
+}
+
+impl<T> SendResult<T> {
+    pub(crate) fn map_dropped<U>(self, map: impl FnOnce(Option<T>) -> U) -> SendResult<U> {
+        match self {
+            Self::Ok => SendResult::Ok,
+            Self::StreamCreationError => SendResult::StreamCreationError,
+            Self::StreamGone => SendResult::StreamGone,
+            Self::Dropped(msg) => SendResult::Dropped(Some(map(msg))),
+            Self::UnknownPeer => SendResult::UnknownPeer,
+            Self::ConnectionClosing => SendResult::ConnectionClosing,
+        }
+    }
 }

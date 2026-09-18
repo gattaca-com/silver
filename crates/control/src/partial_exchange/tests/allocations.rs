@@ -36,7 +36,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
-fn serving_and_feedback_allocate_nothing_after_construction() {
+fn serving_and_drop_recovery_allocate_nothing_after_construction() {
     ControlCounters::init().unwrap();
     for format in [ForkName::Fulu, ForkName::Gloas] {
         let mut rig = Rig::new(format);
@@ -51,8 +51,9 @@ fn serving_and_feedback_allocate_nothing_after_construction() {
                 };
                 assert!(frame.replace(next).is_none());
             });
-            rig.complete(1, frame.unwrap(), true);
+            rig.dropped(1, frame.unwrap());
             rig.request(1, 0, 1 << (attempt % ROWS as u8));
+            rig.now += RETRY;
         }
         assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     }

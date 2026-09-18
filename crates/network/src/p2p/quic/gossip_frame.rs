@@ -2,15 +2,11 @@ use std::{cell::Cell, ptr::NonNull, time::Instant};
 
 use bytes::Bytes;
 use silver_common::{
-    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, GossipFrameResult,
-    P2pStreamId, TRead,
+    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, GossipMsgOut, P2pSend,
+    TRead,
 };
 
-use super::{
-    Leased,
-    leased::OutboundLeaseWheel,
-    send_receipts::{SendReceipt, SendReceipts},
-};
+use super::{Leased, leased::OutboundLeaseWheel};
 use crate::{NetworkCounters, p2p::Context};
 
 const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
@@ -22,8 +18,20 @@ pub(crate) enum OutboundGossip {
     Segmented(SegmentedFrame),
 }
 
+impl OutboundGossip {
+    pub(crate) fn into_message(self, peer_id: usize) -> P2pSend {
+        match self {
+            Self::Contiguous(read) => P2pSend::Gossip(GossipMsgOut { peer_id, tcache: read.read }),
+            Self::Segmented(frame) => P2pSend::SegmentedGossip {
+                peer_id,
+                frame: frame.segments.reference(),
+                partial_cells: frame.partial_cells,
+            },
+        }
+    }
+}
+
 pub(crate) struct SegmentedGossipLimits {
-    receipts: SendReceipts,
     frames: Cell<usize>,
     owners: Cell<usize>,
     retained_bytes: Cell<usize>,
@@ -41,7 +49,6 @@ impl Default for SegmentedGossipLimits {
 impl SegmentedGossipLimits {
     pub(crate) fn new(max_frames: usize) -> Self {
         Self {
-            receipts: SendReceipts::new(max_frames),
             frames: Cell::new(0),
             owners: Cell::new(0),
             retained_bytes: Cell::new(0),
@@ -77,17 +84,13 @@ impl SegmentedGossipLimits {
         )?;
         NetworkCounters::CacheSegmentedAdmitted.inc();
         NetworkCounters::CacheSegmentedSegments.add(frame.segment_count() as u64);
-        Some(SegmentedFrame { segments: wheel.leased(frame, now), budget, receipt: None })
+        Some(SegmentedFrame { segments: wheel.leased(frame, now), budget, partial_cells: None })
     }
 
     pub(crate) fn publish_gauges(&self) {
         NetworkCounters::CacheSegmentedFrames.set(self.frames.get() as u64);
         NetworkCounters::CacheSegmentedOwners.set(self.owners.get() as u64);
         NetworkCounters::CacheSegmentedRetainedBytes.set(self.retained_bytes.get() as u64);
-    }
-
-    pub(crate) fn pop_result(&self) -> Option<GossipFrameResult> {
-        self.receipts.pop()
     }
 }
 
@@ -101,16 +104,12 @@ impl Drop for SegmentedGossipLimits {
 
 #[derive(Debug)]
 pub(crate) struct SegmentedFrame {
-    receipt: Option<SendReceipt>,
+    pub(crate) partial_cells: Option<u8>,
     segments: Leased<AcquiredCacheFrame>,
     budget: FrameBudget,
 }
 
 impl SegmentedFrame {
-    pub(crate) fn track(&mut self, limits: &SegmentedGossipLimits, peer: usize, seq: u64) -> bool {
-        self.receipt = limits.receipts.acquire(peer, seq, self.wire_len());
-        self.receipt.is_some()
-    }
     pub(crate) fn wire_len(&self) -> usize {
         self.segments.wire_len()
     }
@@ -152,10 +151,14 @@ impl SegmentedWriter {
         self.remaining == 0
     }
 
-    pub(crate) fn complete(&mut self, stream_id: P2pStreamId) {
+    pub(crate) fn complete(&mut self) {
         assert_eq!(self.remaining, 0);
-        if let Some(receipt) = &mut self.frame.receipt {
-            receipt.written(stream_id);
+        if let Some(cells) = self.frame.partial_cells.take() {
+            NetworkCounters::PartialFramesWritten.inc();
+            if cells != 0 {
+                NetworkCounters::PartialResponsesSent.inc();
+                NetworkCounters::PartialCellsServed.add(cells as u64);
+            }
         }
     }
 }

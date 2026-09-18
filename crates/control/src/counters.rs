@@ -1,4 +1,5 @@
 silver_common::declare_counters! {
+    #[allow(non_camel_case_types)]
     pub ControlCounters => "control" {
         TailUnavailable,
         RangesIssued,
@@ -13,13 +14,14 @@ silver_common::declare_counters! {
         PartialMetadataIgnored,
         PartialStateLimited,
         PartialFramesQueued,
-        PartialFramesWritten,
+        _Reserved_PartialFramesWritten,
         PartialFramesDropped,
-        PartialCellsServed,
+        _Reserved_PartialCellsServed,
         PartialWithdrawals,
         PartialExchanges,
-        PartialPendingFrames,
-        PartialResponsesSent,
+        _Reserved_PartialPendingFrames,
+        _Reserved_PartialResponsesSent,
         PartialCellsRequested,
+        PartialRateLimited,
     }
 }
