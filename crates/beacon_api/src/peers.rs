@@ -1,8 +1,12 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::{
+    collections::hash_map::Entry,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use rustc_hash::FxHashMap;
 use silver_common::{Eth2Addr, IpBytes, PeerId};
 use silver_httpcore::Query;
+use smallvec::SmallVec;
 
 pub(crate) struct Peer {
     pub(crate) id: PeerId,
@@ -29,27 +33,46 @@ impl Peer {
     }
 }
 
+struct Connection {
+    handle: usize,
+    peer: Peer,
+}
+
 #[derive(Default)]
-pub(crate) struct PeerTable(FxHashMap<usize, Peer>);
+pub(crate) struct PeerTable {
+    peers: FxHashMap<PeerId, SmallVec<[Connection; 2]>>,
+}
 
 impl PeerTable {
     pub(crate) fn new() -> Self {
-        Self(FxHashMap::with_capacity_and_hasher(256, Default::default()))
+        // 600 is the default Config::max_connections; preallocate to avoid rehashing.
+        Self { peers: FxHashMap::with_capacity_and_hasher(600, Default::default()) }
     }
+
     pub(crate) fn insert(&mut self, connection: usize, peer: Peer) {
-        self.0.insert(connection, peer);
+        let connections = self.peers.entry(peer.id).or_default();
+        connections.retain(|c| c.handle != connection);
+        connections.push(Connection { handle: connection, peer });
     }
 
-    pub(crate) fn remove(&mut self, connection: usize) {
-        self.0.remove(&connection);
+    pub(crate) fn remove(&mut self, peer_id: PeerId, connection: usize) {
+        let Entry::Occupied(mut entry) = self.peers.entry(peer_id) else { return };
+        entry.get_mut().retain(|c| c.handle != connection);
+        if entry.get().is_empty() {
+            entry.remove();
+        }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
+    pub(crate) fn connected(&self) -> usize {
+        self.peers.len()
     }
 
     pub(crate) fn matching<'a>(&'a self, filter: &'a PeerFilter) -> impl Iterator<Item = &'a Peer> {
-        self.0.values().filter(move |peer| filter.admits(peer))
+        self.peers
+            .values()
+            .filter_map(|connections| connections.last())
+            .map(|connection| &connection.peer)
+            .filter(move |peer| filter.admits(peer))
     }
 }
 
