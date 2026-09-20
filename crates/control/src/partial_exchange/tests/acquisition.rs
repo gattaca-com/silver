@@ -1,5 +1,5 @@
 use silver_common::{
-    ColumnOrigin, DataKind,
+    ColumnOrigin, DataKind, SszCache,
     cell_store::CellKey,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView},
 };
@@ -72,12 +72,17 @@ impl Rig {
     }
 
     pub(super) fn complete(&mut self, column: u64) {
+        // Acquisition uses the completion identity, not the RPC sidecar bytes.
+        let mut ssz = self.output.reserve(0, false).unwrap();
+        ssz.flush().unwrap();
         self.exchange.validated(
             DataColumnsEvent::Validated {
                 block_root: ROOT,
                 column_index: column,
                 slot: self.ingress.slot_window().0,
                 origin: ColumnOrigin::Rpc,
+                ssz: ssz.read(),
+                ssz_cache: SszCache::Rpc,
             },
             self.now,
         );
