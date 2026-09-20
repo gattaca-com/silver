@@ -19,12 +19,13 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
         let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
         rig.follow([0; 32]);
         rig.turn();
-        let body = if format == ForkName::Fulu {
-            fulu_body(&commitments)
+        let block = if format == ForkName::Fulu {
+            SynthBlock::fulu(SLOT, &commitments)
         } else {
-            gloas_body(&commitments)
-        };
-        let block = block_around(SLOT, &body);
+            SynthBlock::gloas(SLOT, SynthBid::new(&commitments))
+        }
+        .into_bytes();
+        let body = SignedBeaconBlockView::body(&block);
         let root = block_root(&block, format == ForkName::Gloas);
         let domain = rig.tile.validator.domain_at(SLOT).unwrap();
         let context = CommitmentContext { block_root: root, slot: SLOT, format, blob_count: 2 };
@@ -62,8 +63,8 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
 
         let mut header = [0; 208];
         header[..8].copy_from_slice(&SLOT.to_le_bytes());
-        header[80..112].copy_from_slice(&body_root(&body));
-        let proof = kzg_commitments_inclusion_proof(&body);
+        header[80..112].copy_from_slice(&body_root(body));
+        let proof = kzg_commitments_inclusion_proof(body);
         if format == ForkName::Gloas {
             rig.block(&block);
             assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
