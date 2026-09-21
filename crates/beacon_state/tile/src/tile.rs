@@ -387,6 +387,7 @@ impl BeaconStateTile {
         self.shuffling_cache.ensure_window(&view, anchor_epoch);
         self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch + 1);
         self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch);
+        self.fork_choice.justified.precompute(trusted, view.validators);
     }
 
     fn fork_digest(&mut self) -> [u8; 4] {

@@ -31,7 +31,7 @@ use super::{
 };
 use crate::{
     error::{PrecheckError, RejectReason},
-    fork_choice::{BlockImport, PayloadAxis, PayloadStatus},
+    fork_choice::{BlockImport, PROPOSER_SCORE_BOOST_PERCENT, PayloadAxis, PayloadStatus},
     merkle, ssz_hash,
     stf::AttestationVote,
     test_signing,
@@ -126,17 +126,6 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         verify_weak_subjectivity,
         BeaconState::empty_test(0),
     )
-}
-
-/// Like `make_tile_at_wall_slot` but returns the gossip producer so tests
-/// can write real block buffers the tile's consumer can read back.
-fn make_tile_with_gossip(
-    wall_slot: u64,
-    state: BeaconState,
-) -> (BeaconStateTile, TProducer, TProducer) {
-    let (tile, gossip, rpc, _replay) =
-        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
-    (tile, gossip, rpc)
 }
 
 /// Keeps the replay producer alive for tests that feed cached block bytes.
@@ -1463,7 +1452,8 @@ fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
     assert!(state_slot > header.slot, "fixture premise: state {state_slot}, block {}", header.slot);
     assert_ne!(header.state_root, [0u8; 32], "fixture premise: the header names its state");
 
-    let (mut tile, _gp, _rp) = make_tile_with_gossip(state_slot, state);
+    let (mut tile, _gp, _rp, _replay) =
+        make_tile_with_producers(state_slot, state, SpecConfig::mainnet());
     let BeaconStateEvent::Status { ssz, head_roots, .. } = tile.status_event(tile.selected_head())
     else {
         panic!("status_event produces Status")
@@ -3097,22 +3087,70 @@ fn equivocator_excluded_from_votes() {
 
 /// The justified-balance snapshot is rebuilt only when the justified
 /// checkpoint moves; the first build is a full pass, the next is a no-op.
+fn vote_all_for(tile: &mut BeaconStateTile, block_root: B256) {
+    let n = tile.head_validator_count();
+    for validator in 0..n as u32 {
+        tile.fork_choice.record_vote(
+            &AttestationVote {
+                validator,
+                block_root,
+                target_epoch: 0,
+                attestation_slot: 0,
+                payload_present: false,
+            },
+            n,
+        );
+    }
+}
+
+fn node_weight(tile: &BeaconStateTile, root: B256) -> u64 {
+    tile.fork_choice.node(tile.fork_choice.find_node_idx(&root).unwrap()).weight
+}
+
+/// Votes weigh the justified state's effective balances; the proposer boost
+/// follows its total active balance.
 #[test]
-fn justified_balances_rebuilt_on_checkpoint_change_only() {
+fn votes_weigh_justified_effective_balances() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 8, 0);
-    // Anchor justified checkpoint differs from the default → stale → rebuild.
-    assert!(tile.fork_choice.justified_balances_stale());
-    tile.refresh_justified_balances();
-    assert!(!tile.fork_choice.justified_balances_stale());
-    assert_eq!(tile.fork_choice.justified_balances.len(), 8);
-    assert!(tile.fork_choice.justified_balances.iter().all(|&b| b == MAX_EFFECTIVE_BALANCE));
-    // Total active balance is cached in the same sweep: all 8 active and
-    // unslashed → 8 × MAX_EFFECTIVE_BALANCE (proposer boost reads this
-    // instead of re-sweeping per block).
-    assert_eq!(tile.fork_choice.justified_total_active_balance(), 8 * MAX_EFFECTIVE_BALANCE);
-    // Unchanged checkpoint → no rebuild (idempotent).
-    tile.refresh_justified_balances();
+    let anchor = tile.last_applied_block_root;
+    vote_all_for(&mut tile, anchor);
+    tile.recompute_head();
+    assert_eq!(node_weight(&tile, anchor), 8 * MAX_EFFECTIVE_BALANCE);
+
+    tile.fork_choice.set_proposer_boost(anchor);
+    let committee_weight = 8 * MAX_EFFECTIVE_BALANCE / SLOTS_PER_EPOCH;
+    assert_eq!(
+        tile.fork_choice.proposer_boost_score,
+        committee_weight * PROPOSER_SCORE_BOOST_PERCENT / 100
+    );
+}
+
+/// Two justified moves between head recomputes weigh votes by the latest
+/// snapshot, whether or not the first was precomputed.
+#[test]
+fn justified_moves_between_recomputes_weigh_latest_snapshot() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 8, 0);
+    let anchor = tile.last_applied_block_root;
+    vote_all_for(&mut tile, anchor);
+    tile.recompute_head();
+
+    let mut fork = tile.state.apply_block_view(tile.last_applied);
+    fork.view.validators.set_effective_balance(2, MAX_EFFECTIVE_BALANCE / 2);
+    let lowered = fork.commit();
+    let mut fork = tile.state.apply_block_view(tile.last_applied);
+    fork.view.validators.set_slashed(5, true);
+    let slashed = fork.commit();
+
+    let cp1 = Checkpoint { epoch: 1, root: [1; 32] };
+    let cp2 = Checkpoint { epoch: 2, root: [2; 32] };
+    tile.fork_choice.justified.precompute(cp1, tile.state.read_view(lowered).validators);
+    tile.fork_choice.justified.install(cp1, tile.state.read_view(lowered).validators);
+    tile.fork_choice.justified.install(cp2, tile.state.read_view(slashed).validators);
+    tile.fork_choice.recompute_head();
+    assert_eq!(node_weight(&tile, anchor), 7 * MAX_EFFECTIVE_BALANCE);
+    assert_eq!(tile.fork_choice.justified.total_active(), 8 * MAX_EFFECTIVE_BALANCE);
 }
 
 #[test]

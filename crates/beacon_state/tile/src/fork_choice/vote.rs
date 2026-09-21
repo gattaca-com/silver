@@ -1,8 +1,8 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Checkpoint, Epoch, Slot, ValidatorsView};
+use silver_beacon_state_data::{B256, Epoch, Slot};
 
 use super::{ForkChoice, ForkChoiceNode, PayloadStatus};
-use crate::stf::{AttestationVote, EFFECTIVE_BALANCE_INCREMENT};
+use crate::stf::AttestationVote;
 
 #[repr(C)]
 #[derive(Default)]
@@ -67,41 +67,21 @@ fn add_vote_weight_changes(d: &mut WeightDelta, branch: PayloadStatus, v: i64) {
 
 impl ForkChoice {
     /// Fold vote/balance movement into `self.weight_deltas` (staged for
-    /// `apply_score_changes`): a fresh balance snapshot means a full pass
-    /// against the previous snapshot; otherwise only the dirtied votes are
-    /// folded against the unchanged snapshot.
+    /// `apply_score_changes`). Unapplied balance moves fold first, so a dirty
+    /// vote visited afterwards finds its weight already carried and returns.
     #[timed]
     pub(super) fn compute_weight_deltas(&mut self) {
         let Self {
-            vote_tracker,
-            lookup,
-            nodes,
-            votes_dirty,
-            justified_balances,
-            prev_justified_balances,
-            justified_balances_full_pass,
-            weight_deltas: deltas,
-            ..
+            vote_tracker, lookup, nodes, votes_dirty, justified, weight_deltas: deltas, ..
         } = self;
-        let full_pass = *justified_balances_full_pass;
-        let validator_count = justified_balances.len();
-        let (old_balances, new_balances) = if full_pass {
-            (prev_justified_balances.as_slice(), justified_balances.as_slice())
-        } else {
-            (justified_balances.as_slice(), justified_balances.as_slice())
-        };
-        let changed = (!full_pass).then_some(votes_dirty.as_slice());
+        let (applied_balances, balances, unapplied) = justified.pending_weight_update();
+        let validator_count = balances.len();
         let votes = &mut vote_tracker.votes;
 
         deltas.clear();
         deltas.resize(nodes.len(), WeightDelta::default());
 
-        let mut apply = |vi: usize, vote: &mut Vote| {
-            // `old_balances` (previous snapshot) may be shorter than the current
-            // validator set; validators added since then carry no prior weight.
-            let old_balance = old_balances.get(vi).copied().unwrap_or(0);
-            let new_balance = new_balances.get(vi).copied().unwrap_or(0);
-
+        let mut apply = |vote: &mut Vote, old_balance: u64, new_balance: u64| {
             // Unchanged only when target, balance, AND payload branch all match — a
             // re-vote that flips the payload branch must still move weight.
             if vote.applied_root == vote.latest_root &&
@@ -144,19 +124,19 @@ impl ForkChoice {
             vote.applied_payload_present = vote.latest_payload_present;
         };
 
-        match changed {
-            Some(dirty) => {
-                for &vi in dirty {
-                    let vi = vi as usize;
-                    if vi < validator_count {
-                        apply(vi, &mut votes[vi]);
-                    }
-                }
+        // `applied_balances` may be shorter than the current validator set;
+        // validators added since then carry no prior weight.
+        for &vi in unapplied {
+            let vi = vi as usize;
+            if vi < validator_count {
+                let applied_balance = applied_balances.get(vi).copied().unwrap_or(0);
+                apply(&mut votes[vi], applied_balance, balances[vi]);
             }
-            None => {
-                for (vi, vote) in votes.iter_mut().enumerate().take(validator_count) {
-                    apply(vi, vote);
-                }
+        }
+        for &vi in votes_dirty.iter() {
+            let vi = vi as usize;
+            if vi < validator_count {
+                apply(&mut votes[vi], balances[vi], balances[vi]);
             }
         }
     }
@@ -220,44 +200,5 @@ impl ForkChoice {
             v.latest_root = [0u8; 32];
             self.votes_dirty.push(idx as u32);
         }
-    }
-
-    /// True when the justified-balance snapshot must be rebuilt — the justified
-    /// checkpoint moved, or we have no snapshot yet.
-    pub fn justified_balances_stale(&self) -> bool {
-        self.justified_checkpoint != self.justified_balances_cp ||
-            self.justified_balances.is_empty()
-    }
-
-    pub fn set_justified_balances(&mut self, cp: Checkpoint, validators: ValidatorsView<'_>) {
-        std::mem::swap(&mut self.justified_balances, &mut self.prev_justified_balances);
-        let buf = &mut self.justified_balances;
-        buf.clear();
-
-        let mut act = validators.iter_activation_epochs();
-        let mut exit = validators.iter_exit_epochs();
-        let mut eff = validators.iter_effective_balances();
-        let mut slashed = validators.iter_slashed();
-        let mut total_active = 0u64;
-        for _ in 0..validators.count() {
-            let a = act.next().unwrap();
-            let x = exit.next().unwrap();
-            let b = eff.next().unwrap();
-            let s = slashed.next().unwrap();
-            let active = a <= cp.epoch && cp.epoch < x;
-            if active {
-                total_active += b;
-            }
-            buf.push(if active && !s { b } else { 0 });
-        }
-
-        self.justified_total_active_balance = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
-        self.justified_balances_cp = cp;
-        self.justified_balances_full_pass = true;
-    }
-
-    #[cfg(test)]
-    pub fn justified_total_active_balance(&self) -> u64 {
-        self.justified_total_active_balance
     }
 }
