@@ -19,8 +19,7 @@ fn respond(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>, epochs_back
     let Some(epoch) = epoch_param(req, resp) else {
         return;
     };
-    if !ctx.node_status.is_following() {
-        resp.error(503, "duties are unavailable while the node is syncing");
+    if !ctx.follows_chain(resp) {
         return;
     }
 
@@ -28,12 +27,17 @@ fn respond(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>, epochs_back
     let duties = ctx.read_state(|view| {
         ProposerDuties::read(&view, epoch, epoch.saturating_sub(epochs_back), head_root)
     });
-    match duties {
-        Some(duties) => resp.json_body(|json| {
-            json.proposer_duties(&duties, ctx.node_status.execution_optimistic())
-        }),
-        None => resp.error(400, "epoch outside the proposer lookahead of the head state"),
-    }
+    let Some(duties) = duties else {
+        resp.error(400, "epoch outside the proposer lookahead of the head state");
+        return;
+    };
+    resp.json_body(|json| {
+        json.proposer_duties(
+            duties.dependent_root,
+            ctx.node_status.execution_optimistic(),
+            duties.duties.iter(),
+        )
+    });
 }
 
 pub(crate) struct ProposerDuties {
@@ -98,13 +102,11 @@ mod tests {
         ValSeed,
     };
     use silver_common::SyncUpdate;
-    use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
-        duties::test_state::{block_roots_ring, ring_root},
-        router::{Outcome, Router},
-        routes::{ROUTES, test_ctx},
+        routes::test_ctx,
+        testing::{self, answer, block_roots_ring, request, ring_root, status_code},
     };
 
     const STATE_EPOCH: u64 = 300;
@@ -150,30 +152,12 @@ mod tests {
     }
 
     fn get_from(ctx: &ApiCtx, path: &str) -> Vec<u8> {
-        let req = ParsedRequest {
-            method: "GET",
-            path,
-            query: "",
-            body: b"",
-            accept: None,
-            content_type: None,
-            eth_consensus_version: None,
-            version: 1,
-            keep_alive: true,
-        };
-        let mut out = Vec::new();
-        assert_eq!(Router::new(ROUTES).dispatch(&req, ctx, &mut out), Outcome::Response);
-        out
+        answer(ctx, &request("GET", path))
     }
 
     fn body(response: &[u8]) -> String {
-        let text = std::str::from_utf8(response).unwrap();
-        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
-        text[text.find("\r\n\r\n").unwrap() + 4..].to_string()
-    }
-
-    fn status_code(response: &[u8]) -> &str {
-        std::str::from_utf8(response).unwrap().split(' ').nth(1).unwrap()
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"), "{:?}", status_code(response));
+        String::from_utf8(testing::body(response).to_vec()).unwrap()
     }
 
     fn hex(bytes: &[u8]) -> String {

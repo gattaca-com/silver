@@ -3,6 +3,8 @@ use crate::{
     types::{SYNC_COMMITTEE_SIZE, SyncCommittee},
 };
 
+const UNRESOLVED: u32 = u32::MAX;
+
 /// The two sync committees, their cached SSZ roots, and the current
 /// committee's validator indices — one bundle because the period rotation
 /// writes all five together. The rotation costs one committee hash (24 KB of
@@ -10,7 +12,7 @@ use crate::{
 pub struct SyncCommittees {
     current: SyncCommittee,
     next: SyncCommittee,
-    /// Validator index per `current` pubkey, `u32::MAX` where unknown.
+    /// Validator index per `current` pubkey, [`UNRESOLVED`] where unknown.
     indices: [u32; SYNC_COMMITTEE_SIZE],
     current_root: B256,
     next_root: B256,
@@ -41,7 +43,7 @@ impl Default for SyncCommittees {
         Self {
             current: SyncCommittee::default(),
             next: SyncCommittee::default(),
-            indices: [0; SYNC_COMMITTEE_SIZE],
+            indices: [UNRESOLVED; SYNC_COMMITTEE_SIZE],
             current_root: root,
             next_root: root,
         }
@@ -84,6 +86,16 @@ impl SyncCommittees {
     #[inline]
     pub fn indices(&self) -> &[u32; SYNC_COMMITTEE_SIZE] {
         &self.indices
+    }
+
+    #[inline]
+    pub fn index_at(&self, position: usize) -> Option<u32> {
+        Some(self.indices[position]).filter(|&index| index != UNRESOLVED)
+    }
+
+    #[inline]
+    pub const fn unresolved() -> u32 {
+        UNRESOLVED
     }
 
     #[inline]
