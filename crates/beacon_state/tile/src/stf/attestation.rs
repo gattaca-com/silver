@@ -556,6 +556,10 @@ fn collect_attestation_participants(
     if bitlist_len != agg_offset {
         return Err(AttestationError::BitlistLenMismatch { expected: agg_offset, got: bitlist_len });
     }
+    // Committee order is shuffled; ascending order turns the per-attester
+    // column reads that follow into a monotonic sweep and yields the sorted
+    // batch `set_many` needs without a second sort.
+    active_scratch.sort_unstable();
     Ok(())
 }
 
@@ -609,7 +613,7 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
             }
         }
     }
-    updates.sort_unstable_by_key(|(idx, _)| *idx);
+    debug_assert!(updates.is_sorted_by_key(|(idx, _)| *idx));
     participation.set_many(&updates);
     AppliedFlags { proposer_reward_numerator, first_participation_eb, new_target_eb }
 }
