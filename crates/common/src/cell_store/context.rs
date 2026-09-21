@@ -1,7 +1,9 @@
 use silver_beacon_state_data::ForkName;
 
 use super::CommitmentContext;
-use crate::ssz_view::{BYTES_PER_KZG_COMMITMENT, partial_column::PARTIAL_HEADER_FIXED};
+use crate::ssz_view::{
+    BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, partial_column::PARTIAL_HEADER_FIXED,
+};
 
 #[derive(Clone, Copy)]
 pub enum ContextData<'a> {
@@ -10,6 +12,18 @@ pub enum ContextData<'a> {
 }
 
 impl<'a> ContextData<'a> {
+    #[inline]
+    pub fn from_fulu_sidecar(bytes: &'a [u8]) -> Option<Self> {
+        if !DataColumnSidecarFuluView::check_size(bytes) {
+            return None;
+        }
+        Some(Self::Fulu {
+            signed_header: bytes.get(20..228)?.try_into().ok()?,
+            inclusion_proof: DataColumnSidecarFuluView::inclusion_proof(bytes),
+            commitments: DataColumnSidecarFuluView::kzg_commitments(bytes),
+        })
+    }
+
     #[inline]
     pub fn valid_for(self, context: CommitmentContext) -> bool {
         let format_matches = match self {
@@ -38,8 +52,8 @@ impl<'a> ContextData<'a> {
                     return None;
                 }
                 Some(Self::Fulu {
-                    signed_header: bytes[4..212].try_into().unwrap(),
-                    inclusion_proof: bytes[212..PARTIAL_HEADER_FIXED].try_into().unwrap(),
+                    signed_header: bytes[4..212].try_into().ok()?,
+                    inclusion_proof: bytes[212..PARTIAL_HEADER_FIXED].try_into().ok()?,
                     commitments: &bytes[PARTIAL_HEADER_FIXED..],
                 })
             }

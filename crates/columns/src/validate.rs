@@ -139,7 +139,6 @@ impl ColumnValidator {
         self.partial_parents.remember(block_root, Some(*SignedBeaconBlockView::state_root(buffer)));
     }
 
-    #[cfg(test)]
     pub fn is_validated(&self, block_root: &BlockRoot) -> bool {
         self.validated_block_roots.contains(block_root)
     }

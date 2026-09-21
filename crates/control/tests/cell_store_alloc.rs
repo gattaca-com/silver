@@ -97,7 +97,7 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
         let source = Some(FuluContextSource::Header(header.read()));
         assert!(store.admit_context(context, domain, data, source).unwrap());
         let request = store.request_assemblies(&block_root).unwrap();
-        let set = allocator.allocate(request).unwrap();
+        let set = allocator.allocate(request, None).unwrap();
         assert_eq!(
             set.reservations.view(allocator.producer()).unwrap().next().unwrap().read().seq(),
             candidate.reservations.view(allocator.producer()).unwrap().next().unwrap().read().seq()

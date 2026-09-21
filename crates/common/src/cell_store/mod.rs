@@ -226,12 +226,15 @@ pub struct CommitmentContext {
 pub enum FuluContextSource {
     Header(TCacheRead),
     Sidecar(TCacheRead),
+    /// A block-derived header in the existing EL-output cache. Copied into
+    /// the data-columns cache before any assembly is published.
+    ElHeader(TCacheRead),
 }
 
 impl FuluContextSource {
     pub fn read(self) -> TCacheRead {
         match self {
-            Self::Header(read) | Self::Sidecar(read) => read,
+            Self::Header(read) | Self::Sidecar(read) | Self::ElHeader(read) => read,
         }
     }
 }

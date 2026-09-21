@@ -6,7 +6,8 @@ use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, PeerControl, PeerEvent,
     SilverSpineProducers, SszCache, TProducer, TRandomAccess,
     cell_store::{
-        CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, PendingCell, StoreError,
+        CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, ContextData,
+        FuluContextSource, PendingCell, StoreError,
     },
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
@@ -112,6 +113,7 @@ impl CellIngress {
         event: CellStoreEvent,
         now: Instant,
         producers: &SilverSpineProducers,
+        el_consumer: &mut TRandomAccess,
     ) {
         self.spin(now, producers);
         match event {
@@ -120,7 +122,14 @@ impl CellIngress {
                 self.available.retain(|(root, _), _| *root != block_root);
             }
             CellStoreEvent::Allocate(request) => {
-                let set = match self.allocator.allocate(request) {
+                let read = match request.source {
+                    Some(FuluContextSource::ElHeader(read)) => Some(el_consumer.acquire(read)),
+                    _ => None,
+                };
+                let external = read.as_ref().and_then(|read| {
+                    ContextData::from_encoded(read.buffer().ok()?.0, ForkName::Fulu)
+                });
+                let set = match self.allocator.allocate(request, external) {
                     Ok(set) => Some(set),
                     Err(e) => {
                         tracing::debug!(?e, slot = request.context.slot, "cell allocation failed");

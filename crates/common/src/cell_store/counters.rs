@@ -10,7 +10,7 @@ crate::declare_counters! {
     pub DataColumnCounters => "columns" {
         // store side
         DataColumnsAvailableEmitted,
-        // EL-mempool blob fetch (engine_getBlobsV2)
+        // EL-mempool blob fetch (engine_getBlobsV3)
         ElBlobsFetched,
         ElColumnsBuilt,
         // Batched KZG verification: calls, sidecars per call (ratio = batch
@@ -37,5 +37,6 @@ crate::declare_counters! {
         PartialHeadersQueued,
         PartialHeadersAccepted,
         PartialHeadersRejected,
+        ElCellsQueued,
     }
 }

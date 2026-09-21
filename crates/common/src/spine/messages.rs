@@ -1233,7 +1233,7 @@ pub struct EngineGetPayloadResp {
     pub data: TCacheRead,
 }
 
-/// `engine_getBlobsV2` request. `hashes[..hash_count]` are the versioned hashes
+/// `engine_getBlobsV3` request. `hashes[..hash_count]` are the versioned hashes
 /// derived from the block's KZG commitments; the block root is the request's
 /// identity and is echoed back on the response.
 #[derive(Clone, Copy, Debug)]

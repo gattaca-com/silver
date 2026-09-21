@@ -731,7 +731,7 @@ pub(crate) fn json_get_payload_to_tcache(
 }
 
 // ---------------------------------------------------------------------------
-// Zero-alloc JSON → TCache frame converter for engine_getBlobsV2
+// Zero-alloc JSON → TCache frame converter for engine_getBlobsV3
 //
 // Same approach as json_get_payload_to_tcache: BorrowedValue borrows from the
 // input buffer; hex decoded directly into `out` with hex::decode_to_slice.
@@ -755,7 +755,7 @@ pub(crate) fn json_get_blobs_to_tcache(
 
     let items = result
         .as_array()
-        .ok_or_else(|| crate::EngineError::Ssz("getBlobsV2 result not array".into()))?;
+        .ok_or_else(|| crate::EngineError::Ssz("getBlobsV3 result not array".into()))?;
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
 
     let mut blobs_present = 0u8;
@@ -1494,6 +1494,24 @@ mod tests {
         assert_eq!(&out[58..90], &[0xb0u8; 32]);
         // item 1: null → present=0
         assert_eq!(out[90], 0);
+    }
+
+    #[test]
+    fn json_get_blobs_preserves_missing_positions() {
+        let mut json =
+            br#"{"result":[null,{"proofs":[],"blob":"0x01"},null,{"proofs":[],"blob":"0x02"},null]}"#
+                .to_vec();
+        let mut out = Vec::new();
+        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 2);
+        assert_eq!(out, [5, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 2, 0]);
+    }
+
+    #[test]
+    fn json_get_blobs_all_missing() {
+        let mut json = br#"{"result":[null,null,null]}"#.to_vec();
+        let mut out = Vec::new();
+        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 0);
+        assert_eq!(out, [3, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

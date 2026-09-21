@@ -1,7 +1,13 @@
+use blst::min_pk::SecretKey;
+use silver_beacon_state_data::{
+    EpochStateFinalized, ValSeed,
+    types::{EpochState, Fork},
+};
 use silver_common::{
     GossipDomain, block_root_fulu, block_root_gloas, body_root,
     cell_store::{CellKey, CellOrigin, CellValidationRequest},
-    ssz_hash::kzg_commitments_inclusion_proof,
+    merkle::hash_concat,
+    ssz_hash::{hash_tree_root_fork_data, kzg_commitments_inclusion_proof},
     ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN,
     test_util::{SynthBid, SynthBlock},
 };
@@ -9,6 +15,7 @@ use silver_control::cell_allocator::CellAllocator;
 
 use super::*;
 
+mod el;
 mod partial;
 
 struct BlockBlob {
@@ -38,7 +45,7 @@ impl BlockBlob {
         Self { commitment, blob, cells, proofs }
     }
 
-    /// Matches the engine tile's `engine_getBlobsV2` tcache frame format.
+    /// Matches the engine tile's `engine_getBlobsV3` tcache frame format.
     fn el_frame(&self) -> Vec<u8> {
         let mut out = 1u32.to_le_bytes().to_vec();
         out.push(1);
@@ -59,6 +66,7 @@ impl BlockBlob {
         header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(block));
         header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(block));
         header[80..112].copy_from_slice(&body_root(body));
+        header[112..].copy_from_slice(SignedBeaconBlockView::signature(block));
 
         let mut out = Vec::with_capacity(util::data_column_sidecar_len(1));
         util::push_data_column_sidecar_prefix(
@@ -101,6 +109,37 @@ impl BlockBlob {
 }
 
 impl Rig {
+    fn with_fulu_block(custody: u128, slot: u64, commitments: &[u8]) -> (Self, Vec<u8>) {
+        let key = SecretKey::key_gen(&[42; 32], &[]).unwrap();
+        let spec = fulu_from_genesis();
+        let state = BeaconState::for_test(
+            EpochStateFinalized::from_state(EpochState {
+                fork: Fork { current_version: spec.fork_version_at(0), ..Default::default() },
+                ..Default::default()
+            }),
+            &[ValSeed { pubkey: key.sk_to_pk().to_bytes(), ..Default::default() }],
+            0,
+        );
+        let mut owner = BeaconStateOwner::new(state);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        let mut block = SynthBlock::fulu(slot, commitments).into_bytes();
+        let root = block_root_fulu(&block);
+        let fork_root =
+            hash_tree_root_fork_data(spec.fork_version_at(slot / SLOTS_PER_EPOCH), &[0; 32]);
+        let mut domain = [0; 32];
+        domain[4..].copy_from_slice(&fork_root[..28]);
+        block[4..100].copy_from_slice(
+            &key.sign(
+                &hash_concat(&root, &domain),
+                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_",
+                &[],
+            )
+            .to_bytes(),
+        );
+        (Self::with_state(custody, owner.reader(), spec), block)
+    }
+
     fn attach_cell_store(&mut self, slot: u64, columns: u128) -> CellAllocator {
         let start = Instant::now();
         let config = CellStoreConfig::new(self.tile.spec.clone(), columns, Duration::ZERO).unwrap();
@@ -131,7 +170,17 @@ impl Rig {
     fn allocate_cells(&mut self, allocator: &mut CellAllocator) {
         self.inj.consume(|event: CellStoreEvent, _| {
             if let CellStoreEvent::Allocate(request) = event {
-                let set = allocator.allocate(request).unwrap();
+                let external = match request.source {
+                    Some(FuluContextSource::ElHeader(read)) => Some(
+                        ContextData::from_encoded(
+                            self.tile.el_column_producer.read_buffer(read).unwrap(),
+                            ForkName::Fulu,
+                        )
+                        .unwrap(),
+                    ),
+                    _ => None,
+                };
+                let set = allocator.allocate(request, external).unwrap();
                 self.tile.cells.as_mut().unwrap().handle_event(
                     CellStoreEvent::Allocated { request, set: Some(set) },
                     Instant::now(),
@@ -609,13 +658,12 @@ fn buffered_gloas_columns_are_processed_without_publication() {
 
 #[test]
 fn reconstructed_columns_do_not_request_publication() {
-    const SLOT: u64 = 40;
+    const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
-    let block = SynthBlock::fulu(SLOT, &blob.commitment).into_bytes();
+    let (mut rig, block) = Rig::with_fulu_block(CUSTODY_COLUMNS, SLOT, &blob.commitment);
     let block_root = block_root_fulu(&block);
-    let mut rig = Rig::new(CUSTODY_COLUMNS);
     rig.turn();
-    rig.follow([0xAA; 32]);
+    rig.follow([0; 32]);
     rig.block(&block);
     rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
     rig.drain();
@@ -636,23 +684,16 @@ fn reconstructed_columns_do_not_request_publication() {
 /// once, and the EL does not rebuild it.
 #[test]
 fn gossip_and_el_copies_validate_once() {
-    const SLOT: u64 = 40;
+    const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
-    let block = SynthBlock::fulu(SLOT, &blob.commitment).into_bytes();
+    let (mut rig, block) = Rig::with_fulu_block(CUSTODY_COLUMNS, SLOT, &blob.commitment);
     let block_root = block_root_fulu(&block);
-    let mut rig = Rig::new(CUSTODY_COLUMNS);
     rig.turn();
-    rig.follow([0xAA; 32]);
+    rig.follow([0; 32]);
     rig.block(&block);
     rig.drain();
 
     let sidecar = blob.fulu_sidecar(3, &block);
-    // Fixture bypass: the empty validator registry cannot verify signatures.
-    rig.tile.tracker.set_signature(
-        block_root,
-        *DataColumnSidecarFuluView::block_signature(&sidecar),
-        [0; 4],
-    );
     rig.receive_column(ColumnOrigin::Gossip, 3, &sidecar);
     rig.engine_blobs(block_root, SLOT, &blob.el_frame());
     rig.turn();

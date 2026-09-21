@@ -77,11 +77,28 @@ impl ColumnValidator {
         if domain.format() != ForkName::Fulu || !PartialDataColumnHeaderView::check_size(bytes) {
             return HeaderOutcome::Reject;
         }
-        let Some(ContextData::Fulu { signed_header, inclusion_proof, commitments }) =
-            ContextData::from_encoded(bytes, ForkName::Fulu)
-        else {
+        let Some(data) = ContextData::from_encoded(bytes, ForkName::Fulu) else {
             return HeaderOutcome::Reject;
         };
+        self.validate_fulu_context(root, domain, data, sync, tracker)
+    }
+
+    pub(crate) fn validate_fulu_context(
+        &self,
+        root: BlockRoot,
+        domain: GossipDomain,
+        data: ContextData<'_>,
+        sync: &SyncStatus,
+        tracker: &mut ColumnTracker,
+    ) -> HeaderOutcome {
+        let ContextData::Fulu { signed_header, inclusion_proof, commitments } = data else {
+            return HeaderOutcome::Reject;
+        };
+        if domain.format() != ForkName::Fulu ||
+            !commitments.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT)
+        {
+            return HeaderOutcome::Reject;
+        }
         let (Ok(header), Ok(signature)) =
             (signed_header[..112].try_into(), signed_header[112..].try_into())
         else {

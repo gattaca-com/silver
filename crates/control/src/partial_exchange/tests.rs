@@ -94,7 +94,7 @@ impl Rig {
         let context = CommitmentContext { block_root: ROOT, slot: 0, format, blob_count: ROWS };
         store.admit_context(context, domain, context_data, source).unwrap();
         let request = store.request_assemblies(&ROOT).unwrap();
-        let set = ingress.allocator_mut().allocate(request).unwrap();
+        let set = ingress.allocator_mut().allocate(request, None).unwrap();
         let mut columns = columns;
         store.install(set, &mut columns).unwrap();
         let mut full = Vec::new();

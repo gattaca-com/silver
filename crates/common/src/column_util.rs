@@ -380,7 +380,7 @@ pub fn verify_header_signature(
 
 /// EIP-4844 versioned hash of a 48-byte KZG commitment:
 /// `sha256(commitment)` with the first byte replaced by the KZG version.
-/// These are the `versionedHashes` passed to `engine_getBlobsV2`.
+/// These are the `versionedHashes` passed to `engine_getBlobsV3`.
 pub fn kzg_commitment_to_versioned_hash(commitment: &[u8]) -> [u8; 32] {
     let mut h = sha256(commitment);
     h[0] = VERSIONED_HASH_VERSION_KZG;
