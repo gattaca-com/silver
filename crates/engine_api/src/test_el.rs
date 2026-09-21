@@ -142,8 +142,6 @@ impl FakeEl {
         self.send(request_index, response.as_bytes());
     }
 
-    /// What Nethermind does once a response outgrows its buffer: no
-    /// Content-Length, the body split into `chunk_len`-byte chunks.
     pub fn respond_chunked(&mut self, request_index: usize, result_json: &str, chunk_len: usize) {
         let body = self.result_body(request_index, result_json);
         let mut response =

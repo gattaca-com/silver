@@ -33,8 +33,6 @@ impl Framing {
         }
     }
 
-    /// The decoded body and the raw bytes the whole response occupies, once
-    /// the body is complete.
     fn complete_body(&self, buffered: usize) -> Option<(Range<usize>, usize)> {
         match self {
             Self::Head => None,
@@ -219,7 +217,6 @@ mod tests {
         conn.commit_read(n)
     }
 
-    /// Delivers bytes across as many reads as the connection offers space for.
     fn feed_all(conn: &mut ClientConnection, bytes: &[u8]) -> io::Result<()> {
         let mut sent = 0;
         while sent < bytes.len() {
@@ -446,8 +443,6 @@ mod tests {
         assert_eq!(conn.take_response().unwrap(), parts.concat());
     }
 
-    /// 256 KiB is what Nethermind sends for a getBlobsV2 response, and it is
-    /// far larger than the header read size.
     #[test]
     fn chunked_body_larger_than_the_header_read_length() {
         let mut conn = machine();

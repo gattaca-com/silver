@@ -608,8 +608,6 @@ mod tests {
         assert_eq!(completed.unwrap(), [4u8; 32]);
     }
 
-    /// Nethermind chunks a getBlobsV2 response once it carries blobs, which is
-    /// the only engine response large enough to lose its Content-Length.
     #[test]
     fn chunked_response_completes_the_rpc_with_the_decoded_body() {
         let dir = TempDir::new().unwrap();

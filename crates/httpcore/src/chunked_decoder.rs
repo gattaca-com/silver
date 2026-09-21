@@ -27,14 +27,12 @@ enum State {
 }
 
 impl ChunkedDecoder {
-    /// `body_start` is the response-relative index of the first byte after the
-    /// header block; every index this decoder reports is on the same origin.
+    /// Every index this decoder reports shares `body_start`'s origin: the
+    /// response's first byte.
     pub(crate) fn new(body_start: usize) -> Self {
         Self { state: State::Size, body_start, decoded_end: body_start, scan: body_start }
     }
 
-    /// `response` starts at the response's first byte and ends at the last byte
-    /// read so far. Decoding resumes where the previous call stopped.
     pub(crate) fn decode(&mut self, response: &mut [u8]) -> io::Result<()> {
         debug_assert!(self.scan <= response.len(), "decode called on a shrinking buffer");
         loop {
@@ -107,8 +105,6 @@ impl ChunkedDecoder {
         }
     }
 
-    /// Length of the line at `scan`, excluding its CRLF, or `None` while the
-    /// line is incomplete.
     fn line_len(&self, response: &[u8], too_long: &'static str) -> io::Result<Option<usize>> {
         let tail = &response[self.scan..];
         let search = &tail[..tail.len().min(MAX_LINE + 2)];
