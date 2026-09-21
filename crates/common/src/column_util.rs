@@ -10,9 +10,9 @@ use silver_common::{
     },
     ssz_hash::hash_tree_root_fork_data,
     ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, MAX_BLOB_COMMITMENTS_PER_BLOCK,
-        NUMBER_OF_COLUMNS, SidecarLayout,
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockHeaderView,
+        DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SidecarLayout,
     },
 };
 
@@ -36,12 +36,16 @@ const KZG_COMMITMENTS_SUBTREE_INDEX: u64 = 11;
 /// `signed_block_header`. The sidecar carries `body_root` directly, so no
 /// body hashing is required — just the 5-leaf merkleize.
 pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
+    block_root_from_header(DataColumnSidecarFuluView::block_header(sidecar))
+}
+
+pub fn block_root_from_header(header: &[u8; 112]) -> B256 {
     merkleize(&[
-        uint64_chunk(DataColumnSidecarFuluView::slot(sidecar)),
-        uint64_chunk(DataColumnSidecarFuluView::proposer_index(sidecar)),
-        *DataColumnSidecarFuluView::parent_root(sidecar),
-        *DataColumnSidecarFuluView::state_root(sidecar),
-        *DataColumnSidecarFuluView::body_root(sidecar),
+        uint64_chunk(BeaconBlockHeaderView::slot(header)),
+        uint64_chunk(BeaconBlockHeaderView::proposer_index(header)),
+        *BeaconBlockHeaderView::parent_root(header),
+        *BeaconBlockHeaderView::state_root(header),
+        *BeaconBlockHeaderView::body_root(header),
     ])
 }
 

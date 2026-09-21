@@ -851,6 +851,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
             cells.verify_headers(
                 &self.validator,
                 &self.sync_state,
+                &mut self.tracker,
                 Instant::now(),
                 &adapter.producers,
             );

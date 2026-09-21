@@ -269,6 +269,7 @@ impl CellHandler {
         &mut self,
         validator: &ColumnValidator,
         sync: &SyncStatus,
+        tracker: &mut ColumnTracker,
         now: Instant,
         producers: &SilverSpineProducers,
     ) {
@@ -301,8 +302,13 @@ impl CellHandler {
                 self.headers.swap_remove(index);
                 continue;
             }
-            match validator.validate_partial_header(request.block_root, request.domain, bytes, sync)
-            {
+            match validator.validate_partial_header(
+                request.block_root,
+                request.domain,
+                bytes,
+                sync,
+                tracker,
+            ) {
                 HeaderOutcome::Valid(context) => {
                     self.headers.swap_remove(index);
                     let Some(data) = ContextData::from_encoded(bytes, ForkName::Fulu) else {

@@ -1,9 +1,86 @@
+use blst::min_pk::SecretKey;
+use silver_beacon_state_data::{BeaconState, EpochStateFinalized, ValSeed};
 use silver_common::cell_store::{
     CommitmentContext, ContextData, FuluContextSource, HeaderValidationRequest,
 };
 
 use super::*;
-use crate::validate::HeaderOutcome;
+use crate::validate::{ColumnOutcome, HeaderOutcome};
+
+impl Rig {
+    fn full_outcome(&mut self, bytes: &[u8]) -> ColumnOutcome {
+        let ssz = tcache_write(&mut self.rpc_p, bytes);
+        let column = PendingColumn {
+            stream_id: P2pStreamId::new(1, 0, StreamProtocol::DataColumnSidecarsByRange, true),
+            sidecar: self.tile.consumers.rpc.acquire(ssz),
+            ssz_cache: SszCache::Rpc,
+            domain: None,
+            gossip_subnet: None,
+            recv_ts: IngestionTime::now(),
+        };
+        self.tile.validator.validate_fulu(
+            &column,
+            bytes,
+            &self.tile.sync_state,
+            &mut self.tile.tracker,
+            true,
+        )
+    }
+}
+
+#[test]
+fn full_and_partial_keep_missing_snapshot_and_unresolved_proposer_policies() {
+    let blob = BlockBlob::counting();
+    let slot = 2 * SLOTS_PER_EPOCH + 1;
+    let block = SynthBlock::fulu(slot, &blob.commitment).into_bytes();
+    let sidecar = blob.fulu_sidecar(3, &block);
+    let root = util::block_root_from_sidecar(&sidecar);
+    let data = ContextData::Fulu {
+        signed_header: sidecar[20..228].try_into().unwrap(),
+        inclusion_proof: DataColumnSidecarFuluView::inclusion_proof(&sidecar),
+        commitments: DataColumnSidecarFuluView::kzg_commitments(&sidecar),
+    };
+    let mut header = vec![0; data.encoded_len()];
+    data.write(&mut header);
+    let key = SecretKey::key_gen(&[42; 32], &[]).unwrap();
+    let spec = fulu_from_genesis();
+    let domain =
+        GossipDomain::new(spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &[0; 32]), ForkName::Fulu);
+    for published in [false, true] {
+        let state = BeaconState::for_test(
+            EpochStateFinalized::default(),
+            &[ValSeed { pubkey: key.sk_to_pk().to_bytes(), ..Default::default() }],
+            0,
+        );
+        let mut owner = BeaconStateOwner::new(state);
+        if published {
+            let anchor = owner.roll_fresh();
+            owner.publish_state_id(anchor);
+        }
+        let mut rig = Rig::with_state(CUSTODY_COLUMNS, owner.reader(), spec.clone());
+        rig.follow([0; 32]);
+        // Isolate state policy from the synthetic header's unsigned signature.
+        rig.tile.tracker.set_signature(root, [0; 96], [0; 4]);
+        if published {
+            assert!(matches!(rig.full_outcome(&sidecar), ColumnOutcome::Record {
+                relay_eligible: false,
+                ..
+            }));
+        } else {
+            assert!(matches!(rig.full_outcome(&sidecar), ColumnOutcome::Reject { .. }));
+        }
+        assert_eq!(
+            rig.tile.validator.validate_partial_header(
+                root,
+                domain,
+                &header,
+                &rig.tile.sync_state,
+                &mut rig.tile.tracker,
+            ),
+            HeaderOutcome::Ignore
+        );
+    }
+}
 
 #[test]
 fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_senders() {
@@ -81,7 +158,7 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
             let store = rig.tile.cells.as_mut().unwrap().store_mut();
             store.admit_context(context, domain, data, Some(source)).unwrap();
             rig.conn.produce(CellStoreEvent::Allocate(store.request_assemblies(&root).unwrap()));
-            rig.tile.tracker.set_signature(root, [0; 96]);
+            rig.tile.tracker.set_signature(root, [0; 96], [0; 4]);
         }
         rig.allocate_cells(&mut allocator);
         assert_eq!(
@@ -191,20 +268,48 @@ fn fulu_headers_use_snapshot_ancestry_and_validate_signature_and_inclusion() {
         }
     }
     rig.follow([0xab; 32]); // A status event from another head cannot change the snapshot's ancestry.
-    let verify = |rig: &Rig, bytes: &[u8], root| {
-        rig.tile.validator.validate_partial_header(root, domain, bytes, &rig.tile.sync_state)
+    let verify = |rig: &mut Rig, bytes: &[u8], root| {
+        rig.tile.validator.validate_partial_header(
+            root,
+            domain,
+            bytes,
+            &rig.tile.sync_state,
+            &mut rig.tile.tracker,
+        )
     };
-    let outcome = verify(&rig, &header, root);
+    let outcome = verify(&mut rig, &header, root);
     assert!(
         matches!(outcome, HeaderOutcome::Valid(_)),
         "{outcome:?}; slot={slot}; snapshot={:?}",
         reader.read(|view| (view.slot.slot_number(), view.slot.state().latest_block_header))
     );
-    assert_eq!(verify(&rig, &header, [0; 32]), HeaderOutcome::Reject);
-    for offset in [4 + 112, 212] {
+    let version = reader.read(|view| view.epoch.fork().current_version).unwrap();
+    let signature = DataColumnSidecarFuluView::block_signature(&sidecar);
+    assert!(rig.tile.tracker.signature_verified(&root, signature, version));
+    assert!(matches!(rig.full_outcome(&sidecar), ColumnOutcome::Record {
+        relay_eligible: true,
+        ..
+    }));
+
+    // Exercise the reverse arrival order without recording a held column.
+    rig.tile.tracker = ColumnTracker::new(1 << index, Duration::from_secs(60));
+    assert!(matches!(rig.full_outcome(&sidecar), ColumnOutcome::Record {
+        relay_eligible: true,
+        ..
+    }));
+    assert!(rig.tile.tracker.signature_verified(&root, signature, version));
+    assert!(matches!(verify(&mut rig, &header, root), HeaderOutcome::Valid(_)));
+    assert_eq!(verify(&mut rig, &header, [0; 32]), HeaderOutcome::Reject);
+    for offset in [4 + 112, 212, 340] {
         let mut bad = header.clone();
         bad[offset] ^= 1;
-        assert_eq!(verify(&rig, &bad, root), HeaderOutcome::Reject);
+        assert_eq!(verify(&mut rig, &bad, root), HeaderOutcome::Reject);
+    }
+    let commitments_offset = 356 + DataColumnSidecarFuluView::column(&sidecar).len();
+    for offset in [132, 228, commitments_offset] {
+        let mut bad = sidecar.clone();
+        bad[offset] ^= 1;
+        assert!(matches!(rig.full_outcome(&bad), ColumnOutcome::Reject { .. }));
     }
 
     let mut allocator = rig.attach_cell_store(slot, 1 << index);
@@ -260,5 +365,5 @@ fn fulu_headers_use_snapshot_ancestry_and_validate_signature_and_inclusion() {
 
     let parent = *DataColumnSidecarFuluView::parent_root(&sidecar);
     rig.tile.validator.note_rejected(&parent);
-    assert_eq!(verify(&rig, &header, root), HeaderOutcome::Reject);
+    assert_eq!(verify(&mut rig, &header, root), HeaderOutcome::Reject);
 }

@@ -1168,6 +1168,10 @@ impl DataColumnSidecarFuluView {
         u64_le(buf, 0)
     }
     #[inline]
+    pub fn block_header(buf: &[u8]) -> &[u8; 112] {
+        fixed(buf, 20)
+    }
+    #[inline]
     pub fn slot(buf: &[u8]) -> u64 {
         u64_le(buf, 20)
     }
