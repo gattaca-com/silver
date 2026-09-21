@@ -7,7 +7,7 @@ use std::io::Write;
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Version};
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
-use crate::{events::HeadEvent, peers::Peer, validators::ValidatorRecord};
+use crate::{duties::ProposerDuties, events::HeadEvent, peers::Peer, validators::ValidatorRecord};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -401,6 +401,28 @@ impl Json<'_> {
             }
             self.end_array();
         }
+        self.end_object();
+    }
+
+    pub(crate) fn proposer_duties(&mut self, duties: &ProposerDuties, execution_optimistic: bool) {
+        self.begin_object();
+        self.key("dependent_root");
+        self.hex(&duties.dependent_root);
+        self.key("execution_optimistic");
+        self.bool(execution_optimistic);
+        self.key("data");
+        self.begin_array();
+        for duty in &duties.duties {
+            self.begin_object();
+            self.key("pubkey");
+            self.hex(&duty.pubkey);
+            self.key("validator_index");
+            self.quoted_u64(duty.validator_index);
+            self.key("slot");
+            self.quoted_u64(duty.slot);
+            self.end_object();
+        }
+        self.end_array();
         self.end_object();
     }
 
