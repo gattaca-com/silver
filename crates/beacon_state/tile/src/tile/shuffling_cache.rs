@@ -1,6 +1,7 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, StateReadView};
+use silver_common::{BeaconStateEvent, TProducer};
 
 use crate::{
     bls,
@@ -106,17 +107,25 @@ impl ShufflingCache {
         })
     }
 
-    /// Hands each shuffling computed since the last call to `post` and
-    /// remembers it as posted. Epochs below `from_epoch` are dropped unposted:
-    /// they serve attestation validation only.
+    /// Posts each shuffling computed since the last call and remembers it as
+    /// posted. Epochs below `from_epoch` are dropped unposted: they serve
+    /// attestation validation only.
     pub fn post_fresh(
         &mut self,
         from_epoch: Epoch,
-        mut post: impl FnMut(Epoch, stf::EpochShuffling<'_>) -> bool,
-    ) {
+        producer: &mut TProducer,
+        mut emit: impl FnMut(BeaconStateEvent),
+    ) -> bool {
+        let mut any_posted = false;
         for entry in self.entries.iter_mut().filter(|e| e.is_valid && !e.posted) {
-            entry.posted = entry.epoch < from_epoch || post(entry.epoch, entry.shuffling());
+            if entry.epoch < from_epoch {
+                entry.posted = true;
+                continue;
+            }
+            entry.posted = entry.shuffling().post(entry.epoch, producer, &mut emit);
+            any_posted |= entry.posted;
         }
+        any_posted
     }
 
     /// Cached alongside the shuffling because it is the validity key: a

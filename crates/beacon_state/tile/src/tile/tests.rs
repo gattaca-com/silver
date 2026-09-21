@@ -3216,7 +3216,7 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
 /// The slot tick prunes the memo through the same floor as the pool.
 #[test]
 fn att_root_memo_pruned_on_slot_tick() {
-    let (mut tile, _gossip, _rpc, _spine, mut adapter) = tile_with_producers(30);
+    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
     seed_tile(&mut tile, 4, 30);
     let domain = [0xD0u8; 32];
     let mut expired = [0u8; ATTESTATION_DATA_SIZE];
@@ -3228,7 +3228,7 @@ fn att_root_memo_pruned_on_slot_tick() {
     tile.attestation_root_memo.roots(&kept, &domain);
     assert_eq!(tile.attestation_root_memo.len(), 2);
 
-    tile.slot_tick(34, &mut adapter.producers);
+    tile.slot_tick(34);
     assert_eq!(tile.attestation_root_memo.len(), 1);
 }
 
@@ -4207,10 +4207,10 @@ fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: Gossi
     assert_eq!(relays, [(topic, msg_seq)], "the relay names the message's own decompressed bytes");
 }
 
-/// A shuffling is posted where it is computed, and once: a boundary
-/// precompute posts the epochs it filled, and a repeat posts nothing.
+/// Each computed shuffling is posted once: the first post carries the epochs
+/// the precompute filled, and a second post carries nothing.
 #[test]
-fn fresh_shufflings_are_posted_once_when_computed() {
+fn fresh_shufflings_are_posted_once() {
     let mut rig = HeadRig::new();
     let posted = |published: Published| -> Vec<(Epoch, u32, usize)> {
         published
@@ -4225,7 +4225,8 @@ fn fresh_shufflings_are_posted_once_when_computed() {
             .collect()
     };
 
-    rig.tile.precompute_next_epoch_shuffling(4, &mut rig.adapter.producers);
+    rig.tile.precompute_next_epoch_shuffling(4);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
     let mut posted_now = posted(rig.drain());
     posted_now.sort_unstable();
     let expected: Vec<_> = [4, 5]
@@ -4236,6 +4237,7 @@ fn fresh_shufflings_are_posted_once_when_computed() {
         .collect();
     assert_eq!(posted_now, expected);
 
-    rig.tile.precompute_next_epoch_shuffling(4, &mut rig.adapter.producers);
+    rig.tile.precompute_next_epoch_shuffling(4);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
     assert_eq!(posted(rig.drain()), []);
 }

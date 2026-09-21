@@ -204,14 +204,14 @@ impl BeaconStateTile {
         self.publish_status(producers);
 
         self.replay_orphans(block_root, producers);
-        self.precompute_for_next_block(producers);
+        self.precompute_for_next_block();
     }
 
     /// Work the next block would otherwise do inline, run off the newest
     /// applied block once every consumer has been told about it.
-    fn precompute_for_next_block(&mut self, producers: &mut Producers) {
+    fn precompute_for_next_block(&mut self) {
         let block_slot = self.last_applied_block_slot();
-        self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH, producers);
+        self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
         self.epoch_start_state(self.last_applied_block_root, self.last_applied, block_slot + 1);
     }
 
@@ -220,15 +220,10 @@ impl BeaconStateTile {
     /// the active set) are fixed once `block_epoch` begins, so the boundary
     /// block's inline `ensure_window` becomes a cache hit and every block's
     /// `collect_sigs` gets the aggregate-subtract path.
-    pub(super) fn precompute_next_epoch_shuffling(
-        &mut self,
-        block_epoch: Epoch,
-        producers: &mut Producers,
-    ) {
+    pub(super) fn precompute_next_epoch_shuffling(&mut self, block_epoch: Epoch) {
         let view = self.state.read_view(self.last_applied);
         self.shuffling_cache.ensure_window(&view, block_epoch + 1);
         self.shuffling_cache.try_cache_committee_aggs(&view, block_epoch + 1);
-        self.post_shufflings(producers);
     }
 
     pub(super) fn da_required(&self) -> bool {
@@ -239,7 +234,7 @@ impl BeaconStateTile {
         self.da_required() && parsed.has_data_columns && !self.held.is_available(&parsed.block_root)
     }
 
-    pub(super) fn replay_block(&mut self, read: TCacheRead, producers: &mut Producers) {
+    pub(super) fn replay_block(&mut self, read: TCacheRead) {
         let acquired = self.replay_consumer.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
             return;
@@ -268,7 +263,7 @@ impl BeaconStateTile {
         }
 
         if matches!(feedback, Feedback::BlockImported(_)) {
-            self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH, producers);
+            self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
         }
     }
 

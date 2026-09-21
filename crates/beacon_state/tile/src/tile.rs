@@ -549,10 +549,11 @@ impl BeaconStateTile {
     fn post_shufflings(&mut self, producers: &mut Producers) {
         let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
         let producer = &mut self.events_producer;
-        self.shuffling_cache.post_fresh(head_epoch, |epoch, shuffling| {
-            shuffling.post(epoch, producer, |event| producers.produce(event))
-        });
-        producer.publish_head();
+        let posted =
+            self.shuffling_cache.post_fresh(head_epoch, producer, |event| producers.produce(event));
+        if posted {
+            producer.publish_head();
+        }
     }
 
     /// Covers changes since the last Status, including execution verdicts.
@@ -632,14 +633,14 @@ impl BeaconStateTile {
     /// Per-slot fork-choice tick (spec `on_tick_per_slot`): advance the head
     /// state across empty slots, then run the fork-choice tick. Returns whether
     /// a state advance occurred.
-    fn slot_tick(&mut self, slot: Slot, producers: &mut Producers) -> bool {
+    fn slot_tick(&mut self, slot: Slot) -> bool {
         let advanced = self.on_slot_start(slot);
         if advanced {
             // Head-derived epoch, never the wall clock (wall-clock epochs
             // diverge from the head during sync and poison the cache).
             // Covers epochs with no blocks, where no post-apply hook fired.
             let state_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
-            self.precompute_next_epoch_shuffling(state_epoch, producers);
+            self.precompute_next_epoch_shuffling(state_epoch);
         }
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
@@ -705,7 +706,7 @@ impl BeaconStateTile {
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
                 let prev_head = self.fork_choice.find_head();
-                let advanced = self.slot_tick(slot, &mut adapter.producers);
+                let advanced = self.slot_tick(slot);
                 if advanced || self.fork_choice.find_head() != prev_head {
                     self.publish_status(&mut adapter.producers);
                 }
@@ -721,6 +722,8 @@ impl BeaconStateTile {
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
         self.flush_votes(&mut adapter.producers);
         self.gossip_consumer.free();
+
+        self.post_shufflings(&mut adapter.producers);
     }
 
     /// Per-validator votes (attestations, sync committee messages, PTC
@@ -819,7 +822,7 @@ impl BeaconStateTile {
     fn on_replay(&mut self, m: ReplayBlock, producers: &mut Producers) {
         match m {
             ReplayBlock::Block { ssz } => {
-                self.replay_block(ssz, producers);
+                self.replay_block(ssz);
             }
             ReplayBlock::Envelope { ssz } => {
                 self.replay_envelope(ssz);
@@ -989,7 +992,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
         if !self.initial_status_emitted {
             tracing::info!("producing initial status");
             self.publish_status(&mut adapter.producers);
-            self.post_shufflings(&mut adapter.producers);
             self.initial_status_emitted = true;
         }
 
