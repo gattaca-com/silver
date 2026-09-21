@@ -94,7 +94,7 @@ impl SyncCommittees {
     }
 
     #[inline]
-    pub fn unresolved() -> u32 {
+    pub const fn unresolved() -> u32 {
         UNRESOLVED
     }
 
