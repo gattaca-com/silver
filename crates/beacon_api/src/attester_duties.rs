@@ -1,5 +1,6 @@
 use silver_beacon_state_data::{
-    BLSPubkey, Epoch, SLOTS_PER_EPOCH, Slot, StateReadView, committee_range,
+    BLSPubkey, Epoch, SLOTS_PER_EPOCH, Slot, StateReadView, committee_at_position,
+    committees_per_slot,
 };
 
 use crate::{
@@ -64,22 +65,19 @@ const NOT_ACTIVE: u32 = u32::MAX;
 #[derive(Default)]
 struct Shuffling {
     epoch: Option<Epoch>,
-    committees_per_slot: usize,
-    /// Committee `k` of the epoch, in slot then index order, holds positions
-    /// `starts[k]..starts[k + 1]` of the shuffled active set.
-    starts: Vec<u32>,
+    shuffled_len: usize,
     /// Position in the shuffled active set per validator index; empty until
     /// posted.
     position_of: Vec<u32>,
 }
 
 impl PostedShufflings {
-    pub(crate) fn record(&mut self, epoch: Epoch, committees_per_slot: usize, bytes: &[u8]) {
-        if committees_per_slot == 0 {
-            tracing::error!(epoch, "shuffling posted with no committees");
+    pub(crate) fn record(&mut self, epoch: Epoch, bytes: &[u8]) {
+        if bytes.len() < size_of::<u32>() {
+            tracing::error!(epoch, "shuffling posted with no active validators");
             return;
         }
-        self.entry_for(epoch).fill(epoch, committees_per_slot, bytes);
+        self.entry_for(epoch).fill(epoch, bytes);
     }
 
     fn entry_for(&mut self, epoch: Epoch) -> &mut Shuffling {
@@ -110,12 +108,11 @@ fn posted_indices(bytes: &[u8]) -> impl Iterator<Item = u32> {
 }
 
 impl Shuffling {
-    /// Replaces whatever this entry held, reusing both tables' allocations.
-    fn fill(&mut self, epoch: Epoch, committees_per_slot: usize, bytes: &[u8]) {
+    /// Replaces whatever this entry held, reusing the table's allocation.
+    fn fill(&mut self, epoch: Epoch, bytes: &[u8]) {
         self.epoch = Some(epoch);
-        self.committees_per_slot = committees_per_slot;
+        self.shuffled_len = bytes.len() / size_of::<u32>();
         self.fill_positions(bytes);
-        self.fill_starts(bytes.len() / size_of::<u32>());
     }
 
     /// Inverts the posted order, so a request resolves its own validators
@@ -131,28 +128,9 @@ impl Shuffling {
         }
     }
 
-    /// One start per committee of the epoch, plus the end of the last, so a
-    /// committee's bounds are two reads of neighbouring entries.
-    fn fill_starts(&mut self, shuffled_len: usize) {
-        let per_slot = self.committees_per_slot;
-        self.starts.clear();
-        self.starts.extend((0..per_slot * SLOTS_PER_EPOCH as usize).map(|k| {
-            let slot = (k / per_slot) as Slot;
-            committee_range(shuffled_len, per_slot, slot, k % per_slot).start as u32
-        }));
-        self.starts.push(shuffled_len as u32);
-    }
-
     fn position(&self, validator_index: u64) -> Option<u32> {
         let position = *self.position_of.get(usize::try_from(validator_index).ok()?)?;
         (position != NOT_ACTIVE).then_some(position)
-    }
-
-    /// The epoch committee holding `position`, counted in slot then index
-    /// order. An empty committee shares its start with the next one and is
-    /// skipped over.
-    fn committee_at(&self, position: u32) -> usize {
-        self.starts.partition_point(|&start| start <= position) - 1
     }
 }
 
@@ -175,20 +153,19 @@ impl AttesterDuty {
         epoch: Epoch,
         validator_index: u64,
     ) -> Option<Self> {
-        let committees_at_slot = shuffling.committees_per_slot;
-        let position = shuffling.position(validator_index)?;
+        let committees_at_slot = committees_per_slot(shuffling.shuffled_len);
+        let position = shuffling.position(validator_index)? as usize;
         let index =
             usize::try_from(validator_index).ok().filter(|&ix| ix < view.validators.count())?;
-        let committee = shuffling.committee_at(position);
-        let start = shuffling.starts[committee];
+        let committee = committee_at_position(shuffling.shuffled_len, committees_at_slot, position);
         Some(Self {
             pubkey: *view.validators.pubkey(index),
             validator_index,
-            committee_index: (committee % committees_at_slot) as u64,
-            committee_length: (shuffling.starts[committee + 1] - start) as u64,
+            committee_index: committee.committee_index as u64,
+            committee_length: committee.members.len() as u64,
             committees_at_slot: committees_at_slot as u64,
-            validator_committee_index: (position - start) as u64,
-            slot: epoch * SLOTS_PER_EPOCH + (committee / committees_at_slot) as Slot,
+            validator_committee_index: (position - committee.members.start) as u64,
+            slot: epoch * SLOTS_PER_EPOCH + committee.slot_in_epoch,
         })
     }
 }
@@ -197,7 +174,7 @@ impl AttesterDuty {
 mod tests {
     use silver_beacon_state_data::{
         BeaconBlockHeader, BeaconState, BeaconStateOwner, EpochStateFinalized, SlotState,
-        SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed,
+        SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed, committee_range,
     };
     use silver_common::SyncUpdate;
     use silver_httpcore::ParsedRequest;
@@ -209,8 +186,7 @@ mod tests {
         routes::{ROUTES, test_ctx},
     };
 
-    const ACTIVE: u64 = 200;
-    const COMMITTEES_PER_SLOT: usize = 2;
+    const ACTIVE: u64 = 8192;
     const STATE_EPOCH: u64 = 300;
     const STATE_SLOT: u64 = STATE_EPOCH * SLOTS_PER_EPOCH + 5;
     const HEAD_SLOT: u64 = STATE_SLOT - 2;
@@ -250,7 +226,7 @@ mod tests {
         let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status.target = Some(SyncUpdate::Following);
         for epoch in [STATE_EPOCH, STATE_EPOCH + 1] {
-            ctx.shufflings.record(epoch, COMMITTEES_PER_SLOT, &posted_bytes(epoch));
+            ctx.shufflings.record(epoch, &posted_bytes(epoch));
         }
         ctx
     }
@@ -303,6 +279,7 @@ mod tests {
             assert_eq!(duties.len(), ACTIVE as usize);
 
             let order = posted_order(epoch);
+            let per_slot = committees_per_slot(order.len());
             let mut seen = vec![false; ACTIVE as usize];
             for duty in duties {
                 let index = field(duty, "validator_index");
@@ -310,7 +287,7 @@ mod tests {
                 assert_eq!(slot / SLOTS_PER_EPOCH, epoch);
                 let committee = &order[committee_range(
                     order.len(),
-                    COMMITTEES_PER_SLOT,
+                    per_slot,
                     slot,
                     field(duty, "committee_index") as usize,
                 )];
@@ -319,7 +296,7 @@ mod tests {
                     index as u32
                 );
                 assert_eq!(field(duty, "committee_length") as usize, committee.len());
-                assert_eq!(field(duty, "committees_at_slot") as usize, COMMITTEES_PER_SLOT);
+                assert_eq!(field(duty, "committees_at_slot") as usize, per_slot);
                 assert_eq!(
                     duty["pubkey"].as_str().unwrap(),
                     format!("0x{}", hex::encode(pubkey(index)))
@@ -379,12 +356,12 @@ mod tests {
         }
     }
 
-    /// The producer treats a committee-less shuffling as legal; answering one
+    /// An empty shuffling has no committee to divide into; answering one
     /// would divide by zero.
     #[test]
-    fn shufflings_with_no_committees_are_not_recorded() {
+    fn empty_shufflings_are_not_recorded() {
         let mut posted = PostedShufflings::default();
-        posted.record(10, 0, &posted_bytes(10));
+        posted.record(10, &[]);
         assert!(posted.get(10).is_none());
     }
 
@@ -393,10 +370,9 @@ mod tests {
     #[test]
     fn posted_shufflings_hold_the_two_newest_epochs() {
         let mut posted = PostedShufflings::default();
-        posted.record(10, 1, &posted_bytes(10));
-        posted.record(11, 1, &posted_bytes(11));
-        posted.record(10, 2, &posted_bytes(12));
-        assert_eq!(posted.get(10).unwrap().committees_per_slot, 2);
+        posted.record(10, &posted_bytes(10));
+        posted.record(11, &posted_bytes(11));
+        posted.record(10, &posted_bytes(12));
         for (position, &validator_index) in posted_order(12).iter().enumerate() {
             assert_eq!(
                 posted.get(10).unwrap().position(validator_index as u64),
@@ -404,7 +380,7 @@ mod tests {
             );
         }
 
-        posted.record(12, 1, &posted_bytes(12));
+        posted.record(12, &posted_bytes(12));
         assert!(posted.get(10).is_none());
         assert!(posted.get(11).is_some() && posted.get(12).is_some());
     }
@@ -414,8 +390,8 @@ mod tests {
     #[test]
     fn epoch_zero_fills_one_slot_and_leaves_the_other_free() {
         let mut posted = PostedShufflings::default();
-        posted.record(0, 1, &posted_bytes(0));
-        posted.record(1, 1, &posted_bytes(1));
+        posted.record(0, &posted_bytes(0));
+        posted.record(1, &posted_bytes(1));
         assert!(posted.get(0).is_some() && posted.get(1).is_some());
     }
 }

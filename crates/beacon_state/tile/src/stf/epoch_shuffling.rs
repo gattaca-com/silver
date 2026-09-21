@@ -1,10 +1,11 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
     Epoch, RandaoMixesView, Slot, StateReadView, ValidatorsView, committee_range,
+    committees_per_slot,
 };
 use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
-use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed, committees_per_slot};
+use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed};
 
 /// One epoch's attester shuffling and the committee split it implies.
 pub struct EpochShuffling<'a> {
@@ -86,11 +87,7 @@ impl<'a> EpochShuffling<'a> {
             bytes.copy_from_slice(&index.to_le_bytes());
         }
         reservation.increment_offset(len);
-        emit(BeaconStateEvent::AttestersShuffling {
-            epoch,
-            committees_per_slot: self.committees_per_slot as u32,
-            indices: reservation.read(),
-        });
+        emit(BeaconStateEvent::AttestersShuffling { epoch, indices: reservation.read() });
         true
     }
 

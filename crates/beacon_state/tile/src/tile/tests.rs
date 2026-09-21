@@ -4212,13 +4212,13 @@ fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: Gossi
 #[test]
 fn fresh_shufflings_are_posted_once() {
     let mut rig = HeadRig::new();
-    let posted = |published: Published| -> Vec<(Epoch, u32, usize)> {
+    let posted = |published: Published| -> Vec<(Epoch, usize)> {
         published
             .0
             .iter()
             .filter_map(|event| match event {
-                BeaconStateEvent::AttestersShuffling { epoch, committees_per_slot, indices } => {
-                    Some((*epoch, *committees_per_slot, indices.len().unwrap()))
+                BeaconStateEvent::AttestersShuffling { epoch, indices } => {
+                    Some((*epoch, indices.len().unwrap()))
                 }
                 _ => None,
             })
@@ -4231,9 +4231,7 @@ fn fresh_shufflings_are_posted_once() {
     posted_now.sort_unstable();
     let expected: Vec<_> = [4, 5]
         .into_iter()
-        .map(|epoch| {
-            (epoch, 1, rig.tile.shuffling_cache.shuffled_by_epoch(epoch).unwrap().len() * 4)
-        })
+        .map(|epoch| (epoch, rig.tile.shuffling_cache.shuffled_by_epoch(epoch).unwrap().len() * 4))
         .collect();
     assert_eq!(posted_now, expected);
 

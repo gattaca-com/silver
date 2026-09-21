@@ -1,5 +1,5 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Epoch, RandaoMixesView, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{B256, Epoch, RandaoMixesView};
 use silver_common::merkle::sha256;
 
 const SHUFFLE_ROUND_COUNT: u8 = 90;
@@ -8,9 +8,6 @@ pub const DOMAIN_BEACON_PROPOSER: u32 = 0;
 pub const DOMAIN_BEACON_ATTESTER: u32 = 1;
 pub const DOMAIN_RANDAO: u32 = 2;
 pub const DOMAIN_SYNC_COMMITTEE: u32 = 7;
-
-const TARGET_COMMITTEE_SIZE: usize = 128;
-const MAX_COMMITTEES_PER_SLOT: usize = 64;
 
 #[derive(Clone, Copy)]
 pub struct Seed(B256);
@@ -192,12 +189,6 @@ fn swap_iff_bit(indices: &mut [u32], i: usize, j: usize, bit: u8) {
     indices[j] ^= t;
 }
 
-#[inline]
-pub fn committees_per_slot(active_validator_count: usize) -> usize {
-    let per_slot = active_validator_count / SLOTS_PER_EPOCH as usize / TARGET_COMMITTEE_SIZE;
-    per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
-}
-
 /// One seed's 16-bit random draws, which the spec packs 16 to a SHA256 block —
 /// so a sequential sweep rehashes only every 16th draw. Holds the block it
 /// last hashed; every weighted selection walks `i` upward, so that is the
@@ -265,13 +256,6 @@ mod tests {
         let mut sorted = indices.clone();
         sorted.sort();
         assert_eq!(sorted, (0..100).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn committees_per_slot_bounds() {
-        assert_eq!(committees_per_slot(100), 1);
-        assert_eq!(committees_per_slot(1_000_000), 64);
-        assert_eq!(committees_per_slot(8192), 2);
     }
 
     /// Hardcoded test vector: compute_shuffled_index(i, 10, [0;32]) for

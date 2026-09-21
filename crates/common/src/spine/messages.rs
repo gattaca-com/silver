@@ -1026,7 +1026,6 @@ pub enum BeaconStateEvent {
     },
     AttestersShuffling {
         epoch: u64,
-        committees_per_slot: u32,
         indices: TCacheRead,
     },
     BlockReceived {

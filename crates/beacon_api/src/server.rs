@@ -474,12 +474,10 @@ impl BeaconApi {
                 stage: BlockStage::Applied,
                 ..
             } => self.publish_block(slot, &block_root),
-            BeaconStateEvent::AttestersShuffling { epoch, committees_per_slot, indices } => {
+            BeaconStateEvent::AttestersShuffling { epoch, indices } => {
                 let posted = self.beacon_state.acquire(indices);
                 match posted.buffer() {
-                    Ok((bytes, _)) => {
-                        self.ctx.shufflings.record(epoch, committees_per_slot as usize, bytes)
-                    }
+                    Ok((bytes, _)) => self.ctx.shufflings.record(epoch, bytes),
                     Err(e) => tracing::warn!(?e, epoch, "posted shuffling unavailable"),
                 }
             }
