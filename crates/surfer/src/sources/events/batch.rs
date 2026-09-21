@@ -100,7 +100,8 @@ impl DataAvailability {
     }
 }
 
-const ORIGINS: [ColumnOrigin; 3] = [ColumnOrigin::Gossip, ColumnOrigin::El, ColumnOrigin::Rpc];
+const ORIGINS: [ColumnOrigin; 4] =
+    [ColumnOrigin::Gossip, ColumnOrigin::El, ColumnOrigin::Rpc, ColumnOrigin::Assembly];
 
 #[cfg(test)]
 mod tests {
@@ -184,5 +185,26 @@ mod tests {
         let batches = t.da.batches(ColumnOrigin::Gossip);
         assert_eq!(batches.len(), 1, "same instant, no validation yet");
         assert_eq!(batches[0].ranks(), (1, 2));
+    }
+
+    #[test]
+    fn an_assembly_batch_can_open_the_gate() {
+        let origin = ColumnOrigin::Assembly;
+        let t = trace(&[
+            (received(), 300),
+            (recv(1), 100),
+            (validated(1), 120),
+            (Stage::ColumnRecv { index: 2, origin }, 200),
+            (Stage::ColumnValidated { index: 2, origin }, 220),
+            (Stage::DaAvailable, 220),
+            (Stage::ColumnRecv { index: 3, origin }, 230),
+            (Stage::ColumnValidated { index: 3, origin }, 250),
+            (Stage::CustodyDone, 250),
+        ]);
+        let batches = t.da.batches(origin);
+        assert_eq!(batches.len(), 2);
+        assert!(t.da.opened_gate(&batches[0]));
+        assert!(!t.da.opened_gate(&batches[1]));
+        assert!(!t.da.opened_gate(&t.da.batches(ColumnOrigin::Gossip)[0]));
     }
 }
