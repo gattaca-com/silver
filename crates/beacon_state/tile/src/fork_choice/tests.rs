@@ -1,10 +1,10 @@
-use silver_beacon_state_data::MIN_SEED_LOOKAHEAD;
+use blst::min_pk::PublicKey;
+use silver_beacon_state_data::{
+    FinalizedValidators, HashFormat, MIN_SEED_LOOKAHEAD, ValidatorsGroup, ValidatorsId, Withdrawals,
+};
 use silver_common::PayloadResolution;
 
-use super::{
-    vote::{Vote, branch_voted_for},
-    *,
-};
+use super::{vote::branch_voted_for, *};
 
 /// Opaque per-tier bundle for topology/weight tests that never resolve
 /// state. Built field-by-field — `StateId` deliberately has no `Default`.
@@ -91,22 +91,67 @@ fn gloas_block(
     }
 }
 
-/// Stage synthetic votes/balances on `fc` and fold them into
-/// `fc.weight_deltas`: `changed: None` is a full pass against `old`→`new`;
-/// `Some(dirty)` folds only those votes against `new`.
-fn compute_deltas(
-    fc: &mut ForkChoice,
-    votes: Vec<Vote>,
-    old: &[u64],
-    new: &[u64],
-    changed: Option<&[u32]>,
-) {
-    fc.vote_tracker.votes = votes.into_boxed_slice();
-    fc.prev_justified_balances = old.to_vec();
-    fc.justified_balances = new.to_vec();
-    fc.votes_dirty = changed.unwrap_or_default().to_vec();
-    fc.justified_balances_full_pass = changed.is_none();
-    fc.compute_weight_deltas();
+/// Registry of validators active from epoch 0 with these effective balances.
+fn registry(effective_balances: &[u64]) -> (ValidatorsGroup, ValidatorsId) {
+    let empty = FinalizedValidators::try_new(&[], None).unwrap();
+    let mut group = ValidatorsGroup::new(empty, HashFormat::Fixed);
+    let mut w = group.roll_fresh();
+    for (i, &balance) in effective_balances.iter().enumerate() {
+        let ix = w.append([i as u8 + 1; 48], PublicKey::default(), Withdrawals::default());
+        w.set_effective_balance(ix, balance);
+        w.set_activation_epoch(ix, 0);
+    }
+    let id = w.commit();
+    (group, id)
+}
+
+fn with_balance(
+    group: &mut ValidatorsGroup,
+    from: ValidatorsId,
+    ix: u32,
+    balance: u64,
+) -> ValidatorsId {
+    let mut w = group.roll_from(from);
+    w.set_effective_balance(ix, balance);
+    w.commit()
+}
+
+fn install(fc: &mut ForkChoice, group: &ValidatorsGroup, id: ValidatorsId) {
+    fc.justified.install(fc.justified_checkpoint, group.view(id));
+}
+
+fn vote(fc: &mut ForkChoice, validator: u32, block_root: B256, target_epoch: Epoch) {
+    let n = fc.vote_tracker.votes.len();
+    fc.record_vote(
+        &AttestationVote {
+            validator,
+            block_root,
+            target_epoch,
+            attestation_slot: 0,
+            payload_present: false,
+        },
+        n,
+    );
+}
+
+fn weight(fc: &ForkChoice, block_root: B256) -> u64 {
+    fc.nodes[fc.find_node_idx(&block_root).unwrap()].weight
+}
+
+/// Anchor `root(1)` at epoch 0 with room for `validators` votes.
+fn anchored(validators: usize) -> ForkChoice {
+    let fin = cp(0, 1);
+    ForkChoice::init(
+        fin,
+        fin,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        validators,
+    )
 }
 
 #[test]
@@ -263,203 +308,100 @@ fn prune_drops_later_imported_siblings() {
 }
 
 #[test]
-fn deltas_moving_votes() {
-    let fin = cp(0, 1);
-    let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(
-        fin,
-        jus,
-        0,
-        root(1),
-        state_root_of(root(1)),
-        [0u8; 32],
-        false,
-        test_state_id(),
-        0,
-    );
-    fc.on_block(block(1, root(2), root(1), jus, fin));
+fn moved_votes_move_weight() {
+    let (group, id) = registry(&[42; 16]);
+    let mut fc = anchored(16);
+    fc.on_block(block(1, root(2), root(1), fc.justified_checkpoint, fc.finalized_checkpoint));
+    install(&mut fc, &group, id);
 
-    let mut votes = vec![Vote::default(); 16];
-    let mut balances = vec![0u64; 16];
-
-    // 16 validators all move from root(1) to root(2).
-    for i in 0..16 {
-        votes[i] = Vote {
-            applied_root: root(1),
-            latest_root: root(2),
-            latest_epoch: 0,
-            ..Default::default()
-        };
-        balances[i] = 42;
+    for v in 0..16 {
+        vote(&mut fc, v, root(1), 0);
     }
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 42 * 16);
+    assert_eq!(weight(&fc, root(2)), 0);
 
-    compute_deltas(&mut fc, votes, &balances, &balances, None);
-
-    let total = 42i64 * 16;
-    assert_eq!(fc.weight_deltas[0].pending, -total);
-    assert_eq!(fc.weight_deltas[1].pending, total);
-
-    for i in 0..16 {
-        assert_eq!(fc.vote_tracker.votes[i].applied_root, root(2));
+    for v in 0..16 {
+        vote(&mut fc, v, root(2), 1);
     }
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 42 * 16);
+    assert_eq!(weight(&fc, root(2)), 42 * 16);
 }
 
 #[test]
-fn deltas_different_votes() {
-    // Each validator votes for a different block.
-    let fin = cp(0, 100);
-    let jus = cp(0, 100);
-    let mut fc = ForkChoice::init(
-        fin,
-        jus,
-        0,
-        root(100),
-        state_root_of(root(100)),
-        [0u8; 32],
-        false,
-        test_state_id(),
-        0,
-    );
-
-    for i in 1..=16u8 {
-        fc.on_block(block(i as u64, root(i), root(100), jus, fin));
+fn each_vote_weighs_its_own_block() {
+    let (group, id) = registry(&[42; 16]);
+    let mut fc = anchored(16);
+    for i in 2..=17u8 {
+        fc.on_block(block(1, root(i), root(1), fc.justified_checkpoint, fc.finalized_checkpoint));
     }
+    install(&mut fc, &group, id);
 
-    let mut votes = vec![Vote::default(); 16];
-    let mut balances = vec![0u64; 16];
-
-    for i in 0..16 {
-        votes[i] = Vote {
-            applied_root: [0u8; 32],
-            latest_root: root((i + 1) as u8),
-            latest_epoch: 0,
-            ..Default::default()
-        };
-        balances[i] = 42;
+    for v in 0..16u8 {
+        vote(&mut fc, v as u32, root(v + 2), 0);
     }
-
-    compute_deltas(&mut fc, votes, &balances, &balances, None);
-
-    // Each block should get exactly one validator's balance.
-    for i in 1..=16 {
-        assert_eq!(fc.weight_deltas[i].pending, 42);
+    fc.recompute_head();
+    for i in 2..=17u8 {
+        assert_eq!(weight(&fc, root(i)), 42);
     }
+    assert_eq!(weight(&fc, root(1)), 42 * 16);
 }
 
 #[test]
-fn deltas_move_out_of_tree() {
-    let fin = cp(0, 1);
-    let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(
-        fin,
-        jus,
-        0,
-        root(1),
-        state_root_of(root(1)),
-        [0u8; 32],
-        false,
-        test_state_id(),
-        0,
-    );
+fn votes_leaving_the_tree_take_their_weight() {
+    let (group, id) = registry(&[42; 2]);
+    let mut fc = anchored(2);
+    install(&mut fc, &group, id);
+    vote(&mut fc, 0, root(1), 0);
+    vote(&mut fc, 1, root(1), 0);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 42 * 2);
 
-    let mut votes = vec![Vote::default(); 16];
-    let mut balances = vec![0u64; 16];
-
-    // Validator 0 moves from root(1) to zero hash (genesis alias).
-    votes[0] = Vote {
-        applied_root: root(1),
-        latest_root: [0u8; 32],
-        latest_epoch: 0,
-        ..Default::default()
-    };
-    balances[0] = 42;
-
-    // Validator 1 moves from root(1) to unknown root.
-    votes[1] = Vote {
-        applied_root: root(1),
-        latest_root: root(99),
-        latest_epoch: 0,
-        ..Default::default()
-    };
-    balances[1] = 42;
-
-    compute_deltas(&mut fc, votes, &balances[..2], &balances[..2], None);
-
-    // root(1) should lose both balances.
-    assert_eq!(fc.weight_deltas[0].pending, -(42 * 2));
+    // Validator 0 votes the zero root, validator 1 an unknown block.
+    vote(&mut fc, 0, [0u8; 32], 1);
+    vote(&mut fc, 1, root(99), 1);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 0);
 }
 
 #[test]
-fn deltas_changing_balances() {
-    let fin = cp(0, 1);
-    let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(
-        fin,
-        jus,
-        0,
-        root(1),
-        state_root_of(root(1)),
-        [0u8; 32],
-        false,
-        test_state_id(),
-        0,
-    );
-    fc.on_block(block(1, root(2), root(1), jus, fin));
-
-    let mut votes = vec![Vote::default(); 16];
-    let mut old_bal = vec![0u64; 16];
-    let mut new_bal = vec![0u64; 16];
-
-    // 16 validators move from root(1) to root(2), balance doubles.
-    for i in 0..16 {
-        votes[i] = Vote {
-            applied_root: root(1),
-            latest_root: root(2),
-            latest_epoch: 0,
-            ..Default::default()
-        };
-        old_bal[i] = 42;
-        new_bal[i] = 84;
+fn moved_votes_carry_the_new_balance() {
+    let (mut group, id) = registry(&[42; 16]);
+    let mut fc = anchored(16);
+    fc.on_block(block(1, root(2), root(1), fc.justified_checkpoint, fc.finalized_checkpoint));
+    install(&mut fc, &group, id);
+    for v in 0..16 {
+        vote(&mut fc, v, root(1), 0);
     }
+    fc.recompute_head();
 
-    compute_deltas(&mut fc, votes, &old_bal, &new_bal, None);
-
-    // Old balance subtracted from old target, new balance added to new.
-    assert_eq!(fc.weight_deltas[0].pending, -(42i64 * 16));
-    assert_eq!(fc.weight_deltas[1].pending, 84i64 * 16);
+    let mut doubled = id;
+    for v in 0..16 {
+        doubled = with_balance(&mut group, doubled, v, 84);
+    }
+    install(&mut fc, &group, doubled);
+    for v in 0..16 {
+        vote(&mut fc, v, root(2), 1);
+    }
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(2)), 84 * 16);
+    assert_eq!(weight(&fc, root(1)), 84 * 16);
 }
 
 #[test]
-fn deltas_balance_change_no_vote_change() {
-    // Balances change but votes don't — still need deltas.
-    let fin = cp(0, 1);
-    let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(
-        fin,
-        jus,
-        0,
-        root(1),
-        state_root_of(root(1)),
-        [0u8; 32],
-        false,
-        test_state_id(),
-        0,
-    );
+fn balance_change_reweighs_an_unchanged_vote() {
+    let (mut group, id) = registry(&[42, 0]);
+    let mut fc = anchored(2);
+    install(&mut fc, &group, id);
+    vote(&mut fc, 0, root(1), 0);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 42);
 
-    let mut votes = vec![Vote::default(); 16];
-    let mut old_bal = vec![0u64; 16];
-    let mut new_bal = vec![0u64; 16];
-
-    // Validator already voted for root(1), balance changes.
-    votes[0] =
-        Vote { applied_root: root(1), latest_root: root(1), latest_epoch: 0, ..Default::default() };
-    old_bal[0] = 42;
-    new_bal[0] = 84;
-
-    compute_deltas(&mut fc, votes, &old_bal[..1], &new_bal[..1], None);
-
-    // Net delta = new - old = +42.
-    assert_eq!(fc.weight_deltas[0].pending, 42);
+    let doubled = with_balance(&mut group, id, 0, 84);
+    install(&mut fc, &group, doubled);
+    fc.recompute_head();
+    assert_eq!(weight(&fc, root(1)), 84);
 }
 
 /// Tiebreaker: equal-weight siblings → higher block root wins (spec: >=).
@@ -646,58 +588,45 @@ fn proposer_boost_flips_then_expires() {
     assert_eq!(fc.find_head(), root(3));
 }
 
-/// Dirty-only `compute_deltas` reproduces the full-pass result when the
-/// balance snapshot is unchanged (stable votes contribute nothing either
-/// way; only moved votes count).
+/// Recomputing after each batch of votes weighs the tree the same as one
+/// recompute over all of them.
 #[test]
-fn compute_deltas_dirty_matches_full() {
-    let fin = cp(0, 1);
-    let jus = cp(0, 1);
-    let mut fc = ForkChoice::init(
-        fin,
-        jus,
-        0,
-        root(1),
-        state_root_of(root(1)),
-        [0u8; 32],
-        false,
-        test_state_id(),
-        0,
-    );
-    for i in 2..=5u8 {
-        fc.on_block(block(1, root(i), root(1), jus, fin));
-    }
-
-    let bal = vec![10u64; 32];
-    let mut votes_full = vec![Vote::default(); 32];
-    let mut dirty = Vec::new();
-    for (i, v) in votes_full.iter_mut().enumerate() {
-        let r = root(2 + (i % 4) as u8);
-        if i % 2 == 0 {
-            // Moved vote (dirty).
-            *v = Vote {
-                applied_root: [0u8; 32],
-                latest_root: r,
-                latest_epoch: 0,
-                ..Default::default()
-            };
-            dirty.push(i as u32);
-        } else {
-            // Stable vote — full pass skips it (current == next, equal bal).
-            *v = Vote { applied_root: r, latest_root: r, latest_epoch: 0, ..Default::default() };
+fn incremental_recompute_matches_batch() {
+    let (group, id) = registry(&[10; 32]);
+    let weights = |fc: &ForkChoice| (2..=5u8).map(|i| weight(fc, root(i))).collect::<Vec<_>>();
+    let build = || {
+        let mut fc = anchored(32);
+        for i in 2..=5u8 {
+            fc.on_block(block(
+                1,
+                root(i),
+                root(1),
+                fc.justified_checkpoint,
+                fc.finalized_checkpoint,
+            ));
         }
-    }
-    let votes_dirty = votes_full.clone();
+        install(&mut fc, &group, id);
+        fc
+    };
 
-    compute_deltas(&mut fc, votes_full, &bal, &bal, None);
-    let d_full = fc.weight_deltas.clone();
-    let applied_full: Vec<_> = fc.vote_tracker.votes.iter().map(|v| v.applied_root).collect();
-
-    compute_deltas(&mut fc, votes_dirty, &bal, &bal, Some(&dirty));
-    assert_eq!(d_full, fc.weight_deltas);
-    for i in 0..32 {
-        assert_eq!(applied_full[i], fc.vote_tracker.votes[i].applied_root);
+    let mut batch = build();
+    for v in 0..32u8 {
+        vote(&mut batch, v as u32, root(2 + v % 4), 0);
     }
+    batch.recompute_head();
+
+    let mut incremental = build();
+    for v in (0..32u8).step_by(2) {
+        vote(&mut incremental, v as u32, root(2 + v % 4), 0);
+    }
+    incremental.recompute_head();
+    for v in (1..32u8).step_by(2) {
+        vote(&mut incremental, v as u32, root(2 + v % 4), 0);
+    }
+    incremental.recompute_head();
+
+    assert_eq!(weights(&incremental), weights(&batch));
+    assert_eq!(weights(&batch), vec![80; 4]);
 }
 
 /// Genesis exception: while the store's justified checkpoint is at

@@ -4,6 +4,7 @@ use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, S
 use crate::stf::AttestationVote;
 
 mod head;
+mod justified_balances;
 mod lookup;
 mod node;
 mod payload;
@@ -11,6 +12,7 @@ mod payload;
 mod tests;
 mod vote;
 
+pub use justified_balances::JustifiedBalances;
 pub use lookup::NodeLookup;
 use node::{Branch, NodeCheckpoints, PtcVotes};
 pub use node::{ExecutionStatus, ForkChoiceNode, PayloadAxis, PayloadStatus};
@@ -52,15 +54,7 @@ pub struct ForkChoice {
     pub(super) equivocating: Box<[u64]>,
     pub(super) pending_votes: Vec<AttestationVote>,
 
-    pub justified_balances: Vec<u64>,
-    pub(super) prev_justified_balances: Vec<u64>,
-    pub(super) justified_balances_cp: Checkpoint,
-    /// Set when a fresh snapshot was installed; arms the next `recompute_head`
-    /// as a full pass (every weight may shift), then cleared.
-    pub(super) justified_balances_full_pass: bool,
-    /// Spec `get_proposer_score` input: total active balance of the justified
-    /// state at `justified_balances_cp.epoch`.
-    pub(super) justified_total_active_balance: u64,
+    pub justified: JustifiedBalances,
 
     pub(super) current_slot: Slot,
 
@@ -146,11 +140,7 @@ impl ForkChoice {
             votes_dirty: Vec::with_capacity(capacity),
             equivocating: vec![0u64; capacity.div_ceil(64)].into_boxed_slice(),
             pending_votes: Vec::with_capacity(capacity / SLOTS_PER_EPOCH as usize),
-            justified_balances: Vec::with_capacity(capacity),
-            prev_justified_balances: Vec::with_capacity(capacity),
-            justified_balances_cp: Checkpoint::default(),
-            justified_balances_full_pass: false,
-            justified_total_active_balance: 0,
+            justified: JustifiedBalances::with_capacity(capacity),
             current_slot: 0,
             weight_deltas: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
             head_moved: false,
@@ -260,15 +250,13 @@ impl ForkChoice {
     }
 
     /// Fold accumulated vote/balance changes into weights and refresh
-    /// best_descendant. A fresh balance snapshot (`set_justified_balances`)
-    /// arms a full pass; otherwise only the dirtied votes are folded against
-    /// the unchanged snapshot.
+    /// best_descendant.
     #[timed]
     pub fn recompute_head(&mut self) {
         self.compute_weight_deltas();
         self.apply_score_changes();
         self.votes_dirty.clear();
-        self.justified_balances_full_pass = false;
+        self.justified.mark_applied();
     }
 
     #[inline]
@@ -314,7 +302,7 @@ impl ForkChoice {
 
     pub fn set_proposer_boost(&mut self, root: B256) {
         self.proposer_boost_root = root;
-        self.proposer_boost_score = proposer_boost_score(self.justified_total_active_balance);
+        self.proposer_boost_score = proposer_boost_score(self.justified.total_active());
         self.head_moved = true;
     }
 

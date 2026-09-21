@@ -1,6 +1,6 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
+use silver_beacon_state_data::{B256, Checkpoint, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
     BeaconStateEvent, PayloadValidationStatus, hex32,
     ssz_view::{
@@ -20,15 +20,13 @@ use crate::{
 };
 
 impl BeaconStateTile {
-    /// Rebuild fork choice's justified-balance snapshot when its justified
-    /// checkpoint has moved.
     #[timed]
     pub(super) fn refresh_justified_balances(&mut self) {
-        if !self.fork_choice.justified_balances_stale() {
+        let jc = self.fork_choice.justified_checkpoint;
+        if !self.fork_choice.justified.stale(jc) {
             return;
         }
 
-        let jc = self.fork_choice.justified_checkpoint;
         // Justified is lifted only to resident roots; fall back to the head if
         // somehow absent (boot before the anchor node is wired).
         let sid = match self.fork_choice.find_node_idx(&jc.root) {
@@ -36,7 +34,30 @@ impl BeaconStateTile {
             None => self.last_applied,
         };
         let validators = self.state.read_view(sid).validators;
-        self.fork_choice.set_justified_balances(jc, validators);
+        self.fork_choice.justified.install(jc, validators);
+    }
+
+    /// The checkpoint the head's epoch would justify is fixed by the head's
+    /// first block; build its balance snapshot now, off the block frame.
+    #[timed]
+    pub(super) fn precompute_justified_balances(&mut self) {
+        let epoch = self.last_applied_block_slot() / SLOTS_PER_EPOCH;
+        let Some(idx) = self.fork_choice.find_node_idx(&self.last_applied_block_root) else {
+            return;
+        };
+        let Some(root) = self.fork_choice.checkpoint_block_of(idx, epoch * SLOTS_PER_EPOCH) else {
+            return;
+        };
+        let cp = Checkpoint { epoch, root };
+        if !self.fork_choice.justified.wants_candidate(cp) {
+            return;
+        }
+        let Some(cp_idx) = self.fork_choice.find_node_idx(&root) else {
+            return;
+        };
+        let sid = self.fork_choice.node(cp_idx).state_id;
+        let validators = self.state.read_view(sid).validators;
+        self.fork_choice.justified.precompute(cp, validators);
     }
 
     #[timed]
