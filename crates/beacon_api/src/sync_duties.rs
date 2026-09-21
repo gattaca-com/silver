@@ -71,7 +71,7 @@ struct Seats {
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct Seat {
-    validator_index: u64,
+    validator_index: u32,
     position: u32,
 }
 
@@ -84,11 +84,10 @@ impl Seats {
             let validator_index = match period {
                 // The promoted committee travels with its registry indices;
                 // the one still ahead is pubkeys alone.
-                CommitteePeriod::Current => committees.index_at(position).map(u64::from),
-                CommitteePeriod::Next => view
-                    .validators
-                    .find_by_pubkey(&committees.next().pubkeys[position])
-                    .map(u64::from),
+                CommitteePeriod::Current => committees.index_at(position),
+                CommitteePeriod::Next => {
+                    view.validators.find_by_pubkey(&committees.next().pubkeys[position])
+                }
             };
             if let Some(validator_index) = validator_index {
                 seats[len] = Seat { validator_index, position: position as u32 };
@@ -107,7 +106,7 @@ impl Seats {
     }
 
     fn duty<'a>(&'a self, view: &StateReadView<'a>, validator_index: u64) -> Option<SyncDuty<'a>> {
-        let held = self.held_by(validator_index);
+        let held = self.held_by(u32::try_from(validator_index).ok()?);
         let index =
             usize::try_from(validator_index).ok().filter(|&ix| ix < view.validators.count())?;
         (!held.is_empty()).then(|| SyncDuty {
@@ -117,7 +116,7 @@ impl Seats {
         })
     }
 
-    fn held_by(&self, validator_index: u64) -> &[Seat] {
+    fn held_by(&self, validator_index: u32) -> &[Seat] {
         let seats = &self.seats[..self.len];
         let from = seats.partition_point(|seat| seat.validator_index < validator_index);
         let held = &seats[from..];
