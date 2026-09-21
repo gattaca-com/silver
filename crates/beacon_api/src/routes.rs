@@ -11,6 +11,7 @@ use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
+    attestation_data::attestation_data,
     attester_duties::{PostedShufflings, post_attester_duties},
     blocks::{block, block_header, block_root},
     events::events,
@@ -58,6 +59,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/node/peers", peers),
     (Method::Get, "/eth/v1/node/syncing", syncing),
     (Method::Get, "/eth/v1/node/version", version),
+    (Method::Get, "/eth/v1/validator/attestation_data", attestation_data),
     (
         Method::Post,
         "/eth/v1/validator/beacon_committee_subscriptions",
@@ -317,7 +319,7 @@ mod tests {
         BeaconBlockHeader, BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork,
         SlotState, SlotStateFinalized, SlotStateGroup,
     };
-    use silver_common::{AGENT_VERSION, ELSyncStatus, IpBytes, SyncUpdate};
+    use silver_common::{AGENT_VERSION, ELSyncStatus, IpBytes, PayloadResolution, SyncUpdate};
     use silver_httpcore::ParsedRequest;
 
     use super::*;
@@ -380,6 +382,7 @@ mod tests {
         NodeStatus {
             head: HeadStatus { slot: 100, optimistic: false },
             head_root: [0x11; 32],
+            head_payload: PayloadResolution::Full,
             wall_slot: 100,
             finalized_epoch: 12_343,
             target: Some(SyncUpdate::Following),

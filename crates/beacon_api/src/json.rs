@@ -8,8 +8,8 @@ use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Checkpoint, F
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
 use crate::{
-    attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuty,
-    sync_duties::SyncDuty, validators::ValidatorRecord,
+    attestation_data::AttestationData, attester_duties::AttesterDuty, events::HeadEvent,
+    peers::Peer, proposer_duties::ProposerDuty, sync_duties::SyncDuty, validators::ValidatorRecord,
 };
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
@@ -300,6 +300,21 @@ impl Json<'_> {
         self.quoted_u64(checkpoint.epoch);
         self.key("root");
         self.hex(&checkpoint.root);
+        self.end_object();
+    }
+
+    pub(crate) fn attestation_data(&mut self, data: &AttestationData) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(data.slot);
+        self.key("index");
+        self.quoted_u64(data.index);
+        self.key("beacon_block_root");
+        self.hex(&data.beacon_block_root);
+        self.key("source");
+        self.checkpoint(&data.source);
+        self.key("target");
+        self.checkpoint(&data.target);
         self.end_object();
     }
 

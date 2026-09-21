@@ -93,6 +93,10 @@ impl PostedShufflings {
         &mut self.entries[held.unwrap_or_else(oldest)]
     }
 
+    pub(crate) fn committees_per_slot(&self, epoch: Epoch) -> Option<u64> {
+        self.get(epoch).map(|shuffling| committees_per_slot(shuffling.shuffled_len) as u64)
+    }
+
     fn get(&self, epoch: Epoch) -> Option<&Shuffling> {
         self.entries
             .iter()
