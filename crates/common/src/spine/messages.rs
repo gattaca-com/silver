@@ -1024,6 +1024,10 @@ pub enum BeaconStateEvent {
         slot: u64,
         block_root: [u8; 32],
     },
+    AttestersShuffling {
+        epoch: u64,
+        indices: TCacheRead,
+    },
     BlockReceived {
         slot: u64,
         block_root: [u8; 32],
@@ -1307,6 +1311,7 @@ impl BeaconStateEvent {
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
             Self::BlockReceived { .. } |
+            Self::AttestersShuffling { .. } |
             Self::Reorg { .. } => SszView::None,
         }
     }

@@ -58,6 +58,7 @@ impl ApplicationBoundaryTile {
         resp_producer: TProducer,
         ssz_consumers: HashMap<SszCache, TRandomAccess>,
         outgoing_rpc: TRandomAccess,
+        beacon_state: TRandomAccess,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -79,6 +80,7 @@ impl ApplicationBoundaryTile {
             anchor_root,
             ssz_consumers,
             outgoing_rpc,
+            beacon_state,
         );
         let engine = EngineApi::new(
             readiness.registry(),

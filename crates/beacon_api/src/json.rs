@@ -7,7 +7,10 @@ use std::io::Write;
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, Fork, Version};
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
-use crate::{duties::ProposerDuties, events::HeadEvent, peers::Peer, validators::ValidatorRecord};
+use crate::{
+    attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuties,
+    validators::ValidatorRecord,
+};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -404,24 +407,67 @@ impl Json<'_> {
         self.end_object();
     }
 
+    /// `GetProposerDutiesResponse` (`apis/validator/duties/proposer.yaml`).
     pub(crate) fn proposer_duties(&mut self, duties: &ProposerDuties, execution_optimistic: bool) {
+        self.duties_envelope(Some(duties.dependent_root), execution_optimistic, |json| {
+            for duty in &duties.duties {
+                json.begin_object();
+                json.key("pubkey");
+                json.hex(&duty.pubkey);
+                json.key("validator_index");
+                json.quoted_u64(duty.validator_index);
+                json.key("slot");
+                json.quoted_u64(duty.slot);
+                json.end_object();
+            }
+        });
+    }
+
+    /// `GetAttesterDutiesResponse` (`apis/validator/duties/attester.yaml`).
+    pub(crate) fn attester_duties(
+        &mut self,
+        dependent_root: B256,
+        execution_optimistic: bool,
+        duties: impl Iterator<Item = AttesterDuty>,
+    ) {
+        self.duties_envelope(Some(dependent_root), execution_optimistic, |json| {
+            for duty in duties {
+                json.begin_object();
+                json.key("pubkey");
+                json.hex(&duty.pubkey);
+                json.key("validator_index");
+                json.quoted_u64(duty.validator_index);
+                json.key("committee_index");
+                json.quoted_u64(duty.committee_index);
+                json.key("committee_length");
+                json.quoted_u64(duty.committee_length);
+                json.key("committees_at_slot");
+                json.quoted_u64(duty.committees_at_slot);
+                json.key("validator_committee_index");
+                json.quoted_u64(duty.validator_committee_index);
+                json.key("slot");
+                json.quoted_u64(duty.slot);
+                json.end_object();
+            }
+        });
+    }
+
+    fn duties_envelope(
+        &mut self,
+        dependent_root: Option<B256>,
+        execution_optimistic: bool,
+        data: impl FnOnce(&mut Self),
+    ) {
         self.begin_object();
-        self.key("dependent_root");
-        self.hex(&duties.dependent_root);
+        if let Some(root) = dependent_root {
+            self.key("dependent_root");
+            self.hex(&root);
+        }
         self.key("execution_optimistic");
         self.bool(execution_optimistic);
         self.key("data");
         self.begin_array();
-        for duty in &duties.duties {
-            self.begin_object();
-            self.key("pubkey");
-            self.hex(&duty.pubkey);
-            self.key("validator_index");
-            self.quoted_u64(duty.validator_index);
-            self.key("slot");
-            self.quoted_u64(duty.slot);
-            self.end_object();
-        }
+        data(self);
         self.end_array();
         self.end_object();
     }

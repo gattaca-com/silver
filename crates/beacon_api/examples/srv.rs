@@ -33,6 +33,7 @@ fn main() {
             .map(|source| (source, consumer()))
             .collect(),
         consumer(),
+        consumer(),
     );
     println!("serving on {:?}", api.local_addrs());
     loop {

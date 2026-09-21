@@ -122,6 +122,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         rpc_c,
         engine_c,
         replay_c,
+        TCache::producer("test_beacon_state", 1 << 20),
         verify_weak_subjectivity,
         BeaconState::empty_test(0),
     )
@@ -164,6 +165,7 @@ fn make_tile_with_producers(
         rpc_c,
         engine_c,
         replay_c,
+        TCache::producer("test_beacon_state_buf", 1 << 20),
         true,
         state,
     );
@@ -3214,7 +3216,7 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
 /// The slot tick prunes the memo through the same floor as the pool.
 #[test]
 fn att_root_memo_pruned_on_slot_tick() {
-    let mut tile = make_tile();
+    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
     seed_tile(&mut tile, 4, 30);
     let domain = [0xD0u8; 32];
     let mut expired = [0u8; ATTESTATION_DATA_SIZE];
@@ -4203,4 +4205,37 @@ fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: Gossi
         }
     });
     assert_eq!(relays, [(topic, msg_seq)], "the relay names the message's own decompressed bytes");
+}
+
+/// Each computed shuffling is posted once: the first post carries the epochs
+/// the precompute filled, and a second post carries nothing.
+#[test]
+fn fresh_shufflings_are_posted_once() {
+    let mut rig = HeadRig::new();
+    let posted = |published: Published| -> Vec<(Epoch, usize)> {
+        published
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                BeaconStateEvent::AttestersShuffling { epoch, indices } => {
+                    Some((*epoch, indices.len().unwrap()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    rig.tile.precompute_next_epoch_shuffling(4);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    let mut posted_now = posted(rig.drain());
+    posted_now.sort_unstable();
+    let expected: Vec<_> = [4, 5]
+        .into_iter()
+        .map(|epoch| (epoch, rig.tile.shuffling_cache.shuffled_by_epoch(epoch).unwrap().len() * 4))
+        .collect();
+    assert_eq!(posted_now, expected);
+
+    rig.tile.precompute_next_epoch_shuffling(4);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert_eq!(posted(rig.drain()), []);
 }

@@ -1,9 +1,7 @@
-//! The forms an identifier arrives in. A bare `Uint64` is a slot for the
-//! `state_id`/`block_id` of `params/index.yaml`; the `0x`-prefixed 32-byte
-//! root is a form those two parameters alone also take. Each endpoint's
-//! keywords are its own.
-
+use serde::{Deserialize, Deserializer, de};
 use silver_beacon_state_data::{B256, BLSPubkey};
+
+use crate::response::Response;
 
 /// How many validators one POST body may name. No schema that takes a list of
 /// them sets a `maxItems`, and an unbounded list turns a 16 MiB body into
@@ -11,6 +9,32 @@ use silver_beacon_state_data::{B256, BLSPubkey};
 /// quarter of a million is an order of magnitude past the largest single
 /// validator client in production, against a mainnet registry of ~2M.
 pub(crate) const MAX_BODY_IDS: usize = 256 * 1024;
+
+/// The array a body carries, unchecked beyond its shape and length.
+pub(crate) fn body_entries<'a, T: Deserialize<'a>>(
+    body: &'a [u8],
+    resp: &mut Response<'_>,
+) -> Option<Vec<T>> {
+    let Ok(entries) = serde_json::from_slice::<Vec<T>>(body) else {
+        resp.error(400, "invalid request body");
+        return None;
+    };
+    if entries.len() > MAX_BODY_IDS {
+        resp.error(400, "too many entries in request body");
+        return None;
+    }
+    Some(entries)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ValidatorIndex(pub(crate) u64);
+
+impl<'de> Deserialize<'de> for ValidatorIndex {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <&str>::deserialize(deserializer)?;
+        parse_uint64(text).map(Self).ok_or_else(|| de::Error::custom("not a Uint64"))
+    }
+}
 
 /// `u64::from_str` alone also accepts a leading `+`, which the schemas call an
 /// invalid identifier rather than a number.

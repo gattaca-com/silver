@@ -13,7 +13,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
     HeadRoots, NewGossipMsg, Origin, PayloadResolution, ReplayBlock, RequestId, RpcInbound,
-    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead, hex32,
+    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheProducer, TProducer,
+    TRandomAccess, TRead, hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -137,6 +138,7 @@ pub struct BeaconStateTile {
 
     fork_choice: ForkChoice,
     shuffling_cache: Box<ShufflingCache>,
+    events_producer: TProducer,
     seen_attesters: SeenValidators,
     seen_aggregators: SeenValidators,
     seen_aggregates: SeenAggregates,
@@ -212,6 +214,7 @@ impl BeaconStateTile {
         rpc_consumer: TRandomAccess,
         incoming_engine_resp_consumer: TRandomAccess,
         replay_consumer: TRandomAccess,
+        events_producer: TProducer,
         verify_weak_subjectivity: bool,
         state: BeaconState,
     ) -> Self {
@@ -225,6 +228,7 @@ impl BeaconStateTile {
             state: owner,
             fork_choice: ForkChoice::default(),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
+            events_producer,
             seen_attesters: SeenValidators::new(val_cap),
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
@@ -542,6 +546,16 @@ impl BeaconStateTile {
         producers.produce(event);
     }
 
+    fn post_shufflings(&mut self, producers: &mut Producers) {
+        let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
+        let producer = &mut self.events_producer;
+        let posted =
+            self.shuffling_cache.post_fresh(head_epoch, producer, |event| producers.produce(event));
+        if posted {
+            producer.publish_head();
+        }
+    }
+
     /// Covers changes since the last Status, including execution verdicts.
     fn publish_status_on_head_change(&mut self, producers: &mut Producers) {
         let head = self.selected_head();
@@ -708,6 +722,8 @@ impl BeaconStateTile {
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
         self.flush_votes(&mut adapter.producers);
         self.gossip_consumer.free();
+
+        self.post_shufflings(&mut adapter.producers);
     }
 
     /// Per-validator votes (attestations, sync committee messages, PTC
