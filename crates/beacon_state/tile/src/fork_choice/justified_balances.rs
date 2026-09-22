@@ -111,6 +111,7 @@ impl Snapshot {
         let mut slashed = validators.iter_slashed();
         let mut total_active = 0u64;
         for weight in &mut self.balances {
+            // Safety: validators fields all have the same size
             let a = act.next().unwrap();
             let x = exit.next().unwrap();
             let b = eff.next().unwrap();
