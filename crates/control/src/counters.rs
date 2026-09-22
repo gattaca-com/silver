@@ -14,14 +14,13 @@ silver_common::declare_counters! {
         PartialMetadataIgnored,
         PartialStateLimited,
         PartialFramesQueued,
-        _Reserved_PartialFramesWritten,
         PartialFramesDropped,
-        _Reserved_PartialCellsServed,
         PartialWithdrawals,
         PartialExchanges,
-        _Reserved_PartialPendingFrames,
-        _Reserved_PartialResponsesSent,
         PartialCellsRequested,
         PartialRateLimited,
+        PartialCellsRequestedOutbound,
+        PartialRequestsTimedOut,
+        PartialFullFallbacks,
     }
 }

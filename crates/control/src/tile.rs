@@ -3,14 +3,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
+use flux::{
+    spine::{SpineAdapter, SpineProducers},
+    tile::Tile,
+};
 use silver_chain_spec::SpecConfig;
 use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
     SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
-    cell_store::{CellStoreConfig, CellStoreEvent, StoreError},
+    cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
     ticker::SlotTicker,
 };
@@ -122,9 +125,11 @@ impl Controller {
         producer: TProducer,
         slot: u64,
         slot_start: Instant,
+        mode: PartialColumnsMode,
     ) -> Result<Self, StoreError> {
-        self.partial_exchange = Some(PartialExchange::new(&config, slot, slot_start));
-        self.gossip_handler.enable_partial_sending();
+        self.partial_exchange =
+            mode.supports_sending().then(|| PartialExchange::new(&config, slot, slot_start, mode));
+        self.gossip_handler.set_partial_columns_mode(mode);
         self.cell_ingress = Some(CellIngress::new(config, producer, slot, slot_start)?);
         Ok(self)
     }
@@ -257,18 +262,22 @@ impl Tile<SilverSpine> for Controller {
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
             if let Some(exchange) = &mut self.partial_exchange {
-                exchange.advance_slot(
+                exchange.advance(
                     ingress,
                     &self.peer_manager,
                     &mut self.gossip_handler.mcache_publish,
                     now,
-                    &mut |send| adapter.produce(send),
+                    &mut |send| adapter.producers.produce(send),
+                    &mut |need| adapter.producers.produce(need),
                 );
             }
             adapter.consume(|event: CellStoreEvent, producers| {
                 ingress.handle(event, now, producers);
                 if let Some(exchange) = &mut self.partial_exchange {
                     match event {
+                        CellStoreEvent::Allocate(request) => {
+                            exchange.context(request, ingress.slot_window().1, now);
+                        }
                         CellStoreEvent::Available(column) => {
                             if let Some(column) =
                                 ingress.availability(&column.block_root, column.column, now)
@@ -322,6 +331,9 @@ impl Tile<SilverSpine> for Controller {
         self.handle_latest_status(latest_status_event, &mut adapter.producers);
 
         adapter.consume(|event: DataColumnsEvent, producers| {
+            if let Some(exchange) = &mut self.partial_exchange {
+                exchange.validated(event, now);
+            }
             handle_data_column_event(
                 event,
                 &mut self.rpc_ssz_consumer,
@@ -587,16 +599,17 @@ impl Tile<SilverSpine> for Controller {
                 }
             }
         }
-        if let (Some(exchange), Some(ingress)) = (&mut self.partial_exchange, &self.cell_ingress) &&
-            exchange.spin(
+        if let (Some(exchange), Some(ingress)) = (&mut self.partial_exchange, &self.cell_ingress) {
+            if exchange.spin(
                 ingress,
                 &self.peer_manager,
                 &mut self.gossip_handler.mcache_publish,
                 now,
-                &mut |send| adapter.produce(send),
-            )
-        {
-            adapter.mark_work();
+                &mut |send| adapter.producers.produce(send),
+                &mut |need| adapter.producers.produce(need),
+            ) {
+                adapter.mark_work();
+            }
         }
     }
 
