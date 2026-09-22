@@ -5,7 +5,7 @@ use silver_beacon_state_data::{
 
 use crate::{
     duties::{epoch_param, requested_indices},
-    ids::ValidatorIndex,
+    ids::Uint64,
     response::Response,
     router::Request,
     routes::ApiCtx,
@@ -46,7 +46,7 @@ pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
             json.attester_duties(
                 dependent.unwrap_or(head_root),
                 execution_optimistic,
-                indices.iter().filter_map(|&ValidatorIndex(validator_index)| {
+                indices.iter().filter_map(|&Uint64(validator_index)| {
                     AttesterDuty::read(&view, shuffling, epoch, validator_index)
                 }),
             );

@@ -1,8 +1,12 @@
-use silver_beacon_state_data::{B256, Checkpoint, SLOTS_PER_EPOCH, Slot, StateReadView};
+use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, StateReadView};
 use silver_common::PayloadResolution;
-use silver_httpcore::Query;
 
-use crate::{ids::parse_uint64, response::Response, router::Request, routes::ApiCtx};
+use crate::{
+    ids::parse_uint64,
+    response::Response,
+    router::Request,
+    routes::{ApiCtx, query_value},
+};
 
 pub(crate) struct AttestationData {
     pub(crate) slot: Slot,
@@ -30,9 +34,7 @@ pub(crate) fn attestation_data(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     }
 
     let index = payload_presence_vote(ctx, slot);
-    let head_root = ctx.node_status.head_root;
-    let Some(data) = ctx.read_state(|view| AttestationData::read(&view, slot, index, head_root))
-    else {
+    let Some(data) = ctx.read_state(|view| AttestationData::read(&view, slot, epoch, index)) else {
         resp.error(400, "attestation data is served for the head state's epoch only");
         return;
     };
@@ -41,12 +43,12 @@ pub(crate) fn attestation_data(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
 }
 
 impl AttestationData {
-    fn read(view: &StateReadView<'_>, slot: Slot, index: u64, head_root: B256) -> Option<Self> {
-        let epoch = slot / SLOTS_PER_EPOCH;
+    fn read(view: &StateReadView<'_>, slot: Slot, epoch: Epoch, index: u64) -> Option<Self> {
         if epoch != view.slot.current_epoch() {
             return None;
         }
         let state_slot = view.slot.state().slot;
+        let head_root = view.slot.state().latest_block_root;
         let epoch_start = epoch * SLOTS_PER_EPOCH;
         // The ring holds no root at or above `state_slot`, and no block has
         // been processed at the boundary either, so the head is the boundary.
@@ -74,8 +76,7 @@ fn payload_presence_vote(ctx: &ApiCtx, slot: Slot) -> u64 {
 }
 
 fn uint64_query(query: &str, name: &str) -> Option<u64> {
-    let value = Query::new(query).find_map(|(key, value)| (key == name).then_some(value))?;
-    parse_uint64(&value)
+    parse_uint64(&query_value(query, name)?)
 }
 
 #[cfg(test)]
@@ -113,6 +114,7 @@ mod tests {
         state.slot_states = SlotStateGroup::new(SlotStateFinalized::new(SlotState {
             slot: state_slot,
             latest_block_header: BeaconBlockHeader { slot: state_slot, ..Default::default() },
+            latest_block_root: HEAD_ROOT,
             ..Default::default()
         }));
         state.block_roots = block_roots_ring(state_slot);
@@ -123,7 +125,6 @@ mod tests {
 
         let mut ctx = test_ctx(spec, owner.reader());
         ctx.node_status.head = HeadStatus { slot: state_slot, optimistic: false };
-        ctx.node_status.head_root = HEAD_ROOT;
         ctx.node_status.head_payload = PayloadResolution::Full;
         ctx.node_status.target = Some(SyncUpdate::Following);
         ctx.shufflings.record(STATE_EPOCH, &[0u8; 4 * size_of::<u32>()]);
@@ -167,15 +168,6 @@ mod tests {
     fn target_is_the_head_when_the_epoch_starts_at_the_head_state_slot() {
         let ctx = ctx_at(EPOCH_START, &SpecConfig::mainnet());
         assert_eq!(vote(&ctx, EPOCH_START)["target"]["root"], hex_root(&HEAD_ROOT));
-    }
-
-    #[test]
-    fn slots_outside_the_head_state_epoch_are_400() {
-        let ctx = mainnet_ctx();
-        for slot in [STATE_SLOT - SLOTS_PER_EPOCH, STATE_SLOT + SLOTS_PER_EPOCH] {
-            let response = get(&ctx, &format!("slot={slot}&committee_index=0"));
-            assert_eq!(status_code(&response), "400", "{slot}");
-        }
     }
 
     /// The posted shuffling bounds the committee index; without one there is

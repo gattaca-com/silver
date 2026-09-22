@@ -138,18 +138,15 @@ impl AttestationClusterHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        if let BeaconApiRequest::LocalAttestation { request_id, validator_pubkey, subnet, ssz } =
-            request
-        {
-            let slot = SingleAttestationView::slot(&ssz);
+        if let BeaconApiRequest::LocalAttestation { request_id, subnet, ssz } = request {
+            let key = AttestationKey {
+                attester_index: SingleAttestationView::attester_index(&ssz),
+                slot: SingleAttestationView::slot(&ssz),
+            };
             self.handle_local_attestation(
                 PendingAttestation {
                     request_id,
-                    command: AttestationLockCommand {
-                        key: AttestationKey { validator_pubkey, slot },
-                        subnet,
-                        ssz,
-                    },
+                    command: AttestationLockCommand { key, subnet, ssz },
                 },
                 now,
                 gossip_handler,
@@ -158,21 +155,22 @@ impl AttestationClusterHandler {
         }
     }
 
-    /// Complete locally-originated requests only once Beacon State has
-    /// accepted the message for publication or rejected it as invalid.
     pub(super) fn on_peer_event(
         &mut self,
         event: &PeerEvent,
         producers: &mut SilverSpineProducers,
     ) {
-        let (msg_id, response) = match event {
-            PeerEvent::SendGossip { msg_hash, .. } => (*msg_hash, LocalAttestationResult::Success),
-            PeerEvent::P2pGossipInvalidMsg { hash, .. } => {
-                (*hash, LocalAttestationResult::Failure(LocalAttestationFailure::Invalid))
-            }
-            _ => return,
-        };
+        if let PeerEvent::SendGossip { msg_hash, .. } = event {
+            self.complete_validation(*msg_hash, LocalAttestationResult::Success, producers);
+        }
+    }
 
+    pub(super) fn complete_validation(
+        &mut self,
+        msg_id: MessageId,
+        response: LocalAttestationResult,
+        producers: &mut SilverSpineProducers,
+    ) {
         if let Some(pending) = self.pending_validation.remove(&msg_id) {
             pending.complete(|request_id| produce_response(producers, request_id, response));
             if self.pending_validation.is_empty() {
@@ -507,12 +505,7 @@ mod tests {
             ssz[16..24].copy_from_slice(&slot.to_le_bytes());
             ssz[32..64].fill(root);
             self.handler.on_beacon_api_request(
-                BeaconApiRequest::LocalAttestation {
-                    request_id,
-                    validator_pubkey: [validator; 48],
-                    subnet: 0,
-                    ssz,
-                },
+                BeaconApiRequest::LocalAttestation { request_id, subnet: 0, ssz },
                 now,
                 &mut self.gossip,
                 &mut self.adapter.producers,
@@ -623,7 +616,11 @@ mod tests {
 
     #[test]
     fn standalone_keeps_locks_after_validation_failure_or_timeout() {
-        for failure in [LocalAttestationFailure::Invalid, LocalAttestationFailure::TimedOut] {
+        for failure in [
+            LocalAttestationFailure::Invalid,
+            LocalAttestationFailure::Unverifiable,
+            LocalAttestationFailure::TimedOut,
+        ] {
             let now = Instant::now();
             let mut standalone = Standalone::new(now);
             standalone.handler.on_status(10, 10);
@@ -631,20 +628,16 @@ mod tests {
             standalone.submit(1, 11, 7, 1, now);
             let message = standalone.pop_gossip();
 
-            if failure == LocalAttestationFailure::Invalid {
-                standalone.handler.on_peer_event(
-                    &PeerEvent::P2pGossipInvalidMsg {
-                        p2p_peer: message.stream_id.peer(),
-                        topic: message.topic,
-                        hash: message.msg_hash,
-                    },
-                    &mut standalone.adapter.producers,
-                );
-            } else {
-                standalone.handler.expire_pending_validation(
+            match failure {
+                LocalAttestationFailure::TimedOut => standalone.handler.expire_pending_validation(
                     now + LOCAL_ATTESTATION_VALIDATION_TIMEOUT,
                     &mut standalone.adapter.producers,
-                );
+                ),
+                failure => standalone.handler.complete_validation(
+                    message.msg_hash,
+                    LocalAttestationResult::Failure(failure),
+                    &mut standalone.adapter.producers,
+                ),
             }
             assert_eq!(standalone.responses(), [(1, LocalAttestationResult::Failure(failure))]);
             assert!(standalone.handler.pending_validation.is_empty());

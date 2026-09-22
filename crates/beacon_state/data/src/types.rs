@@ -122,6 +122,9 @@ pub struct SlotState {
     pub builder_pending_payments: [BuilderPendingPayment; BUILDER_PENDING_PAYMENTS_LEN],
     pub latest_execution_payload_bid: ExecutionPayloadBid,
     pub payload_expected_withdrawals: Vec<Withdrawal>,
+
+    /// Not spec state: neither hashed nor encoded.
+    pub latest_block_root: B256,
 }
 
 impl Default for SlotState {
@@ -146,6 +149,7 @@ impl Default for SlotState {
                 BUILDER_PENDING_PAYMENTS_LEN],
             latest_execution_payload_bid: ExecutionPayloadBid::default(),
             payload_expected_withdrawals: Vec::new(),
+            latest_block_root: B256::default(),
         }
     }
 }

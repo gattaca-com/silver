@@ -565,6 +565,9 @@ fn fulu_block_header() {
             state_root: [0u8; 32],
             body_root,
         };
-        s.with_view_and_epoch(|view, e| stf::process_block_header(view, e, &header).is_ok())
+        let block_root = silver_beacon_state::ssz_hash::hash_tree_root_block_header(&header);
+        s.with_view_and_epoch(|view, e| {
+            stf::process_block_header(view, e, &header, block_root).is_ok()
+        })
     });
 }

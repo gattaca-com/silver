@@ -42,7 +42,7 @@ impl BeaconStateTile {
     #[timed]
     pub(super) fn precompute_justified_balances(&mut self) {
         let epoch = self.last_applied_block_slot() / SLOTS_PER_EPOCH;
-        let Some(idx) = self.fork_choice.find_node_idx(&self.last_applied_block_root) else {
+        let Some(idx) = self.fork_choice.find_node_idx(&self.head_block_root()) else {
             return;
         };
         let Some(root) = self.fork_choice.checkpoint_block_of(idx, epoch * SLOTS_PER_EPOCH) else {

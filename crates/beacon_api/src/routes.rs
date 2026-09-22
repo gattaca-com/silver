@@ -1,17 +1,17 @@
+use std::borrow::Cow;
 #[cfg(test)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{
-    B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView,
-};
+use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
     attestation_data::attestation_data,
+    attestation_submission::post_pool_attestations,
     attester_duties::{PostedShufflings, post_attester_duties},
     blocks::{block, block_header, block_root},
     events::events,
@@ -77,6 +77,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         post_sync_committee_subscriptions,
     ),
     (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
+    (Method::Post, "/eth/v2/beacon/pool/attestations", post_pool_attestations),
     (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", proposer_duties_v2),
     (Method::Get, "/metrics", metrics),
 ];
@@ -97,12 +98,11 @@ impl ApiCtx {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
-        anchor_root: B256,
     ) -> Self {
-        let (head_slot, anchor_epoch) = state
+        let (head_slot, anchor_root, anchor_epoch) = state
             .read(|view: StateReadView<'_>| {
                 let slot = view.slot.state();
-                (slot.latest_block_header.slot, slot.slot / SLOTS_PER_EPOCH)
+                (slot.latest_block_header.slot, slot.latest_block_root, slot.slot / SLOTS_PER_EPOCH)
             })
             .expect("beacon api needs the anchor state published");
         Self {
@@ -270,13 +270,15 @@ fn health(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     resp.status_only(code);
 }
 
+pub(crate) fn query_value<'a>(query: &'a str, name: &str) -> Option<Cow<'a, str>> {
+    Query::new(query).find_map(|(key, value)| (key == name).then_some(value))
+}
+
 /// The optional `syncing_status` query parameter, which replaces the code a
 /// syncing node reports. `None` for a value outside the 100..=599 the schema
 /// allows, which the spec answers with a 400.
 fn syncing_status(query: &str) -> Option<u16> {
-    let named =
-        Query::new(query).find_map(|(name, value)| (name == "syncing_status").then_some(value));
-    match named {
+    match query_value(query, "syncing_status") {
         Some(value) => value.parse().ok().filter(|code| (100..=599).contains(code)),
         None => Some(DEFAULT_SYNCING_STATUS),
     }
@@ -310,7 +312,7 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
     let enr = Enr::builder().build(keypair.secret_key()).unwrap();
     let mut identify = Identify::default();
     identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-    ApiCtx::new(&keypair, &enr, &identify, spec, state, B256::default())
+    ApiCtx::new(&keypair, &enr, &identify, spec, state)
 }
 
 #[cfg(test)]

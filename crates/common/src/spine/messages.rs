@@ -80,11 +80,8 @@ pub struct ClusterMsgIn {
 pub enum BeaconApiRequest {
     /// A signed single attestation awaiting cluster admission and Beacon
     /// State validation.
-    /// `validator_pubkey` must be resolved from the attester index in
-    /// `ssz`, not accepted as an untrusted request field.
     LocalAttestation {
         request_id: u64,
-        validator_pubkey: [u8; 48],
         subnet: u64,
         ssz: [u8; SINGLE_ATT_SIZE],
     },
@@ -110,6 +107,16 @@ pub enum BeaconApiResponse {
     Block { request_id: u64, block: Option<ServedBlock> },
 }
 
+impl BeaconApiResponse {
+    pub fn request_id(&self) -> u64 {
+        match self {
+            Self::LocalAttestationResponse { request_id, .. } | Self::Block { request_id, .. } => {
+                *request_id
+            }
+        }
+    }
+}
+
 /// `ssz` points into the `outgoing_rpc` tcache.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -128,6 +135,7 @@ pub struct ServedBlock {
 #[repr(C, u8)]
 pub enum LocalAttestationResult {
     Success,
+    AlreadyKnown,
     Failure(LocalAttestationFailure),
 }
 
@@ -143,6 +151,7 @@ pub enum LocalAttestationFailure {
     ConflictingAttestation,
     TimedOut,
     Invalid,
+    Unverifiable,
     Internal,
 }
 
@@ -1019,6 +1028,10 @@ impl PayloadResolution {
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
+    LocalGossipVerdict {
+        hash: MessageId,
+        result: LocalAttestationResult,
+    },
     Status {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
@@ -1322,6 +1335,7 @@ impl BeaconStateEvent {
             }
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
+            Self::LocalGossipVerdict { .. } |
             Self::BlockReceived { .. } |
             Self::AttestersShuffling { .. } |
             Self::Reorg { .. } => SszView::None,

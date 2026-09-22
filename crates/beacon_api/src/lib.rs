@@ -1,4 +1,5 @@
 mod attestation_data;
+mod attestation_submission;
 mod attester_duties;
 mod blocks;
 mod config;

@@ -542,7 +542,7 @@ mod tests {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
         ssz[0] = root;
         AttestationLockCommand {
-            key: AttestationKey { validator_pubkey: [9; 48], slot },
+            key: AttestationKey { attester_index: 9, slot },
             subnet: u64::from(root) % silver_common::ATTESTATION_SUBNETS as u64,
             ssz,
         }

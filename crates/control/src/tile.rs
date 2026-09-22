@@ -9,11 +9,11 @@ use flux::{
 };
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
-    LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
-    RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheReader, TCacheTable,
-    TMultiProducer, TProducer, TReadMode,
+    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, P2pSend,
+    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
+    RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SyncNeed,
+    SyncUpdate, TCacheError, TCacheId, TCacheReader, TCacheTable, TMultiProducer, TProducer,
+    TReadMode,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
     ticker::SlotTicker,
@@ -296,13 +296,16 @@ impl Tile<SilverSpine> for Controller {
         // capped against the imported head, and a one-loop-stale watermark
         // stalls lock-step tests (and costs a loop of latency live).
         let mut latest_status_event = None;
-        adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
+        adapter.consume(|beacon_event: BeaconStateEvent, producers| {
             self.sync_engine.on_beacon_state_event(&beacon_event);
 
             match beacon_event {
                 BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot, .. } => {
                     self.attestation_cluster.on_status(StatusView::head_slot(&ssz), wall_slot);
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
+                }
+                BeaconStateEvent::LocalGossipVerdict { hash, result } => {
+                    self.attestation_cluster.complete_validation(hash, result, producers)
                 }
                 // PM keeps the reject for peer eviction (Status backing a
                 // rejected chain); the engine owns target invalidation.
@@ -345,18 +348,6 @@ impl Tile<SilverSpine> for Controller {
         });
 
         adapter.consume(|event: PeerEvent, producers| {
-            // Beacon State uses the synthetic local stream for a terminal
-            // local validation failure. Complete the API request without
-            // counting that failure against a (non-existent) network peer.
-            if matches!(
-                event,
-                PeerEvent::P2pGossipInvalidMsg { p2p_peer, .. }
-                    if p2p_peer == LOCAL_GOSSIP_STREAM_ID.peer()
-            ) {
-                self.attestation_cluster.on_peer_event(&event, producers);
-                return;
-            }
-
             self.sync_engine.on_peer_event(event, self.peer_manager.our_fork_digest());
 
             if let PeerEvent::SendGossip { topic, domain, msg_hash, protobuf, .. } = &event {

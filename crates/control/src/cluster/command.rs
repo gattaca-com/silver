@@ -4,12 +4,12 @@ use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
 const LOCK_COMMAND_TAG: u8 = 0;
 const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
-const ENCODED_LOCK_COMMAND_LEN: usize = 1 + 48 + 8 + 8 + SINGLE_ATT_SIZE;
+const ENCODED_LOCK_COMMAND_LEN: usize = 1 + 8 + 8 + 8 + SINGLE_ATT_SIZE;
 const ENCODED_ADVANCE_MINIMUM_SLOT_LEN: usize = 1 + 8;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct AttestationKey {
-    pub validator_pubkey: [u8; 48],
+    pub attester_index: u64,
     pub slot: u64,
 }
 
@@ -35,7 +35,7 @@ impl ReplicatedCommand {
             Self::Lock(command) => {
                 let mut encoded = Vec::with_capacity(ENCODED_LOCK_COMMAND_LEN);
                 encoded.push(LOCK_COMMAND_TAG);
-                encoded.extend_from_slice(&command.key.validator_pubkey);
+                encoded.extend_from_slice(&command.key.attester_index.to_le_bytes());
                 encoded.extend_from_slice(&command.key.slot.to_le_bytes());
                 encoded.extend_from_slice(&command.subnet.to_le_bytes());
                 encoded.extend_from_slice(&command.ssz);
@@ -65,17 +65,17 @@ impl ReplicatedCommand {
                     });
                 }
 
-                let validator_pubkey = payload[..48].try_into().expect("slice is 48 bytes");
-                let slot =
-                    u64::from_le_bytes(payload[48..56].try_into().expect("slice is 8 bytes"));
+                let attester_index =
+                    u64::from_le_bytes(payload[..8].try_into().expect("slice is 8 bytes"));
+                let slot = u64::from_le_bytes(payload[8..16].try_into().expect("slice is 8 bytes"));
                 let subnet =
-                    u64::from_le_bytes(payload[56..64].try_into().expect("slice is 8 bytes"));
-                let ssz = payload[64..64 + SINGLE_ATT_SIZE]
+                    u64::from_le_bytes(payload[16..24].try_into().expect("slice is 8 bytes"));
+                let ssz = payload[24..24 + SINGLE_ATT_SIZE]
                     .try_into()
                     .expect("slice is one single attestation");
 
                 Ok(Self::Lock(AttestationLockCommand {
-                    key: AttestationKey { validator_pubkey, slot },
+                    key: AttestationKey { attester_index, slot },
                     subnet,
                     ssz,
                 }))
@@ -126,7 +126,7 @@ mod tests {
         let mut ssz = [0; SINGLE_ATT_SIZE];
         ssz[0] = root;
         AttestationLockCommand {
-            key: AttestationKey { validator_pubkey: [7; 48], slot },
+            key: AttestationKey { attester_index: 7, slot },
             subnet: u64::from(root),
             ssz,
         }

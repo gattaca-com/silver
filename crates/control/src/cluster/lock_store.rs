@@ -42,7 +42,7 @@ struct SlotLocks {
     /// Full-message hashes, including the signature. Comparing only the
     /// signing root would allow a later byte-distinct candidate for the same
     /// attestation data to bypass the first-candidate-wins rule.
-    attestations: FxHashMap<[u8; 48], [u8; 32]>,
+    attestations: FxHashMap<u64, [u8; 32]>,
 }
 
 impl AttestationLockStore {
@@ -63,7 +63,7 @@ impl AttestationLockStore {
         }
 
         let attestation_hash = merkle::sha256(&cmd.ssz);
-        match bucket.attestations.entry(cmd.key.validator_pubkey) {
+        match bucket.attestations.entry(cmd.key.attester_index) {
             Entry::Vacant(entry) => {
                 entry.insert(attestation_hash);
                 LockResult::Accepted
@@ -112,7 +112,7 @@ mod tests {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
         ssz[0] = root;
         AttestationLockCommand {
-            key: AttestationKey { validator_pubkey: [validator; 48], slot },
+            key: AttestationKey { attester_index: u64::from(validator), slot },
             subnet: u64::from(root) % silver_common::ATTESTATION_SUBNETS as u64,
             ssz,
         }
