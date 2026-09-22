@@ -823,13 +823,12 @@ impl HeadRig {
         payload_present: bool,
     ) {
         let n = self.tile.head_validator_count();
-        for validator in validators {
-            self.tile.fork_choice.vote_tracker.record_vote(
-                &VoteTarget { block_root, target_epoch: 2, attestation_slot, payload_present },
-                validator,
-                n,
-            );
-        }
+        let validators = validators.collect::<Vec<_>>();
+        self.tile.fork_choice.record_votes(
+            &VoteTarget { block_root, target_epoch: 2, attestation_slot, payload_present },
+            &validators,
+            n,
+        );
     }
 }
 
@@ -2028,9 +2027,10 @@ fn duplicate_payload_orphan_not_rebuffered() {
 fn attestation_too_short_ignored() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
+    let anchor = tile.last_applied_block_root;
     let buf = [0u8; 100];
     tile.handle_attestation(&buf, 0);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, 0);
+    assert_eq!(voted_weight(&mut tile, anchor), 0);
 }
 
 #[test]
@@ -2303,7 +2303,7 @@ fn build_agg_for_vi0(tile: &BeaconStateTile) -> Vec<u8> {
 }
 
 #[test]
-fn attestation_updates_vote_tracker() {
+fn attestation_weighs_its_block() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
@@ -2322,13 +2322,8 @@ fn attestation_updates_vote_tracker() {
         bbr,
         &imm,
     );
-    // Assert against what the handler reads via the view (the view owns
-    // the offsets), verifying the vote fold self-consistently.
-    let want_root = *SingleAttestationView::beacon_block_root(&buf);
-    let want_epoch = SingleAttestationView::target_epoch(&buf);
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, want_root);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
 /// Distinct payloads expose relays that substitute the protobuf handle for SSZ.
@@ -2418,11 +2413,10 @@ fn attestation_batch_flush_applies_all() {
         let m = gossip_att_msg(&mut gp, &buf, subnet);
         tile.defer_vote(m, &mut adapter.producers);
     }
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32], "vote before flush");
+    assert_eq!(voted_weight(&mut tile, bbr), 0, "vote before flush");
 
     tile.flush_votes(&mut adapter.producers);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, bbr);
+    assert_eq!(voted_weight(&mut tile, bbr), 2 * MAX_EFFECTIVE_BALANCE);
     assert!(tile.vote_batch.is_empty());
     assert!(tile.vote_pending.is_empty());
     assert_eq!(non_block_relays(&mut adapter), expected_topics);
@@ -2444,8 +2438,7 @@ fn attestation_batch_fallback_rejects_only_forged() {
     tile.defer_vote(m, &mut adapter.producers);
 
     tile.flush_votes(&mut adapter.producers);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, [0u8; 32], "forged vote");
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE, "forged vote dropped");
 }
 
 #[test]
@@ -2463,7 +2456,7 @@ fn invalid_vote_does_not_deduplicate_later_valid_vote() {
     tile.defer_vote(gossip_att_msg(&mut gp, &valid, subnet), &mut adapter.producers);
 
     tile.flush_votes(&mut adapter.producers);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
 #[test]
@@ -2507,12 +2500,12 @@ fn attestation_batch_flushed_before_other_gossip() {
     let (buf, subnet) = batched_att(&tile, 0, 0);
     let m = gossip_att_msg(&mut gp, &buf, subnet);
     tile.defer_vote(m, &mut adapter.producers);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
+    assert_eq!(voted_weight(&mut tile, bbr), 0);
 
     let mut exit = gossip_att_msg(&mut gp, &[0u8; SINGLE_ATT_SIZE], 0);
     exit.topic = GossipTopic::VoluntaryExit;
     tile.on_gossip(exit, &mut adapter.producers);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
 #[test]
@@ -2646,7 +2639,7 @@ fn mixed_vote_batch_applies_all_kinds() {
     tile.defer_vote(m, &mut adapter.producers);
 
     tile.flush_votes(&mut adapter.producers);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
     assert!(tile.seen_sync_msgs[3].contains(wall, 0));
 }
 
@@ -2899,14 +2892,14 @@ fn current_slot_vote_deferred_until_drain() {
         &imm,
     );
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
-    // Deferred: not yet folded into the tracker, and a drain within the same
-    // slot keeps it deferred.
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
+    // Deferred: carries no weight yet, and a drain within the same slot
+    // keeps it deferred.
+    assert_eq!(voted_weight(&mut tile, bbr), 0);
     let n = tile.head_validator_count();
     tile.fork_choice.drain_pending_votes(n, tile.ticker.current_slot());
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
+    assert_eq!(voted_weight(&mut tile, bbr), 0);
     tile.fork_choice.drain_pending_votes(n, tile.ticker.current_slot() + 1);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
 /// Spec [REJECT]: an attestation must arrive on the subnet its committee
@@ -3050,56 +3043,55 @@ fn equivocator_excluded_from_votes() {
     seed_tile(&mut tile, 8, 0);
     let anchor = tile.last_applied_block_root;
     let n = tile.head_validator_count();
-    tile.fork_choice.vote_tracker.record_vote(
+    tile.fork_choice.record_votes(
         &VoteTarget {
             block_root: anchor,
             target_epoch: 0,
             attestation_slot: 0,
             payload_present: false,
         },
-        3,
+        &[3],
         n,
     );
-    assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, anchor);
+    assert_eq!(voted_weight(&mut tile, anchor), MAX_EFFECTIVE_BALANCE);
 
-    tile.fork_choice.vote_tracker.mark_equivocating(3);
-    assert!(tile.fork_choice.vote_tracker.is_equivocating(3));
-    assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, [0u8; 32]);
+    tile.fork_choice.mark_equivocating(3);
+    assert!(tile.fork_choice.is_equivocating(3));
+    assert_eq!(voted_weight(&mut tile, anchor), 0);
 
     // A later attestation from an equivocator is ignored.
-    tile.fork_choice.vote_tracker.record_vote(
+    tile.fork_choice.record_votes(
         &VoteTarget {
-            block_root: [0x55u8; 32],
+            block_root: anchor,
             target_epoch: 5,
             attestation_slot: 5,
             payload_present: false,
         },
-        3,
+        &[3],
         n,
     );
-    assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, [0u8; 32]);
+    assert_eq!(voted_weight(&mut tile, anchor), 0);
 }
 
 /// The justified-balance snapshot is rebuilt only when the justified
 /// checkpoint moves; the first build is a full pass, the next is a no-op.
 fn vote_all_for(tile: &mut BeaconStateTile, block_root: B256) {
     let n = tile.head_validator_count();
-    for validator in 0..n as u32 {
-        tile.fork_choice.vote_tracker.record_vote(
-            &VoteTarget {
-                block_root,
-                target_epoch: 0,
-                attestation_slot: 0,
-                payload_present: false,
-            },
-            validator,
-            n,
-        );
-    }
+    let validators = (0..n as u32).collect::<Vec<_>>();
+    tile.fork_choice.record_votes(
+        &VoteTarget { block_root, target_epoch: 0, attestation_slot: 0, payload_present: false },
+        &validators,
+        n,
+    );
 }
 
 fn node_weight(tile: &BeaconStateTile, root: B256) -> u64 {
     tile.fork_choice.node(tile.fork_choice.find_node_idx(&root).unwrap()).weight
+}
+
+fn voted_weight(tile: &mut BeaconStateTile, root: B256) -> u64 {
+    tile.recompute_head();
+    node_weight(tile, root)
 }
 
 /// Votes weigh the justified state's effective balances; the proposer boost
@@ -3173,10 +3165,8 @@ fn agg_accept() {
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
     let beacon_block_root = tile.last_applied_block_root;
-    let slot = SignedAggregateAndProofView::agg_slot(&buf);
     assert_non_block_relay(&mut tile, &buf, GossipTopic::BeaconAggregateAndProof);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
+    assert_eq!(voted_weight(&mut tile, beacon_block_root), MAX_EFFECTIVE_BALANCE);
 }
 
 /// `handle_attestation` derives the attester domain from the state's
@@ -3278,17 +3268,26 @@ fn agg_respects_epoch_monotonicity() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
 
-    let preset_root = [0x99u8; 32];
-    tile.fork_choice.vote_tracker.votes[0].latest_root = preset_root;
-    tile.fork_choice.vote_tracker.votes[0].latest_epoch = 1;
+    // Validator 0 already voted at epoch 1 for a block outside the tree.
+    let bbr = tile.last_applied_block_root;
+    let n = tile.head_validator_count();
+    tile.fork_choice.record_votes(
+        &VoteTarget {
+            block_root: [0x99u8; 32],
+            target_epoch: 1,
+            attestation_slot: 0,
+            payload_present: false,
+        },
+        &[0],
+        n,
+    );
 
     let buf = build_agg_for_vi0(&tile);
     assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
 
     // Older-epoch aggregate must not overwrite the newer vote.
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, preset_root);
-    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, 1);
+    assert_eq!(voted_weight(&mut tile, bbr), 0);
 }
 
 #[test]

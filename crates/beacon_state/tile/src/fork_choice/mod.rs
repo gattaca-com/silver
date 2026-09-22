@@ -48,7 +48,7 @@ pub struct ForkChoice {
     pub(super) applied_boost_root: B256,
     pub(super) applied_boost_score: u64,
 
-    pub vote_tracker: VoteTracker,
+    vote_tracker: VoteTracker,
     /// Gossip votes for the current slot or later, folded once their slot has
     /// passed.
     pub(super) pending_votes: VoteBatch,

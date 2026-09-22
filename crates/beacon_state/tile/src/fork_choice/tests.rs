@@ -123,9 +123,9 @@ fn install(fc: &mut ForkChoice, group: &ValidatorsGroup, id: ValidatorsId) {
 
 fn vote(fc: &mut ForkChoice, validator: u32, block_root: B256, target_epoch: Epoch) {
     let n = fc.vote_tracker.votes.len();
-    fc.vote_tracker.record_vote(
+    fc.record_votes(
         &VoteTarget { block_root, target_epoch, attestation_slot: 0, payload_present: false },
-        validator,
+        &[validator],
         n,
     );
 }

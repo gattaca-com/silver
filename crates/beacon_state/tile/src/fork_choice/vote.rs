@@ -6,7 +6,7 @@ use crate::stf::VoteTarget;
 
 #[derive(Default)]
 pub struct VoteTracker {
-    pub votes: Box<[Vote]>,
+    pub(super) votes: Box<[Vote]>,
     /// Validator indices whose vote moved since the last `recompute_head`.
     pub(super) dirty: Vec<u32>,
     equivocating: Box<[u64]>,
@@ -198,6 +198,23 @@ impl ForkChoice {
 }
 
 impl ForkChoice {
+    pub fn record_votes(
+        &mut self,
+        target: &VoteTarget,
+        validators: &[u32],
+        validator_count: usize,
+    ) {
+        self.vote_tracker.record_votes(target, validators, validator_count);
+    }
+
+    pub fn mark_equivocating(&mut self, idx: usize) {
+        self.vote_tracker.mark_equivocating(idx);
+    }
+
+    pub fn is_equivocating(&self, idx: usize) -> bool {
+        self.vote_tracker.is_equivocating(idx)
+    }
+
     /// Spec `on_attestation` folds a vote only once `current_slot >= slot + 1`;
     /// a vote for `current_slot` or later (clock disparity) stays deferred.
     pub fn record_or_defer_votes(

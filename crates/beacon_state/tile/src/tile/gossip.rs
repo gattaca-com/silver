@@ -1151,7 +1151,7 @@ impl BeaconStateTile {
         // excludes them. Idempotent; removes any live LMD weight next recompute.
         if feedback == Feedback::Accept {
             for &idx in slashed.iter() {
-                self.fork_choice.vote_tracker.mark_equivocating(idx as usize);
+                self.fork_choice.mark_equivocating(idx as usize);
                 self.seen_attester_slashed.mark(idx as usize);
             }
         }
