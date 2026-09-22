@@ -51,6 +51,10 @@ silver_common::declare_counters! {
         CacheSegmentedOwners,
         // Reserved ranges per recipient, including descriptors; not unique cache backing bytes.
         CacheSegmentedRetainedBytes,
+        // Complete partial frames accepted by Quinn, not yet necessarily ACKed.
+        PartialFramesWritten,
+        PartialResponsesSent,
+        PartialCellsServed,
     }
 }
 

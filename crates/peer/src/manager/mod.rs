@@ -9,8 +9,8 @@ use std::{
 };
 
 use silver_common::{
-    AgentString, Enr, GossipTopic, PeerControl, PeerEvent, PeerId, RpcSeverity, StreamProtocol,
-    SyncUpdate,
+    AgentString, Enr, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId, RpcOutbound,
+    RpcSeverity, StreamProtocol, SyncUpdate,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -24,8 +24,10 @@ use crate::{
 pub(crate) mod admission;
 pub(crate) mod attempts;
 pub(crate) mod mesh;
+mod partial;
 pub(crate) mod peers;
 pub(crate) mod promises;
+pub use partial::PartialPeer;
 pub(crate) mod rpc;
 pub(crate) mod sync;
 
@@ -296,6 +298,16 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        self.handle_event_with_partial(event, now, false, emit);
+    }
+
+    pub fn handle_event_with_partial(
+        &mut self,
+        event: PeerEvent,
+        now: Instant,
+        partial_serving: bool,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
         match event {
             PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
@@ -310,10 +322,7 @@ impl PeerManager {
                     self.database.dial_failed(&peer_id, now + DIAL_FAILURE_BACKOFF);
                 }
             }
-            PeerEvent::P2pCannotCreateStream { p2p_peer, protocol, rpc_request, stream_gone } => {
-                if rpc_request {
-                    self.release_outbound_in_flight(p2p_peer, protocol);
-                }
+            PeerEvent::P2pCannotCreateStream { p2p_peer, stream_gone, .. } => {
                 if stream_gone {
                     // Their teardown raced our (possibly late) response —
                     // not peer misbehaviour. Counted, not penalised.
@@ -322,13 +331,12 @@ impl PeerManager {
                     crate::PeerCounters::StreamCreditExhausted.inc();
                     self.add_behaviour_penalty(p2p_peer, 1.0, "stream credit exhausted");
                 }
-                self.disconnect_after_failed_goodbye(p2p_peer, protocol, emit);
             }
-            PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, rpc_request } => {
-                // Local outbound-ring overflow — a backpressure signal, often
-                // ours (blocked socket), not peer misbehaviour. No P7: a
-                // stalled connection drops in bursts and the squared penalty
-                // would graylist the whole mesh on a local uplink stall.
+            PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, msg } => {
+                // Rejections and queue evictions release request capacity here.
+                // Drops alone aren't peer misbehaviour: squared P7 penalties
+                // would graylist the mesh during a local uplink stall.
+                let rpc_request = matches!(msg, P2pSend::Rpc(RpcOutbound::Request(_)));
                 if rpc_request {
                     self.release_outbound_in_flight(p2p_peer, protocol);
                 }
@@ -445,7 +453,7 @@ impl PeerManager {
                 self.on_new_gossip(p2p_peer, topic, msg_hash, recv_ts, idontwant, emit);
             }
             PeerEvent::OutboundIHave { topic, digest, msg_count: _, protobuf } => {
-                self.on_outbound_ihave(topic, digest, protobuf, emit);
+                self.on_outbound_ihave(topic, digest, protobuf, partial_serving, emit);
             }
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
                 self.on_outbound_iwant(p2p_peer, iwant, emit);
@@ -467,6 +475,7 @@ impl PeerManager {
                     topic,
                     domain.digest(),
                     protobuf,
+                    partial_serving,
                     emit,
                 );
             }

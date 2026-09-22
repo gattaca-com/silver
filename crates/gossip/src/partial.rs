@@ -17,8 +17,12 @@ use silver_common::{
 // offsets-plus-bitmap prefix; every piece is small and bounded.
 const MAX_PARTIAL_FRAMING: usize = 256;
 
+mod metadata;
+pub use metadata::{ColumnGroupKey, PartialMetadataReceived};
+
 /// Row masks for a `partsMetadata` field; both bitlists carry exactly
 /// `n_rows` bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartsMetadata {
     pub available: u128,
     pub requests: u128,
@@ -51,6 +55,27 @@ pub struct PartialFrame<'a> {
 }
 
 impl PartialFrame<'_> {
+    /// Protobuf RPC length, excluding the stream's length prefix.
+    pub fn wire_len(&self) -> usize {
+        let (fields, tail) = self.field_lengths();
+        let extension = fields + self.plan.map_or(0, |plan| plan.ssz_len()) + tail;
+        1 + varint_len(extension as u64) + extension
+    }
+
+    fn field_lengths(&self) -> (usize, usize) {
+        let fields = 1 +
+            string_encoded_len(self.topic) +
+            1 +
+            varint_len(self.group_id.len() as u64) +
+            self.group_id.len() +
+            self.plan.map_or(0, |plan| 1 + varint_len(plan.ssz_len() as u64));
+        let tail = self.metadata.as_ref().map_or(0, |meta| {
+            let len = parts_metadata_len(meta.n_rows);
+            1 + varint_len(len as u64) + len
+        });
+        (fields, tail)
+    }
+
     /// Write the frame descriptor into the outgoing gossip cache.
     /// `cells` and `proofs` are the selected rows' ranges in ascending
     /// row order; counts and lengths must match the plan.
@@ -80,14 +105,7 @@ impl PartialFrame<'_> {
         }
 
         let ssz_len = self.plan.map_or(0, |plan| plan.ssz_len());
-        let meta_len = self.metadata.as_ref().map(|meta| parts_metadata_len(meta.n_rows));
-        let fields_len = 1 +
-            string_encoded_len(self.topic) +
-            1 +
-            varint_len(self.group_id.len() as u64) +
-            self.group_id.len() +
-            self.plan.map_or(0, |_| 1 + varint_len(ssz_len as u64));
-        let tail = meta_len.map_or(0, |m| 1 + varint_len(m as u64) + m);
+        let (fields_len, tail) = self.field_lengths();
         let ext_len = fields_len + ssz_len + tail;
 
         // Framing layout: [lead | header list prefix | metadata field].
@@ -123,7 +141,7 @@ impl PartialFrame<'_> {
         }
         if let Some(meta) = &self.metadata {
             let mut buf = [0u8; parts_metadata_len(128)];
-            let bytes = &mut buf[..meta_len.unwrap()];
+            let bytes = &mut buf[..parts_metadata_len(meta.n_rows)];
             write_parts_metadata(meta.available, meta.requests, meta.n_rows, bytes);
             Tag::new(4, WireType::LengthDelimited).encode(&mut cursor);
             encode_bytes(bytes, &mut cursor);
@@ -183,30 +201,37 @@ fn segment_len(segment: CacheSegment) -> usize {
 #[cfg(test)]
 mod tests {
     use buffa::{Message, MessageField, MessageView};
+    use silver_common::{
+        GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
+    };
 
     use crate::generated::{
         ControlExtensions, ControlMessage, PartialMessagesExtension, RPC, RPCView, rpc::SubOpts,
     };
 
-    /// The constant announcement frame is a canonical encoding of
-    /// `RPC { control { extensions {} } }` with its length prefix.
     #[test]
     fn extensions_announcement_frame_decodes() {
-        use silver_common::GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME as FRAME;
-        assert_eq!(FRAME[0] as usize, FRAME.len() - 1);
-        let reference = RPC {
-            control: MessageField::some(ControlMessage {
-                extensions: MessageField::some(ControlExtensions::default()),
+        for (frame, partial_messages) in [
+            (GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, None),
+            (GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME, Some(true)),
+        ] {
+            assert_eq!(frame[0] as usize, frame.len() - 1);
+            let reference = RPC {
+                control: MessageField::some(ControlMessage {
+                    extensions: MessageField::some(ControlExtensions {
+                        partial_messages,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
+            }
+            .encode_to_vec();
+            assert_eq!(&frame[1..], reference);
+            let view = RPCView::decode_view(&frame[1..]).unwrap();
+            let control = view.control.as_option().unwrap();
+            assert_eq!(control.extensions.as_option().unwrap().partial_messages, partial_messages);
         }
-        .encode_to_vec();
-        assert_eq!(&FRAME[1..], reference);
-        let view = RPCView::decode_view(&FRAME[1..]).unwrap();
-        let control = view.control.as_option().unwrap();
-        assert!(control.extensions.is_set());
-        assert_eq!(control.extensions.as_option().unwrap().partial_messages, None);
     }
 
     /// Registry wire numbers: SubOpts.requestsPartial=3,
@@ -398,26 +423,28 @@ mod tests {
 
         let group = fulu_group_id(&[0xab; 32]);
         let plan = PartialSidecarPlan::new(PartialLayout::Fulu { header_bytes }, 0b101, 3).unwrap();
-        let frame = PartialFrame {
+        let partial = PartialFrame {
             topic: TOPIC,
             group_id: &group,
             plan: Some(plan),
             header,
             metadata: Some(PartsMetadata { available: 0b101, requests: 0b010, n_rows: 3 }),
-        }
-        .write(
-            &mut producer,
-            cells.iter().copied(),
-            proofs.iter().copied(),
-            now + Duration::from_secs(1),
-        )
-        .unwrap();
+        };
+        let frame = partial
+            .write(
+                &mut producer,
+                cells.iter().copied(),
+                proofs.iter().copied(),
+                now + Duration::from_secs(1),
+            )
+            .unwrap();
 
         let mut metadata = vec![0u8; parts_metadata_len(3)];
         write_parts_metadata(0b101, 0b010, 3, &mut metadata);
         let reference =
             reference_rpc(&group, reference_ssz(&plan, &source, header_bytes), Some(metadata));
 
+        assert_eq!(partial.wire_len(), reference.len());
         assert_eq!(reassemble(frame, &mut consumer, now), reference);
     }
 
@@ -470,16 +497,17 @@ mod tests {
             });
             let group = fulu_group_id(&[0xab; 32]);
             let now = Instant::now();
-            let frame = PartialFrame {
+            let partial = PartialFrame {
                 topic: TOPIC,
                 group_id: &group,
                 plan: Some(plan),
                 header,
                 metadata: Some(PartsMetadata { available: 0x109, requests: 0xf6, n_rows: 9 }),
-            }
-            .write(&mut producer, cells, proofs, now + Duration::from_secs(1))
-            .unwrap();
+            };
+            let frame =
+                partial.write(&mut producer, cells, proofs, now + Duration::from_secs(1)).unwrap();
             let wire = reassemble(frame, &mut consumer, now);
+            assert_eq!(partial.wire_len(), wire.len());
             let metadata = vec![8, 0, 0, 0, 10, 0, 0, 0, 9, 3, 0xf6, 2];
             assert_eq!(wire, reference_rpc(&group, reference, Some(metadata)));
         }
@@ -495,22 +523,24 @@ mod tests {
 
         let group = gloas_group_id(&[0xcd; 32], 123_456);
         let plan = PartialSidecarPlan::new(PartialLayout::Gloas, 0b10, 2).unwrap();
-        let frame = PartialFrame {
+        let partial = PartialFrame {
             topic: TOPIC,
             group_id: &group,
             plan: Some(plan),
             header: None,
             metadata: None,
-        }
-        .write(
-            &mut producer,
-            cells.iter().copied(),
-            proofs.iter().copied(),
-            now + Duration::from_secs(1),
-        )
-        .unwrap();
+        };
+        let frame = partial
+            .write(
+                &mut producer,
+                cells.iter().copied(),
+                proofs.iter().copied(),
+                now + Duration::from_secs(1),
+            )
+            .unwrap();
 
         let reference = reference_rpc(&group, reference_ssz(&plan, &source, 0), None);
+        assert_eq!(partial.wire_len(), reference.len());
         assert_eq!(reassemble(frame, &mut consumer, now), reference);
     }
 

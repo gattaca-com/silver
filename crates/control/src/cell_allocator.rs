@@ -58,6 +58,10 @@ impl CellAllocator {
         &self.producer
     }
 
+    pub fn slot_window(&self) -> (u64, Instant) {
+        (self.slot, self.slot_end)
+    }
+
     pub fn allocate(&mut self, request: AssemblyRequest) -> Result<AssemblySet, StoreError> {
         let context = request.context;
         if context.slot < self.min_slot {

@@ -1,10 +1,10 @@
-use std::time::Instant;
+use std::{ptr, time::Instant};
 
 use flux::spine::SpineProducers;
 use fxhash::FxHashMap;
 use silver_common::{
-    ColumnOrigin, DataColumnsEvent, GossipTopic, PeerControl, SilverSpineProducers, SszCache,
-    TProducer, TRandomAccess,
+    ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, PeerControl, PeerEvent,
+    SilverSpineProducers, SszCache, TProducer, TRandomAccess,
     cell_store::{
         CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, PendingCell, StoreError,
     },
@@ -122,12 +122,19 @@ impl CellIngress {
             CellStoreEvent::Available(update)
                 if now < update.expires && update.slot >= self.min_slot =>
             {
-                let key = (update.block_root, update.column);
-                if self.available.contains_key(&key) || self.available.len() < self.capacity {
-                    self.available.insert(key, update);
-                }
+                self.update_availability(update, now);
             }
             _ => {}
+        }
+    }
+
+    pub(crate) fn update_availability(&mut self, update: ColumnAvailability, now: Instant) {
+        let key = (update.block_root, update.column);
+        if now < update.expires &&
+            update.slot >= self.min_slot &&
+            (self.available.contains_key(&key) || self.available.len() < self.capacity)
+        {
+            self.available.insert(key, update);
         }
     }
 
@@ -141,6 +148,40 @@ impl CellIngress {
             .get(&(*root, column))
             .copied()
             .filter(|update| now < update.expires && update.slot >= self.min_slot)
+    }
+
+    pub fn slot_window(&self) -> (u64, Instant) {
+        self.allocator.slot_window()
+    }
+
+    pub fn columns(&self, now: Instant) -> impl Iterator<Item = ColumnAvailability> + '_ {
+        self.available
+            .values()
+            .copied()
+            .filter(move |column| now < column.expires && column.slot >= self.min_slot)
+    }
+
+    pub fn serving_column(&self, event: &PeerEvent, now: Instant) -> Option<ColumnAvailability> {
+        let (topic, digest, full) = match event {
+            PeerEvent::SendGossip {
+                topic, domain, ssz, ssz_cache: SszCache::DataColumns, ..
+            } => (*topic, domain.digest(), Some(*ssz)),
+            PeerEvent::OutboundIHave { topic, digest, .. } => (*topic, *digest, None),
+            _ => return None,
+        };
+        let GossipTopic::DataColumnSidecar(index) = topic else { return None };
+        self.columns(now).find(|column| {
+            column.column == index as usize &&
+                column.domain.digest() == digest &&
+                column.available != 0 &&
+                (column.domain.format() != ForkName::Fulu || column.header.is_some()) &&
+                full.is_none_or(|read| {
+                    column.full.is_some_and(|(source, ..)| {
+                        source.seq() == read.seq() &&
+                            ptr::eq(&*source.cache_ref(), &*read.cache_ref())
+                    })
+                })
+        })
     }
 
     pub fn stage_cell(
