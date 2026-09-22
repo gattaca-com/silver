@@ -1,5 +1,7 @@
 use silver_common::{
-    cell_store::CellKey, ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView}, ColumnOrigin, DataKind, SszCache
+    ColumnOrigin, DataKind, SszCache,
+    cell_store::CellKey,
+    ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView},
 };
 
 use super::*;
