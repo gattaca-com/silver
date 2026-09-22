@@ -1,11 +1,11 @@
 #![cfg(feature = "thread_park")]
 
 use flux::park::SIGNAL;
-use silver_common::{SubLayout, SubReservationError, TCache};
+use silver_common::{SubLayout, SubReservationError, TCache, TCacheId};
 
 #[test]
 fn sub_reservations_notify_once_on_terminal_publication() {
-    let mut producer = TCache::producer("", 4096);
+    let mut producer = TCache::producer(TCacheId::IncomingGossip, 4096);
     let initial = SIGNAL.read_counter();
     let finished = producer
         .sub_reservation(SubLayout { parts: 0, first_len: 4, second_len: 2 }, b"full", b"")

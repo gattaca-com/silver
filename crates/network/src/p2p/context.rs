@@ -1,24 +1,39 @@
 use std::collections::HashMap;
 
 use fxhash::FxHashMap;
-use silver_common::{Enr, PeerId, ProtoIdentify, TProducer, TRandomAccess};
+use silver_common::{
+    Enr, PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheReader, TProducer, TReadMode,
+};
 
 use crate::RemotePeer;
 
 pub struct Context {
     pub gossip_producer: TProducer,
-    pub gossip_consumer: TRandomAccess,
     pub rpc_producer: TProducer,
-    pub rpc_consumer: TRandomAccess,
     /// Local identify record.
     pub identify: Option<ProtoIdentify>,
     pub cluster_nodes: Option<ClusterNodes>,
     pub cluster_inbound_producer: TProducer,
-    pub cluster_outbound_consumer: TRandomAccess,
-    pub data_columns_consumer: Option<Box<TRandomAccess>>,
+    /// Opens the retained data-columns consumer for partial column sends.
+    pub partial_columns: bool,
+    pub reader: TCacheReader,
 }
 
 impl Context {
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::OutgoingGossip, "p2p_outgoing_gossip", TReadMode::Strict)?;
+        self.reader.open(TCacheId::OutgoingRpc, "p2p_outgoing_rpc", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::ClusterOutbound,
+            "network_cluster_outbound",
+            TReadMode::Strict,
+        )?;
+        if self.partial_columns {
+            self.reader.open(TCacheId::DataColumns, "network_cells", TReadMode::Retained)?;
+        }
+        Ok(())
+    }
+
     pub fn cluster_peer(&self, raft_id: u64) -> Option<usize> {
         self.cluster_nodes.as_ref().and_then(|n| n.connection_id(raft_id))
     }

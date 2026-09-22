@@ -15,7 +15,7 @@ use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, GossipTopic, MessageId, NewGossipMsg,
     P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncNeed,
-    SyncUpdate, TCache, TCacheProducer, TProducer, TRandomAccess, hex32,
+    SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer, hex32,
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
     test_util::ShmemDir,
     ticker::SlotTicker,
@@ -182,18 +182,15 @@ fn fulu_from_genesis() -> SpecConfig {
 
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
-        Self::build(wall_slot, |ticker, gc, rc, ec, repc| {
+        Self::build(wall_slot, |ticker, tcaches| {
             let state = BeaconState::from_checkpoint(checkpoint_ssz, &fulu_from_genesis(), &[])
                 .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
             BeaconStateTile::new(
                 ticker,
                 Arc::new(fulu_from_genesis()),
                 &SyncingConfig::default(),
-                gc,
-                rc,
-                ec,
-                repc,
-                TCache::producer("harness_beacon_state", 1 << 20),
+                tcaches,
+                TCache::producer(TCacheId::BeaconState, 1 << 20),
                 true,
                 state,
             )
@@ -202,13 +199,7 @@ impl Harness {
 
     fn build<F>(wall_slot: u64, build_tile: F) -> Self
     where
-        F: FnOnce(
-            SlotTicker,
-            TRandomAccess,
-            TRandomAccess,
-            TRandomAccess,
-            TRandomAccess,
-        ) -> BeaconStateTile,
+        F: FnOnce(SlotTicker, TCacheTable) -> BeaconStateTile,
     {
         let base = ShmemDir::new().expect("create temp base");
         let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
@@ -219,25 +210,24 @@ impl Harness {
         let genesis = now.saturating_sub(wall_slot * 12);
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
 
-        let gossip_in_producer = TCache::producer("gossip_in", 1 << 24);
-        let rpc_in_producer = TCache::producer("rpc_in", RPC_RING_BYTES);
-        let engine_resp_producer = TCache::producer("engine_resp", 1 << 24);
-        let replay_in_producer = TCache::producer("replay_in", 1 << 24);
-        let gossip_consumer =
-            gossip_in_producer.cache_ref().random_access("test", true).expect("gossip ra");
-        let rpc_consumer = rpc_in_producer.cache_ref().random_access("test", true).expect("rpc ra");
-        let engine_resp_consumer =
-            engine_resp_producer.cache_ref().random_access("test", true).expect("engine resp ra");
-        let replay_consumer =
-            replay_in_producer.cache_ref().random_access("test", true).expect("replay ra");
-
-        let tile = build_tile(
-            ticker,
-            gossip_consumer,
-            rpc_consumer,
-            engine_resp_consumer,
-            replay_consumer,
+        let gossip_in_producer = TCache::producer(TCacheId::SszGossip, 1 << 24);
+        let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, RPC_RING_BYTES);
+        let engine_resp_producer = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
+        let replay_in_producer = TCache::producer(TCacheId::ReplayBlocks, 1 << 24);
+        let columns_producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let tcaches = TCacheTable::from_iter(
+            [
+                &gossip_in_producer,
+                &rpc_in_producer,
+                &engine_resp_producer,
+                &replay_in_producer,
+                &columns_producer,
+            ]
+            .map(|p| p.cache_ref()),
         );
+
+        let mut tile = build_tile(ticker, tcaches);
+        tile.open_tcaches().unwrap();
 
         // Order matters: attach tile first so its tile_id stays 0 for the
         // real consumer of `inbound`; Injector gets tile_id 1.

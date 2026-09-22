@@ -12,6 +12,7 @@ use silver_beacon_state_data::{
     B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochView,
     LongtailGroup, SpecConfig, StateId, StateWriterView,
 };
+use silver_common::TCacheId;
 
 #[path = "support/loaded_state.rs"]
 mod loaded_state;
@@ -428,30 +429,30 @@ pub fn ef_tile_with_spec(
     spec: SpecConfig,
 ) -> BeaconStateTile {
     use silver_beacon_state::{BeaconStateTile, SlotTicker};
-    use silver_common::{TCache, TCacheProducer};
+    use silver_common::{TCache, TCacheProducer, TCacheTable};
     use silver_config::SyncingConfig;
 
     let ticker =
         SlotTicker::new(0, std::time::Duration::from_secs(12), std::time::Duration::from_secs(4));
     // Producers stay bound through `new`; the tile's consumers keep their caches
     // alive afterward (mirrors the `make_tile` unit-test harness).
-    let (gp, rp, ep, yp) = (
-        TCache::producer("ef_gossip", 1 << 16),
-        TCache::producer("ef_rpc", 1 << 16),
-        TCache::producer("ef_engine", 1 << 16),
-        TCache::producer("ef_replay", 1 << 16),
+    let (gp, rp, ep, yp, cp) = (
+        TCache::producer(TCacheId::SszGossip, 1 << 16),
+        TCache::producer(TCacheId::IncomingRpc, 1 << 16),
+        TCache::producer(TCacheId::IncomingEngineResp, 1 << 16),
+        TCache::producer(TCacheId::ReplayBlocks, 1 << 16),
+        TCache::producer(TCacheId::DataColumns, 1 << 16),
     );
 
-    BeaconStateTile::new(
+    let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(spec),
         &SyncingConfig::default(),
-        gp.cache_ref().random_access("ef_gossip", true).unwrap(),
-        rp.cache_ref().random_access("ef_rpc", true).unwrap(),
-        ep.cache_ref().random_access("ef_engine", true).unwrap(),
-        yp.cache_ref().random_access("ef_replay", true).unwrap(),
-        TCache::producer("ef_beacon_state", 1 << 20),
+        TCacheTable::from_iter([&gp, &rp, &ep, &yp, &cp].map(|p| p.cache_ref())),
+        TCache::producer(TCacheId::BeaconState, 1 << 20),
         false,
         state,
-    )
+    );
+    tile.open_tcaches().unwrap();
+    tile
 }

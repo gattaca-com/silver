@@ -244,18 +244,23 @@ pub(in crate::store) mod fixtures {
         envelope_bytes(block_root, BID_BUILDER_INDEX, BID_BLOCK_HASH)
     }
 
-    /// Producer + random-access consumer pair turning bytes into acquired
-    /// `TRead`s. Declared consumer-after-producer so parked reads (which
-    /// dereference the consumer on release) drop first.
+    /// Producer + reader pair turning bytes into acquired `TRead`s. Declared
+    /// reader-after-producer so parked reads (which dereference the reader on
+    /// release) drop first.
     pub(in crate::store) struct Tc {
         producer: silver_common::TProducer,
-        consumer: silver_common::TRandomAccess,
+        consumer: silver_common::TCacheReader,
     }
 
     impl Tc {
         pub(in crate::store) fn new(name: &'static str, size: usize) -> Self {
-            let producer = TCache::producer(name, size);
-            let consumer = producer.cache_ref().random_access(name, true).unwrap();
+            let producer = TCache::producer(silver_common::TCacheId::IncomingRpc, size);
+            let consumer = silver_common::TCacheReader::single(
+                producer.cache_ref(),
+                name,
+                silver_common::TReadMode::Sliding,
+            )
+            .unwrap();
             Self { producer, consumer }
         }
 

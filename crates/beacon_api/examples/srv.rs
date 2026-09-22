@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{B256, BeaconStateOwner, SpecConfig};
-use silver_common::{Enr, Identify, Keypair, SszCache, TCache, TCacheProducer};
+use silver_common::{Enr, Identify, Keypair, TCache, TCacheId, TCacheProducer, TCacheTable};
 use silver_httpcore::{Bind, Readiness, TokenRange};
 
 fn main() {
@@ -12,8 +12,17 @@ fn main() {
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     let state = BeaconStateOwner::published_empty_test(0).reader();
 
-    let cache = TCache::producer("srv", 1 << 12);
-    let consumer = || cache.cache_ref().random_access("srv", true).unwrap();
+    let tcaches = TCacheTable::from_iter(
+        [
+            TCacheId::SszGossip,
+            TCacheId::IncomingRpc,
+            TCacheId::ElDataColumns,
+            TCacheId::DataColumns,
+            TCacheId::OutgoingRpc,
+            TCacheId::BeaconState,
+        ]
+        .map(|id| TCache::producer(id, 1 << 12).cache_ref()),
+    );
 
     let mut readiness = Readiness::new(1024);
     let mut api = BeaconApi::new(
@@ -28,13 +37,9 @@ fn main() {
         &SpecConfig::mainnet(),
         state,
         B256::default(),
-        [SszCache::Gossip, SszCache::Rpc, SszCache::El, SszCache::DataColumns]
-            .into_iter()
-            .map(|source| (source, consumer()))
-            .collect(),
-        consumer(),
-        consumer(),
+        tcaches,
     );
+    api.open_tcaches().unwrap();
     println!("serving on {:?}", api.local_addrs());
     loop {
         readiness.wait(Duration::ZERO);

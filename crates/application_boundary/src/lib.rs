@@ -1,11 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, EngineResp, Enr, Identify, Keypair,
-    PeerEvent, SilverSpine, SszCache, SyncUpdate, TProducer, TRandomAccess,
+    PeerEvent, SilverSpine, SyncUpdate, TCacheError, TCacheTable, TProducer,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -26,6 +26,11 @@ pub struct ApplicationBoundaryTile {
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
     fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.subscribe_broadcast::<PeerEvent>();
+    }
+
+    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        self.open_tcaches().expect("tcache wiring");
+        true
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -53,12 +58,8 @@ impl ApplicationBoundaryTile {
         state: BeaconStateReader,
         anchor_root: B256,
         engine_config: EngineConfig,
-        gossip_consumer: TRandomAccess,
-        rpc_consumer: TRandomAccess,
+        tcaches: TCacheTable,
         resp_producer: TProducer,
-        ssz_consumers: HashMap<SszCache, TRandomAccess>,
-        outgoing_rpc: TRandomAccess,
-        beacon_state: TRandomAccess,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -78,19 +79,21 @@ impl ApplicationBoundaryTile {
             spec,
             state,
             anchor_root,
-            ssz_consumers,
-            outgoing_rpc,
-            beacon_state,
+            tcaches,
         );
         let engine = EngineApi::new(
             readiness.registry(),
             ENGINE_TOKENS,
             engine_config,
-            gossip_consumer,
-            rpc_consumer,
+            tcaches,
             resp_producer,
         );
         Self { readiness, beacon, engine }
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.beacon.open_tcaches()?;
+        self.engine.open_tcaches()
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {

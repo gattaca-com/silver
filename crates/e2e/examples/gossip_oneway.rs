@@ -43,7 +43,7 @@ use rand::{Rng, RngCore};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess, test_util::ShmemDir,
+    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TCacheReader, test_util::ShmemDir,
 };
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
@@ -274,7 +274,7 @@ fn drain_compression_stats(c: &mut EchoCompressionHalf) {
     });
 }
 
-fn record_latency(consumer: &mut TRandomAccess, msg: &NewGossipMsg, stats: &mut Stats) {
+fn record_latency(consumer: &mut TCacheReader, msg: &NewGossipMsg, stats: &mut Stats) {
     let acquired = consumer.acquire(msg.ssz);
     if let Ok((bytes, _)) = acquired.buffer() {
         stats.gossip_decompressed_bytes += bytes.len() as u64;

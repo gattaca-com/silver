@@ -1,10 +1,10 @@
-use std::{ptr, time::Instant};
+use std::time::Instant;
 
 use flux::spine::SpineProducers;
 use fxhash::FxHashMap;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, PeerControl, PeerEvent,
-    SilverSpineProducers, SszCache, TProducer, TRandomAccess,
+    SilverSpineProducers, SszCache, TCacheProducer, TCacheReader, TProducer,
     cell_store::{
         CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, ContextData,
         FuluContextSource, PendingCell, StoreError,
@@ -21,8 +21,7 @@ use partial::PartialBudget;
 
 pub(super) fn handle_data_column_event<F>(
     event: DataColumnsEvent,
-    rpc_ssz_consumer: &mut TRandomAccess,
-    el_ssz_consumer: &mut TRandomAccess,
+    reader: &mut TCacheReader,
     cell_ingress: Option<&mut CellIngress>,
     gossip_handler: &mut GossipHandler,
     peer_manager: &mut PeerManager,
@@ -38,8 +37,7 @@ pub(super) fn handle_data_column_event<F>(
         return;
     }
     let read = match ssz_cache {
-        SszCache::Rpc => Some(rpc_ssz_consumer.acquire(ssz)),
-        SszCache::El => Some(el_ssz_consumer.acquire(ssz)),
+        SszCache::Rpc | SszCache::El => Some(reader.acquire(ssz)),
         SszCache::DataColumns => None,
         SszCache::Gossip => return,
     };
@@ -113,7 +111,7 @@ impl CellIngress {
         event: CellStoreEvent,
         now: Instant,
         producers: &SilverSpineProducers,
-        el_consumer: &mut TRandomAccess,
+        el_consumer: &mut TCacheReader,
     ) {
         self.spin(now, producers);
         match event {
@@ -194,12 +192,7 @@ impl CellIngress {
                 column.domain.digest() == digest &&
                 column.available != 0 &&
                 (column.domain.format() != ForkName::Fulu || column.header.is_some()) &&
-                full.is_none_or(|read| {
-                    column.full.is_some_and(|(source, ..)| {
-                        source.seq() == read.seq() &&
-                            ptr::eq(&*source.cache_ref(), &*read.cache_ref())
-                    })
-                })
+                full.is_none_or(|read| column.full.is_some_and(|(source, ..)| source == read))
         })
     }
 

@@ -25,13 +25,13 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use mimalloc::MiMalloc;
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
-use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
+use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, DataKind, EngineReq, GossipTopic, HeadChange, HeadRoots,
     MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerEvent, SilverSpine,
-    StreamProtocol, SyncNeed, SyncUpdate, TCache, TCacheProducer, TProducer,
+    StreamProtocol, SyncNeed, SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer,
     profiler::InProcessReader,
     ssz_view::{DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, STATUS_V2_SIZE},
     test_util::ShmemDir,
@@ -118,24 +118,15 @@ impl Node {
 
         // One gossip cache sized for a slot's 128 sidecars so it never wraps
         // mid-slot; the rest only satisfy the constructor.
-        let gossip_p = TCache::producer("gossip_in", 1 << 26);
-        let rpc_p = TCache::producer("rpc_in", 1 << 20);
-        let engine_p = TCache::producer("engine_resp", 1 << 20);
-        let ra = |p: &TProducer, name: &'static str| {
-            p.cache_ref().random_access(name, true).expect("random access")
-        };
+        let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 26);
+        let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
+        let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 20);
         let mut tile = DataColumnsTile::new(
-            ColumnConsumers {
-                gossip: ra(&gossip_p, "dc_gossip"),
-                persist_gossip: ra(&gossip_p, "dc_gossip_persist"),
-                rpc: ra(&rpc_p, "dc_rpc"),
-                persist_rpc: ra(&rpc_p, "dc_rpc_persist"),
-            },
+            TCacheTable::from_iter([&gossip_p, &rpc_p, &engine_p].map(|p| p.cache_ref())),
             owner.reader(),
             custody,
             spec,
-            ra(&engine_p, "dc_engine"),
-            TCache::producer("el_columns", 1 << 22),
+            TCache::producer(TCacheId::ElDataColumns, 1 << 22),
             ticker,
         );
 

@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use flux::spine::SpineAdapter;
 use mio::{Events, Registry};
 use silver_common::{
-    ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TProducer, TRandomAccess,
+    ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TCacheError, TCacheId, TCacheReader,
+    TCacheTable, TProducer, TReadMode,
 };
 use silver_config::EngineConfig;
 use silver_httpcore::TokenRange;
@@ -22,8 +23,7 @@ pub struct EngineApi {
     /// `None` in unsafe no-EL testing mode — see
     /// [`EngineConfig::unsafe_no_el`].
     pub client: Option<EngineClient>,
-    pub gossip_consumer: TRandomAccess,
-    pub rpc_consumer: TRandomAccess,
+    reader: TCacheReader,
     resp_producer: TProducer,
     // Reusable scratch buffer for the JSON→SSZ response conversions: cleared on
     // each use, capacity retained across calls.
@@ -46,8 +46,7 @@ impl EngineApi {
         registry: &Registry,
         tokens: TokenRange,
         config: EngineConfig,
-        gossip_consumer: TRandomAccess,
-        rpc_consumer: TRandomAccess,
+        tcaches: TCacheTable,
         resp_producer: TProducer,
     ) -> Self {
         let client = if config.unsafe_no_el {
@@ -65,8 +64,7 @@ impl EngineApi {
         };
         Self {
             client,
-            gossip_consumer,
-            rpc_consumer,
+            reader: TCacheReader::new(tcaches),
             resp_producer,
 
             first_run: true,
@@ -77,6 +75,11 @@ impl EngineApi {
         }
     }
 
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::SszGossip, "eng_ssz_gossip", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::IncomingRpc, "eng_incoming_rpc", TReadMode::Sliding)
+    }
+
     /// Last status the EL reported to `eth_syncing`; `Unknown` until the
     /// first healthcheck completes.
     pub fn sync_status(&self) -> ELSyncStatus {
@@ -84,8 +87,7 @@ impl EngineApi {
     }
 
     pub fn intake(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.rpc_consumer.free();
-        self.gossip_consumer.free();
+        self.reader.free();
 
         if self.client.is_none() {
             // Unsafe no-EL testing mode: report healthy once so peers don't
@@ -106,13 +108,7 @@ impl EngineApi {
         // connections.
         while self.client.as_ref().unwrap().has_capacity() {
             let consumed = adapter.consume_one(|req: EngineReq, producers| {
-                handle_request(
-                    self.client.as_mut().unwrap(),
-                    &mut self.gossip_consumer,
-                    &mut self.rpc_consumer,
-                    &req,
-                    producers,
-                );
+                handle_request(self.client.as_mut().unwrap(), &mut self.reader, &req, producers);
             });
             if !consumed {
                 break;

@@ -336,7 +336,9 @@ impl History {
 mod tests {
     use std::io::Write;
 
-    use silver_common::{TCache, TCacheProducer, block_root, block_root_fulu};
+    use silver_common::{
+        TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode, block_root, block_root_fulu,
+    };
 
     use super::*;
     use crate::store::backfill::fixtures::{GLOAS_FORK_SLOT, block_bytes, spec};
@@ -351,15 +353,19 @@ mod tests {
         let fulu_root = block_root_fulu(&block);
         assert_ne!(gloas_root, fulu_root, "layouts must disagree for this to mean anything");
 
-        let mut producer = TCache::producer("backfill_gloas_link", 1 << 20);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 20);
         let mut res = producer.reserve(block.len(), true).unwrap();
         res.write_all(&block).unwrap();
         res.flush().unwrap();
         let ssz = res.read();
         // Declared before the queue so parked reads drop first (their release
         // dereferences the consumer).
-        let mut consumer =
-            producer.cache_ref().random_access("backfill_gloas_link_cons", true).unwrap();
+        let mut consumer = TCacheReader::single(
+            producer.cache_ref(),
+            "backfill_gloas_link_cons",
+            TReadMode::Sliding,
+        )
+        .unwrap();
 
         // Nothing held, so the finalized root is the anchor the block must be.
         for (anchor, links) in [(gloas_root, true), (fulu_root, false)] {

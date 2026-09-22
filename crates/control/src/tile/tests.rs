@@ -4,7 +4,8 @@ use silver_chain_spec::SpecConfig;
 use silver_common::{
     ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, Keypair,
     MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
-    TCacheProducer, TCacheRead, TProducer, test_util::ShmemDir,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
+    test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -24,7 +25,7 @@ struct GossipPublications {
     rpc: TProducer,
     el: TProducer,
     payload: TCacheRead,
-    outbound: TRandomAccess,
+    outbound: TCacheReader,
     _spine: Box<SilverSpine>,
     _dir: ShmemDir,
 }
@@ -36,14 +37,19 @@ impl Tile<SilverSpine> for Observer {
 
 impl GossipPublications {
     fn new(topic: GossipTopic, bytes: &[u8]) -> Self {
-        let incoming = TCache::producer("publication_in", 1 << 16);
-        let cluster_in = TCache::producer("publication_cluster_in", 1 << 16);
-        let rpc = TCache::producer("publication_rpc", 1 << 16);
-        let el = TCache::producer("publication_el", 1 << 16);
-        let mut protobuf = TCache::producer("publication_out", 1 << 16);
+        let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 16);
+        let rpc = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let el = TCache::producer(TCacheId::ElDataColumns, 1 << 16);
+        let mut protobuf = TCache::producer(TCacheId::OutgoingGossip, 1 << 16);
         let payload = write_bytes(&mut protobuf, bytes);
-        let outbound = protobuf.cache_ref().random_access("publication_observer", true).unwrap();
-        let controller = Controller::new(
+        let outbound =
+            TCacheReader::single(protobuf.cache_ref(), "publication_observer", TReadMode::Sliding)
+                .unwrap();
+        let tcaches = TCacheTable::from_iter(
+            [&incoming, &cluster_in, &rpc, &el, &protobuf].map(|p| p.cache_ref()),
+        );
+        let mut controller = Controller::new(
             PeerManager::new(
                 PeerId::default(),
                 vec![],
@@ -55,22 +61,21 @@ impl GossipPublications {
                 0,
             ),
             GossipHandler::new(
-                incoming.cache_ref().random_access("publication_in", true).unwrap(),
-                TCache::producer("publication_ssz", 1 << 16),
+                tcaches,
+                TCache::producer(TCacheId::SszGossip, 1 << 16),
                 protobuf,
                 Some(test_domain()),
             )
             .unwrap(),
-            TCache::multi_producer("publication_rpc_out", 1 << 16),
-            rpc.cache_ref().random_access("publication_rpc", true).unwrap(),
-            el.cache_ref().random_access("publication_el", true).unwrap(),
-            TCache::producer("publication_cluster_out", 1 << 16),
-            cluster_in.cache_ref().random_access("publication_cluster", true).unwrap(),
+            TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 16),
+            tcaches,
+            TCache::producer(TCacheId::ClusterOutbound, 1 << 16),
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
         )
         .unwrap();
+        controller.open_tcaches().unwrap();
         let dir = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
         let adapter = SpineAdapter::connect_tile(&controller, &mut *spine);
@@ -122,7 +127,7 @@ impl GossipPublications {
                 let config =
                     CellStoreConfig::new(self.controller.spec.clone(), 1 << 5, Duration::ZERO)
                         .unwrap();
-                let producer = TCache::producer("publication_columns", config.cache_capacity());
+                let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
                 let ingress = self
                     .controller
                     .cell_ingress
@@ -352,16 +357,19 @@ fn assert_column_publication(origin: ColumnOrigin) {
     assert_eq!(frames_to(2).len(), 2, "the message and one control frame: {sent:?}");
 
     // Decode what peer 2 received as peer 2 would.
-    let decoded = TCache::producer("publication_decoded", 1 << 16);
+    let decoded = TCache::producer(TCacheId::SszGossip, 1 << 16);
     let mut decoded_reader =
-        decoded.cache_ref().random_access("publication_decoded", true).unwrap();
+        TCacheReader::single(decoded.cache_ref(), "publication_decoded", TReadMode::Sliding)
+            .unwrap();
+    let protobuf = TCache::producer(TCacheId::OutgoingGossip, 1 << 16);
     let mut receiver = GossipHandler::new(
-        capture.incoming.cache_ref().random_access("publication_receiver", true).unwrap(),
+        TCacheTable::from_iter([capture.incoming.cache_ref(), protobuf.cache_ref()]),
         decoded,
-        TCache::producer("publication_received_protobuf", 1 << 16),
+        protobuf,
         Some(test_domain()),
     )
     .unwrap();
+    receiver.open_tcaches().unwrap();
     let mut receiver_adapter = SpineAdapter::connect_tile(&Observer, &mut capture._spine);
     receiver.spin(&mut receiver_adapter, None);
     let stream = P2pStreamId::new(2, 0, StreamProtocol::GossipSub, true);

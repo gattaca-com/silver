@@ -4,8 +4,8 @@ use buffa::MessageView;
 use silver_chain_spec::SpecConfig;
 use silver_columns::cell_store::CellStore;
 use silver_common::{
-    CacheFrameRef, GossipDomain, Keypair, P2pStreamId, PeerId, StreamProtocol, TCache,
-    TCacheProducer, TRandomAccess,
+    CacheFrameRef, GossipDomain, Keypair, P2pStreamId, PeerId, StreamProtocol, TCache, TCacheId,
+    TCacheProducer, TCacheReader, TCacheTable, TReadMode,
     cell_store::{AssemblyRequest, CommitmentContext, ContextData, FuluContextSource},
     column_util::{columns_of, push_data_column_sidecar_prefix},
     ssz_view::{
@@ -34,9 +34,8 @@ const ROWS: usize = 4;
 struct Rig {
     config: CellStoreConfig,
     request: AssemblyRequest,
-    columns: Box<TRandomAccess>,
-    network: Box<TRandomAccess>,
-    outbound: Box<TRandomAccess>,
+    columns: Box<TCacheReader>,
+    network: Box<TCacheReader>,
     store: CellStore,
     ingress: CellIngress,
     output: TProducer,
@@ -61,11 +60,17 @@ impl Rig {
             ..SpecConfig::mainnet()
         });
         let config = CellStoreConfig::new(spec, column_mask, Duration::from_secs(11)).unwrap();
-        let producer = TCache::producer("", config.cache_capacity());
-        let columns = Box::new(producer.cache_ref().retained_random_access("").unwrap());
-        let network = Box::new(producer.cache_ref().retained_random_access("").unwrap());
-        let output = TCache::producer("", 1 << 20);
-        let outbound = Box::new(output.cache_ref().strict_random_access("", true).unwrap());
+        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let columns =
+            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        let output = TCache::producer(TCacheId::OutgoingGossip, 1 << 20);
+        // The network side: retained on cells, strict on outgoing gossip.
+        let mut network = Box::new(TCacheReader::new(TCacheTable::from_iter([
+            producer.cache_ref(),
+            output.cache_ref(),
+        ])));
+        network.open(TCacheId::DataColumns, "", TReadMode::Retained).unwrap();
+        network.open(TCacheId::OutgoingGossip, "", TReadMode::Strict).unwrap();
         let exchange = PartialExchange::new(&config, 0, now, PartialColumnsMode::SendOnly);
         let mut ingress = CellIngress::new(config.clone(), producer, 0, now).unwrap();
         let mut store = CellStore::new(config.clone(), 0, now).unwrap();
@@ -137,7 +142,6 @@ impl Rig {
             request,
             columns,
             network,
-            outbound,
             store,
             ingress,
             output,
@@ -247,14 +251,14 @@ impl Rig {
     }
 
     fn wire(&mut self, frame: CacheFrameRef) -> Vec<u8> {
-        let view = frame.acquire(&mut self.outbound, self.now).unwrap();
+        let view = frame.acquire(&mut self.network, self.now).unwrap();
         let descriptor = view.descriptor_range();
         let mut wire = Vec::new();
         for segment in view.segments() {
             if let Some(range) = segment.framing_range() {
                 wire.extend_from_slice(&descriptor.as_ref()[range]);
             } else {
-                let range = segment.acquire(&mut self.outbound, Some(&mut self.network)).unwrap();
+                let range = segment.acquire(&mut self.network).unwrap();
                 wire.extend_from_slice(range.as_ref());
             }
         }
@@ -473,8 +477,8 @@ fn expiry_withdraws_without_reading_expired_payloads() {
     assert_eq!(rig.spin().len(), 1);
     rig.now += Duration::from_secs(12);
     let event = rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
-    rig.network.advance_retention(event.retain_from);
-    rig.columns.advance_retention(event.retain_from);
+    rig.network.advance_retention(TCacheId::DataColumns, event.retain_from);
+    rig.columns.advance_retention(TCacheId::DataColumns, event.retain_from);
     let frames = rig.spin();
     assert_eq!(frames.len(), 1);
     let wire = rig.wire(frames[0].1);

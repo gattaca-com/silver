@@ -1,5 +1,6 @@
 use buffa::{Message, MessageView};
 use silver_common::{
+    TCacheId, TCacheReader, TCacheTable, TReadMode,
     cell_store::{CellStoreEvent, ColumnAvailability},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF,
@@ -30,17 +31,15 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
         ..SpecConfig::mainnet()
     });
     let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
-    let mut columns = TCache::producer("", config.cache_capacity());
-    let mut columns_reader = Box::new(columns.cache_ref().retained_random_access("").unwrap());
-    let mut outgoing_reader = Box::new(
-        capture
-            .controller
-            .gossip_handler
-            .mcache_publish
-            .cache_ref()
-            .strict_random_access("", true)
-            .unwrap(),
-    );
+    let mut columns = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+    // The network side: strict on the controller's outgoing gossip, retained on
+    // cells.
+    let mut network_reader = TCacheReader::new(TCacheTable::from_iter([
+        columns.cache_ref(),
+        capture.controller.gossip_handler.mcache_publish.cache_ref(),
+    ]));
+    network_reader.open(TCacheId::DataColumns, "", TReadMode::Retained).unwrap();
+    network_reader.open(TCacheId::OutgoingGossip, "", TReadMode::Strict).unwrap();
     let mut bytes = vec![0; 56];
     bytes[8..12].copy_from_slice(&56u32.to_le_bytes());
     bytes[12..16].copy_from_slice(&((56 + 2 * BYTES_PER_CELL) as u32).to_le_bytes());
@@ -110,16 +109,14 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
         }
     });
     let frame = sent.expect("metadata must reach the exchange coordinator");
-    let view = frame.acquire(&mut outgoing_reader, Instant::now()).unwrap();
+    let view = frame.acquire(&mut network_reader, Instant::now()).unwrap();
     let descriptor = view.descriptor_range();
     let mut wire = Vec::new();
     for segment in view.segments() {
         if let Some(range) = segment.framing_range() {
             wire.extend_from_slice(&descriptor.as_ref()[range]);
         } else {
-            wire.extend_from_slice(
-                segment.acquire(&mut outgoing_reader, Some(&mut columns_reader)).unwrap().as_ref(),
-            );
+            wire.extend_from_slice(segment.acquire(&mut network_reader).unwrap().as_ref());
         }
     }
     let decoded = protobuf::RPCView::decode_view(&wire).unwrap();
@@ -150,9 +147,9 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
             ..SpecConfig::mainnet()
         });
         let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
-        let columns = TCache::producer("", config.cache_capacity());
+        let columns = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
         let cache = columns.cache_ref();
-        let _reader = cache.retained_random_access("").unwrap();
+        let _reader = TCacheReader::single(cache, "", TReadMode::Retained).unwrap();
         capture.controller.spec = spec;
         capture.controller = capture
             .controller
@@ -204,10 +201,7 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
             capture.observer.consume(|event: CellStoreEvent, _| {
                 if let CellStoreEvent::Validate(request) = event {
                     count += 1;
-                    assert!(std::ptr::eq(
-                        &*request.pending.data.reservation().read().cache_ref(),
-                        &*cache
-                    ));
+                    assert_eq!(request.pending.data.reservation().read().id(), cache.id());
                     assert_eq!(request.pending.key.row, 0);
                     assert_eq!(request.domain.format(), format);
                 }
@@ -228,8 +222,8 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
         ..SpecConfig::mainnet()
     });
     let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
-    let columns = TCache::producer("", config.cache_capacity());
-    let _reader = columns.cache_ref().retained_random_access("").unwrap();
+    let columns = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+    let _reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap();
     capture.controller.spec = spec.clone();
     capture.controller = capture
         .controller

@@ -17,7 +17,8 @@ use silver_common::{
     ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
     GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
     PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine, SszCache,
-    StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
+    StreamProtocol, SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
+    TProducer, block_root_fulu,
     column_util::block_root_from_sidecar,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
@@ -35,33 +36,42 @@ impl Tile<SilverSpine> for Injector {
     fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
 }
 
-fn boundary_tile(
-    bind: &Bind,
-    engine_config: EngineConfig,
-    tcache_names: [&'static str; 3],
-) -> ApplicationBoundaryTile {
-    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet()).0
+/// Opened: for tests that drive `loop_body` directly, bypassing `try_init`.
+fn boundary_tile(bind: &Bind, engine_config: EngineConfig) -> ApplicationBoundaryTile {
+    boundary_tile_with_objects(bind, engine_config).0
 }
 
 fn boundary_tile_with_objects(
     bind: &Bind,
     engine_config: EngineConfig,
-    tcache_names: [&'static str; 3],
 ) -> (ApplicationBoundaryTile, TProducer, TProducer) {
-    boundary_tile_with_spec(bind, engine_config, tcache_names, &SpecConfig::mainnet())
+    let (mut tile, gossip_p, rpc_p) =
+        boundary_tile_with_spec(bind, engine_config, &SpecConfig::mainnet());
+    tile.open_tcaches().unwrap();
+    (tile, gossip_p, rpc_p)
 }
 
 fn boundary_tile_with_spec(
     bind: &Bind,
     engine_config: EngineConfig,
-    tcache_names: [&'static str; 3],
     spec: &SpecConfig,
 ) -> (ApplicationBoundaryTile, TProducer, TProducer) {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-    let gossip_p = TCache::producer(tcache_names[0], 1 << 16);
-    let rpc_p = TCache::producer(tcache_names[1], 1 << 16);
-    let resp_p = TCache::producer(tcache_names[2], 1 << 12);
+    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 16);
+    let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+    let resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 12);
+    let tcaches = TCacheTable::from_iter(
+        [
+            TCacheId::ElDataColumns,
+            TCacheId::DataColumns,
+            TCacheId::OutgoingRpc,
+            TCacheId::BeaconState,
+        ]
+        .map(|id| TCache::producer(id, 1 << 16).cache_ref())
+        .into_iter()
+        .chain([gossip_p.cache_ref(), rpc_p.cache_ref()]),
+    );
     let tile = ApplicationBoundaryTile::new(
         std::slice::from_ref(bind),
         64,
@@ -73,19 +83,8 @@ fn boundary_tile_with_spec(
         BeaconStateOwner::published_empty_test(0).reader(),
         [0u8; 32],
         engine_config,
-        gossip_p.cache_ref().random_access("t", true).unwrap(),
-        rpc_p.cache_ref().random_access("t", true).unwrap(),
+        tcaches,
         resp_p,
-        [
-            (SszCache::Gossip, gossip_p.cache_ref().random_access("t_events", true).unwrap()),
-            (SszCache::Rpc, rpc_p.cache_ref().random_access("t_columns", true).unwrap()),
-            (SszCache::El, rpc_p.cache_ref().random_access("t_el", true).unwrap()),
-            (SszCache::DataColumns, rpc_p.cache_ref().random_access("t_cells", true).unwrap()),
-        ]
-        .into_iter()
-        .collect(),
-        rpc_p.cache_ref().random_access("t_storage", true).unwrap(),
-        rpc_p.cache_ref().random_access("t_beacon_state", true).unwrap(),
     );
     (tile, gossip_p, rpc_p)
 }
@@ -136,11 +135,9 @@ fn no_el() -> EngineConfig {
 fn peers_include_connections_published_before_boundary_starts() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_startup_gossip",
-        "cs_startup_rpc",
-        "cs_startup_resp",
-    ]);
+    // Unopened: `tile_runner` runs `try_init`.
+    let tile =
+        boundary_tile_with_spec(&Bind::parse("127.0.0.1:0"), no_el(), &SpecConfig::mainnet()).0;
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let peer_id = Keypair::from_secret(&[2; 32]).unwrap().peer_id();
 
@@ -617,11 +614,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
         jwt_secret: jwt_path.to_str().unwrap().to_string(),
         ..EngineConfig::default()
     };
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config, [
-        "cs_flight_gossip",
-        "cs_flight_rpc",
-        "cs_flight_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     inj.consume(|_: EngineResp, _| {});
@@ -694,11 +687,7 @@ fn pool_cap_gates_spine_intake() {
         max_connections: 3,
         ..EngineConfig::default()
     };
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config, [
-        "cs_cap_gossip",
-        "cs_cap_rpc",
-        "cs_cap_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     inj.consume(|_: EngineResp, _| {});
@@ -774,11 +763,7 @@ fn engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
         jwt_secret: jwt_path.to_str().unwrap().to_string(),
         ..EngineConfig::default()
     };
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config, [
-        "cs_same_iter_gossip",
-        "cs_same_iter_rpc",
-        "cs_same_iter_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     inj.consume(|_: EngineResp, _| {});
@@ -840,11 +825,7 @@ fn engine_request_reaches_the_el_in_the_iteration_that_takes_it() {
 fn peer_table_follows_connections_and_disconnects() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_peers_gossip",
-        "cs_peers_rpc",
-        "cs_peers_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -906,11 +887,7 @@ fn peer_table_follows_connections_and_disconnects() {
 fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_status_gossip",
-        "cs_status_rpc",
-        "cs_status_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
 
@@ -963,11 +940,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
         max_connections: 3,
         ..EngineConfig::default()
     };
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config, [
-        "cs_sat_gossip",
-        "cs_sat_rpc",
-        "cs_sat_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     inj.consume(|_: EngineResp, _| {});
@@ -1032,11 +1005,7 @@ fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
         max_connections: 4,
         ..EngineConfig::default()
     };
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config, [
-        "cs_alias_gossip",
-        "cs_alias_rpc",
-        "cs_alias_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     inj.consume(|_: EngineResp, _| {});
@@ -1115,11 +1084,7 @@ fn concurrent_clients_and_engine_calls_keep_their_own_sockets() {
 fn serves_concurrent_clients_with_no_engine_registered() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_noel_gossip",
-        "cs_noel_rpc",
-        "cs_noel_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
@@ -1140,11 +1105,7 @@ fn serves_concurrent_clients_with_no_engine_registered() {
 fn applied_block_on_the_spine_reaches_an_events_subscriber() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_sse_gossip",
-        "cs_sse_rpc",
-        "cs_sse_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -1173,11 +1134,7 @@ fn subscriptions_select_their_topics_and_preserve_repeated_requests() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
-        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
-            "cs_subscriptions_gossip",
-            "cs_subscriptions_rpc",
-            "cs_subscriptions_resp",
-        ]);
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -1263,11 +1220,7 @@ fn late_subscriber_receives_only_relay_requests_published_after_it() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
-        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
-            "cs_late_gossip",
-            "cs_late_rpc",
-            "cs_late_resp",
-        ]);
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -1308,11 +1261,7 @@ fn idle_boundary_lets_the_object_rings_evict_its_consumers() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
-        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
-            "cs_idle_gossip",
-            "cs_idle_rpc",
-            "cs_idle_resp",
-        ]);
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     tile.loop_body(&mut adapter);
 
@@ -1351,11 +1300,7 @@ fn gossip_events_are_served_while_the_engine_pool_is_saturated() {
         ..EngineConfig::default()
     };
     let (mut tile, mut gossip, mut rpc) =
-        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), config, [
-            "cs_gsat_gossip",
-            "cs_gsat_rpc",
-            "cs_gsat_resp",
-        ]);
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), config);
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -1407,12 +1352,9 @@ fn head_subscribers_receive_changes_for_their_topics() {
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let mut spec = SpecConfig::mainnet();
     spec.gloas_fork_epoch = spec.fulu_fork_epoch + 2;
-    let (mut tile, _gossip, _rpc) = boundary_tile_with_spec(
-        &Bind::parse("127.0.0.1:0"),
-        no_el(),
-        ["cs_head_v2_gossip", "cs_head_v2_rpc", "cs_head_v2_resp"],
-        &spec,
-    );
+    let (mut tile, _gossip, _rpc) =
+        boundary_tile_with_spec(&Bind::parse("127.0.0.1:0"), no_el(), &spec);
+    tile.open_tcaches().unwrap();
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -1499,11 +1441,7 @@ fn head_subscribers_receive_changes_for_their_topics() {
 fn head_events_describe_changes_observed_while_following() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el(), [
-        "cs_follow_gossip",
-        "cs_follow_rpc",
-        "cs_follow_resp",
-    ]);
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
@@ -1567,11 +1505,7 @@ fn block_by_root_round_trips_over_the_storage_queues() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, _gossip, mut served) =
-        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el(), [
-            "cs_block_gossip",
-            "cs_block_rpc",
-            "cs_block_resp",
-        ]);
+        boundary_tile_with_objects(&Bind::parse("127.0.0.1:0"), no_el());
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);

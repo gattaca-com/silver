@@ -173,7 +173,7 @@ mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
         BlockSource, BlockStage, ColumnOrigin, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
-        PayloadValidationStatus, SszCache, TCache, TCacheProducer, TCacheRead,
+        PayloadValidationStatus, SszCache, TCache, TCacheId, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -194,7 +194,7 @@ mod tests {
     }
 
     fn unread_payload() -> TCacheRead {
-        let mut producer = TCache::producer("stages_test", 1 << 12);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
         let mut r = producer.reserve(1, true).expect("tcache reserve");
         r.increment_offset(1);
         r.read()

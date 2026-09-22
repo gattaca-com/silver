@@ -21,6 +21,16 @@ pub trait TCacheProducer: SealedProducer {
         TCacheRef { cache: self.tcache() as *const c_void }
     }
 
+    /// Unpinned: only for bytes this producer wrote and has not reclaimed.
+    #[inline]
+    fn read_buffer(&self, read: TCacheRead) -> Result<&[u8], Error> {
+        let cache = unsafe { &*self.tcache() };
+        if read.id != cache.id() {
+            return Err(Error::UnexpectedCacheRef);
+        }
+        cache.read(read.seq).map(|(bytes, ..)| bytes)
+    }
+
     fn reservation_buffer<'a>(
         &self,
         reservation: &'a mut Reservation,
@@ -58,21 +68,12 @@ impl Producer {
         self.state.seq
     }
 
-    #[inline]
-    pub fn read_buffer(&self, read: TCacheRead) -> Result<&[u8], Error> {
-        if read.tcache.cache != self.cache.cast() {
-            return Err(Error::UnexpectedCacheRef);
-        }
-        let cache = unsafe { &*self.cache };
-        cache.read(read.seq).map(|(bytes, _, _)| bytes)
-    }
-
     /// A producer-side claim cannot survive an allocation, even after the view
     /// has been consumed.
     ///
     /// ```compile_fail
-    /// use silver_common::{SubLayout, TCache, TCacheProducer};
-    /// let mut producer = TCache::producer("", 1 << 16);
+    /// use silver_common::{SubLayout, TCache, TCacheId, TCacheProducer};
+    /// let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
     /// let reference = producer.sub_reservation(
     ///     SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"", b""
     /// ).unwrap();
@@ -255,7 +256,7 @@ impl Reservation {
 
     /// Returns a `TCacheRead` reference for this reservation.
     pub fn read(&self) -> TCacheRead {
-        TCacheRead { tcache: self.cache, seq: self.seq }
+        TCacheRead { id: self.cache.id(), seq: self.seq }
     }
 
     pub fn is_committed(&self) -> bool {
@@ -302,7 +303,7 @@ impl Drop for Reservation {
             tracing::debug!(
                 seq = self.seq,
                 offset = self.offset,
-                tcache = self.cache.name,
+                tcache = self.cache.name(),
                 "aborting reservation"
             );
             self.cache.commit(self.seq, false);

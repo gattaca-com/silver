@@ -8,7 +8,7 @@ use flux::spine::SpineProducers;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq, ForkName,
     GossipDomain, IngestionTime, MAX_BLOBS_PER_BLOCK, SilverSpineProducers, SszCache,
-    TCacheProducer, TProducer, TRandomAccess, TRead, Wheel, body_root,
+    TCacheProducer, TCacheReader, TProducer, TRead, Wheel, body_root,
     cell_store::{CommitmentContext, ContextData},
     column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
@@ -128,9 +128,6 @@ pub(crate) struct ElBlobFetcher {
     attempted: Wheel<BlockRoot, (), 4>,
     responses: Vec<PendingResponse>,
     sidecar_buffer: Vec<u8>,
-    // Deferred responses borrow bucket counters; the consumer must stay put
-    // and outlive those reads.
-    engine_resp_consumer: Box<TRandomAccess>,
 }
 
 impl ElBlobFetcher {
@@ -221,18 +218,13 @@ impl ElBlobFetcher {
         Some((fetch.context, fetch.domain, fetch.data()))
     }
 
-    pub(crate) fn new(engine_resp_consumer: TRandomAccess, epoch_duration: Duration) -> Self {
+    pub(crate) fn new(epoch_duration: Duration) -> Self {
         Self {
             pending: Wheel::new(FETCH_TIMEOUT / 4),
             attempted: Wheel::new(epoch_duration),
             responses: Vec::with_capacity(MAX_RESPONSES),
             sidecar_buffer: Vec::with_capacity(8 * 1024),
-            engine_resp_consumer: Box::new(engine_resp_consumer),
         }
-    }
-
-    pub(crate) fn free(&mut self) {
-        self.engine_resp_consumer.free();
     }
 
     pub(crate) fn rotate(&mut self, now: Instant) {
@@ -272,7 +264,11 @@ impl ElBlobFetcher {
         self.pending.insert(context.block_root, fetch);
     }
 
-    pub(crate) fn handle_response(&mut self, response: EngineGetBlobsResp) {
+    pub(crate) fn handle_response(
+        &mut self,
+        response: EngineGetBlobsResp,
+        reader: &mut TCacheReader,
+    ) {
         if self
             .pending
             .get(&response.block_root)
@@ -285,7 +281,7 @@ impl ElBlobFetcher {
         {
             return;
         }
-        let read = self.engine_resp_consumer.acquire(response.data);
+        let read = reader.acquire(response.data);
         self.responses.push(PendingResponse { fetch, read });
     }
 

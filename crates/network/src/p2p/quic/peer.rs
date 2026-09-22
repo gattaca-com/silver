@@ -191,7 +191,7 @@ impl Peer {
             return SendResult::ConnectionClosing;
         }
         let acquired = frame
-            .acquire(&mut context.gossip_consumer, now)
+            .acquire(&mut context.reader, now)
             .ok()
             .and_then(|view| limits.acquire(view, context, &self.outbound_lease_wheel, now));
         let Some(mut acquired) = acquired else {
@@ -1261,8 +1261,8 @@ mod tests {
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
     use silver_common::{
         CacheFrameError, CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut,
-        Keypair, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCache, TCacheProducer,
-        TConsumer, TProducer,
+        Keypair, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCache, TCacheId,
+        TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode,
     };
 
     use super::*;
@@ -1413,9 +1413,11 @@ mod tests {
         /// writes here).
         gossip_in_consumer: TConsumer,
         /// Test enqueues outbound gossip payloads here. The network's
-        /// `gossip_consumer` reads via random access.
+        /// reader reads via random access.
         gossip_out_producer: TProducer,
+        rpc_out_producer: TProducer,
         cluster_out_producer: TProducer,
+        columns: TProducer,
         /// Bytes received per stream — extracted from inbound frames in
         /// `drain_inbound`.
         received: HashMap<P2pStreamId, Vec<u8>>,
@@ -1423,41 +1425,50 @@ mod tests {
 
     impl PeerHarness {
         fn new() -> Self {
-            let gossip_in_p = TCache::producer("gossip_in", TCACHE_BYTES);
+            let gossip_in_p = TCache::producer(TCacheId::IncomingGossip, TCACHE_BYTES);
             let gossip_in_c = gossip_in_p.cache_ref().consumer("peer_gossip_in").unwrap();
-            let gossip_out_p = TCache::producer("gossip_out", TCACHE_BYTES);
-            let gossip_out_c =
-                gossip_out_p.cache_ref().random_access("peer_gossip_out", false).unwrap();
-
-            let rpc_in_p = TCache::producer("rpc_in", TCACHE_BYTES);
-            let rpc_out_p = TCache::producer("rpc_out", TCACHE_BYTES);
-            let rpc_out_c = rpc_out_p.cache_ref().random_access("peer_rpc_out", false).unwrap();
-
-            let cluster_in = TCache::producer("cluster_in", TCACHE_BYTES);
-            let cluster_out_producer = TCache::producer("cluster_out", TCACHE_BYTES);
-            let cluster_out = cluster_out_producer
-                .cache_ref()
-                .strict_random_access("peer_cluster_out", true)
+            let gossip_out_p = TCache::producer(TCacheId::OutgoingGossip, TCACHE_BYTES);
+            let rpc_in_p = TCache::producer(TCacheId::IncomingRpc, TCACHE_BYTES);
+            let rpc_out_producer = TCache::producer(TCacheId::OutgoingRpc, TCACHE_BYTES);
+            let cluster_in = TCache::producer(TCacheId::ClusterInbound, TCACHE_BYTES);
+            let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, TCACHE_BYTES);
+            let columns = TCache::producer(TCacheId::DataColumns, 1 << 16);
+            let tcaches = TCacheTable::from_iter(
+                [&gossip_out_p, &rpc_out_producer, &cluster_out_producer, &columns]
+                    .map(|p| p.cache_ref()),
+            );
+            let mut reader = TCacheReader::new(tcaches);
+            reader
+                .open(TCacheId::OutgoingGossip, "peer_gossip_out", TReadMode::SlidingManualFree)
                 .unwrap();
+            reader
+                .open(TCacheId::OutgoingRpc, "peer_rpc_out", TReadMode::SlidingManualFree)
+                .unwrap();
+            reader.open(TCacheId::ClusterOutbound, "peer_cluster_out", TReadMode::Strict).unwrap();
 
             Self {
                 context: Context {
-                    data_columns_consumer: None,
                     gossip_producer: gossip_in_p,
-                    gossip_consumer: gossip_out_c,
                     rpc_producer: rpc_in_p,
-                    rpc_consumer: rpc_out_c,
                     identify: None,
                     cluster_nodes: None,
                     cluster_inbound_producer: cluster_in,
-                    cluster_outbound_consumer: cluster_out,
+                    partial_columns: false,
+                    reader,
                 },
                 rpc_codec_pool: RpcCodecPool::default(),
                 gossip_in_consumer: gossip_in_c,
                 gossip_out_producer: gossip_out_p,
+                rpc_out_producer,
                 cluster_out_producer,
+                columns,
                 received: HashMap::new(),
             }
+        }
+
+        fn reopen(&mut self, id: TCacheId, mode: TReadMode) {
+            self.context.reader.close(id);
+            self.context.reader.open(id, "", mode).unwrap();
         }
 
         /// Stage `payload` for outbound delivery on `stream_id`. Reserves
@@ -1468,15 +1479,14 @@ mod tests {
                 self.gossip_out_producer.reserve(payload.len(), true).expect("tcache full");
             res.write_all(payload).unwrap();
             assert!(res.is_committed());
-            let read = self.context.gossip_consumer.acquire(res.read());
+            let read = self.context.reader.acquire(res.read());
             peer.send_gossip(read, &mut self.rpc_codec_pool);
         }
 
         fn send_cluster(&mut self, payload: &[u8], peer: &mut Peer) -> SendResult {
             let mut reservation = self.cluster_out_producer.reserve(payload.len(), true).unwrap();
             reservation.write_all(payload).unwrap();
-            let read =
-                self.context.cluster_outbound_consumer.acquire_strict(reservation.read()).unwrap();
+            let read = self.context.reader.acquire_strict(reservation.read()).unwrap();
             peer.send_cluster(read, &mut self.rpc_codec_pool)
         }
 
@@ -1952,7 +1962,7 @@ mod tests {
         assert!(pair.client_peer.outbound_gossip.is_none());
         let mut res = client_h.gossip_out_producer.reserve(4, true).unwrap();
         res.write_all(b"late").unwrap();
-        let late = client_h.context.gossip_consumer.acquire(res.read());
+        let late = client_h.context.reader.acquire(res.read());
         assert!(matches!(
             pair.client_peer.send_gossip(late, &mut client_h.rpc_codec_pool),
             SendResult::ConnectionClosing
@@ -2082,7 +2092,7 @@ mod tests {
             peer: pair.client_peer.id.connection,
             request: RpcRequest::Ping([0u8; 8]),
         });
-        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.rpc_consumer));
+        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.reader));
         assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
 
         // Step until the server has read the request; nothing ever responds,
@@ -2206,17 +2216,14 @@ mod tests {
     fn segmented_rpc_crosses_quinn_and_releases_owners_after_ack() {
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
-        client_h.context.gossip_consumer =
-            client_h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
-        let mut columns = TCache::producer("", 1 << 16);
-        client_h.context.data_columns_consumer =
-            Some(Box::new(columns.cache_ref().retained_random_access("").unwrap()));
+        client_h.reopen(TCacheId::OutgoingGossip, TReadMode::Strict);
+        client_h.context.reader.open(TCacheId::DataColumns, "", TReadMode::Retained).unwrap();
         let limits = Box::new(SegmentedGossipLimits::new(2));
         let mut pair = PeerPair::new();
         // RPC.subscriptions = [{ subscribe: true, topicID: "t" }].
         let payload = b"\x0a\x05\x08\x01\x12\x01t";
         let read = {
-            let mut write = columns.reserve(5, false).unwrap();
+            let mut write = client_h.columns.reserve(5, false).unwrap();
             write.write_all(&payload[2..]).unwrap();
             write.flush().unwrap();
             write.read()
@@ -2245,10 +2252,8 @@ mod tests {
         ));
         client_h
             .context
-            .data_columns_consumer
-            .as_deref_mut()
-            .unwrap()
-            .advance_retention(columns.next_seq());
+            .reader
+            .advance_retention(TCacheId::DataColumns, client_h.columns.next_seq());
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         let wire: Vec<_> = server_h.received.values().flatten().copied().collect();
         let mut expected = vec![0x1a, 4, 0x32, 2, 0x50, 1];
@@ -2273,8 +2278,7 @@ mod tests {
     #[test]
     fn segmented_queue_overflow_drops_only_whole_unstarted_frames() {
         let mut h = PeerHarness::new();
-        h.context.gossip_consumer =
-            h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        h.reopen(TCacheId::OutgoingGossip, TReadMode::Strict);
         let limits = Box::new(SegmentedGossipLimits::new(2));
         let mut pair = PeerPair::new();
         let frame = CacheFrameRef::write(
@@ -2331,8 +2335,7 @@ mod tests {
     #[test]
     fn endpoint_gossip_overflow_returns_the_evicted_variant_and_descriptor() {
         let mut h = PeerHarness::new();
-        h.context.gossip_consumer =
-            h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        h.reopen(TCacheId::OutgoingGossip, TReadMode::Strict);
         let pair = PeerPair::new();
         let handle = pair.client_peer.handle;
         let mut endpoint = pair.into_client();
@@ -2378,7 +2381,7 @@ mod tests {
         assert_eq!(partial_cells, Some(7));
         assert_eq!(dropped.read().seq(), frame.read().seq());
         assert!(matches!(
-            dropped.acquire(&mut h.context.gossip_consumer, expires),
+            dropped.acquire(&mut h.context.reader, expires),
             Err(CacheFrameError::Expired)
         ));
 
@@ -2399,8 +2402,7 @@ mod tests {
     #[test]
     fn endpoint_rejected_gossip_returns_the_attempted_message() {
         let mut h = PeerHarness::new();
-        h.context.gossip_consumer =
-            h.gossip_out_producer.cache_ref().strict_random_access("", true).unwrap();
+        h.reopen(TCacheId::OutgoingGossip, TReadMode::Strict);
         let pair = PeerPair::new();
         let handle = pair.client_peer.handle;
         let mut endpoint = pair.into_client();
@@ -2441,8 +2443,7 @@ mod tests {
     #[test]
     fn endpoint_rpc_overflow_returns_the_evicted_response() {
         let mut h = PeerHarness::new();
-        let mut producer = TCache::producer("", TCACHE_BYTES);
-        h.context.rpc_consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        h.reopen(TCacheId::OutgoingRpc, TReadMode::Strict);
         let pair = PeerPair::new();
         let handle = pair.client_peer.handle;
         let mut endpoint = pair.into_client();
@@ -2452,7 +2453,7 @@ mod tests {
         let stream_id =
             P2pStreamId::new(handle.0, stream.into(), StreamProtocol::BeaconBlocksByRoot, false);
 
-        let mut reservation = producer.reserve(5, true).unwrap();
+        let mut reservation = h.rpc_out_producer.reserve(5, true).unwrap();
         reservation.write_all(b"block").unwrap();
         let read = reservation.read();
         let first = RpcOutbound::Response(RpcResponseOutbound {
@@ -2585,7 +2586,7 @@ mod tests {
 
         // Shrink the server's inbound gossip tcache: one 6 KB frame fits,
         // two don't.
-        server_h.context.gossip_producer = TCache::producer("gossip_in_small", 8 * 1024);
+        server_h.context.gossip_producer = TCache::producer(TCacheId::IncomingGossip, 8 * 1024);
         server_h.gossip_in_consumer =
             server_h.context.gossip_producer.cache_ref().consumer("peer_gossip_in_small").unwrap();
 
@@ -2657,7 +2658,7 @@ mod tests {
             peer: pair.client_peer.id.connection,
             request: RpcRequest::Goodbye(129u64.to_le_bytes()),
         });
-        let msg = AcquiredRpcOutbound::from((goodbye, &mut client_h.context.rpc_consumer));
+        let msg = AcquiredRpcOutbound::from((goodbye, &mut client_h.context.reader));
         assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
 
         // Time advances 1ms per step so the server's delayed ACK fires, but
@@ -2706,7 +2707,7 @@ mod tests {
             peer: pair.client_peer.id.connection,
             request: RpcRequest::StatusV2([1u8; STATUS_V2_SIZE]),
         });
-        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.rpc_consumer));
+        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.reader));
         assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
 
         let mut request_stream = None;
@@ -2738,7 +2739,7 @@ mod tests {
                     stream_id,
                     response: RpcResponse::StatusV2([2u8; STATUS_V2_SIZE]),
                 });
-                let msg = AcquiredRpcOutbound::from((response, &mut server_h.context.rpc_consumer));
+                let msg = AcquiredRpcOutbound::from((response, &mut server_h.context.reader));
                 assert!(matches!(pair.server_peer.send_rpc(msg), SendResult::Ok));
             }
 

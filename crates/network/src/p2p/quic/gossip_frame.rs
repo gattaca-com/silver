@@ -78,10 +78,7 @@ impl SegmentedGossipLimits {
         self.owners.set(self.owners.get() + owners);
         self.retained_bytes.set(self.retained_bytes.get() + bytes);
         let budget = FrameBudget { limits: NonNull::from(self), owners, bytes };
-        let frame = view.acquire_segments(
-            &mut context.gossip_consumer,
-            context.data_columns_consumer.as_deref_mut(),
-        )?;
+        let frame = view.acquire_segments(&mut context.reader)?;
         NetworkCounters::CacheSegmentedAdmitted.inc();
         NetworkCounters::CacheSegmentedSegments.add(frame.segment_count() as u64);
         Some(SegmentedFrame { segments: wheel.leased(frame, now), budget, partial_cells: None })

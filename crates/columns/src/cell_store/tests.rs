@@ -2,7 +2,8 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_beacon_state_data::{BlobParameters, FAR_FUTURE_EPOCH, SpecConfig};
 use silver_common::{
-    SubReservationError, TCache, TCacheProducer, TCacheRef, TRandomAccess, TReservation,
+    SubReservationError, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheRef, TReadMode,
+    TReservation,
     cell_store::{AcquiredCell, CELL_RECORD_BYTES, PendingCell},
     column_util::push_data_column_sidecar_prefix,
 };
@@ -17,7 +18,7 @@ const PROOF: [u8; BYTES_PER_KZG_PROOF] = [0x22; BYTES_PER_KZG_PROOF];
 struct Harness {
     store: CellStore,
     allocator: CellAllocator,
-    consumer: Box<TRandomAccess>,
+    consumer: Box<TCacheReader>,
     cache: TCacheRef,
     start: Instant,
 }
@@ -51,9 +52,9 @@ impl Harness {
     }
 
     fn at_slot(config: CellStoreConfig, slot: u64) -> Self {
-        let producer = TCache::producer("", config.cache_capacity());
+        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
         let cache = producer.cache_ref();
-        let consumer = Box::new(cache.retained_random_access("").unwrap());
+        let consumer = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
         let start = Instant::now();
         Self {
             allocator: CellAllocator::new(config.clone(), producer, slot, start).unwrap(),
@@ -163,7 +164,7 @@ impl Harness {
         let boundary = self.allocator.advance(now, min_slot);
         self.store.advance(now, min_slot, on_expired);
         if let Some(event) = boundary {
-            self.consumer.advance_retention(event.retain_from);
+            self.consumer.advance_retention(TCacheId::DataColumns, event.retain_from);
         }
     }
 
@@ -344,7 +345,7 @@ fn invalid_and_overflowing_configurations_are_rejected() {
 fn an_undersized_cache_is_rejected() {
     let config =
         CellStoreConfig::new(Arc::new(Harness::spec(21)), u128::MAX, Duration::ZERO).unwrap();
-    let producer = TCache::producer("", 1 << 16);
+    let producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
     assert_eq!(producer.cache_ref().capacity(), 1 << 16);
     assert!(matches!(
         CellAllocator::new(config, producer, 0, Instant::now()),
@@ -358,7 +359,10 @@ fn cell_and_proof_share_one_record() {
     h.context(ROOT, 0, 2);
     let (reference, complete) = h.insert(key(0, 0));
     assert!(!complete);
-    assert_eq!(reference.read().len().unwrap_err().to_string(), "reservation is incomplete");
+    assert_eq!(
+        h.allocator.producer().read_buffer(reference.read()).unwrap_err().to_string(),
+        "reservation is incomplete"
+    );
     let acquired = h.acquire_cell(key(0, 0)).unwrap();
     let cell = acquired.cell;
     let proof = acquired.proof;
@@ -873,7 +877,7 @@ fn slab_reuses_holes_without_moving_live_blocks() {
 #[test]
 fn acquired_send_outlives_expiry_and_blocks_overwrite() {
     let mut h = Harness::new(1, 1);
-    let mut outbound = Box::new(h.cache.strict_random_access("", true).unwrap());
+    let mut outbound = Box::new(TCacheReader::single(h.cache, "", TReadMode::Strict).unwrap());
     h.context(ROOT, 0, 1);
     let reference = h.insert(key(0, 0)).0;
     let sent = reference.acquire(&mut outbound).unwrap();
@@ -920,8 +924,9 @@ fn acquired_send_outlives_expiry_and_blocks_overwrite() {
 
 #[test]
 fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
-    let mut ingress = TCache::producer("", 1 << 17);
-    let mut incoming = Box::new(ingress.cache_ref().strict_random_access("", true).unwrap());
+    let mut ingress = TCache::producer(TCacheId::IncomingGossip, 1 << 17);
+    let mut incoming =
+        Box::new(TCacheReader::single(ingress.cache_ref(), "", TReadMode::Strict).unwrap());
     let mut h = Harness::new(1, 1);
     h.context(ROOT, 0, 1);
     let mut reservation = ingress.reserve(CELL_RECORD_BYTES, true).unwrap();
@@ -951,7 +956,7 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
         reservation.increment_offset(4096);
         drop(incoming.acquire_strict(reservation.read()).unwrap());
     }
-    assert!(old.len().is_err(), "the ingress buffer must actually have been reused");
+    assert!(ingress.read_buffer(old).is_err(), "the ingress buffer must actually have been reused");
     let validation = pending.data.acquire(&mut h.consumer).unwrap();
     assert_eq!(validation.buffers(), [&CELL[..], &PROOF[..]]);
     validation.accept().unwrap();
@@ -964,7 +969,7 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
 #[test]
 fn independent_ingress_writers_ignore_duplicates_and_retry_failed_validation() {
     let mut h = Harness::new(2, 3);
-    let mut el = Box::new(h.cache.retained_random_access("").unwrap());
+    let mut el = Box::new(TCacheReader::single(h.cache, "", TReadMode::Retained).unwrap());
     h.context(ROOT, 0, 2);
     let columns: Vec<_> = h.store.reservations(&ROOT).collect();
     assert_eq!(columns.len(), 2);
@@ -990,7 +995,7 @@ fn independent_ingress_writers_ignore_duplicates_and_retry_failed_validation() {
 #[test]
 fn pending_validation_and_writes_survive_slot_expiry_without_publishing() {
     let mut h = Harness::new(3, 1);
-    let mut writer = Box::new(h.cache.strict_random_access("", true).unwrap());
+    let mut writer = Box::new(TCacheReader::single(h.cache, "", TReadMode::Strict).unwrap());
     h.context(ROOT, 0, 3);
     let column = h.store.reservations(&ROOT).next().unwrap();
     let pending = column.stage(&mut writer, 0, &CELL, &PROOF).unwrap().unwrap();
@@ -1014,7 +1019,7 @@ fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
         let config =
             CellStoreConfig::new(Arc::new(Harness::spec(2)), 1 << 3, Duration::ZERO).unwrap();
         let mut h = Harness::at_slot(config, slot);
-        let mut network = Box::new(h.cache.retained_random_access("").unwrap());
+        let mut network = Box::new(TCacheReader::single(h.cache, "", TReadMode::Retained).unwrap());
         h.context(ROOT, slot, 2);
         let (old_cell, _) = h.insert(key(3, 0));
         let assembly_send = old_cell.acquire(&mut network).unwrap();
@@ -1036,7 +1041,7 @@ fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
         let column = h.store.reservations(&ROOT).next().unwrap();
         assert_eq!(column.reservation.acquire(&mut network).unwrap().ready(), 1);
         let cell = h.store.cell(key(3, 1)).unwrap();
-        assert!(ptr::eq(&*cell.read().cache_ref(), &*h.cache));
+        assert_eq!(cell.read().id(), h.cache.id());
         assert_eq!(cell.read().seq(), read.seq());
         let full_send = cell.acquire(&mut network).unwrap();
         assert_eq!(full_send.cell.as_ref(), &[0x12; BYTES_PER_CELL]);
@@ -1124,7 +1129,7 @@ fn rpc_sidecars_do_not_become_sendable_cells() {
     let mut h = Harness::new(2, 1);
     h.context(ROOT, 0, 2);
     let full = h.full_bytes(&ROOT, 0);
-    let mut rpc = TCache::producer("", 1 << 16);
+    let mut rpc = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
     let mut reservation = rpc.reserve(full.len(), true).unwrap();
     reservation.write_all(&full).unwrap();
     assert!(matches!(h.retain(&ROOT, 0, reservation.read()), Err(StoreError::WrongCache)));

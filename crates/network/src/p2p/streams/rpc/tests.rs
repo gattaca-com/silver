@@ -1,13 +1,13 @@
 use std::io::Write;
 
-use silver_common::{TCache, TCacheProducer};
+use silver_common::{TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode};
 
 use super::*;
 
 #[test]
 fn recovered_request_preserves_application_id_and_inline_payload() {
-    let producer = TCache::producer("", 1 << 16);
-    let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+    let producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+    let mut consumer = TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
     let request = RpcRequest::data_columns_by_range(10, 20, u128::MAX);
     let msg = RpcOutbound::Request(RpcRequestOutbound { application_id: 37, peer: 12, request });
     let recovered = AcquiredRpcOutbound::from((msg, &mut consumer)).into_message(12);
@@ -28,8 +28,8 @@ fn recovered_request_preserves_application_id_and_inline_payload() {
 
 #[test]
 fn recovered_cached_requests_keep_the_original_descriptor() {
-    let mut producer = TCache::producer("", 1 << 16);
-    let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+    let mut consumer = TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
     let mut reservation = producer.reserve(32, true).unwrap();
     reservation.write_all(&[7; 32]).unwrap();
     let read = reservation.read();

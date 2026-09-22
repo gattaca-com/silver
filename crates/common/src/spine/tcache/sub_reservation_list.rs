@@ -1,8 +1,8 @@
 use std::io::Write;
 
 use super::{
-    AcquiredRead, Producer, RandomAccessConsumer, SubReservationError, SubReservationRef,
-    TCacheProducer, TCacheRead,
+    AcquiredRead, Producer, SubReservationError, SubReservationRef, TCacheProducer, TCacheRead,
+    TCacheReader,
 };
 
 const ENTRY_BYTES: usize = 16;
@@ -30,7 +30,7 @@ impl SubReservationList {
         let mut written = 0;
         for (index, entry) in entries.enumerate() {
             let entry = entry.into().ok_or(SubReservationError::InvalidLayout)?;
-            if index >= count || entry.read.tcache.cache != producer.cache.cast() {
+            if index >= count || entry.read.id != producer.cache_ref().id() {
                 return Err(SubReservationError::WrongProducer);
             }
             let out = &mut bytes[index * ENTRY_BYTES..(index + 1) * ENTRY_BYTES];
@@ -51,11 +51,12 @@ impl SubReservationList {
 
     pub fn acquire(
         self,
-        consumer: &mut RandomAccessConsumer,
+        reader: &mut TCacheReader,
     ) -> Result<AcquiredSubReservationList, SubReservationError> {
-        if !consumer.strict || consumer.cache.cache != self.read.tcache.cache {
-            return Err(SubReservationError::WrongConsumer);
-        }
+        let consumer = reader
+            .get(self.read.id)
+            .filter(|consumer| consumer.strict)
+            .ok_or(SubReservationError::WrongConsumer)?;
         let read = consumer.acquire_strict(self.read).ok_or(SubReservationError::Stale)?;
         if read.buffer().map_err(|_| SubReservationError::Stale)?.0.len() !=
             self.count * ENTRY_BYTES
@@ -76,7 +77,7 @@ impl SubReservationList {
     fn entries(self, bytes: &[u8]) -> impl ExactSizeIterator<Item = SubReservationRef> + '_ {
         bytes.chunks_exact(ENTRY_BYTES).map(move |entry| SubReservationRef {
             read: TCacheRead {
-                tcache: self.read.tcache,
+                id: self.read.id,
                 seq: u64::from_le_bytes(entry[..8].try_into().unwrap()),
             },
             header_bytes: u64::from_le_bytes(entry[8..].try_into().unwrap()) as usize,
@@ -98,12 +99,13 @@ impl AcquiredSubReservationList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SubLayout, TCache};
+    use crate::{SubLayout, TCache, TCacheId, TCacheReader, TReadMode};
 
     #[test]
     fn list_keeps_descriptors_in_one_cache_and_requires_live_strict_reads() {
-        let mut producer = TCache::producer("", 1 << 16);
-        let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut consumer =
+            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
         let layout = SubLayout { parts: 1, first_len: 4, second_len: 2 };
         let first = producer.sub_reservation(layout, b"", b"").unwrap();
         let second = producer.sub_reservation(layout, b"", b"").unwrap();
@@ -113,8 +115,9 @@ mod tests {
         assert_eq!(sequences, [first.read().seq(), second.read().seq()]);
         assert_eq!(list.view(&producer).unwrap().len(), 2);
 
-        let mut other = TCache::producer("", 1 << 16);
-        let mut wrong = Box::new(other.cache_ref().retained_random_access("").unwrap());
+        let mut other = TCache::producer(TCacheId::SszGossip, 1 << 16);
+        let mut wrong =
+            Box::new(TCacheReader::single(other.cache_ref(), "", TReadMode::Retained).unwrap());
         assert!(matches!(list.acquire(&mut wrong), Err(SubReservationError::WrongConsumer)));
         assert!(SubReservationList::write(&mut other, [first].into_iter()).is_err());
         assert!(
@@ -128,7 +131,7 @@ mod tests {
         let mut padding = producer.reserve(32 * 1024, false).unwrap();
         padding.buffer().unwrap().fill(0);
         padding.flush().unwrap();
-        consumer.advance_retention(producer.next_seq());
+        consumer.advance_retention(TCacheId::DataColumns, producer.next_seq());
         assert_eq!(acquired.entries().len(), 2);
         drop(acquired);
         consumer.free();

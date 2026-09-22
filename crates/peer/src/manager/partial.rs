@@ -119,7 +119,7 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{MessageId, TCache, TCacheProducer};
+    use silver_common::{MessageId, TCache, TCacheId, TCacheProducer};
 
     use super::*;
     use crate::manager::fixture::{connect, fixture};
@@ -134,7 +134,7 @@ mod tests {
         let root = [7; 32];
         manager.on_column_verdict(1, root, 3, Nanos(1), true, now);
         manager.on_column_verdict(1, root, 3, Nanos(2), true, now);
-        let mut cache = TCache::producer("", 1 << 14);
+        let mut cache = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
         let idontwant = cache.reserve(1, false).unwrap().read();
         manager.on_new_gossip(
             1,

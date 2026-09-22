@@ -152,7 +152,8 @@ mod tests {
     use bytes::Bytes;
     use quinn_proto::StreamId;
     use silver_common::{
-        AcquiredWithOffset, StreamProtocol, TCache, TCacheProducer, TProducer, TRandomAccess,
+        AcquiredWithOffset, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheReader,
+        TProducer, TReadMode,
     };
 
     use super::*;
@@ -217,9 +218,11 @@ mod tests {
     /// The read holds a raw pointer to its consumer, and the consumer one to
     /// the producer's cache: box the consumer so its address survives the
     /// return, and order the tuple so the consumer drops before the producer.
-    fn queued_msg(name: &'static str) -> (Box<TRandomAccess>, TProducer, TRead) {
-        let mut producer = TCache::producer(name, 1 << 16);
-        let mut consumer = Box::new(producer.cache_ref().random_access(name, false).unwrap());
+    fn queued_msg(name: &'static str) -> (Box<TCacheReader>, TProducer, TRead) {
+        let mut producer = TCache::producer(TCacheId::OutgoingGossip, 1 << 16);
+        let mut consumer = Box::new(
+            TCacheReader::single(producer.cache_ref(), name, TReadMode::SlidingManualFree).unwrap(),
+        );
         let mut reservation = producer.reserve(100, true).unwrap();
         reservation.write_all(&[0xaa; 100]).unwrap();
         reservation.flush().unwrap();
@@ -298,8 +301,9 @@ mod tests {
         const CAPACITY: usize = 1 << 18;
         const CHURN_BYTES: usize = 8 * 1024;
 
-        let mut producer = TCache::producer("", CAPACITY);
-        let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, CAPACITY);
+        let mut consumer =
+            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
         let payload: [u8; 513] = array::from_fn(|i| i as u8);
         let mut reservation = producer.reserve(payload.len(), true).unwrap();
         reservation.write_all(&payload).unwrap();

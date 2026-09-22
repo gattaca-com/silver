@@ -247,7 +247,7 @@ fn entry_type(value: i32) -> Result<EntryType, DecodeError> {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use silver_common::{TCache, TCacheProducer};
+    use silver_common::{TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode};
 
     use super::*;
 
@@ -296,9 +296,13 @@ mod tests {
         message.set_priority(-10);
 
         let expected = message.clone();
-        let mut producer = TCache::producer("cluster_wire_test", 1 << 14);
-        let mut consumer =
-            producer.cache_ref().strict_random_access("cluster_wire_test_consumer", true).unwrap();
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut consumer = TCacheReader::single(
+            producer.cache_ref(),
+            "cluster_wire_test_consumer",
+            TReadMode::Strict,
+        )
+        .unwrap();
         let read = encode_message(message, &mut producer).unwrap();
         let acquired = consumer.acquire_strict(read).unwrap();
         let (bytes, _) = acquired.buffer().unwrap();

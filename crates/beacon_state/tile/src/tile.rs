@@ -13,8 +13,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
     HeadRoots, NewGossipMsg, Origin, PayloadResolution, ReplayBlock, RequestId, RpcInbound,
-    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheProducer, TProducer,
-    TRandomAccess, TRead, hex32,
+    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheError, TCacheId,
+    TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode, hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -185,12 +185,10 @@ pub struct BeaconStateTile {
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
 
-    gossip_consumer: TRandomAccess,
-    rpc_consumer: TRandomAccess,
-    ea_consumer: TRandomAccess,
-    replay_consumer: TRandomAccess,
-
     verify_weak_subjectivity: bool,
+
+    // Last: acquired reads above point into it.
+    reader: TCacheReader,
 }
 
 type Producers = <SilverSpine as FluxSpine>::Producers;
@@ -210,10 +208,7 @@ impl BeaconStateTile {
         ticker: SlotTicker,
         spec: Arc<SpecConfig>,
         syncing: &SyncingConfig,
-        gossip_consumer: TRandomAccess,
-        rpc_consumer: TRandomAccess,
-        incoming_engine_resp_consumer: TRandomAccess,
-        replay_consumer: TRandomAccess,
+        tcaches: TCacheTable,
         events_producer: TProducer,
         verify_weak_subjectivity: bool,
         state: BeaconState,
@@ -258,15 +253,24 @@ impl BeaconStateTile {
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
             pending_bounds: syncing.pending,
-            gossip_consumer,
-            rpc_consumer,
-            ea_consumer: incoming_engine_resp_consumer,
-            replay_consumer,
             verify_weak_subjectivity,
+            reader: TCacheReader::new(tcaches),
         };
         tile.seed_anchor(anchor, val_cap);
         tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
         tile
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::SszGossip, "bs_ssz_gossip", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::IncomingRpc, "bs_incoming_rpc", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::IncomingEngineResp,
+            "engine_incoming_resp",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(TCacheId::ReplayBlocks, "bs_replay", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::DataColumns, "bs_data_columns", TReadMode::Sliding)
     }
 
     /// A read handle on the owned state, for wiring other tiles (lock-free
@@ -698,7 +702,7 @@ impl BeaconStateTile {
             );
             Self::reject_local_gossip(&m, producers);
         });
-        self.gossip_consumer.free();
+        self.reader.free();
     }
 
     fn following_loop(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -722,7 +726,7 @@ impl BeaconStateTile {
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
         self.flush_votes(&mut adapter.producers);
-        self.gossip_consumer.free();
+        self.reader.free();
 
         self.post_shufflings(&mut adapter.producers);
     }
@@ -749,7 +753,6 @@ impl BeaconStateTile {
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
 
         adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
-        self.rpc_consumer.free();
 
         adapter.consume(|m: DataColumnsEvent, producers| {
             if let DataColumnsEvent::Available { block_root, slot } = m {
@@ -760,10 +763,8 @@ impl BeaconStateTile {
         adapter.consume(|eng_resp: EngineResp, producers| {
             self.handle_engine_response(eng_resp, producers);
         });
-        self.ea_consumer.free();
 
         adapter.consume(|m: ReplayBlock, producers| self.on_replay(m, producers));
-        self.replay_consumer.free();
     }
 
     fn on_sync_update(&mut self, target: SyncUpdate) {
@@ -797,7 +798,7 @@ impl BeaconStateTile {
             RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz }
                 if id.is(DataKind::Envelope, Origin::Live) =>
             {
-                let acquired = self.rpc_consumer.acquire(ssz);
+                let acquired = self.reader.acquire(ssz);
                 match acquired.buffer() {
                     Ok((data, _)) => {
                         self.handle_execution_payload_envelope(
@@ -989,6 +990,11 @@ impl BeaconStateTile {
 }
 
 impl Tile<SilverSpine> for BeaconStateTile {
+    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        self.open_tcaches().expect("tcache wiring");
+        true
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         if !self.initial_status_emitted {
             tracing::info!("producing initial status");

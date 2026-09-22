@@ -1,5 +1,5 @@
 use crate::{
-    RpcRequest, StreamProtocol, TCacheError,
+    RpcRequest, StreamProtocol, TCacheError, TCacheProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, DataColumnSidecarsByRangeRequestView,
         ExecutionPayloadEnvelopesByRangeRequestView,
@@ -86,7 +86,8 @@ impl SyncRequest {
 /// where we only ever ask for one, and the by-root arms deliberately count from
 /// the payload length rather than acquire it in the hot path.
 impl RpcRequest {
-    pub fn rate_limit_tokens(&self) -> Result<u64, TCacheError> {
+    /// `rpc_in` is the producer that wrote the by-root payloads.
+    pub fn rate_limit_tokens(&self, rpc_in: &impl TCacheProducer) -> Result<u64, TCacheError> {
         let tokens = match self {
             RpcRequest::StatusV1(_) |
             RpcRequest::StatusV2(_) |
@@ -94,7 +95,9 @@ impl RpcRequest {
             RpcRequest::Goodbye(_) |
             RpcRequest::MetaData => 1,
             RpcRequest::BlocksByRange(ssz) => BeaconBlocksByRangeRequestView::count(ssz),
-            RpcRequest::BlockByRoot(read) => fixed_width_list_tokens(read.len()?, 32),
+            RpcRequest::BlockByRoot(read) => {
+                fixed_width_list_tokens(rpc_in.read_buffer(*read)?.len(), 32)
+            }
             RpcRequest::DataColumnsByRange { ssz, len } => {
                 let Some(buf) = ssz.get(..*len) else { return Ok(1) };
                 if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
@@ -106,13 +109,13 @@ impl RpcRequest {
                 }
             }
             RpcRequest::DataColumnsByRoot(read) => {
-                data_columns_by_root_tokens_from_len(read.len()?)
+                data_columns_by_root_tokens_from_len(rpc_in.read_buffer(*read)?.len())
             }
             RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
                 ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
             }
             RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
-                fixed_width_list_tokens(read.len()?, 32)
+                fixed_width_list_tokens(rpc_in.read_buffer(*read)?.len(), 32)
             }
         };
         Ok(tokens.max(1))
@@ -189,14 +192,14 @@ impl From<u64> for RequestId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RpcRequest, TCache};
+    use crate::{RpcRequest, TCache, TCacheId};
 
     /// The two token formulas — ours from the ask, the peer's from our bytes —
     /// must agree, or we either throttle sync for no reason or get rate-limited
     /// off peers that charged more than we budgeted.
     #[test]
     fn tokens_agree_with_what_the_encoded_request_costs() {
-        let mut producer = TCache::multi_producer("token_agreement", 1 << 16);
+        let mut producer = TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 16);
         let columns = (1u128 << 3) | (1u128 << 7) | (1u128 << 40);
 
         for scope in [Scope::Range { start: 1000, count: 64 }, Scope::Root([0xAB; 32])] {
@@ -231,7 +234,7 @@ mod tests {
                     "{kind:?} {scope:?} encoded onto another protocol"
                 );
                 assert_eq!(
-                    encoded.rate_limit_tokens().unwrap(),
+                    encoded.rate_limit_tokens(&producer).unwrap(),
                     request.tokens(),
                     "{kind:?} {scope:?} costs differ"
                 );

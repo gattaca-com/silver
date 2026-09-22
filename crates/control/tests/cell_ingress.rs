@@ -1,7 +1,6 @@
 use std::{
     array,
     io::Write,
-    ptr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -14,8 +13,8 @@ use silver_chain_spec::{ForkName, SpecConfig};
 use silver_columns::cell_store::CellStore;
 use silver_common::{
     GossipDomain, GossipTopic, Nanos, P2pStreamId, SilverSpine, StreamProtocol,
-    SubReservationError, TCache, TCacheProducer, TCacheRead, TCacheRef, TProducer, TRandomAccess,
-    TReservation,
+    SubReservationError, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef,
+    TProducer, TReadMode, TReservation,
     cell_store::{
         CellKey, CellOrigin, CellSource, CellStoreConfig, CellStoreEvent, CellValidationOutcome,
         CellValidationRequest, ColumnRef, CommitmentContext, ContextData, FuluContextSource,
@@ -43,10 +42,10 @@ impl Tile<SilverSpine> for Endpoint {
 struct Rig {
     control: CellIngress,
     store: CellStore,
-    columns: Box<TRandomAccess>,
-    network: Box<TRandomAccess>,
+    columns: Box<TCacheReader>,
+    network: Box<TCacheReader>,
     el: TProducer,
-    el_consumer: TRandomAccess,
+    el_consumer: TCacheReader,
     adapters: [SpineAdapter<SilverSpine>; 3],
     cache: TCacheRef,
     now: Instant,
@@ -80,8 +79,8 @@ fn block_derived_header_is_copied_from_el_cache_into_the_shared_cache() {
     });
     assert_eq!(rig.reservations().len(), 3);
     let header = rig.store.availability(&ROOT, 0).unwrap().header.unwrap();
-    assert!(ptr::eq(&*header.cache_ref(), &*rig.cache));
-    assert!(!ptr::eq(&*header.cache_ref(), &*rig.el.cache_ref()));
+    assert_eq!(header.id(), rig.cache.id());
+    assert_ne!(header.id(), rig.el.cache_ref().id());
     assert!(data.matches(rig.control.producer_mut().read_buffer(header).unwrap()));
 }
 
@@ -95,12 +94,12 @@ impl Rig {
             ..SpecConfig::mainnet()
         });
         let config = CellStoreConfig::new(spec, 7, Duration::from_secs(11)).unwrap();
-        let producer = TCache::producer("", config.cache_capacity());
+        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
         let cache = producer.cache_ref();
-        let columns = Box::new(cache.retained_random_access("").unwrap());
-        let network = Box::new(cache.retained_random_access("").unwrap());
-        let el = TCache::producer("", 4096);
-        let el_consumer = el.cache_ref().random_access("", true).unwrap();
+        let columns = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
+        let network = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
+        let el = TCache::producer(TCacheId::ElDataColumns, 4096);
+        let el_consumer = TCacheReader::single(el.cache_ref(), "", TReadMode::Sliding).unwrap();
         let now = Instant::now();
         let directory = tempfile::tempdir().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(directory.path(), None));
@@ -197,7 +196,7 @@ impl Rig {
         let mut boundary = None;
         self.adapters[1].consume(|event: RetentionEvent, _| {
             assert!(boundary.is_none());
-            self.columns.advance_retention(event.retain_from);
+            self.columns.advance_retention(TCacheId::DataColumns, event.retain_from);
             boundary = Some(event);
         });
         boundary.unwrap()
@@ -205,7 +204,7 @@ impl Rig {
 
     fn network_boundaries(&mut self) {
         self.adapters[2].consume(|event: RetentionEvent, _| {
-            self.network.advance_retention(event.retain_from);
+            self.network.advance_retention(TCacheId::DataColumns, event.retain_from);
         });
     }
 
@@ -319,7 +318,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
             if let CellStoreEvent::Available(column) = event {
                 for row in 0..2 {
                     let cell = column.cell(row).unwrap();
-                    assert!(ptr::eq(&*cell.read().cache_ref(), &*rig.cache));
+                    assert_eq!(cell.read().id(), rig.cache.id());
                     let acquired = cell.acquire(&mut rig.network).unwrap();
                     assert_eq!(acquired.proof.as_ref(), PROOF);
                     available += 1;
@@ -333,7 +332,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
         assert!(matches!(full.source, CellSource::Full { .. }));
         assert!(matches!(assembly.source, CellSource::Assembly { .. }));
         assert_eq!(full.read().seq(), full_read.seq());
-        assert!(ptr::eq(&*full.read().cache_ref(), &*assembly.read().cache_ref()));
+        assert_eq!(full.read().id(), assembly.read().id());
 
         for _ in 0..rig.cache.capacity() / 8192 / 2 {
             let newer = rig.write(8192, 0xcc);
@@ -409,9 +408,9 @@ fn delayed_expiry_preserves_next_slot_data_and_newer_events_recover_missed_ones(
     rig.now += SLOT;
     let latest = rig.expire();
     // The latest boundary is sufficient even if earlier notifications are missed.
-    rig.network.advance_retention(latest.retain_from);
-    rig.network.advance_retention(missed.retain_from);
-    rig.network.advance_retention(old.retain_from);
+    rig.network.advance_retention(TCacheId::DataColumns, latest.retain_from);
+    rig.network.advance_retention(TCacheId::DataColumns, missed.retain_from);
+    rig.network.advance_retention(TCacheId::DataColumns, old.retain_from);
     for _ in 0..20 {
         rig.write(8192, 0x44);
     }

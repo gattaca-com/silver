@@ -1,12 +1,9 @@
-use std::{
-    ptr,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 use silver_common::{
-    GossipDomain, SubReservationRef, TCacheRead, TRandomAccess,
+    GossipDomain, SubReservationRef, TCacheId, TCacheRead, TCacheReader,
     cell_store::{
         AssemblyRequest, AssemblySet, CellKey, CellRef, CellStoreConfig, ColumnAvailability,
         ColumnRef, CommitmentContext, ContextData, FuluContextSource, MAX_CONTEXT_BYTES,
@@ -260,9 +257,9 @@ impl CellStore {
     pub fn install(
         &mut self,
         set: AssemblySet,
-        consumer: &mut TRandomAccess,
+        reader: &mut TCacheReader,
     ) -> Result<bool, StoreError> {
-        if !consumer.is_retained() {
+        if !reader.is_retained(TCacheId::DataColumns) {
             return Err(StoreError::WrongCache);
         }
         let request = set.request;
@@ -282,19 +279,19 @@ impl CellStore {
         if self.columns[start].assembly.is_some() {
             return Ok(false);
         }
-        let list = set.reservations.acquire(consumer)?;
+        let list = set.reservations.acquire(reader)?;
         if list.entries().len() != self.config.column_indices().len() {
             return Err(StoreError::InvalidContext);
         }
         let mut bytes = 0;
         for reference in list.entries() {
-            bytes += reference.acquire(consumer)?.len();
+            bytes += reference.acquire(reader)?.len();
         }
         if let Some(header) = set.header {
-            if !ptr::eq(&*header.cache_ref(), &*consumer.cache_ref()) {
+            if header.id() != TCacheId::DataColumns {
                 return Err(StoreError::WrongCache);
             }
-            let read = consumer.acquire_strict(header).ok_or(StoreError::ContextExpired)?;
+            let read = reader.acquire_strict(header).ok_or(StoreError::ContextExpired)?;
             let bytes = read.buffer().map_err(|_| StoreError::ContextExpired)?.0;
             if !self.context(&request.context.block_root).unwrap().1.matches(bytes) {
                 return Err(StoreError::InvalidContext);
@@ -319,14 +316,14 @@ impl CellStore {
         &mut self,
         root: &BlockRoot,
         column: usize,
-        consumer: &mut TRandomAccess,
+        reader: &mut TCacheReader,
     ) -> Result<ColumnUpdate, StoreError> {
         let (block, index) = self.column_index(root, column)?;
         let entry = &self.columns[index];
         let (available, complete_read) = if let Some(full) = &entry.full {
             (CellMask::all(self.blocks[block].context.blob_count), Some(full.read))
         } else {
-            let acquired = entry.assembly.ok_or(StoreError::ContextExpired)?.acquire(consumer)?;
+            let acquired = entry.assembly.ok_or(StoreError::ContextExpired)?.acquire(reader)?;
             (CellMask(acquired.ready()), acquired.finish().ok())
         };
         Ok(self.refresh_column_at(index, available, complete_read))
@@ -355,13 +352,13 @@ impl CellStore {
         root: &BlockRoot,
         column: usize,
         read: TCacheRead,
-        consumer: &mut TRandomAccess,
+        reader: &mut TCacheReader,
     ) -> Result<ColumnUpdate, StoreError> {
-        if !consumer.is_retained() || !ptr::eq(&*read.cache_ref(), &*consumer.cache_ref()) {
+        if read.id() != TCacheId::DataColumns || !reader.is_retained(read.id()) {
             return Err(StoreError::WrongCache);
         }
         let (block, index) = self.column_index(root, column)?;
-        let pinned = consumer.acquire_strict(read).ok_or(StoreError::ContextExpired)?;
+        let pinned = reader.acquire_strict(read).ok_or(StoreError::ContextExpired)?;
         let bytes = pinned.buffer().map_err(|_| StoreError::ContextExpired)?.0;
         let context = &self.blocks[block];
         let (cell_offset, proof_offset) =

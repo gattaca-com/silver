@@ -12,7 +12,7 @@ impl Rig {
         let ssz = tcache_write(&mut self.rpc_p, bytes);
         let column = PendingColumn {
             stream_id: P2pStreamId::new(1, 0, StreamProtocol::DataColumnSidecarsByRange, true),
-            sidecar: self.tile.consumers.rpc.acquire(ssz),
+            sidecar: self.tile.reader.acquire(ssz),
             ssz_cache: SszCache::Rpc,
             domain: None,
             gossip_subnet: None,

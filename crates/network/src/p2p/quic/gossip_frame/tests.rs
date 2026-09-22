@@ -9,7 +9,7 @@ use std::{
 use quinn_proto::StreamId;
 use silver_common::{
     AcquiredWithOffset, CacheFrameRef, CacheSegment, P2pStreamId, StreamProtocol, SubLayout,
-    SubReservationRef, TCache, TCacheProducer, TProducer,
+    SubReservationRef, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer,
 };
 
 use super::*;
@@ -58,28 +58,25 @@ impl Harness {
         // Counter files initialise lazily on first touch; warm them so the
         // zero-allocation baselines below measure only the frame path.
         NetworkCounters::CacheSegmentedAdmitted.inc();
-        let gossip = TCache::producer("", 1 << 18);
-        let columns = TCache::producer("", 1 << 18);
-        let rpc = TCache::producer("", 1 << 16);
-        let cluster = TCache::producer("", 1 << 16);
+        let gossip = TCache::producer(TCacheId::OutgoingGossip, 1 << 18);
+        let columns = TCache::producer(TCacheId::DataColumns, 1 << 18);
+        let rpc_out = TCache::producer(TCacheId::OutgoingRpc, 1 << 16);
+        let cluster = TCache::producer(TCacheId::ClusterOutbound, 1 << 16);
         let now = Instant::now();
+        let mut context = Box::new(Context {
+            gossip_producer: TCache::producer(TCacheId::IncomingGossip, 1 << 16),
+            rpc_producer: TCache::producer(TCacheId::IncomingRpc, 1 << 16),
+            identify: None,
+            cluster_nodes: None,
+            cluster_inbound_producer: TCache::producer(TCacheId::ClusterInbound, 1 << 16),
+            partial_columns: true,
+            reader: TCacheReader::new(TCacheTable::from_iter(
+                [&gossip, &columns, &rpc_out, &cluster].map(|p| p.cache_ref()),
+            )),
+        });
+        context.open_tcaches().unwrap();
         Self {
-            context: Box::new(Context {
-                gossip_consumer: gossip.cache_ref().strict_random_access("", true).unwrap(),
-                data_columns_consumer: Some(Box::new(
-                    columns.cache_ref().retained_random_access("").unwrap(),
-                )),
-                gossip_producer: TCache::producer("", 1 << 16),
-                rpc_consumer: rpc.cache_ref().random_access("", true).unwrap(),
-                rpc_producer: rpc,
-                identify: None,
-                cluster_nodes: None,
-                cluster_inbound_producer: TCache::producer("", 1 << 16),
-                cluster_outbound_consumer: cluster
-                    .cache_ref()
-                    .strict_random_access("", true)
-                    .unwrap(),
-            }),
+            context,
             limits: Box::new(SegmentedGossipLimits::new(2)),
             wheel: Box::new(OutboundLeaseWheel::new(now)),
             gossip,
@@ -102,11 +99,7 @@ impl Harness {
             .write(&[0xab; 64], &[0xcd; 8])
             .unwrap();
         if accept {
-            pending
-                .acquire(self.context.data_columns_consumer.as_deref_mut().unwrap())
-                .unwrap()
-                .accept()
-                .unwrap();
+            pending.acquire(&mut self.context.reader).unwrap().accept().unwrap();
         }
         let frame = CacheFrameRef::write(
             &mut self.gossip,
@@ -136,7 +129,7 @@ impl Harness {
     }
 
     fn acquire(&mut self, frame: CacheFrameRef) -> Option<SegmentedFrame> {
-        let view = frame.acquire(&mut self.context.gossip_consumer, self.now).ok()?;
+        let view = frame.acquire(&mut self.context.reader, self.now).ok()?;
         self.limits.acquire(view, &mut self.context, &self.wheel, self.now)
     }
 }
@@ -260,13 +253,8 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     let mut frame = h.acquire(reference).unwrap();
     frame.partial_cells = Some(1);
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
-    let cell_ptr = assembly
-        .acquire(h.context.data_columns_consumer.as_deref_mut().unwrap())
-        .unwrap()
-        .ranges(0)
-        .unwrap()[0]
-        .as_ref()
-        .as_ptr();
+    let cell_ptr =
+        assembly.acquire(&mut h.context.reader).unwrap().ranges(0).unwrap()[0].as_ref().as_ptr();
     let mut io = MockIo::new(OutboundGossip::Segmented(frame), 7);
     let before = ALLOCATIONS.with(Cell::get);
     let mut state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
@@ -280,7 +268,7 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     }
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     h.columns.view_sub_reservation(assembly).unwrap().close();
-    h.context.data_columns_consumer.as_deref_mut().unwrap().advance_retention(h.columns.next_seq());
+    h.context.reader.advance_retention(TCacheId::DataColumns, h.columns.next_seq());
     assert!(h.acquire(reference).is_none());
     let mut filled = 0;
     while let Some(mut reservation) = h.columns.reserve(8192, true) {
@@ -311,7 +299,7 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     io.retained.clear();
     assert_eq!(h.limits.owners.get(), 0);
     assert_eq!(h.wheel.active_count(), 0);
-    h.context.data_columns_consumer.as_deref_mut().unwrap().advance_retention(h.columns.next_seq());
+    h.context.reader.advance_retention(TCacheId::DataColumns, h.columns.next_seq());
     assert!(h.columns.reserve(8192, true).is_some());
 }
 
@@ -342,7 +330,7 @@ fn fanout_has_independent_delivery_leases() {
     let (reference, _) = h.assembly(true);
     let wheel = Box::new(OutboundLeaseWheel::new(h.now));
     let mut first = h.acquire(reference).unwrap().into_writer();
-    let view = reference.acquire(&mut h.context.gossip_consumer, h.now).unwrap();
+    let view = reference.acquire(&mut h.context.reader, h.now).unwrap();
     let mut second = h.limits.acquire(view, &mut h.context, &wheel, h.now).unwrap().into_writer();
     drop(first.take_chunk());
     drop(second.take_chunk());
@@ -363,7 +351,7 @@ fn fanout_has_independent_delivery_leases() {
 fn byte_and_owner_limits_remain_charged_until_ack() {
     let mut h = Harness::new();
     let (reference, _) = h.assembly(true);
-    let view = reference.acquire(&mut h.context.gossip_consumer, h.now).unwrap();
+    let view = reference.acquire(&mut h.context.reader, h.now).unwrap();
     h.limits.max_bytes = view.descriptor_len() + view.wire_len();
     h.limits.max_owners = view.segment_count() + 1;
     drop(view);
@@ -486,7 +474,7 @@ fn partial_length_prefix_and_mixed_frames_preserve_boundaries() {
     assert!(matches!(state, GossipWriteState::WritingLength { written: 1, .. }));
     let mut write = h.gossip.reserve(3, true).unwrap();
     write.write_all(b"end").unwrap();
-    let read = h.context.gossip_consumer.acquire_strict(write.read()).unwrap();
+    let read = h.context.reader.acquire_strict(write.read()).unwrap();
     io.pending = Some(OutboundGossip::Contiguous(h.wheel.leased(read, h.now)));
     io.budget = 0;
     state = state.spin(&mut io, &stream()).unwrap();
@@ -509,7 +497,7 @@ fn contiguous_baseline_uses_one_owner_per_write_attempt() {
     let mut h = Harness::new();
     let mut reservation = h.gossip.reserve(64, true).unwrap();
     reservation.write_all(&[0xab; 64]).unwrap();
-    let read = h.context.gossip_consumer.acquire_strict(reservation.read()).unwrap();
+    let read = h.context.reader.acquire_strict(reservation.read()).unwrap();
     let mut io = MockIo::new(OutboundGossip::Contiguous(h.wheel.leased(read, h.now)), 7);
     let before = ALLOCATIONS.with(Cell::get);
     let mut state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();

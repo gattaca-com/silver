@@ -16,7 +16,9 @@ pub use consumer::{
     AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
 };
 use flux::{Timer, timing::Nanos, tracing};
+pub use id::TCacheId;
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
+pub use reader::{ReadMode, TCacheReader, TCacheTable};
 pub use sub_reservation::{
     AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
     SubReservationRef, SubReservationView, SubValidation, SubWrite,
@@ -47,8 +49,10 @@ const fn lag_threshold(len: u32) -> u64 {
 
 mod cache_frame;
 mod consumer;
+mod id;
 mod metrics;
 mod producer;
+mod reader;
 mod sub_reservation;
 mod sub_reservation_list;
 
@@ -62,7 +66,7 @@ use metrics::TCacheMetrics;
 ///  \_       (_
 ///  (___/-(____) _
 pub struct TCache {
-    name: &'static str,
+    id: TCacheId,
     /// Flat buffer: [TCacheHead | padding | data…]
     /// Aligned to ALIGN. DATA_OFFSET bytes precede the data region.
     ptr: *mut u8,
@@ -138,6 +142,8 @@ pub enum Error {
     MaxConsumers,
     #[error("Unexpected cache ref")]
     UnexpectedCacheRef,
+    #[error("tcache {0:?} not in table")]
+    Unregistered(TCacheId),
     #[error("stale seq: {seq} < {tail}")]
     StaleSeq { name: &'static str, seq: u64, tail: u64 },
     #[error("reservation is incomplete")]
@@ -149,20 +155,20 @@ pub enum Error {
 }
 
 impl TCache {
-    /// Create a single producer t-cache. `name` is a stable label
-    /// (e.g. `"gossip_in"`); the metrics layer uses it to produce
-    /// `counters-tcache-{name}`.
-    pub fn producer(name: &'static str, n: usize) -> Producer {
-        Producer::new(Self::alloc_heap(name, n))
+    pub fn producer(id: TCacheId, n: usize) -> Producer {
+        Producer::new(Self::alloc_heap(id, n))
     }
 
-    /// Create a multi-producer t-cache.
-    pub fn multi_producer(name: &'static str, n: usize) -> MultiProducer {
-        MultiProducer::new(Self::producer(name, n))
+    pub fn multi_producer(id: TCacheId, n: usize) -> MultiProducer {
+        MultiProducer::new(Self::producer(id, n))
+    }
+
+    pub fn id(&self) -> TCacheId {
+        self.id
     }
 
     pub fn name(&self) -> &'static str {
-        self.name
+        self.id.name()
     }
 
     #[inline]
@@ -176,20 +182,20 @@ impl TCache {
     /// Writers must be trusted cooperating processes. Pointer-bearing payloads
     /// are process-local, not portable between processes.
     #[cfg(unix)]
-    pub fn shm_producer(name: &'static str, n: usize) -> Producer {
-        Producer::new(Self::attach_shmem(name, n))
+    pub fn shm_producer(id: TCacheId, n: usize) -> Producer {
+        Producer::new(Self::attach_shmem(id, n))
     }
 
-    /// Attach to a named shmem segment as a random-access consumer, creating
-    /// it if needed. Either side (producer or consumer) may start first. `n`
-    /// must be identical on both sides.
+    /// Attach to a named shmem segment as a reader, creating it if needed.
+    /// Either side (producer or reader) may start first. `n` must be
+    /// identical on both sides.
     /// The trust and payload restrictions of [`Self::shm_producer`] also apply.
     #[cfg(unix)]
-    pub fn shm_consumer(name: &str, n: usize) -> Result<RandomAccessConsumer, Error> {
-        let tcache = Box::into_raw(Self::attach_shmem(name, n));
-        // SAFETY: tcache is a valid Box-allocated TCache; we intentionally
-        // leak it here (same pattern as producer/multi_producer).
-        unsafe { (*tcache).random_access("", true) }
+    pub fn shm_reader(id: TCacheId, n: usize) -> Result<TCacheReader, Error> {
+        // Leaked like the producer-side caches.
+        let tcache = Box::leak(Self::attach_shmem(id, n));
+        let cache = TCacheRef { cache: addr_of!(*tcache) as *const c_void };
+        TCacheReader::single(cache, "", ReadMode::Sliding)
     }
 
     pub fn consumer(&self, name: &'static str) -> Result<Consumer, Error> {
@@ -221,42 +227,14 @@ impl TCache {
         })
     }
 
-    pub fn random_access(
+    /// Tail is claimed at `seq`; the producer must not have reclaimed past it.
+    pub(super) fn ra_consumer_from(
         &self,
-        name: &'static str,
-        auto_free: bool,
-    ) -> Result<RandomAccessConsumer, Error> {
-        self.ra_consumer(name, auto_free, false)
-    }
-
-    /// Strict random access consumer cannot be force reset
-    /// on idle and therefore can block producer - only use
-    /// for high throughput consumers.
-    pub fn strict_random_access(
-        &self,
-        name: &'static str,
-        auto_free: bool,
-    ) -> Result<RandomAccessConsumer, Error> {
-        self.ra_consumer(name, auto_free, true)
-    }
-
-    pub fn retained_random_access(
-        &self,
-        name: &'static str,
-    ) -> Result<RandomAccessConsumer, Error> {
-        let mut consumer = self.ra_consumer(name, true, true)?;
-        consumer.retain();
-        Ok(consumer)
-    }
-
-    fn ra_consumer(
-        &self,
+        seq: u64,
         name: &'static str,
         auto_free: bool,
         strict: bool,
     ) -> Result<RandomAccessConsumer, Error> {
-        let seq = self.head().seq.load(Ordering::Acquire);
-
         let index = self
             .head()
             .tails
@@ -315,7 +293,7 @@ impl TCache {
     /// no-op for latency.
     fn create_consumer_timer(&self, consumer_name: &'static str) -> Option<flux::Timer> {
         self.metrics.as_ref()?;
-        let label = format!("tcache-{}-{}", self.name, consumer_name);
+        let label = format!("tcache-{}-{}", self.id.name(), consumer_name);
         Some(flux::Timer::new("silver", &label))
     }
 
@@ -562,23 +540,19 @@ impl TCache {
 
     // --- allocators ---
 
-    fn alloc_heap(name: &'static str, size: usize) -> Box<Self> {
+    fn alloc_heap(id: TCacheId, size: usize) -> Box<Self> {
         assert!(
             size.is_power_of_two() && size.is_multiple_of(ALIGN),
             "n must be a power-of-two multiple of {ALIGN}"
         );
         let total = DATA_OFFSET + size;
         let layout = Layout::from_size_align(total, ALIGN).unwrap();
-        let (metrics, timer) = if name.is_empty() {
-            (None, None)
-        } else {
-            let label = format!("tcache-write-{}", name);
-            let timer = Some(flux::Timer::new("silver", &label));
-            let metrics = TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
-                .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
-                .ok();
-            (metrics, timer)
-        };
+        let name = id.name();
+        let label = format!("tcache-write-{}", name);
+        let timer = Some(flux::Timer::new("silver", &label));
+        let metrics = TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
+            .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
+            .ok();
         let ptr = unsafe {
             let p = alloc::alloc_zeroed(layout);
             if p.is_null() {
@@ -588,7 +562,7 @@ impl TCache {
         };
         Self::init_head(ptr);
         Box::new(Self {
-            name,
+            id,
             ptr,
             len: size as u32,
             backing: Backing::Heap { layout },
@@ -605,8 +579,9 @@ impl TCache {
     /// Readiness is signalled by `ready == u64::MAX`, set as the last
     /// store in `init_head`.
     #[cfg(unix)]
-    fn attach_shmem(name: &str, size: usize) -> Box<Self> {
+    fn attach_shmem(id: TCacheId, size: usize) -> Box<Self> {
         use std::ffi::CString;
+        let name = id.name();
         assert!(
             size.is_power_of_two() && size.is_multiple_of(ALIGN),
             "n must be a power-of-two multiple of {ALIGN}"
@@ -651,7 +626,7 @@ impl TCache {
             Self::init_head(ptr);
             std::mem::forget(cleanup); // init complete, segment is valid
             Box::new(Self {
-                name: "",
+                id,
                 ptr,
                 len: size as u32,
                 backing: Backing::Shmem { fd, total_len: total, owner: true, name: cname },
@@ -705,7 +680,7 @@ impl TCache {
             }
 
             Box::new(Self {
-                name: "",
+                id,
                 ptr: ptr as *mut u8,
                 len: size as u32,
                 backing: Backing::Shmem { fd, total_len: total, owner: false, name: cname },
@@ -1009,7 +984,7 @@ mod tests {
         const CONSUMERS: usize = 4;
         const MSGS: u32 = 4096;
 
-        let mut producer = TCache::producer("test_tcache", TCACHE_SIZE);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
             (0..CONSUMERS).map(|_| producer.cache_ref().consumer("test").unwrap()).collect();
 
@@ -1063,7 +1038,7 @@ mod tests {
         const CONSUMERS: usize = 4;
         const MSGS_PER_PRODUCER: u32 = 4096;
 
-        let mp = TCache::multi_producer("test_mp", TCACHE_SIZE);
+        let mp = TCache::multi_producer(TCacheId::OutgoingRpc, TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
             (0..CONSUMERS).map(|_| mp.cache_ref().consumer("test").unwrap()).collect();
 
@@ -1125,7 +1100,7 @@ mod tests {
 
     #[test]
     fn produce_consume() {
-        let mut producer = TCache::producer("test_buckets", 2 << 14);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 2 << 14);
         let mut consumer = producer.cache_ref().consumer("test").unwrap();
 
         let prod = std::thread::spawn(move || {

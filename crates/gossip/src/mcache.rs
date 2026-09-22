@@ -6,7 +6,7 @@ use std::{
 };
 
 use silver_common::{
-    GossipDomain, GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess, TRead, Wheel,
+    GossipDomain, GossipTopic, MessageId, MessageIdHasher, TCacheRead, TCacheReader, TRead, Wheel,
 };
 
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
@@ -34,18 +34,16 @@ impl Default for Bucket {
 pub(crate) struct MessageCache {
     buckets: Box<[Bucket]>,
     history: Wheel<MessageId, Instant, 64>, // last 64 * 700ms cached messages = ~45seconds
-    cache_consumer: TRandomAccess,
     current_bucket: usize,
     last_rotation: Instant,
     last_ihaves: Instant,
 }
 
 impl MessageCache {
-    pub(crate) fn new(cache_consumer: TRandomAccess) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buckets: vec![Bucket::default(); BUCKETS].into_boxed_slice(),
             history: Wheel::new(ROTATION_INTERVAL),
-            cache_consumer,
             current_bucket: 0,
             last_rotation: Instant::now(),
             last_ihaves: Instant::now(),
@@ -58,8 +56,9 @@ impl MessageCache {
         topic: GossipTopic,
         domain: GossipDomain,
         tcache: TCacheRead,
+        consumer: &mut TCacheReader,
     ) {
-        let acquired = self.cache_consumer.acquire(tcache);
+        let acquired = consumer.acquire(tcache);
         let bucket = &mut self.buckets[self.current_bucket];
 
         // TODO could have a preallocated ring of max ihaves per gossip topic.
@@ -111,7 +110,6 @@ impl MessageCache {
             bucket.tcache_min_seq = u64::MAX;
             bucket.messages.clear();
             bucket.ihaves.clear();
-            self.cache_consumer.free();
 
             self.last_rotation = now;
             self.history.maybe_rotate(now);
@@ -182,16 +180,20 @@ impl<'a> ExactSizeIterator for IHaveIterator<'a> {}
 mod tests {
     use std::io::Write;
 
-    use silver_common::{ForkName, MessageId, TCache, TCacheProducer};
+    use silver_common::{ForkName, MessageId, TCache, TCacheId, TCacheProducer, TReadMode};
 
     const TEST_DOMAIN: GossipDomain = GossipDomain::new([0; 4], ForkName::Fulu);
 
     use super::*;
 
-    fn mk_mcache() -> (MessageCache, silver_common::TProducer) {
-        let producer = TCache::producer("mcache_test", 1 << 14);
-        let consumer = producer.cache_ref().random_access("test", false).unwrap();
-        (MessageCache::new(consumer), producer)
+    // Bound last, the cache drops first: its acquired reads point at the
+    // consumer.
+    fn mk_mcache() -> (silver_common::TProducer, TCacheReader, MessageCache) {
+        let producer = TCache::producer(TCacheId::OutgoingGossip, 1 << 14);
+        let consumer =
+            TCacheReader::single(producer.cache_ref(), "test", TReadMode::SlidingManualFree)
+                .unwrap();
+        (producer, consumer, MessageCache::new())
     }
 
     fn mk_tcache_read(producer: &mut silver_common::TProducer) -> TCacheRead {
@@ -202,10 +204,10 @@ mod tests {
 
     #[test]
     fn serve_iwant() {
-        let (mut mcache, mut producer) = mk_mcache();
+        let (mut producer, mut consumer, mut mcache) = mk_mcache();
         let id = MessageId { id: [1u8; 20] };
         let tc = mk_tcache_read(&mut producer);
-        mcache.insert(id, GossipTopic::BeaconBlock, TEST_DOMAIN, tc);
+        mcache.insert(id, GossipTopic::BeaconBlock, TEST_DOMAIN, tc, &mut consumer);
         assert!(matches!(mcache.get(&id), Some(_)));
     }
 
@@ -216,12 +218,12 @@ mod tests {
 
     #[test]
     fn ihaves_cover_three_most_recent_buckets() {
-        let (mut mcache, mut producer) = mk_mcache();
+        let (mut producer, mut consumer, mut mcache) = mk_mcache();
 
         let ids: Vec<_> = (1u8..=4).map(|b| MessageId { id: [b; 20] }).collect();
         for (i, id) in ids.iter().enumerate() {
             let tc = mk_tcache_read(&mut producer);
-            mcache.insert(*id, GossipTopic::BeaconBlock, TEST_DOMAIN, tc);
+            mcache.insert(*id, GossipTopic::BeaconBlock, TEST_DOMAIN, tc, &mut consumer);
             if i < ids.len() - 1 {
                 force_rotate(&mut mcache);
             }
@@ -237,7 +239,7 @@ mod tests {
 
     #[test]
     fn serve_iwant_unknown_for_missing_id() {
-        let (mcache, _producer) = mk_mcache();
+        let (_producer, _consumer, mcache) = mk_mcache();
         let id = MessageId { id: [2u8; 20] };
         assert!(matches!(mcache.get(&id), None));
     }

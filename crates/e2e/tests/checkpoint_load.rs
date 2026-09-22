@@ -15,7 +15,7 @@ use silver_beacon_state::{
 use silver_beacon_state_data::{
     BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
 };
-use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
+use silver_common::{TCache, TCacheId, TCacheProducer, TCacheTable, ticker::SlotTicker};
 use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::BlockFixtures};
 
 /// Pull the full checkpoint (state SSZ + pubkeys sidecar) out of `bs` through
@@ -155,27 +155,25 @@ fn finalized_state_loads() {
     let genesis_time = u64::from_le_bytes(ssz[0..8].try_into().unwrap());
     let mut ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
     ticker.set_current_slot(last_slot + 1);
-    let gossip_p = TCache::producer("gossip_in", 1 << 20);
-    let rpc_p = TCache::producer("rpc_in", 1 << 20);
-    let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
-    let replay_p = TCache::producer("replay_in", 1 << 20);
-    let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
-    let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
-    let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
-    let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
+    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
+    let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
+    let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
+    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let tcaches = TCacheTable::from_iter(
+        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+    );
 
     let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
         &silver_config::SyncingConfig::default(),
-        gossip_c,
-        rpc_c,
-        engine_resp_c,
-        replay_c,
-        TCache::producer("test_beacon_state", 1 << 25),
+        tcaches,
+        TCache::producer(TCacheId::BeaconState, 1 << 25),
         true,
         state,
     );
+    tile.open_tcaches().unwrap();
 
     let head = tile.head_block_root();
     assert_ne!(head, [0u8; 32], "head_block_root is zero after bootstrap");
@@ -309,14 +307,14 @@ fn tile_apply_block_ef_fixture() {
         Duration::from_secs(12),
         Duration::from_secs(4),
     );
-    let gossip_p = TCache::producer("gossip_ef", 1 << 20);
-    let rpc_p = TCache::producer("rpc_ef", 1 << 20);
-    let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
-    let replay_p = TCache::producer("replay_ef", 1 << 20);
-    let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
-    let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
-    let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
-    let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
+    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
+    let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
+    let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
+    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let tcaches = TCacheTable::from_iter(
+        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+    );
 
     let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
@@ -324,14 +322,12 @@ fn tile_apply_block_ef_fixture() {
         ticker,
         Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
         &silver_config::SyncingConfig::default(),
-        gossip_c,
-        rpc_c,
-        engine_resp_c,
-        replay_c,
-        TCache::producer("test_beacon_state", 1 << 25),
+        tcaches,
+        TCache::producer(TCacheId::BeaconState, 1 << 25),
         true,
         state,
     );
+    tile.open_tcaches().unwrap();
 
     let fb = tile.try_apply_block(&block_ssz);
     assert!(

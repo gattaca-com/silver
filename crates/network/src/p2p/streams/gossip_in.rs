@@ -195,7 +195,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TRead};
+    use silver_common::{StreamProtocol, TCache, TCacheId, TCacheReader, TRead, TReadMode};
 
     use super::*;
     use crate::p2p::streams::AcquiredRpcOutbound;
@@ -267,7 +267,7 @@ mod tests {
         wire.push(12);
         wire.extend_from_slice(b"bbbbbbbbbbbb");
 
-        let mut producer = TCache::producer("test_gossip_pipelined", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
@@ -296,7 +296,7 @@ mod tests {
         wire.push(4);
         wire.extend_from_slice(b"bbbb");
 
-        let mut producer = TCache::producer("test_gossip_tiny", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
         let header = size_of::<P2pStreamId>();
@@ -328,7 +328,7 @@ mod tests {
         wire.push(4);
         wire.extend_from_slice(b"bbbb");
 
-        let mut producer = TCache::producer("test_gossip_fin", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: true };
         let header = size_of::<P2pStreamId>();
@@ -359,7 +359,7 @@ mod tests {
         let mut wire = vec![6u8];
         wire.extend_from_slice(b"cccccc");
 
-        let mut producer = TCache::producer("test_gossip_frag", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: Vec::new(), pos: 0, eof: false };
         let header = size_of::<P2pStreamId>();
@@ -386,7 +386,7 @@ mod tests {
         let mut wire = vec![100u8];
         wire.extend_from_slice(&[0xaa; 10]);
 
-        let mut producer = TCache::producer("test_gossip_stall", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
 
@@ -416,7 +416,7 @@ mod tests {
         let mut wire = vec![100u8];
         wire.extend_from_slice(&[0xaa; 10]);
 
-        let mut producer = TCache::producer("test_gossip_progress", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
 
@@ -440,7 +440,7 @@ mod tests {
         let mut wire = vec![100u8];
         wire.extend_from_slice(&[0xaa; 10]);
 
-        let mut producer = TCache::producer("test_gossip_abort_skip", 1 << 16);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
         let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
@@ -467,8 +467,9 @@ mod tests {
     fn unfinished_body_survives_cache_pressure_and_releases_space() {
         for complete in [false, true] {
             const CAPACITY: usize = 1 << 17;
-            let mut producer = TCache::producer("", CAPACITY);
-            let mut consumer = producer.cache_ref().random_access("", true).unwrap();
+            let mut producer = TCache::producer(TCacheId::IncomingGossip, CAPACITY);
+            let mut consumer =
+                TCacheReader::single(producer.cache_ref(), "", TReadMode::Sliding).unwrap();
             let slow_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
             let fast_id = P2pStreamId::new(1, 4, StreamProtocol::GossipSub, true);
             let header = size_of::<P2pStreamId>();

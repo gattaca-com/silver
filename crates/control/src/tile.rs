@@ -12,7 +12,8 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TMultiProducer, TProducer, TRandomAccess,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheReader, TCacheTable,
+    TMultiProducer, TProducer, TReadMode,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
     ticker::SlotTicker,
@@ -44,10 +45,6 @@ pub struct Controller {
     /// (peer-pick, caps, send) and owns column sync.
     sync_engine: SyncEngine,
     rpc_producer: TMultiProducer,
-    /// Validated sidecars this node did not receive over gossip are
-    /// republished from the cache their `Persist` names.
-    rpc_ssz_consumer: TRandomAccess,
-    el_ssz_consumer: TRandomAccess,
     attestation_cluster: AttestationClusterHandler,
     last_tick: Instant,
     last_ping: Instant,
@@ -71,6 +68,9 @@ pub struct Controller {
     /// the wall slot.
     spec: Arc<SpecConfig>,
     gossip_schedule: Option<GossipSchedule>,
+
+    // Last: acquired reads above point into it.
+    reader: TCacheReader,
 }
 
 impl Controller {
@@ -82,29 +82,21 @@ impl Controller {
         peer_manager: PeerManager,
         gossip_handler: GossipHandler,
         rpc_producer: TMultiProducer,
-        rpc_ssz_consumer: TRandomAccess,
-        el_ssz_consumer: TRandomAccess,
+        tcaches: TCacheTable,
         cluster_outbound_producer: TProducer,
-        cluster_inbound_consumer: TRandomAccess,
         cluster_config: Option<AttestationClusterConfig>,
         sync_engine: SyncEngine,
         spec: Arc<SpecConfig>,
     ) -> Result<Self, ClusterError> {
         let now = Instant::now();
-        let attestation_cluster = AttestationClusterHandler::new(
-            cluster_outbound_producer,
-            cluster_inbound_consumer,
-            cluster_config,
-            now,
-        )?;
+        let attestation_cluster =
+            AttestationClusterHandler::new(cluster_outbound_producer, cluster_config, now)?;
 
         Ok(Self {
             peer_manager,
             gossip_handler,
             sync_engine,
             rpc_producer,
-            rpc_ssz_consumer,
-            el_ssz_consumer,
             attestation_cluster,
             last_tick: now,
             last_ping: now,
@@ -116,7 +108,15 @@ impl Controller {
             partial_exchange: None,
             spec,
             gossip_schedule: None,
+            reader: TCacheReader::new(tcaches),
         })
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::IncomingRpc, "ctl_incoming_rpc", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::ElDataColumns, "ctl_el_data_columns", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::ClusterInbound, "control_cluster_inbound", TReadMode::Strict)?;
+        self.gossip_handler.open_tcaches()
     }
 
     pub fn with_data_columns_cache(
@@ -256,9 +256,7 @@ impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let now = Instant::now();
         self.advance_gossip_domains(&mut adapter.producers);
-        self.rpc_ssz_consumer.free();
-        self.el_ssz_consumer.free();
-        self.attestation_cluster.free();
+        self.reader.free();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
             if let Some(exchange) = &mut self.partial_exchange {
@@ -272,7 +270,7 @@ impl Tile<SilverSpine> for Controller {
                 );
             }
             adapter.consume(|event: CellStoreEvent, producers| {
-                ingress.handle(event, now, producers, &mut self.el_ssz_consumer);
+                ingress.handle(event, now, producers, &mut self.reader);
                 if let Some(exchange) = &mut self.partial_exchange {
                     match event {
                         CellStoreEvent::Allocate(request) => {
@@ -324,7 +322,7 @@ impl Tile<SilverSpine> for Controller {
             );
         });
 
-        self.attestation_cluster.spin(now, adapter, &mut self.gossip_handler);
+        self.attestation_cluster.spin(now, adapter, &mut self.gossip_handler, &mut self.reader);
 
         adapter.consume(|need: SyncNeed, _producers| self.sync_engine.on_sync_need(need, now));
 
@@ -336,8 +334,7 @@ impl Tile<SilverSpine> for Controller {
             }
             handle_data_column_event(
                 event,
-                &mut self.rpc_ssz_consumer,
-                &mut self.el_ssz_consumer,
+                &mut self.reader,
                 self.cell_ingress.as_mut(),
                 &mut self.gossip_handler,
                 &mut self.peer_manager,
@@ -614,6 +611,7 @@ impl Tile<SilverSpine> for Controller {
     }
 
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        self.open_tcaches().expect("tcache wiring");
         self.last_tick = Instant::now() + Duration::from_millis(700);
         true
     }

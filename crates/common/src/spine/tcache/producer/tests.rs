@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn unfinished_reservations_stop_reuse_despite_out_of_order_commits() {
-    let mut producer = TCache::producer("", 256);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 256);
     let mut first = producer.reserve(32, false).unwrap();
     first.write_all(&[0xaa; 16]).unwrap();
     let mut second = producer.reserve(32, true).unwrap();
@@ -30,7 +30,7 @@ fn unfinished_reservations_stop_reuse_despite_out_of_order_commits() {
 
 #[test]
 fn allocation_min_passes_manual_auto_and_aborted_commits() {
-    let mut producer = TCache::producer("", 256);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 256);
     let mut manual = producer.reserve(32, false).unwrap();
     let mut automatic_write = producer.reserve(32, true).unwrap();
     let mut automatic_offset = producer.reserve(32, true).unwrap();
@@ -54,7 +54,7 @@ fn allocation_min_passes_manual_auto_and_aborted_commits() {
 #[test]
 fn allocation_min_walks_wrap_padding_on_commit_or_abort() {
     for abort in [false, true] {
-        let mut producer = TCache::producer("", 256);
+        let mut producer = TCache::producer(TCacheId::DataColumns, 256);
         producer.reserve(160, false).unwrap().flush().unwrap();
         let mut wrapped = producer.reserve(96, false).unwrap();
         assert_eq!(wrapped.seq(), 192);
@@ -79,7 +79,7 @@ fn allocation_min_walks_wrap_padding_on_commit_or_abort() {
 
 #[test]
 fn consumer_tail_still_limits_reuse_after_all_writes_finish() {
-    let mut producer = TCache::producer("", 256);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 256);
     let mut consumer = producer.cache_ref().consumer("").unwrap();
     for _ in 0..4 {
         producer.reserve(32, true).unwrap().write_all(&[0xab; 32]).unwrap();
@@ -95,7 +95,7 @@ fn consumer_tail_still_limits_reuse_after_all_writes_finish() {
 
 #[test]
 fn committed_reservation_cannot_modify_a_reused_slot() {
-    let mut producer = TCache::producer("", 256);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 256);
     let mut old = producer.reserve(224, false).unwrap();
     old.write_all(&[0xaa; 32]).unwrap();
     old.flush().unwrap();
@@ -120,7 +120,7 @@ fn committed_reservation_cannot_modify_a_reused_slot() {
 
 #[test]
 fn oversized_reservations_do_not_advance_the_allocator() {
-    let mut producer = TCache::producer("", 256);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 256);
     for length in [225, 256, usize::MAX] {
         assert!(producer.reserve(length, false).is_none());
         assert_eq!(producer.next_seq(), 0);
@@ -139,13 +139,13 @@ fn every_valid_payload_size_fits_at_every_empty_cache_offset() {
         let mut reservation = producer.reserve(len, false).expect("empty cache must fit payload");
         reservation.write_all(&[0xab; 224][..len]).unwrap();
         reservation.flush().unwrap();
-        assert_eq!(reservation.read().len().unwrap(), len);
+        assert_eq!(producer.cache_ref().read(reservation.read().seq()).unwrap().0.len(), len);
     }
 
     for offset in (0..256).step_by(ALIGN) {
         for len in 0..=224 {
-            check(TCache::producer("", 256), offset, len);
-            check(TCache::multi_producer("", 256), offset, len);
+            check(TCache::producer(TCacheId::DataColumns, 256), offset, len);
+            check(TCache::multi_producer(TCacheId::DataColumns, 256), offset, len);
         }
     }
 }
@@ -177,8 +177,8 @@ fn padding_waits_for_pending_writes_and_linear_consumer_release() {
         assert_eq!(consumer.read().unwrap().0, &[0xcd; 160]);
     }
 
-    check(TCache::producer("", 256));
-    check(TCache::multi_producer("", 256));
+    check(TCache::producer(TCacheId::DataColumns, 256));
+    check(TCache::multi_producer(TCacheId::DataColumns, 256));
 }
 
 #[test]
@@ -204,13 +204,13 @@ fn padding_itself_must_fit_without_overwriting_consumer_data() {
         assert_eq!(producer.reserve(160, false).unwrap().seq(), 512);
     }
 
-    check(TCache::producer("", 256));
-    check(TCache::multi_producer("", 256));
+    check(TCache::producer(TCacheId::DataColumns, 256));
+    check(TCache::multi_producer(TCacheId::DataColumns, 256));
 }
 
 #[test]
 fn sub_reservations_use_separate_padding_when_needed() {
-    let mut producer = TCache::producer("", 512);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 512);
     producer.reserve(224, false).unwrap().flush().unwrap();
     let reference = producer
         .sub_reservation(SubLayout { parts: 0, first_len: 4, second_len: 2 }, &[0xab; 300], b"")

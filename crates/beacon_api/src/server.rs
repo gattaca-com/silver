@@ -11,8 +11,8 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair,
-    PayloadValidationStatus, PeerEvent, SszCache, SyncUpdate, TCacheRead, TRandomAccess,
-    block_root,
+    PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheError, TCacheId, TCacheRead,
+    TCacheReader, TCacheTable, TReadMode, block_root,
     column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -348,12 +348,9 @@ pub struct BeaconApi {
     frame: Vec<u8>,
     router: Router,
     ctx: ApiCtx,
-    ssz_consumers: HashMap<SszCache, TRandomAccess>,
-    /// Blocks storage serves, in the `outgoing_rpc` tcache.
-    storage: TRandomAccess,
-    beacon_state: TRandomAccess,
     next_request_id: u64,
     head_verdict: HeadVerdict,
+    reader: TCacheReader,
 }
 
 impl BeaconApi {
@@ -370,9 +367,7 @@ impl BeaconApi {
         spec: &SpecConfig,
         state: BeaconStateReader,
         anchor_root: B256,
-        ssz_consumers: HashMap<SszCache, TRandomAccess>,
-        storage: TRandomAccess,
-        beacon_state: TRandomAccess,
+        tcaches: TCacheTable,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let tokens_needed = binds.len().checked_add(max_connections);
@@ -410,12 +405,19 @@ impl BeaconApi {
             frame: Vec::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, anchor_root),
-            ssz_consumers,
-            storage,
-            beacon_state,
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
+            reader: TCacheReader::new(tcaches),
         }
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::SszGossip, "api_ssz_gossip", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::IncomingRpc, "api_incoming_rpc", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::ElDataColumns, "api_el_columns", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::DataColumns, "api_data_columns", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::OutgoingRpc, "api_outgoing_rpc", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::BeaconState, "api_beacon_state", TReadMode::Sliding)
     }
 
     pub fn local_addrs(&self) -> Vec<Bind> {
@@ -475,7 +477,7 @@ impl BeaconApi {
                 ..
             } => self.publish_block(slot, &block_root),
             BeaconStateEvent::AttestersShuffling { epoch, indices } => {
-                let posted = self.beacon_state.acquire(indices);
+                let posted = self.reader.acquire(indices);
                 match posted.buffer() {
                     Ok((bytes, _)) => self.ctx.shufflings.record(epoch, bytes),
                     Err(e) => tracing::warn!(?e, epoch, "posted shuffling unavailable"),
@@ -520,11 +522,7 @@ impl BeaconApi {
     }
 
     fn publish_relayed_block(&mut self, ssz: TCacheRead) {
-        let block = self
-            .ssz_consumers
-            .get_mut(&SszCache::Gossip)
-            .expect("configured gossip cache")
-            .acquire(ssz);
+        let block = self.reader.acquire(ssz);
         match block.buffer() {
             Ok((buf, _)) => {
                 let slot = SignedBeaconBlockView::slot(buf);
@@ -536,12 +534,8 @@ impl BeaconApi {
     }
 
     pub fn handle_data_columns_event(&mut self, event: DataColumnsEvent) {
-        if let DataColumnsEvent::Validated {
-            block_root, column_index, slot, ssz, ssz_cache, ..
-        } = event
-        {
-            let sidecar =
-                self.ssz_consumers.get_mut(&ssz_cache).expect("configured SSZ cache").acquire(ssz);
+        if let DataColumnsEvent::Validated { block_root, column_index, slot, ssz, .. } = event {
+            let sidecar = self.reader.acquire(ssz);
             match sidecar.buffer() {
                 Ok((bytes, _)) => self.publish_data_column_sidecar(
                     &block_root,
@@ -654,14 +648,14 @@ impl BeaconApi {
             return;
         };
 
-        let Self { connections, storage, ctx, .. } = self;
+        let Self { connections, reader, ctx, .. } = self;
         let requests = connections
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
         let (_, kind) = requests.pending.take().expect("awaiting above");
         let mut resp = Response::new(requests.http.write_buf_mut());
-        kind.respond(&mut resp, block, storage, ctx);
+        kind.respond(&mut resp, block, reader, ctx);
 
         self.resume_writing(token);
     }
@@ -680,11 +674,7 @@ impl BeaconApi {
     }
 
     pub fn pump(&mut self, events: &Events, emit: &mut impl FnMut(BeaconApiRequest)) -> bool {
-        for consumer in self.ssz_consumers.values_mut() {
-            consumer.free();
-        }
-        self.storage.free();
-        self.beacon_state.free();
+        self.reader.free();
         let now = Instant::now();
 
         let mut did_work = false;
@@ -852,7 +842,7 @@ mod tests {
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
         BlockLookup, ColumnOrigin, EngineNewPayloadResp, HeadRoots, PayloadResolution, ServedBlock,
-        TCache, TCacheProducer, TProducer, body_root,
+        SszCache, TCache, TCacheId, TCacheProducer, TProducer, body_root,
         ssz_view::{
             BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
             DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
@@ -886,9 +876,20 @@ mod tests {
             let readiness = Readiness::new(1024);
             let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
             let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-            let cache = TCache::producer("beacon_api_test", 1 << 16);
-            let consumer = || cache.cache_ref().random_access("beacon_api_test", true).unwrap();
-            let api = BeaconApi::new(
+            let cache = TCache::producer(TCacheId::OutgoingRpc, 1 << 16);
+            let tcaches = TCacheTable::from_iter(
+                [
+                    TCacheId::SszGossip,
+                    TCacheId::IncomingRpc,
+                    TCacheId::ElDataColumns,
+                    TCacheId::DataColumns,
+                    TCacheId::BeaconState,
+                ]
+                .map(|id| TCache::producer(id, 1 << 16).cache_ref())
+                .into_iter()
+                .chain([cache.cache_ref()]),
+            );
+            let mut api = BeaconApi::new(
                 readiness.registry(),
                 tokens,
                 binds,
@@ -900,13 +901,9 @@ mod tests {
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::published_empty_test(0).reader(),
                 B256::default(),
-                [SszCache::Gossip, SszCache::Rpc, SszCache::El, SszCache::DataColumns]
-                    .into_iter()
-                    .map(|source| (source, consumer()))
-                    .collect(),
-                consumer(),
-                consumer(),
+                tcaches,
             );
+            api.open_tcaches().unwrap();
             Self { readiness, api, served: cache, requests: Vec::new() }
         }
 
@@ -1672,22 +1669,25 @@ mod tests {
             (
                 SszCache::Gossip,
                 ColumnOrigin::Gossip,
-                TCache::producer("api_columns_gossip", 1 << 16),
+                TCache::producer(TCacheId::SszGossip, 1 << 16),
             ),
-            (SszCache::Rpc, ColumnOrigin::Rpc, TCache::producer("api_columns_rpc", 1 << 16)),
-            (SszCache::El, ColumnOrigin::El, TCache::producer("api_columns_el", 1 << 16)),
+            (SszCache::Rpc, ColumnOrigin::Rpc, TCache::producer(TCacheId::IncomingRpc, 1 << 16)),
+            (SszCache::El, ColumnOrigin::El, TCache::producer(TCacheId::ElDataColumns, 1 << 16)),
             (
                 SszCache::DataColumns,
                 ColumnOrigin::Assembly,
-                TCache::producer("api_columns_cells", 1 << 16),
+                TCache::producer(TCacheId::DataColumns, 1 << 16),
             ),
         ];
-        server.api.ssz_consumers = sources
-            .iter()
-            .map(|(cache, _, producer)| {
-                (*cache, producer.cache_ref().random_access("api_columns", true).unwrap())
-            })
-            .collect();
+        let outgoing_rpc = TCache::producer(TCacheId::OutgoingRpc, 1 << 16);
+        let beacon_state = TCache::producer(TCacheId::BeaconState, 1 << 16);
+        server.api.reader = TCacheReader::new(TCacheTable::from_iter(
+            sources
+                .iter()
+                .map(|(_, _, producer)| producer.cache_ref())
+                .chain([outgoing_rpc.cache_ref(), beacon_state.cache_ref()]),
+        ));
+        server.api.open_tcaches().unwrap();
         let mut client = connect(tcp_addr(&server));
         subscribe(&mut client, "data_column_sidecar");
         let reader = read_events_until_marker(client);

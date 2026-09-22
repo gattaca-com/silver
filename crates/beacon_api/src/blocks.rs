@@ -1,6 +1,6 @@
 use silver_beacon_state_data::BeaconBlockHeader;
 use silver_common::{
-    BeaconApiRequest, BlockLookup, ServedBlock, TRandomAccess, body_root_at,
+    BeaconApiRequest, BlockLookup, ServedBlock, TCacheReader, body_root_at,
     ssz_view::SignedBeaconBlockView,
 };
 
@@ -81,7 +81,7 @@ impl Kind {
         self,
         resp: &mut Response<'_>,
         block: Option<ServedBlock>,
-        storage: &mut TRandomAccess,
+        reader: &mut TCacheReader,
         ctx: &ApiCtx,
     ) {
         let Some(block) = block else {
@@ -95,11 +95,11 @@ impl Kind {
             Self::Root => resp.json_body(|json| {
                 json.flagged_envelope(flags, |json| json.block_root(&block.root))
             }),
-            Self::Ssz => with_bytes(resp, &block, storage, |resp, bytes| {
+            Self::Ssz => with_bytes(resp, &block, reader, |resp, bytes| {
                 let version = ctx.spec.fork_at_slot(block.slot).name();
                 resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], bytes);
             }),
-            Self::Header => with_bytes(resp, &block, storage, |resp, bytes| {
+            Self::Header => with_bytes(resp, &block, reader, |resp, bytes| {
                 let signed =
                     SignedHeader::read(&block, bytes, ctx.spec.is_gloas_at_slot(block.slot));
                 resp.json_body(|json| {
@@ -113,14 +113,14 @@ impl Kind {
 fn with_bytes(
     resp: &mut Response<'_>,
     block: &ServedBlock,
-    storage: &mut TRandomAccess,
+    reader: &mut TCacheReader,
     respond: impl FnOnce(&mut Response<'_>, &[u8]),
 ) {
     let Some(ssz) = block.ssz else {
         tracing::error!(block.slot, "storage answered a block request without the bytes");
         return resp.error(500, "block bytes missing");
     };
-    let ssz = storage.acquire(ssz);
+    let ssz = reader.acquire(ssz);
     match ssz.buffer() {
         Ok((bytes, _)) if SignedBeaconBlockView::check_size(bytes) => respond(resp, bytes),
         Ok(_) => {

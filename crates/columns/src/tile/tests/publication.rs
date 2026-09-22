@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
     types::{EpochState, Fork},
 };
 use silver_common::{
-    GossipDomain, block_root_fulu, block_root_gloas, body_root,
+    GossipDomain, TCacheId, TCacheTable, block_root_fulu, block_root_gloas, body_root,
     cell_store::{CellKey, CellOrigin, CellValidationRequest},
     merkle::hash_concat,
     ssz_hash::{hash_tree_root_fork_data, kzg_commitments_inclusion_proof},
@@ -143,9 +143,11 @@ impl Rig {
     fn attach_cell_store(&mut self, slot: u64, columns: u128) -> CellAllocator {
         let start = Instant::now();
         let config = CellStoreConfig::new(self.tile.spec.clone(), columns, Duration::ZERO).unwrap();
-        let producer = TCache::producer("", config.cache_capacity());
-        let consumer = producer.cache_ref().retained_random_access("").unwrap();
-        self.tile.cells = Some(CellHandler::new(config.clone(), consumer, slot, start).unwrap());
+        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let tcaches = TCacheTable::from_iter([producer.cache_ref()]);
+        let mut cells = CellHandler::new(config.clone(), tcaches, slot, start).unwrap();
+        cells.open_tcaches().unwrap();
+        self.tile.cells = Some(cells);
         CellAllocator::new(config, producer, slot, start).unwrap()
     }
 

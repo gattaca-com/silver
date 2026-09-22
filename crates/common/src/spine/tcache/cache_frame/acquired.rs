@@ -5,9 +5,10 @@ use std::{
 };
 
 use super::{
-    AcquiredRange, AcquiredRead, CacheFrameSegment, CacheFrameView, RandomAccessConsumer,
-    SubReservationRef, TCacheRead,
+    AcquiredRange, AcquiredRead, CacheFrameSegment, CacheFrameView, SubReservationRef, TCacheId,
+    TCacheRead, TCacheReader,
 };
+use crate::spine::tcache::RandomAccessConsumer;
 
 pub enum AcquiredCacheSegment {
     Framing(Range<usize>),
@@ -17,34 +18,24 @@ pub enum AcquiredCacheSegment {
 #[derive(Debug)]
 pub struct AcquiredCacheFrame {
     view: CacheFrameView,
-    gossip: NonNull<RandomAccessConsumer>,
-    columns: Option<NonNull<RandomAccessConsumer>>,
+    reader: NonNull<TCacheReader>,
     // Every non-framing descriptor in [next, acquired_end) owns one bucket
     // count. The descriptor stays pinned until those counts are released.
     next: usize,
     acquired_end: usize,
 }
 
-// As with AcquiredRead, consumers stay at stable addresses and outlive their
-// reads. Acquisition, handoff, and drops remain on the consumer's tile.
+// As with AcquiredRead, the reader stays at a stable address and outlives its
+// reads. Acquisition, handoff, and drops remain on the reader's tile.
 unsafe impl Send for AcquiredCacheFrame {}
 
 impl AcquiredCacheFrame {
-    pub(super) fn new(
-        view: CacheFrameView,
-        gossip: &mut RandomAccessConsumer,
-        mut columns: Option<&mut RandomAccessConsumer>,
-    ) -> Option<Self> {
-        let mut frame = Self {
-            view,
-            gossip: NonNull::from(&mut *gossip),
-            columns: columns.as_deref_mut().map(NonNull::from),
-            next: 0,
-            acquired_end: 0,
-        };
+    pub(super) fn new(view: CacheFrameView, reader: &mut TCacheReader) -> Option<Self> {
+        let mut frame =
+            Self { view, reader: NonNull::from(&mut *reader), next: 0, acquired_end: 0 };
         for segment in frame.view.segments() {
             if segment.kind != 0 {
-                let range = segment.acquire(gossip, columns.as_deref_mut())?;
+                let range = segment.acquire(reader)?;
                 // No fallible work separates forgetting this owner and recording
                 // its count in the frame's acquired prefix.
                 mem::forget(range);
@@ -69,7 +60,7 @@ impl AcquiredCacheFrame {
             if next.kind == 0 ||
                 range.read.consumer != self.consumer(&next).as_ptr() ||
                 range.read.seq() != next.seq ||
-                range.offset + range.length != Self::offset(&next, range.read.read)
+                range.offset + range.length != Self::offset(&next, &range.read)
             {
                 break;
             }
@@ -80,7 +71,8 @@ impl AcquiredCacheFrame {
     }
 
     fn consumer(&self, segment: &CacheFrameSegment) -> NonNull<RandomAccessConsumer> {
-        if segment.kind == 1 { self.gossip } else { self.columns.expect("acquired column segment") }
+        let id = TCacheId::from_index(segment.cache).expect("admitted segment");
+        NonNull::from(unsafe { &mut *self.reader.as_ptr() }.consumer(id))
     }
 
     fn take_read(&mut self, segment: &CacheFrameSegment) -> AcquiredRead {
@@ -89,7 +81,7 @@ impl AcquiredCacheFrame {
         // here, and frame cleanup excludes the transferred descriptor.
         let read = AcquiredRead {
             consumer: consumer.as_ptr(),
-            read: TCacheRead { tcache: unsafe { consumer.as_ref() }.cache, seq: segment.seq },
+            read: TCacheRead { id: unsafe { consumer.as_ref() }.id(), seq: segment.seq },
             acquired: self.view.read.acquired,
         };
         self.next += 1;
@@ -98,19 +90,21 @@ impl AcquiredCacheFrame {
 
     fn take_range(&mut self, segment: &CacheFrameSegment) -> AcquiredRange {
         let read = self.take_read(segment);
-        let offset = Self::offset(segment, read.read);
+        let offset = Self::offset(segment, &read);
         AcquiredRange { read, offset, length: segment.length }
     }
 
-    fn offset(segment: &CacheFrameSegment, read: TCacheRead) -> usize {
+    fn offset(segment: &CacheFrameSegment, read: &AcquiredRead) -> usize {
         if segment.kind != 3 {
             return segment.offset;
         }
-        let reference = SubReservationRef { read, header_bytes: (segment.metadata >> 32) as usize };
+        let reference =
+            SubReservationRef { read: read.read, header_bytes: (segment.metadata >> 32) as usize };
         // Admission validated this part and retains its count. Its immutable
         // layout remains valid even after the reservation is closed.
         let base = unsafe {
             reference.acquired_offset(
+                read.cache(),
                 ((segment.metadata as u32) >> 1) as usize,
                 segment.metadata & 1 != 0,
             )

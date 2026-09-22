@@ -6,7 +6,8 @@ use std::{
 use flux::spine::SpineProducers;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipDomain, GossipTopic, IngestionTime, PeerEvent,
-    SilverSpineProducers, SszCache, SyncNeed, TCacheRead, TRandomAccess, TRead, Wheel,
+    SilverSpineProducers, SszCache, SyncNeed, TCacheError, TCacheId, TCacheRead, TCacheReader,
+    TCacheTable, TRead, TReadMode, Wheel,
     cell_store::{
         CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
         ColumnRef, CommitmentContext, ContextData, DataColumnCounters, FuluContextSource,
@@ -29,8 +30,7 @@ pub(crate) struct CellHandler {
     store: CellStore,
     pending: PendingCells,
     headers: PendingHeaders,
-    // The boxed consumer stays at a stable address while acquired reads exist.
-    consumer: Box<TRandomAccess>,
+    reader: TCacheReader,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -209,7 +209,7 @@ impl CellHandler {
             // SAFETY: Cell is repr(C) over [u8; BYTES_PER_CELL].
             let cell: &[u8; BYTES_PER_CELL] =
                 unsafe { &*ptr::from_ref(&cells[column as usize]).cast() };
-            match reference.stage(&mut self.consumer, row, cell, proof) {
+            match reference.stage(&mut self.reader, row, cell, proof) {
                 Ok(Some(pending)) => {
                     DataColumnCounters::ElCellsQueued.inc();
                     self.handle_event(
@@ -232,28 +232,32 @@ impl CellHandler {
 
     pub(super) fn new(
         config: CellStoreConfig,
-        consumer: TRandomAccess,
+        tcaches: TCacheTable,
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        assert!(consumer.is_retained());
-        if consumer.cache_ref().capacity() < config.cache_capacity() {
+        let cache = tcaches.get(TCacheId::DataColumns).map_err(|_| StoreError::WrongCache)?;
+        if cache.capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
         Ok(Self {
             pending: PendingCells::new(config.cell_capacity()),
             headers: PendingHeaders::new(slot_start),
             store: CellStore::new(config, slot, slot_start)?,
-            consumer: Box::new(consumer),
+            reader: TCacheReader::new(tcaches),
         })
+    }
+
+    pub(super) fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::DataColumns, "columns_cells", TReadMode::Retained)
     }
 
     #[inline]
     pub(super) fn acquire(&mut self, read: TCacheRead) -> Option<TRead> {
-        if !ptr::eq(&*self.consumer.cache_ref(), &*read.cache_ref()) {
+        if read.id() != TCacheId::DataColumns {
             return None;
         }
-        self.consumer.acquire_strict(read)
+        self.reader.acquire_strict(read)
     }
 
     #[inline]
@@ -287,12 +291,12 @@ impl CellHandler {
                 !columns.is_empty()
             });
         }
-        self.consumer.advance_retention(event.retain_from);
+        self.reader.advance_retention(TCacheId::DataColumns, event.retain_from);
     }
 
     #[inline]
     pub(super) fn free(&mut self) {
-        self.consumer.free();
+        self.reader.free();
     }
 
     pub(super) fn reject(&mut self, block_root: BlockRoot, producers: &SilverSpineProducers) {
@@ -352,7 +356,7 @@ impl CellHandler {
             &p.block_root,
             p.column_index as usize,
             p.sidecar.read,
-            &mut self.consumer,
+            &mut self.reader,
         ) {
             Ok(_) => self.store.mark_changed(&p.block_root, p.column_index as usize),
             Err(e) => tracing::debug!(?e, column = p.column_index, "full sidecar not retained"),
@@ -370,7 +374,7 @@ impl CellHandler {
                 Some(set)
                     if set.request.id == request.id && set.request.context == request.context =>
                 {
-                    match self.store.install(set, &mut self.consumer) {
+                    match self.store.install(set, &mut self.reader) {
                         Ok(true) => {
                             self.pending.ready = true;
                             let mut columns = request.columns;
@@ -399,7 +403,7 @@ impl CellHandler {
                         producers.produce(SyncNeed::missing_block(root, request.slot));
                     }
                 } else {
-                    let _ = request.pending.data.cancel(&mut self.consumer);
+                    let _ = request.pending.data.cancel(&mut self.reader);
                     Self::complete(request, CellValidationOutcome::Ignored, producers);
                 }
             }
@@ -407,7 +411,7 @@ impl CellHandler {
                 self.headers.admit(request, now);
             }
             CellStoreEvent::Cancel(pending) => {
-                let _ = pending.data.cancel(&mut self.consumer);
+                let _ = pending.data.cancel(&mut self.reader);
             }
             _ => {}
         }
@@ -508,7 +512,7 @@ impl CellHandler {
             let key = request.pending.key;
             if now >= request.deadline {
                 self.pending.requests.swap_remove(index);
-                let _ = request.pending.data.cancel(&mut self.consumer);
+                let _ = request.pending.data.cancel(&mut self.reader);
                 Self::complete(request, CellValidationOutcome::Ignored, producers);
                 continue;
             }
@@ -523,11 +527,11 @@ impl CellHandler {
                 key.row != request.pending.data.part() ||
                 assembly.read().seq() != request.pending.data.reservation().read().seq()
             {
-                let _ = request.pending.data.cancel(&mut self.consumer);
+                let _ = request.pending.data.cancel(&mut self.reader);
                 Self::complete(request, CellValidationOutcome::Ignored, producers);
                 continue;
             }
-            let Ok(validation) = request.pending.data.acquire(&mut self.consumer) else {
+            let Ok(validation) = request.pending.data.acquire(&mut self.reader) else {
                 Self::complete(request, CellValidationOutcome::Ignored, producers);
                 continue;
             };
@@ -602,7 +606,7 @@ impl CellHandler {
     ) {
         loop {
             let Some((root, column)) = self.store.next_changed() else { return };
-            let Ok(update) = self.store.refresh_column(&root, column, &mut self.consumer) else {
+            let Ok(update) = self.store.refresh_column(&root, column, &mut self.reader) else {
                 continue
             };
             let Some(available) = self.store.availability(&root, column) else { continue };

@@ -1,14 +1,11 @@
-use std::{
-    ptr,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use silver_beacon_state_data::ForkName;
 
 use crate::{
     AcquiredRange, GossipDomain, GossipTopic, Nanos, P2pStreamId, PendingSubReservation,
-    SubReservationError, SubReservationList, SubReservationRef, TCacheRead, TRandomAccess,
+    SubReservationError, SubReservationList, SubReservationRef, TCacheRead, TCacheReader,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         partial_column::PARTIAL_HEADER_FIXED,
@@ -119,16 +116,16 @@ impl CellRef {
         }
     }
 
-    pub fn acquire(self, consumer: &mut TRandomAccess) -> Option<AcquiredCell> {
+    pub fn acquire(self, reader: &mut TCacheReader) -> Option<AcquiredCell> {
         let [cell, proof] = match self.source {
             CellSource::Assembly { reservation, row } => {
-                reservation.acquire(consumer).ok()?.ranges(row)?
+                reservation.acquire(reader).ok()?.ranges(row)?
             }
             CellSource::Full { read, cell, proof } => {
-                if !consumer.is_strict() || !ptr::eq(&*consumer.cache_ref(), &*read.cache_ref()) {
+                if !reader.is_strict(read.id()) {
                     return None;
                 }
-                let pin = consumer.acquire_strict(read)?;
+                let pin = reader.acquire_strict(read)?;
                 [pin.with_range(cell, BYTES_PER_CELL)?, pin.with_range(proof, BYTES_PER_KZG_PROOF)?]
             }
         };
@@ -153,12 +150,12 @@ pub struct ColumnRef {
 impl ColumnRef {
     pub fn stage(
         self,
-        consumer: &mut TRandomAccess,
+        reader: &mut TCacheReader,
         row: usize,
         cell: &[u8; BYTES_PER_CELL],
         proof: &[u8; BYTES_PER_KZG_PROOF],
     ) -> Result<Option<PendingCell>, SubReservationError> {
-        let acquired = self.reservation.acquire(consumer)?;
+        let acquired = self.reservation.acquire(reader)?;
         let claim = match acquired.claim(row) {
             Ok(claim) => claim,
             Err(SubReservationError::Claimed | SubReservationError::Published) => return Ok(None),

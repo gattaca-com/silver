@@ -11,7 +11,8 @@ use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateReader
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
+    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead,
+    TCacheTable, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
@@ -125,16 +126,15 @@ impl PmBsHarness {
         let genesis_time = u64::from_le_bytes(checkpoint[0..8].try_into().unwrap());
         let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
 
-        let gossip_p = TCache::producer("gossip_in", 1 << 20);
+        let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);
-        let rpc_p = TCache::producer("rpc_in", rpc_cap);
-        let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
-        let replay_p = TCache::producer("replay_in", 1 << 20);
-        let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
-        let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
-        let engine_resp_c =
-            engine_resp_p.cache_ref().random_access("test", true).expect("engine resp ra");
-        let replay_c = replay_p.cache_ref().random_access("test", true).expect("replay ra");
+        let rpc_p = TCache::producer(TCacheId::IncomingRpc, rpc_cap);
+        let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
+        let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+        let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let bs_tcaches = TCacheTable::from_iter(
+            [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+        );
 
         let state = BeaconState::from_checkpoint(checkpoint, &SpecConfig::mainnet(), &[])
             .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
@@ -142,16 +142,14 @@ impl PmBsHarness {
             ticker,
             Arc::new(SpecConfig::mainnet()),
             &SyncingConfig::default(),
-            gossip_c,
-            rpc_c,
-            engine_resp_c,
-            replay_c,
-            TCache::producer("test_beacon_state", 1 << 25),
+            bs_tcaches,
+            TCache::producer(TCacheId::BeaconState, 1 << 25),
             // Replays a committed fixture whose anchor is intentionally old; the
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,
             state,
         );
+        bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
         // One config for both: the engine used to read this off the PM, so a
@@ -168,38 +166,33 @@ impl PmBsHarness {
             0,
         );
 
-        let dummy_gossip_in = TCache::producer("dummy gossip in", 32);
-        let dummy_gossip_c =
-            dummy_gossip_in.cache_ref().random_access("dummy  gossip c", true).unwrap();
-
+        let dummy_gossip_in = TCache::producer(TCacheId::IncomingGossip, 32);
+        let dummy_protobuf = TCache::producer(TCacheId::OutgoingGossip, 32);
         let gossip_handler = GossipHandler::new(
-            dummy_gossip_c,
-            TCache::producer("g ssz", 32),
-            TCache::producer("g proto", 32),
+            TCacheTable::from_iter([dummy_gossip_in.cache_ref(), dummy_protobuf.cache_ref()]),
+            TCache::producer(TCacheId::SszGossip, 32),
+            dummy_protobuf,
             None,
         )
         .unwrap();
-        let cluster_in = TCache::producer("test_cluster_in", 1 << 12);
-        let cluster_in_consumer = cluster_in
-            .cache_ref()
-            .strict_random_access("test_control_cluster_in", true)
-            .expect("cluster inbound random access");
+        let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
+        let dummy_el = TCache::producer(TCacheId::ElDataColumns, 32);
         let mut ctl = Controller::new(
             pm,
             gossip_handler,
-            TCache::multi_producer("rpc_out_dummy", 32),
-            rpc_p.cache_ref().random_access("ctl_test", true).expect("ctl rpc ra"),
-            TCache::producer("ctl_el_dummy", 32)
-                .cache_ref()
-                .random_access("ctl_test_el", true)
-                .expect("ctl el ra"),
-            TCache::producer("test_cluster_out", 1 << 12),
-            cluster_in_consumer,
+            TCache::multi_producer(TCacheId::OutgoingRpc, 32),
+            TCacheTable::from_iter([
+                rpc_p.cache_ref(),
+                dummy_el.cache_ref(),
+                cluster_in.cache_ref(),
+            ]),
+            TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
         )
         .expect("controller");
+        ctl.open_tcaches().expect("ctl tcaches");
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
         let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);
