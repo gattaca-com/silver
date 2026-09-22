@@ -505,8 +505,8 @@ impl BeaconStateTile {
 
         // Fold block-included attestations into the LMD vote tracker.
         let n = self.head_validator_count();
-        for vote in &votes.votes {
-            self.fork_choice.record_vote(vote, n);
+        for (target, validators) in votes.votes.iter() {
+            self.fork_choice.vote_tracker.record_votes(target, validators, n);
         }
 
         // Spec `on_block` takes the head before the new block joins the store.
@@ -532,7 +532,7 @@ impl BeaconStateTile {
         // equivocating (spec `on_attester_slashing`), removing any live LMD
         // weight on the next recompute.
         for &idx in &votes.slashed {
-            self.fork_choice.mark_equivocating(idx as usize);
+            self.fork_choice.vote_tracker.mark_equivocating(idx as usize);
         }
         self.stf_scratch.votes.recycle(votes);
 

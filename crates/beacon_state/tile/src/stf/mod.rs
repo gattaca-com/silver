@@ -21,7 +21,7 @@ pub use block::{
     BlockFork, BlockInput, apply_block, collect_sigs_randao, hash_body, process_block_body,
     process_block_header, process_slot, process_slots,
 };
-pub use common::{AttestationVote, BlockVotes, StfScratch};
+pub use common::{BlockVotes, StfScratch, VoteBatch, VoteTarget};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};
 pub(crate) use epoch::{
     BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,

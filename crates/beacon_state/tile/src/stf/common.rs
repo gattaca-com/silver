@@ -5,11 +5,9 @@ use crate::stf::MAX_PENDING_DEPOSITS_PER_EPOCH;
 
 pub(crate) const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
 
-/// One attester's block-included vote, emitted by `process_attestations` for
-/// the tile to fold into the LMD vote tracker.
-#[derive(Clone, Copy)]
-pub struct AttestationVote {
-    pub validator: u32,
+/// What one attestation votes for; shared by every attester it carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct VoteTarget {
     pub block_root: B256,
     pub target_epoch: Epoch,
     // [New in Gloas]
@@ -17,18 +15,82 @@ pub struct AttestationVote {
     pub payload_present: bool,
 }
 
+struct VoteGroup {
+    target: VoteTarget,
+    len: u32,
+}
+
+/// Votes grouped by target: one `VoteTarget` per attestation and a flat run of
+/// attester indices, instead of a 56-byte copy of the target per attester.
+/// Consecutive pushes of the same target merge, so the single attestations of
+/// one slot collapse into one group.
+#[derive(Default)]
+pub struct VoteBatch {
+    groups: Vec<VoteGroup>,
+    validators: Vec<u32>,
+}
+
+impl VoteBatch {
+    pub fn with_capacity(validators: usize) -> Self {
+        Self {
+            groups: Vec::with_capacity(MAX_ATTESTATIONS_ELECTRA),
+            validators: Vec::with_capacity(validators),
+        }
+    }
+
+    pub fn push(&mut self, target: VoteTarget, validators: &[u32]) {
+        self.validators.extend_from_slice(validators);
+        let len = validators.len() as u32;
+        match self.groups.last_mut() {
+            Some(last) if last.target == target => last.len += len,
+            _ => self.groups.push(VoteGroup { target, len }),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&VoteTarget, &[u32])> {
+        let mut start = 0;
+        self.groups.iter().map(move |g| {
+            let end = start + g.len as usize;
+            let validators = &self.validators[start..end];
+            start = end;
+            (&g.target, validators)
+        })
+    }
+
+    /// Keep the groups `keep` accepts, compacting the index array in place.
+    pub fn retain(&mut self, mut keep: impl FnMut(&VoteTarget, &[u32]) -> bool) {
+        let (mut read, mut write) = (0, 0);
+        self.groups.retain(|g| {
+            let end = read + g.len as usize;
+            let kept = keep(&g.target, &self.validators[read..end]);
+            if kept {
+                self.validators.copy_within(read..end, write);
+                write += g.len as usize;
+            }
+            read = end;
+            kept
+        });
+        self.validators.truncate(write);
+    }
+
+    pub fn clear(&mut self) {
+        self.groups.clear();
+        self.validators.clear();
+    }
+}
+
 /// What a block's transition hands fork choice: its attesters' votes and the
 /// validators its attester slashings slashed.
 #[derive(Default)]
 pub struct BlockVotes {
-    pub votes: Vec<AttestationVote>,
+    pub votes: VoteBatch,
     pub slashed: Vec<u32>,
 }
 
 impl BlockVotes {
     pub fn with_max_capacity() -> Self {
         Self {
-            votes: Vec::with_capacity(MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES),
+            votes: VoteBatch::with_capacity(MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES),
             slashed: Vec::with_capacity(MAX_ATTESTING_INDICES),
         }
     }
@@ -67,6 +129,8 @@ pub struct StfScratch {
     /// epoch-transition passes.
     pub replace_u64: Vec<(u32, u64)>,
     pub eff: Vec<u64>,
+    /// One attestation's changed participation flags, sorted for `set_many`.
+    pub flag_updates: Vec<(u32, u8)>,
     pub votes: VotePool,
 }
 
@@ -77,6 +141,7 @@ impl StfScratch {
             postponed: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             replace_u64: Vec::with_capacity(validator_cap),
             eff: Vec::with_capacity(validator_cap),
+            flag_updates: Vec::with_capacity(MAX_ATTESTING_INDICES),
             votes: VotePool::default(),
         }
     }

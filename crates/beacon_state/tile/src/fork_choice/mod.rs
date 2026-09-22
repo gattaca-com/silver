@@ -1,7 +1,7 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, StateId};
 
-use crate::stf::AttestationVote;
+use crate::stf::VoteBatch;
 
 mod head;
 mod justified_balances;
@@ -49,10 +49,9 @@ pub struct ForkChoice {
     pub(super) applied_boost_score: u64,
 
     pub vote_tracker: VoteTracker,
-    /// Validator indices whose vote moved since the last `recompute_head`.
-    pub(super) votes_dirty: Vec<u32>,
-    pub(super) equivocating: Box<[u64]>,
-    pub(super) pending_votes: Vec<AttestationVote>,
+    /// Gossip votes for the current slot or later, folded once their slot has
+    /// passed.
+    pub(super) pending_votes: VoteBatch,
 
     pub justified: JustifiedBalances,
 
@@ -137,9 +136,7 @@ impl ForkChoice {
             applied_boost_root: [0u8; 32],
             applied_boost_score: 0,
             vote_tracker: VoteTracker::with_capacity(capacity),
-            votes_dirty: Vec::with_capacity(capacity),
-            equivocating: vec![0u64; capacity.div_ceil(64)].into_boxed_slice(),
-            pending_votes: Vec::with_capacity(capacity / SLOTS_PER_EPOCH as usize),
+            pending_votes: VoteBatch::with_capacity(capacity / SLOTS_PER_EPOCH as usize),
             justified: JustifiedBalances::with_capacity(capacity),
             current_slot: 0,
             weight_deltas: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
@@ -255,7 +252,7 @@ impl ForkChoice {
     pub fn recompute_head(&mut self) {
         self.compute_weight_deltas();
         self.apply_score_changes();
-        self.votes_dirty.clear();
+        self.vote_tracker.dirty.clear();
         self.justified.mark_applied();
     }
 

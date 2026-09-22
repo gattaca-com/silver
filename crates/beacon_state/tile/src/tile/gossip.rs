@@ -45,7 +45,8 @@ pub(super) struct PreparedAttestation {
     signing_root: B256,
     data_root: B256,
     signature: CheckedSignature,
-    vote: stf::AttestationVote,
+    attester: u32,
+    target: stf::VoteTarget,
 }
 
 pub(super) struct PreparedSyncMessage {
@@ -90,7 +91,7 @@ impl PreparedVote {
     fn is_seen(&self, tile: &BeaconStateTile) -> bool {
         match self {
             Self::Attestation(p) => {
-                tile.seen_attesters.contains(p.vote.target_epoch, p.vote.validator as usize)
+                tile.seen_attesters.contains(p.target.target_epoch, p.attester as usize)
             }
             Self::SyncMessage(p) => {
                 tile.seen_sync_msgs[p.subnet as usize].contains(p.slot, p.validator as usize)
@@ -101,7 +102,7 @@ impl PreparedVote {
 
     fn dedup_key(&self) -> (u8, u64, u64, u64) {
         match self {
-            Self::Attestation(p) => (0, p.vote.validator as u64, p.vote.target_epoch, 0),
+            Self::Attestation(p) => (0, p.attester as u64, p.target.target_epoch, 0),
             Self::SyncMessage(p) => (1, p.validator, p.slot, p.subnet),
             Self::Ptc(p) => (2, p.validator, p.slot, 0),
         }
@@ -302,8 +303,8 @@ impl BeaconStateTile {
             signing_root,
             data_root,
             signature,
-            vote: stf::AttestationVote {
-                validator: attester_index as u32,
+            attester: attester_index as u32,
+            target: stf::VoteTarget {
                 block_root,
                 target_epoch,
                 attestation_slot: att_slot,
@@ -325,16 +326,22 @@ impl BeaconStateTile {
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
             tracing::debug!(
-                slot = p.vote.attestation_slot,
+                slot = p.target.attestation_slot,
                 committee = SingleAttestationView::committee_index(&p.buf),
                 "attestation pool full"
             );
         }
 
         let n = self.head_validator_count();
-        self.record_or_defer_vote(p.vote, n);
+        let slot = self.ticker.current_slot();
+        self.fork_choice.record_or_defer_votes(
+            p.target,
+            std::slice::from_ref(&p.attester),
+            n,
+            slot,
+        );
 
-        self.seen_attesters.mark(p.vote.target_epoch, p.vote.validator as usize);
+        self.seen_attesters.mark(p.target.target_epoch, p.attester as usize);
     }
 
     pub(super) fn defer_vote(&mut self, m: NewGossipMsg, producers: &mut Producers) {
@@ -662,20 +669,18 @@ impl BeaconStateTile {
     }
 
     fn record_attester_votes(&mut self, data: AttestationDataView<'_>, validator_count: usize) {
-        let block_root = *data.beacon_block_root();
-        let target_epoch = data.target_epoch();
-        let attestation_slot = data.slot();
-        let payload_present = data.index() == 1;
-        for i in 0..self.stf_scratch.active.len() {
-            let vote = stf::AttestationVote {
-                validator: self.stf_scratch.active[i],
-                block_root,
-                target_epoch,
-                attestation_slot,
-                payload_present,
-            };
-            self.record_or_defer_vote(vote, validator_count);
-        }
+        let target = stf::VoteTarget {
+            block_root: *data.beacon_block_root(),
+            target_epoch: data.target_epoch(),
+            attestation_slot: data.slot(),
+            payload_present: data.index() == 1,
+        };
+        self.fork_choice.record_or_defer_votes(
+            target,
+            &self.stf_scratch.active,
+            validator_count,
+            self.ticker.current_slot(),
+        );
     }
 
     #[timed]
@@ -985,14 +990,6 @@ impl BeaconStateTile {
         }
     }
 
-    fn record_or_defer_vote(&mut self, vote: stf::AttestationVote, validator_count: usize) {
-        if vote.attestation_slot >= self.ticker.current_slot() {
-            self.fork_choice.defer_vote(vote);
-        } else {
-            self.fork_choice.record_vote(&vote, validator_count);
-        }
-    }
-
     fn verify_aggregate_and_proof_sigs(
         view: &StateReadView,
         parsed: &ParsedAggregateAndProof<'_>,
@@ -1154,7 +1151,7 @@ impl BeaconStateTile {
         // excludes them. Idempotent; removes any live LMD weight next recompute.
         if feedback == Feedback::Accept {
             for &idx in slashed.iter() {
-                self.fork_choice.mark_equivocating(idx as usize);
+                self.fork_choice.vote_tracker.mark_equivocating(idx as usize);
                 self.seen_attester_slashed.mark(idx as usize);
             }
         }

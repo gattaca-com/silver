@@ -33,7 +33,7 @@ use crate::{
     error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, PROPOSER_SCORE_BOOST_PERCENT, PayloadAxis, PayloadStatus},
     merkle, ssz_hash,
-    stf::AttestationVote,
+    stf::VoteTarget,
     test_signing,
 };
 
@@ -824,14 +824,9 @@ impl HeadRig {
     ) {
         let n = self.tile.head_validator_count();
         for validator in validators {
-            self.tile.fork_choice.record_vote(
-                &AttestationVote {
-                    validator,
-                    block_root,
-                    target_epoch: 2,
-                    attestation_slot,
-                    payload_present,
-                },
+            self.tile.fork_choice.vote_tracker.record_vote(
+                &VoteTarget { block_root, target_epoch: 2, attestation_slot, payload_present },
+                validator,
                 n,
             );
         }
@@ -3055,31 +3050,31 @@ fn equivocator_excluded_from_votes() {
     seed_tile(&mut tile, 8, 0);
     let anchor = tile.last_applied_block_root;
     let n = tile.head_validator_count();
-    tile.fork_choice.record_vote(
-        &AttestationVote {
-            validator: 3,
+    tile.fork_choice.vote_tracker.record_vote(
+        &VoteTarget {
             block_root: anchor,
             target_epoch: 0,
             attestation_slot: 0,
             payload_present: false,
         },
+        3,
         n,
     );
     assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, anchor);
 
-    tile.fork_choice.mark_equivocating(3);
-    assert!(tile.fork_choice.is_equivocating(3));
+    tile.fork_choice.vote_tracker.mark_equivocating(3);
+    assert!(tile.fork_choice.vote_tracker.is_equivocating(3));
     assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, [0u8; 32]);
 
     // A later attestation from an equivocator is ignored.
-    tile.fork_choice.record_vote(
-        &AttestationVote {
-            validator: 3,
+    tile.fork_choice.vote_tracker.record_vote(
+        &VoteTarget {
             block_root: [0x55u8; 32],
             target_epoch: 5,
             attestation_slot: 5,
             payload_present: false,
         },
+        3,
         n,
     );
     assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, [0u8; 32]);
@@ -3090,14 +3085,14 @@ fn equivocator_excluded_from_votes() {
 fn vote_all_for(tile: &mut BeaconStateTile, block_root: B256) {
     let n = tile.head_validator_count();
     for validator in 0..n as u32 {
-        tile.fork_choice.record_vote(
-            &AttestationVote {
-                validator,
+        tile.fork_choice.vote_tracker.record_vote(
+            &VoteTarget {
                 block_root,
                 target_epoch: 0,
                 attestation_slot: 0,
                 payload_present: false,
             },
+            validator,
             n,
         );
     }

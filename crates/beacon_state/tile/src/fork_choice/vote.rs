@@ -2,17 +2,74 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Epoch, Slot};
 
 use super::{ForkChoice, ForkChoiceNode, PayloadStatus};
-use crate::stf::AttestationVote;
+use crate::stf::VoteTarget;
 
-#[repr(C)]
 #[derive(Default)]
 pub struct VoteTracker {
     pub votes: Box<[Vote]>,
+    /// Validator indices whose vote moved since the last `recompute_head`.
+    pub(super) dirty: Vec<u32>,
+    equivocating: Box<[u64]>,
 }
 
 impl VoteTracker {
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { votes: vec![Vote::default(); capacity].into_boxed_slice() }
+        Self {
+            votes: vec![Vote::default(); capacity].into_boxed_slice(),
+            dirty: Vec::with_capacity(capacity),
+            equivocating: vec![0u64; capacity.div_ceil(64)].into_boxed_slice(),
+        }
+    }
+
+    pub fn record_votes(
+        &mut self,
+        target: &VoteTarget,
+        validators: &[u32],
+        validator_count: usize,
+    ) {
+        for &validator in validators {
+            self.record_vote(target, validator, validator_count);
+        }
+    }
+
+    pub fn record_vote(&mut self, target: &VoteTarget, validator: u32, validator_count: usize) {
+        let validator_idx = validator as usize;
+        if validator_idx >= validator_count || self.is_equivocating(validator_idx) {
+            return;
+        }
+        // Zero `latest_root` is the uninitialised sentinel — first vote always
+        // takes; a real attestation never has a zero `beacon_block_root`.
+        let v = &mut self.votes[validator_idx];
+        if v.latest_root != [0u8; 32] && target.target_epoch <= v.latest_epoch {
+            return;
+        }
+        v.latest_root = target.block_root;
+        v.latest_epoch = target.target_epoch;
+        v.latest_slot = target.attestation_slot;
+        v.latest_payload_present = target.payload_present;
+        self.dirty.push(validator);
+    }
+
+    pub fn is_equivocating(&self, idx: usize) -> bool {
+        let (w, b) = (idx / 64, idx % 64);
+        self.equivocating.get(w).is_some_and(|word| word & (1u64 << b) != 0)
+    }
+
+    pub fn mark_equivocating(&mut self, idx: usize) {
+        let (w, b) = (idx / 64, idx % 64);
+        let Some(word) = self.equivocating.get_mut(w) else {
+            return;
+        };
+        if *word & (1u64 << b) != 0 {
+            return;
+        }
+        *word |= 1u64 << b;
+        if let Some(v) = self.votes.get_mut(idx) &&
+            (v.applied_root != [0u8; 32] || v.latest_root != [0u8; 32])
+        {
+            v.latest_root = [0u8; 32];
+            self.dirty.push(idx as u32);
+        }
     }
 }
 
@@ -71,9 +128,7 @@ impl ForkChoice {
     /// vote visited afterwards finds its weight already carried and returns.
     #[timed]
     pub(super) fn compute_weight_deltas(&mut self) {
-        let Self {
-            vote_tracker, lookup, nodes, votes_dirty, justified, weight_deltas: deltas, ..
-        } = self;
+        let Self { vote_tracker, lookup, nodes, justified, weight_deltas: deltas, .. } = self;
         let (applied_balances, balances, unapplied) = justified.pending_weight_update();
         let validator_count = balances.len();
         let votes = &mut vote_tracker.votes;
@@ -133,7 +188,7 @@ impl ForkChoice {
                 apply(&mut votes[vi], applied_balance, balances[vi]);
             }
         }
-        for &vi in votes_dirty.iter() {
+        for &vi in vote_tracker.dirty.iter() {
             let vi = vi as usize;
             if vi < validator_count {
                 apply(&mut votes[vi], balances[vi], balances[vi]);
@@ -143,62 +198,30 @@ impl ForkChoice {
 }
 
 impl ForkChoice {
-    pub fn record_vote(&mut self, vote: &AttestationVote, validator_count: usize) {
-        let validator_idx = vote.validator as usize;
-        if validator_idx >= validator_count || self.is_equivocating(validator_idx) {
-            return;
-        }
-        // Zero `latest_root` is the uninitialised sentinel — first vote always
-        // takes; a real attestation never has a zero `beacon_block_root`.
-        let v = &mut self.vote_tracker.votes[validator_idx];
-        if v.latest_root != [0u8; 32] && vote.target_epoch <= v.latest_epoch {
-            return;
-        }
-        v.latest_root = vote.block_root;
-        v.latest_epoch = vote.target_epoch;
-        v.latest_slot = vote.attestation_slot;
-        v.latest_payload_present = vote.payload_present;
-        self.votes_dirty.push(vote.validator);
-    }
-
-    pub fn defer_vote(&mut self, vote: AttestationVote) {
-        self.pending_votes.push(vote);
-    }
-
     /// Spec `on_attestation` folds a vote only once `current_slot >= slot + 1`;
     /// a vote for `current_slot` or later (clock disparity) stays deferred.
+    pub fn record_or_defer_votes(
+        &mut self,
+        target: VoteTarget,
+        validators: &[u32],
+        validator_count: usize,
+        current_slot: Slot,
+    ) {
+        if target.attestation_slot >= current_slot {
+            self.pending_votes.push(target, validators);
+        } else {
+            self.vote_tracker.record_votes(&target, validators, validator_count);
+        }
+    }
+
     pub fn drain_pending_votes(&mut self, validator_count: usize, current_slot: Slot) {
-        let mut i = 0;
-        while i < self.pending_votes.len() {
-            let v = self.pending_votes[i];
-            if v.attestation_slot >= current_slot {
-                i += 1;
-                continue;
+        let Self { vote_tracker, pending_votes, .. } = self;
+        pending_votes.retain(|target, validators| {
+            if target.attestation_slot >= current_slot {
+                return true;
             }
-            self.pending_votes.swap_remove(i);
-            self.record_vote(&v, validator_count);
-        }
-    }
-
-    pub fn is_equivocating(&self, idx: usize) -> bool {
-        let (w, b) = (idx / 64, idx % 64);
-        self.equivocating.get(w).is_some_and(|word| word & (1u64 << b) != 0)
-    }
-
-    pub fn mark_equivocating(&mut self, idx: usize) {
-        let (w, b) = (idx / 64, idx % 64);
-        let Some(word) = self.equivocating.get_mut(w) else {
-            return;
-        };
-        if *word & (1u64 << b) != 0 {
-            return;
-        }
-        *word |= 1u64 << b;
-        if let Some(v) = self.vote_tracker.votes.get_mut(idx) &&
-            (v.applied_root != [0u8; 32] || v.latest_root != [0u8; 32])
-        {
-            v.latest_root = [0u8; 32];
-            self.votes_dirty.push(idx as u32);
-        }
+            vote_tracker.record_votes(target, validators, validator_count);
+            false
+        });
     }
 }
