@@ -159,8 +159,9 @@ fn finalized_state_loads() {
     let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
     let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
     let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
     let tcaches = TCacheTable::from_iter(
-        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p].map(|p| p.cache_ref()),
+        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
     );
 
     let mut tile = BeaconStateTile::new(
@@ -310,8 +311,9 @@ fn tile_apply_block_ef_fixture() {
     let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
     let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
     let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
     let tcaches = TCacheTable::from_iter(
-        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p].map(|p| p.cache_ref()),
+        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
     );
 
     let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])

@@ -131,8 +131,9 @@ impl PmBsHarness {
         let rpc_p = TCache::producer(TCacheId::IncomingRpc, rpc_cap);
         let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
         let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+        let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
         let bs_tcaches = TCacheTable::from_iter(
-            [&gossip_p, &rpc_p, &engine_resp_p, &replay_p].map(|p| p.cache_ref()),
+            [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
         );
 
         let state = BeaconState::from_checkpoint(checkpoint, &SpecConfig::mainnet(), &[])

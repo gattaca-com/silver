@@ -269,7 +269,8 @@ impl BeaconStateTile {
             "engine_incoming_resp",
             TReadMode::Sliding,
         )?;
-        self.reader.open(TCacheId::ReplayBlocks, "bs_replay", TReadMode::Sliding)
+        self.reader.open(TCacheId::ReplayBlocks, "bs_replay", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::DataColumns, "bs_data_columns", TReadMode::Sliding)
     }
 
     /// A read handle on the owned state, for wiring other tiles (lock-free

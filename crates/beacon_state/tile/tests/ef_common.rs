@@ -436,18 +436,19 @@ pub fn ef_tile_with_spec(
         SlotTicker::new(0, std::time::Duration::from_secs(12), std::time::Duration::from_secs(4));
     // Producers stay bound through `new`; the tile's consumers keep their caches
     // alive afterward (mirrors the `make_tile` unit-test harness).
-    let (gp, rp, ep, yp) = (
+    let (gp, rp, ep, yp, cp) = (
         TCache::producer(TCacheId::SszGossip, 1 << 16),
         TCache::producer(TCacheId::IncomingRpc, 1 << 16),
         TCache::producer(TCacheId::IncomingEngineResp, 1 << 16),
         TCache::producer(TCacheId::ReplayBlocks, 1 << 16),
+        TCache::producer(TCacheId::DataColumns, 1 << 16),
     );
 
     let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(spec),
         &SyncingConfig::default(),
-        TCacheTable::from_iter([&gp, &rp, &ep, &yp].map(|p| p.cache_ref())),
+        TCacheTable::from_iter([&gp, &rp, &ep, &yp, &cp].map(|p| p.cache_ref())),
         TCache::producer(TCacheId::BeaconState, 1 << 20),
         false,
         state,

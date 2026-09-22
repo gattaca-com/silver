@@ -214,9 +214,16 @@ impl Harness {
         let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, RPC_RING_BYTES);
         let engine_resp_producer = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
         let replay_in_producer = TCache::producer(TCacheId::ReplayBlocks, 1 << 24);
+        let columns_producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
         let tcaches = TCacheTable::from_iter(
-            [&gossip_in_producer, &rpc_in_producer, &engine_resp_producer, &replay_in_producer]
-                .map(|p| p.cache_ref()),
+            [
+                &gossip_in_producer,
+                &rpc_in_producer,
+                &engine_resp_producer,
+                &replay_in_producer,
+                &columns_producer,
+            ]
+            .map(|p| p.cache_ref()),
         );
 
         let mut tile = build_tile(ticker, tcaches);
