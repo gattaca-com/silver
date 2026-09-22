@@ -47,22 +47,18 @@ impl AttestationData {
         if epoch != view.slot.current_epoch() {
             return None;
         }
-        let state_slot = view.slot.state().slot;
-        let head_root = view.slot.state().latest_block_root;
-        let epoch_start = epoch * SLOTS_PER_EPOCH;
-        // The ring holds no root at or above `state_slot`, and no block has
-        // been processed at the boundary either, so the head is the boundary.
-        let target_root = if epoch_start >= state_slot {
-            head_root
-        } else {
-            view.block_roots.at_slot(epoch_start)
+        let state = view.slot.state();
+        // The ring holds no root at or above the state's slot, and no block
+        // has been processed there either, so the head is the block there.
+        let block_at = |at: Slot| {
+            if at >= state.slot { state.latest_block_root } else { view.block_roots.at_slot(at) }
         };
         Some(Self {
             slot,
             index,
-            beacon_block_root: head_root,
+            beacon_block_root: block_at(slot),
             source: view.epoch.state().current_justified_checkpoint,
-            target: Checkpoint { epoch, root: target_root },
+            target: Checkpoint { epoch, root: block_at(epoch * SLOTS_PER_EPOCH) },
         })
     }
 }
@@ -168,6 +164,15 @@ mod tests {
     fn target_is_the_head_when_the_epoch_starts_at_the_head_state_slot() {
         let ctx = ctx_at(EPOCH_START, &SpecConfig::mainnet());
         assert_eq!(vote(&ctx, EPOCH_START)["target"]["root"], hex_root(&HEAD_ROOT));
+    }
+
+    /// A vote for an earlier slot must name a block from at or before that
+    /// slot, or fork choice discards it as a vote for a future block.
+    #[test]
+    fn vote_for_an_earlier_slot_names_the_block_at_that_slot() {
+        let data = vote(&mainnet_ctx(), STATE_SLOT - 1);
+        assert_eq!(data["beacon_block_root"], hex_root(&ring_root(STATE_SLOT - 1)));
+        assert_eq!(data["target"]["root"], hex_root(&ring_root(EPOCH_START)));
     }
 
     /// The posted shuffling bounds the committee index; without one there is

@@ -56,7 +56,7 @@ pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
 
 #[derive(Default)]
 pub(crate) struct PostedShufflings {
-    entries: [Shuffling; 2],
+    entries: [Shuffling; 3],
 }
 
 const NOT_ACTIVE: u32 = u32::MAX;
@@ -87,7 +87,7 @@ impl PostedShufflings {
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, entry)| entry.epoch)
-                .expect("two entries");
+                .expect("three entries");
             index
         };
         &mut self.entries[held.unwrap_or_else(oldest)]
@@ -330,33 +330,35 @@ mod tests {
         assert!(posted.get(10).is_none());
     }
 
-    /// A repost for an epoch replaces it; a newer epoch evicts the older of
-    /// the two held.
+    /// A repost for an epoch replaces it; a newer epoch evicts the oldest
+    /// held.
     #[test]
-    fn posted_shufflings_hold_the_two_newest_epochs() {
+    fn posted_shufflings_hold_the_three_newest_epochs() {
         let mut posted = PostedShufflings::default();
         posted.record(10, &posted_bytes(10));
         posted.record(11, &posted_bytes(11));
-        posted.record(10, &posted_bytes(12));
-        for (position, &validator_index) in posted_order(12).iter().enumerate() {
+        posted.record(12, &posted_bytes(12));
+        posted.record(10, &posted_bytes(13));
+        for (position, &validator_index) in posted_order(13).iter().enumerate() {
             assert_eq!(
                 posted.get(10).unwrap().position(validator_index as u64),
                 Some(position as u32)
             );
         }
 
-        posted.record(12, &posted_bytes(12));
+        posted.record(13, &posted_bytes(13));
         assert!(posted.get(10).is_none());
-        assert!(posted.get(11).is_some() && posted.get(12).is_some());
+        assert!([11, 12, 13].iter().all(|&epoch| posted.get(epoch).is_some()));
     }
 
-    /// Epoch zero is a real epoch, so recording it must not leave the second
-    /// slot looking like the older of the two.
+    /// Epoch zero is a real epoch, so recording it must not leave an unfilled
+    /// slot looking like the oldest.
     #[test]
-    fn epoch_zero_fills_one_slot_and_leaves_the_other_free() {
+    fn epoch_zero_fills_one_slot_and_leaves_the_others_free() {
         let mut posted = PostedShufflings::default();
         posted.record(0, &posted_bytes(0));
         posted.record(1, &posted_bytes(1));
-        assert!(posted.get(0).is_some() && posted.get(1).is_some());
+        posted.record(2, &posted_bytes(2));
+        assert!([0, 1, 2].iter().all(|&epoch| posted.get(epoch).is_some()));
     }
 }

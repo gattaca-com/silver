@@ -135,7 +135,7 @@ impl<G: RingGroup> Ring<G> {
     }
 
     #[inline]
-    pub fn get_mut(&mut self, id: Id<G>) -> &mut G::Entry {
+    pub(crate) fn get_mut(&mut self, id: Id<G>) -> &mut G::Entry {
         let buf = self.buf_mut();
         let mask = buf.mask;
         &mut buf.entries[id.index() & mask]

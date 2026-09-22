@@ -63,6 +63,8 @@ impl SlotStateGroup {
         SlotStateWriteView::new(finalized, fork)
     }
 
+    /// Writes into a committed fork, which only the anchor tolerates: it is
+    /// unpublished and no block apply will ever write this field for it.
     pub fn set_latest_block_root(&mut self, id: SlotStateId, root: B256) {
         self.deltas.get_mut(id).slot.latest_block_root = root;
     }
