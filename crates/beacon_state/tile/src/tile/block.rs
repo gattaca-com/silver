@@ -6,7 +6,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
-    SyncNeed, SyncUpdate, TCacheRead, TRandomAccess, hex32,
+    SyncNeed, SyncUpdate, TCacheRead, hex32,
     ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
 
@@ -236,7 +236,7 @@ impl BeaconStateTile {
     }
 
     pub(super) fn replay_block(&mut self, read: TCacheRead) {
-        let acquired = self.replay_consumer.acquire(read);
+        let acquired = self.reader.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
             return;
         };
@@ -269,7 +269,7 @@ impl BeaconStateTile {
     }
 
     pub(super) fn replay_envelope(&mut self, read: TCacheRead) {
-        let acquired = self.replay_consumer.acquire(read);
+        let acquired = self.reader.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
             return;
         };
@@ -380,7 +380,7 @@ impl BeaconStateTile {
         };
         let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;
 
-        let acquired = self.block_consumer(source).acquire(ssz);
+        let acquired = self.reader.acquire(ssz);
         let Ok((data, _)) = acquired.buffer() else {
             tracing::error!(
                 block = hex32(&block_root),
@@ -397,13 +397,6 @@ impl BeaconStateTile {
             self.fork_choice.on_payload_valid(&block_root);
         }
         self.announce_imported(block_root, slot, data, ssz, source, producers);
-    }
-
-    fn block_consumer(&mut self, source: BlockSource) -> &mut TRandomAccess {
-        match source {
-            BlockSource::Gossip => &mut self.gossip_consumer,
-            BlockSource::Rpc => &mut self.rpc_consumer,
-        }
     }
 
     /// Run the per-block STF against a COW child of the parent post-state and

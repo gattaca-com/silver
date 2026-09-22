@@ -364,8 +364,8 @@ fn live_fulu_to_gloas_cutover_uses_new_context_group_and_requests_without_a_head
     rig.now += Duration::from_secs(32 * 12);
     let boundary = rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
     rig.store.advance(rig.now, 0, |_| {});
-    rig.network.advance_retention(boundary.retain_from);
-    rig.columns.advance_retention(boundary.retain_from);
+    rig.network.advance_retention(TCacheId::DataColumns, boundary.retain_from);
+    rig.columns.advance_retention(TCacheId::DataColumns, boundary.retain_from);
     assert!(rig.acquire().is_empty());
     rig.spin();
     let next_domain = GossipDomain::new([2; 4], ForkName::Gloas);

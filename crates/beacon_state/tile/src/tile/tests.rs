@@ -12,7 +12,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID, MessageId,
     P2pStreamId, PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed,
-    TCache, TCacheProducer, TCacheRead, TProducer, block_root_fulu,
+    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -106,26 +106,32 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
     let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
-    let gossip_p = TCache::producer("test_gossip", 1 << 20);
-    let event_p = TCache::producer("test_event", 1 << 20);
-    let engine_p = TCache::producer("test_engine", 1 << 20);
-    let replay_p = TCache::producer("test_replay", 1 << 20);
-    let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
-    let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
-    let engine_c = engine_p.cache_ref().random_access("test_engine", true).unwrap();
-    let replay_c = replay_p.cache_ref().random_access("test_replay", true).unwrap();
-    BeaconStateTile::new(
+    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
+    let event_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
+    let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 20);
+    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+    let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(SpecConfig::mainnet()),
         &SyncingConfig::default(),
-        gossip_c,
-        rpc_c,
-        engine_c,
-        replay_c,
-        TCache::producer("test_beacon_state", 1 << 20),
+        TCacheTable::from_iter([&gossip_p, &event_p, &engine_p, &replay_p].map(|p| p.cache_ref())),
+        TCache::producer(TCacheId::BeaconState, 1 << 20),
         verify_weak_subjectivity,
         BeaconState::empty_test(0),
-    )
+    );
+    tile.open_tcaches().unwrap();
+    tile
+}
+
+/// Like `make_tile_at_wall_slot` but returns the gossip producer so tests
+/// can write real block buffers the tile's consumer can read back.
+fn make_tile_with_gossip(
+    wall_slot: u64,
+    state: BeaconState,
+) -> (BeaconStateTile, TProducer, TProducer) {
+    let (tile, gossip, rpc, _replay) =
+        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+    (tile, gossip, rpc)
 }
 
 /// Keeps the replay producer alive for tests that feed cached block bytes.
@@ -138,26 +144,20 @@ fn make_tile_with_producers(
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
     let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
-    let gossip_p = TCache::producer("test_gossip_buf", 1 << 20);
-    let event_p = TCache::producer("test_event_buf", TEST_RING_BYTES);
-    let engine_p = TCache::producer("test_engine", 1 << 20);
-    let replay_p = TCache::producer("test_replay_buf", 1 << 20);
-    let gossip_c = gossip_p.cache_ref().random_access("test_gossip_buf", true).unwrap();
-    let rpc_c = event_p.cache_ref().random_access("test_event_buf", true).unwrap();
-    let engine_c = engine_p.cache_ref().random_access("test_engine", true).unwrap();
-    let replay_c = replay_p.cache_ref().random_access("test_replay_buf", true).unwrap();
-    let tile = BeaconStateTile::new(
+    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
+    let event_p = TCache::producer(TCacheId::IncomingRpc, TEST_RING_BYTES);
+    let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 20);
+    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
+    let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(spec),
         &SyncingConfig::default(),
-        gossip_c,
-        rpc_c,
-        engine_c,
-        replay_c,
-        TCache::producer("test_beacon_state_buf", 1 << 20),
+        TCacheTable::from_iter([&gossip_p, &event_p, &engine_p, &replay_p].map(|p| p.cache_ref())),
+        TCache::producer(TCacheId::BeaconState, 1 << 20),
         true,
         state,
     );
+    tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, replay_p)
 }
 
@@ -1785,7 +1785,7 @@ fn lap_rpc_ring(tile: &mut BeaconStateTile, rp: &mut TProducer, producers: &mut 
     for _ in 0..(TEST_RING_BYTES / JUNK_BYTES + 2) {
         let (_, ssz) = publish_block_bytes(rp, &junk);
         tile.on_rpc_inbound(live_block_response(ssz), producers);
-        tile.rpc_consumer.free();
+        tile.reader.free();
     }
 }
 
@@ -2044,12 +2044,12 @@ fn ve_unknown_validator_rejected() {
 
 #[test]
 fn ve_accept() {
-    let mut tile = make_tile();
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(1, BeaconState::empty_test(0));
     // Past shard-committee-period so the exit is permitted.
     seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
-    assert_non_block_relay(&mut tile, &buf, GossipTopic::VoluntaryExit);
+    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::VoluntaryExit);
 }
 
 #[test]
@@ -2073,11 +2073,11 @@ fn ps_unknown_proposer_rejected() {
 
 #[test]
 fn ps_accept() {
-    let mut tile = make_tile();
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(1, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
-    assert_non_block_relay(&mut tile, &buf, GossipTopic::ProposerSlashing);
+    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::ProposerSlashing);
 }
 
 #[test]
@@ -2136,11 +2136,11 @@ fn as_zero_intersection_ignored() {
 
 #[test]
 fn as_accept() {
-    let mut tile = make_tile();
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(1, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let buf = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
-    assert_non_block_relay(&mut tile, &buf, GossipTopic::AttesterSlashing);
+    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::AttesterSlashing);
 }
 
 #[test]
@@ -2189,12 +2189,12 @@ fn bls_change_wrong_prefix_rejected() {
 
 #[test]
 fn bls_change_accept() {
-    let mut tile = make_tile();
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(1, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 4, 0);
     let imm = seed_immutable(&tile);
     let to_addr = [0x42u8; 20];
     let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
-    assert_non_block_relay(&mut tile, &buf, GossipTopic::BlsToExecutionChange);
+    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::BlsToExecutionChange);
 }
 
 #[test]
@@ -2675,12 +2675,17 @@ fn sync_aggregator_slot_for_two_subcommittees(imm: &Immutable) -> (u64, u64, u64
 fn sync_contribution_accepted_then_superset_ignored() {
     let imm = Immutable::default();
     let (slot, sub) = sync_aggregator_slot(&imm, true);
-    let mut tile = make_tile_at_wall_slot(slot);
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(slot, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 128, slot);
     let bbr = tile.last_applied_block_root;
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
-    assert_non_block_relay(&mut tile, &buf, GossipTopic::SyncCommitteeContributionAndProof);
+    assert_non_block_relay(
+        &mut tile,
+        &mut gossip,
+        &buf,
+        GossipTopic::SyncCommitteeContributionAndProof,
+    );
     assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Ignore));
 }
 
@@ -3161,11 +3166,11 @@ fn agg_unknown_block_root_ignored() {
 
 #[test]
 fn agg_accept() {
-    let mut tile = make_tile_at_wall_slot(31);
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(31, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
     let beacon_block_root = tile.last_applied_block_root;
-    assert_non_block_relay(&mut tile, &buf, GossipTopic::BeaconAggregateAndProof);
+    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::BeaconAggregateAndProof);
     assert_eq!(voted_weight(&mut tile, beacon_block_root), MAX_EFFECTIVE_BALANCE);
 }
 
@@ -3825,7 +3830,7 @@ fn staged_blocks_follow_finalization() {
     const S_ROOT: B256 = [0x05; 32];
     const S2_ROOT: B256 = [0x52; 32];
     let mut forks = ThreeForks::new();
-    let mut producer = TCache::producer("test_staged_finalize", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
     let s_id = forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
     forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
 
@@ -3853,7 +3858,7 @@ fn el_invalid_drops_staged_block() {
     let (mut spine, mut adapter) = spine_adapter(&forks.tile);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
-    let mut producer = TCache::producer("test_el_invalid", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ElDataColumns, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
@@ -3878,7 +3883,7 @@ fn el_valid_is_kept_on_a_staged_block() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut producer = TCache::producer("test_el_valid_staged", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ElDataColumns, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
@@ -3901,7 +3906,7 @@ fn el_invalid_staged_block_is_remembered_as_rejected() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut producer = TCache::producer("test_el_invalid_memory", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ElDataColumns, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
@@ -3951,7 +3956,7 @@ fn child_of_transition_failed_block_is_rejected() {
 fn a_finalized_target_drops_staged_blocks() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
-    let mut producer = TCache::producer("test_staged_finalized_target", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     forks.tile.on_sync_update(SyncUpdate::SyncingHead { head_root: [9; 32], head_slot: 40 });
@@ -3970,7 +3975,7 @@ fn pruned_staged_block_takes_its_children() {
     const S2_ROOT: B256 = [0x52; 32];
     let mut forks = ThreeForks::new();
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut producer = TCache::producer("test_staged_children", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
     forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
     let child = gossip_pending(&mut producer, 3);
     let parked = forks.tile.buffer_orphan(S2_ROOT, [0x53; 32], child, 3, &mut adapter.producers);
@@ -3988,7 +3993,7 @@ fn pruned_staged_block_takes_its_children() {
 fn availability_outlives_a_failed_release() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
-    let mut producer = TCache::producer("test_da_release", 1 << 12);
+    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let held = &mut forks.tile.held;
@@ -4229,12 +4234,15 @@ fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic>
     topics
 }
 
-fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: GossipTopic) {
-    let mut gossip = TCache::producer("non_block_relay", 1 << 20);
-    tile.gossip_consumer = gossip.cache_ref().random_access("non_block_relay", true).unwrap();
+fn assert_non_block_relay(
+    tile: &mut BeaconStateTile,
+    gossip: &mut TProducer,
+    bytes: &[u8],
+    topic: GossipTopic,
+) {
     let (_spine, mut adapter) = spine_adapter(tile);
     adapter.consume(|_: PeerEvent, _| {});
-    let msg = gossip_msg(&mut gossip, bytes, topic);
+    let msg = gossip_msg(gossip, bytes, topic);
     let msg_seq = msg.ssz.seq();
     tile.on_gossip(msg, &mut adapter.producers);
     tile.flush_votes(&mut adapter.producers);
@@ -4252,13 +4260,13 @@ fn assert_non_block_relay(tile: &mut BeaconStateTile, bytes: &[u8], topic: Gossi
 #[test]
 fn fresh_shufflings_are_posted_once() {
     let mut rig = HeadRig::new();
-    let posted = |published: Published| -> Vec<(Epoch, usize)> {
+    let posted = |producer: &TProducer, published: Published| -> Vec<(Epoch, usize)> {
         published
             .0
             .iter()
             .filter_map(|event| match event {
                 BeaconStateEvent::AttestersShuffling { epoch, indices } => {
-                    Some((*epoch, indices.len().unwrap()))
+                    Some((*epoch, producer.read_buffer(*indices).unwrap().len()))
                 }
                 _ => None,
             })
@@ -4267,7 +4275,8 @@ fn fresh_shufflings_are_posted_once() {
 
     rig.tile.precompute_next_epoch_shuffling(4);
     rig.tile.post_shufflings(&mut rig.adapter.producers);
-    let mut posted_now = posted(rig.drain());
+    let published = rig.drain();
+    let mut posted_now = posted(&rig.tile.events_producer, published);
     posted_now.sort_unstable();
     let expected: Vec<_> = [4, 5]
         .into_iter()
@@ -4277,5 +4286,6 @@ fn fresh_shufflings_are_posted_once() {
 
     rig.tile.precompute_next_epoch_shuffling(4);
     rig.tile.post_shufflings(&mut rig.adapter.producers);
-    assert_eq!(posted(rig.drain()), []);
+    let published = rig.drain();
+    assert_eq!(posted(&rig.tile.events_producer, published), []);
 }

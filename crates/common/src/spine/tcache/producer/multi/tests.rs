@@ -9,7 +9,7 @@ use super::*;
 
 #[test]
 fn multi_producer_clones_share_the_oldest_unfinished_reservation() {
-    let mut producer = TCache::multi_producer("", 256);
+    let mut producer = TCache::multi_producer(TCacheId::DataColumns, 256);
     let mut other = producer.clone();
     let mut first = producer.reserve(32, false).unwrap();
     first.write_all(&[0xaa; 16]).unwrap();
@@ -36,7 +36,7 @@ fn multi_producer_clones_share_the_oldest_unfinished_reservation() {
 #[test]
 fn multi_producer_retries_contention_before_reserving_or_publishing() {
     for allocate in [false, true] {
-        let producer = TCache::multi_producer("", 256);
+        let producer = TCache::multi_producer(TCacheId::DataColumns, 256);
         let cache = producer.cache_ref();
         let allocator = producer.claim();
         let reservation = allocator.state.reserve(cache, 32, false).unwrap();
@@ -76,7 +76,7 @@ fn multi_producer_retries_contention_before_reserving_or_publishing() {
 
 #[test]
 fn multi_producer_releases_claim_when_reservation_cannot_fit() {
-    let mut producer = TCache::multi_producer("", 256);
+    let mut producer = TCache::multi_producer(TCacheId::DataColumns, 256);
     for len in [225, 256, usize::MAX] {
         assert!(producer.reserve(len, false).is_none());
         assert_eq!(producer.try_claim().unwrap().state.seq, 0);
@@ -90,7 +90,7 @@ fn multi_producer_releases_claim_when_reservation_cannot_fit() {
 
 #[test]
 fn multi_producer_releases_claim_after_unwind() {
-    let mut producer = TCache::multi_producer("", 256);
+    let mut producer = TCache::multi_producer(TCacheId::DataColumns, 256);
     let result = catch_unwind(AssertUnwindSafe(|| {
         let allocator = producer.claim();
         let _reservation = allocator.state.reserve(producer.cache_ref(), 224, false).unwrap();
@@ -103,7 +103,7 @@ fn multi_producer_releases_claim_after_unwind() {
 
 #[test]
 fn multi_producer_debug_does_not_read_claimed_state() {
-    let producer = TCache::multi_producer("", 256);
+    let producer = TCache::multi_producer(TCacheId::DataColumns, 256);
     let allocator = producer.claim();
     assert!(format!("{producer:?}").contains("<locked>"));
     drop(allocator);
@@ -114,7 +114,7 @@ fn multi_producer_debug_does_not_read_claimed_state() {
 fn multi_producer_walks_and_header_initialization_survive_concurrent_wraps() {
     const CAPACITY: usize = 4096;
     const WORKERS: usize = 4;
-    let producer = TCache::multi_producer("", CAPACITY);
+    let producer = TCache::multi_producer(TCacheId::DataColumns, CAPACITY);
     let start = Barrier::new(WORKERS);
 
     thread::scope(|scope| {
@@ -170,7 +170,7 @@ fn multi_producer_walks_and_header_initialization_survive_concurrent_wraps() {
 
 #[test]
 fn multi_producer_consumer_tail_still_limits_reuse() {
-    let mut producer = TCache::multi_producer("", 256);
+    let mut producer = TCache::multi_producer(TCacheId::DataColumns, 256);
     let mut consumer = producer.cache_ref().consumer("").unwrap();
     for _ in 0..4 {
         producer.reserve(32, true).unwrap().write_all(&[0xab; 32]).unwrap();

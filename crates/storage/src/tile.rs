@@ -4,10 +4,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
-    Origin, P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
-    SilverSpineProducers, SszCache, SyncNeed, SyncUpdate, SyncingStrategy, TCacheProducer,
-    TMultiProducer, TProducer, TRandomAccess, block_root,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
+    P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
+    SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError, TCacheId,
+    TCacheProducer, TCacheReader, TCacheTable, TMultiProducer, TProducer, TReadMode, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -34,12 +34,6 @@ impl ReplayStep {
 const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
 
 pub struct StorageTile {
-    // bit set of our custody group columns.
-    persist_gossip_consumer: TRandomAccess,
-    persist_data_columns_consumer: TRandomAccess,
-    rpc_consumer: TRandomAccess,
-    persist_rpc_consumer: TRandomAccess,
-    el_column_consumer: TRandomAccess,
     rpc_producer: TMultiProducer,
     beacon_state: BeaconStateReader,
     store: Store,
@@ -67,16 +61,17 @@ pub struct StorageTile {
     /// finalized ahead (in which case we skip it and sync from them).
     syncing_strategy: Option<SyncingStrategy>,
     peers_loaded: bool,
+
+    // Last: the store's acquired reads point into them. Persisted reads are
+    // long-lived, so they track their own tails.
+    reader: TCacheReader,
+    persist_reader: TCacheReader,
 }
 
 impl StorageTile {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        persist_gossip_consumer: TRandomAccess,
-        persist_data_columns_consumer: TRandomAccess,
-        rpc_consumer: TRandomAccess,
-        persist_rpc_consumer: TRandomAccess,
-        el_column_consumer: TRandomAccess,
+        tcaches: TCacheTable,
         rpc_producer: TMultiProducer,
         replay_producer: TProducer,
         beacon_state: BeaconStateReader,
@@ -106,11 +101,6 @@ impl StorageTile {
         tracing::info!("have {} replay steps", replay_steps.len());
 
         Self {
-            persist_gossip_consumer,
-            persist_data_columns_consumer,
-            rpc_consumer,
-            persist_rpc_consumer,
-            el_column_consumer,
             rpc_producer,
             beacon_state,
             store,
@@ -124,7 +114,25 @@ impl StorageTile {
             replay_done: !replay_from_disk,
             syncing_strategy: None,
             peers_loaded: false,
+            reader: TCacheReader::new(tcaches),
+            persist_reader: TCacheReader::new(tcaches),
         }
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::IncomingRpc, "ds_incoming_rpc", TReadMode::Sliding)?;
+        self.persist_reader.open(
+            TCacheId::SszGossip,
+            "ds_persist_ssz_gossip",
+            TReadMode::Sliding,
+        )?;
+        self.persist_reader.open(
+            TCacheId::IncomingRpc,
+            "ds_persist_incoming_rpc",
+            TReadMode::Sliding,
+        )?;
+        self.persist_reader.open(TCacheId::DataColumns, "storage_cells", TReadMode::Sliding)?;
+        self.persist_reader.open(TCacheId::ElDataColumns, "el_data_columns", TReadMode::Sliding)
     }
 
     fn drive_replay(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -251,10 +259,7 @@ impl StorageTile {
                 latest_status_event = Some((ssz, wall_slot));
             }
             BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
-                let t_read = match source {
-                    BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                };
+                let t_read = self.persist_reader.acquire(ssz);
 
                 match t_read.buffer() {
                     Ok((buf, _)) => {
@@ -280,10 +285,7 @@ impl StorageTile {
                 if !self.store.is_envelope_owed(&block_root, slot) {
                     return None;
                 }
-                let t_read = match source {
-                    BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                };
+                let t_read = self.persist_reader.acquire(ssz);
                 match t_read.buffer() {
                     Ok((buf, _)) if SignedExecutionPayloadEnvelopeView::check_size(buf) => {
                         self.store.add_envelope(block_root, t_read);
@@ -309,15 +311,17 @@ impl StorageTile {
 }
 
 impl Tile<SilverSpine> for StorageTile {
+    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        self.open_tcaches().expect("tcache wiring");
+        true
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.consume(|d: SyncingStrategy, _| self.syncing_strategy = Some(d));
         self.drive_replay(adapter);
 
-        self.rpc_consumer.free();
-        self.persist_gossip_consumer.free();
-        self.persist_rpc_consumer.free();
-        self.persist_data_columns_consumer.free();
-        self.el_column_consumer.free();
+        self.reader.free();
+        self.persist_reader.free();
 
         adapter.consume(|request: BeaconApiRequest, producers| {
             if let BeaconApiRequest::Block { request_id, lookup, with_bytes } = request {
@@ -334,7 +338,7 @@ impl Tile<SilverSpine> for StorageTile {
         // Check for data columns and incoming blocks via RPC.
         adapter.consume(|rpc: RpcInbound, producers| match rpc {
             RpcInbound::Request(req) => {
-                self.store.rpc_request(&mut self.rpc_consumer, req);
+                self.store.rpc_request(&mut self.reader, req);
             }
             RpcInbound::Response(rsp) => {
                 let id = RequestId::from(rsp.application_id);
@@ -342,14 +346,14 @@ impl Tile<SilverSpine> for StorageTile {
                     silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
                         if id.is(DataKind::Block, Origin::Backfill) =>
                     {
-                        let t_read = self.rpc_consumer.acquire(ssz);
+                        let t_read = self.reader.acquire(ssz);
                         self.store.backfill_block(t_read);
                     }
                     silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz }
                         if id.is(DataKind::Columns, Origin::Backfill) =>
                     {
                         tracing::debug!("backfill data column sidecar over rpc");
-                        let t_read = self.rpc_consumer.acquire(ssz);
+                        let t_read = self.reader.acquire(ssz);
                         self.store.backfill_data_column(
                             t_read,
                             rsp.stream_id.peer(),
@@ -361,7 +365,7 @@ impl Tile<SilverSpine> for StorageTile {
                         fork_digest: _,
                         ssz,
                     } if id.is(DataKind::Envelope, Origin::Backfill) => {
-                        let t_read = self.rpc_consumer.acquire(ssz);
+                        let t_read = self.reader.acquire(ssz);
                         self.store.backfill_envelope(t_read, &mut |io| io.produce(producers));
                     }
                     silver_common::RpcResponse::Error { error, msg, len }
@@ -388,21 +392,10 @@ impl Tile<SilverSpine> for StorageTile {
 
         adapter.consume(|dc_event: DataColumnsEvent, producers| {
             if let DataColumnsEvent::Persist {
-                ssz,
-                origin,
-                ssz_cache,
-                block_root,
-                column_index,
-                slot,
-                ..
+                ssz, origin, block_root, column_index, slot, ..
             } = dc_event
             {
-                let sidecar_ssz = match ssz_cache {
-                    SszCache::DataColumns => self.persist_data_columns_consumer.acquire(ssz),
-                    SszCache::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    SszCache::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                    SszCache::El => self.el_column_consumer.acquire(ssz),
-                };
+                let sidecar_ssz = self.persist_reader.acquire(ssz);
                 match sidecar_ssz.buffer() {
                     Ok(_) => self.store.add_data_column(
                         block_root,
@@ -511,7 +504,7 @@ mod tests {
     use std::{io::Write, thread, time::Duration};
 
     use silver_beacon_state_data::BeaconStateOwner;
-    use silver_common::{DataColumnsEvent, TCache, TCacheProducer, test_util::ShmemDir};
+    use silver_common::{DataColumnsEvent, TCache, TCacheId, TCacheProducer, test_util::ShmemDir};
     use tempfile::TempDir;
 
     use super::*;
@@ -540,33 +533,33 @@ mod tests {
     }
 
     fn empty_tile(store_dir: &str) -> StorageTile {
-        let pg = TCache::producer("st_pg", 1 << 16);
-        let dc = TCache::producer("st_dc", 1 << 16);
-        let rpc = TCache::producer("st_rpc", 1 << 16);
-        let pr = TCache::producer("st_pr", 1 << 16);
-        let el = TCache::producer("st_el", 1 << 16);
-        StorageTile::new(
-            pg.cache_ref().random_access("st_pg", true).unwrap(),
-            dc.cache_ref().random_access("st_dc", true).unwrap(),
-            rpc.cache_ref().random_access("st_rpc", true).unwrap(),
-            pr.cache_ref().random_access("st_pr", true).unwrap(),
-            el.cache_ref().random_access("st_el", true).unwrap(),
-            TCache::multi_producer("st_rpc_out", 1 << 16),
-            TCache::producer("st_replay_out", 1 << 16),
+        empty_tile_with_columns(store_dir).0
+    }
+
+    /// Also returns the data-columns producer the tile's persist reader is on.
+    fn empty_tile_with_columns(store_dir: &str) -> (StorageTile, TProducer) {
+        let pg = TCache::producer(TCacheId::SszGossip, 1 << 16);
+        let dc = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let rpc = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let el = TCache::producer(TCacheId::ElDataColumns, 1 << 16);
+        let mut tile = StorageTile::new(
+            TCacheTable::from_iter([&pg, &dc, &rpc, &el].map(|p| p.cache_ref())),
+            TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 16),
+            TCache::producer(TCacheId::ReplayBlocks, 1 << 16),
             BeaconStateOwner::empty_test(0).reader(),
             0,
             Arc::new(SpecConfig::mainnet()),
             store_dir.to_string(),
             true,
-        )
+        );
+        tile.open_tcaches().unwrap();
+        (tile, dc)
     }
 
     #[test]
     fn idle_storage_releases_the_data_columns_cache_without_persist_events() {
         let directory = TempDir::new().unwrap();
-        let mut tile = empty_tile(directory.path().to_str().unwrap());
-        let mut producer = TCache::producer("", 1 << 16);
-        tile.persist_data_columns_consumer = producer.cache_ref().random_access("", true).unwrap();
+        let (mut tile, mut producer) = empty_tile_with_columns(directory.path().to_str().unwrap());
         let base = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
         let mut adapter = SpineAdapter::connect_tile(&tile, &mut spine);
@@ -649,26 +642,22 @@ mod tests {
         }
         std::fs::write(cols.join(format!("34_{root_b}_3.ssz")), b"c").unwrap(); // partial
 
-        let pg_tc = TCache::producer("pg", 1 << 20);
-        let dc_tc = TCache::producer("dc", 1 << 20);
-        let rpc_tc = TCache::producer("r", 1 << 20);
-        let pr_tc = TCache::producer("pr", 1 << 20);
-        let el_tc = TCache::producer("pr", 1 << 20);
+        let pg_tc = TCache::producer(TCacheId::SszGossip, 1 << 20);
+        let dc_tc = TCache::producer(TCacheId::DataColumns, 1 << 20);
+        let rpc_tc = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
+        let el_tc = TCache::producer(TCacheId::ElDataColumns, 1 << 20);
 
         let mut tile = StorageTile::new(
-            pg_tc.cache_ref().random_access("pg", true).unwrap(),
-            dc_tc.cache_ref().random_access("dc", true).unwrap(),
-            rpc_tc.cache_ref().random_access("r", true).unwrap(),
-            pr_tc.cache_ref().random_access("pr", true).unwrap(),
-            el_tc.cache_ref().random_access("el_column_consumer", true).unwrap(),
-            TCache::multi_producer("rpc_out", 1 << 20),
-            TCache::producer("replay_out", 1 << 20),
+            TCacheTable::from_iter([&pg_tc, &dc_tc, &rpc_tc, &el_tc].map(|p| p.cache_ref())),
+            TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 20),
+            TCache::producer(TCacheId::ReplayBlocks, 1 << 20),
             BeaconStateOwner::empty_test(0).reader(),
             custody,
             Arc::new(SpecConfig::mainnet()),
             store_dir.path().to_str().unwrap().to_owned(),
             true,
         );
+        tile.open_tcaches().unwrap();
         assert_eq!(tile.replay_steps.len(), 3, "skip decided at replay, not load");
 
         // Spine + injector: the tile produces, the injector drains.

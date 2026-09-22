@@ -12,7 +12,9 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 use pprof::criterion::{Output, PProfProfiler};
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::{Rng, RngCore, SeedableRng};
-use silver_common::{GossipMsgOut, Keypair, P2pStreamId, TCache, TCacheProducer};
+use silver_common::{
+    GossipMsgOut, Keypair, P2pStreamId, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+};
 use silver_discovery::Discovery;
 use silver_network::{Context, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult};
 use tracing::Level;
@@ -39,18 +41,18 @@ pub fn broadcast(c: &mut Criterion) {
             |x| {
                 x.iter_batched(
                     || {
-                        let gi_producer = TCache::producer("bench_gi", 2 << 24);
+                        let gi_producer = TCache::producer(TCacheId::IncomingGossip, 2 << 24);
                         let mut gi_consumer = gi_producer.cache_ref().consumer("bench").unwrap();
-                        let go_producer = TCache::producer("bench_small", 32);
-                        let go_consumer =
-                            go_producer.cache_ref().random_access("bench", true).unwrap();
-                        let rpc_in = TCache::producer("bench_small", 32);
-                        let rpc_out = rpc_in.cache_ref().random_access("bench", true).unwrap();
+                        let go_producer = TCache::producer(TCacheId::OutgoingGossip, 32);
+                        let rpc_in = TCache::producer(TCacheId::IncomingRpc, 32);
+                        let rpc_out = TCache::producer(TCacheId::OutgoingRpc, 32);
 
                         // dummys
-                        let cluster_in = TCache::producer("cluster_in", 32);
-                        let cluster_out =
-                            cluster_in.cache_ref().random_access("cluster_out", true).unwrap();
+                        let cluster_in = TCache::producer(TCacheId::ClusterInbound, 32);
+                        let cluster_out = TCache::producer(TCacheId::ClusterOutbound, 32);
+                        let tcaches = TCacheTable::from_iter(
+                            [&go_producer, &rpc_out, &cluster_out].map(|p| p.cache_ref()),
+                        );
 
                         let (mut server_tile, server_id) = {
                             let secret = secp256k1::SecretKey::new(&mut rng);
@@ -67,29 +69,28 @@ pub fn broadcast(c: &mut Criterion) {
                             );
 
                             let context = Context {
-                                data_columns_consumer: None,
                                 gossip_producer: gi_producer,
-                                gossip_consumer: go_consumer,
                                 rpc_producer: rpc_in,
-                                rpc_consumer: rpc_out,
                                 identify: None,
                                 cluster_nodes: None,
                                 cluster_inbound_producer: cluster_in,
-                                cluster_outbound_consumer: cluster_out,
+                                partial_columns: false,
+                                reader: TCacheReader::new(tcaches),
                             };
 
                             let p2p = P2p::new(keypair, server_endpoint, 1024, Default::default());
-                            (
-                                NetworkTileInner::new(
+                            {
+                                let mut tile = NetworkTileInner::new(
                                     "0.0.0.0:20001".parse().unwrap(),
                                     p2p,
                                     context,
                                     "0.0.0.0:12345".parse().unwrap(),
                                     DummyDisc,
                                 )
-                                .unwrap(),
-                                server_id,
-                            )
+                                .unwrap();
+                                tile.context_mut().open_tcaches().unwrap();
+                                (tile, server_id)
+                            }
                         };
 
                         let server_handle = std::thread::spawn(move || {
@@ -122,27 +123,26 @@ pub fn broadcast(c: &mut Criterion) {
                                 None,
                             );
 
-                            let gi_producer = TCache::producer("bench_small", 32);
-                            let mut go_producer = TCache::producer("bench_go", 2 << 28);
-                            let go_consumer =
-                                go_producer.cache_ref().random_access("bench", true).unwrap();
-                            let rpc_in = TCache::producer("bench_small", 32);
-                            let rpc_out = rpc_in.cache_ref().random_access("bench", false).unwrap();
+                            let gi_producer = TCache::producer(TCacheId::IncomingGossip, 32);
+                            let mut go_producer =
+                                TCache::producer(TCacheId::OutgoingGossip, 2 << 28);
+                            let rpc_in = TCache::producer(TCacheId::IncomingRpc, 32);
+                            let rpc_out = TCache::producer(TCacheId::OutgoingRpc, 32);
                             // dummys
-                            let cluster_in = TCache::producer("cluster_in", 32);
-                            let cluster_out =
-                                cluster_in.cache_ref().random_access("cluster_out", true).unwrap();
+                            let cluster_in = TCache::producer(TCacheId::ClusterInbound, 32);
+                            let cluster_out = TCache::producer(TCacheId::ClusterOutbound, 32);
+                            let tcaches = TCacheTable::from_iter(
+                                [&go_producer, &rpc_out, &cluster_out].map(|p| p.cache_ref()),
+                            );
 
                             let context = Context {
-                                data_columns_consumer: None,
                                 gossip_producer: gi_producer,
-                                gossip_consumer: go_consumer,
                                 rpc_producer: rpc_in,
-                                rpc_consumer: rpc_out,
                                 identify: None,
                                 cluster_nodes: None,
                                 cluster_inbound_producer: cluster_in,
-                                cluster_outbound_consumer: cluster_out,
+                                partial_columns: false,
+                                reader: TCacheReader::new(tcaches),
                             };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
@@ -155,7 +155,7 @@ pub fn broadcast(c: &mut Criterion) {
                             )
                             .unwrap();
 
-                            let tile = NetworkTileInner::new(
+                            let mut tile = NetworkTileInner::new(
                                 addr.parse().unwrap(),
                                 p2p,
                                 context,
@@ -163,6 +163,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 DummyDisc,
                             )
                             .unwrap();
+                            tile.context_mut().open_tcaches().unwrap();
 
                             // stage msgs
                             let mut msgs = vec![];

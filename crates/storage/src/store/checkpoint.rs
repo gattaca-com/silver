@@ -350,6 +350,7 @@ mod tests {
     };
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
+    use silver_common::TCacheId;
     use tempfile::TempDir;
 
     use super::{FINALIZED_CHECKPOINTS_DIR, Store};
@@ -472,7 +473,7 @@ mod tests {
         // open a stream.
         let owner = published_owner(bs);
         let reader = owner.reader();
-        let mut producer = TCache::multi_producer("bench_persist_rpc", 1 << 20);
+        let mut producer = TCache::multi_producer(TCacheId::IncomingRpc, 1 << 20);
         let mut streamed = Vec::new();
         // Per-section total over the measured iterations (the per-turn `Instant`
         // overhead is ~ns/turn, negligible vs the section writes it brackets).
@@ -579,7 +580,7 @@ mod tests {
         assert!(store.checkpoint_in_flight(), "begin_checkpoint should arm a job");
 
         // One chunk per file_io turn until the commit clears the job.
-        let mut producer = TCache::multi_producer("streamcp_rpc", 1 << 20);
+        let mut producer = TCache::multi_producer(TCacheId::IncomingRpc, 1 << 20);
         let mut turns = 0;
         while store.checkpoint_in_flight() {
             store.file_io(|_| [0u8; 4], &mut producer, &mut |_: IoEvent| {}).unwrap();

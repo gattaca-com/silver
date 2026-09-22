@@ -7,12 +7,13 @@ use super::{
     super::{Producer, TCacheProducer},
     *,
 };
-use crate::TCache;
+use crate::{TCache, TCacheId, TCacheReader, TReadMode};
 
 #[test]
 fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_bytes() {
-    let mut producer = TCache::producer("", 1 << 16);
-    let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let mut consumer =
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
     let reference = producer
         .uninitialized_sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, 3, 5)
         .unwrap();
@@ -47,8 +48,9 @@ fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_b
 
 #[test]
 fn closing_a_deferred_reservation_denies_initialization_and_validation() {
-    let mut producer = TCache::producer("", 1 << 16);
-    let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let mut consumer =
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
     let reference = producer
         .uninitialized_sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, 3, 0)
         .unwrap();
@@ -67,14 +69,16 @@ fn closing_a_deferred_reservation_denies_initialization_and_validation() {
 
 struct Harness {
     owner: Option<SubReservation>,
-    consumer: Box<RandomAccessConsumer>,
+    // Boxed: pins point at it and the harness moves after acquiring.
+    consumer: Box<TCacheReader>,
     producer: Producer,
 }
 
 impl Harness {
     fn new(parts: usize) -> Self {
-        let mut producer = TCache::producer("", 1 << 17);
-        let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
+        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 17);
+        let mut consumer =
+            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
         let reference = producer
             .sub_reservation(SubLayout { parts, first_len: 4, second_len: 2 }, b"prefix", b"middle")
             .unwrap();
@@ -102,11 +106,12 @@ impl Harness {
 
 #[test]
 fn producer_returns_an_unpinned_descriptor() {
-    let mut producer = TCache::producer("", 1 << 17);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 17);
     let reference = producer
         .sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"prefix", b"middle")
         .unwrap();
-    let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
+    let mut consumer =
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     drop(reference.acquire(&mut consumer).unwrap());
     drop(reference.acquire(&mut consumer).unwrap());
 
@@ -121,8 +126,9 @@ fn producer_returns_an_unpinned_descriptor() {
 
 #[test]
 fn producer_views_stage_cancel_and_finish_without_local_pins() {
-    let mut producer = TCache::producer("", 1 << 16);
-    let mut consumer = Box::new(producer.cache_ref().retained_random_access("").unwrap());
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let mut consumer =
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
     let reference = producer
         .sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"prefix", b"middle")
         .unwrap();
@@ -150,19 +156,19 @@ fn producer_views_stage_cancel_and_finish_without_local_pins() {
     view.close();
     assert!(matches!(reference.acquire(&mut consumer), Err(SubReservationError::Closed)));
 
-    let other = TCache::producer("", 1 << 16);
+    let other = TCache::producer(TCacheId::SszGossip, 1 << 16);
     assert!(matches!(
         other.view_sub_reservation(reference),
         Err(SubReservationError::WrongProducer)
     ));
     assert!(matches!(other.read_buffer(read), Err(super::super::Error::UnexpectedCacheRef)));
-    consumer.advance_retention(producer.next_seq());
+    consumer.advance_retention(TCacheId::DataColumns, producer.next_seq());
     for _ in 0..32 {
         let mut write = producer.reserve(4096, false).unwrap();
         write.buffer().unwrap().fill(0xcc);
         write.flush().unwrap();
         drop(write);
-        consumer.advance_retention(producer.next_seq());
+        consumer.advance_retention(TCacheId::DataColumns, producer.next_seq());
     }
     assert!(matches!(producer.view_sub_reservation(reference), Err(SubReservationError::Stale)));
     assert!(producer.read_buffer(read).is_err());
@@ -170,7 +176,7 @@ fn producer_views_stage_cancel_and_finish_without_local_pins() {
 
 #[test]
 fn ordinary_reservations_commit_or_abort() {
-    let mut producer = TCache::producer("", 1 << 16);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
     assert!(producer.reserve(usize::MAX, false).is_none());
     let read = {
         let mut write = producer.reserve(4, false).unwrap();
@@ -192,7 +198,10 @@ fn ordinary_reservations_commit_or_abort() {
 fn writing_does_not_publish_and_completion_excludes_the_sub_header() {
     let mut h = Harness::new(2);
     let read = h.owner().reference().read();
-    assert!(matches!(read.len(), Err(super::super::Error::Incomplete)));
+    assert!(matches!(
+        h.producer.cache_ref().read(read.seq()),
+        Err(super::super::Error::Incomplete)
+    ));
     let pending = h.stage(1);
     assert!(h.owner().acquired().ranges(1).is_none());
     assert_eq!(h.owner().acquired().ready(), 0);
@@ -260,9 +269,10 @@ fn closure_preserves_existing_ranges_and_prevents_new_work() {
 #[test]
 fn closing_an_incomplete_record_unblocks_linear_consumers() {
     for drop_owner in [false, true] {
-        let mut producer = TCache::producer("", 4096);
+        let mut producer = TCache::producer(TCacheId::DataColumns, 4096);
         let mut linear = producer.cache_ref().consumer("").unwrap();
-        let mut consumer = Box::new(producer.cache_ref().strict_random_access("", true).unwrap());
+        let mut consumer =
+            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
         let reference = producer
             .sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"", b"")
             .unwrap();
@@ -276,7 +286,7 @@ fn closing_an_incomplete_record_unblocks_linear_consumers() {
         drop(owner);
         assert_eq!(linear.read().unwrap().0, b"after");
         linear.free();
-        assert_eq!(reference.read().len().unwrap(), 0);
+        assert_eq!(producer.cache_ref().read(reference.read().seq()).unwrap().0.len(), 0);
         assert!(matches!(
             producer.view_sub_reservation(reference).unwrap().finish(),
             Err(SubReservationError::Closed)
@@ -286,24 +296,24 @@ fn closing_an_incomplete_record_unblocks_linear_consumers() {
 
 #[test]
 fn close_preserves_finished_records_and_their_timestamp() {
-    let mut producer = TCache::producer("", 4096);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 4096);
     let mut linear = producer.cache_ref().consumer("").unwrap();
     let reference = producer
         .sub_reservation(SubLayout { parts: 0, first_len: 4, second_len: 2 }, b"full", b"")
         .unwrap();
-    let timestamp = reference.read().cache_ts().unwrap();
+    let timestamp = producer.cache_ref().slot_ts(reference.read().seq()).unwrap();
     let view = producer.view_sub_reservation(reference).unwrap();
     view.finish().unwrap();
     view.finish().unwrap();
     view.close();
     view.close();
-    assert_eq!(reference.read().cache_ts().unwrap(), timestamp);
+    assert_eq!(producer.cache_ref().slot_ts(reference.read().seq()).unwrap(), timestamp);
     assert_eq!(linear.read().unwrap().0, b"full");
 }
 
 #[test]
 fn competing_finish_and_close_do_not_reopen_skipped_records() {
-    let mut producer = TCache::producer("", 1 << 17);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 17);
     for _ in 0..128 {
         let reference = producer
             .sub_reservation(SubLayout { parts: 0, first_len: 4, second_len: 2 }, b"full", b"")
@@ -320,11 +330,17 @@ fn competing_finish_and_close_do_not_reopen_skipped_records() {
             producer.view_sub_reservation(reference).unwrap().close();
             worker.join().unwrap()
         });
-        assert_eq!(reference.read().len().unwrap(), if finished { 4 } else { 0 });
+        assert_eq!(
+            producer.cache_ref().read(reference.read().seq()).unwrap().0.len(),
+            if finished { 4 } else { 0 }
+        );
         let view = producer.view_sub_reservation(reference).unwrap();
         assert!(matches!(view.finish(), Err(SubReservationError::Closed)));
         view.close();
-        assert_eq!(reference.read().len().unwrap(), if finished { 4 } else { 0 });
+        assert_eq!(
+            producer.cache_ref().read(reference.read().seq()).unwrap().0.len(),
+            if finished { 4 } else { 0 }
+        );
     }
 }
 
@@ -339,7 +355,8 @@ fn cross_thread_writers_claim_once_and_validator_reads_published_input() {
         for _ in 0..3 {
             let barrier = barrier.clone();
             threads.push(scope.spawn(move || {
-                let mut consumer = Box::new(cache.strict_random_access("", true).unwrap());
+                let mut consumer =
+                    Box::new(TCacheReader::single(cache, "", TReadMode::Strict).unwrap());
                 let acquired = reference.acquire(&mut consumer).unwrap();
                 barrier.wait();
                 let mut pending = Vec::new();
@@ -377,7 +394,8 @@ fn cross_thread_writers_claim_once_and_validator_reads_published_input() {
 #[test]
 fn zero_and_128_parts_finish_without_shifting_overflow() {
     let h = Harness::new(0);
-    assert_eq!(h.owner().finish().unwrap().len().unwrap(), 12);
+    let finished = h.owner().finish().unwrap();
+    assert_eq!(h.producer.cache_ref().read(finished.seq()).unwrap().0.len(), 12);
     let mut h = Harness::new(128);
     for part in 0..128 {
         let pending = h.stage(part);
@@ -392,17 +410,19 @@ fn zero_and_128_parts_finish_without_shifting_overflow() {
 fn wrong_cache_and_non_strict_consumers_are_rejected() {
     let h = Harness::new(1);
     let reference = h.owner().reference();
-    let mut non_strict = h.producer.cache_ref().random_access("", true).unwrap();
+    let mut non_strict =
+        Box::new(TCacheReader::single(h.producer.cache_ref(), "", TReadMode::Sliding).unwrap());
     assert!(matches!(reference.acquire(&mut non_strict), Err(SubReservationError::WrongConsumer)));
-    let other = TCache::producer("", 1 << 16);
-    let mut foreign = other.cache_ref().strict_random_access("", true).unwrap();
+    let other = TCache::producer(TCacheId::SszGossip, 1 << 16);
+    let mut foreign =
+        Box::new(TCacheReader::single(other.cache_ref(), "", TReadMode::Strict).unwrap());
     assert!(matches!(reference.acquire(&mut foreign), Err(SubReservationError::WrongConsumer)));
     assert_eq!(size_of::<super::super::Slot>(), 32);
 }
 
 #[test]
 fn invalid_layouts_do_not_allocate() {
-    let mut producer = TCache::producer("", 1 << 17);
+    let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 17);
     let seq = producer.next_seq();
     for layout in [
         SubLayout { parts: 129, first_len: 1, second_len: 1 },

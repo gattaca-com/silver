@@ -13,8 +13,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_beacon_state_data::SpecConfig;
 use silver_common::{
-    Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheProducer, TConsumer,
-    TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
+    Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer,
+    TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode, ssz_view::METADATA_SIZE,
 };
 use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
 use silver_control::{Controller, sync_engine::SyncEngine};
@@ -59,9 +59,9 @@ pub struct PublisherStack {
     /// Producer for inbound RPC payload bytes (the network tile reserves
     /// here as it decompresses chunks; the resulting `TCacheRead` rides
     /// inside `RpcResponse::BeaconBlock`/`DataColumnSidecar`). Exposed for
-    /// the multipart-RPC tests that need a `TRandomAccess` peer of this
+    /// the multipart-RPC tests that need a `TCacheReader` peer of this
     /// cache; production-time the field is owned by `Context.rpc_producer`.
-    pub rpc_in_ra: TRandomAccess,
+    pub rpc_in_ra: TCacheReader,
     /// Producer for outbound RPC payload bytes — multipart-RPC tests
     /// reserve here, write SSZ, and reference the resulting `TCacheRead`
     /// in `RpcOutbound::Response(BeaconBlock { ssz })`. The network tile
@@ -78,7 +78,7 @@ pub struct EchoStack {
     pub peer_id: PeerId,
     pub spine: SilverSpine,
     pub network: NetworkTile,
-    pub ssz_consumer: TRandomAccess,
+    pub ssz_consumer: TCacheReader,
     pub controller: Controller,
     pub network_adapter: SpineAdapter<SilverSpine>,
     pub controller_adapter: SpineAdapter<SilverSpine>,
@@ -120,7 +120,7 @@ pub struct EchoNetworkHalf {
 /// `NewGossipMsg` onto the spine.
 pub struct EchoCompressionHalf {
     pub stats_adapter: SpineAdapter<SilverSpine>,
-    pub ssz_consumer: TRandomAccess,
+    pub ssz_consumer: TCacheReader,
     pub stats: Stats,
 }
 
@@ -159,12 +159,12 @@ struct StackKeepAlive {
     ssz_consumer: Option<TConsumer>,
     // Inbound gossip-bytes cache consumer (kept alive; compression owns the
     // consumer in the echo stack).
-    gossip_in_consumer: Option<TRandomAccess>,
+    gossip_in_consumer: Option<TCacheReader>,
     // Publisher-side dummy RPC caches.
     rpc_in_consumer: Option<TConsumer>,
     rpc_out_producer: Option<TProducer>,
-    // Gossip-out random-access consumer — alive on publisher side.
-    gossip_out_ra: Option<TRandomAccess>,
+    // Gossip-out reader — alive on publisher side.
+    gossip_out_ra: Option<TCacheReader>,
 }
 
 /// Build a keypair deterministically from a single-byte salt — makes test
@@ -198,54 +198,49 @@ impl PublisherStack {
 
         // TCaches needed by the network tile on the publisher side.
         // gossip_in: network writes raw inbound gossip here; nobody reads.
-        let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().random_access("e2e", true).ok();
-        let gossip_in_consumer_2 =
-            gossip_in_producer.cache_ref().random_access("e2e_2", true).unwrap();
+        let gossip_in_producer = TCache::producer(TCacheId::IncomingGossip, TCACHE_SIZE);
+        let gossip_in_consumer =
+            TCacheReader::single(gossip_in_producer.cache_ref(), "e2e", TReadMode::Sliding).ok();
 
-        // gossip_out: network reads outbound bytes from here via random-access.
+        // gossip_out: network reads outbound bytes from here via its reader.
         // The publisher's mcache TCache IS the gossip_out source — same cache.
-        let mcache_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
+        let mcache_producer = TCache::producer(TCacheId::OutgoingGossip, TCACHE_SIZE);
         let gossip_out_ra =
-            mcache_producer.cache_ref().random_access("e2e", true).expect("random_access");
+            TCacheReader::single(mcache_producer.cache_ref(), "e2e", TReadMode::Sliding)
+                .expect("random_access");
 
         // rpc_in: network writes inbound RPC payload bytes here; tests
         // (multipart-RPC) read via `rpc_in_ra`. Regular consumer also
-        // attached for keep-alive plus future controller use.
-        let rpc_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_in_ctl =
-            rpc_in_producer.cache_ref().random_access("ctl_e2e", true).expect("ctl rpc ra");
+        // attached for keep-alive.
+        let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, TCACHE_SIZE);
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
         let rpc_in_ra =
-            rpc_in_producer.cache_ref().random_access("e2e", true).expect("rpc_in random_access");
+            TCacheReader::single(rpc_in_producer.cache_ref(), "e2e", TReadMode::Sliding)
+                .expect("rpc_in random_access");
         // rpc_out: tests reserve here to inject outbound BeaconBlock
-        // chunks; the network tile reads via the random-access handle
-        // wired into `Context.rpc_consumer`.
-        let rpc_out_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_out_ra =
-            rpc_out_producer.cache_ref().random_access("e2e", true).expect("random_access");
+        // chunks; the network tile reads via its reader.
+        let rpc_out_producer = TCache::producer(TCacheId::OutgoingRpc, TCACHE_SIZE);
 
-        // gossip_out handle given to network.
-        let gossip_out_ra_for_network =
-            mcache_producer.cache_ref().random_access("e2e", true).expect("random_access");
+        let cluster_in_producer = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
+        let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, 1 << 12);
 
-        let cluster_in_producer = TCache::producer("e2e_cluster_in", 1 << 12);
-        let cluster_in_consumer = cluster_in_producer
-            .cache_ref()
-            .strict_random_access("e2e_control_cluster_in", true)
-            .expect("cluster inbound random access");
-        let cluster_out_producer = TCache::producer("e2e_cluster_out", 1 << 12);
-        let cluster_out_consumer = cluster_out_producer
-            .cache_ref()
-            .strict_random_access("e2e_network_cluster_out", true)
-            .expect("cluster outbound random access");
+        // Dummies the controller and gossip handler read from or write to.
+        let ssz_producer = TCache::producer(TCacheId::SszGossip, 32);
+        let protobuf_producer = TCache::producer(TCacheId::OutgoingGossip, 32);
+        let el_producer = TCache::producer(TCacheId::ElDataColumns, 32);
+
+        let network_tcaches = TCacheTable::from_iter(
+            [&mcache_producer, &rpc_out_producer, &cluster_out_producer].map(|p| p.cache_ref()),
+        );
+        let gossip_tcaches =
+            TCacheTable::from_iter([gossip_in_producer.cache_ref(), protobuf_producer.cache_ref()]);
+        let controller_tcaches = TCacheTable::from_iter(
+            [&rpc_in_producer, &el_producer, &cluster_in_producer].map(|p| p.cache_ref()),
+        );
 
         let context = Context {
-            data_columns_consumer: None,
             gossip_producer: gossip_in_producer,
-            gossip_consumer: gossip_out_ra_for_network,
             rpc_producer: rpc_in_producer,
-            rpc_consumer: rpc_out_ra,
             // Build a fully-populated `ProtoIdentify` via the `Identify`
             // -> protobuf conversion: a default-constructed protobuf has
             // every field as `None`, including `protocolVersion`, which
@@ -253,7 +248,8 @@ impl PublisherStack {
             identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
             cluster_nodes: None,
             cluster_inbound_producer: cluster_in_producer,
-            cluster_outbound_consumer: cluster_out_consumer,
+            partial_columns: false,
+            reader: TCacheReader::new(network_tcaches),
         };
 
         let discovery = DiscV5::new(
@@ -265,13 +261,14 @@ impl PublisherStack {
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
-        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
+        let mut network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
+        network.open_tcaches().map_err(std::io::Error::other)?;
 
         // Tests don't subscribe to gossip topics, so PeerManager runs with
         // an empty subscription set — meshes stay empty, score deltas
         // exercise only the connection / RPC paths.
-        let controller = Controller::new(
+        let mut controller = Controller::new(
             PeerManager::new(
                 PeerId::default(),
                 Vec::new(),
@@ -282,26 +279,16 @@ impl PublisherStack {
                 [0u8; METADATA_SIZE],
                 0,
             ),
-            GossipHandler::new(
-                gossip_in_consumer_2,
-                TCache::producer("g_ssz", 32),
-                TCache::producer("g_proto", 32),
-                None,
-            )
-            .unwrap(),
-            TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
-            rpc_in_ctl,
-            TCache::producer("ctl_el_in_dummy_a", 32)
-                .cache_ref()
-                .random_access("ctl_stack_el", true)
-                .expect("ctl el ra"),
+            GossipHandler::new(gossip_tcaches, ssz_producer, protobuf_producer, None).unwrap(),
+            TCache::multi_producer(TCacheId::OutgoingRpc, 32), // dummpy rpc out
+            controller_tcaches,
             cluster_out_producer,
-            cluster_in_consumer,
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
         )
         .map_err(std::io::Error::other)?;
+        controller.open_tcaches().map_err(std::io::Error::other)?;
 
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
@@ -350,45 +337,43 @@ impl EchoStack {
         });
 
         // Inbound gossip raw bytes: network writes, compression consumes.
-        let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer =
-            gossip_in_producer.cache_ref().random_access("e2e", true).expect("consumer");
+        let gossip_in_producer = TCache::producer(TCacheId::IncomingGossip, TCACHE_SIZE);
 
         // SSZ output: compression writes, stats-sink reads.
-        let ssz_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let ssz_consumer = ssz_producer.cache_ref().random_access("e2e", true).expect("consumer");
+        let ssz_producer = TCache::producer(TCacheId::SszGossip, TCACHE_SIZE);
+        let ssz_consumer =
+            TCacheReader::single(ssz_producer.cache_ref(), "e2e", TReadMode::Sliding)
+                .expect("consumer");
 
-        // Protobuf mcache: compression writes; network reads via random_access
+        // Protobuf mcache: compression writes; network reads via its reader
         // when re-forwarding. Not exercised in one-way test but wiring must
         // exist.
-        let protobuf_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let protobuf_ra_for_network =
-            protobuf_producer.cache_ref().random_access("e2e", true).expect("random_access");
+        let protobuf_producer = TCache::producer(TCacheId::OutgoingGossip, TCACHE_SIZE);
 
         // RPC caches: dummy.
-        let rpc_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
+        let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, TCACHE_SIZE);
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
-        let rpc_out_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_out_ra =
-            rpc_out_producer.cache_ref().random_access("e2e", true).expect("random_access");
+        let rpc_out_producer = TCache::producer(TCacheId::OutgoingRpc, TCACHE_SIZE);
 
-        let cluster_in_producer = TCache::producer("e2e_cluster_in", 1 << 12);
-        let cluster_in_consumer = cluster_in_producer
-            .cache_ref()
-            .strict_random_access("e2e_control_cluster_in", true)
-            .expect("cluster inbound random access");
-        let cluster_out_producer = TCache::producer("e2e_cluster_out", 1 << 12);
-        let cluster_out_consumer = cluster_out_producer
-            .cache_ref()
-            .strict_random_access("e2e_network_cluster_out", true)
-            .expect("cluster outbound random access");
+        let cluster_in_producer = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
+        let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, 1 << 12);
+
+        // Dummies the controller reads from.
+        let ctl_rpc_producer = TCache::producer(TCacheId::IncomingRpc, 32);
+        let el_producer = TCache::producer(TCacheId::ElDataColumns, 32);
+
+        let network_tcaches = TCacheTable::from_iter(
+            [&protobuf_producer, &rpc_out_producer, &cluster_out_producer].map(|p| p.cache_ref()),
+        );
+        let gossip_tcaches =
+            TCacheTable::from_iter([gossip_in_producer.cache_ref(), protobuf_producer.cache_ref()]);
+        let controller_tcaches = TCacheTable::from_iter(
+            [&ctl_rpc_producer, &el_producer, &cluster_in_producer].map(|p| p.cache_ref()),
+        );
 
         let context = Context {
-            data_columns_consumer: None,
             gossip_producer: gossip_in_producer,
-            gossip_consumer: protobuf_ra_for_network,
             rpc_producer: rpc_in_producer,
-            rpc_consumer: rpc_out_ra,
             // Build a fully-populated `ProtoIdentify` via the `Identify`
             // -> protobuf conversion: a default-constructed protobuf has
             // every field as `None`, including `protocolVersion`, which
@@ -396,7 +381,8 @@ impl EchoStack {
             identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
             cluster_nodes: None,
             cluster_inbound_producer: cluster_in_producer,
-            cluster_outbound_consumer: cluster_out_consumer,
+            partial_columns: false,
+            reader: TCacheReader::new(network_tcaches),
         };
 
         let discovery = DiscV5::new(
@@ -408,14 +394,15 @@ impl EchoStack {
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
-        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
+        let mut network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
+        network.open_tcaches().map_err(std::io::Error::other)?;
 
         let compression =
-            GossipHandler::new(gossip_in_consumer, ssz_producer, protobuf_producer, boot_domain)
+            GossipHandler::new(gossip_tcaches, ssz_producer, protobuf_producer, boot_domain)
                 .map_err(std::io::Error::other)?;
 
-        let controller = Controller::new(
+        let mut controller = Controller::new(
             PeerManager::new(
                 PeerId::default(),
                 Vec::new(),
@@ -427,22 +414,15 @@ impl EchoStack {
                 0,
             ),
             compression,
-            TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
-            TCache::producer("ctl_rpc_in_dummy", 32)
-                .cache_ref()
-                .random_access("ctl_e2e", true)
-                .expect("ctl rpc ra"),
-            TCache::producer("ctl_el_in_dummy", 32)
-                .cache_ref()
-                .random_access("ctl_e2e_el", true)
-                .expect("ctl el ra"),
+            TCache::multi_producer(TCacheId::OutgoingRpc, 32), // dummpy rpc out
+            controller_tcaches,
             cluster_out_producer,
-            cluster_in_consumer,
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
         )
         .map_err(std::io::Error::other)?;
+        controller.open_tcaches().map_err(std::io::Error::other)?;
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);

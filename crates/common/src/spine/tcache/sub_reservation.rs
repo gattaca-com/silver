@@ -5,7 +5,8 @@ use std::{
 };
 
 use super::{
-    AcquiredRange, AcquiredRead, Producer, RandomAccessConsumer, Reservation, Slot, TCacheRead,
+    AcquiredRange, AcquiredRead, Producer, Reservation, Slot, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheRef,
 };
 
 pub(super) const INCOMPLETE: u8 = 2;
@@ -114,7 +115,7 @@ impl SubReservationRef {
         middle_len: usize,
     ) -> Self {
         let read = reservation.read();
-        let cache = read.tcache;
+        let cache = reservation.cache;
         let slot_ptr = unsafe { cache.data_ptr().add(cache.index(read.seq)).cast::<Slot>() };
         // The sole allocator owns this unpublished record during initialization.
         unsafe {
@@ -150,18 +151,24 @@ impl SubReservationRef {
 
     // The caller must hold a pin and have validated this part. Closure does
     // not change the layout or revoke previously acquired, verified bytes.
-    pub(super) unsafe fn acquired_offset(self, part: usize, second: bool) -> usize {
-        let view = SubReservationView { reference: self, _scope: PhantomData };
+    pub(super) unsafe fn acquired_offset(
+        self,
+        cache: TCacheRef,
+        part: usize,
+        second: bool,
+    ) -> usize {
+        let view = SubReservationView { reference: self, cache, _scope: PhantomData };
         view.header().ranges(part)[usize::from(second)].0
     }
 
     pub fn acquire(
         self,
-        consumer: &mut RandomAccessConsumer,
+        reader: &mut TCacheReader,
     ) -> Result<AcquiredSubReservation, SubReservationError> {
-        if !consumer.strict || consumer.cache.cache != self.read.tcache.cache {
-            return Err(SubReservationError::WrongConsumer);
-        }
+        let consumer = reader
+            .get(self.read.id)
+            .filter(|consumer| consumer.strict)
+            .ok_or(SubReservationError::WrongConsumer)?;
         let pin = consumer.acquire_strict(self.read).ok_or(SubReservationError::Stale)?;
         let acquired = AcquiredSubReservation { pin, reference: self, _local: PhantomData };
         if acquired.view().header().closed.load(Ordering::Acquire) {
@@ -218,7 +225,11 @@ pub struct AcquiredSubReservation {
 impl AcquiredSubReservation {
     #[inline]
     fn view(&self) -> SubReservationView<'_> {
-        SubReservationView { reference: self.reference, _scope: PhantomData }
+        SubReservationView {
+            reference: self.reference,
+            cache: self.pin.cache(),
+            _scope: PhantomData,
+        }
     }
 
     #[inline]
@@ -261,6 +272,7 @@ impl AcquiredSubReservation {
 /// this record while the view or one of its write claims remains in use.
 pub struct SubReservationView<'a> {
     reference: SubReservationRef,
+    cache: TCacheRef,
     _scope: PhantomData<&'a *const ()>,
 }
 
@@ -270,20 +282,20 @@ impl<'a> SubReservationView<'a> {
         producer: &'a Producer,
         reference: SubReservationRef,
     ) -> Result<Self, SubReservationError> {
-        if reference.read.tcache.cache != producer.cache.cast() {
+        let cache = producer.cache_ref();
+        if reference.read.id != cache.id() {
             return Err(SubReservationError::WrongProducer);
         }
-        if !reference.read.tcache.check_seq(reference.read.seq) {
+        if !cache.check_seq(reference.read.seq) {
             return Err(SubReservationError::Stale);
         }
-        Ok(Self { reference, _scope: PhantomData })
+        Ok(Self { reference, cache, _scope: PhantomData })
     }
 
     #[inline]
     fn data(&self) -> *mut u8 {
-        let read = self.reference.read;
-        let slot = read.tcache.slot_at(read.tcache.index(read.seq));
-        unsafe { read.tcache.data_ptr().add(slot.data_start as usize) }
+        let slot = self.cache.slot_at(self.cache.index(self.reference.read.seq));
+        unsafe { self.cache.data_ptr().add(slot.data_start as usize) }
     }
 
     #[inline]
@@ -386,7 +398,7 @@ impl<'a> SubReservationView<'a> {
             return Err(SubReservationError::Incomplete);
         }
         let read = self.reference.read;
-        match read.tcache.complete_sub_reservation(read.seq, true) {
+        match self.cache.complete_sub_reservation(read.seq, true) {
             Ok(()) | Err(0) => {}
             Err(_) => return Err(SubReservationError::Closed),
         }
@@ -395,13 +407,11 @@ impl<'a> SubReservationView<'a> {
 
     pub fn close(&self) {
         self.header().closed.store(true, Ordering::Release);
-        let read = self.reference.read;
-        let _ = read.tcache.complete_sub_reservation(read.seq, false);
+        let _ = self.cache.complete_sub_reservation(self.reference.read.seq, false);
     }
 
     pub fn cancel(&self, pending: PendingSubReservation) -> Result<bool, SubReservationError> {
-        if pending.reservation.read.tcache.cache != self.reference.read.tcache.cache ||
-            pending.reservation.read.seq != self.reference.read.seq ||
+        if pending.reservation.read != self.reference.read ||
             pending.part >= self.header().parts as usize
         {
             return Err(SubReservationError::Stale);
@@ -492,11 +502,8 @@ impl PendingSubReservation {
         self.part
     }
 
-    pub fn acquire(
-        self,
-        consumer: &mut RandomAccessConsumer,
-    ) -> Result<SubValidation, SubReservationError> {
-        let acquired = self.reservation.acquire(consumer)?;
+    pub fn acquire(self, reader: &mut TCacheReader) -> Result<SubValidation, SubReservationError> {
+        let acquired = self.reservation.acquire(reader)?;
         if acquired.view().header().initialization.load(Ordering::Acquire) != INITIALIZED {
             return Err(SubReservationError::Incomplete);
         }
@@ -515,8 +522,8 @@ impl PendingSubReservation {
 
     /// Cancels queued work only; an active validator owns its bytes until it
     /// finishes.
-    pub fn cancel(self, consumer: &mut RandomAccessConsumer) -> Result<bool, SubReservationError> {
-        let acquired = self.reservation.acquire(consumer)?;
+    pub fn cancel(self, reader: &mut TCacheReader) -> Result<bool, SubReservationError> {
+        let acquired = self.reservation.acquire(reader)?;
         acquired.view().cancel(self)
     }
 }

@@ -5,7 +5,7 @@ use fxhash::FxHashMap;
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic,
     LocalAttestationFailure, LocalAttestationResult, MessageId, Nanos, PeerEvent, SilverSpine,
-    SilverSpineProducers, TProducer, TRandomAccess, ssz_view::SingleAttestationView,
+    SilverSpineProducers, TCacheReader, TProducer, ssz_view::SingleAttestationView,
 };
 use silver_gossip::GossipHandler;
 
@@ -86,9 +86,6 @@ pub(super) struct AttestationClusterHandler {
     /// Encoded Raft messages are reserved here before `ClusterMsgOut` is
     /// published to the network tile.
     outbound_producer: TProducer,
-    /// Acquires encoded Raft messages referenced by `ClusterMsgIn` while the
-    /// cluster state machine processes them.
-    inbound_consumer: TRandomAccess,
     cluster: Option<AttestationCluster>,
     local_locks: AttestationLockStore,
     admission: AttestationAdmission,
@@ -101,7 +98,6 @@ pub(super) struct AttestationClusterHandler {
 impl AttestationClusterHandler {
     pub(super) fn new(
         outbound_producer: TProducer,
-        inbound_consumer: TRandomAccess,
         config: Option<AttestationClusterConfig>,
         now: Instant,
     ) -> Result<Self, ClusterError> {
@@ -109,7 +105,6 @@ impl AttestationClusterHandler {
 
         Ok(Self {
             outbound_producer,
-            inbound_consumer,
             cluster,
             local_locks: AttestationLockStore::default(),
             admission: AttestationAdmission::new(),
@@ -161,10 +156,6 @@ impl AttestationClusterHandler {
                 producers,
             );
         }
-    }
-
-    pub(super) fn free(&mut self) {
-        self.inbound_consumer.free();
     }
 
     /// Complete locally-originated requests only once Beacon State has
@@ -230,9 +221,10 @@ impl AttestationClusterHandler {
         now: Instant,
         adapter: &mut SpineAdapter<SilverSpine>,
         gossip_handler: &mut GossipHandler,
+        inbound_consumer: &mut TCacheReader,
     ) {
         adapter.consume(|message: ClusterIn, _producers| match message {
-            ClusterIn::Msg(message) => self.handle_message(message),
+            ClusterIn::Msg(message) => self.handle_message(message, inbound_consumer),
             ClusterIn::NodeUnreachable(id) => {
                 if let Some(cluster) = self.cluster.as_mut() {
                     cluster.report_unreachable(id);
@@ -310,8 +302,8 @@ impl AttestationClusterHandler {
         }
     }
 
-    fn handle_message(&mut self, inbound: ClusterMsgIn) {
-        let Some(acquired) = self.inbound_consumer.acquire_strict(inbound.data) else {
+    fn handle_message(&mut self, inbound: ClusterMsgIn, inbound_consumer: &mut TCacheReader) {
+        let Some(acquired) = inbound_consumer.acquire_strict(inbound.data) else {
             tracing::warn!(
                 from = inbound.from,
                 seq = inbound.data.seq(),
@@ -458,21 +450,17 @@ impl AttestationClusterHandler {
 #[cfg(test)]
 mod tests {
     use flux::tile::Tile;
-    use silver_common::{NewGossipMsg, TCache, TCacheProducer, ssz_view::SINGLE_ATT_SIZE};
+    use silver_common::{
+        NewGossipMsg, TCache, TCacheId, TCacheProducer, TCacheTable, ssz_view::SINGLE_ATT_SIZE,
+    };
     use silver_gossip::GossipHandlerEvent;
     use tempfile::TempDir;
 
     use super::*;
 
     fn handler(now: Instant) -> AttestationClusterHandler {
-        let inbound = TCache::producer("test_attestation_cluster_in", 1 << 12);
-        let inbound_consumer = inbound
-            .cache_ref()
-            .strict_random_access("test_attestation_cluster_handler", true)
-            .unwrap();
         AttestationClusterHandler::new(
-            TCache::producer("test_attestation_cluster_out", 1 << 12),
-            inbound_consumer,
+            TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,
             now,
         )
@@ -500,14 +488,16 @@ mod tests {
             let mut adapter = SpineAdapter::connect_tile(&TestTile, &mut spine);
             // The consumer attaches at the current head on its first read.
             adapter.consume(|_: BeaconApiResponse, _| panic!("unexpected initial response"));
-            let incoming = TCache::producer("standalone_gossip_in", 1 << 12);
-            let gossip = GossipHandler::new(
-                incoming.cache_ref().random_access("standalone_gossip", true).unwrap(),
-                TCache::producer("standalone_gossip_ssz", 1 << 12),
-                TCache::producer("standalone_gossip_protobuf", 1 << 12),
+            let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+            let protobuf = TCache::producer(TCacheId::OutgoingGossip, 1 << 12);
+            let mut gossip = GossipHandler::new(
+                TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
+                TCache::producer(TCacheId::SszGossip, 1 << 12),
+                protobuf,
                 Some(silver_common::GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
             )
             .unwrap();
+            gossip.open_tcaches().unwrap();
             Self { handler: handler(now), gossip, adapter, _spine: spine, _base: base }
         }
 

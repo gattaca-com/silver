@@ -373,7 +373,7 @@ impl BeaconStateTile {
         // arrival order without O(n) front-removes or another allocation.
         self.vote_batch.reverse();
         while let Some(m) = self.vote_batch.pop() {
-            let acquired = self.gossip_consumer.acquire(m.ssz);
+            let acquired = self.reader.acquire(m.ssz);
             let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else {
                 Self::reject_local_gossip(&m, producers);
                 continue;
@@ -1211,7 +1211,7 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) -> bool {
-        let acquired = self.gossip_consumer.acquire(read);
+        let acquired = self.reader.acquire(read);
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
 
         let feedback = match m.topic {

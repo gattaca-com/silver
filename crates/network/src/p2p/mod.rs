@@ -370,7 +370,7 @@ impl P2p {
     }
 
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
-        let result = match context.gossip_consumer.acquire_strict(msg.into()) {
+        let result = match context.reader.acquire_strict(msg.into()) {
             Some(acquired) => match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
                 Some(peer) => peer.send_gossip(acquired, &mut self.rpc_codec_pool),
                 None => SendResult::UnknownPeer,
@@ -410,7 +410,7 @@ impl P2p {
         let result = match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
             Some(peer) => {
                 tracing::debug!(protocol=?msg.protocol(), peer=msg.peer_id(), "enqueue outbound rpc request");
-                let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.rpc_consumer));
+                let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.reader));
                 peer.send_rpc(acquired_msg)
             }
             None => SendResult::UnknownPeer,
@@ -425,7 +425,7 @@ impl P2p {
             .cluster_peer(msg.to)
             .and_then(|conn| self.peers.get_mut(&ConnectionHandle(conn)))
         {
-            Some(peer) => match context.cluster_outbound_consumer.acquire_strict(msg.data) {
+            Some(peer) => match context.reader.acquire_strict(msg.data) {
                 Some(acquired) => peer.send_cluster(acquired, &mut self.rpc_codec_pool),
                 None => SendResult::Dropped(None),
             },

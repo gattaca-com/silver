@@ -1,8 +1,8 @@
 use std::{io::Write, ops::Range, time::Instant};
 
 use super::{
-    AcquiredRange, AcquiredRead, Producer, RandomAccessConsumer, SubReservationRef, TCacheProducer,
-    TCacheRead,
+    AcquiredRange, AcquiredRead, Producer, SubReservationRef, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader,
 };
 use crate::MAX_GOSSIP_FRAME_SIZE;
 
@@ -93,7 +93,7 @@ impl CacheFrameRef {
                     (0u64, None, 0, offset, length)
                 }
                 CacheSegment::Gossip { read, offset, length } => {
-                    if read.tcache.cache != cache.cache {
+                    if read.id != cache.id() {
                         return Err(CacheFrameError::InvalidDescriptor);
                     }
                     (1, Some(read), 0, offset, length)
@@ -121,8 +121,7 @@ impl CacheFrameRef {
             let start = HEADER_BYTES + index * SEGMENT_BYTES;
             let entry = &mut buffer[start..start + SEGMENT_BYTES];
             entry[..8].copy_from_slice(&kind.to_le_bytes());
-            entry[8..16]
-                .copy_from_slice(&read.map_or(0, |r| r.tcache.cache as usize as u64).to_le_bytes());
+            entry[8..16].copy_from_slice(&read.map_or(0, |r| r.id as u64).to_le_bytes());
             entry[16..24].copy_from_slice(&read.map_or(0, |r| r.seq).to_le_bytes());
             entry[24..32].copy_from_slice(&metadata.to_le_bytes());
             entry[32..36].copy_from_slice(&(offset as u32).to_le_bytes());
@@ -143,15 +142,16 @@ impl CacheFrameRef {
 
     pub fn acquire(
         self,
-        consumer: &mut RandomAccessConsumer,
+        reader: &mut TCacheReader,
         now: Instant,
     ) -> Result<CacheFrameView, CacheFrameError> {
         if now >= self.expires {
             return Err(CacheFrameError::Expired);
         }
-        if !consumer.is_strict() || consumer.cache.cache != self.descriptor.tcache.cache {
-            return Err(CacheFrameError::InvalidDescriptor);
-        }
+        let consumer = reader
+            .get(self.descriptor.id)
+            .filter(|consumer| consumer.is_strict())
+            .ok_or(CacheFrameError::InvalidDescriptor)?;
         let read = consumer.acquire_strict(self.descriptor).ok_or(CacheFrameError::Stale)?;
         let buffer = read.buffer().map_err(|_| CacheFrameError::Stale)?.0;
         if buffer.len() < HEADER_BYTES || buffer[..8] != MAGIC {
@@ -227,12 +227,8 @@ impl CacheFrameView {
         self.read.with_range(0, self.descriptor_len()).expect("acquired descriptor")
     }
 
-    pub fn acquire_segments(
-        self,
-        gossip: &mut RandomAccessConsumer,
-        columns: Option<&mut RandomAccessConsumer>,
-    ) -> Option<AcquiredCacheFrame> {
-        AcquiredCacheFrame::new(self, gossip, columns)
+    pub fn acquire_segments(self, reader: &mut TCacheReader) -> Option<AcquiredCacheFrame> {
+        AcquiredCacheFrame::new(self, reader)
     }
 
     pub fn segments(&self) -> impl ExactSizeIterator<Item = CacheFrameSegment> + '_ {
@@ -278,27 +274,16 @@ impl CacheFrameSegment {
         })
     }
 
-    pub fn acquire(
-        &self,
-        gossip: &mut RandomAccessConsumer,
-        columns: Option<&mut RandomAccessConsumer>,
-    ) -> Option<AcquiredRange> {
-        let consumer = match self.kind {
-            1 => gossip,
-            2 | 3 => columns?,
-            _ => return None,
-        };
-        if !consumer.is_strict() ||
-            consumer.cache.cache as usize as u64 != self.cache ||
-            !self.seq.is_multiple_of(super::ALIGN as u64)
-        {
+    pub fn acquire(&self, reader: &mut TCacheReader) -> Option<AcquiredRange> {
+        if !matches!(self.kind, 1..=3) || !self.seq.is_multiple_of(super::ALIGN as u64) {
             return None;
         }
-        let read = TCacheRead { tcache: consumer.cache, seq: self.seq };
+        let consumer = reader.get(TCacheId::from_index(self.cache)?).filter(|c| c.is_strict())?;
+        let read = TCacheRead { id: consumer.id(), seq: self.seq };
         if self.kind == 3 {
             let reference =
                 SubReservationRef { read, header_bytes: (self.metadata >> 32) as usize };
-            let acquired = reference.acquire(consumer).ok()?;
+            let acquired = reference.acquire(reader).ok()?;
             let [first, second] = acquired.ranges(((self.metadata as u32) >> 1) as usize)?;
             let range = if self.metadata & 1 == 0 { first } else { second };
             range.slice(self.offset, self.length)

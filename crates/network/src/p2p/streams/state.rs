@@ -3,7 +3,7 @@ use std::time::Instant;
 use buffa::Message;
 use silver_common::{
     P2pStreamId, RpcInbound, RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound,
-    StreamProtocol, encode_observed_addr,
+    StreamProtocol, TCacheId, TProducer, encode_observed_addr,
     rpc_rate_limit::{RpcRateLimit, RpcRateLimitSet},
 };
 
@@ -65,9 +65,10 @@ fn admit_inbound_rpc(
     stream_id: P2pStreamId,
     request: &RpcRequest,
     now: Instant,
+    rpc_in: &TProducer,
 ) -> InboundRpcAdmission {
     let protocol = request.protocol();
-    let tokens = request.rate_limit_tokens().unwrap_or(1);
+    let tokens = request.rate_limit_tokens(rpc_in).unwrap_or(1);
     match limits.admit_inbound(protocol, tokens, now) {
         RpcRateLimit::Allowed => InboundRpcAdmission::Admit,
         RpcRateLimit::TooLarge | RpcRateLimit::TooSoon => {
@@ -265,8 +266,8 @@ impl StreamState {
                                         GossipWriteState::Announcing {
                                             written: 0,
                                             partial_columns: context
-                                                .data_columns_consumer
-                                                .is_some(),
+                                                .reader
+                                                .is_open(TCacheId::DataColumns),
                                         }
                                     } else {
                                         GossipWriteState::Idle
@@ -313,6 +314,7 @@ impl StreamState {
                                             *id,
                                             &request,
                                             now,
+                                            &context.rpc_producer,
                                         ) {
                                             InboundRpcAdmission::Admit => {
                                                 emit(NetEvent::RpcInbound(RpcInbound::Request(
@@ -394,7 +396,13 @@ impl StreamState {
                             &mut codec.dec,
                         )? {
                             RpcReadRequest::Complete { msg } => {
-                                match admit_inbound_rpc(inbound_rpc_limits, *id, &msg, now) {
+                                match admit_inbound_rpc(
+                                    inbound_rpc_limits,
+                                    *id,
+                                    &msg,
+                                    now,
+                                    &context.rpc_producer,
+                                ) {
                                     InboundRpcAdmission::Admit => {
                                         emit(NetEvent::RpcInbound(RpcInbound::Request(
                                             RpcRequestInbound { stream_id: *id, request: msg },

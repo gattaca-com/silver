@@ -40,7 +40,7 @@ use std::{
 use flux::{tile::Tile, timing::Nanos};
 use rand::RngCore;
 use silver_common::{
-    GossipTopic, NewGossipMsg, PeerControl, PeerEvent, PeerId, TRandomAccess, test_util::ShmemDir,
+    GossipTopic, NewGossipMsg, PeerControl, PeerEvent, PeerId, TCacheReader, test_util::ShmemDir,
 };
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, LhGossipClient, Stats, keypair_from_seed,
@@ -242,7 +242,7 @@ fn drain_compression_stats(c: &mut EchoCompressionHalf) {
     });
 }
 
-fn record_latency(consumer: &mut TRandomAccess, msg: &NewGossipMsg, stats: &mut Stats) {
+fn record_latency(consumer: &mut TCacheReader, msg: &NewGossipMsg, stats: &mut Stats) {
     let acquired = consumer.acquire(msg.ssz);
     if let Ok((bytes, _)) = acquired.buffer() {
         stats.gossip_decompressed_bytes += bytes.len() as u64;

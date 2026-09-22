@@ -16,7 +16,7 @@ use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
     PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine,
-    cell_store::RetentionEvent,
+    TCacheError, TCacheId, cell_store::RetentionEvent,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -118,9 +118,10 @@ impl NetworkTile {
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
-        if let Some(consumer) = &mut self.inner.context.data_columns_consumer {
+        if self.inner.context.reader.is_open(TCacheId::DataColumns) {
+            let reader = &mut self.inner.context.reader;
             adapter.consume(|event: RetentionEvent, _| {
-                consumer.advance_retention(event.retain_from);
+                reader.advance_retention(TCacheId::DataColumns, event.retain_from);
             });
         }
         adapter.consume(|peer_control: PeerControl, _producers| {
@@ -292,18 +293,28 @@ pub enum Event {
     Discovery(DiscoveryEvent),
 }
 
+impl NetworkTile {
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.inner.context.open_tcaches()
+    }
+}
+
 impl Tile<SilverSpine> for NetworkTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.body(adapter);
     }
 
-    #[cfg(feature = "thread_park")]
     fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
-        const WAKER_TOKEN: Token = Token(3);
-
-        let waker = mio::Waker::new(self.inner.poll.registry(), WAKER_TOKEN)
-            .expect("failed to create network waker");
-        adapter.register_waker(waker);
+        self.open_tcaches().expect("tcache wiring");
+        #[cfg(feature = "thread_park")]
+        {
+            const WAKER_TOKEN: Token = Token(3);
+            let waker = mio::Waker::new(self.inner.poll.registry(), WAKER_TOKEN)
+                .expect("failed to create network waker");
+            adapter.register_waker(waker);
+        }
+        #[cfg(not(feature = "thread_park"))]
+        let _ = adapter;
         true
     }
 
@@ -358,10 +369,6 @@ where
         discovery_addr: SocketAddr,
         discovery: D,
     ) -> Result<Self, Error> {
-        assert!(
-            context.data_columns_consumer.as_ref().is_none_or(|consumer| consumer.is_retained()),
-            "data columns consumer must have a fixed retention boundary"
-        );
         let poll = Poll::new()?;
         let p2p_socket = Socket::new(p2p_addr, &poll, P2P_SOCKET_TOKEN)?;
         let disc_socket = Socket::new(discovery_addr, &poll, DISC_SOCKET_TOKEN)?;
@@ -481,9 +488,7 @@ where
             other => on_event(Event::Discovery(other)),
         });
 
-        self.context.gossip_consumer.free();
-        self.context.rpc_consumer.free();
-        self.context.cluster_outbound_consumer.free();
+        self.context.reader.free();
         did_work
     }
 }

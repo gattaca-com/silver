@@ -1,6 +1,6 @@
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{
-    SilverSpine, TCache,
+    SilverSpine, TCache, TCacheId, TCacheReader, TCacheTable, TReadMode,
     test_util::{ShmemDir, SynthBlock},
 };
 
@@ -14,6 +14,7 @@ impl Tile<SilverSpine> for Endpoint {
 
 struct Rig {
     fetcher: ElBlobFetcher,
+    reader: TCacheReader,
     response: TProducer,
     output: TProducer,
     adapter: SpineAdapter<SilverSpine>,
@@ -23,16 +24,18 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let response = TCache::producer("", 1 << 18);
-        let consumer = response.cache_ref().random_access("", true).unwrap();
+        let response = TCache::producer(TCacheId::IncomingEngineResp, 1 << 18);
+        let mut reader = TCacheReader::new(TCacheTable::from_iter([response.cache_ref()]));
+        reader.open(TCacheId::IncomingEngineResp, "", TReadMode::Sliding).unwrap();
         let dir = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
         let mut adapter = SpineAdapter::connect_tile(&Endpoint, &mut spine);
         adapter.consume(|_: EngineReq, _| {});
         Self {
-            fetcher: ElBlobFetcher::new(consumer, Duration::from_secs(60)),
+            fetcher: ElBlobFetcher::new(Duration::from_secs(60)),
+            reader,
             response,
-            output: TCache::producer("", 1 << 16),
+            output: TCache::producer(TCacheId::IncomingGossip, 1 << 16),
             adapter,
             _spine: spine,
             _dir: dir,
@@ -52,13 +55,16 @@ impl Rig {
     fn response(&mut self, root: BlockRoot, slot: u64) {
         let mut write = self.response.reserve(4, true).unwrap();
         write.write_all(&0u32.to_le_bytes()).unwrap();
-        self.fetcher.handle_response(EngineGetBlobsResp {
-            block_root: root,
-            slot,
-            ok: true,
-            blobs_present: 0,
-            data: write.read(),
-        });
+        self.fetcher.handle_response(
+            EngineGetBlobsResp {
+                block_root: root,
+                slot,
+                ok: true,
+                blobs_present: 0,
+                data: write.read(),
+            },
+            &mut self.reader,
+        );
     }
 
     fn requests(&mut self) -> usize {
@@ -107,7 +113,7 @@ fn response_pins_are_bounded_and_expired_responses_are_released() {
         &mut rig.output,
         &mut rig.adapter.producers,
     );
-    rig.fetcher.free();
+    rig.reader.free();
     assert!(rig.fetcher.responses.is_empty());
     rig.request([99; 32]);
     let Entry::Occupied(mut entry) = rig.fetcher.pending.entry([99; 32]) else { unreachable!() };

@@ -211,7 +211,7 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) -> bool {
-        let acquired = self.rpc_consumer.acquire(read);
+        let acquired = self.reader.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
             return false;
         };

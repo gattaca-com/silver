@@ -26,10 +26,10 @@ use silver_beacon_state::{BeaconStateTile, Feedback, SlotTicker, ssz_hash};
 use silver_beacon_state_data::{
     BeaconBlockHeader, BeaconState, BlobParameters, Checkpoint, SLOTS_PER_EPOCH, SpecConfig,
 };
-use silver_columns::tile::{ColumnConsumers, DataColumnsTile, EfVerdict};
+use silver_columns::tile::{DataColumnsTile, EfVerdict};
 use silver_common::{
-    PayloadValidationStatus, SilverSpine, TCache, TCacheProducer, TCacheRead, TProducer,
-    ssz_view::SignedBeaconBlockView, test_util::ShmemDir,
+    PayloadValidationStatus, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheRead,
+    TCacheTable, TProducer, ssz_view::SignedBeaconBlockView, test_util::ShmemDir,
 };
 
 const HANDLED_TOPICS: &[&str] = &[
@@ -161,29 +161,23 @@ struct ColumnsRig {
 
 impl ColumnsRig {
     fn new(beacon: &BeaconStateTile, spec: SpecConfig) -> Self {
-        let gossip = TCache::producer("ef_columns_gossip", 1 << 24);
-        let consumer = |name| gossip.cache_ref().random_access(name, true).unwrap();
-        let consumers = ColumnConsumers {
-            gossip: consumer("ef_columns_gossip_c"),
-            persist_gossip: consumer("ef_columns_persist_gossip_c"),
-            rpc: consumer("ef_columns_rpc_c"),
-            persist_rpc: consumer("ef_columns_persist_rpc_c"),
-        };
-        let engine = TCache::producer("ef_columns_engine", 1 << 16);
+        let gossip = TCache::producer(TCacheId::SszGossip, 1 << 24);
+        let rpc = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let engine = TCache::producer(TCacheId::IncomingEngineResp, 1 << 16);
         let ticker = SlotTicker::new(
             0,
             Duration::from_millis(spec.slot_duration_ms()),
             Duration::from_secs(4),
         );
-        let tile = DataColumnsTile::new(
-            consumers,
+        let mut tile = DataColumnsTile::new(
+            TCacheTable::from_iter([&gossip, &rpc, &engine].map(|p| p.cache_ref())),
             beacon.reader(),
             u128::MAX,
             Arc::new(spec),
-            engine.cache_ref().random_access("ef_columns_engine_c", true).unwrap(),
-            TCache::producer("ef_columns_el", 1 << 16),
+            TCache::producer(TCacheId::ElDataColumns, 1 << 16),
             ticker,
         );
+        tile.open_tcaches().unwrap();
         let dir = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
         let adapter = SpineAdapter::connect_tile(&tile, &mut spine);

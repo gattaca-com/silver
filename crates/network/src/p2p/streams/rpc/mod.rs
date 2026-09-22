@@ -16,7 +16,7 @@ pub use response_in::RpcReadResponse;
 pub use response_out::RpcWriteResponse;
 use silver_common::{
     P2pStreamId, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseOutbound,
-    StreamProtocol, TRandomAccess, TRead,
+    StreamProtocol, TCacheReader, TRead,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -96,8 +96,8 @@ pub(crate) struct AcquiredRpcResponseOutbound {
     pub(crate) response: AcquiredRpcResponse,
 }
 
-impl From<(RpcOutbound, &mut TRandomAccess)> for AcquiredRpcOutbound {
-    fn from((rpc, consumer): (RpcOutbound, &mut TRandomAccess)) -> Self {
+impl From<(RpcOutbound, &mut TCacheReader)> for AcquiredRpcOutbound {
+    fn from((rpc, consumer): (RpcOutbound, &mut TCacheReader)) -> Self {
         match rpc {
             RpcOutbound::Request(req) => Self::Request(AcquiredRpcRequestOutbound {
                 application_id: req.application_id,
@@ -134,8 +134,8 @@ impl AcquiredRpcResponse {
     }
 }
 
-impl From<(RpcResponse, &mut TRandomAccess)> for AcquiredRpcResponse {
-    fn from((rsp, consumer): (RpcResponse, &mut TRandomAccess)) -> Self {
+impl From<(RpcResponse, &mut TCacheReader)> for AcquiredRpcResponse {
+    fn from((rsp, consumer): (RpcResponse, &mut TCacheReader)) -> Self {
         match rsp {
             RpcResponse::StatusV1(b) => Self::StatusV1(b),
             RpcResponse::StatusV2(b) => Self::StatusV2(b),
@@ -223,8 +223,8 @@ impl AcquiredRpcRequest {
     }
 }
 
-impl From<(RpcRequest, &mut TRandomAccess)> for AcquiredRpcRequest {
-    fn from((req, consumer): (RpcRequest, &mut TRandomAccess)) -> Self {
+impl From<(RpcRequest, &mut TCacheReader)> for AcquiredRpcRequest {
+    fn from((req, consumer): (RpcRequest, &mut TCacheReader)) -> Self {
         match req {
             RpcRequest::StatusV1(b) => Self::StatusV1(b),
             RpcRequest::StatusV2(b) => Self::StatusV2(b),

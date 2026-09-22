@@ -11,7 +11,7 @@ use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound,
     RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead,
+    TCacheReader, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -708,7 +708,7 @@ impl Store {
     #[timed]
     pub(super) fn rpc_request(
         &mut self,
-        rpc_consumer: &mut TRandomAccess,
+        rpc_consumer: &mut TCacheReader,
         request: RpcRequestInbound,
     ) {
         let stream_id = request.stream_id;
@@ -990,7 +990,7 @@ fn ensure_dir(store_dir: &str, name: &str) -> Result<PathBuf, Error> {
 }
 
 fn with_root_request(
-    rpc_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TCacheReader,
     read: TCacheRead,
     check_size: fn(&[u8]) -> bool,
     resolve: impl FnOnce(&[u8]),

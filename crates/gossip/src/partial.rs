@@ -205,6 +205,7 @@ mod tests {
     use buffa::{Message, MessageField, MessageView};
     use silver_common::{
         GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
+        TCacheId, TReadMode,
     };
 
     use crate::generated::{
@@ -312,8 +313,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use silver_common::{
-        CacheFrameError, CacheFrameRef, CacheSegment, TCache, TCacheProducer, TProducer,
-        TRandomAccess,
+        CacheFrameError, CacheFrameRef, CacheSegment, TCache, TCacheProducer, TCacheReader,
+        TProducer,
         ssz_view::{
             BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
             partial_column::{
@@ -343,7 +344,7 @@ mod tests {
         .encode_to_vec()
     }
 
-    fn reassemble(frame: CacheFrameRef, consumer: &mut TRandomAccess, now: Instant) -> Vec<u8> {
+    fn reassemble(frame: CacheFrameRef, consumer: &mut TCacheReader, now: Instant) -> Vec<u8> {
         let view = frame.acquire(consumer, now).unwrap();
         let descriptor = view.descriptor_range();
         let mut wire = Vec::new();
@@ -351,7 +352,7 @@ mod tests {
             if let Some(range) = segment.framing_range() {
                 wire.extend_from_slice(&descriptor.as_ref()[range]);
             } else {
-                wire.extend_from_slice(segment.acquire(consumer, None).unwrap().as_ref());
+                wire.extend_from_slice(segment.acquire(consumer).unwrap().as_ref());
             }
         }
         assert_eq!(wire.len(), view.wire_len());
@@ -417,8 +418,9 @@ mod tests {
 
     #[test]
     fn fulu_frame_matches_buffa_reference_encoding() {
-        let mut producer = TCache::producer("", 1 << 18);
-        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+        let mut consumer =
+            TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
         let now = Instant::now();
         let header_bytes = PARTIAL_HEADER_FIXED + 3 * BYTES_PER_KZG_COMMITMENT;
         let (cells, proofs, header, source) = source_record(&mut producer, 2, header_bytes);
@@ -471,8 +473,9 @@ mod tests {
                         .map(|index| u8::from_str_radix(&line[index..index + 2], 16).unwrap())
                 })
                 .collect();
-            let mut producer = TCache::producer("", 1 << 18);
-            let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+            let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+            let mut consumer =
+                TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
             let mut reservation = producer.reserve(reference.len(), true).unwrap();
             let read = reservation.read();
             reservation.buffer().unwrap().copy_from_slice(&reference);
@@ -517,8 +520,9 @@ mod tests {
 
     #[test]
     fn gloas_frame_matches_buffa_reference_encoding() {
-        let mut producer = TCache::producer("", 1 << 18);
-        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+        let mut consumer =
+            TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
         let now = Instant::now();
         let (cells, proofs, header, source) = source_record(&mut producer, 1, 0);
         assert!(header.is_none());
@@ -548,7 +552,7 @@ mod tests {
 
     #[test]
     fn frame_rejects_count_and_header_mismatches() {
-        let mut producer = TCache::producer("", 1 << 18);
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
         let now = Instant::now();
         let (cells, proofs, _, _) = source_record(&mut producer, 2, 0);
 
@@ -609,8 +613,9 @@ mod tests {
 
     #[test]
     fn metadata_only_frame_matches_buffa_reference_encoding() {
-        let mut producer = TCache::producer("", 1 << 16);
-        let mut consumer = producer.cache_ref().strict_random_access("", true).unwrap();
+        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut consumer =
+            TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
         let now = Instant::now();
 
         let group = fulu_group_id(&[0xee; 32]);

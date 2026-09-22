@@ -1,3 +1,5 @@
+use silver_common::TCacheReader;
+
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +22,7 @@ struct Published {
 }
 
 impl Published {
-    fn drain(sink: &mut SpineAdapter<SilverSpine>, gossip: &mut TRandomAccess) -> Self {
+    fn drain(sink: &mut SpineAdapter<SilverSpine>, gossip: &mut TCacheReader) -> Self {
         let mut events = Vec::new();
         sink.consume(|event: BeaconStateEvent, _| events.push(event));
         let mut relays = Vec::new();
@@ -112,7 +114,7 @@ impl BlockPublications {
     }
 
     fn drain(&mut self) -> Published {
-        Published::drain(&mut self.sink, &mut self.tile.gossip_consumer)
+        Published::drain(&mut self.sink, &mut self.tile.reader)
     }
 }
 

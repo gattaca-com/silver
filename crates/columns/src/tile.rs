@@ -10,11 +10,14 @@ use flux::{
 };
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
+#[cfg(feature = "ef_tests")]
+use silver_common::TCacheRead;
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind,
-    EngineResp, ForkName, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed,
-    SyncUpdate, TCacheProducer, TCacheRead, TProducer, TRandomAccess, TRead, Wheel, block_root,
+    BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind, EngineResp, ForkName,
+    GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
+    RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed, SyncUpdate,
+    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
+    Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
         FuluContextSource, RetentionEvent, StoreError,
@@ -47,29 +50,6 @@ enum ColumnDisposition {
     Rejected { block_root: BlockRoot, slot: u64, column: Option<u64> },
 }
 
-pub struct ColumnConsumers {
-    pub gossip: TRandomAccess,
-    pub persist_gossip: TRandomAccess,
-    pub rpc: TRandomAccess,
-    pub persist_rpc: TRandomAccess,
-}
-
-impl ColumnConsumers {
-    fn free(&mut self) {
-        self.gossip.free();
-        self.rpc.free();
-        self.persist_gossip.free();
-        self.persist_rpc.free();
-    }
-
-    fn acquire_persisted(&mut self, source: BlockSource, ssz: TCacheRead) -> TRead {
-        match source {
-            BlockSource::Gossip => self.persist_gossip.acquire(ssz),
-            BlockSource::Rpc => self.persist_rpc.acquire(ssz),
-        }
-    }
-}
-
 pub struct DataColumnsTile {
     spec: Arc<SpecConfig>,
 
@@ -93,26 +73,27 @@ pub struct DataColumnsTile {
 
     kzg_scratch: KzgScratch,
 
-    // Consumers must outlive the acquired reads held by pending columns.
-    consumers: ColumnConsumers,
     cells: Option<CellHandler>,
+
+    // Last: acquired reads held by pending columns point into them. Persisted
+    // reads are long-lived, so they track their own tails.
+    reader: TCacheReader,
+    persist_reader: TCacheReader,
 }
 
 impl DataColumnsTile {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        consumers: ColumnConsumers,
+        tcaches: TCacheTable,
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
         spec: Arc<SpecConfig>,
-        engine_resp_consumer: TRandomAccess,
         el_column_producer: TProducer,
         ticker: SlotTicker,
     ) -> Self {
         let epoch_duration =
             Duration::from_millis(spec.slot_duration_ms()) * SLOTS_PER_EPOCH as u32;
         Self {
-            consumers,
             validator: ColumnValidator::new(beacon_state, spec.clone(), epoch_duration, ticker),
             spec,
             kzg_batch: KzgBatch::new(),
@@ -120,22 +101,47 @@ impl DataColumnsTile {
             gloas_pending_columns: Wheel::new(epoch_duration),
             parent_pending_columns: Wheel::new(Duration::from_secs(24)),
             sync_state: SyncStatus::default(),
-            el_fetcher: ElBlobFetcher::new(engine_resp_consumer, epoch_duration),
+            el_fetcher: ElBlobFetcher::new(epoch_duration),
             el_column_producer,
             kzg_scratch: KzgScratch::default(),
             cells: None,
+            reader: TCacheReader::new(tcaches),
+            persist_reader: TCacheReader::new(tcaches),
         }
     }
 
     pub fn with_data_columns_cache(
         mut self,
         config: CellStoreConfig,
-        consumer: TRandomAccess,
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        self.cells = Some(CellHandler::new(config, consumer, slot, slot_start)?);
+        self.cells = Some(CellHandler::new(config, *self.reader.table(), slot, slot_start)?);
         Ok(self)
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::SszGossip, "dc_ssz_gossip", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::IncomingRpc, "dc_incoming_rpc", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::IncomingEngineResp,
+            "ds_engine_incoming_resp",
+            TReadMode::Sliding,
+        )?;
+        self.persist_reader.open(
+            TCacheId::SszGossip,
+            "dc_persist_ssz_gossip",
+            TReadMode::Sliding,
+        )?;
+        self.persist_reader.open(
+            TCacheId::IncomingRpc,
+            "dc_persist_incoming_rpc",
+            TReadMode::Sliding,
+        )?;
+        if let Some(cells) = &mut self.cells {
+            cells.open_tcaches()?;
+        }
+        Ok(())
     }
 
     #[timed]
@@ -570,7 +576,7 @@ impl DataColumnsTile {
                 let Some(read) = cells.acquire(gossip.ssz) else { return };
                 read
             }
-            SszCache::Gossip => self.consumers.gossip.acquire(gossip.ssz),
+            SszCache::Gossip => self.reader.acquire(gossip.ssz),
             _ => return,
         };
         self.handle_data_column_sidecar(
@@ -749,7 +755,7 @@ impl DataColumnsTile {
     /// A block the store holds, as both the gossip block and its persistence
     /// would have delivered it.
     pub fn ef_block(&mut self, ssz: TCacheRead, producers: &mut SilverSpineProducers) {
-        let block = self.consumers.gossip.acquire(ssz);
+        let block = self.reader.acquire(ssz);
         if let Ok((buf, _)) = block.buffer() {
             let slot = SignedBeaconBlockView::slot(buf);
             let root = block_root(buf, self.spec.is_gloas_at_slot(slot));
@@ -767,7 +773,7 @@ impl DataColumnsTile {
     ) -> EfVerdict {
         let column = PendingColumn {
             stream_id: P2pStreamId::new(1, 1, StreamProtocol::GossipSub, true),
-            sidecar: self.consumers.gossip.acquire(ssz),
+            sidecar: self.reader.acquire(ssz),
             ssz_cache: SszCache::Gossip,
             domain: None,
             gossip_subnet: Some(subnet),
@@ -829,8 +835,8 @@ impl DataColumnsTile {
                     cells.reject(block_root, producers);
                 }
             }
-            BeaconStateEvent::PersistBlock { ssz, source, .. } => {
-                let t_read = self.consumers.acquire_persisted(source, ssz);
+            BeaconStateEvent::PersistBlock { ssz, .. } => {
+                let t_read = self.persist_reader.acquire(ssz);
 
                 match t_read.buffer() {
                     Ok((buf, _)) => {
@@ -849,7 +855,11 @@ impl DataColumnsTile {
                         self.note_staged_block(block_root, slot, producers);
                     }
                     Err(e) => {
-                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.consumers.persist_gossip, "persist consumer buffer acquire failed");
+                        tracing::error!(
+                            ?e,
+                            seq = t_read.seq(),
+                            "persist consumer buffer acquire failed"
+                        );
                     }
                 }
             }
@@ -862,11 +872,13 @@ impl DataColumnsTile {
 impl Tile<SilverSpine> for DataColumnsTile {
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         util::warm_kzg_settings();
+        self.open_tcaches().expect("tcache wiring");
         true
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.consumers.free();
+        self.reader.free();
+        self.persist_reader.free();
         if let Some(cells) = &mut self.cells {
             cells.advance(Instant::now(), self.sync_state.data_availability_floor());
             adapter.consume(|event: RetentionEvent, _| {
@@ -891,7 +903,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
             silver_common::GossipTopic::BeaconBlock if self.sync_state.is_synced() => {
-                let t_read: TRead = self.consumers.gossip.acquire(gossip.ssz);
+                let t_read: TRead = self.reader.acquire(gossip.ssz);
                 self.handle_beacon_block(t_read, gossip.stream_id, producers);
             }
             silver_common::GossipTopic::DataColumnSidecar(custody_group)
@@ -910,13 +922,13 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
                     if id.is(DataKind::Block, Origin::Live) =>
                 {
-                    let t_read = self.consumers.rpc.acquire(ssz);
+                    let t_read = self.reader.acquire(ssz);
                     self.handle_beacon_block(t_read, rsp.stream_id, producers);
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if id.is(DataKind::Columns, Origin::Live) => {
                     // TODO validate that originating peer has data column index in custody groups
                     tracing::debug!("data column sidecar over rpc");
-                    let sidecar = self.consumers.rpc.acquire(ssz);
+                    let sidecar = self.reader.acquire(ssz);
                     self.handle_data_column_sidecar(
                         PendingColumn {
                             stream_id: rsp.stream_id,
@@ -979,7 +991,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
 
         adapter.consume(|resp: EngineResp, _| {
             if let EngineResp::GetBlobs(r) = resp {
-                self.el_fetcher.handle_response(r);
+                self.el_fetcher.handle_response(r, &mut self.reader);
             }
         });
         self.el_fetcher.process_responses(
@@ -992,7 +1004,6 @@ impl Tile<SilverSpine> for DataColumnsTile {
         if self.cells.as_ref().is_some_and(CellHandler::has_pending) {
             self.flush_kzg_batch(&mut adapter.producers);
         }
-        self.el_fetcher.free();
 
         let now = Instant::now();
 
@@ -1015,7 +1026,8 @@ mod tests {
     use silver_common::{
         BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, GossipDomain, HeadChange,
         HeadRoots, MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution,
-        StreamProtocol, TCache, TCacheProducer, TCacheRead, block_root_fulu,
+        StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
+        block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
             BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -1088,38 +1100,19 @@ mod tests {
             spec: SpecConfig,
             el_cache_len: usize,
         ) -> Self {
-            let gossip_p = TCache::producer("gossip_blocks", 1024 * 1024);
-            let gossip_consumer = gossip_p.cache_ref().random_access("gossip_cons", true).unwrap();
+            let gossip_p = TCache::producer(TCacheId::SszGossip, 1024 * 1024);
+            let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1024 * 1024);
+            let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1024 * 1024);
 
-            let persist_gossip_tc = TCache::producer("persist_gossip_blocks", TCACHE_LEN);
-            let persist_gossip_consumer =
-                persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
-
-            let rpc_p = TCache::producer("rpc_blocks", 1024 * 1024);
-            let rpc_consumer = rpc_p.cache_ref().random_access("rpc_cons", true).unwrap();
-
-            let persist_rpc_tc = TCache::producer("persist_rpc_blocks", TCACHE_LEN);
-            let persist_rpc_consumer =
-                persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
-
-            let engine_p = TCache::producer("engine_resp", 1024 * 1024);
-            let engine_resp_consumer =
-                engine_p.cache_ref().random_access("engine_resp_cons", true).unwrap();
-
-            let tile = DataColumnsTile::new(
-                ColumnConsumers {
-                    gossip: gossip_consumer,
-                    persist_gossip: persist_gossip_consumer,
-                    rpc: rpc_consumer,
-                    persist_rpc: persist_rpc_consumer,
-                },
+            let mut tile = DataColumnsTile::new(
+                TCacheTable::from_iter([&gossip_p, &rpc_p, &engine_p].map(|p| p.cache_ref())),
                 beacon_state,
                 custody,
                 Arc::new(spec),
-                engine_resp_consumer,
-                TCache::producer("el_columns", el_cache_len),
+                TCache::producer(TCacheId::ElDataColumns, el_cache_len),
                 SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
             );
+            tile.open_tcaches().unwrap();
 
             let dir = ShmemDir::new().unwrap();
             let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
@@ -1183,7 +1176,7 @@ mod tests {
 
         fn rpc_sidecar(&mut self, bytes: &[u8]) {
             let ssz = tcache_write(&mut self.rpc_p, bytes);
-            let sidecar = self.tile.consumers.rpc.acquire(ssz);
+            let sidecar = self.tile.reader.acquire(ssz);
             self.tile.handle_data_column_sidecar(
                 PendingColumn {
                     stream_id: P2pStreamId::new(
@@ -1205,7 +1198,7 @@ mod tests {
 
         fn block(&mut self, bytes: &[u8]) {
             let ssz = tcache_write(&mut self.gossip_p, bytes);
-            let read = self.tile.consumers.gossip.acquire(ssz);
+            let read = self.tile.reader.acquire(ssz);
             self.tile.handle_beacon_block(
                 read,
                 P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
@@ -1230,7 +1223,7 @@ mod tests {
                 SyncNeed::BackfillPrefill(_) => {}
             });
             self.inj.consume(|_: EngineReq, _| out.engine += 1);
-            let consumers = &mut self.tile.consumers;
+            let reader = &mut self.tile.reader;
             let data_columns = &mut self.tile.cells;
             self.inj.consume(|event: PeerEvent, _| {
                 let (origin, topic, domain, sidecar) = match event {
@@ -1239,7 +1232,7 @@ mod tests {
                             SszCache::DataColumns => {
                                 data_columns.as_mut().unwrap().acquire(ssz).unwrap()
                             }
-                            SszCache::Gossip => consumers.gossip.acquire(ssz),
+                            SszCache::Gossip => reader.acquire(ssz),
                             _ => panic!("unexpected gossip cache"),
                         };
                         (ColumnOrigin::Gossip, topic, domain, read)
@@ -1313,13 +1306,14 @@ mod tests {
     /// Callers `acquire` the returned handle themselves: a `TRead` points back
     /// at the consumer's address, so it must not be acquired before the
     /// consumer reaches its final binding.
-    fn produce_block(block_bytes: &[u8], cache: &'static str) -> (TRandomAccess, TCacheRead) {
-        let mut producer = TCache::producer(cache, 1024 * 1024);
+    fn produce_block(block_bytes: &[u8], cache: &'static str) -> (TCacheReader, TCacheRead) {
+        let mut producer = TCache::producer(TCacheId::SszGossip, 1024 * 1024);
         let mut res = producer.reserve(block_bytes.len(), true).unwrap();
         res.write_all(block_bytes).unwrap();
         res.flush().unwrap();
         let ssz = res.read();
-        let consumer = producer.cache_ref().random_access("test_block_cons", true).unwrap();
+        let consumer =
+            TCacheReader::single(producer.cache_ref(), cache, TReadMode::Sliding).unwrap();
         (consumer, ssz)
     }
 

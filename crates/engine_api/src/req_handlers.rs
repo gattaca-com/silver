@@ -1,9 +1,9 @@
 use flux::spine::FluxSpine;
 use silver_common::{
-    BlockSource, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
-    EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
-    EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus,
-    SilverSpine, TCacheRead, TProducer, TRandomAccess,
+    EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadReq,
+    EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
+    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
+    TCacheRead, TCacheReader, TProducer,
 };
 
 use crate::{
@@ -16,18 +16,15 @@ use crate::{
 #[inline]
 pub(crate) fn handle_request(
     client: &mut EngineClient,
-    gossip_consumer: &mut TRandomAccess,
-    rpc_consumer: &mut TRandomAccess,
+    reader: &mut TCacheReader,
     req: &EngineReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
     match req {
         EngineReq::Fcu(r) => handle_fcu(client, r),
-        EngineReq::NewPayload(r) => {
-            handle_new_payload(client, gossip_consumer, rpc_consumer, r, producers)
-        }
+        EngineReq::NewPayload(r) => handle_new_payload(client, reader, r, producers),
         EngineReq::NewPayloadEnvelope(r) => {
-            handle_new_payload_envelope(client, gossip_consumer, rpc_consumer, r, producers)
+            handle_new_payload_envelope(client, reader, r, producers)
         }
         EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r),
         EngineReq::GetPayload(r) => handle_get_payload(client, *r),
@@ -105,16 +102,13 @@ fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
 #[inline]
 fn handle_new_payload(
     client: &mut EngineClient,
-    gossip_consumer: &mut TRandomAccess,
-    rpc_consumer: &mut TRandomAccess,
+    reader: &mut TCacheReader,
     r: &EngineNewPayloadReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
     handle_new_payload_common(
         client,
-        gossip_consumer,
-        rpc_consumer,
-        r.block_source,
+        reader,
         r.data,
         r.block_root,
         producers,
@@ -126,8 +120,7 @@ fn handle_new_payload(
 #[inline]
 fn handle_new_payload_envelope(
     client: &mut EngineClient,
-    gossip_consumer: &mut TRandomAccess,
-    rpc_consumer: &mut TRandomAccess,
+    reader: &mut TCacheReader,
     r: &EngineNewPayloadEnvelopeReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
@@ -135,9 +128,7 @@ fn handle_new_payload_envelope(
     let versioned_hashes = &r.versioned_hashes[..hash_count];
     handle_new_payload_common(
         client,
-        gossip_consumer,
-        rpc_consumer,
-        r.block_source,
+        reader,
         r.data,
         r.block_root,
         producers,
@@ -149,20 +140,14 @@ fn handle_new_payload_envelope(
 #[allow(clippy::too_many_arguments)]
 fn handle_new_payload_common(
     client: &mut EngineClient,
-    gossip_consumer: &mut TRandomAccess,
-    rpc_consumer: &mut TRandomAccess,
-    block_source: BlockSource,
+    reader: &mut TCacheReader,
     data: TCacheRead,
     block_root: [u8; 32],
     producers: &mut <SilverSpine as FluxSpine>::Producers,
     kind: &str,
     send: impl FnOnce(&mut EngineClient, &[u8]) -> Result<(), EngineError>,
 ) {
-    let consumer = match block_source {
-        BlockSource::Gossip => gossip_consumer,
-        BlockSource::Rpc => rpc_consumer,
-    };
-    let acquired = consumer.acquire(data);
+    let acquired = reader.acquire(data);
     let bytes = match acquired.buffer() {
         Ok((b, _)) => b,
         Err(e) => {
@@ -180,7 +165,7 @@ fn handle_new_payload_common(
             .engine_resps
             .produce(&EngineResp::NewPayload(invalid_new_payload_resp(block_root)).into());
     }
-    consumer.free();
+    reader.free();
 }
 
 #[inline]

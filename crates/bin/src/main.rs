@@ -17,11 +17,12 @@ use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
-use silver_columns::tile::{ColumnConsumers, DataColumnsTile};
+use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, ProtoIdentify, SilverSpine, SszCache, TCache, TCacheProducer,
+    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
+    TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
@@ -84,76 +85,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // TCaches
     let incoming_gossip_producer =
-        TCache::producer("incoming_gossip", config.incoming_gossip_tcache_size());
-    let incoming_gossip_consumer =
-        incoming_gossip_producer.cache_ref().random_access("incoming_gossip", true)?; //.consumer("incoming_gossip")?;
+        TCache::producer(TCacheId::IncomingGossip, config.incoming_gossip_tcache_size());
     let ssz_gossip_producer =
-        TCache::producer("ssz_gossip", config.incoming_gossip_ssz_tcache_size());
-    let ssz_gossip_consumer =
-        ssz_gossip_producer.cache_ref().random_access("bs_ssz_gossip", true)?;
-    let ssz_gossip_consumer_dc =
-        ssz_gossip_producer.cache_ref().random_access("dc_ssz_gossip", true)?;
-    let ssz_persist_gossip_consumer_ds =
-        ssz_gossip_producer.cache_ref().random_access("ds_persist_ssz_gossip", true)?;
-    let ssz_persist_gossip_consumer_dc =
-        ssz_gossip_producer.cache_ref().random_access("dc_persist_ssz_gossip", true)?;
-    let ssz_gossip_consumer_eng =
-        ssz_gossip_producer.cache_ref().random_access("eng_ssz_gossip", true)?;
-    let ssz_gossip_consumer_api =
-        ssz_gossip_producer.cache_ref().random_access("api_ssz_gossip", true)?;
+        TCache::producer(TCacheId::SszGossip, config.incoming_gossip_ssz_tcache_size());
     let outgoing_gossip_producer =
-        TCache::producer("outgoing_gossip", config.outgoing_gossip_tcache_size());
-    let incoming_rpc_producer = TCache::producer("incoming_rpc", config.incoming_rpc_tcache_size());
-    let incoming_rpc_consumer =
-        incoming_rpc_producer.cache_ref().random_access("bs_incoming_rpc", true)?;
-    let incoming_rpc_consumer_ds =
-        incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
-    let incoming_rpc_consumer_dc =
-        incoming_rpc_producer.cache_ref().random_access("dc_incoming_rpc", true)?;
-    let persist_rpc_consumer_ds =
-        incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
-    let persist_rpc_consumer_dc =
-        incoming_rpc_producer.cache_ref().random_access("dc_persist_incoming_rpc", true)?;
-    let incoming_rpc_consumer_api =
-        incoming_rpc_producer.cache_ref().random_access("api_incoming_rpc", true)?;
-    let incoming_rpc_consumer_eng =
-        incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
-    let incoming_rpc_consumer_ctl =
-        incoming_rpc_producer.cache_ref().random_access("ctl_incoming_rpc", true)?;
+        TCache::producer(TCacheId::OutgoingGossip, config.outgoing_gossip_tcache_size());
+    let incoming_rpc_producer =
+        TCache::producer(TCacheId::IncomingRpc, config.incoming_rpc_tcache_size());
     let incoming_engine_resp_producer = TCache::producer(
-        "incoming_engine_resp",
+        TCacheId::IncomingEngineResp,
         config.engine_config().incoming_engine_resp_tcache_size,
     );
-    let incoming_engine_resp_consumer =
-        incoming_engine_resp_producer.cache_ref().random_access("engine_incoming_resp", true)?;
-    let incoming_engine_resp_consumer_ds =
-        incoming_engine_resp_producer.cache_ref().random_access("ds_engine_incoming_resp", true)?;
-
-    let cluster_inbound_producer = TCache::producer("cluster_inbound", CLUSTER_MESSAGE_TCACHE_SIZE);
-    let cluster_inbound_consumer = cluster_inbound_producer
-        .cache_ref()
-        .strict_random_access("control_cluster_inbound", true)?;
+    let cluster_inbound_producer =
+        TCache::producer(TCacheId::ClusterInbound, CLUSTER_MESSAGE_TCACHE_SIZE);
     let cluster_outbound_producer =
-        TCache::producer("cluster_outbound", CLUSTER_MESSAGE_TCACHE_SIZE);
-    let cluster_outbound_consumer = cluster_outbound_producer
-        .cache_ref()
-        .strict_random_access("network_cluster_outbound", true)?;
-
-    // rpc producer
+        TCache::producer(TCacheId::ClusterOutbound, CLUSTER_MESSAGE_TCACHE_SIZE);
     let outgoing_rpc_producer =
-        TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
-    let outgoing_rpc_consumer_api =
-        outgoing_rpc_producer.cache_ref().random_access("api_outgoing_rpc", true)?;
-    let replay_blocks_producer = TCache::producer("replay_blocks", 1 << 25);
-    let replay_blocks_consumer =
-        replay_blocks_producer.cache_ref().random_access("bs_replay", true)?;
-
-    // engine producer
-    let el_producer = TCache::producer("el_data_columns", 1 << 25);
-    let el_columns_consumer_api = el_producer.cache_ref().random_access("api_el_columns", true)?;
-    let el_columns_consumer = el_producer.cache_ref().random_access("el_data_columns", true)?;
-    let el_columns_consumer_ctl =
-        el_producer.cache_ref().random_access("ctl_el_data_columns", true)?;
+        TCache::multi_producer(TCacheId::OutgoingRpc, config.outgoing_rpc_tcache_size());
+    let replay_blocks_producer = TCache::producer(TCacheId::ReplayBlocks, 1 << 25);
+    let el_producer = TCache::producer(TCacheId::ElDataColumns, 1 << 25);
+    let beacon_state_producer = TCache::producer(TCacheId::BeaconState, BEACON_STATE_TCACHE_SIZE);
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -229,19 +180,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         trusted_ips,
     );
     let identify = config.identify()?;
-    let mut p2p_context = Context {
-        gossip_producer: incoming_gossip_producer,
-        gossip_consumer: outgoing_gossip_producer
-            .cache_ref()
-            .strict_random_access("p2p_outgoing_gossip", true)?,
-        rpc_producer: incoming_rpc_producer,
-        rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
-        identify: Some(ProtoIdentify::from((&identify, &keypair))),
-        cluster_nodes: cluster_nodes.map(ClusterNodes::new),
-        cluster_inbound_producer,
-        cluster_outbound_consumer,
-        data_columns_consumer: None,
-    };
 
     let now = Instant::now();
 
@@ -270,25 +208,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         .transpose()
         .map_err(|error| format!("cell store configuration: {error:?}"))?;
     let data_columns_producer = TCache::producer(
-        "data_columns",
+        TCacheId::DataColumns,
         cell_config.as_ref().map_or(1 << 16, CellStoreConfig::cache_capacity),
     );
-    let columns_consumer = cell_config
-        .as_ref()
-        .map(|_| data_columns_producer.cache_ref().retained_random_access("columns_cells"))
-        .transpose()?;
-    let api_data_columns_consumer =
-        data_columns_producer.cache_ref().random_access("api_data_columns", true)?;
-    let storage_data_columns_consumer =
-        data_columns_producer.cache_ref().random_access("storage_cells", true)?;
-    p2p_context.data_columns_consumer = cell_config
-        .as_ref()
-        .map(|_| {
-            data_columns_producer.cache_ref().retained_random_access("network_cells").map(Box::new)
-        })
-        .transpose()?;
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
 
+    // Every tile opens the consumers it reads through in `try_init`.
+    let tcaches = TCacheTable::from_iter([
+        incoming_gossip_producer.cache_ref(),
+        ssz_gossip_producer.cache_ref(),
+        outgoing_gossip_producer.cache_ref(),
+        incoming_rpc_producer.cache_ref(),
+        incoming_engine_resp_producer.cache_ref(),
+        cluster_inbound_producer.cache_ref(),
+        cluster_outbound_producer.cache_ref(),
+        outgoing_rpc_producer.cache_ref(),
+        replay_blocks_producer.cache_ref(),
+        el_producer.cache_ref(),
+        beacon_state_producer.cache_ref(),
+        data_columns_producer.cache_ref(),
+    ]);
+
+    let p2p_context = Context {
+        gossip_producer: incoming_gossip_producer,
+        rpc_producer: incoming_rpc_producer,
+        identify: Some(ProtoIdentify::from((&identify, &keypair))),
+        cluster_nodes: cluster_nodes.map(ClusterNodes::new),
+        cluster_inbound_producer,
+        partial_columns: cell_config.is_some(),
+        reader: TCacheReader::new(tcaches),
+    };
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
     let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
@@ -297,7 +246,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
     let gossip_handler = GossipHandler::new(
-        incoming_gossip_consumer,
+        tcaches,
         ssz_gossip_producer,
         outgoing_gossip_producer,
         Some(silver_common::GossipDomain::new(
@@ -319,10 +268,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         gossip_handler,
         outgoing_rpc_producer.clone(),
-        incoming_rpc_consumer_ctl,
-        el_columns_consumer_ctl,
+        tcaches,
         cluster_outbound_producer,
-        cluster_inbound_consumer,
         cluster_config,
         SyncEngine::new(
             config.syncing_config(),
@@ -359,17 +306,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
         .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
     control_tile.set_gossip_clock(ticker.clone(), &state.immutable.genesis_validators_root);
-    let beacon_state_producer = TCache::producer("beacon_state", BEACON_STATE_TCACHE_SIZE);
-    let beacon_state_consumer_api =
-        beacon_state_producer.cache_ref().random_access("api_beacon_state", true)?;
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         spec.clone(),
         &config.syncing_config(),
-        ssz_gossip_consumer,
-        incoming_rpc_consumer,
-        incoming_engine_resp_consumer,
-        replay_blocks_consumer,
+        tcaches,
         beacon_state_producer,
         !config.disable_weak_subjectivity_check(),
         state,
@@ -377,11 +318,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state_reader = beacon_state_tile.reader();
 
     let storage_tile = StorageTile::new(
-        ssz_persist_gossip_consumer_ds,
-        storage_data_columns_consumer,
-        incoming_rpc_consumer_ds,
-        persist_rpc_consumer_ds,
-        el_columns_consumer,
+        tcaches,
         outgoing_rpc_producer,
         replay_blocks_producer,
         state_reader,
@@ -393,16 +330,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let state_reader = beacon_state_tile.reader();
     let mut data_columns_tile = DataColumnsTile::new(
-        ColumnConsumers {
-            gossip: ssz_gossip_consumer_dc,
-            persist_gossip: ssz_persist_gossip_consumer_dc,
-            rpc: incoming_rpc_consumer_dc,
-            persist_rpc: persist_rpc_consumer_dc,
-        },
+        tcaches,
         state_reader,
         das_custody_groups,
         spec.clone(),
-        incoming_engine_resp_consumer_ds,
         el_producer,
         SlotTicker::new(
             chain_config.genesis_unix_secs,
@@ -410,9 +341,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             chain_config.playload_lookahead(),
         ),
     );
-    if let (Some(config), Some(consumer)) = (cell_config, columns_consumer) {
+    if let Some(config) = cell_config {
         data_columns_tile = data_columns_tile
-            .with_data_columns_cache(config, consumer, cell_slot, cell_slot_start)
+            .with_data_columns_cache(config, cell_slot, cell_slot_start)
             .map_err(|error| format!("cell store construction: {error:?}"))?;
     }
 
@@ -429,19 +360,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         beacon_state_tile.reader(),
         beacon_state_tile.head_block_root(),
         config.engine_config(),
-        ssz_gossip_consumer_eng,
-        incoming_rpc_consumer_eng,
+        tcaches,
         incoming_engine_resp_producer,
-        [
-            (SszCache::Gossip, ssz_gossip_consumer_api),
-            (SszCache::Rpc, incoming_rpc_consumer_api),
-            (SszCache::El, el_columns_consumer_api),
-            (SszCache::DataColumns, api_data_columns_consumer),
-        ]
-        .into_iter()
-        .collect(),
-        outgoing_rpc_consumer_api,
-        beacon_state_consumer_api,
     );
 
     // Spine

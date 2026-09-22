@@ -147,7 +147,9 @@ mod tests {
     use std::net::SocketAddr;
 
     use quinn_proto::StreamId;
-    use silver_common::{StreamProtocol, TCache, TCacheProducer};
+    use silver_common::{
+        StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode,
+    };
 
     use super::*;
     use crate::p2p::streams::{
@@ -225,9 +227,13 @@ mod tests {
         let mut wire = vec![ssz.len() as u8]; // single-byte varint (64)
         wire.extend_from_slice(&body);
 
-        let mut producer = TCache::producer("test_rpc_by_root_req", 1 << 16);
-        let mut consumer =
-            producer.cache_ref().random_access("test_rpc_by_root_req", false).unwrap();
+        let mut producer = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let mut consumer = TCacheReader::single(
+            producer.cache_ref(),
+            "test_rpc_by_root_req",
+            TReadMode::SlidingManualFree,
+        )
+        .unwrap();
         let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::BeaconBlocksByRoot, true);
 
         // Full-buffer reads, byte-by-byte, and odd-sized.

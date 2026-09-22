@@ -5,8 +5,9 @@ use flux::spine::SpineAdapter;
 use silver_common::{
     Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
-    SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
-    TRandomAccess, cell_store::PartialColumnsMode, msg_id_valid_snappy,
+    SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer,
+    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, cell_store::PartialColumnsMode,
+    msg_id_valid_snappy,
 };
 
 use crate::{
@@ -31,7 +32,6 @@ use crate::{
 ///  - periodically generates new IHAVE messages
 ///    - produces `NewIHaveMsg`s on spine
 pub struct GossipHandler {
-    incoming_gossip: TRandomAccess,
     incoming_gossip_publish: TProducer,
     domains: ActiveDomains,
     dedup_cache: DedupCache,
@@ -51,21 +51,21 @@ pub struct GossipHandler {
     partial_columns: PartialColumnsMode,
 
     events: VecDeque<GossipHandlerEvent>,
+
+    // Last: the mcache's acquired reads point into it.
+    reader: TCacheReader,
 }
 
 impl GossipHandler {
     pub fn new(
-        incoming_gossip: TRandomAccess,
+        tcaches: TCacheTable,
         ssz_gossip_publish: TProducer,
         protobuf_gossip_publish: TProducer,
         domain: Option<GossipDomain>,
     ) -> Result<Self, Error> {
-        let mcache_consumer =
-            protobuf_gossip_publish.cache_ref().random_access("gossip_mcache", false)?;
-        let mcache = MessageCache::new(mcache_consumer);
+        let mcache = MessageCache::new();
 
         Ok(Self {
-            incoming_gossip,
             incoming_gossip_publish: ssz_gossip_publish,
             domains: ActiveDomains::new(domain),
             dedup_cache: DedupCache::default(),
@@ -77,7 +77,13 @@ impl GossipHandler {
             snap_encoder: snap::raw::Encoder::new(),
             snap_scratch: Vec::new(),
             events: VecDeque::with_capacity(64),
+            reader: TCacheReader::new(tcaches),
         })
+    }
+
+    pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
+        self.reader.open(TCacheId::IncomingGossip, "incoming_gossip", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::OutgoingGossip, "gossip_mcache", TReadMode::SlidingManualFree)
     }
 
     fn generate_ihave_messages(&mut self, now: Instant, emit: &mut impl FnMut(GossipHandlerEvent)) {
@@ -160,7 +166,7 @@ impl GossipHandler {
         )
         .inspect_err(|e| tracing::error!(?e, ?topic, "publish protobuf write failed"))
         .ok()?;
-        self.mcache.insert(msg_id, topic, domain, read);
+        self.mcache.insert(msg_id, topic, domain, read, &mut self.reader);
         let idontwant =
             copy_idontwants_to_protobuf_output(&mut self.mcache_publish, std::iter::once(&msg_id))
                 .inspect_err(|e| tracing::error!(?e, ?topic, "publish idontwant write failed"))
@@ -259,7 +265,7 @@ impl GossipHandler {
         domain: GossipDomain,
         protobuf: TCacheRead,
     ) {
-        self.mcache.insert(id, topic, domain, protobuf);
+        self.mcache.insert(id, topic, domain, protobuf, &mut self.reader);
     }
 
     pub fn pop_event(&mut self) -> Option<GossipHandlerEvent> {
@@ -373,12 +379,12 @@ impl GossipHandler {
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
         self.generate_ihave_messages(now, emit);
-        self.incoming_gossip.free();
+        self.reader.free();
 
         adapter.consume(|msg: GossipMsgIn, producers| {
             did_work = true;
 
-            let acquired = self.incoming_gossip.acquire(msg.tcache);
+            let acquired = self.reader.acquire(msg.tcache);
             let Ok((mut buffer, recv_ts)) = acquired.buffer() else {
                 return;
             };
@@ -486,7 +492,7 @@ impl GossipHandler {
         });
 
         // Free read data.
-        self.incoming_gossip.free();
+        self.reader.free();
 
         did_work
     }
@@ -595,7 +601,9 @@ impl ExtensionTracker {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{ForkName, TCache, TCacheProducer, ssz_view::SINGLE_ATT_SIZE};
+    use silver_common::{
+        ForkName, TCache, TCacheId, TCacheProducer, TCacheTable, ssz_view::SINGLE_ATT_SIZE,
+    };
 
     use super::*;
 
@@ -606,16 +614,18 @@ mod tests {
     #[test]
     fn delayed_publications_keep_their_fork_and_digest_domain() {
         let old = GossipDomain::new([1; 4], ForkName::Fulu);
-        let incoming = TCache::producer("", 1 << 16);
-        let protobuf = TCache::producer("", 1 << 16);
-        let mut output = Box::new(protobuf.cache_ref().random_access("", true).unwrap());
+        let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let protobuf = TCache::producer(TCacheId::OutgoingGossip, 1 << 16);
+        let mut output =
+            Box::new(TCacheReader::single(protobuf.cache_ref(), "", TReadMode::Sliding).unwrap());
         let mut handler = GossipHandler::new(
-            incoming.cache_ref().random_access("", true).unwrap(),
-            TCache::producer("", 1 << 16),
+            TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
+            TCache::producer(TCacheId::SszGossip, 1 << 16),
             protobuf,
             Some(old),
         )
         .unwrap();
+        handler.open_tcaches().unwrap();
         let topic = GossipTopic::DataColumnSidecar(3);
         for (index, current) in
             [GossipDomain::new([2; 4], ForkName::Fulu), GossipDomain::new([3; 4], ForkName::Gloas)]
@@ -661,30 +671,31 @@ mod tests {
 
     #[test]
     fn local_injection_uses_inbound_tcaches_without_precaching() {
-        let incoming = TCache::producer("inject_local_in", 1 << 12);
-        let incoming_consumer = incoming
-            .cache_ref()
-            .random_access("inject_local_handler", true)
-            .expect("incoming consumer");
+        let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
 
-        let ssz_producer = TCache::producer("inject_local_ssz", 1 << 12);
-        let mut ssz_consumer = ssz_producer
-            .cache_ref()
-            .random_access("inject_local_ssz_test", true)
-            .expect("ssz consumer");
-        let protobuf_producer = TCache::producer("inject_local_protobuf", 1 << 12);
-        let mut protobuf_consumer = protobuf_producer
-            .cache_ref()
-            .random_access("inject_local_protobuf_test", true)
-            .expect("protobuf consumer");
+        let ssz_producer = TCache::producer(TCacheId::SszGossip, 1 << 12);
+        let mut ssz_consumer = TCacheReader::single(
+            ssz_producer.cache_ref(),
+            "inject_local_ssz_test",
+            TReadMode::Sliding,
+        )
+        .expect("ssz consumer");
+        let protobuf_producer = TCache::producer(TCacheId::OutgoingGossip, 1 << 12);
+        let mut protobuf_consumer = TCacheReader::single(
+            protobuf_producer.cache_ref(),
+            "inject_local_protobuf_test",
+            TReadMode::Sliding,
+        )
+        .expect("protobuf consumer");
 
         let mut handler = GossipHandler::new(
-            incoming_consumer,
+            TCacheTable::from_iter([incoming.cache_ref(), protobuf_producer.cache_ref()]),
             ssz_producer,
             protobuf_producer,
             Some(GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
         )
         .expect("gossip handler");
+        handler.open_tcaches().unwrap();
         let topic = GossipTopic::BeaconAttestation(7);
         let ssz = [42; SINGLE_ATT_SIZE];
 
