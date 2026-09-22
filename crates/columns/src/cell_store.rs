@@ -249,6 +249,14 @@ impl CellStore {
         }
     }
 
+    pub(crate) fn awaiting_allocation(&self, root: &BlockRoot) -> bool {
+        let Some(&index) = self.roots.get(root) else { return false };
+        let block = &self.blocks[index];
+        block.active &&
+            block.request.is_some() &&
+            self.columns[index * self.config.column_indices().len()].assembly.is_none()
+    }
+
     pub fn install(
         &mut self,
         set: AssemblySet,

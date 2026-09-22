@@ -104,7 +104,7 @@ impl Harness {
         };
         self.store.admit_context(context, domain, data, source)?;
         let request = self.store.request_assemblies(&context.block_root).unwrap();
-        let set = match self.allocator.allocate(request) {
+        let set = match self.allocator.allocate(request, None) {
             Ok(set) => set,
             Err(error) => {
                 self.store.allocation_failed(request);
@@ -478,13 +478,16 @@ fn stale_allocation_reply_cannot_resurrect_an_expired_context() {
     let block = &h.store.blocks[h.store.roots[&ROOT]];
     let set = h
         .allocator
-        .allocate(AssemblyRequest {
-            id: block.request.unwrap(),
-            context: block.context,
-            domain: block.domain,
-            columns: h.store.config.columns(),
-            source: block.source,
-        })
+        .allocate(
+            AssemblyRequest {
+                id: block.request.unwrap(),
+                context: block.context,
+                domain: block.domain,
+                columns: h.store.config.columns(),
+                source: block.source,
+            },
+            None,
+        )
         .unwrap();
     h.advance_ms(12_000);
     assert_eq!(h.store.install(set, &mut h.consumer), Err(StoreError::ContextExpired));

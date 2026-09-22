@@ -5,15 +5,15 @@ use std::{
 
 use flux::spine::SpineProducers;
 use silver_common::{
-    ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, IngestionTime, PeerEvent,
+    ColumnOrigin, DataColumnsEvent, ForkName, GossipDomain, GossipTopic, IngestionTime, PeerEvent,
     SilverSpineProducers, SszCache, SyncNeed, TCacheRead, TRandomAccess, TRead, Wheel,
     cell_store::{
         CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
-        CommitmentContext, ContextData, DataColumnCounters, FuluContextSource,
+        ColumnRef, CommitmentContext, ContextData, DataColumnCounters, FuluContextSource,
         HeaderValidationRequest, RetentionEvent, StoreError,
     },
-    column_util::SidecarIdentity,
-    ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
+    column_util::{SidecarIdentity, columns_of},
+    ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF},
 };
 
 use crate::{
@@ -25,12 +25,19 @@ use crate::{
     validate::{ColumnValidator, HeaderOutcome, PendingColumn},
 };
 
-pub(super) struct CellHandler {
+pub(crate) struct CellHandler {
     store: CellStore,
     pending: PendingCells,
     headers: PendingHeaders,
     // The boxed consumer stays at a stable address while acquired reads exist.
     consumer: Box<TRandomAccess>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellWriteState {
+    Unavailable,
+    Pending,
+    Ready,
 }
 
 struct PendingCells {
@@ -45,8 +52,12 @@ impl PendingCells {
         Self { requests: Vec::with_capacity(limit), limit, ready: false }
     }
 
+    fn is_full(&self) -> bool {
+        self.requests.len() >= self.limit
+    }
+
     fn admit(&mut self, request: CellValidationRequest, now: Instant) -> bool {
-        if now >= request.deadline || self.requests.len() >= self.limit {
+        if now >= request.deadline || self.is_full() {
             return false;
         }
         self.requests.push(request);
@@ -128,6 +139,97 @@ impl PendingHeaders {
 }
 
 impl CellHandler {
+    pub(crate) fn el_write_state(
+        &self,
+        context: CommitmentContext,
+        domain: GossipDomain,
+        now: Instant,
+    ) -> CellWriteState {
+        if now >= self.store.slot_end() ||
+            self.store.context(&context.block_root).is_none_or(|(known, _)| *known != context)
+        {
+            return CellWriteState::Unavailable;
+        }
+        let Some(column) = self.store.reservations(&context.block_root).next() else {
+            return if self.store.awaiting_allocation(&context.block_root) {
+                CellWriteState::Pending
+            } else {
+                CellWriteState::Unavailable
+            };
+        };
+        if self
+            .store
+            .availability(&context.block_root, column.column)
+            .is_none_or(|column| column.domain != domain)
+        {
+            return CellWriteState::Unavailable;
+        }
+        CellWriteState::Ready
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stage_el_row(
+        &mut self,
+        context: CommitmentContext,
+        domain: GossipDomain,
+        columns: u128,
+        row: usize,
+        cells: &[c_kzg::Cell; c_kzg::CELLS_PER_EXT_BLOB],
+        proofs: &[u8],
+        request_id: u64,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let now = Instant::now();
+        for column in columns_of(columns) {
+            if self.pending.is_full() {
+                break;
+            }
+            let Some(available) = self.store.availability(&context.block_root, column as usize)
+            else {
+                continue
+            };
+            if now >= available.expires || available.cell(row).is_some() {
+                continue;
+            }
+            let Some(reservation) = available.assembly else { continue };
+            let reference = ColumnRef {
+                block_root: context.block_root,
+                column: column as usize,
+                reservation,
+                slot: context.slot,
+                expires: available.expires,
+            };
+            let offset = column as usize * BYTES_PER_KZG_PROOF;
+            let Some(proof) = proofs
+                .get(offset..offset + BYTES_PER_KZG_PROOF)
+                .and_then(|proof| proof.try_into().ok())
+            else {
+                continue
+            };
+            // SAFETY: Cell is repr(C) over [u8; BYTES_PER_CELL].
+            let cell: &[u8; BYTES_PER_CELL] =
+                unsafe { &*ptr::from_ref(&cells[column as usize]).cast() };
+            match reference.stage(&mut self.consumer, row, cell, proof) {
+                Ok(Some(pending)) => {
+                    DataColumnCounters::ElCellsQueued.inc();
+                    self.handle_event(
+                        CellStoreEvent::Validate(CellValidationRequest {
+                            pending,
+                            slot: context.slot,
+                            domain,
+                            origin: CellOrigin::El { request_id },
+                            deadline: available.expires,
+                        }),
+                        now,
+                        producers,
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => tracing::debug!(?error, column, row, "el cell staging failed"),
+            }
+        }
+    }
+
     pub(super) fn new(
         config: CellStoreConfig,
         consumer: TRandomAccess,
@@ -200,30 +302,22 @@ impl CellHandler {
         producers.produce(CellStoreEvent::RejectedContext { block_root });
     }
 
-    pub(super) fn admit_gloas_context(
+    pub(super) fn admit_context(
         &mut self,
-        root: BlockRoot,
-        slot: u64,
-        validator: &ColumnValidator,
+        context: CommitmentContext,
+        domain: GossipDomain,
+        data: ContextData<'_>,
+        source: Option<FuluContextSource>,
         producers: &SilverSpineProducers,
-    ) {
-        let Some(commitments) = validator.gloas_commitments(&root) else { return };
-        let Some(domain) = validator.domain_at(slot) else { return };
-        let context = CommitmentContext {
-            block_root: root,
-            slot,
-            format: ForkName::Gloas,
-            blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
-        };
-        if self
-            .store
-            .admit_context(context, domain, ContextData::Gloas { commitments }, None)
-            .is_ok()
-        {
-            if let Some(request) = self.store.request_assemblies(&root) {
-                producers.produce(CellStoreEvent::Allocate(request));
-            }
+    ) -> bool {
+        if let Err(error) = self.store.admit_context(context, domain, data, source) {
+            tracing::debug!(?error, slot = context.slot, "cell context not admitted");
+            return false;
         }
+        if let Some(request) = self.store.request_assemblies(&context.block_root) {
+            producers.produce(CellStoreEvent::Allocate(request));
+        }
+        true
     }
 
     pub(super) fn retain_validated_column(
@@ -241,11 +335,8 @@ impl CellHandler {
             let Some(commitments) = validator.gloas_commitments(&p.block_root) else { return };
             ContextData::Gloas { commitments }
         } else {
-            ContextData::Fulu {
-                signed_header: bytes[20..228].try_into().unwrap(),
-                inclusion_proof: bytes[228..356].try_into().unwrap(),
-                commitments: DataColumnSidecarFuluView::kzg_commitments(bytes),
-            }
+            let Some(data) = ContextData::from_fulu_sidecar(bytes) else { return };
+            data
         };
         let context = CommitmentContext {
             block_root: p.block_root,
@@ -254,8 +345,7 @@ impl CellHandler {
             blob_count: data.commitments().len() / BYTES_PER_KZG_COMMITMENT,
         };
         let source = (!p.is_gloas).then_some(FuluContextSource::Sidecar(p.sidecar.read));
-        if let Err(e) = self.store.admit_context(context, domain, data, source) {
-            tracing::debug!(?e, slot = p.slot, "cell context not admitted");
+        if !self.admit_context(context, domain, data, source, producers) {
             return;
         }
         match self.store.retain_full(
@@ -266,9 +356,6 @@ impl CellHandler {
         ) {
             Ok(_) => self.store.mark_changed(&p.block_root, p.column_index as usize),
             Err(e) => tracing::debug!(?e, column = p.column_index, "full sidecar not retained"),
-        }
-        if let Some(request) = self.store.request_assemblies(&p.block_root) {
-            producers.produce(CellStoreEvent::Allocate(request));
         }
     }
 
@@ -337,6 +424,7 @@ impl CellHandler {
         tracker: &mut ColumnTracker,
         now: Instant,
         producers: &SilverSpineProducers,
+        mut on_context: impl FnMut(CommitmentContext, GossipDomain, ContextData<'_>, u128),
     ) {
         for _ in 0..self.headers.due(now) {
             let index = self.headers.next_index();
@@ -373,21 +461,20 @@ impl CellHandler {
                     let Some(data) = ContextData::from_encoded(bytes, ForkName::Fulu) else {
                         continue
                     };
-                    if self
-                        .store
-                        .admit_context(
-                            context,
-                            request.domain,
-                            data,
-                            Some(FuluContextSource::Header(request.ssz)),
-                        )
-                        .is_ok()
-                    {
+                    on_context(
+                        context,
+                        request.domain,
+                        data,
+                        tracker.to_request(&context.block_root),
+                    );
+                    if self.admit_context(
+                        context,
+                        request.domain,
+                        data,
+                        Some(FuluContextSource::Header(request.ssz)),
+                        producers,
+                    ) {
                         DataColumnCounters::PartialHeadersAccepted.inc();
-                        if let Some(allocation) = self.store.request_assemblies(&request.block_root)
-                        {
-                            producers.produce(CellStoreEvent::Allocate(allocation));
-                        }
                         Self::verdict(request.origin, request.block_root, true, producers);
                     }
                 }

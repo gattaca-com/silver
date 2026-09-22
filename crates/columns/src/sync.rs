@@ -13,10 +13,6 @@ impl SyncStatus {
         !self.sync_target.is_syncing()
     }
 
-    pub(crate) fn finalized_slot(&self) -> u64 {
-        self.finalized_slot
-    }
-
     pub(crate) fn data_availability_floor(&self) -> u64 {
         self.sync_target.data_availability_floor(self.finalized_slot)
     }

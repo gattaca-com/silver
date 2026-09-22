@@ -398,7 +398,7 @@ fn live_fulu_to_gloas_cutover_uses_new_context_group_and_requests_without_a_head
         )
         .unwrap();
     let request = rig.store.request_assemblies(&root).unwrap();
-    let set = rig.ingress.allocator_mut().allocate(request).unwrap();
+    let set = rig.ingress.allocator_mut().allocate(request, None).unwrap();
     rig.store.install(set, &mut rig.columns).unwrap();
     let available = rig.store.availability(&root, 1).unwrap();
     assert!(available.header.is_none());

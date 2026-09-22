@@ -24,7 +24,7 @@ const OUR_CAPABILITIES: &[&str] = &[
     "engine_newPayloadV5",
     "engine_getPayloadV3",
     "engine_getPayloadV4",
-    "engine_getBlobsV2",
+    "engine_getBlobsV3",
     "engine_getClientVersionV1",
 ];
 
@@ -245,7 +245,7 @@ pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
 }
 
 pub fn get_blobs(c: &mut EngineClient, params: simd_json::OwnedValue, block_root: B256, slot: u64) {
-    let (id, body) = make_rpc_body(&mut c.id, "engine_getBlobsV2", params);
+    let (id, body) = make_rpc_body(&mut c.id, "engine_getBlobsV3", params);
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetBlobs { block_root, slot });
 }
@@ -282,9 +282,60 @@ pub fn get_client_version(c: &mut EngineClient) {
 
 #[cfg(test)]
 mod tests {
-    use simd_json::prelude::ValueAsScalar;
+    use std::time::Instant;
+
+    use silver_httpcore::Readiness;
+    use simd_json::prelude::{ValueAsArray, ValueAsScalar};
 
     use super::*;
+    use crate::test_el::{FakeEl, write_jwt};
+
+    #[test]
+    fn get_blobs_uses_and_advertises_v3() {
+        let dir = tempfile::tempdir().unwrap();
+        let jwt = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let mut el = FakeEl::uds(&socket);
+        let mut readiness = Readiness::new(16);
+        let mut client = EngineClient::new_uds(
+            readiness.registry(),
+            TokenRange::whole(),
+            &socket,
+            jwt.to_str().unwrap(),
+            2,
+            Duration::from_secs(10),
+        );
+        let params = simd_json::json!([[format!("0x{}", hex::encode([1; 32]))]]);
+        exchange_capabilities(&mut client);
+        get_blobs(&mut client, params.clone(), [2; 32], 42);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while el.requests.len() < 2 {
+            assert!(Instant::now() < deadline, "timeout waiting for engine requests");
+            readiness.wait(Duration::from_millis(1));
+            client.dispatch(readiness.events(), |_, response| {
+                panic!("unexpected response before the EL replied: {response:?}");
+            });
+            el.pump();
+        }
+
+        let request = el.requests.iter().find(|r| r.method == "engine_getBlobsV3").unwrap();
+        let mut body = request.body.as_bytes().to_vec();
+        let body = simd_json::to_owned_value(&mut body).unwrap();
+        assert_eq!(body["params"], params);
+        assert!(matches!(
+            client.pending_requests.get(&request.id),
+            Some(ReqKind::GetBlobs { block_root, slot: 42 }) if *block_root == [2; 32]
+        ));
+
+        let request =
+            el.requests.iter().find(|r| r.method == "engine_exchangeCapabilities").unwrap();
+        let mut body = request.body.as_bytes().to_vec();
+        let body = simd_json::to_borrowed_value(&mut body).unwrap();
+        let capabilities = body["params"][0].as_array().unwrap();
+        assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_getBlobsV3")));
+        assert!(!capabilities.iter().any(|v| v.as_str() == Some("engine_getBlobsV2")));
+    }
 
     #[test]
     fn endpoint_http_scheme_parses_to_http() {

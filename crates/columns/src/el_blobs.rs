@@ -1,59 +1,233 @@
-//! EL-mempool blob path: fetch a block's blobs via `engine_getBlobsV2` and
-//! rebuild our custody `DataColumnSidecar`s locally, racing the p2p ByRoot
-//! request. Whichever fills the custody set first wins; the loser dedups via
-//! the tile's column tracker.
-
 use std::{
+    collections::hash_map::Entry,
     io::Write,
     time::{Duration, Instant},
 };
 
 use flux::spine::SpineProducers;
 use silver_common::{
-    ColumnOrigin, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
-    MAX_BLOBS_PER_BLOCK, SilverSpineProducers, SszCache, TCacheProducer, TProducer, TRandomAccess,
-    Wheel, body_root, column_util as util,
+    ColumnOrigin, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq, ForkName,
+    GossipDomain, IngestionTime, MAX_BLOBS_PER_BLOCK, SilverSpineProducers, SszCache,
+    TCacheProducer, TProducer, TRandomAccess, TRead, Wheel, body_root,
+    cell_store::{CommitmentContext, ContextData},
+    column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
-        BeaconBlockBodyFuluView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BeaconBlockBodyFuluView, DATA_COLUMN_SIDECAR_GLOAS_MIN, SignedBeaconBlockView,
     },
 };
 
-use crate::{BlockRoot, DataColumnCounters, availability::ColumnTracker, sync::SyncStatus};
+use crate::{
+    BlockRoot, DataColumnCounters,
+    availability::ColumnTracker,
+    sync::SyncStatus,
+    tile::cell_handler::{CellHandler, CellWriteState},
+    validate::{ColumnValidator, HeaderOutcome},
+};
 
-/// Inline size for [`PendingBlobFetch::commitments`] — avoids a per-fetch heap
-/// allocation.
+mod response;
+use response::BlobResponse;
+
+#[cfg(test)]
+mod tests;
+
+const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_FETCHES: usize = 256;
+const MAX_RESPONSES: usize = 8;
 const MAX_COMMITMENTS_LEN: usize = MAX_BLOBS_PER_BLOCK * BYTES_PER_KZG_COMMITMENT;
 
-/// State carried between firing an `engine_getBlobsV2` request and receiving
-/// its response — everything needed to rebuild custody sidecars from the
-/// returned blobs.
 struct PendingBlobFetch {
-    slot: u64,
-    /// Custody columns still wanted at request time. Recomputed on response
-    /// (the p2p race may have filled some).
+    requested: bool,
+    context: CommitmentContext,
+    domain: GossipDomain,
     needed: u128,
-    num_blobs: usize,
+    deadline: Instant,
     header: [u8; 208],
     inclusion_proof: [u8; 128],
     commitments: [u8; MAX_COMMITMENTS_LEN],
 }
 
+impl PendingBlobFetch {
+    fn new(
+        context: CommitmentContext,
+        domain: GossipDomain,
+        data: ContextData<'_>,
+        needed: u128,
+    ) -> Option<Self> {
+        if context.blob_count == 0 ||
+            context.blob_count > MAX_BLOBS_PER_BLOCK ||
+            !data.valid_for(context) ||
+            domain.format() != context.format
+        {
+            return None;
+        }
+        let mut fetch = Self {
+            requested: false,
+            context,
+            domain,
+            needed,
+            deadline: Instant::now() + FETCH_TIMEOUT,
+            header: [0; 208],
+            inclusion_proof: [0; 128],
+            commitments: [0; MAX_COMMITMENTS_LEN],
+        };
+        let commitments = data.commitments();
+        fetch.commitments[..commitments.len()].copy_from_slice(commitments);
+        if let ContextData::Fulu { signed_header, inclusion_proof, .. } = data {
+            fetch.header = *signed_header;
+            fetch.inclusion_proof = *inclusion_proof;
+        }
+        Some(fetch)
+    }
+
+    fn start(&mut self, producers: &SilverSpineProducers) {
+        if self.requested || self.needed == 0 {
+            return;
+        }
+        self.requested = true;
+        self.deadline = Instant::now() + FETCH_TIMEOUT;
+        let mut request = EngineGetBlobsReq {
+            block_root: self.context.block_root,
+            slot: self.context.slot,
+            hash_count: self.context.blob_count as u8,
+            hashes: [[0; 32]; MAX_BLOBS_PER_BLOCK],
+        };
+        for (hash, commitment) in request
+            .hashes
+            .iter_mut()
+            .zip(self.data().commitments().chunks_exact(BYTES_PER_KZG_COMMITMENT))
+        {
+            *hash = util::kzg_commitment_to_versioned_hash(commitment);
+        }
+        DataColumnCounters::ElBlobsFetched.inc();
+        producers.produce(EngineReq::GetBlobs(request));
+    }
+
+    fn data(&self) -> ContextData<'_> {
+        let commitments = &self.commitments[..self.context.blob_count * BYTES_PER_KZG_COMMITMENT];
+        match self.context.format {
+            ForkName::Fulu => ContextData::Fulu {
+                signed_header: &self.header,
+                inclusion_proof: &self.inclusion_proof,
+                commitments,
+            },
+            _ => ContextData::Gloas { commitments },
+        }
+    }
+}
+
+struct PendingResponse {
+    fetch: PendingBlobFetch,
+    read: TRead,
+}
+
 pub(crate) struct ElBlobFetcher {
-    engine_resp_consumer: TRandomAccess,
-    /// In-flight fetches. 4 buckets × 500ms ⇒ entries age out after ~1.5–2s if
-    /// the EL never responds.
     pending: Wheel<BlockRoot, PendingBlobFetch, 4>,
+    // Deduplication outlives the payload context and includes failed lookups.
+    attempted: Wheel<BlockRoot, (), 4>,
+    responses: Vec<PendingResponse>,
     sidecar_buffer: Vec<u8>,
+    // Deferred responses borrow bucket counters; the consumer must stay put
+    // and outlive those reads.
+    engine_resp_consumer: Box<TRandomAccess>,
 }
 
 impl ElBlobFetcher {
-    pub(crate) fn new(engine_resp_consumer: TRandomAccess) -> Self {
+    pub(crate) fn cache_fulu_block(&mut self, bytes: &[u8], root: BlockRoot, domain: GossipDomain) {
+        if domain.format() != ForkName::Fulu || self.attempted.contains(&root) {
+            return;
+        }
+        if self.pending.len() >= MAX_FETCHES && !self.pending.contains(&root) {
+            return;
+        }
+        let body = SignedBeaconBlockView::body(bytes);
+        if body.len() < BEACON_BLOCK_BODY_FIXED {
+            return;
+        }
+        let start = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
+        let end = BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
+        let Some(commitments) = body.get(start..end) else { return };
+        let context = CommitmentContext {
+            block_root: root,
+            slot: SignedBeaconBlockView::slot(bytes),
+            format: ForkName::Fulu,
+            blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
+        };
+        if context.blob_count == 0 ||
+            context.blob_count > MAX_BLOBS_PER_BLOCK ||
+            !commitments.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT)
+        {
+            return;
+        }
+        let mut header = [0; 208];
+        header[..8].copy_from_slice(&context.slot.to_le_bytes());
+        header[8..16].copy_from_slice(&SignedBeaconBlockView::proposer_index(bytes).to_le_bytes());
+        header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(bytes));
+        header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(bytes));
+        header[80..112].copy_from_slice(&body_root(body));
+        header[112..].copy_from_slice(SignedBeaconBlockView::signature(bytes));
+        let proof = kzg_commitments_inclusion_proof(body);
+        if let Some(fetch) = PendingBlobFetch::new(
+            context,
+            domain,
+            ContextData::Fulu { signed_header: &header, inclusion_proof: &proof, commitments },
+            0,
+        ) {
+            match self.pending.entry(root) {
+                Entry::Occupied(mut entry) => *entry.get_mut() = fetch,
+                Entry::Vacant(entry) => {
+                    entry.insert(fetch);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn approve_block(
+        &mut self,
+        root: BlockRoot,
+        validator: &ColumnValidator,
+        sync: &SyncStatus,
+        tracker: &mut ColumnTracker,
+        producers: &SilverSpineProducers,
+    ) -> Option<(CommitmentContext, GossipDomain, ContextData<'_>)> {
+        let fetch = self.pending.get(&root)?;
+        if fetch.context.format != ForkName::Fulu {
+            return None;
+        }
+        if !fetch.requested {
+            if self.attempted.len() >= MAX_FETCHES ||
+                self.attempted.contains(&root) ||
+                !matches!(
+                    validator.validate_fulu_context(
+                        root,
+                        fetch.domain,
+                        fetch.data(),
+                        sync,
+                        tracker
+                    ),
+                    HeaderOutcome::Valid(_)
+                )
+            {
+                return None;
+            }
+            let mut fetch = self.pending.remove(&root)?;
+            fetch.needed = tracker.to_request(&root);
+            fetch.start(producers);
+            self.attempted.insert(root, ());
+            self.pending.insert(root, fetch);
+        }
+        let fetch = self.pending.get(&root)?;
+        Some((fetch.context, fetch.domain, fetch.data()))
+    }
+
+    pub(crate) fn new(engine_resp_consumer: TRandomAccess, epoch_duration: Duration) -> Self {
         Self {
-            engine_resp_consumer,
-            pending: Wheel::new(Duration::from_millis(500)),
+            pending: Wheel::new(FETCH_TIMEOUT / 4),
+            attempted: Wheel::new(epoch_duration),
+            responses: Vec::with_capacity(MAX_RESPONSES),
             sidecar_buffer: Vec::with_capacity(8 * 1024),
+            engine_resp_consumer: Box::new(engine_resp_consumer),
         }
     }
 
@@ -63,266 +237,241 @@ impl ElBlobFetcher {
 
     pub(crate) fn rotate(&mut self, now: Instant) {
         self.pending.maybe_rotate(now);
+        self.attempted.maybe_rotate(now);
     }
 
-    /// Fire an `engine_getBlobsV2` request for `block`'s blobs and stash the
-    /// state needed to rebuild custody sidecars from the response. No-op if the
-    /// block carries no commitments. Runs alongside the p2p ByRoot path.
+    pub(crate) fn reject(&mut self, root: &BlockRoot) {
+        if self.pending.remove(root).is_some() &&
+            self.attempted.len() < MAX_FETCHES &&
+            !self.attempted.contains(root)
+        {
+            self.attempted.insert(*root, ());
+        }
+        self.responses.retain(|response| &response.fetch.context.block_root != root);
+    }
+
     pub(crate) fn try_fetch(
         &mut self,
-        block: &[u8],
-        block_root: BlockRoot,
-        slot: u64,
+        context: CommitmentContext,
+        domain: GossipDomain,
+        data: ContextData<'_>,
         needed: u128,
+        producers: &SilverSpineProducers,
+    ) {
+        if needed == 0 ||
+            self.attempted.contains(&context.block_root) ||
+            self.attempted.len() >= MAX_FETCHES ||
+            self.pending.len() >= MAX_FETCHES && !self.pending.contains(&context.block_root)
+        {
+            return;
+        }
+        let Some(mut fetch) = PendingBlobFetch::new(context, domain, data, needed) else { return };
+        fetch.start(producers);
+        self.attempted.insert(context.block_root, ());
+        self.pending.remove(&context.block_root);
+        self.pending.insert(context.block_root, fetch);
+    }
+
+    pub(crate) fn handle_response(&mut self, response: EngineGetBlobsResp) {
+        if self
+            .pending
+            .get(&response.block_root)
+            .is_none_or(|pending| !pending.requested || pending.context.slot != response.slot)
+        {
+            return;
+        }
+        let Some(fetch) = self.pending.remove(&response.block_root) else { return };
+        if !response.ok || Instant::now() >= fetch.deadline || self.responses.len() >= MAX_RESPONSES
+        {
+            return;
+        }
+        let read = self.engine_resp_consumer.acquire(response.data);
+        self.responses.push(PendingResponse { fetch, read });
+    }
+
+    pub(crate) fn process_responses(
+        &mut self,
+        mut cells: Option<&mut CellHandler>,
+        tracker: &mut ColumnTracker,
+        sync: &SyncStatus,
+        producer: &mut TProducer,
         producers: &mut SilverSpineProducers,
     ) {
-        let body = SignedBeaconBlockView::body(block);
-        if body.len() < BEACON_BLOCK_BODY_FIXED {
-            return;
-        }
-        let kzg_off = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
-        let exec_off = BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
-        if kzg_off > exec_off || exec_off > body.len() {
-            return;
-        }
-        let commitments = &body[kzg_off..exec_off];
-        if commitments.is_empty() || !commitments.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) {
-            return;
-        }
-        let num_blobs = commitments.len() / BYTES_PER_KZG_COMMITMENT;
-        if num_blobs > MAX_BLOBS_PER_BLOCK {
-            return;
-        }
-
-        let mut req = EngineGetBlobsReq {
-            block_root,
-            slot,
-            hash_count: num_blobs as u8,
-            hashes: [[0u8; 32]; MAX_BLOBS_PER_BLOCK],
-        };
-        for (i, commitment) in commitments.chunks(BYTES_PER_KZG_COMMITMENT).enumerate() {
-            req.hashes[i] = util::kzg_commitment_to_versioned_hash(commitment);
-        }
-
-        let mut header = [0u8; 208];
-        header[0..8].copy_from_slice(&slot.to_le_bytes());
-        header[8..16].copy_from_slice(&SignedBeaconBlockView::proposer_index(block).to_le_bytes());
-        header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(block));
-        header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(block));
-        header[80..112].copy_from_slice(&body_root(body));
-        header[112..208].copy_from_slice(SignedBeaconBlockView::signature(block));
-
-        let mut commitments_buf = [0u8; MAX_COMMITMENTS_LEN];
-        commitments_buf[..commitments.len()].copy_from_slice(commitments);
-
-        self.pending.insert(block_root, PendingBlobFetch {
-            slot,
-            needed,
-            num_blobs,
-            header,
-            inclusion_proof: kzg_commitments_inclusion_proof(body),
-            commitments: commitments_buf,
-        });
-        DataColumnCounters::ElBlobsFetched.inc();
-        producers.produce(EngineReq::GetBlobs(req));
-    }
-
-    /// Rebuilds the still-missing custody sidecars from an `engine_getBlobsV2`
-    /// response and returns `(slot, built)`. Bails (leaving the p2p race to
-    /// fill them) on any incompleteness — `ok == false`, a missing blob, a
-    /// decode/KZG error, or a now-finalized block.
-    pub(crate) fn handle_response(
-        &mut self,
-        resp: EngineGetBlobsResp,
-        tracker: &ColumnTracker,
-        sync_state: &SyncStatus,
-        column_producer: &mut TProducer,
-        producers: &mut SilverSpineProducers,
-    ) -> Option<(u64, u128)> {
-        let block_root = resp.block_root;
-        let pending = self.pending.remove(&block_root)?;
-        if !resp.ok || pending.slot <= sync_state.finalized_slot() {
-            return None;
-        }
-
-        // Columns still missing (some may have arrived via the p2p race).
-        let to_build = tracker.to_request(&block_root) & pending.needed;
-        if to_build == 0 {
-            return None;
-        }
-
-        let read = self.engine_resp_consumer.acquire(resp.data);
-        let Ok((data, _)) = read.buffer() else {
-            tracing::error!(
-                block = hex::encode(block_root),
-                "get_blobs response buffer acquire failed"
-            );
-            return None;
-        };
-        let n = pending.num_blobs;
-        let mut blobs = [(EMPTY, EMPTY); MAX_BLOBS_PER_BLOCK];
-        if !parse_el_blobs(data, &mut blobs[..n]) {
-            tracing::debug!(
-                block = hex::encode(block_root),
-                "el blobs incomplete; leaving columns to the p2p race"
-            );
-            return None;
-        }
-
-        // Column j of the block is cell j of each blob. Only `compute_cells`
-        // (the cheap FFT extension) — the EL's cell proofs are reused as-is.
-        let settings = c_kzg::ethereum_kzg_settings(0);
-        let mut all_cells: [Option<Box<[c_kzg::Cell; c_kzg::CELLS_PER_EXT_BLOB]>>;
-            MAX_BLOBS_PER_BLOCK] = std::array::from_fn(|_| None);
-        for (i, (blob_bytes, _)) in blobs[..n].iter().enumerate() {
-            let blob = match c_kzg::Blob::from_bytes(blob_bytes) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(?e, "el blob decode failed");
-                    return None;
-                }
-            };
-            match settings.compute_cells(&blob) {
-                Ok(cells) => all_cells[i] = Some(cells),
-                Err(e) => {
-                    tracing::error!(?e, "compute_cells failed");
-                    return None;
-                }
-            }
-        }
-
-        let commitments = &pending.commitments[..n * BYTES_PER_KZG_COMMITMENT];
-
-        let mut built = 0u128;
-        for j in 0..NUMBER_OF_COLUMNS as u64 {
-            let bit = 1u128 << j;
-            if to_build & bit == 0 {
+        let now = Instant::now();
+        let mut index = 0;
+        while index < self.responses.len() {
+            let pending = &self.responses[index];
+            let context = pending.fetch.context;
+            let needed = tracker.to_request(&context.block_root) & pending.fetch.needed;
+            if now >= pending.fetch.deadline ||
+                context.slot <= sync.data_availability_floor() ||
+                needed == 0
+            {
+                self.responses.swap_remove(index);
                 continue;
             }
-            let proof_lo = j as usize * BYTES_PER_KZG_PROOF;
-            let proof_hi = proof_lo + BYTES_PER_KZG_PROOF;
-
-            self.sidecar_buffer.clear();
-            util::push_data_column_sidecar_prefix(
-                &mut self.sidecar_buffer,
-                j,
-                n,
-                &pending.header,
-                &pending.inclusion_proof,
-            );
-            // column: cell j of every blob.
-            for cells in all_cells[..n].iter() {
-                let cell = &cells.as_ref().unwrap()[j as usize];
-                // SAFETY: `c_kzg::Cell` is `#[repr(C)]` over `[u8; BYTES_PER_CELL]`;
-                // cast avoids the array copy `Cell::to_bytes()` makes.
-                let bytes: &[u8; BYTES_PER_CELL] = unsafe { &*std::ptr::from_ref(cell).cast() };
-                self.sidecar_buffer.extend_from_slice(bytes);
+            let target = cells.as_ref().map_or(CellWriteState::Unavailable, |cells| {
+                cells.el_write_state(context, pending.fetch.domain, now)
+            });
+            if target == CellWriteState::Pending {
+                index += 1;
+                continue;
             }
-            // kzg_commitments (shared) then kzg_proofs: proof j of every blob.
-            self.sidecar_buffer.extend_from_slice(commitments);
-            for (_, proofs) in blobs[..n].iter() {
-                self.sidecar_buffer.extend_from_slice(&proofs[proof_lo..proof_hi]);
-            }
-            debug_assert_eq!(self.sidecar_buffer.len(), util::data_column_sidecar_len(n));
-
-            match column_producer.reserve(self.sidecar_buffer.len(), true) {
-                Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
-                    Ok(_) => {
-                        tracing::info!(
-                            block_root = hex::encode(block_root),
-                            slot = pending.slot,
-                            column_index = j,
-                            "EL data column recv"
+            let pending = self.responses.swap_remove(index);
+            // Newer responses can force this non-strict consumer past a queued
+            // read. Re-acquire before borrowing bytes, even if its slot still matches.
+            let Some(read) = pending.read.with_offset(0) else {
+                tracing::error!(
+                    block = hex::encode(context.block_root),
+                    "get_blobs response buffer acquire failed"
+                );
+                continue;
+            };
+            let Some(response) = BlobResponse::parse(read.as_ref(), context.blob_count) else {
+                tracing::warn!(
+                    block = hex::encode(context.block_root),
+                    "malformed el blobs response"
+                );
+                continue;
+            };
+            if target == CellWriteState::Ready &&
+                let Some(cells) = cells.as_deref_mut()
+            {
+                for (row, entry) in response.present() {
+                    if let Some(computed) = entry.compute_cells() {
+                        cells.stage_el_row(
+                            context,
+                            pending.fetch.domain,
+                            needed,
+                            row,
+                            &computed,
+                            entry.proofs,
+                            pending.read.seq(),
+                            producers,
                         );
-                        producers.produce(DataColumnsEvent::Validated {
-                            block_root,
-                            column_index: j,
-                            slot: pending.slot,
-                            origin: ColumnOrigin::El,
-                            ssz: reservation.read(),
-                            ssz_cache: SszCache::El,
-                        });
-                        producers.produce(DataColumnsEvent::Persist {
-                            ssz: reservation.read(),
-                            origin: ColumnOrigin::El,
-                            ssz_cache: SszCache::El,
-                            domain: None,
-                            block_root,
-                            column_index: j,
-                            slot: pending.slot,
-                        });
-                        built |= bit;
                     }
-                    Err(e) => tracing::error!(?e, "failed to write el sidecar to tcache"),
-                },
-                None => {
-                    tracing::error!("failed to allocation cache space for el data column");
+                }
+            } else {
+                let built = Self::build_columns(
+                    &pending.fetch,
+                    &response,
+                    needed,
+                    &mut self.sidecar_buffer,
+                    producer,
+                    producers,
+                );
+                if built != 0 {
+                    tracker.record_and_notify(
+                        context.block_root,
+                        context.slot,
+                        built,
+                        IngestionTime::now(),
+                        producers,
+                    );
                 }
             }
         }
+    }
 
-        if built == 0 {
-            return None;
+    fn build_columns(
+        fetch: &PendingBlobFetch,
+        response: &BlobResponse<'_>,
+        needed: u128,
+        buffer: &mut Vec<u8>,
+        producer: &mut TProducer,
+        producers: &SilverSpineProducers,
+    ) -> u128 {
+        let context = fetch.context;
+        if !response.is_complete() {
+            tracing::debug!(
+                block = hex::encode(context.block_root),
+                "el blobs incomplete; leaving columns to the p2p race"
+            );
+            return 0;
         }
-        DataColumnCounters::ElColumnsBuilt.inc();
-        Some((pending.slot, built))
+        let mut all_cells: [Option<Box<[c_kzg::Cell; c_kzg::CELLS_PER_EXT_BLOB]>>;
+            MAX_BLOBS_PER_BLOCK] = std::array::from_fn(|_| None);
+        for (row, entry) in response.present() {
+            let Some(computed) = entry.compute_cells() else { return 0 };
+            all_cells[row] = Some(computed);
+        }
+        let mut built = 0;
+        for column in util::columns_of(needed) {
+            buffer.clear();
+            match fetch.data() {
+                ContextData::Fulu { signed_header, inclusion_proof, .. } => {
+                    util::push_data_column_sidecar_prefix(
+                        buffer,
+                        column,
+                        context.blob_count,
+                        signed_header,
+                        inclusion_proof,
+                    );
+                }
+                ContextData::Gloas { .. } => {
+                    buffer.extend_from_slice(&column.to_le_bytes());
+                    buffer.extend_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
+                    buffer.extend_from_slice(
+                        &((DATA_COLUMN_SIDECAR_GLOAS_MIN + context.blob_count * BYTES_PER_CELL)
+                            as u32)
+                            .to_le_bytes(),
+                    );
+                    buffer.extend_from_slice(&context.slot.to_le_bytes());
+                    buffer.extend_from_slice(&context.block_root);
+                }
+            }
+            for cells in &all_cells[..context.blob_count] {
+                let Some(cells) = cells else { return built };
+                let cell = &cells[column as usize];
+                // SAFETY: Cell is repr(C) over [u8; BYTES_PER_CELL].
+                let bytes: &[u8; BYTES_PER_CELL] = unsafe { &*std::ptr::from_ref(cell).cast() };
+                buffer.extend_from_slice(bytes);
+            }
+            if let ContextData::Fulu { commitments, .. } = fetch.data() {
+                buffer.extend_from_slice(commitments);
+            }
+            let proof_offset = column as usize * BYTES_PER_KZG_PROOF;
+            for (_, entry) in response.present() {
+                buffer.extend_from_slice(
+                    &entry.proofs[proof_offset..proof_offset + BYTES_PER_KZG_PROOF],
+                );
+            }
+            let Some(mut reservation) = producer.reserve(buffer.len(), true) else {
+                tracing::error!("failed to allocation cache space for el data column");
+                continue;
+            };
+            if let Err(error) = reservation.write_all(buffer) {
+                tracing::error!(?error, "failed to write el sidecar to tcache");
+                continue;
+            }
+            tracing::info!(
+                block_root = hex::encode(context.block_root),
+                slot = context.slot,
+                column_index = column,
+                "EL data column recv"
+            );
+            producers.produce(DataColumnsEvent::Validated {
+                block_root: context.block_root,
+                column_index: column,
+                slot: context.slot,
+                origin: ColumnOrigin::El,
+                ssz: reservation.read(),
+                ssz_cache: SszCache::El,
+            });
+            producers.produce(DataColumnsEvent::Persist {
+                ssz: reservation.read(),
+                origin: ColumnOrigin::El,
+                ssz_cache: SszCache::El,
+                domain: Some(fetch.domain),
+                block_root: context.block_root,
+                column_index: column,
+                slot: context.slot,
+            });
+            built |= 1 << column;
+        }
+        if built != 0 {
+            DataColumnCounters::ElColumnsBuilt.inc();
+        }
+        built
     }
-}
-
-/// Placeholder for stack-initializing the parsed-blob array.
-const EMPTY: &[u8] = &[];
-
-/// Parse the `engine_getBlobsV2` tcache frame, filling `out[i]` with
-/// `(blob, cell_proofs)` for blob `i`. `cell_proofs` is the flat
-/// `NUMBER_OF_COLUMNS * 48` bytes of cell KZG proofs the EL supplies — reused
-/// rather than recomputed (proof generation is the expensive half of the KZG
-/// work). Filling a caller slice keeps the parse allocation-free.
-///
-/// Wire layout (from `engine::types::json_get_blobs_to_tcache`):
-/// `[u32 count] ([u8 present][u8 proof_count][48B proof]* [u32
-/// blob_len][blob])*`. Returns `false` unless `count == out.len()`, the frame
-/// is well-formed, every blob is present, and each carries exactly
-/// `NUMBER_OF_COLUMNS` cell proofs.
-fn parse_el_blobs<'a>(data: &'a [u8], out: &mut [(&'a [u8], &'a [u8])]) -> bool {
-    if data.len() < 4 {
-        return false;
-    }
-    let Ok(count_bytes) = data[0..4].try_into() else { return false };
-    if u32::from_le_bytes(count_bytes) as usize != out.len() {
-        return false;
-    }
-    let mut off = 4;
-    for slot in out.iter_mut() {
-        let Some(&present) = data.get(off) else { return false };
-        off += 1;
-        if present == 0 {
-            return false;
-        }
-        let Some(&proof_count) = data.get(off) else { return false };
-        off += 1;
-        if proof_count as usize != NUMBER_OF_COLUMNS {
-            return false;
-        }
-        let Some(proofs_end) = off.checked_add(NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF) else {
-            return false;
-        };
-        if proofs_end > data.len() {
-            return false;
-        }
-        let proofs = &data[off..proofs_end];
-        off = proofs_end;
-        if off + 4 > data.len() {
-            return false;
-        }
-        let Ok(len_bytes) = data[off..off + 4].try_into() else { return false };
-        let blob_len = u32::from_le_bytes(len_bytes) as usize;
-        off += 4;
-        let Some(end) = off.checked_add(blob_len) else { return false };
-        if end > data.len() {
-            return false;
-        }
-        *slot = (&data[off..end], proofs);
-        off = end;
-    }
-    true
 }

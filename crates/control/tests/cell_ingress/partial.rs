@@ -199,7 +199,7 @@ fn speculative_budget_is_cumulative_and_preserves_trusted_replacement_capacity()
         Err(StoreError::Full)
     ));
     let trusted = allocator
-        .allocate(AssemblyRequest { id: 1, context, domain, columns: 7, source: None })
+        .allocate(AssemblyRequest { id: 1, context, domain, columns: 7, source: None }, None)
         .unwrap();
     assert_eq!(trusted.request.context, context);
     rig.now = rig.start + SLOT;
@@ -227,7 +227,7 @@ fn failed_fulu_promotion_closes_every_partially_initialized_column_before_retry(
         }
     });
     assert!(matches!(pending.data.acquire(&mut rig.columns), Err(SubReservationError::Closed)));
-    let set = rig.control.allocator_mut().allocate(request.unwrap()).unwrap();
+    let set = rig.control.allocator_mut().allocate(request.unwrap(), None).unwrap();
     assert!(
         set.reservations
             .view(rig.control.allocator_mut().producer())

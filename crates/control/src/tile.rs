@@ -272,7 +272,7 @@ impl Tile<SilverSpine> for Controller {
                 );
             }
             adapter.consume(|event: CellStoreEvent, producers| {
-                ingress.handle(event, now, producers);
+                ingress.handle(event, now, producers, &mut self.el_ssz_consumer);
                 if let Some(exchange) = &mut self.partial_exchange {
                     match event {
                         CellStoreEvent::Allocate(request) => {

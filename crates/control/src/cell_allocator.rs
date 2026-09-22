@@ -13,7 +13,7 @@ use silver_common::{
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
-        DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
+        DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
     },
 };
 
@@ -171,7 +171,11 @@ impl CellAllocator {
         Ok(set)
     }
 
-    pub fn allocate(&mut self, request: AssemblyRequest) -> Result<AssemblySet, StoreError> {
+    pub fn allocate(
+        &mut self,
+        request: AssemblyRequest,
+        external: Option<ContextData<'_>>,
+    ) -> Result<AssemblySet, StoreError> {
         self.check_request(request)?;
         let context = request.context;
         if let Some(allocation) = self.allocations.get(&context.block_root) &&
@@ -195,28 +199,22 @@ impl CellAllocator {
         let data = match context.format {
             ForkName::Fulu => {
                 let source = request.source.ok_or(StoreError::InvalidContext)?;
-                let bytes = self
-                    .producer
-                    .read_buffer(source.read())
-                    .map_err(|_| StoreError::ContextExpired)?;
                 let data = match source {
-                    FuluContextSource::Header(_) => {
+                    FuluContextSource::ElHeader(_) => external.ok_or(StoreError::ContextExpired)?,
+                    FuluContextSource::Header(read) => {
+                        let bytes = self
+                            .producer
+                            .read_buffer(read)
+                            .map_err(|_| StoreError::ContextExpired)?;
                         ContextData::from_encoded(bytes, ForkName::Fulu)
                             .ok_or(StoreError::InvalidContext)?
                     }
-                    FuluContextSource::Sidecar(_) => {
-                        if !DataColumnSidecarFuluView::check_size(bytes) {
-                            return Err(StoreError::InvalidContext);
-                        }
-                        ContextData::Fulu {
-                            signed_header: bytes[20..228]
-                                .try_into()
-                                .map_err(|_| StoreError::InvalidContext)?,
-                            inclusion_proof: bytes[228..356]
-                                .try_into()
-                                .map_err(|_| StoreError::InvalidContext)?,
-                            commitments: DataColumnSidecarFuluView::kzg_commitments(bytes),
-                        }
+                    FuluContextSource::Sidecar(read) => {
+                        let bytes = self
+                            .producer
+                            .read_buffer(read)
+                            .map_err(|_| StoreError::ContextExpired)?;
+                        ContextData::from_fulu_sidecar(bytes).ok_or(StoreError::InvalidContext)?
                     }
                 };
                 if !data.valid_for(context) {

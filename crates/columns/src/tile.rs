@@ -1,4 +1,5 @@
 use std::{
+    io::Write,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -11,14 +12,15 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind,
-    EngineResp, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
+    EngineResp, ForkName, GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
     RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed,
-    SyncUpdate, TCacheRead, TProducer, TRandomAccess, TRead, Wheel, block_root,
+    SyncUpdate, TCacheProducer, TCacheRead, TProducer, TRandomAccess, TRead, Wheel, block_root,
     cell_store::{
-        CellStoreConfig, CellStoreEvent, CellValidationOutcome, RetentionEvent, StoreError,
+        CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
+        FuluContextSource, RetentionEvent, StoreError,
     },
     column_util::{self as util, KzgScratch},
-    ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
+    ssz_view::{BYTES_PER_KZG_COMMITMENT, NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
     ticker::SlotTicker,
 };
 
@@ -31,7 +33,7 @@ use crate::{
     validate::{ColumnOutcome, ColumnValidator, PendingColumn},
 };
 
-mod cell_handler;
+pub(crate) mod cell_handler;
 
 use cell_handler::CellHandler;
 
@@ -118,7 +120,7 @@ impl DataColumnsTile {
             gloas_pending_columns: Wheel::new(epoch_duration),
             parent_pending_columns: Wheel::new(Duration::from_secs(24)),
             sync_state: SyncStatus::default(),
-            el_fetcher: ElBlobFetcher::new(engine_resp_consumer),
+            el_fetcher: ElBlobFetcher::new(engine_resp_consumer, epoch_duration),
             el_column_producer,
             kzg_scratch: KzgScratch::default(),
             cells: None,
@@ -178,8 +180,13 @@ impl DataColumnsTile {
 
         if is_gloas {
             self.validator.cache_gloas_commitments(block_root, buffer);
-            if let Some(cells) = &mut self.cells {
-                cells.admit_gloas_context(block_root, slot, &self.validator, producers);
+            self.gloas_context(block_root, slot, producers);
+        } else if self.sync_state.is_synced() &&
+            let Some(domain) = self.validator.domain_at(slot)
+        {
+            self.el_fetcher.cache_fulu_block(buffer, block_root, domain);
+            if self.validator.is_validated(&block_root) {
+                self.fulu_block_context(block_root, producers);
             }
         }
 
@@ -196,12 +203,6 @@ impl DataColumnsTile {
             "data columns by root request: {to_request:b}"
         );
 
-        // EL blob reconstruction parses the Fulu body layout; gloas blobs are
-        // fetched from peers by root/range instead.
-        if !is_gloas && self.sync_state.is_synced() {
-            self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, producers);
-        }
-
         producers.produce(SyncNeed::missing_columns(block_root, slot, to_request));
         Some((block_root, is_gloas))
     }
@@ -215,9 +216,8 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) {
         self.validator.note_validated(block_root, slot);
-        if let Some(cells) = &mut self.cells {
-            cells.admit_gloas_context(block_root, slot, &self.validator, producers);
-        }
+        self.gloas_context(block_root, slot, producers);
+        self.fulu_block_context(block_root, producers);
         self.drain_pending_gloas_columns(block_root, producers);
         self.drain_parent_pending_columns(block_root, producers);
 
@@ -236,9 +236,8 @@ impl DataColumnsTile {
     ) -> ColumnDisposition {
         let validated = match column.sidecar.buffer() {
             Ok((buf, _)) => {
-                // cell sourced data columns need revalidation even if the column is already
-                // held, b/c cells can only be served from data columns tcache,
-                // not rpc or el TODO: fix this
+                // RPC and legacy EL output can satisfy custody without providing
+                // sendable backing in the data-columns cache.
                 let verify_held = column.ssz_cache == SszCache::DataColumns &&
                     self.cells.as_ref().is_some_and(|cells| cells.needs_full_validation(buf));
                 self.validator.validate(
@@ -315,6 +314,9 @@ impl DataColumnsTile {
                 ColumnDisposition::Ignored
             }
             ColumnOutcome::Record { block_root, column_index, slot, relay_eligible } => {
+                if relay_eligible && !is_gloas {
+                    self.fulu_context(&column, block_root, slot, producers);
+                }
                 let queued = self.kzg_batch.push(PendingKzg {
                     sidecar: column.sidecar,
                     ssz_cache: column.ssz_cache,
@@ -331,6 +333,107 @@ impl DataColumnsTile {
                 if queued { ColumnDisposition::Batched } else { ColumnDisposition::Ignored }
             }
         }
+    }
+
+    fn fulu_context(
+        &mut self,
+        column: &PendingColumn,
+        block_root: BlockRoot,
+        slot: u64,
+        producers: &SilverSpineProducers,
+    ) {
+        let Some(domain) = column.domain.or_else(|| self.validator.domain_at(slot)) else { return };
+        let Ok((bytes, _)) = column.sidecar.buffer() else { return };
+        let Some(data) = ContextData::from_fulu_sidecar(bytes) else { return };
+        let context = CommitmentContext {
+            block_root,
+            slot,
+            format: ForkName::Fulu,
+            blob_count: data.commitments().len() / BYTES_PER_KZG_COMMITMENT,
+        };
+        if self.sync_state.is_synced() {
+            self.el_fetcher.try_fetch(
+                context,
+                domain,
+                data,
+                self.tracker.to_request(&block_root),
+                producers,
+            );
+        }
+        if column.ssz_cache == SszCache::DataColumns &&
+            let Some(cells) = &mut self.cells
+        {
+            cells.admit_context(
+                context,
+                domain,
+                data,
+                Some(FuluContextSource::Sidecar(column.sidecar.read)),
+                producers,
+            );
+        }
+    }
+
+    fn gloas_context(
+        &mut self,
+        block_root: BlockRoot,
+        slot: u64,
+        producers: &SilverSpineProducers,
+    ) {
+        let Some(commitments) = self.validator.gloas_commitments(&block_root) else { return };
+        let Some(domain) = self.validator.domain_at(slot) else { return };
+        let context = CommitmentContext {
+            block_root,
+            slot,
+            format: ForkName::Gloas,
+            blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
+        };
+        let data = ContextData::Gloas { commitments };
+        if let Some(cells) = &mut self.cells {
+            cells.admit_context(context, domain, data, None, producers);
+        }
+        if self.sync_state.is_synced() && slot > self.sync_state.data_availability_floor() {
+            self.el_fetcher.try_fetch(
+                context,
+                domain,
+                data,
+                self.tracker.to_request(&block_root),
+                producers,
+            );
+        }
+    }
+
+    fn fulu_block_context(&mut self, root: BlockRoot, producers: &SilverSpineProducers) {
+        if !self.sync_state.is_synced() {
+            return;
+        }
+        let Some((context, domain, data)) = self.el_fetcher.approve_block(
+            root,
+            &self.validator,
+            &self.sync_state,
+            &mut self.tracker,
+            producers,
+        ) else {
+            return
+        };
+        let Some(cells) = &mut self.cells else { return };
+        if cells.store().context(&root).is_some() {
+            return;
+        }
+        let Some(mut write) = self.el_column_producer.reserve(data.encoded_len(), false) else {
+            return
+        };
+        let Ok(buffer) = write.buffer() else { return };
+        data.write(buffer);
+        if write.flush().is_err() {
+            return;
+        }
+        cells.admit_context(
+            context,
+            domain,
+            data,
+            Some(FuluContextSource::ElHeader(write.read())),
+            producers,
+        );
     }
 
     fn drain_pending_gloas_columns(
@@ -700,9 +803,8 @@ impl DataColumnsTile {
                 let root = *StatusView::head_root(&ssz);
                 let slot = StatusView::head_slot(&ssz);
                 self.validator.note_validated(root, slot);
-                if let Some(cells) = &mut self.cells {
-                    cells.admit_gloas_context(root, slot, &self.validator, producers);
-                }
+                self.gloas_context(root, slot, producers);
+                self.fulu_block_context(root, producers);
                 self.drain_pending_gloas_columns(root, producers);
                 // Per-event (not latest-only): BS emits one Status per accepted
                 // block, and each newly validated root may unblock buffered
@@ -719,6 +821,7 @@ impl DataColumnsTile {
                 self.note_staged_block(block_root, slot, producers);
             }
             BeaconStateEvent::BlockRejected { block_root, .. } => {
+                self.el_fetcher.reject(&block_root);
                 self.validator.note_rejected(&block_root);
                 self.gloas_pending_columns.remove(&block_root);
                 self.parent_pending_columns.remove(&block_root);
@@ -737,6 +840,11 @@ impl DataColumnsTile {
 
                         if self.spec.is_gloas_at_slot(slot) {
                             self.validator.cache_gloas_commitments(block_root, buf);
+                        } else if self.sync_state.is_synced() &&
+                            slot > self.sync_state.data_availability_floor() &&
+                            let Some(domain) = self.validator.domain_at(slot)
+                        {
+                            self.el_fetcher.cache_fulu_block(buf, block_root, domain);
                         }
                         self.note_staged_block(block_root, slot, producers);
                     }
@@ -848,6 +956,17 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 &mut self.tracker,
                 Instant::now(),
                 &adapter.producers,
+                |context, domain, data, needed| {
+                    if self.sync_state.is_synced() {
+                        self.el_fetcher.try_fetch(
+                            context,
+                            domain,
+                            data,
+                            needed,
+                            &adapter.producers,
+                        );
+                    }
+                },
             );
         }
         if !self.kzg_batch.is_empty() || self.cells.as_ref().is_some_and(CellHandler::has_pending) {
@@ -858,27 +977,21 @@ impl Tile<SilverSpine> for DataColumnsTile {
             self.sync_state.set_sync_target(sync_update);
         });
 
-        adapter.consume(|resp: EngineResp, producers| {
+        adapter.consume(|resp: EngineResp, _| {
             if let EngineResp::GetBlobs(r) = resp {
-                let block_root = r.block_root;
-                let built = self.el_fetcher.handle_response(
-                    r,
-                    &self.tracker,
-                    &self.sync_state,
-                    &mut self.el_column_producer,
-                    producers,
-                );
-                if let Some((slot, built)) = built {
-                    self.tracker.record_and_notify(
-                        block_root,
-                        slot,
-                        built,
-                        IngestionTime::now(),
-                        producers,
-                    );
-                }
+                self.el_fetcher.handle_response(r);
             }
         });
+        self.el_fetcher.process_responses(
+            self.cells.as_mut(),
+            &mut self.tracker,
+            &self.sync_state,
+            &mut self.el_column_producer,
+            &mut adapter.producers,
+        );
+        if self.cells.as_ref().is_some_and(CellHandler::has_pending) {
+            self.flush_kzg_batch(&mut adapter.producers);
+        }
         self.el_fetcher.free();
 
         let now = Instant::now();
@@ -900,9 +1013,9 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, ForkName};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots,
-        MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
-        TCacheProducer, TCacheRead, block_root_fulu,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, GossipDomain, HeadChange,
+        HeadRoots, MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution,
+        StreamProtocol, TCache, TCacheProducer, TCacheRead, block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
             BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -960,7 +1073,7 @@ mod tests {
             Self::build(
                 custody,
                 BeaconStateOwner::empty_test(0).reader(),
-                SpecConfig::mainnet(),
+                fulu_from_genesis(),
                 el_cache_len,
             )
         }
@@ -1477,19 +1590,26 @@ mod tests {
         let too_small = util::data_column_sidecar_len(1).next_power_of_two() / 2;
         let custody_count = CUSTODY_COLUMNS.count_ones() as usize;
 
-        for (el_cache_len, want_built, cache) in
-            [(too_small, false, "el_fail_block"), (TCACHE_LEN, true, "el_ok_block")]
-        {
+        for (el_cache_len, want_built) in [(too_small, false), (TCACHE_LEN, true)] {
             let mut rig = Rig::with_el_cache(CUSTODY_COLUMNS, el_cache_len);
             rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
             // Initialize channel cursors before publishing the response so it
             // is not skipped on the first read.
             rig.tile.loop_body(&mut rig.conn);
-            let (mut consumer, ssz) = produce_block(&block_bytes, cache);
-            let read = consumer.acquire(ssz);
-            rig.tile.beacon_block(
-                P2pStreamId::new(2, 2, StreamProtocol::GossipSub, true),
-                read,
+            // Supply trusted context directly to isolate the output allocation failure.
+            let mut header = [0; 208];
+            header[..8].copy_from_slice(&42u64.to_le_bytes());
+            let context =
+                CommitmentContext { block_root, slot: 42, format: ForkName::Fulu, blob_count: 1 };
+            rig.tile.el_fetcher.try_fetch(
+                context,
+                GossipDomain::new([0; 4], ForkName::Fulu),
+                ContextData::Fulu {
+                    signed_header: &header,
+                    inclusion_proof: &[0; 128],
+                    commitments: &[0; 48],
+                },
+                CUSTODY_COLUMNS,
                 &mut rig.conn.producers,
             );
             assert_eq!(

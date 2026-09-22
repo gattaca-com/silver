@@ -38,6 +38,7 @@ impl Group {
                 Span::Da(DaSpan::Cols(ColumnOrigin::Gossip)),
                 Span::Da(DaSpan::Cols(ColumnOrigin::El)),
                 Span::Da(DaSpan::Cols(ColumnOrigin::Rpc)),
+                Span::Da(DaSpan::Cols(ColumnOrigin::Assembly)),
             ],
             Self::Cols(_) | Self::Batch { .. } => &[],
             Self::Stf => &[
@@ -131,7 +132,7 @@ fn cols_label(origin: ColumnOrigin) -> &'static str {
         ColumnOrigin::Gossip => "gossip cols",
         ColumnOrigin::Rpc => "rpc cols",
         ColumnOrigin::El => "el cols",
-        ColumnOrigin::Assembly => "assembled cols",
+        ColumnOrigin::Assembly => "cells",
     }
 }
 
@@ -438,6 +439,47 @@ mod tests {
             Node::Col { index: 1, rank: 2 },
         ]);
         assert!(cols.iter().all(|d| d.depth == 3 && d.fold == Fold::Leaf));
+    }
+
+    #[test]
+    fn assembled_columns_unfold_as_cells_from_either_data_row() {
+        let origin = ColumnOrigin::Assembly;
+        let traces = rows_of(trace(&[
+            (received(), 300),
+            (Stage::ColumnRecv { index: 7, origin }, 200),
+            (Stage::ColumnValidated { index: 7, origin }, 220),
+            (Stage::DaAvailable, 220),
+            (Stage::ColumnRecv { index: 3, origin }, 230),
+            (Stage::ColumnValidated { index: 3, origin }, 250),
+            (Stage::CustodyDone, 250),
+        ]));
+        let block = &traces[0];
+        let cells = Node::Span(cols(origin));
+        assert_eq!(cols(origin).spec().label, "cells");
+        assert_eq!(cells.parent(block), Some(Group::Da));
+
+        for opener in [Node::Span(DA), Node::Span(Span::Da(DaSpan::Custody))] {
+            let mut expanded = Expanded::default();
+            expanded.toggle(block.block_root, Group::Block);
+            assert!(!nodes(&display_rows(&traces, &expanded)).contains(&cells));
+
+            expanded.toggle(block.block_root, opener.opens().unwrap());
+            let display = display_rows(&traces, &expanded);
+            let row = display.iter().find(|row| row.node == cells).unwrap();
+            assert_eq!((row.depth, row.fold), (2, Fold::Closed));
+
+            expanded.toggle(block.block_root, cells.opens().unwrap());
+            let display = display_rows(&traces, &expanded);
+            let columns = display
+                .iter()
+                .filter(|row| matches!(row.node, Node::Col { .. }))
+                .map(|row| (row.node, row.depth, row.fold))
+                .collect::<Vec<_>>();
+            assert_eq!(columns, [
+                (Node::Col { index: 0, rank: 1 }, 3, Fold::Leaf),
+                (Node::Col { index: 1, rank: 2 }, 3, Fold::Leaf),
+            ]);
+        }
     }
 
     #[test]

@@ -295,21 +295,21 @@ impl<'a> Responses<'a> {
                         block = hex::encode(block_root),
                         slot,
                         blobs_present,
-                        "getBlobsV2 ok"
+                        "getBlobsV3 ok"
                     );
                     EngineGetBlobsResp { block_root, slot, ok: true, blobs_present, data }
                 }
                 Ok(None) => {
-                    tracing::warn!("getBlobsV2 TCache full");
+                    tracing::warn!("getBlobsV3 TCache full");
                     EngineGetBlobsResp::failed(block_root, slot)
                 }
                 Err(e) => {
-                    tracing::warn!("getBlobsV2 parse error: {e}");
+                    tracing::warn!("getBlobsV3 parse error: {e}");
                     EngineGetBlobsResp::failed(block_root, slot)
                 }
             },
             Err(e) => {
-                tracing::warn!("getBlobsV2 error: {e}");
+                tracing::warn!("getBlobsV3 error: {e}");
                 EngineGetBlobsResp::failed(block_root, slot)
             }
         };
