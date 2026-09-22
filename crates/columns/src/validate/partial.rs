@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use fxhash::FxHashMap;
+use silver_beacon_state_data::{B256, StateReadView};
 use silver_common::{
     ForkName, GossipDomain, SLOTS_PER_EPOCH,
     cell_store::{CommitmentContext, ContextData},
@@ -12,7 +13,9 @@ use super::{
     ColumnValidator,
     fulu_header::{FuluHeader, ProposerCheck},
 };
-use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
+use crate::{
+    BlockRoot, availability::ColumnTracker, sync::SyncStatus, validate::fulu_header::HeaderState,
+};
 
 pub(super) struct PartialParents {
     entries: FxHashMap<BlockRoot, ParentInfo>,
@@ -99,54 +102,20 @@ impl ColumnValidator {
         if self.partial_parents.entries.get(parent).is_some_and(|info| info.state_root.is_none()) {
             return HeaderOutcome::Reject;
         }
-        let checks = self.beacon_state.read(|view| {
-            let mut state = header.read_state(&view);
-            let state_slot = view.slot.slot_number();
-            let latest = view.slot.state().latest_block_header;
-            // A post-block snapshot leaves state_root zero until the next slot.
-            // Only a positively validated block may supply the missing root.
-            let state_root = if latest.state_root != [0; 32] {
-                Some(latest.state_root)
-            } else {
-                self.partial_parents
-                    .entries
-                    .get(parent)
-                    .filter(|_| self.validated_block_roots.contains(parent))
-                    .and_then(|info| info.state_root)
-            };
-            let is_head = state_root.is_some_and(|state_root| {
-                *parent ==
-                    merkleize(&[
-                        uint64_chunk(latest.slot),
-                        uint64_chunk(latest.proposer_index),
-                        latest.parent_root,
-                        state_root,
-                        latest.body_root,
-                    ])
-            });
-            let parent_slot = if is_head {
-                Some(latest.slot)
-            } else {
-                view.block_roots.slot_of(parent, state_slot.saturating_sub(1))
-            };
-            if parent_slot.is_none_or(|parent_slot| {
-                slot / SLOTS_PER_EPOCH > parent_slot / SLOTS_PER_EPOCH + 1
-            }) {
-                state.proposer = ProposerCheck::Unresolvable;
-            }
-            let domain = GossipDomain::new(
-                self.spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &view.imm.genesis_validators_root),
-                self.spec.fork_at_slot(slot),
-            );
-            (state, parent_slot, domain)
-        });
-        let Some((state, parent_slot, expected_domain)) = checks else {
+
+        let Some((state, parent_slot, expected_domain)) =
+            self.beacon_state.read(|view| self.state_validate(parent, slot, &header, view))
+        else {
             return HeaderOutcome::Ignore
         };
-        if slot <= state.finalized_slot() {
+
+        if slot <= state.finalized_slot() || state.proposer == ProposerCheck::Unresolvable {
             return HeaderOutcome::Ignore;
         }
-        if domain != expected_domain {
+        if domain != expected_domain ||
+            state.pubkey.is_none() ||
+            state.proposer == ProposerCheck::Mismatch
+        {
             return HeaderOutcome::Reject;
         }
         // The published snapshot vouches for its own ancestry and proposer lookahead,
@@ -157,17 +126,13 @@ impl ColumnValidator {
             }
             return HeaderOutcome::AwaitParent { root: *parent, slot: slot.saturating_sub(1) };
         };
+
         if parent_slot >= slot ||
             parent_slot < state.finalized_slot() && parent != &state.finalized.root
         {
             return HeaderOutcome::Reject;
         }
-        if state.pubkey.is_none() {
-            return HeaderOutcome::Reject;
-        }
-        if state.proposer == ProposerCheck::Unresolvable {
-            return HeaderOutcome::Ignore;
-        }
+
         if header
             .verify_signature(&state, self.spec.fork_version_at(slot / SLOTS_PER_EPOCH), tracker)
             .is_err() ||
@@ -175,14 +140,60 @@ impl ColumnValidator {
         {
             return HeaderOutcome::Reject;
         }
-        if state.proposer == ProposerCheck::Mismatch {
-            return HeaderOutcome::Reject;
-        }
+
         HeaderOutcome::Valid(CommitmentContext {
             block_root: root,
             slot,
             format: ForkName::Fulu,
             blob_count: commitments.len() / BYTES_PER_KZG_COMMITMENT,
         })
+    }
+
+    fn state_validate(
+        &self,
+        parent: &B256,
+        slot: u64,
+        header: &FuluHeader<'_>,
+        view: StateReadView<'_>,
+    ) -> (HeaderState, Option<u64>, GossipDomain) {
+        let mut state = header.read_state(&view);
+        let state_slot = view.slot.slot_number();
+        let latest = view.slot.state().latest_block_header;
+        // A post-block snapshot leaves state_root zero until the next slot.
+        // Only a positively validated block may supply the missing root.
+        let state_root = if latest.state_root != [0; 32] {
+            Some(latest.state_root)
+        } else {
+            self.partial_parents
+                .entries
+                .get(parent)
+                .filter(|_| self.validated_block_roots.contains(parent))
+                .and_then(|info| info.state_root)
+        };
+        let is_head = state_root.is_some_and(|state_root| {
+            *parent ==
+                merkleize(&[
+                    uint64_chunk(latest.slot),
+                    uint64_chunk(latest.proposer_index),
+                    latest.parent_root,
+                    state_root,
+                    latest.body_root,
+                ])
+        });
+        let parent_slot = if is_head {
+            Some(latest.slot)
+        } else {
+            view.block_roots.slot_of(parent, state_slot.saturating_sub(1))
+        };
+        if parent_slot
+            .is_none_or(|parent_slot| slot / SLOTS_PER_EPOCH > parent_slot / SLOTS_PER_EPOCH + 1)
+        {
+            state.proposer = ProposerCheck::Unresolvable;
+        }
+        let domain = GossipDomain::new(
+            self.spec.fork_digest_at(slot / SLOTS_PER_EPOCH, &view.imm.genesis_validators_root),
+            self.spec.fork_at_slot(slot),
+        );
+        (state, parent_slot, domain)
     }
 }

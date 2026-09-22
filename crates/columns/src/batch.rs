@@ -1,6 +1,6 @@
 use silver_common::{
-    GossipDomain, IngestionTime, MessageId, P2pStreamId, SszCache, SubValidation, TCacheRead,
-    TRead,
+    GossipDomain, IngestionTime, MessageId, P2pStreamId, PeerEvent, SszCache, SubValidation,
+    TCacheRead, TRead,
     cell_store::CellValidationRequest,
     column_util::KzgBatchEntry,
     ssz_view::{
@@ -55,6 +55,18 @@ pub(crate) struct PendingKzg {
     pub slot: u64,
     pub is_gloas: bool,
     pub frame: Option<GossipSidecarFrame>,
+}
+
+impl From<&PendingKzg> for PeerEvent {
+    fn from(p: &PendingKzg) -> Self {
+        PeerEvent::ColumnVerdict {
+            p2p_peer: p.stream_id.peer(),
+            block_root: p.block_root,
+            column: p.column_index,
+            recv_ts: p.recv_ts.into(),
+            accepted: true,
+        }
+    }
 }
 
 /// Columns collected within one `loop_body` pass for a single combined

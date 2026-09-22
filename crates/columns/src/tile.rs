@@ -590,13 +590,7 @@ impl DataColumnsTile {
 
     fn resolve_validated(&mut self, mut p: PendingKzg, producers: &mut SilverSpineProducers) {
         if let Some(GossipSidecarFrame { domain, msg_hash, protobuf }) = p.frame.take() {
-            producers.produce(PeerEvent::ColumnVerdict {
-                p2p_peer: p.stream_id.peer(),
-                block_root: p.block_root,
-                column: p.column_index,
-                recv_ts: p.recv_ts.into(),
-                accepted: true,
-            });
+            producers.produce(PeerEvent::from(&p));
             producers.produce(PeerEvent::SendGossip {
                 originator_stream_id: p.stream_id,
                 topic: GossipTopic::DataColumnSidecar(p.column_index),

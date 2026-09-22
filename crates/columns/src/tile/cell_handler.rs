@@ -27,14 +27,104 @@ use crate::{
 
 pub(super) struct CellHandler {
     store: CellStore,
-    pending: Vec<CellValidationRequest>,
-    headers: Vec<HeaderValidationRequest>,
-    header_retry: Instant,
-    header_cursor: usize,
-    pending_limit: usize,
-    pending_ready: bool,
+    pending: PendingCells,
+    headers: PendingHeaders,
     // The boxed consumer stays at a stable address while acquired reads exist.
     consumer: Box<TRandomAccess>,
+}
+
+struct PendingCells {
+    requests: Vec<CellValidationRequest>,
+    limit: usize,
+    // A request was admitted or an assembly installed since the last prepare.
+    ready: bool,
+}
+
+impl PendingCells {
+    fn new(limit: usize) -> Self {
+        Self { requests: Vec::with_capacity(limit), limit, ready: false }
+    }
+
+    fn admit(&mut self, request: CellValidationRequest, now: Instant) -> bool {
+        if now >= request.deadline || self.requests.len() >= self.limit {
+            return false;
+        }
+        self.requests.push(request);
+        self.ready = true;
+        true
+    }
+
+    fn has_root(&self, root: &BlockRoot) -> bool {
+        self.requests.iter().any(|request| request.pending.key.block_root == *root)
+    }
+
+    fn retain_from(&mut self, seq: u64) {
+        self.retain(|request| request.pending.data.reservation().read().seq() >= seq);
+    }
+
+    fn remove_root(&mut self, root: &BlockRoot) {
+        self.retain(|request| request.pending.key.block_root != *root);
+    }
+
+    fn retain(&mut self, keep: impl Fn(&CellValidationRequest) -> bool) {
+        self.requests.retain(|request| {
+            let keep = keep(request);
+            if !keep {
+                DataColumnCounters::PartialCellsIgnored.inc();
+            }
+            keep
+        });
+    }
+}
+
+struct PendingHeaders {
+    requests: Vec<HeaderValidationRequest>,
+    retry_at: Instant,
+    cursor: usize,
+}
+
+impl PendingHeaders {
+    const LIMIT: usize = 128;
+    const PER_PASS: usize = 4;
+    const RETRY: Duration = Duration::from_millis(20);
+
+    fn new(now: Instant) -> Self {
+        Self { requests: Vec::with_capacity(Self::LIMIT), retry_at: now, cursor: 0 }
+    }
+
+    fn admit(&mut self, request: HeaderValidationRequest, now: Instant) -> bool {
+        if now >= request.deadline || self.requests.len() >= Self::LIMIT {
+            return false;
+        }
+        self.requests.push(request);
+        self.retry_at = now;
+        true
+    }
+
+    fn retain_from(&mut self, seq: u64) {
+        self.requests.retain(|request| request.ssz.seq() >= seq);
+    }
+
+    fn remove_root(&mut self, root: &BlockRoot) {
+        self.requests.retain(|request| request.block_root != *root);
+    }
+
+    /// Headers to verify this pass; zero until the retry interval elapses.
+    fn due(&mut self, now: Instant) -> usize {
+        if now < self.retry_at {
+            return 0;
+        }
+        self.retry_at = now + Self::RETRY;
+        self.requests.len().min(Self::PER_PASS)
+    }
+
+    /// Round-robin index into `requests`, which must be non-empty.
+    fn next_index(&mut self) -> usize {
+        self.cursor %= self.requests.len();
+        let index = self.cursor;
+        self.cursor += 1;
+        index
+    }
 }
 
 impl CellHandler {
@@ -48,16 +138,11 @@ impl CellHandler {
         if consumer.cache_ref().capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
-        let pending_limit = config.cell_capacity();
         Ok(Self {
+            pending: PendingCells::new(config.cell_capacity()),
+            headers: PendingHeaders::new(slot_start),
             store: CellStore::new(config, slot, slot_start)?,
             consumer: Box::new(consumer),
-            pending: Vec::with_capacity(pending_limit),
-            headers: Vec::with_capacity(128),
-            header_retry: slot_start,
-            header_cursor: 0,
-            pending_limit,
-            pending_ready: false,
         })
     }
 
@@ -89,14 +174,8 @@ impl CellHandler {
         pending: [&mut Wheel<BlockRoot, Vec<PendingColumn>, 4>; 2],
     ) {
         self.store.expire_through(event.expired_slot);
-        self.pending.retain(|request| {
-            let keep = request.pending.data.reservation().read().seq() >= event.retain_from;
-            if !keep {
-                DataColumnCounters::PartialCellsIgnored.inc();
-            }
-            keep
-        });
-        self.headers.retain(|request| request.ssz.seq() >= event.retain_from);
+        self.pending.retain_from(event.retain_from);
+        self.headers.retain_from(event.retain_from);
         for pending in pending {
             pending.retain(|_, columns| {
                 columns.retain(|column| {
@@ -116,14 +195,8 @@ impl CellHandler {
 
     pub(super) fn reject(&mut self, block_root: BlockRoot, producers: &SilverSpineProducers) {
         self.store.reject(&block_root);
-        self.pending.retain(|request| {
-            let keep = request.pending.key.block_root != block_root;
-            if !keep {
-                DataColumnCounters::PartialCellsIgnored.inc();
-            }
-            keep
-        });
-        self.headers.retain(|request| request.block_root != block_root);
+        self.pending.remove_root(&block_root);
+        self.headers.remove_root(&block_root);
         producers.produce(CellStoreEvent::RejectedContext { block_root });
     }
 
@@ -212,7 +285,7 @@ impl CellHandler {
                 {
                     match self.store.install(set, &mut self.consumer) {
                         Ok(true) => {
-                            self.pending_ready = true;
+                            self.pending.ready = true;
                             let mut columns = request.columns;
                             while columns != 0 {
                                 let column = columns.trailing_zeros() as usize;
@@ -230,29 +303,21 @@ impl CellHandler {
                 _ => self.store.allocation_failed(request),
             },
             CellStoreEvent::Validate(request) => {
-                if now < request.deadline && self.pending.len() < self.pending_limit {
-                    let root = request.pending.key.block_root;
-                    if request.domain.format() == ForkName::Gloas &&
-                        self.store.context(&root).is_none() &&
-                        !self
-                            .pending
-                            .iter()
-                            .any(|pending| pending.pending.key.block_root == root)
-                    {
+                let root = request.pending.key.block_root;
+                let first_for_root = request.domain.format() == ForkName::Gloas &&
+                    self.store.context(&root).is_none() &&
+                    !self.pending.has_root(&root);
+                if self.pending.admit(request, now) {
+                    if first_for_root {
                         producers.produce(SyncNeed::missing_block(root, request.slot));
                     }
-                    self.pending.push(request);
-                    self.pending_ready = true;
                 } else {
                     let _ = request.pending.data.cancel(&mut self.consumer);
                     Self::complete(request, CellValidationOutcome::Ignored, producers);
                 }
             }
-            CellStoreEvent::Header(request)
-                if now < request.deadline && self.headers.len() < 128 =>
-            {
-                self.headers.push(request);
-                self.header_retry = now;
+            CellStoreEvent::Header(request) => {
+                self.headers.admit(request, now);
             }
             CellStoreEvent::Cancel(pending) => {
                 let _ = pending.data.cancel(&mut self.consumer);
@@ -262,7 +327,7 @@ impl CellHandler {
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        self.pending_ready
+        self.pending.ready
     }
 
     pub(super) fn verify_headers(
@@ -273,25 +338,19 @@ impl CellHandler {
         now: Instant,
         producers: &SilverSpineProducers,
     ) {
-        if now < self.header_retry {
-            return;
-        }
-        self.header_retry = now + Duration::from_millis(20);
-        for _ in 0..self.headers.len().min(4) {
-            self.header_cursor %= self.headers.len();
-            let index = self.header_cursor;
-            self.header_cursor += 1;
-            let request = self.headers[index];
+        for _ in 0..self.headers.due(now) {
+            let index = self.headers.next_index();
+            let request = self.headers.requests[index];
             if now >= request.deadline {
-                self.headers.swap_remove(index);
+                self.headers.requests.swap_remove(index);
                 continue;
             }
             let Some(read) = self.acquire(request.ssz) else {
-                self.headers.swap_remove(index);
+                self.headers.requests.swap_remove(index);
                 continue;
             };
             let Ok((bytes, _)) = read.buffer() else {
-                self.headers.swap_remove(index);
+                self.headers.requests.swap_remove(index);
                 continue;
             };
             if let Some((_, context)) = self.store.context(&request.block_root) {
@@ -299,7 +358,7 @@ impl CellHandler {
                     DataColumnCounters::PartialHeadersRejected.inc();
                     Self::verdict(request.origin, request.block_root, false, producers);
                 }
-                self.headers.swap_remove(index);
+                self.headers.requests.swap_remove(index);
                 continue;
             }
             match validator.validate_partial_header(
@@ -310,7 +369,7 @@ impl CellHandler {
                 tracker,
             ) {
                 HeaderOutcome::Valid(context) => {
-                    self.headers.swap_remove(index);
+                    self.headers.requests.swap_remove(index);
                     let Some(data) = ContextData::from_encoded(bytes, ForkName::Fulu) else {
                         continue
                     };
@@ -334,7 +393,7 @@ impl CellHandler {
                 }
                 HeaderOutcome::Reject => {
                     DataColumnCounters::PartialHeadersRejected.inc();
-                    self.headers.swap_remove(index);
+                    self.headers.requests.swap_remove(index);
                     Self::verdict(request.origin, request.block_root, false, producers);
                 }
                 HeaderOutcome::AwaitParent { root, slot } => {
@@ -350,18 +409,18 @@ impl CellHandler {
         now: Instant,
         producers: &SilverSpineProducers,
     ) -> PreparedCells {
-        self.pending_ready = false;
+        self.pending.ready = false;
         let mut ready = std::array::from_fn(|_| None);
         let mut count = 0;
-        for index in (0..self.pending.len()).rev() {
+        for index in (0..self.pending.requests.len()).rev() {
             if count == ready.len() {
-                self.pending_ready = true;
+                self.pending.ready = true;
                 break;
             }
-            let request = self.pending[index];
+            let request = self.pending.requests[index];
             let key = request.pending.key;
             if now >= request.deadline {
-                self.pending.swap_remove(index);
+                self.pending.requests.swap_remove(index);
                 let _ = request.pending.data.cancel(&mut self.consumer);
                 Self::complete(request, CellValidationOutcome::Ignored, producers);
                 continue;
@@ -370,7 +429,7 @@ impl CellHandler {
                 continue
             };
             let Some(assembly) = column.assembly else { continue };
-            self.pending.swap_remove(index);
+            self.pending.requests.swap_remove(index);
             if column.domain != request.domain ||
                 now >= column.expires ||
                 column.cell(key.row).is_some() ||
