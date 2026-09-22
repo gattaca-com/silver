@@ -33,6 +33,13 @@ pub(crate) struct CellHandler {
     consumer: Box<TRandomAccess>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellWriteState {
+    Unavailable,
+    Pending,
+    Ready,
+}
+
 struct PendingCells {
     requests: Vec<CellValidationRequest>,
     limit: usize,
@@ -45,8 +52,12 @@ impl PendingCells {
         Self { requests: Vec::with_capacity(limit), limit, ready: false }
     }
 
+    fn is_full(&self) -> bool {
+        self.requests.len() >= self.limit
+    }
+
     fn admit(&mut self, request: CellValidationRequest, now: Instant) -> bool {
-        if now >= request.deadline || self.requests.len() >= self.limit {
+        if now >= request.deadline || self.is_full() {
             return false;
         }
         self.requests.push(request);
@@ -170,7 +181,7 @@ impl CellHandler {
     ) {
         let now = Instant::now();
         for column in columns_of(columns) {
-            if self.pending.len() >= self.pending_limit {
+            if self.pending.is_full() {
                 break;
             }
             let Some(available) = self.store.availability(&context.block_root, column as usize)
