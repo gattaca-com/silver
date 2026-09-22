@@ -19,6 +19,11 @@ use crate::{BlockRoot, availability::ColumnTracker, sync::SyncStatus};
 const COMMITMENT_EPOCHS: usize = 4;
 const MAX_COMMITMENT_ROOTS: usize = 2 * COMMITMENT_EPOCHS * SLOTS_PER_EPOCH as usize;
 
+mod fulu_header;
+mod partial;
+use fulu_header::{FuluHeader, ProposerCheck, SignatureError};
+pub(crate) use partial::HeaderOutcome;
+
 /// A sidecar with the provenance its validation needs. Carrying `recv_ts` is
 /// what lets a column buffered before its block still report its own receive
 /// time rather than the drain's.
@@ -61,13 +66,6 @@ pub(crate) enum ColumnOutcome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ProposerCheck {
-    Matches,
-    Mismatch,
-    Unresolvable,
-}
-
-#[derive(Debug, PartialEq, Eq)]
 enum ParentCheck {
     Seen,
     Unseen,
@@ -99,6 +97,7 @@ pub(crate) struct ColumnValidator {
     // slot each sits at — parent-seen and parent-slot checks beyond the head
     // fork.
     validated_block_roots: Wheel<BlockRoot, u64, 16>,
+    partial_parents: partial::PartialParents,
 }
 
 impl ColumnValidator {
@@ -114,6 +113,7 @@ impl ColumnValidator {
             ticker,
             gloas_commitments: Wheel::new(epoch_duration),
             validated_block_roots: Wheel::new(epoch_duration),
+            partial_parents: partial::PartialParents::new(epoch_duration * 2),
         }
     }
 
@@ -132,6 +132,11 @@ impl ColumnValidator {
     pub fn note_rejected(&mut self, block_root: &BlockRoot) {
         self.validated_block_roots.remove(block_root);
         self.gloas_commitments.remove(block_root);
+        self.partial_parents.remember(*block_root, None);
+    }
+
+    pub fn cache_parent_state_root(&mut self, block_root: BlockRoot, buffer: &[u8]) {
+        self.partial_parents.remember(block_root, Some(*SignedBeaconBlockView::state_root(buffer)));
     }
 
     #[cfg(test)]
@@ -186,6 +191,7 @@ impl ColumnValidator {
     }
 
     pub fn rotate(&mut self, now: Instant) {
+        self.partial_parents.prune(now);
         self.gloas_commitments.maybe_rotate(now);
         self.validated_block_roots.maybe_rotate(now);
     }
@@ -246,7 +252,11 @@ impl ColumnValidator {
             return ColumnOutcome::Skip;
         }
 
-        let block_root = util::block_root_from_sidecar(buffer);
+        let header = FuluHeader::new(
+            DataColumnSidecarFuluView::block_header(buffer),
+            DataColumnSidecarFuluView::block_signature(buffer),
+        );
+        let block_root = header.root;
         let column_index = DataColumnSidecarFuluView::index(buffer);
         if column_index >= NUMBER_OF_COLUMNS as u64 {
             tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
@@ -273,10 +283,10 @@ impl ColumnValidator {
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
-        // Inclusion proof binds the sidecar's `kzg_commitments` to the
-        // block's `body_root` — neither input is pinned by block_root, so
-        // it must run on every sidecar.
-        if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
+        if !header.verify_commitments(
+            DataColumnSidecarFuluView::kzg_commitments(buffer),
+            DataColumnSidecarFuluView::inclusion_proof(buffer),
+        ) {
             tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
@@ -284,18 +294,8 @@ impl ColumnValidator {
         // State-driven validations: pull every input in one seqlock pass.
         // BLS verify runs OUTSIDE the closure (slow; would hold the
         // notional read lock too long otherwise).
-        let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
         let validated_parent_slot = self.validated_block_roots.get(parent_root).copied();
         let checks = self.beacon_state.read(|v| {
-            let state_epoch = v.slot.current_epoch();
-            // proposer_lookahead is anchored to `state_epoch` and covers
-            // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64).
-            let lookahead_idx = slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
-            let proposer = match v.epoch.proposer_at(lookahead_idx) {
-                Some(expected) if expected == claimed_proposer_index => ProposerCheck::Matches,
-                Some(_) => ProposerCheck::Mismatch,
-                None => ProposerCheck::Unresolvable,
-            };
             let parent = match validated_parent_slot {
                 Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
                 None if parent_root == sync_state.head_root() => ParentCheck::Seen,
@@ -304,29 +304,19 @@ impl ColumnValidator {
                     None => ParentCheck::Unseen,
                 },
             };
-            let is_above_finalized =
-                util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
-
-            let idx = claimed_proposer_index as usize;
-            let pubkey =
-                (idx < v.validators.count()).then(|| *v.validators.pubkey_decompressed(idx));
-
             (
-                is_above_finalized,
+                header.read_state(&v),
                 parent,
-                proposer,
-                pubkey,
                 v.epoch.fork().current_version, // TODO for backfill
-                v.imm.genesis_validators_root,
             )
         });
         // No snapshot yet (pre-bootstrap): nothing can be validated.
-        let Some((above_finalized, parent, proposer, pubkey, fork_version, gvr)) = checks else {
+        let Some((state, parent, fork_version)) = checks else {
             tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         };
 
-        if !above_finalized {
+        if slot <= state.finalized_slot() {
             tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
@@ -346,7 +336,7 @@ impl ColumnValidator {
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
         }
-        let relay_eligible = match proposer {
+        let relay_eligible = match state.proposer {
             ProposerCheck::Matches => true,
             ProposerCheck::Mismatch => {
                 tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
@@ -359,21 +349,16 @@ impl ColumnValidator {
             }
         };
 
-        // BLS verify cache: skip the ~1 ms verify iff the sidecar's
-        // signature bytes match a previously-validated signature for
-        // this block_root. block_root does not pin the signature, so
-        // bytes-equality is required.
-        let sig_bytes = *DataColumnSidecarFuluView::block_signature(buffer);
-        if !tracker.signature_verified(&block_root, &sig_bytes) {
-            let Some(pubkey) = pubkey else {
+        match header.verify_signature(&state, fork_version, tracker) {
+            Ok(()) => {}
+            Err(SignatureError::UnknownProposer) => {
                 tracing::warn!(?stream_id, "sidecar proposer_index out of range");
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
-            };
-            if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
+            }
+            Err(SignatureError::InvalidSignature) => {
                 tracing::warn!(?stream_id, "sidecar proposer signature invalid");
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
-            tracker.set_signature(block_root, sig_bytes);
         }
 
         ColumnOutcome::Record { block_root, column_index, slot, relay_eligible }

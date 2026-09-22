@@ -17,7 +17,9 @@ use silver_common::{
 // offsets-plus-bitmap prefix; every piece is small and bounded.
 const MAX_PARTIAL_FRAMING: usize = 256;
 
+mod inbound;
 mod metadata;
+pub use inbound::{ColumnIngress, PartialInbound};
 pub use metadata::{ColumnGroupKey, PartialMetadataReceived};
 
 /// Row masks for a `partsMetadata` field; both bitlists carry exactly

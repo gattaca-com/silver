@@ -6,7 +6,7 @@ use std::{
 use silver_beacon_state_data::ForkName;
 
 use crate::{
-    AcquiredRange, GossipDomain, GossipTopic, MessageId, Nanos, P2pStreamId, PendingSubReservation,
+    AcquiredRange, GossipDomain, GossipTopic, Nanos, P2pStreamId, PendingSubReservation,
     SubReservationError, SubReservationList, SubReservationRef, TCacheRead, TRandomAccess,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -155,16 +155,39 @@ pub struct PendingCell {
 
 #[derive(Clone, Copy, Debug)]
 pub enum CellOrigin {
-    Gossip { stream_id: P2pStreamId, topic: GossipTopic, message_id: MessageId, received: Nanos },
+    Gossip { stream_id: P2pStreamId, topic: GossipTopic, received: Nanos },
     El { request_id: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct CellValidationRequest {
     pub pending: PendingCell,
+    pub slot: u64,
     pub origin: CellOrigin,
     pub deadline: Instant,
     pub domain: GossipDomain,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HeaderValidationRequest {
+    pub block_root: [u8; 32],
+    pub ssz: TCacheRead,
+    pub domain: GossipDomain,
+    pub origin: CellOrigin,
+    pub deadline: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ColumnGroupKey {
+    pub domain: GossipDomain,
+    pub block_root: [u8; 32],
+    pub column: u64,
+}
+
+impl From<ColumnAvailability> for ColumnGroupKey {
+    fn from(column: ColumnAvailability) -> Self {
+        Self { domain: column.domain, block_root: column.block_root, column: column.column as u64 }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,7 +260,7 @@ impl ColumnAvailability {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellValidationOutcome {
     Accepted,
     Rejected,
@@ -251,6 +274,7 @@ pub enum CellStoreEvent {
     Allocated { request: AssemblyRequest, set: Option<AssemblySet> },
     Available(ColumnAvailability),
     Validate(CellValidationRequest),
+    Header(HeaderValidationRequest),
     Cancel(PendingCell),
     Validation { request: CellValidationRequest, outcome: CellValidationOutcome },
 }

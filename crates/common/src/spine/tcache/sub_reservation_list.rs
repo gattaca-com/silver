@@ -16,9 +16,9 @@ pub struct SubReservationList {
 }
 
 impl SubReservationList {
-    pub fn write(
+    pub fn write<T: Into<Option<SubReservationRef>>>(
         producer: &mut Producer,
-        entries: impl ExactSizeIterator<Item = SubReservationRef>,
+        entries: impl ExactSizeIterator<Item = T>,
     ) -> Result<Self, SubReservationError> {
         let count = entries.len();
         if count == 0 || count > 128 {
@@ -29,6 +29,7 @@ impl SubReservationList {
         let bytes = reservation.buffer().map_err(|_| SubReservationError::Stale)?;
         let mut written = 0;
         for (index, entry) in entries.enumerate() {
+            let entry = entry.into().ok_or(SubReservationError::InvalidLayout)?;
             if index >= count || entry.read.tcache.cache != producer.cache.cast() {
                 return Err(SubReservationError::WrongProducer);
             }
@@ -116,7 +117,10 @@ mod tests {
         let mut wrong = Box::new(other.cache_ref().retained_random_access("").unwrap());
         assert!(matches!(list.acquire(&mut wrong), Err(SubReservationError::WrongConsumer)));
         assert!(SubReservationList::write(&mut other, [first].into_iter()).is_err());
-        assert!(SubReservationList::write(&mut producer, [].into_iter()).is_err());
+        assert!(
+            SubReservationList::write(&mut producer, std::iter::empty::<SubReservationRef>())
+                .is_err()
+        );
         assert!(SubReservationList::write(&mut producer, [first; 129].into_iter()).is_err());
 
         producer.view_sub_reservation(first).unwrap().close();

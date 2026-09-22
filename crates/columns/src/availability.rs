@@ -40,8 +40,8 @@ struct BlockColumns {
     /// Columns of this block that passed KZG validation here.
     validated: u128,
     /// Proposer signature already BLS-verified for this block root. The root
-    /// does not pin the signature, so the memo hits only on bytes-equality.
-    signature: Option<[u8; 96]>,
+    /// does not pin the signature or signing fork, so both must match.
+    signature: Option<([u8; 96], [u8; 4])>,
 }
 
 /// Which columns this node has for each block it still tracks, plus the custody
@@ -118,12 +118,26 @@ impl ColumnTracker {
         self.blocks.get(root).is_some_and(|b| b.validated & (1u128 << column) != 0)
     }
 
-    pub(crate) fn signature_verified(&self, root: &BlockRoot, signature: &[u8; 96]) -> bool {
-        self.blocks.get(root).is_some_and(|b| b.signature.as_ref() == Some(signature))
+    pub(crate) fn signature_verified(
+        &self,
+        root: &BlockRoot,
+        signature: &[u8; 96],
+        fork_version: [u8; 4],
+    ) -> bool {
+        self.blocks.get(root).is_some_and(|b| {
+            b.signature.as_ref().is_some_and(|(verified, version)| {
+                verified == signature && *version == fork_version
+            })
+        })
     }
 
-    pub(crate) fn set_signature(&mut self, root: BlockRoot, signature: [u8; 96]) {
-        self.blocks.entry(root).or_default().signature = Some(signature);
+    pub(crate) fn set_signature(
+        &mut self,
+        root: BlockRoot,
+        signature: [u8; 96],
+        fork_version: [u8; 4],
+    ) {
+        self.blocks.entry(root).or_default().signature = Some((signature, fork_version));
     }
 
     pub(crate) fn maybe_rotate(&mut self, now: Instant) {

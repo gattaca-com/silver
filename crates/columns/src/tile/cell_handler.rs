@@ -1,29 +1,130 @@
-use std::{iter::once, ptr, time::Instant};
+use std::{
+    ptr,
+    time::{Duration, Instant},
+};
 
 use flux::spine::SpineProducers;
 use silver_common::{
-    ColumnOrigin, DataColumnsEvent, ForkName, IngestionTime, SilverSpineProducers, SszCache,
-    TCacheRead, TRandomAccess, TRead, Wheel,
+    ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, IngestionTime, PeerEvent,
+    SilverSpineProducers, SszCache, SyncNeed, TCacheRead, TRandomAccess, TRead, Wheel,
     cell_store::{
-        CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
-        CommitmentContext, ContextData, FuluContextSource, RetentionEvent, StoreError,
+        CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
+        CommitmentContext, ContextData, DataColumnCounters, FuluContextSource,
+        HeaderValidationRequest, RetentionEvent, StoreError,
     },
-    column_util::{self as util, KzgBatchEntry, KzgScratch, SidecarIdentity},
+    column_util::SidecarIdentity,
     ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
 };
 
 use crate::{
     BlockRoot,
     availability::ColumnTracker,
-    batch::PendingKzg,
+    batch::{PendingCellKzg, PendingKzg, PreparedCells},
     cell_store::CellStore,
-    validate::{ColumnValidator, PendingColumn},
+    sync::SyncStatus,
+    validate::{ColumnValidator, HeaderOutcome, PendingColumn},
 };
 
 pub(super) struct CellHandler {
     store: CellStore,
+    pending: PendingCells,
+    headers: PendingHeaders,
     // The boxed consumer stays at a stable address while acquired reads exist.
     consumer: Box<TRandomAccess>,
+}
+
+struct PendingCells {
+    requests: Vec<CellValidationRequest>,
+    limit: usize,
+    // A request was admitted or an assembly installed since the last prepare.
+    ready: bool,
+}
+
+impl PendingCells {
+    fn new(limit: usize) -> Self {
+        Self { requests: Vec::with_capacity(limit), limit, ready: false }
+    }
+
+    fn admit(&mut self, request: CellValidationRequest, now: Instant) -> bool {
+        if now >= request.deadline || self.requests.len() >= self.limit {
+            return false;
+        }
+        self.requests.push(request);
+        self.ready = true;
+        true
+    }
+
+    fn has_root(&self, root: &BlockRoot) -> bool {
+        self.requests.iter().any(|request| request.pending.key.block_root == *root)
+    }
+
+    fn retain_from(&mut self, seq: u64) {
+        self.retain(|request| request.pending.data.reservation().read().seq() >= seq);
+    }
+
+    fn remove_root(&mut self, root: &BlockRoot) {
+        self.retain(|request| request.pending.key.block_root != *root);
+    }
+
+    fn retain(&mut self, keep: impl Fn(&CellValidationRequest) -> bool) {
+        self.requests.retain(|request| {
+            let keep = keep(request);
+            if !keep {
+                DataColumnCounters::PartialCellsIgnored.inc();
+            }
+            keep
+        });
+    }
+}
+
+struct PendingHeaders {
+    requests: Vec<HeaderValidationRequest>,
+    retry_at: Instant,
+    cursor: usize,
+}
+
+impl PendingHeaders {
+    const LIMIT: usize = 128;
+    const PER_PASS: usize = 4;
+    const RETRY: Duration = Duration::from_millis(20);
+
+    fn new(now: Instant) -> Self {
+        Self { requests: Vec::with_capacity(Self::LIMIT), retry_at: now, cursor: 0 }
+    }
+
+    fn admit(&mut self, request: HeaderValidationRequest, now: Instant) -> bool {
+        if now >= request.deadline || self.requests.len() >= Self::LIMIT {
+            return false;
+        }
+        self.requests.push(request);
+        self.retry_at = now;
+        true
+    }
+
+    fn retain_from(&mut self, seq: u64) {
+        self.requests.retain(|request| request.ssz.seq() >= seq);
+    }
+
+    fn remove_root(&mut self, root: &BlockRoot) {
+        self.requests.retain(|request| request.block_root != *root);
+    }
+
+    /// Headers to verify this pass; zero until the retry interval elapses.
+    fn due(&mut self, now: Instant) -> usize {
+        if now < self.retry_at {
+            return 0;
+        }
+        self.retry_at = now + Self::RETRY;
+        self.requests.len().min(Self::PER_PASS)
+    }
+
+    /// Round-robin index into `requests`, which must be non-empty.
+    fn next_index(&mut self) -> usize {
+        self.cursor %= self.requests.len();
+        let index = self.cursor;
+        self.cursor += 1;
+        index
+    }
 }
 
 impl CellHandler {
@@ -37,7 +138,12 @@ impl CellHandler {
         if consumer.cache_ref().capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
-        Ok(Self { store: CellStore::new(config, slot, slot_start)?, consumer: Box::new(consumer) })
+        Ok(Self {
+            pending: PendingCells::new(config.cell_capacity()),
+            headers: PendingHeaders::new(slot_start),
+            store: CellStore::new(config, slot, slot_start)?,
+            consumer: Box::new(consumer),
+        })
     }
 
     #[inline]
@@ -68,6 +174,8 @@ impl CellHandler {
         pending: [&mut Wheel<BlockRoot, Vec<PendingColumn>, 4>; 2],
     ) {
         self.store.expire_through(event.expired_slot);
+        self.pending.retain_from(event.retain_from);
+        self.headers.retain_from(event.retain_from);
         for pending in pending {
             pending.retain(|_, columns| {
                 columns.retain(|column| {
@@ -87,6 +195,8 @@ impl CellHandler {
 
     pub(super) fn reject(&mut self, block_root: BlockRoot, producers: &SilverSpineProducers) {
         self.store.reject(&block_root);
+        self.pending.remove_root(&block_root);
+        self.headers.remove_root(&block_root);
         producers.produce(CellStoreEvent::RejectedContext { block_root });
     }
 
@@ -166,7 +276,6 @@ impl CellHandler {
         &mut self,
         event: CellStoreEvent,
         now: Instant,
-        scratch: &mut KzgScratch,
         producers: &mut SilverSpineProducers,
     ) {
         match event {
@@ -176,6 +285,7 @@ impl CellHandler {
                 {
                     match self.store.install(set, &mut self.consumer) {
                         Ok(true) => {
+                            self.pending.ready = true;
                             let mut columns = request.columns;
                             while columns != 0 {
                                 let column = columns.trailing_zeros() as usize;
@@ -193,8 +303,21 @@ impl CellHandler {
                 _ => self.store.allocation_failed(request),
             },
             CellStoreEvent::Validate(request) => {
-                let outcome = self.validate_cell(request, now, scratch);
-                producers.produce(CellStoreEvent::Validation { request, outcome });
+                let root = request.pending.key.block_root;
+                let first_for_root = request.domain.format() == ForkName::Gloas &&
+                    self.store.context(&root).is_none() &&
+                    !self.pending.has_root(&root);
+                if self.pending.admit(request, now) {
+                    if first_for_root {
+                        producers.produce(SyncNeed::missing_block(root, request.slot));
+                    }
+                } else {
+                    let _ = request.pending.data.cancel(&mut self.consumer);
+                    Self::complete(request, CellValidationOutcome::Ignored, producers);
+                }
+            }
+            CellStoreEvent::Header(request) => {
+                self.headers.admit(request, now);
             }
             CellStoreEvent::Cancel(pending) => {
                 let _ = pending.data.cancel(&mut self.consumer);
@@ -203,53 +326,186 @@ impl CellHandler {
         }
     }
 
-    pub(super) fn validate_cell(
+    pub(super) fn has_pending(&self) -> bool {
+        self.pending.ready
+    }
+
+    pub(super) fn verify_headers(
         &mut self,
-        request: CellValidationRequest,
+        validator: &ColumnValidator,
+        sync: &SyncStatus,
+        tracker: &mut ColumnTracker,
         now: Instant,
-        scratch: &mut KzgScratch,
-    ) -> CellValidationOutcome {
-        let key = request.pending.key;
-        let eligible = self.store.availability(&key.block_root, key.column).is_some_and(|column| {
-            now < request.deadline &&
-                now < column.expires &&
-                column.domain == request.domain &&
-                column.assembly.is_some_and(|reference| {
-                    reference.read().seq() == request.pending.data.reservation().read().seq()
-                }) &&
-                key.row == request.pending.data.part()
-        });
-        if !eligible {
-            let _ = request.pending.data.cancel(&mut self.consumer);
-            return CellValidationOutcome::Ignored;
+        producers: &SilverSpineProducers,
+    ) {
+        for _ in 0..self.headers.due(now) {
+            let index = self.headers.next_index();
+            let request = self.headers.requests[index];
+            if now >= request.deadline {
+                self.headers.requests.swap_remove(index);
+                continue;
+            }
+            let Some(read) = self.acquire(request.ssz) else {
+                self.headers.requests.swap_remove(index);
+                continue;
+            };
+            let Ok((bytes, _)) = read.buffer() else {
+                self.headers.requests.swap_remove(index);
+                continue;
+            };
+            if let Some((_, context)) = self.store.context(&request.block_root) {
+                if !context.matches(bytes) {
+                    DataColumnCounters::PartialHeadersRejected.inc();
+                    Self::verdict(request.origin, request.block_root, false, producers);
+                }
+                self.headers.requests.swap_remove(index);
+                continue;
+            }
+            match validator.validate_partial_header(
+                request.block_root,
+                request.domain,
+                bytes,
+                sync,
+                tracker,
+            ) {
+                HeaderOutcome::Valid(context) => {
+                    self.headers.requests.swap_remove(index);
+                    let Some(data) = ContextData::from_encoded(bytes, ForkName::Fulu) else {
+                        continue
+                    };
+                    if self
+                        .store
+                        .admit_context(
+                            context,
+                            request.domain,
+                            data,
+                            Some(FuluContextSource::Header(request.ssz)),
+                        )
+                        .is_ok()
+                    {
+                        DataColumnCounters::PartialHeadersAccepted.inc();
+                        if let Some(allocation) = self.store.request_assemblies(&request.block_root)
+                        {
+                            producers.produce(CellStoreEvent::Allocate(allocation));
+                        }
+                        Self::verdict(request.origin, request.block_root, true, producers);
+                    }
+                }
+                HeaderOutcome::Reject => {
+                    DataColumnCounters::PartialHeadersRejected.inc();
+                    self.headers.requests.swap_remove(index);
+                    Self::verdict(request.origin, request.block_root, false, producers);
+                }
+                HeaderOutcome::AwaitParent { root, slot } => {
+                    producers.produce(SyncNeed::missing_block(root, slot))
+                }
+                HeaderOutcome::Ignore => {}
+            }
         }
-        let Ok(validation) = request.pending.data.acquire(&mut self.consumer) else {
-            return CellValidationOutcome::Ignored
+    }
+
+    pub(super) fn prepare_cells(
+        &mut self,
+        now: Instant,
+        producers: &SilverSpineProducers,
+    ) -> PreparedCells {
+        self.pending.ready = false;
+        let mut ready = std::array::from_fn(|_| None);
+        let mut count = 0;
+        for index in (0..self.pending.requests.len()).rev() {
+            if count == ready.len() {
+                self.pending.ready = true;
+                break;
+            }
+            let request = self.pending.requests[index];
+            let key = request.pending.key;
+            if now >= request.deadline {
+                self.pending.requests.swap_remove(index);
+                let _ = request.pending.data.cancel(&mut self.consumer);
+                Self::complete(request, CellValidationOutcome::Ignored, producers);
+                continue;
+            }
+            let Some(column) = self.store.availability(&key.block_root, key.column) else {
+                continue
+            };
+            let Some(assembly) = column.assembly else { continue };
+            self.pending.requests.swap_remove(index);
+            if column.domain != request.domain ||
+                now >= column.expires ||
+                column.cell(key.row).is_some() ||
+                key.row != request.pending.data.part() ||
+                assembly.read().seq() != request.pending.data.reservation().read().seq()
+            {
+                let _ = request.pending.data.cancel(&mut self.consumer);
+                Self::complete(request, CellValidationOutcome::Ignored, producers);
+                continue;
+            }
+            let Ok(validation) = request.pending.data.acquire(&mut self.consumer) else {
+                Self::complete(request, CellValidationOutcome::Ignored, producers);
+                continue;
+            };
+            ready[count] = Some(PendingCellKzg { request, validation });
+            count += 1;
+        }
+        ready
+    }
+
+    pub(super) fn resolve_cell(
+        &mut self,
+        pending: PendingCellKzg,
+        valid: bool,
+        producers: &SilverSpineProducers,
+    ) {
+        let request = pending.request;
+        let outcome = if Instant::now() >= request.deadline {
+            CellValidationOutcome::Ignored
+        } else if !valid {
+            Self::verdict(request.origin, request.pending.key.block_root, false, producers);
+            CellValidationOutcome::Rejected
+        } else if pending.validation.accept().is_ok() {
+            let key = request.pending.key;
+            self.store.mark_changed(&key.block_root, key.column);
+            Self::verdict(request.origin, key.block_root, true, producers);
+            CellValidationOutcome::Accepted
+        } else {
+            CellValidationOutcome::Ignored
         };
-        let (context, data) = self.store.context(&key.block_root).unwrap();
-        if key.row >= context.blob_count {
-            return CellValidationOutcome::Ignored;
+        Self::complete(request, outcome, producers);
+    }
+
+    fn complete(
+        request: CellValidationRequest,
+        outcome: CellValidationOutcome,
+        producers: &SilverSpineProducers,
+    ) {
+        match outcome {
+            CellValidationOutcome::Accepted => DataColumnCounters::PartialCellsAccepted.inc(),
+            CellValidationOutcome::Rejected => DataColumnCounters::PartialCellsRejected.inc(),
+            CellValidationOutcome::Ignored => DataColumnCounters::PartialCellsIgnored.inc(),
         }
-        let [cell, proof] = validation.buffers();
-        let commitments = &data.commitments()
-            [key.row * BYTES_PER_KZG_COMMITMENT..(key.row + 1) * BYTES_PER_KZG_COMMITMENT];
-        let valid = util::kzg_verify_batch_multi(
-            once(KzgBatchEntry {
-                column: cell,
-                commitments,
-                proofs: proof,
-                index: key.column as u64,
-            }),
-            scratch,
-        );
-        if !valid {
-            return CellValidationOutcome::Rejected;
+        producers.produce(CellStoreEvent::Validation { request, outcome });
+    }
+
+    fn verdict(
+        origin: CellOrigin,
+        block_root: BlockRoot,
+        accepted: bool,
+        producers: &SilverSpineProducers,
+    ) {
+        if let CellOrigin::Gossip {
+            stream_id,
+            topic: GossipTopic::DataColumnSidecar(column),
+            received,
+        } = origin
+        {
+            producers.produce(PeerEvent::ColumnVerdict {
+                p2p_peer: stream_id.peer(),
+                block_root,
+                column,
+                recv_ts: received,
+                accepted,
+            });
         }
-        if validation.accept().is_err() {
-            return CellValidationOutcome::Ignored;
-        }
-        self.store.mark_changed(&key.block_root, key.column);
-        CellValidationOutcome::Accepted
     }
 
     pub(super) fn flush_updates(
@@ -295,8 +551,12 @@ impl CellHandler {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn store(&self) -> &CellStore {
         &self.store
+    }
+
+    #[cfg(test)]
+    pub(super) fn store_mut(&mut self) -> &mut CellStore {
+        &mut self.store
     }
 }

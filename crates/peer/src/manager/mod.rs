@@ -102,6 +102,7 @@ pub struct PeerManager {
     promises: MsgIdMap<Vec<(usize, Instant)>>,
 
     recent_deliveries: MsgIdMap<promises::RecentDelivery>,
+    column_deliveries: partial::ColumnDeliveries,
 
     /// Our current fork digest, set by the consumer at startup and rotated
     /// across hard-fork boundaries. `None` disables the fork-digest filter
@@ -247,6 +248,7 @@ impl PeerManager {
             mesh,
             promises: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
             recent_deliveries: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
+            column_deliveries: partial::ColumnDeliveries::new(),
             banned_ips: HashMap::with_capacity(64),
             ip_eviction_counts: HashMap::with_capacity(64),
             banned_peers: HashMap::with_capacity(128),
@@ -433,6 +435,9 @@ impl PeerManager {
             PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash: _ } => {
                 crate::PeerCounters::GossipInvalidMsg.inc();
                 self.add_invalid_delivery(p2p_peer, topic);
+            }
+            PeerEvent::ColumnVerdict { p2p_peer, block_root, column, recv_ts, accepted } => {
+                self.on_column_verdict(p2p_peer, block_root, column, recv_ts, accepted, now);
             }
             PeerEvent::P2pGossipInvalidControl { p2p_peer } => {
                 crate::PeerCounters::GossipInvalidControl.inc();
