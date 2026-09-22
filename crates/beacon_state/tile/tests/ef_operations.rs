@@ -197,8 +197,8 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
             rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
         ShufflingRef::build(&rv, curr_epoch, &mut curr_active, &mut prev_active)
     };
-    let mut votes_sink = Vec::new();
-    let mut active_scratch = Vec::new();
+    let mut votes_sink = stf::VoteBatch::default();
+    let mut scratch = stf::StfScratch::new(0);
     let mut batch = SigBatch::new();
     let sid = s.state_id;
     {
@@ -236,7 +236,7 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
             proposer_index,
             &sref,
             &mut votes_sink,
-            &mut active_scratch,
+            &mut scratch,
         )
         .is_ok()
     })

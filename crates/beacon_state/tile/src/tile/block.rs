@@ -505,8 +505,8 @@ impl BeaconStateTile {
 
         // Fold block-included attestations into the LMD vote tracker.
         let n = self.head_validator_count();
-        for vote in &votes.votes {
-            self.fork_choice.record_vote(vote, n);
+        for (target, validators) in votes.votes.iter() {
+            self.fork_choice.record_votes(target, validators, n);
         }
 
         // Spec `on_block` takes the head before the new block joins the store.

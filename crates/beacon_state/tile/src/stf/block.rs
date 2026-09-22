@@ -459,7 +459,7 @@ pub fn process_block_body(
         return Err(Error::SigBatchFailed);
     }
 
-    apply_block_body(cfg, fork, &offsets, input, &mut scratch.active, out)
+    apply_block_body(cfg, fork, &offsets, input, scratch, out)
 }
 
 fn apply_block_body(
@@ -467,7 +467,7 @@ fn apply_block_body(
     fork: &mut ForkWriter,
     offsets: &BodyOffsets<'_>,
     input: &BlockInput<'_>,
-    active_scratch: &mut Vec<u32>,
+    scratch: &mut StfScratch,
     out: &mut BlockVotes,
 ) -> Result<()> {
     let ForkWriter { view, epoch, longtail, epoch_idx, longtail_idx, .. } = fork;
@@ -514,7 +514,7 @@ fn apply_block_body(
             proposer_index,
             input.shuffling,
             &mut out.votes,
-            active_scratch,
+            scratch,
         )?;
     }
 

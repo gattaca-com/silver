@@ -12,8 +12,9 @@ use crate::{
     error::{AttestationError, Result},
     merkle, ssz_hash,
     stf::{
-        AttestationVote, BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, EpochShuffling,
-        PROPOSER_WEIGHT, ShufflingRef, WEIGHT_DENOMINATOR, for_each_ssz_list_item, integer_sqrt,
+        BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, EpochShuffling, PROPOSER_WEIGHT,
+        ShufflingRef, StfScratch, VoteBatch, VoteTarget, WEIGHT_DENOMINATOR,
+        for_each_ssz_list_item, integer_sqrt,
     },
     validate,
 };
@@ -254,8 +255,8 @@ pub fn process_attestations(
     parent_slot: Option<Slot>,
     proposer_index: u32,
     shuffling: &ShufflingRef<'_>,
-    votes_sink: &mut Vec<AttestationVote>,
-    active_scratch: &mut Vec<u32>,
+    votes_sink: &mut VoteBatch,
+    scratch: &mut StfScratch,
 ) -> Result<(), AttestationError> {
     if attestation_data.is_empty() {
         return Ok(());
@@ -282,7 +283,7 @@ pub fn process_attestations(
                 total_active,
                 shuffling,
                 votes_sink,
-                active_scratch,
+                scratch,
             )?;
             if reward > 0 && (proposer_index as usize) < view.validators.count() {
                 let proposer_reward_denominator =
@@ -311,8 +312,8 @@ pub fn process_single_attestation(
     parent_slot: Option<Slot>,
     total_active: u64,
     shuffling: &ShufflingRef<'_>,
-    votes_sink: &mut Vec<AttestationVote>,
-    active_scratch: &mut Vec<u32>,
+    votes_sink: &mut VoteBatch,
+    scratch: &mut StfScratch,
 ) -> Result<u64, AttestationError> {
     let current_slot = view.slot.state().slot;
     let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
@@ -341,23 +342,21 @@ pub fn process_single_attestation(
         (false, false)
     };
 
+    let target = VoteTarget {
+        block_root: parsed.beacon_block_root,
+        target_epoch: parsed.target_epoch,
+        attestation_slot: parsed.att_slot,
+        payload_present,
+    };
     collect_attestation_participants(
-        &view.validators.reader(),
+        view.validators.count(),
         att,
         shuffling,
         is_current,
-        active_scratch,
+        &mut scratch.active,
     )?;
-
-    for &validator_idx in active_scratch.iter() {
-        votes_sink.push(AttestationVote {
-            validator: validator_idx,
-            block_root: parsed.beacon_block_root,
-            target_epoch: parsed.target_epoch,
-            attestation_slot: parsed.att_slot,
-            payload_present,
-        });
-    }
+    votes_sink.push(target, &scratch.active);
+    let attesters = &scratch.active;
 
     if !flag_weights.iter().any(|&f| f) {
         return Ok(0);
@@ -369,17 +368,19 @@ pub fn process_single_attestation(
         apply_attestation_participation_flags(
             &validators,
             &mut view.current_participation,
-            active_scratch,
+            attesters,
             total_active,
             flag_weights,
+            &mut scratch.flag_updates,
         )
     } else {
         apply_attestation_participation_flags(
             &validators,
             &mut view.previous_participation,
-            active_scratch,
+            attesters,
             total_active,
             flag_weights,
+            &mut scratch.flag_updates,
         )
     };
 
@@ -528,25 +529,28 @@ fn compute_attestation_flags(
     [inclusion_delay <= 5, is_matching_target, is_matching_head && inclusion_delay == 1]
 }
 
+/// Append the attesting validator indices to `out`, in ascending order:
+/// committee order is shuffled, and a monotonic sweep makes the per-attester
+/// column reads that follow sequential.
 fn collect_attestation_participants(
-    validators: &ValidatorsView,
+    validator_count: usize,
     att: &[u8],
     shuffling: &ShufflingRef<'_>,
     is_current: bool,
-    active_scratch: &mut Vec<u32>,
+    out: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
-    let committees = AttestedCommittees::resolve(att, shuffling, is_current, validators.count())?;
+    let committees = AttestedCommittees::resolve(att, shuffling, is_current, validator_count)?;
 
-    active_scratch.clear();
+    out.clear();
     let mut agg_offset = 0usize;
     for (committee, base) in committees.committees() {
-        let before = active_scratch.len();
+        let before = out.len();
         for (j, &validator_idx) in committee.iter().enumerate() {
             if committees.attested(base + j) {
-                active_scratch.push(validator_idx);
+                out.push(validator_idx);
             }
         }
-        if active_scratch.len() == before {
+        if out.len() == before {
             return Err(AttestationError::EmptyCommittee);
         }
         agg_offset += committee.len();
@@ -556,6 +560,7 @@ fn collect_attestation_participants(
     if bitlist_len != agg_offset {
         return Err(AttestationError::BitlistLenMismatch { expected: agg_offset, got: bitlist_len });
     }
+    out.sort_unstable();
     Ok(())
 }
 
@@ -571,22 +576,21 @@ struct AppliedFlags {
 fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     validators: &ValidatorsView,
     participation: &mut ParticipationWriteView<M>,
-    active_scratch: &[u32],
+    attesters: &[u32],
     total_active: u64,
     flag_weights: [bool; 3],
+    updates: &mut Vec<(u32, u8)>,
 ) -> AppliedFlags {
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
 
     let mut proposer_reward_numerator = 0u64;
-    // Collect changed flags, then apply them in one sorted merge. A committee's
-    // participants are distinct validator indices, so the batch is dup-free; a
-    // per-validator `set_*_participation` would be O(|edits|) each (quadratic
-    // over an epoch's accumulated participation edits).
-    let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
+    // Collect the changed flags, then apply them in one sorted merge:
+    // `attesters` is ascending and dup-free, so `updates` is too.
+    updates.clear();
     let mut first_participation_eb = 0u64;
     let mut new_target_eb = 0u64;
-    for &vi in active_scratch {
+    for &vi in attesters {
         let prev_p = participation.get(vi as usize);
         let mut p = prev_p;
         let effective_balance = validators.effective_balance(vi as usize);
@@ -609,8 +613,8 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
             }
         }
     }
-    updates.sort_unstable_by_key(|(idx, _)| *idx);
-    participation.set_many(&updates);
+    debug_assert!(updates.is_sorted_by_key(|(idx, _)| *idx));
+    participation.set_many(updates);
     AppliedFlags { proposer_reward_numerator, first_participation_eb, new_target_eb }
 }
 
