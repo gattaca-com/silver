@@ -1,0 +1,34 @@
+# Scenario 10: the EL rejects block 1's payload. Block 2 builds on block 1's
+# FULL variant, so it descends from the invalid payload and is ignored. The
+# same block imports in scenario 8, where the payload is not declared invalid.
+#
+# Source: EF gloas fork_choice on_block_parent_full_accepts_verified_payload.
+
+startup_checkpoint: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/anchor_state.ssz_snappy
+gloas: true
+slots_missing: 3
+
+steps:
+  - kind: sync_target
+    target: syncing_head
+    target_slot: 2
+  - kind: step
+
+  - kind: blocks_range_resp
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/block_0x76bf14e70fc96a5a3442a46dff3bfb897d5568cdb4dc7e94419f625df2fcd9e5.ssz_snappy
+  - kind: envelope_resp
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/execution_payload_envelope_0x240ec2c17454f3e653fd3b43961e3c9a16770d336b0e882535c01f99b9223b41.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [block_applied, new_payload_envelope]
+
+  - kind: engine_verdict
+    block_root: "0x76bf14e70fc96a5a3442a46dff3bfb897d5568cdb4dc7e94419f625df2fcd9e5"
+    status: invalid
+  - kind: step
+
+  - kind: blocks_range_resp
+    from: tests/mainnet/gloas/fork_choice/on_block/pyspec_tests/on_block_parent_full_accepts_verified_payload/block_0xfaf1845afc1fff44268e104e3d054597a4d411f8d22da3c52489d5256f1292d4.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_lacks: [block_applied, block_staged, persist_block]

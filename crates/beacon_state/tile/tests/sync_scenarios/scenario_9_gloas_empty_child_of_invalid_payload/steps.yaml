@@ -1,0 +1,34 @@
+# Scenario 9: the EL rejects block 1's payload. Block 2 builds on block 1's
+# EMPTY variant, so it does not descend from the invalid payload and imports.
+#
+# Source: EF gloas fork_choice get_head_empty_payload_tiebreak.
+
+startup_checkpoint: tests/mainnet/gloas/fork_choice/get_head/pyspec_tests/get_head_empty_payload_tiebreak/anchor_state.ssz_snappy
+gloas: true
+slots_missing: 3
+
+steps:
+  - kind: sync_target
+    target: syncing_head
+    target_slot: 2
+  - kind: step
+
+  - kind: blocks_range_resp
+    from: tests/mainnet/gloas/fork_choice/get_head/pyspec_tests/get_head_empty_payload_tiebreak/block_0x780218dcb4c1afc8ba72f325eb4f9ad43523356242345752d0e7a52391c15582.ssz_snappy
+  - kind: envelope_resp
+    from: tests/mainnet/gloas/fork_choice/get_head/pyspec_tests/get_head_empty_payload_tiebreak/execution_payload_envelope_0xbba7bbe6c4fb93af68a15e1048436396821dfaf7af6e2a5049dbef906df6801e.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [block_applied, new_payload_envelope]
+
+  - kind: engine_verdict
+    block_root: "0x780218dcb4c1afc8ba72f325eb4f9ad43523356242345752d0e7a52391c15582"
+    status: invalid
+  - kind: step
+
+  - kind: blocks_range_resp
+    from: tests/mainnet/gloas/fork_choice/get_head/pyspec_tests/get_head_empty_payload_tiebreak/block_0x979efe6b508d84cf6e28986ead4e841c93cb57f6f5c43a59fee9c5f5e37fbf79.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [block_applied]
+    outbound_lacks: [block_rejected, rpc_misbehaviour]

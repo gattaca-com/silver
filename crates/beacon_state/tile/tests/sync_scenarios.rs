@@ -40,3 +40,23 @@ fn scenario_6_blob_block_staged_then_applied_on_data_columns() {
 fn scenario_7_lapped_staged_block_is_refetched() {
     common::run_scenario(&cases_dir().join("scenario_7_blob_staged_lapped_then_refetched"));
 }
+
+#[test]
+fn scenario_8_gloas_block_skips_new_payload() {
+    common::run_scenario(&cases_dir().join("scenario_8_gloas_block_skips_new_payload"));
+}
+
+#[test]
+fn scenario_9_gloas_empty_child_of_invalid_payload_imports() {
+    common::run_scenario(&cases_dir().join("scenario_9_gloas_empty_child_of_invalid_payload"));
+}
+
+#[test]
+fn scenario_10_gloas_full_child_of_invalid_payload_is_rejected() {
+    common::run_scenario(&cases_dir().join("scenario_10_gloas_full_child_of_invalid_payload"));
+}
+
+#[test]
+fn scenario_11_gloas_fcu_finalized_hash_is_bid_parent() {
+    common::run_scenario(&cases_dir().join("scenario_11_gloas_fcu_finalized_hash"));
+}

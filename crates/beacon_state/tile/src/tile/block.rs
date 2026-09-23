@@ -139,12 +139,14 @@ impl BeaconStateTile {
             return Feedback::Ignore;
         }
 
-        producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
-            data: ssz.to_read(),
-            block_root: parsed.block_root,
-            slot,
-            block_source: source,
-        }));
+        if !parsed.fork.is_gloas() {
+            producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
+                data: ssz.to_read(),
+                block_root: parsed.block_root,
+                slot,
+                block_source: source,
+            }));
+        }
 
         let block_root = parsed.block_root;
         let hold = waits_for_columns.then(|| (ssz.clone(), source));
@@ -456,8 +458,11 @@ impl BeaconStateTile {
         // its epoch boundary, read-only on the live view.
         let unrealized =
             stf::unrealized_checkpoints(&fork.view, es, parsed.header.slot / SLOTS_PER_EPOCH);
-        let execution_block_hash =
-            fork.view.slot.state().latest_execution_payload_header.block_hash;
+        let execution_block_hash = if parsed.fork.is_gloas() {
+            fork.view.slot.state().latest_block_hash
+        } else {
+            fork.view.slot.state().latest_execution_payload_header.block_hash
+        };
         let bid_block_hash = fork.view.slot.state().latest_execution_payload_bid.block_hash;
 
         Ok(AppliedBlock {
@@ -641,13 +646,6 @@ impl BeaconStateTile {
         };
 
         let parent_node = self.fork_choice.node(parent_idx);
-        // EL declared the parent invalid — descendants are invalid by
-        // definition. Reject before the COW/EL round-trip.
-        if parent_node.execution_status == ExecutionStatus::Invalid {
-            let reason = RejectReason::InvalidPayload;
-            return Err(PrecheckError::ParentRejected { parent_root, block_root, reason });
-        }
-
         let parent_state_id = parent_node.state_id;
 
         let rv = self.state.read_view(parent_state_id);
@@ -658,6 +656,13 @@ impl BeaconStateTile {
         } else {
             PayloadStatus::Full
         };
+
+        if parent_payload_status == PayloadStatus::Full &&
+            parent_node.execution_status == ExecutionStatus::Invalid
+        {
+            let reason = RejectReason::InvalidPayload;
+            return Err(PrecheckError::ParentRejected { parent_root, block_root, reason });
+        }
 
         // A block must strictly extend its parent's slot.
         if block_slot <= parent_slot {

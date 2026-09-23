@@ -1,0 +1,22 @@
+# Scenario 11: once a Gloas block finalizes, the FCU's finalized hash is that
+# block's bid parent_block_hash (gloas fork-choice notify_forkchoice_updated).
+#
+# Source: EF gloas finality finality_rule_3, 160 blocks from pre. It finalizes
+# past the anchor only in its last epochs.
+
+startup_checkpoint: tests/mainnet/gloas/finality/finality/pyspec_tests/finality_rule_3/pre.ssz_snappy
+gloas: true
+slots_missing: 200
+
+steps:
+  - kind: sync_target
+    target: syncing_head
+    target_slot: 1000
+  - kind: step
+
+  - kind: ef_blocks
+    case: tests/mainnet/gloas/finality/finality/pyspec_tests/finality_rule_3
+  - kind: check
+    outbound_has: [block_applied]
+    outbound_lacks: [new_payload, block_rejected]
+    fcu_finalized_is_bid_parent: true
