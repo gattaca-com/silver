@@ -366,7 +366,7 @@ impl BeaconStateTile {
         debug_assert!(!self.vote_batch.is_empty());
         BeaconStateCounters::VoteBatchSize.set(self.vote_batch.len() as u64);
 
-        self.vote_sig_batch.clear();
+        self.sig_batch.clear();
         debug_assert!(self.vote_pending.is_empty());
 
         // Drain from the back after one in-place reversal: this preserves
@@ -399,7 +399,7 @@ impl BeaconStateTile {
                     let key = p.dedup_key();
                     if !self.vote_pending.iter().any(|(_, q)| q.dedup_key() == key) {
                         let (pk, sig, root) = p.sig_parts();
-                        self.vote_sig_batch.push_parsed(pk, sig, *root);
+                        self.sig_batch.push_parsed(pk, sig, *root);
                     }
                     self.vote_pending.push((m, p));
                 }
@@ -408,7 +408,7 @@ impl BeaconStateTile {
             }
         }
 
-        let batch_ok = self.vote_sig_batch.verify_all();
+        let batch_ok = self.sig_batch.verify_all();
         if !batch_ok && !self.vote_pending.is_empty() {
             BeaconStateCounters::VoteBatchFallback.inc();
         }

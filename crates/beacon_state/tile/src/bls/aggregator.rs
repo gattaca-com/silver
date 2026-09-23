@@ -1,6 +1,6 @@
 use blst::{
-    blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg, blst_p1_to_affine, blst_p1s_add,
-    blst_p2_affine,
+    blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg, blst_p1_is_inf,
+    blst_p1_to_affine, blst_p1s_add, blst_p2_affine,
 };
 use flux_profiler::timed;
 
@@ -55,11 +55,18 @@ impl PubkeyAggregator {
         unsafe { std::mem::transmute::<blst_p1_affine, PublicKey>(affine) }
     }
 
+    /// `None` for the point at infinity: `e(∞, H(m)) = e(G1, ∞)` for every
+    /// `m`, so an infinite aggregate would let an infinite signature pass for
+    /// any message. blst's own `FastAggregateVerify` rejects it the same way.
+    fn to_verifiable_public_key(sum: blst_p1) -> Option<PublicKey> {
+        (!unsafe { blst_p1_is_inf(&sum) }).then(|| Self::to_public_key(sum))
+    }
+
     pub(crate) fn aggregate<'a>(
         &mut self,
         pks: impl IntoIterator<Item = &'a PublicKey>,
     ) -> Option<PublicKey> {
-        self.sum(pks).map(Self::to_public_key)
+        self.sum(pks).and_then(Self::to_verifiable_public_key)
     }
 
     /// `Σ committees − Σ missing = Σ present`: the same group element as
@@ -78,7 +85,7 @@ impl PubkeyAggregator {
                 blst_p1_add_or_double(&mut sum, &sum, &missing);
             }
         }
-        Some(Self::to_public_key(sum))
+        Self::to_verifiable_public_key(sum)
     }
 
     /// Identity for an empty set, for position-indexed tables where every

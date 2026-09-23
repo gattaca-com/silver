@@ -146,7 +146,6 @@ pub struct BeaconStateTile {
     attestation_root_memo: AttestationRootMemo,
     vote_batch: Vec<NewGossipMsg>,
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
-    vote_sig_batch: bls::SigBatch,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
@@ -176,8 +175,13 @@ pub struct BeaconStateTile {
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
 
     stf_scratch: stf::StfScratch,
-    /// Pre-validation pass collects every BLS sig in the block here, then
-    /// runs `verify_all` once before pass 2 mutates state.
+    /// Every BLS verification the tile runs, for blocks and for gossip alike.
+    ///
+    /// A block's pre-validation pass collects its signatures here, then
+    /// `verify_all` runs once before pass 2 mutates state. Each gossip handler
+    /// builds its own batch the same way. They share one instance for two
+    /// reasons: no two of them are ever live at once, and sharing lets them
+    /// reuse each other's cache of hashed signing roots.
     sig_batch: bls::SigBatch,
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
@@ -230,7 +234,6 @@ impl BeaconStateTile {
             attestation_pool: AttestationPool::new(),
             vote_batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
-            vote_sig_batch: bls::SigBatch::new(),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
