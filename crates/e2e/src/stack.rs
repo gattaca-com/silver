@@ -228,7 +228,6 @@ impl PublisherStack {
         // Dummies the controller and gossip handler read from or write to.
         let ssz_producer = TCache::producer(TCacheId::ControlProcessing, 32);
         let protobuf_producer = TCache::producer(TCacheId::ControlGossip, 32);
-        let el_producer = TCache::producer(TCacheId::ColumnsProcessing, 32);
 
         let network_tcaches = TCacheTable::from_iter(
             [&mcache_producer, &rpc_out_producer, &control_rpc_producer, &cluster_out_producer]
@@ -236,9 +235,8 @@ impl PublisherStack {
         );
         let gossip_tcaches =
             TCacheTable::from_iter([gossip_in_producer.cache_ref(), protobuf_producer.cache_ref()]);
-        let controller_tcaches = TCacheTable::from_iter(
-            [&rpc_in_producer, &el_producer, &cluster_in_producer].map(|p| p.cache_ref()),
-        );
+        let controller_tcaches =
+            TCacheTable::from_iter([&rpc_in_producer, &cluster_in_producer].map(|p| p.cache_ref()));
 
         let context = Context {
             gossip_producer: gossip_in_producer,
@@ -363,7 +361,6 @@ impl EchoStack {
 
         // Dummies the controller reads from.
         let ctl_rpc_producer = TCache::producer(TCacheId::NetworkProcessing, 32);
-        let el_producer = TCache::producer(TCacheId::ColumnsProcessing, 32);
 
         let network_tcaches = TCacheTable::from_iter(
             [&protobuf_producer, &rpc_out_producer, &control_rpc_producer, &cluster_out_producer]
@@ -372,7 +369,7 @@ impl EchoStack {
         let gossip_tcaches =
             TCacheTable::from_iter([gossip_in_producer.cache_ref(), protobuf_producer.cache_ref()]);
         let controller_tcaches = TCacheTable::from_iter(
-            [&ctl_rpc_producer, &el_producer, &cluster_in_producer].map(|p| p.cache_ref()),
+            [&ctl_rpc_producer, &cluster_in_producer].map(|p| p.cache_ref()),
         );
 
         let context = Context {

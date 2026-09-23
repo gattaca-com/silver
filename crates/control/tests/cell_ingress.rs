@@ -14,11 +14,11 @@ use silver_columns::cell_store::CellStore;
 use silver_common::{
     GossipDomain, GossipTopic, Nanos, P2pStreamId, SilverSpine, StreamProtocol,
     SubReservationError, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef,
-    TProducer, TReadMode, TReservation,
+    TReadMode, TReservation,
     cell_store::{
         CellKey, CellOrigin, CellSource, CellStoreConfig, CellStoreEvent, CellValidationOutcome,
-        CellValidationRequest, ColumnRef, CommitmentContext, ContextData, FuluContextSource,
-        RetentionEvent, StoreError,
+        CellValidationRequest, ColumnRef, CommitmentContext, ContextData, RetentionEvent,
+        StoreError,
     },
     column_util::push_data_column_sidecar_prefix,
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
@@ -44,8 +44,6 @@ struct Rig {
     store: CellStore,
     columns: Box<TCacheReader>,
     network: Box<TCacheReader>,
-    el: TProducer,
-    el_consumer: TCacheReader,
     adapters: [SpineAdapter<SilverSpine>; 3],
     cache: TCacheRef,
     now: Instant,
@@ -56,7 +54,7 @@ struct Rig {
 }
 
 #[test]
-fn block_derived_header_is_copied_from_el_cache_into_the_shared_cache() {
+fn validated_context_initializes_the_shared_header_without_an_intermediate_cache() {
     let mut rig = Rig::new(ForkName::Fulu);
     let mut header = [0x33; 208];
     header[..8].copy_from_slice(&rig.context.slot.to_le_bytes());
@@ -65,22 +63,15 @@ fn block_derived_header_is_copied_from_el_cache_into_the_shared_cache() {
         inclusion_proof: &[0x33; 128],
         commitments: &[0x33; 96],
     };
-    let mut write = rig.el.reserve(data.encoded_len(), false).unwrap();
-    data.write(write.buffer().unwrap());
-    write.flush().unwrap();
-    let source = FuluContextSource::ElHeader(write.read());
-    rig.store
-        .admit_context(rig.context, GossipDomain::new([0; 4], ForkName::Fulu), data, Some(source))
-        .unwrap();
+    rig.store.admit_context(rig.context, GossipDomain::new([0; 4], ForkName::Fulu), data).unwrap();
     let request = rig.store.request_assemblies(&ROOT).unwrap();
     rig.adapters[1].produce(CellStoreEvent::Allocate(request));
     rig.adapters[0].consume(|event: CellStoreEvent, producers| {
-        rig.control.handle(event, rig.now, producers, &mut rig.el_consumer);
+        rig.control.handle(event, rig.now, producers);
     });
     assert_eq!(rig.reservations().len(), 3);
     let header = rig.store.availability(&ROOT, 0).unwrap().header.unwrap();
     assert_eq!(header.id(), rig.cache.id());
-    assert_ne!(header.id(), rig.el.cache_ref().id());
     assert!(data.matches(rig.control.producer_mut().read_buffer(header).unwrap()));
 }
 
@@ -98,8 +89,6 @@ impl Rig {
         let cache = producer.cache_ref();
         let columns = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
         let network = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
-        let el = TCache::producer(TCacheId::ColumnsProcessing, 4096);
-        let el_consumer = TCacheReader::single(el.cache_ref(), "", TReadMode::Sliding).unwrap();
         let now = Instant::now();
         let directory = tempfile::tempdir().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(directory.path(), None));
@@ -114,8 +103,6 @@ impl Rig {
             store: CellStore::new(config, 0, now).unwrap(),
             columns,
             network,
-            el,
-            el_consumer,
             adapters,
             cache,
             now,
@@ -138,21 +125,12 @@ impl Rig {
         } else {
             ContextData::Gloas { commitments: &[0x33; 96] }
         };
-        let source = if self.context.format == ForkName::Fulu {
-            let mut header =
-                self.control.producer_mut().reserve(data.encoded_len(), false).unwrap();
-            data.write(header.buffer().unwrap());
-            header.flush().unwrap();
-            Some(FuluContextSource::Header(header.read()))
-        } else {
-            None
-        };
         let domain = GossipDomain::new([0; 4], self.context.format);
-        assert!(self.store.admit_context(self.context, domain, data, source).unwrap());
+        assert!(self.store.admit_context(self.context, domain, data).unwrap());
         let request = self.store.request_assemblies(&ROOT).unwrap();
         self.adapters[1].produce(CellStoreEvent::Allocate(request));
         self.adapters[0].consume(|event: CellStoreEvent, producers| {
-            self.control.handle(event, self.now, producers, &mut self.el_consumer)
+            self.control.handle(event, self.now, producers)
         });
     }
 
@@ -311,7 +289,7 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
         rig.adapters[1]
             .produce(CellStoreEvent::Available(rig.store.availability(&ROOT, 1).unwrap()));
         rig.adapters[0].consume(|event: CellStoreEvent, producers| {
-            rig.control.handle(event, rig.now, producers, &mut rig.el_consumer);
+            rig.control.handle(event, rig.now, producers);
         });
         let mut available = 0;
         rig.adapters[2].consume(|event: CellStoreEvent, _| {
@@ -355,6 +333,41 @@ fn gossip_full_sidecars_and_cells_share_one_cache_through_validation_and_expiry(
         assert_eq!(full_send.cell.as_ref(), &[0x11; BYTES_PER_CELL]);
         assert_eq!(assembly_send.cell.as_ref(), &[0x11; BYTES_PER_CELL]);
         assert!(columns[1].reservation.acquire(&mut rig.columns).is_err());
+    }
+}
+
+#[test]
+fn late_assemblies_are_writable_but_not_available_for_partial_serving() {
+    for format in [ForkName::Fulu, ForkName::Gloas] {
+        let mut rig = Rig::new(format);
+        rig.admit();
+        rig.reservations();
+        rig.now += SLOT;
+        rig.expire();
+        rig.network_boundaries();
+        rig.admit();
+        let column = rig.reservations()[0];
+        let pending =
+            column.stage(&mut rig.columns, 0, &[0x11; BYTES_PER_CELL], &PROOF).unwrap().unwrap();
+        pending.data.acquire(&mut rig.columns).unwrap().accept().unwrap();
+        rig.store.refresh_column(&ROOT, column.column, &mut rig.columns).unwrap();
+        let available = rig.store.availability(&ROOT, column.column).unwrap();
+        assert_eq!(available.available, 1);
+        assert_eq!(available.slot, 0);
+        rig.adapters[1].produce(CellStoreEvent::Available(available));
+        rig.adapters[0].consume(|event: CellStoreEvent, producers| {
+            rig.control.handle(event, rig.now, producers);
+        });
+        assert!(rig.control.availability(&ROOT, column.column, rig.now).is_none());
+        assert!(matches!(
+            rig.control.stage_cell(
+                CellKey { block_root: ROOT, column: 0, row: 1 },
+                &[0x11; BYTES_PER_CELL],
+                &PROOF,
+                rig.now
+            ),
+            Err(StoreError::ContextExpired)
+        ));
     }
 }
 

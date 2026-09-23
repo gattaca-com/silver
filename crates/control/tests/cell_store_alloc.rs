@@ -11,7 +11,7 @@ use silver_chain_spec::{ForkName, SpecConfig};
 use silver_columns::cell_store::CellStore;
 use silver_common::{
     GossipDomain, TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode,
-    cell_store::{CellKey, CellStoreConfig, CommitmentContext, ContextData, FuluContextSource},
+    cell_store::{CellKey, CellStoreConfig, CommitmentContext, ContextData},
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
 use silver_control::cell_allocator::CellAllocator;
@@ -93,13 +93,9 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
             .stage(CellKey { block_root, column: 0, row: 0 }, &cell, &proof)
             .unwrap()
             .unwrap();
-        let mut header = allocator.producer_mut().reserve(data.encoded_len(), false).unwrap();
-        data.write(header.buffer().unwrap());
-        header.flush().unwrap();
-        let source = Some(FuluContextSource::Header(header.read()));
-        assert!(store.admit_context(context, domain, data, source).unwrap());
+        assert!(store.admit_context(context, domain, data).unwrap());
         let request = store.request_assemblies(&block_root).unwrap();
-        let set = allocator.allocate(request, None).unwrap();
+        let set = allocator.allocate(request).unwrap();
         assert_eq!(
             set.reservations.view(allocator.producer()).unwrap().next().unwrap().read().seq(),
             candidate.reservations.view(allocator.producer()).unwrap().next().unwrap().read().seq()

@@ -87,25 +87,12 @@ impl Harness {
             _ => ContextData::Fulu { signed_header: &header, inclusion_proof: &proof, commitments },
         };
         let domain = GossipDomain::new([0; 4], context.format);
-        let admitted = self.store.admit_context(context, domain, data, None)?;
+        let admitted = self.store.admit_context(context, domain, data)?;
         if self.store.reservations(&context.block_root).next().is_some() {
             return Ok(false);
         }
-        let source = if context.format == ForkName::Fulu {
-            let mut write = self
-                .allocator
-                .producer_mut()
-                .reserve(data.encoded_len(), false)
-                .ok_or(StoreError::CacheFull)?;
-            data.write(write.buffer().unwrap());
-            write.flush().unwrap();
-            Some(FuluContextSource::Header(write.read()))
-        } else {
-            None
-        };
-        self.store.admit_context(context, domain, data, source)?;
         let request = self.store.request_assemblies(&context.block_root).unwrap();
-        let set = match self.allocator.allocate(request, None) {
+        let set = match self.allocator.allocate(request) {
             Ok(set) => set,
             Err(error) => {
                 self.store.allocation_failed(request);
@@ -482,16 +469,12 @@ fn stale_allocation_reply_cannot_resurrect_an_expired_context() {
     let block = &h.store.blocks[h.store.roots[&ROOT]];
     let set = h
         .allocator
-        .allocate(
-            AssemblyRequest {
-                id: block.request.unwrap(),
-                context: block.context,
-                domain: block.domain,
-                columns: h.store.config.columns(),
-                source: block.source,
-            },
-            None,
-        )
+        .allocate(AssemblyRequest {
+            id: block.request.unwrap(),
+            context: block.context,
+            domain: block.domain,
+            columns: h.store.config.columns(),
+        })
         .unwrap();
     h.advance_ms(12_000);
     assert_eq!(h.store.install(set, &mut h.consumer), Err(StoreError::ContextExpired));
@@ -635,14 +618,30 @@ fn context_survives_until_the_slot_boundary() {
 }
 
 #[test]
-fn expired_incomplete_context_requires_full_sidecar_recovery() {
+fn expired_context_can_get_fresh_assemblies_for_a_late_el_response() {
     let mut h = Harness::new(2, 1);
     let context = h.context(ROOT, 0, 2);
-    h.insert(key(0, 0));
+    let old = h.store.reservations(&ROOT).next().unwrap();
+    let old_cell = h.insert(key(0, 0)).0;
     h.advance_ms(13_000);
     assert!(matches!(h.admit_cell(key(0, 1), &CELL, &PROOF), Err(StoreError::UnknownCell)));
-    assert_eq!(h.admit(context, 0x33), Err(StoreError::OutsideServingSlot));
+    assert!(h.admit(context, 0x33).unwrap());
+    let current = h.store.reservations(&ROOT).next().unwrap();
+    assert!(current.reservation.read().seq() > old.reservation.read().seq());
+    assert_eq!(current.slot, context.slot);
+    assert_eq!(current.expires, h.start + Duration::from_secs(24));
+    assert!(old_cell.acquire(&mut h.consumer).is_none());
+    assert_eq!(h.store.column(&ROOT, 0).unwrap().admitted.bits(), 0);
     assert!(!h.store.column(&ROOT, 0).unwrap().complete);
+    // A delayed expiry event refers to the old allocation window, not the
+    // block slot of the new late-response assembly.
+    h.store.expire_through(0);
+    assert!(!h.insert(key(0, 0)).1);
+    assert!(h.insert(key(0, 1)).1);
+    h.assert_counts();
+    h.advance_ms(24_000);
+    assert!(h.store.context(&ROOT).is_none());
+    h.assert_counts();
 }
 
 #[test]
@@ -673,13 +672,14 @@ fn schedule_and_fork_boundaries_use_the_blocks_slot() {
 }
 
 #[test]
-fn non_current_slots_are_not_admitted() {
+fn future_and_below_floor_contexts_are_not_admitted() {
     let config = CellStoreConfig::new(Arc::new(Harness::spec(2)), 1, Duration::ZERO).unwrap();
     let mut h = Harness::at_slot(config, 40);
-    for slot in [39, 41] {
+    h.advance(h.start, 40, |_| {});
+    for (slot, error) in [(39, StoreError::BelowSlotFloor), (41, StoreError::OutsideServingSlot)] {
         let context =
             CommitmentContext { block_root: ROOT, slot, format: ForkName::Fulu, blob_count: 2 };
-        assert_eq!(h.admit(context, 0x33), Err(StoreError::OutsideServingSlot));
+        assert_eq!(h.admit(context, 0x33), Err(error));
     }
     assert_eq!(h.store.counts().blocks, 0);
     h.advance_ms(4000);
@@ -705,7 +705,7 @@ fn conflicting_and_oversized_contexts_do_not_replace_descriptors() {
         commitments: &[0; 3 * 48],
     };
     assert_eq!(
-        h.store.admit_context(context, GossipDomain::new([0; 4], context.format), data, None),
+        h.store.admit_context(context, GossipDomain::new([0; 4], context.format), data),
         Err(StoreError::InvalidContext)
     );
     assert_eq!(h.store.blocks[h.store.roots[&ROOT]].ssz.unwrap().seq(), seq);
@@ -917,6 +917,8 @@ fn acquired_send_outlives_expiry_and_blocks_overwrite() {
     drop(sent);
     outbound.free();
     let context = next_context.unwrap();
+    assert!(h.store.request_assemblies(&context.block_root).is_none());
+    h.advance(h.store.now + ASSEMBLY_RETRY_INTERVAL, context.slot, |_| {});
     h.admit(context, 0x33).unwrap();
     h.admit_cell(CellKey { block_root: context.block_root, column: 0, row: 0 }, &CELL, &PROOF)
         .unwrap();

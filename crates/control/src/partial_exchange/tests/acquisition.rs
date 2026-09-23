@@ -390,15 +390,10 @@ fn live_fulu_to_gloas_cutover_uses_new_context_group_and_requests_without_a_head
     let context =
         CommitmentContext { block_root: root, slot: 32, format: ForkName::Gloas, blob_count: ROWS };
     rig.store
-        .admit_context(
-            context,
-            next_domain,
-            ContextData::Gloas { commitments: &[0x44; ROWS * 48] },
-            None,
-        )
+        .admit_context(context, next_domain, ContextData::Gloas { commitments: &[0x44; ROWS * 48] })
         .unwrap();
     let request = rig.store.request_assemblies(&root).unwrap();
-    let set = rig.ingress.allocator_mut().allocate(request, None).unwrap();
+    let set = rig.ingress.allocator_mut().allocate(request).unwrap();
     rig.store.install(set, &mut rig.columns).unwrap();
     let available = rig.store.availability(&root, 1).unwrap();
     assert!(available.header.is_none());

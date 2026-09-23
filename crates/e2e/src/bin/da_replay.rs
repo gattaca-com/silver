@@ -127,7 +127,6 @@ impl Node {
             owner.reader(),
             custody,
             spec,
-            TCache::producer(TCacheId::ColumnsProcessing, 1 << 22),
             ticker,
         );
 

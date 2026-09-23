@@ -957,7 +957,6 @@ pub enum SszCache {
     Gossip,
     DataColumns,
     Rpc,
-    El,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

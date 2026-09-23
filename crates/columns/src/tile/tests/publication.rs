@@ -172,17 +172,7 @@ impl Rig {
     fn allocate_cells(&mut self, allocator: &mut CellAllocator) {
         self.inj.consume(|event: CellStoreEvent, _| {
             if let CellStoreEvent::Allocate(request) = event {
-                let external = match request.source {
-                    Some(FuluContextSource::ElHeader(read)) => Some(
-                        ContextData::from_encoded(
-                            self.tile.el_column_producer.read_buffer(read).unwrap(),
-                            ForkName::Fulu,
-                        )
-                        .unwrap(),
-                    ),
-                    _ => None,
-                };
-                let set = allocator.allocate(request, external).unwrap();
+                let set = allocator.allocate(request).unwrap();
                 self.tile.cells.as_mut().unwrap().handle_event(
                     CellStoreEvent::Allocated { request, set: Some(set) },
                     Instant::now(),
@@ -663,18 +653,20 @@ fn reconstructed_columns_do_not_request_publication() {
     const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
     let (mut rig, block) = Rig::with_fulu_block(CUSTODY_COLUMNS, SLOT, &blob.commitment);
+    let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
     let block_root = block_root_fulu(&block);
     rig.turn();
     rig.follow([0; 32]);
     rig.block(&block);
     rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
+    rig.allocate_cells(&mut allocator);
     rig.drain();
     rig.engine_blobs(block_root, SLOT, &blob.el_frame());
     rig.turn();
     let out = rig.drain();
     assert!(
         out.receipts.iter().any(|event| matches!(event,
-            DataColumnsEvent::Persist { origin: ColumnOrigin::El, block_root: root, .. }
+            DataColumnsEvent::Persist { origin: ColumnOrigin::Assembly, block_root: root, .. }
                 if *root == block_root
         )),
         "the EL response produced a reconstructed column"
@@ -689,10 +681,13 @@ fn gossip_and_el_copies_validate_once() {
     const SLOT: u64 = 7;
     let blob = BlockBlob::counting();
     let (mut rig, block) = Rig::with_fulu_block(CUSTODY_COLUMNS, SLOT, &blob.commitment);
+    let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
     let block_root = block_root_fulu(&block);
     rig.turn();
     rig.follow([0; 32]);
     rig.block(&block);
+    rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
+    rig.allocate_cells(&mut allocator);
     rig.drain();
 
     let sidecar = blob.fulu_sidecar(3, &block);
@@ -703,7 +698,7 @@ fn gossip_and_el_copies_validate_once() {
 
     assert_eq!(out.validated, CUSTODY_COLUMNS, "each custody column is validated once");
     let el_built = out.receipts.iter().fold(0u128, |mask, event| match event {
-        DataColumnsEvent::Persist { origin: ColumnOrigin::El, column_index, .. } => {
+        DataColumnsEvent::Persist { origin: ColumnOrigin::Assembly, column_index, .. } => {
             mask | 1 << column_index
         }
         _ => mask,

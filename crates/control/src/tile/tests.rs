@@ -23,7 +23,6 @@ struct GossipPublications {
     observer: SpineAdapter<SilverSpine>,
     incoming: TProducer,
     rpc: TProducer,
-    el: TProducer,
     payload: TCacheRead,
     outbound: TCacheReader,
     _spine: Box<SilverSpine>,
@@ -40,14 +39,13 @@ impl GossipPublications {
         let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 16);
         let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
-        let el = TCache::producer(TCacheId::ColumnsProcessing, 1 << 16);
         let mut protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 16);
         let payload = write_bytes(&mut protobuf, bytes);
         let outbound =
             TCacheReader::single(protobuf.cache_ref(), "publication_observer", TReadMode::Sliding)
                 .unwrap();
         let tcaches = TCacheTable::from_iter(
-            [&incoming, &cluster_in, &rpc, &el, &protobuf].map(|p| p.cache_ref()),
+            [&incoming, &cluster_in, &rpc, &protobuf].map(|p| p.cache_ref()),
         );
         let mut controller = Controller::new(
             PeerManager::new(
@@ -87,7 +85,6 @@ impl GossipPublications {
             observer,
             incoming,
             rpc,
-            el,
             payload,
             outbound,
             _spine: spine,
@@ -122,8 +119,7 @@ impl GossipPublications {
             ColumnOrigin::Rpc => {
                 (write_bytes(&mut self.rpc, bytes), SszCache::Rpc, Some(test_domain()))
             }
-            ColumnOrigin::El => (write_bytes(&mut self.el, bytes), SszCache::El, None),
-            ColumnOrigin::Assembly => {
+            ColumnOrigin::El | ColumnOrigin::Assembly => {
                 let config =
                     CellStoreConfig::new(self.controller.spec.clone(), 1 << 5, Duration::ZERO)
                         .unwrap();
@@ -135,7 +131,7 @@ impl GossipPublications {
                 (
                     write_bytes(ingress.producer_mut(), bytes),
                     SszCache::DataColumns,
-                    Some(test_domain()),
+                    (origin != ColumnOrigin::El).then_some(test_domain()),
                 )
             }
             ColumnOrigin::Gossip => unreachable!(),

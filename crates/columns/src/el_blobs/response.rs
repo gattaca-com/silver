@@ -31,7 +31,6 @@ impl BlobEntry<'_> {
 pub(super) struct BlobResponse<'a> {
     entries: [Option<BlobEntry<'a>>; MAX_BLOBS_PER_BLOCK],
     count: usize,
-    present: usize,
 }
 
 impl<'a> BlobResponse<'a> {
@@ -42,8 +41,7 @@ impl<'a> BlobResponse<'a> {
         let (count, remaining) = bytes.split_first_chunk::<4>()?;
         bytes = remaining;
         let count = u32::from_le_bytes(*count) as usize;
-        let mut response =
-            Self { entries: [None; MAX_BLOBS_PER_BLOCK], count: expected, present: 0 };
+        let mut response = Self { entries: [None; MAX_BLOBS_PER_BLOCK], count: expected };
         // A null JSON result is encoded as a zero-length list.
         if count == 0 && bytes.is_empty() {
             return Some(response);
@@ -75,13 +73,8 @@ impl<'a> BlobResponse<'a> {
             let (blob, remaining) = remaining.split_at_checked(length)?;
             bytes = remaining;
             *entry = Some(BlobEntry { blob, proofs });
-            response.present += 1;
         }
         bytes.is_empty().then_some(response)
-    }
-
-    pub(super) fn is_complete(&self) -> bool {
-        self.present == self.count
     }
 
     pub(super) fn present(&self) -> impl Iterator<Item = (usize, BlobEntry<'a>)> + '_ {
@@ -114,7 +107,7 @@ mod tests {
     fn missing_entries_preserve_blob_rows() {
         let bytes = frame(&[true, false, true]);
         let response = BlobResponse::parse(&bytes, 3).unwrap();
-        assert!(!response.is_complete());
+        assert_eq!(response.present().count(), 2);
         assert_eq!(
             response
                 .present()
@@ -122,7 +115,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(0, 0, 0), (2, 2, 2)]
         );
-        assert!(BlobResponse::parse(&frame(&[true, true]), 2).unwrap().is_complete());
+        assert_eq!(BlobResponse::parse(&frame(&[true, true]), 2).unwrap().present().count(), 2);
         assert_eq!(BlobResponse::parse(&frame(&[false, false]), 2).unwrap().present().count(), 0);
         assert_eq!(BlobResponse::parse(&0u32.to_le_bytes(), 2).unwrap().present().count(), 0);
     }

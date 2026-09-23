@@ -176,16 +176,11 @@ impl PmBsHarness {
         )
         .unwrap();
         let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
-        let dummy_el = TCache::producer(TCacheId::ColumnsProcessing, 32);
         let mut ctl = Controller::new(
             pm,
             gossip_handler,
             TCache::producer(TCacheId::ControlRpc, 32),
-            TCacheTable::from_iter([
-                rpc_p.cache_ref(),
-                dummy_el.cache_ref(),
-                cluster_in.cache_ref(),
-            ]),
+            TCacheTable::from_iter([rpc_p.cache_ref(), cluster_in.cache_ref()]),
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),

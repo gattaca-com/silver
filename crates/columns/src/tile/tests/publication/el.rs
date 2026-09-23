@@ -270,52 +270,62 @@ fn incomplete_el_rows_wait_for_allocation_and_merge_with_gossip_on_both_forks() 
 }
 
 #[test]
-fn complete_el_response_keeps_legacy_output_when_partial_is_off() {
+fn complete_el_response_uses_assemblies_for_current_and_late_contexts_on_both_forks() {
     let blobs = [BlockBlob::counting(), BlockBlob::starting_at(1000)];
     let response = frame(&[Some(&blobs[0]), Some(&blobs[1])]);
     for format in [ForkName::Fulu, ForkName::Gloas] {
-        let (mut rig, block) = rig_for(format, CUSTODY_COLUMNS, &blobs);
-        let root = block_root(&block, format == ForkName::Gloas);
-        let domain = rig.tile.validator.domain_at(SLOT).unwrap();
-        rig.follow([0; 32]);
-        rig.turn();
-        rig.block(&block);
-        rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
-        assert_eq!(rig.drain().engine, 1);
-        rig.engine_blobs(root, SLOT, &response);
-        rig.turn();
-        let out = rig.drain();
-        assert_eq!(out.validated, CUSTODY_COLUMNS);
-        assert_eq!(out.available, 1);
-        for event in out.receipts {
-            let DataColumnsEvent::Persist {
-                ssz,
-                origin,
-                ssz_cache,
-                domain: persisted_domain,
-                column_index,
-                ..
-            } = event
-            else {
-                unreachable!()
-            };
-            assert_eq!(origin, ColumnOrigin::El);
-            assert_eq!(ssz_cache, SszCache::El);
-            assert_eq!(persisted_domain, Some(domain));
-            assert_eq!(
-                rig.tile.el_column_producer.read_buffer(ssz).unwrap(),
-                full_column(format, column_index, &block, &blobs)
-            );
+        for current_slot in [SLOT, SLOT + 1] {
+            let (mut rig, block) = rig_for(format, CUSTODY_COLUMNS, &blobs);
+            let root = block_root(&block, format == ForkName::Gloas);
+            let mut allocator = rig.attach_cell_store(current_slot, CUSTODY_COLUMNS);
+            let domain = rig.tile.validator.domain_at(SLOT).unwrap();
+            rig.follow([0; 32]);
+            rig.turn();
+            rig.block(&block);
+            rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+            assert_eq!(rig.drain().engine, 1);
+            if current_slot != SLOT {
+                assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
+            }
+            rig.allocate_cells(&mut allocator);
+            rig.engine_blobs(root, SLOT, &response);
+            rig.turn();
+            rig.allocate_cells(&mut allocator);
+            rig.turn();
+            let out = rig.drain();
+            assert_eq!(out.validated, CUSTODY_COLUMNS);
+            assert_eq!(out.available, 1);
+            assert_eq!(out.receipts.len(), CUSTODY_COLUMNS.count_ones() as usize);
+            for event in out.receipts {
+                let DataColumnsEvent::Persist {
+                    ssz,
+                    origin,
+                    ssz_cache,
+                    domain: persisted_domain,
+                    column_index,
+                    ..
+                } = event
+                else {
+                    unreachable!()
+                };
+                assert_eq!(origin, ColumnOrigin::Assembly);
+                assert_eq!(ssz_cache, SszCache::DataColumns);
+                assert_eq!(persisted_domain, Some(domain));
+                assert_eq!(
+                    allocator.producer().read_buffer(ssz).unwrap(),
+                    full_column(format, column_index, &block, &blobs)
+                );
+            }
         }
     }
 }
 
 #[test]
-fn failed_assembly_allocation_falls_back_to_full_el_columns() {
+fn failed_assembly_allocation_retries_without_publishing_unwritten_columns() {
     let blobs = [BlockBlob::counting()];
     let (mut rig, block) = rig_for(ForkName::Gloas, CUSTODY_COLUMNS, &blobs);
     let root = block_root_gloas(&block);
-    let _allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
+    let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
     rig.follow([0; 32]);
     rig.turn();
     rig.block(&block);
@@ -332,6 +342,14 @@ fn failed_assembly_allocation_falls_back_to_full_el_columns() {
             );
         }
     });
+    rig.turn();
+    let out = rig.drain();
+    assert_eq!(out.validated, 0);
+    assert!(out.receipts.is_empty());
+    assert_eq!(rig.tile.tracker.to_request(&root), CUSTODY_COLUMNS);
+    std::thread::sleep(Duration::from_millis(25));
+    rig.turn();
+    rig.allocate_cells(&mut allocator);
     rig.turn();
     assert_eq!(rig.drain().validated, CUSTODY_COLUMNS);
 }

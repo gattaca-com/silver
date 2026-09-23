@@ -106,7 +106,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let control_rpc_producer = TCache::producer(TCacheId::ControlRpc, CONTROL_RPC_TCACHE_SIZE);
     let storage_delivery_producer =
         TCache::producer(TCacheId::StorageDelivery, config.outgoing_rpc_tcache_size());
-    let columns_processing_producer = TCache::producer(TCacheId::ColumnsProcessing, 1 << 25);
     let beacon_state_handoff_producer =
         TCache::producer(TCacheId::BeaconStateHandoff, BEACON_STATE_TCACHE_SIZE);
 
@@ -206,15 +205,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let partial_columns = config.partial_columns();
 
-    let cell_config = partial_columns
-        .supports_sending()
-        .then(|| CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION))
-        .transpose()
-        .map_err(|error| format!("cell store configuration: {error:?}"))?;
-    let control_slot_producer = TCache::producer(
-        TCacheId::ControlSlot,
-        cell_config.as_ref().map_or(1 << 16, CellStoreConfig::cache_capacity),
-    );
+    let cell_config =
+        CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION)
+            .map_err(|error| format!("cell store configuration: {error:?}"))?;
+    let control_slot_producer =
+        TCache::producer(TCacheId::ControlSlot, cell_config.cache_capacity());
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
 
     // Every tile opens the consumers it reads through in `try_init`.
@@ -228,7 +223,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         cluster_outbound_producer.cache_ref(),
         control_rpc_producer.cache_ref(),
         storage_delivery_producer.cache_ref(),
-        columns_processing_producer.cache_ref(),
         beacon_state_handoff_producer.cache_ref(),
         control_slot_producer.cache_ref(),
     ]);
@@ -239,7 +233,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
         cluster_nodes: cluster_nodes.map(ClusterNodes::new),
         cluster_inbound_producer,
-        partial_columns: cell_config.is_some(),
+        partial_columns: partial_columns.supports_sending(),
         reader: TCacheReader::new(tcaches),
     };
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
@@ -283,17 +277,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         spec.clone(),
     )?;
-    if let Some(cell_config) = &cell_config {
-        control_tile = control_tile
-            .with_data_columns_cache(
-                cell_config.clone(),
-                control_slot_producer,
-                cell_slot,
-                cell_slot_start,
-                partial_columns,
-            )
-            .map_err(|error| format!("cell store construction: {error:?}"))?;
-    }
+    control_tile = control_tile
+        .with_data_columns_cache(
+            cell_config.clone(),
+            control_slot_producer,
+            cell_slot,
+            cell_slot_start,
+            partial_columns,
+        )
+        .map_err(|error| format!("cell store construction: {error:?}"))?;
     control_tile.set_pending_subnet_topics(
         silver_common::attnet_subnets(subnets)
             .map(silver_common::GossipTopic::BeaconAttestation)
@@ -332,23 +324,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let state_reader = beacon_state_tile.reader();
-    let mut data_columns_tile = DataColumnsTile::new(
+    let data_columns_tile = DataColumnsTile::new(
         tcaches,
         state_reader,
         das_custody_groups,
         spec.clone(),
-        columns_processing_producer,
         SlotTicker::new(
             chain_config.genesis_unix_secs,
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),
-    );
-    if let Some(config) = cell_config {
-        data_columns_tile = data_columns_tile
-            .with_data_columns_cache(config, cell_slot, cell_slot_start)
-            .map_err(|error| format!("cell store construction: {error:?}"))?;
-    }
+    )
+    .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)
+    .map_err(|error| format!("cell store construction: {error:?}"))?;
 
     let beacon_api_binds =
         config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
