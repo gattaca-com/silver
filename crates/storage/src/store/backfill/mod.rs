@@ -254,7 +254,7 @@ pub(in crate::store) mod fixtures {
 
     impl Tc {
         pub(in crate::store) fn new(name: &'static str, size: usize) -> Self {
-            let producer = TCache::producer(silver_common::TCacheId::IncomingRpc, size);
+            let producer = TCache::producer(silver_common::TCacheId::NetworkProcessing, size);
             let consumer = silver_common::TCacheReader::single(
                 producer.cache_ref(),
                 name,

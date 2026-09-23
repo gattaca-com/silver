@@ -437,11 +437,11 @@ pub fn ef_tile_with_spec(
     // Producers stay bound through `new`; the tile's consumers keep their caches
     // alive afterward (mirrors the `make_tile` unit-test harness).
     let (gp, rp, ep, yp, cp) = (
-        TCache::producer(TCacheId::SszGossip, 1 << 16),
-        TCache::producer(TCacheId::IncomingRpc, 1 << 16),
-        TCache::producer(TCacheId::IncomingEngineResp, 1 << 16),
-        TCache::producer(TCacheId::ReplayBlocks, 1 << 16),
-        TCache::producer(TCacheId::DataColumns, 1 << 16),
+        TCache::producer(TCacheId::ControlProcessing, 1 << 16),
+        TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
+        TCache::producer(TCacheId::BoundaryProcessing, 1 << 16),
+        TCache::producer(TCacheId::StorageDelivery, 1 << 16),
+        TCache::producer(TCacheId::ControlSlot, 1 << 16),
     );
 
     let mut tile = BeaconStateTile::new(
@@ -449,7 +449,7 @@ pub fn ef_tile_with_spec(
         Arc::new(spec),
         &SyncingConfig::default(),
         TCacheTable::from_iter([&gp, &rp, &ep, &yp, &cp].map(|p| p.cache_ref())),
-        TCache::producer(TCacheId::BeaconState, 1 << 20),
+        TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         false,
         state,
     );

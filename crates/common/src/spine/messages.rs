@@ -9,7 +9,7 @@ use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
-    P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TMultiProducer,
+    P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
     column_util::columns_of,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -248,7 +248,7 @@ impl RpcRequest {
 
     /// A `List[Root, N]` of one root — the only shape we ask for.
     pub fn by_root(
-        producer: &mut TMultiProducer,
+        producer: &mut TProducer,
         root: &[u8; 32],
     ) -> Result<TCacheRead, std::io::Error> {
         let Some(mut reservation) = producer.reserve(32, true) else {
@@ -263,7 +263,7 @@ impl RpcRequest {
     /// offsets (so `offset[0] / 4` is the length), then the 32B block root, the
     /// 4B inner-list offset (always 36), and one 8B index per column.
     pub fn data_columns_by_root(
-        producer: &mut TMultiProducer,
+        producer: &mut TProducer,
         root: &[u8; 32],
         columns: u128,
     ) -> Result<TCacheRead, std::io::Error> {

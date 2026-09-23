@@ -2,9 +2,6 @@ use std::io::Write;
 
 use super::*;
 
-mod multi;
-pub use multi::MultiProducer;
-
 #[cfg(test)]
 mod tests;
 
@@ -73,7 +70,7 @@ impl Producer {
     ///
     /// ```compile_fail
     /// use silver_common::{SubLayout, TCache, TCacheId, TCacheProducer};
-    /// let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    /// let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     /// let reference = producer.sub_reservation(
     ///     SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"", b""
     /// ).unwrap();
@@ -153,6 +150,8 @@ impl AllocationState {
         cache.record_head(self.seq);
     }
 
+    /// `floor` is sampled here, under the allocator's claim: `min_allocation`
+    /// bounds every reservation still uncommitted, this one included.
     #[inline]
     fn reserve(&mut self, cache: TCacheRef, len: usize, auto_commit: bool) -> Option<Reservation> {
         if len > cache.capacity() - size_of::<Slot>() {
@@ -178,7 +177,8 @@ impl AllocationState {
         cache.reserve(self.seq, self.space, len as u32).map(|(seq, reservation_len)| {
             self.seq += reservation_len as u64;
             self.space -= reservation_len as u32;
-            Reservation { cache, seq, offset: 0, committed: false, auto_commit }
+            let floor = self.min_allocation;
+            Reservation { cache, seq, offset: 0, committed: false, auto_commit, floor }
         })
     }
 
@@ -207,6 +207,7 @@ pub struct Reservation {
     offset: usize,
     pub(super) committed: bool,
     auto_commit: bool,
+    floor: u64,
 }
 
 unsafe impl Send for Reservation {}
@@ -254,9 +255,13 @@ impl Reservation {
         Ok(&mut buf[self.offset..])
     }
 
-    /// Returns a `TCacheRead` reference for this reservation.
     pub fn read(&self) -> TCacheRead {
-        TCacheRead { id: self.cache.id(), seq: self.seq }
+        TCacheRead {
+            id: self.cache.id(),
+            emitter: PRODUCER_EMITTER,
+            seq: self.seq,
+            floor: self.floor,
+        }
     }
 
     pub fn is_committed(&self) -> bool {

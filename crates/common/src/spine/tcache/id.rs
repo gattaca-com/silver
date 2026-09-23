@@ -2,35 +2,35 @@
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum TCacheId {
-    IncomingGossip,
-    SszGossip,
-    OutgoingGossip,
-    IncomingRpc,
-    IncomingEngineResp,
+    NetworkIngress,
+    NetworkProcessing,
     ClusterInbound,
+    ControlProcessing,
+    ControlGossip,
+    ControlRpc,
     ClusterOutbound,
-    OutgoingRpc,
-    ReplayBlocks,
-    ElDataColumns,
-    DataColumns,
-    BeaconState,
+    ControlSlot,
+    StorageDelivery,
+    BoundaryProcessing,
+    ColumnsProcessing,
+    BeaconStateHandoff,
 }
 
 impl TCacheId {
     pub const COUNT: usize = 12;
     pub const ALL: [Self; Self::COUNT] = [
-        Self::IncomingGossip,
-        Self::SszGossip,
-        Self::OutgoingGossip,
-        Self::IncomingRpc,
-        Self::IncomingEngineResp,
+        Self::NetworkIngress,
+        Self::NetworkProcessing,
         Self::ClusterInbound,
+        Self::ControlProcessing,
+        Self::ControlGossip,
+        Self::ControlRpc,
         Self::ClusterOutbound,
-        Self::OutgoingRpc,
-        Self::ReplayBlocks,
-        Self::ElDataColumns,
-        Self::DataColumns,
-        Self::BeaconState,
+        Self::ControlSlot,
+        Self::StorageDelivery,
+        Self::BoundaryProcessing,
+        Self::ColumnsProcessing,
+        Self::BeaconStateHandoff,
     ];
 
     pub fn from_index(index: u64) -> Option<Self> {
@@ -40,20 +40,20 @@ impl TCacheId {
     /// Metrics label: `counters-tcache-{name}`, `tcache-write-{name}`.
     pub fn name(self) -> &'static str {
         match self {
-            Self::IncomingGossip => "incoming_gossip",
-            Self::SszGossip => "ssz_gossip",
-            Self::OutgoingGossip => "outgoing_gossip",
-            Self::IncomingRpc => "incoming_rpc",
-            Self::IncomingEngineResp => "incoming_engine_resp",
+            Self::NetworkIngress => "network_ingress",
+            Self::NetworkProcessing => "network_processing",
             Self::ClusterInbound => "cluster_inbound",
+            Self::ControlProcessing => "control_processing",
+            Self::ControlGossip => "control_gossip",
+            Self::ControlRpc => "control_rpc",
             Self::ClusterOutbound => "cluster_outbound",
-            Self::OutgoingRpc => "outgoing_rpc",
-            Self::ReplayBlocks => "replay_blocks",
-            Self::ElDataColumns => "el_data_columns",
-            Self::DataColumns => "data_columns",
-            Self::BeaconState => "beacon_state",
+            Self::ControlSlot => "control_slot",
+            Self::StorageDelivery => "storage_delivery",
+            Self::BoundaryProcessing => "boundary_processing",
+            Self::ColumnsProcessing => "columns_processing",
+            Self::BeaconStateHandoff => "beacon_state_handoff",
         }
     }
 }
 
-const _: () = assert!(TCacheId::BeaconState as usize + 1 == TCacheId::COUNT);
+const _: () = assert!(TCacheId::BeaconStateHandoff as usize + 1 == TCacheId::COUNT);

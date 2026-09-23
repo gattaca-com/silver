@@ -161,20 +161,21 @@ struct ColumnsRig {
 
 impl ColumnsRig {
     fn new(beacon: &BeaconStateTile, spec: SpecConfig) -> Self {
-        let gossip = TCache::producer(TCacheId::SszGossip, 1 << 24);
-        let rpc = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
-        let engine = TCache::producer(TCacheId::IncomingEngineResp, 1 << 16);
+        let gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 24);
+        let frames = TCache::producer(TCacheId::ControlGossip, 1 << 16);
+        let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let engine = TCache::producer(TCacheId::BoundaryProcessing, 1 << 16);
         let ticker = SlotTicker::new(
             0,
             Duration::from_millis(spec.slot_duration_ms()),
             Duration::from_secs(4),
         );
         let mut tile = DataColumnsTile::new(
-            TCacheTable::from_iter([&gossip, &rpc, &engine].map(|p| p.cache_ref())),
+            TCacheTable::from_iter([&gossip, &frames, &rpc, &engine].map(|p| p.cache_ref())),
             beacon.reader(),
             u128::MAX,
             Arc::new(spec),
-            TCache::producer(TCacheId::ElDataColumns, 1 << 16),
+            TCache::producer(TCacheId::ColumnsProcessing, 1 << 16),
             ticker,
         );
         tile.open_tcaches().unwrap();

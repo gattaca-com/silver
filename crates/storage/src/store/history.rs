@@ -353,7 +353,7 @@ mod tests {
         let fulu_root = block_root_fulu(&block);
         assert_ne!(gloas_root, fulu_root, "layouts must disagree for this to mean anything");
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 20);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
         let mut res = producer.reserve(block.len(), true).unwrap();
         res.write_all(&block).unwrap();
         res.flush().unwrap();

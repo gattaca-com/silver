@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn subscribes_round_trip() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let topics = ["beacon_block", "voluntary_exit"];
         let topic_refs: Vec<&str> = topics.iter().copied().collect();
         let tc = copy_subscribes_to_protobuf_output(&mut producer, &topic_refs).unwrap();
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn send_only_subscription_advertises_sending_without_requesting() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let read = copy_subscriptions(
             &mut producer,
             &["/eth2/00000000/data_column_sidecar_3/ssz_snappy"],
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn requesting_subscription_always_advertises_support_for_sending() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let read = copy_subscriptions(
             &mut producer,
             &["/eth2/00000000/data_column_sidecar_3/ssz_snappy"],
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn unsubscribes_round_trip() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let topic_refs: Vec<&str> = vec!["beacon_block"];
         let tc = copy_unsubscribes_to_protobuf_output(&mut producer, &topic_refs).unwrap();
 
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn grafts_round_trip() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let topic_refs: Vec<&str> = vec!["beacon_block", "sync_committee_3"];
         let tc = copy_grafts_to_protobuf_output(&mut producer, &topic_refs).unwrap();
 
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn prunes_round_trip() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let topic_refs: Vec<&str> = vec!["data_column_sidecar_42"];
         let tc = copy_prunes_to_protobuf_output(&mut producer, &topic_refs, None).unwrap();
 
@@ -690,7 +690,7 @@ mod tests {
     /// re-GRAFTs early is penalised against this value.
     #[test]
     fn prunes_carry_backoff() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let topic_refs: Vec<&str> = vec!["beacon_attestation_7"];
         let tc = copy_prunes_to_protobuf_output(&mut producer, &topic_refs, Some(960)).unwrap();
 

@@ -21,7 +21,9 @@ pub(crate) enum OutboundGossip {
 impl OutboundGossip {
     pub(crate) fn into_message(self, peer_id: usize) -> P2pSend {
         match self {
-            Self::Contiguous(read) => P2pSend::Gossip(GossipMsgOut { peer_id, tcache: read.read }),
+            Self::Contiguous(read) => {
+                P2pSend::Gossip(GossipMsgOut { peer_id, tcache: read.to_read() })
+            }
             Self::Segmented(frame) => P2pSend::SegmentedGossip {
                 peer_id,
                 frame: frame.segments.reference(),

@@ -1,6 +1,5 @@
 use silver_common::{
-    GossipDomain, IngestionTime, MessageId, P2pStreamId, PeerEvent, SszCache, SubValidation,
-    TCacheRead, TRead,
+    GossipDomain, IngestionTime, MessageId, P2pStreamId, PeerEvent, SszCache, SubValidation, TRead,
     cell_store::CellValidationRequest,
     column_util::KzgBatchEntry,
     ssz_view::{
@@ -32,13 +31,13 @@ impl PendingCellKzg {
 
 pub(crate) type PreparedCells = [Option<PendingCellKzg>; 128];
 
-/// The gossip frame a sidecar arrived in, kept until KZG passes so the mesh
+/// The gossip frame a sidecar arrived in, pinned until KZG passes so the mesh
 /// receives that exact frame, on the fork domain it came from, and never an
 /// unverified one.
 pub(crate) struct GossipSidecarFrame {
     pub domain: GossipDomain,
     pub msg_hash: MessageId,
-    pub protobuf: TCacheRead,
+    pub protobuf: TRead,
 }
 
 /// A sidecar that passed every per-sidecar check and awaits the end-of-pass

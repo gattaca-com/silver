@@ -193,7 +193,7 @@ impl Harness {
                 Arc::new(fulu_from_genesis()),
                 &SyncingConfig::default(),
                 tcaches,
-                TCache::producer(TCacheId::BeaconState, 1 << 20),
+                TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
                 true,
                 state,
             )
@@ -213,11 +213,11 @@ impl Harness {
         let genesis = now.saturating_sub(wall_slot * 12);
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
 
-        let gossip_in_producer = TCache::producer(TCacheId::SszGossip, 1 << 24);
-        let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, RPC_RING_BYTES);
-        let engine_resp_producer = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
-        let replay_in_producer = TCache::producer(TCacheId::ReplayBlocks, 1 << 24);
-        let columns_producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let gossip_in_producer = TCache::producer(TCacheId::ControlProcessing, 1 << 24);
+        let rpc_in_producer = TCache::producer(TCacheId::NetworkProcessing, RPC_RING_BYTES);
+        let engine_resp_producer = TCache::producer(TCacheId::BoundaryProcessing, 1 << 24);
+        let replay_in_producer = TCache::producer(TCacheId::StorageDelivery, 1 << 24);
+        let columns_producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let tcaches = TCacheTable::from_iter(
             [
                 &gossip_in_producer,

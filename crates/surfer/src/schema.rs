@@ -14,6 +14,7 @@ pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
         "columns" => Some(silver_columns::DataColumnCounters::NAMES),
         "network" => Some(silver_network::NetworkCounters::NAMES),
         "peer" => Some(silver_peer::PeerCounters::NAMES),
+        "tcache" => Some(silver_common::TCacheCounters::NAMES),
         _ => None,
     }
 }

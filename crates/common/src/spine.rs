@@ -23,10 +23,10 @@ pub use tcache::{
     AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, AcquiredRead, AcquiredSubReservation,
     AcquiredSubReservationList, AcquiredWithOffset, CacheFrameError, CacheFrameRef,
     CacheFrameSegment, CacheFrameView, CacheSegment, Consumer, Error, MAX_CACHE_SEGMENTS,
-    MultiProducer, PendingSubReservation, Producer, ReadMode, Reservation, SubLayout,
-    SubReservation, SubReservationError, SubReservationList, SubReservationRef, SubReservationView,
-    SubValidation, SubWrite, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef,
-    TCacheTable,
+    PendingSubReservation, Producer, ReadMode, Reservation, SubLayout, SubReservation,
+    SubReservationError, SubReservationList, SubReservationRef, SubReservationView, SubValidation,
+    SubWrite, TCache, TCacheCounters, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
+    TCacheRef, TCacheTable,
 };
 
 use crate::cell_store::{CellStoreEvent, RetentionEvent};

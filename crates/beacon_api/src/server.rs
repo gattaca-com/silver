@@ -478,12 +478,28 @@ impl BeaconApi {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::SszGossip, "api_ssz_gossip", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::IncomingRpc, "api_incoming_rpc", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::ElDataColumns, "api_el_columns", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::DataColumns, "api_data_columns", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::OutgoingRpc, "api_outgoing_rpc", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::BeaconState, "api_beacon_state", TReadMode::Sliding)
+        self.reader.open(
+            TCacheId::ControlProcessing,
+            "api_control_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(
+            TCacheId::NetworkProcessing,
+            "api_network_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(
+            TCacheId::ColumnsProcessing,
+            "api_columns_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(TCacheId::ControlSlot, "api_control_slot", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::StorageDelivery, "api_storage_delivery", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::BeaconStateHandoff,
+            "api_beacon_state_handoff",
+            TReadMode::Sliding,
+        )
     }
 
     pub fn local_addrs(&self) -> Vec<Bind> {
@@ -980,14 +996,14 @@ mod tests {
             let readiness = Readiness::new(1024);
             let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
             let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-            let cache = TCache::producer(TCacheId::OutgoingRpc, 1 << 16);
+            let cache = TCache::producer(TCacheId::StorageDelivery, 1 << 16);
             let tcaches = TCacheTable::from_iter(
                 [
-                    TCacheId::SszGossip,
-                    TCacheId::IncomingRpc,
-                    TCacheId::ElDataColumns,
-                    TCacheId::DataColumns,
-                    TCacheId::BeaconState,
+                    TCacheId::ControlProcessing,
+                    TCacheId::NetworkProcessing,
+                    TCacheId::ColumnsProcessing,
+                    TCacheId::ControlSlot,
+                    TCacheId::BeaconStateHandoff,
                 ]
                 .map(|id| TCache::producer(id, 1 << 16).cache_ref())
                 .into_iter()
@@ -1772,18 +1788,26 @@ mod tests {
             (
                 SszCache::Gossip,
                 ColumnOrigin::Gossip,
-                TCache::producer(TCacheId::SszGossip, 1 << 16),
+                TCache::producer(TCacheId::ControlProcessing, 1 << 16),
             ),
-            (SszCache::Rpc, ColumnOrigin::Rpc, TCache::producer(TCacheId::IncomingRpc, 1 << 16)),
-            (SszCache::El, ColumnOrigin::El, TCache::producer(TCacheId::ElDataColumns, 1 << 16)),
+            (
+                SszCache::Rpc,
+                ColumnOrigin::Rpc,
+                TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
+            ),
+            (
+                SszCache::El,
+                ColumnOrigin::El,
+                TCache::producer(TCacheId::ColumnsProcessing, 1 << 16),
+            ),
             (
                 SszCache::DataColumns,
                 ColumnOrigin::Assembly,
-                TCache::producer(TCacheId::DataColumns, 1 << 16),
+                TCache::producer(TCacheId::ControlSlot, 1 << 16),
             ),
         ];
-        let outgoing_rpc = TCache::producer(TCacheId::OutgoingRpc, 1 << 16);
-        let beacon_state = TCache::producer(TCacheId::BeaconState, 1 << 16);
+        let outgoing_rpc = TCache::producer(TCacheId::StorageDelivery, 1 << 16);
+        let beacon_state = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 16);
         server.api.reader = TCacheReader::new(TCacheTable::from_iter(
             sources
                 .iter()

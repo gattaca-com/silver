@@ -1,18 +1,22 @@
-use std::{ops::Deref, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 use flux::{Timer, timing::Nanos};
 
 use crate::{
     GossipMsgOut, TCacheError, TCacheId, TCacheRef,
-    spine::tcache::{IDLE_INTERVAL_NS, lag_threshold},
+    spine::tcache::{IDLE_INTERVAL_NS, TCacheCounters, lag_threshold},
 };
 
-/// Reader for a TCache msg
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Descriptor of one TCache msg. `emitter` and `floor` carry the stamping
+/// party's promise: no later read from `emitter` has `seq < floor`.
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct TCacheRead {
     pub(super) id: TCacheId,
+    // Consumer slot, or MAX_CONSUMERS + producer clone.
+    pub(super) emitter: u8,
     pub(super) seq: u64,
+    pub(super) floor: u64,
 }
 
 impl TCacheRead {
@@ -26,6 +30,16 @@ impl TCacheRead {
         self.seq
     }
 }
+
+// Identity is the message, not the stamp: the same seq forwarded by two
+// emitters is one read.
+impl PartialEq for TCacheRead {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.seq == other.seq
+    }
+}
+
+impl Eq for TCacheRead {}
 
 impl From<GossipMsgOut> for TCacheRead {
     fn from(value: GossipMsgOut) -> Self {
@@ -79,6 +93,7 @@ impl Consumer {
             // check lagging
             let head = cache_head.seq.load(Ordering::Relaxed);
             if head.saturating_sub(self.seq) > self.lag_threshold {
+                TCacheCounters::IdleReset.inc();
                 tracing::warn!(head, seq = self.seq, "force setting idle consumer tail");
                 self.seq = if self.last_head > self.seq { self.last_head } else { head };
             }
@@ -121,6 +136,12 @@ pub struct RandomAccessConsumer {
 impl RandomAccessConsumer {
     pub fn id(&self) -> TCacheId {
         self.cache.id()
+    }
+
+    /// Lookup key for a seq this consumer already protects (frame segments,
+    /// sub-reservation entries); not a promise to anyone.
+    pub(super) fn descriptor(&self, seq: u64) -> TCacheRead {
+        TCacheRead { id: self.id(), emitter: self.index as u8, seq, floor: self.active.tail_seq }
     }
 
     pub fn is_strict(&self) -> bool {
@@ -193,6 +214,7 @@ impl RandomAccessConsumer {
                 // check lagging
                 let head = cache_head.seq.load(Ordering::Relaxed);
                 if head.saturating_sub(tail) > self.lag_threshold {
+                    TCacheCounters::IdleReset.inc();
                     tracing::warn!(
                         head,
                         tail,
@@ -257,13 +279,36 @@ impl Drop for RandomAccessConsumer {
 #[derive(Debug)]
 pub struct AcquiredRead {
     pub(super) consumer: *const RandomAccessConsumer,
-    pub read: TCacheRead,
+    pub(super) read: TCacheRead,
     pub acquired: Nanos,
 }
 
 impl AcquiredRead {
     pub fn is_strict(&self) -> bool {
         unsafe { &*self.consumer }.strict
+    }
+
+    #[inline]
+    pub fn id(&self) -> TCacheId {
+        self.read.id
+    }
+
+    #[inline]
+    pub fn seq(&self) -> u64 {
+        self.read.seq
+    }
+
+    /// The forwardable descriptor. The pin holds `tail <= seq`, so the
+    /// stamped floor is the consumer's tail at this moment.
+    #[inline]
+    pub fn to_read(&self) -> TCacheRead {
+        let consumer = unsafe { &*self.consumer };
+        TCacheRead {
+            id: self.read.id,
+            emitter: consumer.index as u8,
+            seq: self.read.seq,
+            floor: consumer.active.tail_seq,
+        }
     }
 
     pub(super) fn cache(&self) -> TCacheRef {
@@ -307,14 +352,6 @@ impl AcquiredRead {
         }
         range.length = length;
         Some(range)
-    }
-}
-
-impl Deref for AcquiredRead {
-    type Target = TCacheRead;
-
-    fn deref(&self) -> &Self::Target {
-        &self.read
     }
 }
 
@@ -458,8 +495,12 @@ impl Buckets {
         // live bucket (the matching release is dropped below tail). Skip;
         // the read surfaces as StaleSeq at buffer() time.
         if self.tail_seq != u64::MAX && seq < self.tail_seq {
+            TCacheCounters::AcquireBelowTail.inc();
             tracing::warn!(seq, tail = self.tail_seq, head = self.head_seq, "acquire below tail");
             return false;
+        }
+        if seq < self.bucket_start_seq(self.head_seq) {
+            TCacheCounters::AcquireInGuard.inc();
         }
 
         let bucket_idx = self.bucket_index(seq);
@@ -498,6 +539,7 @@ impl Buckets {
         while self.tail_seq < limit {
             let tail_bucket = self.bucket_index(self.tail_seq);
             if self.head_seq - self.tail_seq > self.lag_threshold {
+                TCacheCounters::LagEviction.inc();
                 tracing::warn!(
                     lagging = self.buckets[tail_bucket],
                     "unfreed lagging consumers dropped!"
@@ -703,7 +745,7 @@ mod tests {
     /// the guard's Drop calls release without panicking.
     #[test]
     fn acquire_release_cycle_reads_buffer() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), false, false);
         producer.publish_head();
 
@@ -723,7 +765,7 @@ mod tests {
 
     #[test]
     fn retention_advance_skips_unacquired_records_without_releasing_live_reads() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         let mut consumer = retained(producer.cache_ref());
         let read = write_marker(&mut producer, 32, 0xab);
         let pinned = consumer.acquire_strict(read).unwrap();
@@ -741,7 +783,7 @@ mod tests {
 
     #[test]
     fn fixed_retention_replaces_the_sliding_guard_on_acquire_and_drop() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         let mut consumer = retained(producer.cache_ref());
         let old = write_marker(&mut producer, 32, 0xab);
         for _ in 0..20 {
@@ -761,7 +803,7 @@ mod tests {
 
     #[test]
     fn delayed_boundary_cannot_discard_next_region_or_move_backwards() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         let mut consumer = retained(producer.cache_ref());
         for _ in 0..10 {
             write_marker(&mut producer, 8192, 0xab);
@@ -781,7 +823,7 @@ mod tests {
 
     #[test]
     fn acquired_ranges_share_cell_and_proof_bytes() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let mut reservation = producer.reserve(2098, true).unwrap();
         let buffer = reservation.buffer().unwrap();
@@ -807,7 +849,7 @@ mod tests {
 
     #[test]
     fn acquired_range_checks_bounds_without_leaking_pins() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let read = write_marker(&mut producer, 32, 0xab);
         let acquired = consumer.acquire_strict(read).unwrap();
@@ -842,7 +884,7 @@ mod tests {
 
     #[test]
     fn acquired_offset_preserves_suffix_access() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let read = write_marker(&mut producer, 32, 0xab);
         let acquired = consumer.acquire_strict(read).unwrap();
@@ -862,7 +904,7 @@ mod tests {
 
     #[test]
     fn acquired_range_clones_release_exactly_once() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         let mut consumer = random_access(producer.cache_ref(), false, true);
         let read = write_marker(&mut producer, 2096, 0xab);
         let acquired = consumer.acquire_strict(read).unwrap();
@@ -894,7 +936,7 @@ mod tests {
 
     #[test]
     fn acquired_range_bytes_slices_share_one_pin() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let read = write_marker(&mut producer, 2096, 0xab);
         let acquired = consumer.acquire_strict(read).unwrap();
@@ -921,7 +963,7 @@ mod tests {
         const CAPACITY: usize = 1 << 18;
         const MESSAGE_LEN: usize = 8 * 1024;
 
-        let mut producer = TCache::producer(TCacheId::DataColumns, CAPACITY);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, CAPACITY);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let read = write_marker(&mut producer, 2096, 0xab);
         let acquired = consumer.acquire_strict(read).unwrap();
@@ -953,7 +995,7 @@ mod tests {
     fn acquired_range_rejects_stale_reads_and_hides_overwritten_data() {
         const CAPACITY: usize = 1 << 18;
 
-        let mut producer = TCache::producer(TCacheId::DataColumns, CAPACITY);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, CAPACITY);
         let mut consumer = random_access(producer.cache_ref(), true, false);
         let read = write_marker(&mut producer, 32, 0xab);
         let acquired = consumer.acquire_strict(read).unwrap();
@@ -985,7 +1027,7 @@ mod tests {
 
     #[test]
     fn acquired_range_rejects_uncommitted_reads_without_leaking_pins() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let mut reservation = producer.reserve(32, true).unwrap();
         let acquired = consumer.acquire(reservation.read());
@@ -1015,7 +1057,7 @@ mod tests {
         // block at ~slot 128 forever.
         const TOTAL: usize = 1000;
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, CACHE);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, CACHE);
         let mut consumer = random_access(producer.cache_ref(), false, false);
         producer.publish_head();
 

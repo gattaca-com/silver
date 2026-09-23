@@ -58,15 +58,15 @@ fn boundary_tile_with_spec(
 ) -> (ApplicationBoundaryTile, TProducer, TProducer) {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 16);
-    let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
-    let resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 12);
+    let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
+    let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+    let resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
     let tcaches = TCacheTable::from_iter(
         [
-            TCacheId::ElDataColumns,
-            TCacheId::DataColumns,
-            TCacheId::OutgoingRpc,
-            TCacheId::BeaconState,
+            TCacheId::ColumnsProcessing,
+            TCacheId::ControlSlot,
+            TCacheId::StorageDelivery,
+            TCacheId::BeaconStateHandoff,
         ]
         .map(|id| TCache::producer(id, 1 << 16).cache_ref())
         .into_iter()

@@ -259,7 +259,7 @@ impl CellStore {
         set: AssemblySet,
         reader: &mut TCacheReader,
     ) -> Result<bool, StoreError> {
-        if !reader.is_retained(TCacheId::DataColumns) {
+        if !reader.is_retained(TCacheId::ControlSlot) {
             return Err(StoreError::WrongCache);
         }
         let request = set.request;
@@ -288,7 +288,7 @@ impl CellStore {
             bytes += reference.acquire(reader)?.len();
         }
         if let Some(header) = set.header {
-            if header.id() != TCacheId::DataColumns {
+            if header.id() != TCacheId::ControlSlot {
                 return Err(StoreError::WrongCache);
             }
             let read = reader.acquire_strict(header).ok_or(StoreError::ContextExpired)?;
@@ -354,7 +354,7 @@ impl CellStore {
         read: TCacheRead,
         reader: &mut TCacheReader,
     ) -> Result<ColumnUpdate, StoreError> {
-        if read.id() != TCacheId::DataColumns || !reader.is_retained(read.id()) {
+        if read.id() != TCacheId::ControlSlot || !reader.is_retained(read.id()) {
             return Err(StoreError::WrongCache);
         }
         let (block, index) = self.column_index(root, column)?;

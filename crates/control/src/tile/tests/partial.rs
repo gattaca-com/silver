@@ -31,15 +31,15 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
         ..SpecConfig::mainnet()
     });
     let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
-    let mut columns = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+    let mut columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
     // The network side: strict on the controller's outgoing gossip, retained on
     // cells.
     let mut network_reader = TCacheReader::new(TCacheTable::from_iter([
         columns.cache_ref(),
         capture.controller.gossip_handler.mcache_publish.cache_ref(),
     ]));
-    network_reader.open(TCacheId::DataColumns, "", TReadMode::Retained).unwrap();
-    network_reader.open(TCacheId::OutgoingGossip, "", TReadMode::Strict).unwrap();
+    network_reader.open(TCacheId::ControlSlot, "", TReadMode::Retained).unwrap();
+    network_reader.open(TCacheId::ControlGossip, "", TReadMode::Strict).unwrap();
     let mut bytes = vec![0; 56];
     bytes[8..12].copy_from_slice(&56u32.to_le_bytes());
     bytes[12..16].copy_from_slice(&((56 + 2 * BYTES_PER_CELL) as u32).to_le_bytes());
@@ -147,7 +147,7 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
             ..SpecConfig::mainnet()
         });
         let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
-        let columns = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let cache = columns.cache_ref();
         let _reader = TCacheReader::single(cache, "", TReadMode::Retained).unwrap();
         capture.controller.spec = spec;
@@ -222,7 +222,7 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
         ..SpecConfig::mainnet()
     });
     let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
-    let columns = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+    let columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
     let _reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap();
     capture.controller.spec = spec.clone();
     capture.controller = capture

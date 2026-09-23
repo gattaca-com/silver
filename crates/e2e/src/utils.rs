@@ -126,14 +126,14 @@ impl PmBsHarness {
         let genesis_time = u64::from_le_bytes(checkpoint[0..8].try_into().unwrap());
         let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
 
-        let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
+        let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);
-        let rpc_p = TCache::producer(TCacheId::IncomingRpc, rpc_cap);
-        let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
-        let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
-        let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let rpc_p = TCache::producer(TCacheId::NetworkProcessing, rpc_cap);
+        let engine_resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 24);
+        let delivery_p = TCache::producer(TCacheId::StorageDelivery, 1 << 20);
+        let columns_p = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let bs_tcaches = TCacheTable::from_iter(
-            [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+            [&gossip_p, &rpc_p, &engine_resp_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
         );
 
         let state = BeaconState::from_checkpoint(checkpoint, &SpecConfig::mainnet(), &[])
@@ -143,7 +143,7 @@ impl PmBsHarness {
             Arc::new(SpecConfig::mainnet()),
             &SyncingConfig::default(),
             bs_tcaches,
-            TCache::producer(TCacheId::BeaconState, 1 << 25),
+            TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
             // Replays a committed fixture whose anchor is intentionally old; the
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,
@@ -166,21 +166,21 @@ impl PmBsHarness {
             0,
         );
 
-        let dummy_gossip_in = TCache::producer(TCacheId::IncomingGossip, 32);
-        let dummy_protobuf = TCache::producer(TCacheId::OutgoingGossip, 32);
+        let dummy_gossip_in = TCache::producer(TCacheId::NetworkIngress, 32);
+        let dummy_protobuf = TCache::producer(TCacheId::ControlGossip, 32);
         let gossip_handler = GossipHandler::new(
             TCacheTable::from_iter([dummy_gossip_in.cache_ref(), dummy_protobuf.cache_ref()]),
-            TCache::producer(TCacheId::SszGossip, 32),
+            TCache::producer(TCacheId::ControlProcessing, 32),
             dummy_protobuf,
             None,
         )
         .unwrap();
         let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
-        let dummy_el = TCache::producer(TCacheId::ElDataColumns, 32);
+        let dummy_el = TCache::producer(TCacheId::ColumnsProcessing, 32);
         let mut ctl = Controller::new(
             pm,
             gossip_handler,
-            TCache::multi_producer(TCacheId::OutgoingRpc, 32),
+            TCache::producer(TCacheId::ControlRpc, 32),
             TCacheTable::from_iter([
                 rpc_p.cache_ref(),
                 dummy_el.cache_ref(),

@@ -236,7 +236,7 @@ impl CellHandler {
         slot: u64,
         slot_start: Instant,
     ) -> Result<Self, StoreError> {
-        let cache = tcaches.get(TCacheId::DataColumns).map_err(|_| StoreError::WrongCache)?;
+        let cache = tcaches.get(TCacheId::ControlSlot).map_err(|_| StoreError::WrongCache)?;
         if cache.capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
@@ -249,12 +249,12 @@ impl CellHandler {
     }
 
     pub(super) fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::DataColumns, "columns_cells", TReadMode::Retained)
+        self.reader.open(TCacheId::ControlSlot, "dc_control_slot", TReadMode::Retained)
     }
 
     #[inline]
     pub(super) fn acquire(&mut self, read: TCacheRead) -> Option<TRead> {
-        if read.id() != TCacheId::DataColumns {
+        if read.id() != TCacheId::ControlSlot {
             return None;
         }
         self.reader.acquire_strict(read)
@@ -291,7 +291,7 @@ impl CellHandler {
                 !columns.is_empty()
             });
         }
-        self.reader.advance_retention(TCacheId::DataColumns, event.retain_from);
+        self.reader.advance_retention(TCacheId::ControlSlot, event.retain_from);
     }
 
     #[inline]
@@ -348,14 +348,14 @@ impl CellHandler {
             format: domain.format(),
             blob_count: data.commitments().len() / BYTES_PER_KZG_COMMITMENT,
         };
-        let source = (!p.is_gloas).then_some(FuluContextSource::Sidecar(p.sidecar.read));
+        let source = (!p.is_gloas).then_some(FuluContextSource::Sidecar(p.sidecar.to_read()));
         if !self.admit_context(context, domain, data, source, producers) {
             return;
         }
         match self.store.retain_full(
             &p.block_root,
             p.column_index as usize,
-            p.sidecar.read,
+            p.sidecar.to_read(),
             &mut self.reader,
         ) {
             Ok(_) => self.store.mark_changed(&p.block_root, p.column_index as usize),

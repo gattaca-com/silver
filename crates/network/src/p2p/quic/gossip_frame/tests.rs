@@ -58,20 +58,21 @@ impl Harness {
         // Counter files initialise lazily on first touch; warm them so the
         // zero-allocation baselines below measure only the frame path.
         NetworkCounters::CacheSegmentedAdmitted.inc();
-        let gossip = TCache::producer(TCacheId::OutgoingGossip, 1 << 18);
-        let columns = TCache::producer(TCacheId::DataColumns, 1 << 18);
-        let rpc_out = TCache::producer(TCacheId::OutgoingRpc, 1 << 16);
+        let gossip = TCache::producer(TCacheId::ControlGossip, 1 << 18);
+        let columns = TCache::producer(TCacheId::ControlSlot, 1 << 18);
+        let rpc_out = TCache::producer(TCacheId::StorageDelivery, 1 << 16);
+        let control_rpc = TCache::producer(TCacheId::ControlRpc, 1 << 16);
         let cluster = TCache::producer(TCacheId::ClusterOutbound, 1 << 16);
         let now = Instant::now();
         let mut context = Box::new(Context {
-            gossip_producer: TCache::producer(TCacheId::IncomingGossip, 1 << 16),
-            rpc_producer: TCache::producer(TCacheId::IncomingRpc, 1 << 16),
+            gossip_producer: TCache::producer(TCacheId::NetworkIngress, 1 << 16),
+            rpc_producer: TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
             identify: None,
             cluster_nodes: None,
             cluster_inbound_producer: TCache::producer(TCacheId::ClusterInbound, 1 << 16),
             partial_columns: true,
             reader: TCacheReader::new(TCacheTable::from_iter(
-                [&gossip, &columns, &rpc_out, &cluster].map(|p| p.cache_ref()),
+                [&gossip, &columns, &rpc_out, &control_rpc, &cluster].map(|p| p.cache_ref()),
             )),
         });
         context.open_tcaches().unwrap();
@@ -268,7 +269,7 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     }
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     h.columns.view_sub_reservation(assembly).unwrap().close();
-    h.context.reader.advance_retention(TCacheId::DataColumns, h.columns.next_seq());
+    h.context.reader.advance_retention(TCacheId::ControlSlot, h.columns.next_seq());
     assert!(h.acquire(reference).is_none());
     let mut filled = 0;
     while let Some(mut reservation) = h.columns.reserve(8192, true) {
@@ -299,7 +300,7 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     io.retained.clear();
     assert_eq!(h.limits.owners.get(), 0);
     assert_eq!(h.wheel.active_count(), 0);
-    h.context.reader.advance_retention(TCacheId::DataColumns, h.columns.next_seq());
+    h.context.reader.advance_retention(TCacheId::ControlSlot, h.columns.next_seq());
     assert!(h.columns.reserve(8192, true).is_some());
 }
 

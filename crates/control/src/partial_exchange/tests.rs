@@ -60,17 +60,17 @@ impl Rig {
             ..SpecConfig::mainnet()
         });
         let config = CellStoreConfig::new(spec, column_mask, Duration::from_secs(11)).unwrap();
-        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let columns =
             Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
-        let output = TCache::producer(TCacheId::OutgoingGossip, 1 << 20);
+        let output = TCache::producer(TCacheId::ControlGossip, 1 << 20);
         // The network side: retained on cells, strict on outgoing gossip.
         let mut network = Box::new(TCacheReader::new(TCacheTable::from_iter([
             producer.cache_ref(),
             output.cache_ref(),
         ])));
-        network.open(TCacheId::DataColumns, "", TReadMode::Retained).unwrap();
-        network.open(TCacheId::OutgoingGossip, "", TReadMode::Strict).unwrap();
+        network.open(TCacheId::ControlSlot, "", TReadMode::Retained).unwrap();
+        network.open(TCacheId::ControlGossip, "", TReadMode::Strict).unwrap();
         let exchange = PartialExchange::new(&config, 0, now, PartialColumnsMode::SendOnly);
         let mut ingress = CellIngress::new(config.clone(), producer, 0, now).unwrap();
         let mut store = CellStore::new(config.clone(), 0, now).unwrap();
@@ -477,8 +477,8 @@ fn expiry_withdraws_without_reading_expired_payloads() {
     assert_eq!(rig.spin().len(), 1);
     rig.now += Duration::from_secs(12);
     let event = rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
-    rig.network.advance_retention(TCacheId::DataColumns, event.retain_from);
-    rig.columns.advance_retention(TCacheId::DataColumns, event.retain_from);
+    rig.network.advance_retention(TCacheId::ControlSlot, event.retain_from);
+    rig.columns.advance_retention(TCacheId::ControlSlot, event.retain_from);
     let frames = rig.spin();
     assert_eq!(frames.len(), 1);
     let wire = rig.wire(frames[0].1);

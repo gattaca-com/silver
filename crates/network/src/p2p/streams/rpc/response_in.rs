@@ -413,7 +413,7 @@ mod tests {
         let mut wire = vec![3u8, msg.len() as u8];
         wire.extend_from_slice(&body);
 
-        let mut producer = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::DataColumnSidecarsByRange, false);
 
         // Full-buffer reads (the live failure shape), byte-by-byte, and odd.
@@ -471,7 +471,7 @@ mod tests {
         wire.extend_from_slice(&[0u8; CHECKSUM_LEN]); // crc (unchecked)
         wire.extend(std::iter::repeat_n(0xCD, data_len));
 
-        let mut producer = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::DataColumnSidecarsByRange, false);
 
         // Whole-buffer, byte-by-byte, and odd reads — the boundary the bug hid at.

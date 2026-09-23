@@ -227,7 +227,7 @@ mod tests {
         let mut wire = vec![ssz.len() as u8]; // single-byte varint (64)
         wire.extend_from_slice(&body);
 
-        let mut producer = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
         let mut consumer = TCacheReader::single(
             producer.cache_ref(),
             "test_rpc_by_root_req",

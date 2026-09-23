@@ -267,7 +267,7 @@ impl StreamState {
                                             written: 0,
                                             partial_columns: context
                                                 .reader
-                                                .is_open(TCacheId::DataColumns),
+                                                .is_open(TCacheId::ControlSlot),
                                         }
                                     } else {
                                         GossipWriteState::Idle

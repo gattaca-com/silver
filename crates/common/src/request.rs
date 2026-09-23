@@ -199,7 +199,7 @@ mod tests {
     /// off peers that charged more than we budgeted.
     #[test]
     fn tokens_agree_with_what_the_encoded_request_costs() {
-        let mut producer = TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlRpc, 1 << 16);
         let columns = (1u128 << 3) | (1u128 << 7) | (1u128 << 40);
 
         for scope in [Scope::Range { start: 1000, count: 64 }, Scope::Root([0xAB; 32])] {

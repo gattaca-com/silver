@@ -12,8 +12,7 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, P2pSend,
     PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
     RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SyncNeed,
-    SyncUpdate, TCacheError, TCacheId, TCacheReader, TCacheTable, TMultiProducer, TProducer,
-    TReadMode,
+    SyncUpdate, TCacheError, TCacheId, TCacheReader, TCacheTable, TProducer, TReadMode,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
     ticker::SlotTicker,
@@ -44,7 +43,7 @@ pub struct Controller {
     /// `sync_target`) and forward block issuance. PM serves its requests
     /// (peer-pick, caps, send) and owns column sync.
     sync_engine: SyncEngine,
-    rpc_producer: TMultiProducer,
+    rpc_producer: TProducer,
     attestation_cluster: AttestationClusterHandler,
     last_tick: Instant,
     last_ping: Instant,
@@ -81,7 +80,7 @@ impl Controller {
     pub fn new(
         peer_manager: PeerManager,
         gossip_handler: GossipHandler,
-        rpc_producer: TMultiProducer,
+        rpc_producer: TProducer,
         tcaches: TCacheTable,
         cluster_outbound_producer: TProducer,
         cluster_config: Option<AttestationClusterConfig>,
@@ -113,8 +112,16 @@ impl Controller {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::IncomingRpc, "ctl_incoming_rpc", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::ElDataColumns, "ctl_el_data_columns", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::NetworkProcessing,
+            "ctl_network_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(
+            TCacheId::ColumnsProcessing,
+            "ctl_columns_processing",
+            TReadMode::Sliding,
+        )?;
         self.reader.open(TCacheId::ClusterInbound, "control_cluster_inbound", TReadMode::Strict)?;
         self.gossip_handler.open_tcaches()
     }
@@ -606,7 +613,7 @@ impl Tile<SilverSpine> for Controller {
 
 fn handle_peer_control(
     gossip_handler: &mut GossipHandler,
-    rpc_producer: &mut TMultiProducer,
+    rpc_producer: &mut TProducer,
     pc: PeerControl,
     producers: &mut SilverSpineProducers,
 ) {

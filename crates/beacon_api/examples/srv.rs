@@ -14,12 +14,12 @@ fn main() {
 
     let tcaches = TCacheTable::from_iter(
         [
-            TCacheId::SszGossip,
-            TCacheId::IncomingRpc,
-            TCacheId::ElDataColumns,
-            TCacheId::DataColumns,
-            TCacheId::OutgoingRpc,
-            TCacheId::BeaconState,
+            TCacheId::ControlProcessing,
+            TCacheId::NetworkProcessing,
+            TCacheId::ColumnsProcessing,
+            TCacheId::ControlSlot,
+            TCacheId::StorageDelivery,
+            TCacheId::BeaconStateHandoff,
         ]
         .map(|id| TCache::producer(id, 1 << 12).cache_ref()),
     );

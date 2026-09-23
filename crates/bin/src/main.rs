@@ -47,6 +47,9 @@ static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 /// Normal Raft protocol messages only.
 const CLUSTER_MESSAGE_TCACHE_SIZE: usize = 1 << 22;
 
+/// By-root request payloads: one root list per request.
+const CONTROL_RPC_TCACHE_SIZE: usize = 1 << 20;
+
 /// Attester shufflings, one `u32` per active validator: three epochs of a
 /// two-million-validator set, so the two the validator API serves never wait
 /// on the one being written.
@@ -84,27 +87,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!("loaded config with fork digest: {}", hex::encode(config.fork_digest()));
 
     // TCaches
-    let incoming_gossip_producer =
-        TCache::producer(TCacheId::IncomingGossip, config.incoming_gossip_tcache_size());
-    let ssz_gossip_producer =
-        TCache::producer(TCacheId::SszGossip, config.incoming_gossip_ssz_tcache_size());
-    let outgoing_gossip_producer =
-        TCache::producer(TCacheId::OutgoingGossip, config.outgoing_gossip_tcache_size());
-    let incoming_rpc_producer =
-        TCache::producer(TCacheId::IncomingRpc, config.incoming_rpc_tcache_size());
-    let incoming_engine_resp_producer = TCache::producer(
-        TCacheId::IncomingEngineResp,
+    let network_ingress_producer =
+        TCache::producer(TCacheId::NetworkIngress, config.incoming_gossip_tcache_size());
+    let control_processing_producer =
+        TCache::producer(TCacheId::ControlProcessing, config.incoming_gossip_ssz_tcache_size());
+    let control_gossip_producer =
+        TCache::producer(TCacheId::ControlGossip, config.outgoing_gossip_tcache_size());
+    let network_processing_producer =
+        TCache::producer(TCacheId::NetworkProcessing, config.incoming_rpc_tcache_size());
+    let boundary_processing_producer = TCache::producer(
+        TCacheId::BoundaryProcessing,
         config.engine_config().incoming_engine_resp_tcache_size,
     );
     let cluster_inbound_producer =
         TCache::producer(TCacheId::ClusterInbound, CLUSTER_MESSAGE_TCACHE_SIZE);
     let cluster_outbound_producer =
         TCache::producer(TCacheId::ClusterOutbound, CLUSTER_MESSAGE_TCACHE_SIZE);
-    let outgoing_rpc_producer =
-        TCache::multi_producer(TCacheId::OutgoingRpc, config.outgoing_rpc_tcache_size());
-    let replay_blocks_producer = TCache::producer(TCacheId::ReplayBlocks, 1 << 25);
-    let el_producer = TCache::producer(TCacheId::ElDataColumns, 1 << 25);
-    let beacon_state_producer = TCache::producer(TCacheId::BeaconState, BEACON_STATE_TCACHE_SIZE);
+    let control_rpc_producer = TCache::producer(TCacheId::ControlRpc, CONTROL_RPC_TCACHE_SIZE);
+    let storage_delivery_producer =
+        TCache::producer(TCacheId::StorageDelivery, config.outgoing_rpc_tcache_size());
+    let columns_processing_producer = TCache::producer(TCacheId::ColumnsProcessing, 1 << 25);
+    let beacon_state_handoff_producer =
+        TCache::producer(TCacheId::BeaconStateHandoff, BEACON_STATE_TCACHE_SIZE);
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -207,31 +211,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         .then(|| CellStoreConfig::new(spec.clone(), das_custody_groups, GOSSIP_DELIVERY_RETENTION))
         .transpose()
         .map_err(|error| format!("cell store configuration: {error:?}"))?;
-    let data_columns_producer = TCache::producer(
-        TCacheId::DataColumns,
+    let control_slot_producer = TCache::producer(
+        TCacheId::ControlSlot,
         cell_config.as_ref().map_or(1 << 16, CellStoreConfig::cache_capacity),
     );
     let (cell_slot, cell_slot_start) = ticker.current_slot_start();
 
     // Every tile opens the consumers it reads through in `try_init`.
     let tcaches = TCacheTable::from_iter([
-        incoming_gossip_producer.cache_ref(),
-        ssz_gossip_producer.cache_ref(),
-        outgoing_gossip_producer.cache_ref(),
-        incoming_rpc_producer.cache_ref(),
-        incoming_engine_resp_producer.cache_ref(),
+        network_ingress_producer.cache_ref(),
+        control_processing_producer.cache_ref(),
+        control_gossip_producer.cache_ref(),
+        network_processing_producer.cache_ref(),
+        boundary_processing_producer.cache_ref(),
         cluster_inbound_producer.cache_ref(),
         cluster_outbound_producer.cache_ref(),
-        outgoing_rpc_producer.cache_ref(),
-        replay_blocks_producer.cache_ref(),
-        el_producer.cache_ref(),
-        beacon_state_producer.cache_ref(),
-        data_columns_producer.cache_ref(),
+        control_rpc_producer.cache_ref(),
+        storage_delivery_producer.cache_ref(),
+        columns_processing_producer.cache_ref(),
+        beacon_state_handoff_producer.cache_ref(),
+        control_slot_producer.cache_ref(),
     ]);
 
     let p2p_context = Context {
-        gossip_producer: incoming_gossip_producer,
-        rpc_producer: incoming_rpc_producer,
+        gossip_producer: network_ingress_producer,
+        rpc_producer: network_processing_producer,
         identify: Some(ProtoIdentify::from((&identify, &keypair))),
         cluster_nodes: cluster_nodes.map(ClusterNodes::new),
         cluster_inbound_producer,
@@ -247,8 +251,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let gossip_handler = GossipHandler::new(
         tcaches,
-        ssz_gossip_producer,
-        outgoing_gossip_producer,
+        control_processing_producer,
+        control_gossip_producer,
         Some(silver_common::GossipDomain::new(
             config.fork_digest(),
             spec.fork_at_slot(boot_wall_slot),
@@ -267,7 +271,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             das_custody_groups,
         ),
         gossip_handler,
-        outgoing_rpc_producer.clone(),
+        control_rpc_producer,
         tcaches,
         cluster_outbound_producer,
         cluster_config,
@@ -283,7 +287,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         control_tile = control_tile
             .with_data_columns_cache(
                 cell_config.clone(),
-                data_columns_producer,
+                control_slot_producer,
                 cell_slot,
                 cell_slot_start,
                 partial_columns,
@@ -311,7 +315,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         spec.clone(),
         &config.syncing_config(),
         tcaches,
-        beacon_state_producer,
+        beacon_state_handoff_producer,
         !config.disable_weak_subjectivity_check(),
         state,
     );
@@ -319,8 +323,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let storage_tile = StorageTile::new(
         tcaches,
-        outgoing_rpc_producer,
-        replay_blocks_producer,
+        storage_delivery_producer,
         state_reader,
         das_custody_groups,
         spec.clone(),
@@ -334,7 +337,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         state_reader,
         das_custody_groups,
         spec.clone(),
-        el_producer,
+        columns_processing_producer,
         SlotTicker::new(
             chain_config.genesis_unix_secs,
             chain_config.slot_duration(),
@@ -360,7 +363,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         beacon_state_tile.reader(),
         config.engine_config(),
         tcaches,
-        incoming_engine_resp_producer,
+        boundary_processing_producer,
     );
 
     // Spine

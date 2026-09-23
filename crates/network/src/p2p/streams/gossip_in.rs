@@ -267,7 +267,7 @@ mod tests {
         wire.push(12);
         wire.extend_from_slice(b"bbbbbbbbbbbb");
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
@@ -296,7 +296,7 @@ mod tests {
         wire.push(4);
         wire.extend_from_slice(b"bbbb");
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
         let header = size_of::<P2pStreamId>();
@@ -328,7 +328,7 @@ mod tests {
         wire.push(4);
         wire.extend_from_slice(b"bbbb");
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: true };
         let header = size_of::<P2pStreamId>();
@@ -359,7 +359,7 @@ mod tests {
         let mut wire = vec![6u8];
         wire.extend_from_slice(b"cccccc");
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: Vec::new(), pos: 0, eof: false };
         let header = size_of::<P2pStreamId>();
@@ -386,7 +386,7 @@ mod tests {
         let mut wire = vec![100u8];
         wire.extend_from_slice(&[0xaa; 10]);
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
 
@@ -416,7 +416,7 @@ mod tests {
         let mut wire = vec![100u8];
         wire.extend_from_slice(&[0xaa; 10]);
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
 
@@ -440,7 +440,7 @@ mod tests {
         let mut wire = vec![100u8];
         wire.extend_from_slice(&[0xaa; 10]);
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: wire, pos: 0, eof: false };
@@ -467,7 +467,7 @@ mod tests {
     fn unfinished_body_survives_cache_pressure_and_releases_space() {
         for complete in [false, true] {
             const CAPACITY: usize = 1 << 17;
-            let mut producer = TCache::producer(TCacheId::IncomingGossip, CAPACITY);
+            let mut producer = TCache::producer(TCacheId::NetworkIngress, CAPACITY);
             let mut consumer =
                 TCacheReader::single(producer.cache_ref(), "", TReadMode::Sliding).unwrap();
             let slow_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);

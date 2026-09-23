@@ -6,7 +6,7 @@ use std::{
 
 use super::{
     AcquiredRange, AcquiredRead, CacheFrameSegment, CacheFrameView, SubReservationRef, TCacheId,
-    TCacheRead, TCacheReader,
+    TCacheReader,
 };
 use crate::spine::tcache::RandomAccessConsumer;
 
@@ -81,7 +81,7 @@ impl AcquiredCacheFrame {
         // here, and frame cleanup excludes the transferred descriptor.
         let read = AcquiredRead {
             consumer: consumer.as_ptr(),
-            read: TCacheRead { id: unsafe { consumer.as_ref() }.id(), seq: segment.seq },
+            read: unsafe { consumer.as_ref() }.descriptor(segment.seq),
             acquired: self.view.read.acquired,
         };
         self.next += 1;

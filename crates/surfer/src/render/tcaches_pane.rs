@@ -209,7 +209,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
 
     let chart = Chart::new(datasets)
         .block(block)
-        // Consumer names (e.g. `p2p_outgoing_gossip`) overflow the default
+        // Consumer names (e.g. `p2p_control_gossip`) overflow the default
         // 1/4-width legend cap and get hidden/clipped. Allow the legend to
         // size to the longest name so names render in full.
         .hidden_legend_constraints((Constraint::Ratio(1, 1), Constraint::Ratio(1, 1)))

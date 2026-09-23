@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn fulu_frame_matches_buffa_reference_encoding() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
         let mut consumer =
             TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
         let now = Instant::now();
@@ -473,7 +473,7 @@ mod tests {
                         .map(|index| u8::from_str_radix(&line[index..index + 2], 16).unwrap())
                 })
                 .collect();
-            let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+            let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
             let mut consumer =
                 TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
             let mut reservation = producer.reserve(reference.len(), true).unwrap();
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn gloas_frame_matches_buffa_reference_encoding() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
         let mut consumer =
             TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
         let now = Instant::now();
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn frame_rejects_count_and_header_mismatches() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
         let now = Instant::now();
         let (cells, proofs, _, _) = source_record(&mut producer, 2, 0);
 
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn metadata_only_frame_matches_buffa_reference_encoding() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let mut consumer =
             TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap();
         let now = Instant::now();

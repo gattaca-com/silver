@@ -198,13 +198,13 @@ impl PublisherStack {
 
         // TCaches needed by the network tile on the publisher side.
         // gossip_in: network writes raw inbound gossip here; nobody reads.
-        let gossip_in_producer = TCache::producer(TCacheId::IncomingGossip, TCACHE_SIZE);
+        let gossip_in_producer = TCache::producer(TCacheId::NetworkIngress, TCACHE_SIZE);
         let gossip_in_consumer =
             TCacheReader::single(gossip_in_producer.cache_ref(), "e2e", TReadMode::Sliding).ok();
 
         // gossip_out: network reads outbound bytes from here via its reader.
         // The publisher's mcache TCache IS the gossip_out source — same cache.
-        let mcache_producer = TCache::producer(TCacheId::OutgoingGossip, TCACHE_SIZE);
+        let mcache_producer = TCache::producer(TCacheId::ControlGossip, TCACHE_SIZE);
         let gossip_out_ra =
             TCacheReader::single(mcache_producer.cache_ref(), "e2e", TReadMode::Sliding)
                 .expect("random_access");
@@ -212,25 +212,27 @@ impl PublisherStack {
         // rpc_in: network writes inbound RPC payload bytes here; tests
         // (multipart-RPC) read via `rpc_in_ra`. Regular consumer also
         // attached for keep-alive.
-        let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, TCACHE_SIZE);
+        let rpc_in_producer = TCache::producer(TCacheId::NetworkProcessing, TCACHE_SIZE);
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
         let rpc_in_ra =
             TCacheReader::single(rpc_in_producer.cache_ref(), "e2e", TReadMode::Sliding)
                 .expect("rpc_in random_access");
         // rpc_out: tests reserve here to inject outbound BeaconBlock
         // chunks; the network tile reads via its reader.
-        let rpc_out_producer = TCache::producer(TCacheId::OutgoingRpc, TCACHE_SIZE);
+        let rpc_out_producer = TCache::producer(TCacheId::StorageDelivery, TCACHE_SIZE);
+        let control_rpc_producer = TCache::producer(TCacheId::ControlRpc, 32);
 
         let cluster_in_producer = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
         let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, 1 << 12);
 
         // Dummies the controller and gossip handler read from or write to.
-        let ssz_producer = TCache::producer(TCacheId::SszGossip, 32);
-        let protobuf_producer = TCache::producer(TCacheId::OutgoingGossip, 32);
-        let el_producer = TCache::producer(TCacheId::ElDataColumns, 32);
+        let ssz_producer = TCache::producer(TCacheId::ControlProcessing, 32);
+        let protobuf_producer = TCache::producer(TCacheId::ControlGossip, 32);
+        let el_producer = TCache::producer(TCacheId::ColumnsProcessing, 32);
 
         let network_tcaches = TCacheTable::from_iter(
-            [&mcache_producer, &rpc_out_producer, &cluster_out_producer].map(|p| p.cache_ref()),
+            [&mcache_producer, &rpc_out_producer, &control_rpc_producer, &cluster_out_producer]
+                .map(|p| p.cache_ref()),
         );
         let gossip_tcaches =
             TCacheTable::from_iter([gossip_in_producer.cache_ref(), protobuf_producer.cache_ref()]);
@@ -280,7 +282,7 @@ impl PublisherStack {
                 0,
             ),
             GossipHandler::new(gossip_tcaches, ssz_producer, protobuf_producer, None).unwrap(),
-            TCache::multi_producer(TCacheId::OutgoingRpc, 32), // dummpy rpc out
+            control_rpc_producer,
             controller_tcaches,
             cluster_out_producer,
             None,
@@ -337,10 +339,10 @@ impl EchoStack {
         });
 
         // Inbound gossip raw bytes: network writes, compression consumes.
-        let gossip_in_producer = TCache::producer(TCacheId::IncomingGossip, TCACHE_SIZE);
+        let gossip_in_producer = TCache::producer(TCacheId::NetworkIngress, TCACHE_SIZE);
 
         // SSZ output: compression writes, stats-sink reads.
-        let ssz_producer = TCache::producer(TCacheId::SszGossip, TCACHE_SIZE);
+        let ssz_producer = TCache::producer(TCacheId::ControlProcessing, TCACHE_SIZE);
         let ssz_consumer =
             TCacheReader::single(ssz_producer.cache_ref(), "e2e", TReadMode::Sliding)
                 .expect("consumer");
@@ -348,22 +350,24 @@ impl EchoStack {
         // Protobuf mcache: compression writes; network reads via its reader
         // when re-forwarding. Not exercised in one-way test but wiring must
         // exist.
-        let protobuf_producer = TCache::producer(TCacheId::OutgoingGossip, TCACHE_SIZE);
+        let protobuf_producer = TCache::producer(TCacheId::ControlGossip, TCACHE_SIZE);
 
         // RPC caches: dummy.
-        let rpc_in_producer = TCache::producer(TCacheId::IncomingRpc, TCACHE_SIZE);
+        let rpc_in_producer = TCache::producer(TCacheId::NetworkProcessing, TCACHE_SIZE);
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
-        let rpc_out_producer = TCache::producer(TCacheId::OutgoingRpc, TCACHE_SIZE);
+        let rpc_out_producer = TCache::producer(TCacheId::StorageDelivery, TCACHE_SIZE);
+        let control_rpc_producer = TCache::producer(TCacheId::ControlRpc, 32);
 
         let cluster_in_producer = TCache::producer(TCacheId::ClusterInbound, 1 << 12);
         let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, 1 << 12);
 
         // Dummies the controller reads from.
-        let ctl_rpc_producer = TCache::producer(TCacheId::IncomingRpc, 32);
-        let el_producer = TCache::producer(TCacheId::ElDataColumns, 32);
+        let ctl_rpc_producer = TCache::producer(TCacheId::NetworkProcessing, 32);
+        let el_producer = TCache::producer(TCacheId::ColumnsProcessing, 32);
 
         let network_tcaches = TCacheTable::from_iter(
-            [&protobuf_producer, &rpc_out_producer, &cluster_out_producer].map(|p| p.cache_ref()),
+            [&protobuf_producer, &rpc_out_producer, &control_rpc_producer, &cluster_out_producer]
+                .map(|p| p.cache_ref()),
         );
         let gossip_tcaches =
             TCacheTable::from_iter([gossip_in_producer.cache_ref(), protobuf_producer.cache_ref()]);
@@ -414,7 +418,7 @@ impl EchoStack {
                 0,
             ),
             compression,
-            TCache::multi_producer(TCacheId::OutgoingRpc, 32), // dummpy rpc out
+            control_rpc_producer,
             controller_tcaches,
             cluster_out_producer,
             None,

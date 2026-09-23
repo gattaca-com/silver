@@ -296,7 +296,7 @@ mod tests {
         message.set_priority(-10);
 
         let expected = message.clone();
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let mut consumer = TCacheReader::single(
             producer.cache_ref(),
             "cluster_wire_test_consumer",

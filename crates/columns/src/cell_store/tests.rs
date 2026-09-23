@@ -52,7 +52,7 @@ impl Harness {
     }
 
     fn at_slot(config: CellStoreConfig, slot: u64) -> Self {
-        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let cache = producer.cache_ref();
         let consumer = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
         let start = Instant::now();
@@ -164,7 +164,7 @@ impl Harness {
         let boundary = self.allocator.advance(now, min_slot);
         self.store.advance(now, min_slot, on_expired);
         if let Some(event) = boundary {
-            self.consumer.advance_retention(TCacheId::DataColumns, event.retain_from);
+            self.consumer.advance_retention(TCacheId::ControlSlot, event.retain_from);
         }
     }
 
@@ -345,7 +345,7 @@ fn invalid_and_overflowing_configurations_are_rejected() {
 fn an_undersized_cache_is_rejected() {
     let config =
         CellStoreConfig::new(Arc::new(Harness::spec(21)), u128::MAX, Duration::ZERO).unwrap();
-    let producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+    let producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
     assert_eq!(producer.cache_ref().capacity(), 1 << 16);
     assert!(matches!(
         CellAllocator::new(config, producer, 0, Instant::now()),
@@ -924,7 +924,7 @@ fn acquired_send_outlives_expiry_and_blocks_overwrite() {
 
 #[test]
 fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
-    let mut ingress = TCache::producer(TCacheId::IncomingGossip, 1 << 17);
+    let mut ingress = TCache::producer(TCacheId::NetworkIngress, 1 << 17);
     let mut incoming =
         Box::new(TCacheReader::single(ingress.cache_ref(), "", TReadMode::Strict).unwrap());
     let mut h = Harness::new(1, 1);
@@ -1129,7 +1129,7 @@ fn rpc_sidecars_do_not_become_sendable_cells() {
     let mut h = Harness::new(2, 1);
     h.context(ROOT, 0, 2);
     let full = h.full_bytes(&ROOT, 0);
-    let mut rpc = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+    let mut rpc = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
     let mut reservation = rpc.reserve(full.len(), true).unwrap();
     reservation.write_all(&full).unwrap();
     assert!(matches!(h.retain(&ROOT, 0, reservation.read()), Err(StoreError::WrongCache)));

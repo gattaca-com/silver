@@ -169,7 +169,7 @@ pub struct Config {
     /// headroom for column traffic passing a parked block, which dominates
     /// and is why nothing asserts a static bound. Default is ~4× that
     /// floor.
-    #[serde(default = "default_usize::<268435456>")] // 2 << 27
+    #[serde(default = "default_usize::<134217728>")] // 2 << 26
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     outgoing_rpc_tcache_size: usize,
@@ -223,7 +223,7 @@ impl Config {
             incoming_gossip_tcache_size: 2 << 27,     // protobuf
             outgoing_gossip_tcache_size: 2 << 27,     // protobuf
             incoming_gossip_ssz_tcache_size: 2 << 27, // ssz
-            incoming_rpc_tcache_size: 2 << 27,        // ssz
+            incoming_rpc_tcache_size: 2 << 26,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),

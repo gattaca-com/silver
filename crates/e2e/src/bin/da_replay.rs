@@ -118,15 +118,16 @@ impl Node {
 
         // One gossip cache sized for a slot's 128 sidecars so it never wraps
         // mid-slot; the rest only satisfy the constructor.
-        let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 26);
-        let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
-        let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 20);
+        let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 26);
+        let frame_p = TCache::producer(TCacheId::ControlGossip, 1 << 20);
+        let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+        let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
         let mut tile = DataColumnsTile::new(
-            TCacheTable::from_iter([&gossip_p, &rpc_p, &engine_p].map(|p| p.cache_ref())),
+            TCacheTable::from_iter([&gossip_p, &frame_p, &rpc_p, &engine_p].map(|p| p.cache_ref())),
             owner.reader(),
             custody,
             spec,
-            TCache::producer(TCacheId::ElDataColumns, 1 << 22),
+            TCache::producer(TCacheId::ColumnsProcessing, 1 << 22),
             ticker,
         );
 
