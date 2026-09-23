@@ -15,6 +15,7 @@ pub use cache_frame::{
 pub use consumer::{
     AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
 };
+pub use counters::TCacheCounters;
 use flux::{Timer, timing::Nanos, tracing};
 pub use id::TCacheId;
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
@@ -49,6 +50,7 @@ const fn lag_threshold(len: u32) -> u64 {
 
 mod cache_frame;
 mod consumer;
+mod counters;
 mod id;
 mod metrics;
 mod producer;
@@ -301,14 +303,11 @@ impl TCache {
         (seq & (self.len - 1) as u64) as usize
     }
 
+    /// Zero while a consumer's tail sits more than a ring behind the head,
+    /// which a consumer opened after a wrap does until its first free.
     fn space(&self, head_seq: u64, min_allocation: u64) -> u32 {
         let min_tail = self.min_tail(min_allocation);
-        debug_assert!(
-            head_seq - min_tail <= self.len as u64,
-            "{head_seq} - {min_tail} > {}",
-            self.len
-        );
-        self.len - ((head_seq - min_tail) as u32)
+        u64::from(self.len).saturating_sub(head_seq - min_tail).min(u64::from(self.len)) as u32
     }
 
     fn min_tail(&self, seq: u64) -> u64 {
@@ -553,6 +552,11 @@ impl TCache {
         let metrics = TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
             .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
             .ok();
+        // Map the fault counters here, not on their first hit: that keeps the
+        // lazy mmap out of allocation-free paths and tests.
+        if let Err(e) = TCacheCounters::init() {
+            tracing::warn!(?e, "TCacheCounters::init failed");
+        }
         let ptr = unsafe {
             let p = alloc::alloc_zeroed(layout);
             if p.is_null() {

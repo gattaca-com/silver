@@ -25,8 +25,8 @@ pub use tcache::{
     CacheFrameSegment, CacheFrameView, CacheSegment, Consumer, Error, MAX_CACHE_SEGMENTS,
     MultiProducer, PendingSubReservation, Producer, ReadMode, Reservation, SubLayout,
     SubReservation, SubReservationError, SubReservationList, SubReservationRef, SubReservationView,
-    SubValidation, SubWrite, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef,
-    TCacheTable,
+    SubValidation, SubWrite, TCache, TCacheCounters, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheRef, TCacheTable,
 };
 
 use crate::cell_store::{CellStoreEvent, RetentionEvent};

@@ -4,7 +4,7 @@ use flux::{Timer, timing::Nanos};
 
 use crate::{
     GossipMsgOut, TCacheError, TCacheId, TCacheRef,
-    spine::tcache::{IDLE_INTERVAL_NS, lag_threshold},
+    spine::tcache::{IDLE_INTERVAL_NS, TCacheCounters, lag_threshold},
 };
 
 /// Reader for a TCache msg
@@ -79,6 +79,7 @@ impl Consumer {
             // check lagging
             let head = cache_head.seq.load(Ordering::Relaxed);
             if head.saturating_sub(self.seq) > self.lag_threshold {
+                TCacheCounters::IdleReset.inc();
                 tracing::warn!(head, seq = self.seq, "force setting idle consumer tail");
                 self.seq = if self.last_head > self.seq { self.last_head } else { head };
             }
@@ -193,6 +194,7 @@ impl RandomAccessConsumer {
                 // check lagging
                 let head = cache_head.seq.load(Ordering::Relaxed);
                 if head.saturating_sub(tail) > self.lag_threshold {
+                    TCacheCounters::IdleReset.inc();
                     tracing::warn!(
                         head,
                         tail,
@@ -458,8 +460,12 @@ impl Buckets {
         // live bucket (the matching release is dropped below tail). Skip;
         // the read surfaces as StaleSeq at buffer() time.
         if self.tail_seq != u64::MAX && seq < self.tail_seq {
+            TCacheCounters::AcquireBelowTail.inc();
             tracing::warn!(seq, tail = self.tail_seq, head = self.head_seq, "acquire below tail");
             return false;
+        }
+        if seq < self.bucket_start_seq(self.head_seq) {
+            TCacheCounters::AcquireInGuard.inc();
         }
 
         let bucket_idx = self.bucket_index(seq);
@@ -498,6 +504,7 @@ impl Buckets {
         while self.tail_seq < limit {
             let tail_bucket = self.bucket_index(self.tail_seq);
             if self.head_seq - self.tail_seq > self.lag_threshold {
+                TCacheCounters::LagEviction.inc();
                 tracing::warn!(
                     lagging = self.buckets[tail_bucket],
                     "unfreed lagging consumers dropped!"

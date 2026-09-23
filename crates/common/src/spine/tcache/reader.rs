@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use super::{AcquiredRead, Error, RandomAccessConsumer, TCacheId, TCacheRead, TCacheRef};
 
 #[derive(Copy, Clone, Default)]
@@ -53,18 +55,22 @@ impl TCacheReader {
         Ok(reader)
     }
 
-    /// Tail is claimed at seq 0: anything the producer published before this
-    /// call stays readable, as long as the cache has not wrapped yet.
+    /// The tail is claimed one ring behind the published head, so everything
+    /// still in the ring at open stays readable; before the first wrap that
+    /// is seq 0. The producer blocks until this consumer's first free if its
+    /// unpublished progress puts the head further ahead than that.
     pub fn open(&mut self, id: TCacheId, name: &'static str, mode: ReadMode) -> Result<(), Error> {
         let cache = self.tcaches.get(id)?;
         let slot = &mut self.consumers[id as usize];
         assert!(slot.is_none(), "{name}: {id:?} already open");
+        let head = cache.head().seq.load(Ordering::Acquire);
+        let tail = head.saturating_sub(cache.capacity() as u64);
         let consumer = match mode {
-            ReadMode::Sliding => cache.ra_consumer_from(0, name, true, false)?,
-            ReadMode::SlidingManualFree => cache.ra_consumer_from(0, name, false, false)?,
-            ReadMode::Strict => cache.ra_consumer_from(0, name, true, true)?,
+            ReadMode::Sliding => cache.ra_consumer_from(tail, name, true, false)?,
+            ReadMode::SlidingManualFree => cache.ra_consumer_from(tail, name, false, false)?,
+            ReadMode::Strict => cache.ra_consumer_from(tail, name, true, true)?,
             ReadMode::Retained => {
-                let mut consumer = cache.ra_consumer_from(0, name, true, true)?;
+                let mut consumer = cache.ra_consumer_from(tail, name, true, true)?;
                 consumer.retain();
                 consumer
             }
