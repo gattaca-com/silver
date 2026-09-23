@@ -99,7 +99,7 @@ fn mesh_refill_and_ihave_use_exact_domain_subscriptions() {
     assert_eq!(manager.mesh[&TOPIC].get(NEW).unwrap().peers, [2]);
     // Peer 1 is meshed only on OLD, so it remains eligible for NEW's IHAVE.
     manager.on_subscribe(1, TOPIC, NEW, now, &mut |_| {});
-    let mut cache = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+    let mut cache = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
     let mut reservation = cache.reserve(1, false).unwrap();
     let protobuf = reservation.read();
     reservation.increment_offset(1);

@@ -4,8 +4,8 @@ use std::{
 };
 
 use silver_common::{
-    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef, TCacheTable,
-    TMultiProducer, TProducer, TRead, TReadMode, TReservation,
+    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef, TCacheTable, TProducer,
+    TRead, TReadMode, TReservation,
 };
 
 pub const CAPACITY: usize = 256 * 1024;
@@ -23,24 +23,15 @@ pub struct Msg {
 #[derive(Default)]
 pub struct Link(VecDeque<Msg>);
 
-pub enum Writer {
-    Single(TProducer),
-    Multi(TMultiProducer),
-}
+pub struct Writer(pub TProducer);
 
 impl Writer {
-    fn producer(&mut self) -> &mut dyn TCacheProducer {
-        match self {
-            Self::Single(p) => p,
-            Self::Multi(p) => p,
-        }
+    fn producer(&mut self) -> &mut TProducer {
+        &mut self.0
     }
 
     pub fn cache_ref(&self) -> TCacheRef {
-        match self {
-            Self::Single(p) => p.cache_ref(),
-            Self::Multi(p) => p.cache_ref(),
-        }
+        self.0.cache_ref()
     }
 }
 

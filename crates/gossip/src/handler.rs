@@ -82,8 +82,8 @@ impl GossipHandler {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::IncomingGossip, "incoming_gossip", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::OutgoingGossip, "gossip_mcache", TReadMode::SlidingManualFree)
+        self.reader.open(TCacheId::NetworkIngress, "gossip_network_ingress", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::ControlGossip, "gossip_mcache", TReadMode::SlidingManualFree)
     }
 
     fn generate_ihave_messages(&mut self, now: Instant, emit: &mut impl FnMut(GossipHandlerEvent)) {
@@ -614,13 +614,13 @@ mod tests {
     #[test]
     fn delayed_publications_keep_their_fork_and_digest_domain() {
         let old = GossipDomain::new([1; 4], ForkName::Fulu);
-        let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
-        let protobuf = TCache::producer(TCacheId::OutgoingGossip, 1 << 16);
+        let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 16);
         let mut output =
             Box::new(TCacheReader::single(protobuf.cache_ref(), "", TReadMode::Sliding).unwrap());
         let mut handler = GossipHandler::new(
             TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
-            TCache::producer(TCacheId::SszGossip, 1 << 16),
+            TCache::producer(TCacheId::ControlProcessing, 1 << 16),
             protobuf,
             Some(old),
         )
@@ -671,16 +671,16 @@ mod tests {
 
     #[test]
     fn local_injection_uses_inbound_tcaches_without_precaching() {
-        let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+        let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 12);
 
-        let ssz_producer = TCache::producer(TCacheId::SszGossip, 1 << 12);
+        let ssz_producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
         let mut ssz_consumer = TCacheReader::single(
             ssz_producer.cache_ref(),
             "inject_local_ssz_test",
             TReadMode::Sliding,
         )
         .expect("ssz consumer");
-        let protobuf_producer = TCache::producer(TCacheId::OutgoingGossip, 1 << 12);
+        let protobuf_producer = TCache::producer(TCacheId::ControlGossip, 1 << 12);
         let mut protobuf_consumer = TCacheReader::single(
             protobuf_producer.cache_ref(),
             "inject_local_protobuf_test",

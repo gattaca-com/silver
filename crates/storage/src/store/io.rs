@@ -13,7 +13,7 @@ use std::{
 
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TMultiProducer, hex32};
+use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TProducer, hex32};
 
 use super::{
     Payload, PendingWrite, QueryUnit, Store, backfill::BlockFacts, block_path, column_path,
@@ -168,7 +168,7 @@ impl Store {
     fn serve_pending_reads<F>(
         &mut self,
         fork_digest_at: impl Fn(u64) -> [u8; 4],
-        producer: &mut TMultiProducer,
+        producer: &mut TProducer,
         emit: &mut F,
     ) -> Result<(), Error>
     where
@@ -220,7 +220,7 @@ impl Store {
     pub(crate) fn file_io<F>(
         &mut self,
         fork_digest_at: impl Fn(u64) -> [u8; 4],
-        producer: &mut TMultiProducer,
+        producer: &mut TProducer,
         emit: &mut F,
     ) -> Result<(), Error>
     where
@@ -280,7 +280,7 @@ impl Store {
     /// Read the whole file at `path` into a freshly-reserved tcache slot.
     /// `Missing` if the file doesn't exist (skip the query), `ProducerFull`
     /// if the tcache has no room (retry next loop).
-    fn serve_file(path: &Path, producer: &mut TMultiProducer) -> Result<ServeResult, Error> {
+    fn serve_file(path: &Path, producer: &mut TProducer) -> Result<ServeResult, Error> {
         let mut file = match open_file_read(path) {
             Ok(f) => f,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(ServeResult::Missing),

@@ -73,7 +73,7 @@ impl MessageCache {
     }
 
     pub(crate) fn get(&self, id: &MessageId) -> Option<TCacheRead> {
-        self.buckets.iter().find_map(|b| b.messages.get(id)).map(|a| &a.read).copied()
+        self.buckets.iter().find_map(|b| b.messages.get(id)).map(|a| a.to_read())
     }
 
     pub(crate) fn history(&self, id: &MessageId) -> Option<&Instant> {
@@ -189,7 +189,7 @@ mod tests {
     // Bound last, the cache drops first: its acquired reads point at the
     // consumer.
     fn mk_mcache() -> (silver_common::TProducer, TCacheReader, MessageCache) {
-        let producer = TCache::producer(TCacheId::OutgoingGossip, 1 << 14);
+        let producer = TCache::producer(TCacheId::ControlGossip, 1 << 14);
         let consumer =
             TCacheReader::single(producer.cache_ref(), "test", TReadMode::SlidingManualFree)
                 .unwrap();

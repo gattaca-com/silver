@@ -833,7 +833,7 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) {
         producers.produce(BeaconStateEvent::EnvelopeAvailable {
-            ssz: acquired.read,
+            ssz: acquired.to_read(),
             source,
             slot,
             block_root,
@@ -884,7 +884,7 @@ impl BeaconStateTile {
 
         self.fork_choice.mark_payload_verified(&block_root);
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
-            data: acquired.read,
+            data: acquired.to_read(),
             block_root,
             block_source: source,
             hash_count,
@@ -1245,7 +1245,7 @@ impl BeaconStateTile {
             GossipTopic::BeaconBlock => {
                 let feedback = self.apply_block(
                     data,
-                    read,
+                    &acquired,
                     BlockSource::Gossip,
                     pre_verified,
                     producers,

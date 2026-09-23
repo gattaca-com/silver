@@ -167,13 +167,13 @@ impl From<AcquiredRpcResponse> for RpcResponse {
             AcquiredRpcResponse::Ping(b) => Self::Ping(b),
             AcquiredRpcResponse::MetaData(b) => Self::MetaData(b),
             AcquiredRpcResponse::BeaconBlock { fork_digest, ssz } => {
-                Self::BeaconBlock { fork_digest, ssz: ssz.read }
+                Self::BeaconBlock { fork_digest, ssz: ssz.to_read() }
             }
             AcquiredRpcResponse::DataColumnSidecar { fork_digest, ssz } => {
-                Self::DataColumnSidecar { fork_digest, ssz: ssz.read }
+                Self::DataColumnSidecar { fork_digest, ssz: ssz.to_read() }
             }
             AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz } => {
-                Self::ExecutionPayloadEnvelope { fork_digest, ssz: ssz.read }
+                Self::ExecutionPayloadEnvelope { fork_digest, ssz: ssz.to_read() }
             }
             AcquiredRpcResponse::Error { error, msg, len } => Self::Error { error, msg, len },
             AcquiredRpcResponse::Complete => Self::Complete,
@@ -261,16 +261,16 @@ impl From<AcquiredRpcRequest> for RpcRequest {
             AcquiredRpcRequest::Goodbye(b) => Self::Goodbye(b),
             AcquiredRpcRequest::MetaData => Self::MetaData,
             AcquiredRpcRequest::BlocksByRange(b) => Self::BlocksByRange(b),
-            AcquiredRpcRequest::BlockByRoot(read) => Self::BlockByRoot(read.read),
+            AcquiredRpcRequest::BlockByRoot(read) => Self::BlockByRoot(read.to_read()),
             AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
                 Self::DataColumnsByRange { ssz, len }
             }
-            AcquiredRpcRequest::DataColumnsByRoot(read) => Self::DataColumnsByRoot(read.read),
+            AcquiredRpcRequest::DataColumnsByRoot(read) => Self::DataColumnsByRoot(read.to_read()),
             AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(b) => {
                 Self::ExecutionPayloadEnvelopesByRange(b)
             }
             AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
-                Self::ExecutionPayloadEnvelopesByRoot(read.read)
+                Self::ExecutionPayloadEnvelopesByRoot(read.to_read())
             }
         }
     }

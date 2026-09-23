@@ -2,19 +2,19 @@
 //! `docs/tcache-tail-watermarks.md`. `Expect::Known` marks what the
 //! sliding guard cannot do today and flips to `Holds` with floors.
 
-use silver_common::{TCache, TCacheId, TCacheTable, TReadMode};
+use silver_common::{TCacheId, TCacheTable, TReadMode};
 
 use crate::model::{
-    Action, CAPACITY, Drain, Driver, Expect, NONE, Node, Then, World, Writer, check, consume,
-    consume_one, produce, wraps,
+    Action, Drain, Driver, Expect, NONE, Node, Then, World, Writer, check, consume, consume_one,
+    produce, wraps,
 };
 
 const SEEDS: [u64; 4] = [1, 7, 42, 1234];
-const CACHE: TCacheId = TCacheId::IncomingGossip;
-const OTHER: TCacheId = TCacheId::IncomingRpc;
+const CACHE: TCacheId = TCacheId::NetworkIngress;
+const OTHER: TCacheId = TCacheId::NetworkProcessing;
 
 fn producer(name: &'static str, id: TCacheId) -> (Node, Writer) {
-    let writer = Writer::Single(World::cache(id));
+    let writer = Writer(World::cache(id));
     let table = World::table(&[&writer]);
     (Node::new(name, table), writer)
 }
@@ -185,31 +185,6 @@ fn forward_two_hops() {
                 consumer("receiver", table, consume(2, Then::Acquire, n)),
             ],
             3,
-        );
-        world.run(Driver::Random { seed });
-        check(&world, Expect::Holds);
-    }
-}
-
-#[test]
-fn two_producer_clones_one_queue() {
-    for seed in SEEDS {
-        let shared = TCache::multi_producer(OTHER, CAPACITY);
-        let a = Writer::Multi(shared.clone());
-        let b = Writer::Multi(shared);
-        let table = World::table(&[&a]);
-        let n = wraps(2);
-        let mut world = World::new(
-            vec![
-                Node::new("control", table).with_writer(a).script(produce(0, 0x71, 0, n)),
-                Node::new("storage", table).with_writer(b).script(produce(0, 0x72, 0, n)),
-                Node::new("network", table).open(OTHER, TReadMode::Sliding).script([consume(
-                    0,
-                    Then::Acquire,
-                    2 * n,
-                )]),
-            ],
-            1,
         );
         world.run(Driver::Random { seed });
         check(&world, Expect::Holds);
@@ -402,14 +377,14 @@ fn consume_one_and_stop_queue_not_drained() {
 /// blocks on the boundary and resumes when it moves.
 #[test]
 fn retained_cache() {
-    let (p, writer) = producer("allocator", TCacheId::DataColumns);
+    let (p, writer) = producer("allocator", TCacheId::ControlSlot);
     let table = World::table(&[&writer]);
     let batch = wraps(1) / 2;
-    let advance = Action::AdvanceRetentionToConsumed { cache: TCacheId::DataColumns };
+    let advance = Action::AdvanceRetentionToConsumed { cache: TCacheId::ControlSlot };
     let mut world = World::new(
         vec![
             p.with_writer(writer).script(produce(0, 0xf1, 0, 3 * batch)),
-            Node::new("cells", table).open(TCacheId::DataColumns, TReadMode::Retained).script([
+            Node::new("cells", table).open(TCacheId::ControlSlot, TReadMode::Retained).script([
                 consume(0, Then::Acquire, batch),
                 advance,
                 consume(0, Then::Acquire, batch),

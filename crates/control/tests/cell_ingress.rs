@@ -94,11 +94,11 @@ impl Rig {
             ..SpecConfig::mainnet()
         });
         let config = CellStoreConfig::new(spec, 7, Duration::from_secs(11)).unwrap();
-        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let cache = producer.cache_ref();
         let columns = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
         let network = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
-        let el = TCache::producer(TCacheId::ElDataColumns, 4096);
+        let el = TCache::producer(TCacheId::ColumnsProcessing, 4096);
         let el_consumer = TCacheReader::single(el.cache_ref(), "", TReadMode::Sliding).unwrap();
         let now = Instant::now();
         let directory = tempfile::tempdir().unwrap();
@@ -196,7 +196,7 @@ impl Rig {
         let mut boundary = None;
         self.adapters[1].consume(|event: RetentionEvent, _| {
             assert!(boundary.is_none());
-            self.columns.advance_retention(TCacheId::DataColumns, event.retain_from);
+            self.columns.advance_retention(TCacheId::ControlSlot, event.retain_from);
             boundary = Some(event);
         });
         boundary.unwrap()
@@ -204,7 +204,7 @@ impl Rig {
 
     fn network_boundaries(&mut self) {
         self.adapters[2].consume(|event: RetentionEvent, _| {
-            self.network.advance_retention(TCacheId::DataColumns, event.retain_from);
+            self.network.advance_retention(TCacheId::ControlSlot, event.retain_from);
         });
     }
 
@@ -408,9 +408,9 @@ fn delayed_expiry_preserves_next_slot_data_and_newer_events_recover_missed_ones(
     rig.now += SLOT;
     let latest = rig.expire();
     // The latest boundary is sufficient even if earlier notifications are missed.
-    rig.network.advance_retention(TCacheId::DataColumns, latest.retain_from);
-    rig.network.advance_retention(TCacheId::DataColumns, missed.retain_from);
-    rig.network.advance_retention(TCacheId::DataColumns, old.retain_from);
+    rig.network.advance_retention(TCacheId::ControlSlot, latest.retain_from);
+    rig.network.advance_retention(TCacheId::ControlSlot, missed.retain_from);
+    rig.network.advance_retention(TCacheId::ControlSlot, old.retain_from);
     for _ in 0..20 {
         rig.write(8192, 0x44);
     }

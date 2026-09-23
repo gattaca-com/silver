@@ -272,15 +272,15 @@ mod tests {
 
     #[test]
     fn full_retention_cache_falls_back_to_normal_gossip_ingress() {
-        let mut columns = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut columns = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let _retained =
             Box::new(TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap());
         while let Some(mut reservation) = columns.reserve(1024, false) {
             reservation.buffer().unwrap().fill(0);
             reservation.flush().unwrap();
         }
-        let mut ssz = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
-        let mut protobuf = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+        let mut ssz = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let mut protobuf = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let topic = GossipTopic::DataColumnSidecar(0);
         let bytes = vec![0x33; topic.min_uncompressed_size() + 2048 + 96];
         let compressed = snap::raw::Encoder::new().compress_vec(&bytes).unwrap();

@@ -6,7 +6,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
-    SyncNeed, SyncUpdate, TCacheRead, hex32,
+    SyncNeed, SyncUpdate, TCacheRead, TRead, hex32,
     ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
 
@@ -42,12 +42,11 @@ struct AppliedBlock {
 }
 
 /// A block whose post-state is committed but which waits for its data columns
-/// before entering fork choice. `read` is not acquired, so the ring may lap
-/// it; import re-acquires and asks for the block again on a miss.
+/// before entering fork choice. The pin keeps its bytes until import.
 pub(super) struct StagedBlock {
     pub(super) parsed: ParsedBlock,
     applied: AppliedBlock,
-    pub(super) ssz: TCacheRead,
+    pub(super) ssz: TRead,
     pub(super) source: BlockSource,
     pub(super) el_valid: bool,
 }
@@ -61,7 +60,7 @@ impl StagedBlock {
     pub(super) fn with_state_id(
         parsed: ParsedBlock,
         id: StateId,
-        ssz: TCacheRead,
+        ssz: TRead,
         source: BlockSource,
     ) -> Self {
         let applied = AppliedBlock {
@@ -91,7 +90,7 @@ impl BeaconStateTile {
     pub(super) fn apply_block(
         &mut self,
         data: &[u8],
-        ssz: TCacheRead,
+        ssz: &TRead,
         source: BlockSource,
         pre_verified: bool,
         producers: &mut Producers,
@@ -121,7 +120,7 @@ impl BeaconStateTile {
                         producers,
                     );
                     producers.produce(BeaconStateEvent::PersistBlock {
-                        ssz,
+                        ssz: ssz.to_read(),
                         source,
                         slot,
                         block_root,
@@ -141,18 +140,18 @@ impl BeaconStateTile {
         }
 
         producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
-            data: ssz,
+            data: ssz.to_read(),
             block_root: parsed.block_root,
             slot,
             block_source: source,
         }));
 
         let block_root = parsed.block_root;
-        let hold = waits_for_columns.then_some((ssz, source));
+        let hold = waits_for_columns.then(|| (ssz.clone(), source));
         let f = self.apply_and_import(parsed, data, hold);
         match f {
             Feedback::BlockImported(_) => {
-                self.announce_imported(block_root, slot, data, ssz, source, producers)
+                self.announce_imported(block_root, slot, data, ssz.to_read(), source, producers)
             }
             Feedback::AwaitData(_) => {
                 self.emit_block_received(data, block_root, BlockStage::AwaitData, source, producers)
@@ -328,7 +327,7 @@ impl BeaconStateTile {
         &mut self,
         parsed: ParsedBlock,
         data: &[u8],
-        hold: Option<(TCacheRead, BlockSource)>,
+        hold: Option<(TRead, BlockSource)>,
     ) -> Feedback {
         let applied = match self.apply_or_reject(&parsed, data) {
             Ok(applied) => applied,
@@ -380,12 +379,12 @@ impl BeaconStateTile {
         };
         let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;
 
-        let acquired = self.reader.acquire(ssz);
-        let Ok((data, _)) = acquired.buffer() else {
+        // Only lag eviction of the pin can lose the bytes; counted as a fault.
+        let Ok((data, _)) = ssz.buffer() else {
             tracing::error!(
                 block = hex32(&block_root),
                 slot,
-                "block lapped in the tcache before its data columns arrived; re-requesting"
+                "staged block evicted from the tcache before its data columns arrived; re-requesting"
             );
             producers.produce(SyncNeed::missing_block(block_root, slot));
             self.stf_scratch.votes.recycle(applied.votes);
@@ -396,7 +395,7 @@ impl BeaconStateTile {
         if el_valid {
             self.fork_choice.on_payload_valid(&block_root);
         }
-        self.announce_imported(block_root, slot, data, ssz, source, producers);
+        self.announce_imported(block_root, slot, data, ssz.to_read(), source, producers);
     }
 
     /// Run the per-block STF against a COW child of the parent post-state and

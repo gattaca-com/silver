@@ -24,9 +24,9 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let response = TCache::producer(TCacheId::IncomingEngineResp, 1 << 18);
+        let response = TCache::producer(TCacheId::BoundaryProcessing, 1 << 18);
         let mut reader = TCacheReader::new(TCacheTable::from_iter([response.cache_ref()]));
-        reader.open(TCacheId::IncomingEngineResp, "", TReadMode::Sliding).unwrap();
+        reader.open(TCacheId::BoundaryProcessing, "", TReadMode::Sliding).unwrap();
         let dir = ShmemDir::new().unwrap();
         let mut spine = Box::new(SilverSpine::new_with_base_dir(dir.path(), None));
         let mut adapter = SpineAdapter::connect_tile(&Endpoint, &mut spine);
@@ -35,7 +35,7 @@ impl Rig {
             fetcher: ElBlobFetcher::new(Duration::from_secs(60)),
             reader,
             response,
-            output: TCache::producer(TCacheId::IncomingGossip, 1 << 16),
+            output: TCache::producer(TCacheId::NetworkIngress, 1 << 16),
             adapter,
             _spine: spine,
             _dir: dir,

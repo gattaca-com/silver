@@ -76,8 +76,12 @@ impl EngineApi {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::SszGossip, "eng_ssz_gossip", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::IncomingRpc, "eng_incoming_rpc", TReadMode::Sliding)
+        self.reader.open(
+            TCacheId::ControlProcessing,
+            "eng_control_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(TCacheId::NetworkProcessing, "eng_network_processing", TReadMode::Sliding)
     }
 
     /// Last status the EL reported to `eth_syncing`; `Unknown` until the

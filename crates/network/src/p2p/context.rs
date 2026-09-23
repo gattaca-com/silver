@@ -21,15 +21,16 @@ pub struct Context {
 
 impl Context {
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::OutgoingGossip, "p2p_outgoing_gossip", TReadMode::Strict)?;
-        self.reader.open(TCacheId::OutgoingRpc, "p2p_outgoing_rpc", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::ControlGossip, "p2p_control_gossip", TReadMode::Strict)?;
+        self.reader.open(TCacheId::ControlRpc, "p2p_control_rpc", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::StorageDelivery, "p2p_storage_delivery", TReadMode::Sliding)?;
         self.reader.open(
             TCacheId::ClusterOutbound,
             "network_cluster_outbound",
             TReadMode::Strict,
         )?;
         if self.partial_columns {
-            self.reader.open(TCacheId::DataColumns, "network_cells", TReadMode::Retained)?;
+            self.reader.open(TCacheId::ControlSlot, "p2p_control_slot", TReadMode::Retained)?;
         }
         Ok(())
     }

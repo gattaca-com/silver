@@ -108,7 +108,7 @@ fn fork_tree_persist_serve_promote() {
     let bytes_b = [0xB7u8; 80];
 
     // Stage both payloads in a tcache and acquire reads to hand to the store.
-    let mut blocks = TCache::producer(TCacheId::IncomingGossip, 1024 * 1024);
+    let mut blocks = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
     let mut res_a = blocks.reserve(bytes_a.len(), true).unwrap();
     res_a.write_all(&bytes_a).unwrap();
     res_a.flush().unwrap();
@@ -131,8 +131,7 @@ fn fork_tree_persist_serve_promote() {
     store.update_head(slot, root_a, 0, [0u8; 32]);
 
     let fork_digest = [1, 2, 3, 4];
-    let producer_cache = TCache::multi_producer(TCacheId::IncomingRpc, 1024 * 1024);
-    let mut producer = producer_cache.clone();
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
 
     let path_a = store.unfinalized_dir(super::Payload::Block).join(super::io::unfinalized_name(
@@ -150,7 +149,7 @@ fn fork_tree_persist_serve_promote() {
 
     // Asserts a response is a BeaconBlock carrying `expected` bytes.
     let mut read_consumer =
-        TCacheReader::single(producer_cache.cache_ref(), "fork_read", TReadMode::Sliding).unwrap();
+        TCacheReader::single(producer.cache_ref(), "fork_read", TReadMode::Sliding).unwrap();
     let mut assert_block = |resp: &P2pSend, expected: &[u8]| {
         let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
             response: RpcResponse::BeaconBlock { ssz, .. },
@@ -172,7 +171,7 @@ fn fork_tree_persist_serve_promote() {
     let sid = P2pStreamId::new(1234, 1, StreamProtocol::BeaconBlocksByRange, false);
 
     // BlockByRoot request buffer (one root) staged in a tcache.
-    let mut req_producer = TCache::producer(TCacheId::IncomingGossip, 1024 * 1024);
+    let mut req_producer = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
     let mut byroot_res = req_producer.reserve(32, true).unwrap();
     byroot_res.write_all(&root_b).unwrap();
     byroot_res.flush().unwrap();
@@ -244,8 +243,7 @@ fn fork_tree_persist_serve_promote() {
     assert!(!served.finalized && !served.canonical, "B is the fork off the head");
     assert!(!head.finalized && head.canonical, "A is the unfinalized head");
     let mut api_consumer =
-        TCacheReader::single(producer_cache.cache_ref(), "fork_api_read", TReadMode::Sliding)
-            .unwrap();
+        TCacheReader::single(producer.cache_ref(), "fork_api_read", TReadMode::Sliding).unwrap();
     assert_eq!(api_consumer.acquire(served.ssz.unwrap()).buffer().unwrap().0, &bytes_b);
     assert!(at_slot.canonical && at_slot.root == root_a, "a slot resolves along the head chain");
     assert_eq!(
@@ -322,7 +320,7 @@ fn envelope_persist_promote_prune() {
     let env_a = [0x1Au8; 120];
     let env_b = [0x1Bu8; 60];
 
-    let mut cache = TCache::producer(TCacheId::IncomingGossip, 1024 * 1024);
+    let mut cache = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
     let stage = |cache: &mut _, bytes: &[u8]| {
         let mut res = TCacheProducer::reserve(cache, bytes.len(), true).unwrap();
         res.write_all(bytes).unwrap();
@@ -347,8 +345,7 @@ fn envelope_persist_promote_prune() {
     store.update_head(slot, root_a, 0, [0u8; 32]);
 
     let fork_digest = [1, 2, 3, 4];
-    let producer_cache = TCache::multi_producer(TCacheId::IncomingRpc, 1024 * 1024);
-    let mut producer = producer_cache.clone();
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
 
     let unf_a = store
@@ -415,7 +412,7 @@ fn range_query_terminates_on_cycle() {
     // parent_root == block_root: a self-loop in the fork tree.
     let root_x = [0xEE; 32];
     let slot = 10u64;
-    let mut blocks = TCache::producer(TCacheId::IncomingGossip, 1024 * 1024);
+    let mut blocks = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
     let mut res = blocks.reserve(8, true).unwrap();
     res.write_all(&[0u8; 8]).unwrap();
     res.flush().unwrap();
@@ -428,7 +425,7 @@ fn range_query_terminates_on_cycle() {
 
     // Drain the staged write so the acquired read is released while its
     // consumer is still alive (`read` is parked in the write queue).
-    let mut producer = TCache::multi_producer(TCacheId::IncomingRpc, 1024 * 1024).clone();
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
 
     // A range spanning the self-loop slot must return rather than spin.
@@ -437,7 +434,7 @@ fn range_query_terminates_on_cycle() {
     range[8..16].copy_from_slice(&10u64.to_le_bytes()); // count
     range[16..24].copy_from_slice(&1u64.to_le_bytes()); // step
     let sid = P2pStreamId::new(1, 1, StreamProtocol::BeaconBlocksByRange, false);
-    let req_producer = TCache::producer(TCacheId::IncomingGossip, 1024 * 1024);
+    let req_producer = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
     let mut req_consumer =
         TCacheReader::single(req_producer.cache_ref(), "cycle_req_cons", TReadMode::Sliding)
             .unwrap();
@@ -463,7 +460,7 @@ fn envelope_range_request_served_empty() {
 
     // We don't persist envelopes, but an inbound range request must still get
     // a clean empty response (`Complete` only), never a hung stream.
-    let req_producer = TCache::producer(TCacheId::IncomingGossip, 1024 * 1024);
+    let req_producer = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
     let mut req_consumer =
         TCacheReader::single(req_producer.cache_ref(), "env_req_cons", TReadMode::Sliding).unwrap();
     let sid = P2pStreamId::new(9, 1, StreamProtocol::ExecutionPayloadEnvelopesByRange, false);
@@ -476,8 +473,7 @@ fn envelope_range_request_served_empty() {
     });
 
     let fork_digest = [1, 2, 3, 4];
-    let producer_cache = TCache::multi_producer(TCacheId::IncomingRpc, 1024 * 1024);
-    let mut producer = producer_cache.clone();
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     let mut responses = vec![];
     store
         .file_io(|_| fork_digest, &mut producer, &mut |s| {
@@ -519,7 +515,7 @@ fn column_fork_persist_serve_promote() {
     let b3 = [0xB3u8; 64];
 
     // Stage block + column payloads in a tcache.
-    let mut tc = TCache::producer(TCacheId::IncomingGossip, 1 << 20);
+    let mut tc = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
     let mut stage = |bytes: &[u8]| {
         let mut r = tc.reserve(bytes.len(), true).unwrap();
         r.write_all(bytes).unwrap();
@@ -545,16 +541,14 @@ fn column_fork_persist_serve_promote() {
     store.update_head(slot, root_a, 0, [0u8; 32]);
 
     let fork_digest = [9, 9, 9, 9];
-    let producer_cache = TCache::multi_producer(TCacheId::IncomingRpc, 1 << 20);
-    let mut producer = producer_cache.clone();
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
     store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 7)).exists());
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
 
     let mut read_consumer =
-        TCacheReader::single(producer_cache.cache_ref(), "colfork_read", TReadMode::Sliding)
-            .unwrap();
+        TCacheReader::single(producer.cache_ref(), "colfork_read", TReadMode::Sliding).unwrap();
     let mut assert_col = |resp: &P2pSend, expected: &[u8]| {
         let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
             response: RpcResponse::DataColumnSidecar { ssz, .. },
@@ -578,7 +572,7 @@ fn column_fork_persist_serve_promote() {
     range[28..36].copy_from_slice(&7u64.to_le_bytes());
     let sid = P2pStreamId::new(1, 1, StreamProtocol::DataColumnSidecarsByRange, false);
 
-    let mut req_producer = TCache::producer(TCacheId::IncomingGossip, 1 << 20);
+    let mut req_producer = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
     let mut req_consumer =
         TCacheReader::single(req_producer.cache_ref(), "colfork_req_cons", TReadMode::Sliding)
             .unwrap();
@@ -771,7 +765,7 @@ fn failed_write_is_neither_held_nor_reported() {
     let mut reported = Vec::new();
     let result = store.file_io(
         |_| [0u8; 4],
-        &mut TCache::multi_producer(TCacheId::IncomingRpc, 1 << 16),
+        &mut TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
         &mut |io| {
             if let IoEvent::Need(need) = io {
                 reported.push(need)
@@ -846,7 +840,7 @@ fn prefills(store: &mut super::Store) -> Vec<Prefill> {
     store
         .file_io(
             |_| [0u8; 4],
-            &mut TCache::multi_producer(TCacheId::IncomingRpc, 1 << 16),
+            &mut TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
             &mut |io| {
                 if let IoEvent::Need(SyncNeed::BackfillPrefill(p)) = io {
                     out.push(p)
@@ -967,7 +961,7 @@ struct Staged {
 
 fn stage(name: &'static str, block: &[u8], copies: usize) -> Staged {
     use silver_common::{TCache, TCacheId, TCacheProducer};
-    let mut tc = TCache::producer(TCacheId::SszGossip, 1 << 20);
+    let mut tc = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let reads = (0..copies)
         .map(|_| {
             let mut res = tc.reserve(block.len(), true).unwrap();
@@ -984,7 +978,7 @@ fn drain(store: &mut super::Store) -> Result<(), std::io::Error> {
     use silver_common::TCache;
     store.file_io(
         |_| [0u8; 4],
-        &mut TCache::multi_producer(TCacheId::IncomingGossip, 1 << 16),
+        &mut TCache::producer(TCacheId::NetworkIngress, 1 << 16),
         &mut |_| {},
     )
 }
@@ -1197,7 +1191,7 @@ fn range_queries_interleave_fairly() {
     let parent = [0xCC; 32];
     let root_10 = [0x10; 32];
     let root_11 = [0x11; 32];
-    let mut blocks = TCache::producer(TCacheId::IncomingGossip, 1 << 20);
+    let mut blocks = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
     let mut stage = |bytes: &[u8]| {
         let mut r = blocks.reserve(bytes.len(), true).unwrap();
         r.write_all(bytes).unwrap();
@@ -1213,8 +1207,7 @@ fn range_queries_interleave_fairly() {
     store.update_head(11, root_11, 0, [0u8; 32]);
 
     let fork_digest = [0u8; 4];
-    let producer_cache = TCache::multi_producer(TCacheId::IncomingRpc, 1 << 20);
-    let mut producer = producer_cache.clone();
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
     store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap(); // flush block writes
 
     // Two BlocksByRange [10,12) on distinct streams, queued before draining.
@@ -1224,7 +1217,7 @@ fn range_queries_interleave_fairly() {
     range[16..24].copy_from_slice(&1u64.to_le_bytes());
     let stream_a = P2pStreamId::new(1, 1, StreamProtocol::BeaconBlocksByRange, false);
     let stream_b = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, false);
-    let req_producer = TCache::producer(TCacheId::IncomingGossip, 1 << 20);
+    let req_producer = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
     let mut req_consumer =
         TCacheReader::single(req_producer.cache_ref(), "fair_req_cons", TReadMode::Sliding)
             .unwrap();

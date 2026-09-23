@@ -279,7 +279,7 @@ impl CacheFrameSegment {
             return None;
         }
         let consumer = reader.get(TCacheId::from_index(self.cache)?).filter(|c| c.is_strict())?;
-        let read = TCacheRead { id: consumer.id(), seq: self.seq };
+        let read = consumer.descriptor(self.seq);
         if self.kind == 3 {
             let reference =
                 SubReservationRef { read, header_bytes: (self.metadata >> 32) as usize };

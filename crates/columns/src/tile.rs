@@ -121,21 +121,30 @@ impl DataColumnsTile {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::SszGossip, "dc_ssz_gossip", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::IncomingRpc, "dc_incoming_rpc", TReadMode::Sliding)?;
         self.reader.open(
-            TCacheId::IncomingEngineResp,
-            "ds_engine_incoming_resp",
+            TCacheId::ControlProcessing,
+            "dc_control_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(
+            TCacheId::NetworkProcessing,
+            "dc_network_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(TCacheId::ControlGossip, "dc_control_gossip", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::BoundaryProcessing,
+            "dc_boundary_processing",
             TReadMode::Sliding,
         )?;
         self.persist_reader.open(
-            TCacheId::SszGossip,
-            "dc_persist_ssz_gossip",
+            TCacheId::ControlProcessing,
+            "dc_persist_control_processing",
             TReadMode::Sliding,
         )?;
         self.persist_reader.open(
-            TCacheId::IncomingRpc,
-            "dc_persist_incoming_rpc",
+            TCacheId::NetworkProcessing,
+            "dc_persist_network_processing",
             TReadMode::Sliding,
         )?;
         if let Some(cells) = &mut self.cells {
@@ -373,7 +382,7 @@ impl DataColumnsTile {
                 context,
                 domain,
                 data,
-                Some(FuluContextSource::Sidecar(column.sidecar.read)),
+                Some(FuluContextSource::Sidecar(column.sidecar.to_read())),
                 producers,
             );
         }
@@ -505,7 +514,7 @@ impl DataColumnsTile {
                 column_index,
                 slot,
                 origin,
-                ssz: sidecar.read,
+                ssz: sidecar.to_read(),
                 ssz_cache,
             },
             recv_ts,
@@ -513,7 +522,7 @@ impl DataColumnsTile {
         if self.tracker.is_custody(column_index) {
             producers.produce_with_ingestion(
                 DataColumnsEvent::Persist {
-                    ssz: sidecar.read,
+                    ssz: sidecar.to_read(),
                     origin,
                     ssz_cache,
                     domain: p.domain,
@@ -568,7 +577,7 @@ impl DataColumnsTile {
         let frame = Some(GossipSidecarFrame {
             domain: gossip.domain,
             msg_hash: gossip.msg_hash,
-            protobuf: gossip.protobuf,
+            protobuf: self.reader.acquire(gossip.protobuf),
         });
         let sidecar = match gossip.ssz_cache {
             SszCache::DataColumns => {
@@ -707,8 +716,8 @@ impl DataColumnsTile {
                 ssz_cache: p.ssz_cache,
                 msg_hash,
                 recv_ts: p.recv_ts.into(),
-                protobuf,
-                ssz: p.sidecar.read,
+                protobuf: protobuf.to_read(),
+                ssz: p.sidecar.to_read(),
             });
         }
         if let Some(cells) = &mut self.cells {
@@ -1051,6 +1060,7 @@ mod tests {
         conn: SpineAdapter<SilverSpine>,
         tile: DataColumnsTile,
         gossip_p: TProducer,
+        frame_p: TProducer,
         rpc_p: TProducer,
         engine_p: TProducer,
         _spine: Box<SilverSpine>,
@@ -1100,16 +1110,19 @@ mod tests {
             spec: SpecConfig,
             el_cache_len: usize,
         ) -> Self {
-            let gossip_p = TCache::producer(TCacheId::SszGossip, 1024 * 1024);
-            let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1024 * 1024);
-            let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1024 * 1024);
+            let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1024 * 1024);
+            let frame_p = TCache::producer(TCacheId::ControlGossip, 1024 * 1024);
+            let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
+            let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1024 * 1024);
 
             let mut tile = DataColumnsTile::new(
-                TCacheTable::from_iter([&gossip_p, &rpc_p, &engine_p].map(|p| p.cache_ref())),
+                TCacheTable::from_iter(
+                    [&gossip_p, &frame_p, &rpc_p, &engine_p].map(|p| p.cache_ref()),
+                ),
                 beacon_state,
                 custody,
                 Arc::new(spec),
-                TCache::producer(TCacheId::ElDataColumns, el_cache_len),
+                TCache::producer(TCacheId::ColumnsProcessing, el_cache_len),
                 SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
             );
             tile.open_tcaches().unwrap();
@@ -1124,7 +1137,7 @@ mod tests {
             inj.consume(|_: EngineReq, _| {});
             inj.consume(|_: PeerEvent, _| {});
             inj.consume(|_: CellStoreEvent, _| {});
-            Self { inj, conn, tile, gossip_p, rpc_p, engine_p, _spine: spine, _dir: dir }
+            Self { inj, conn, tile, gossip_p, frame_p, rpc_p, engine_p, _spine: spine, _dir: dir }
         }
 
         fn turn(&mut self) {
@@ -1153,7 +1166,7 @@ mod tests {
         /// that substitute its handle for SSZ.
         fn gossip_sidecar(&mut self, index: u64, bytes: &[u8]) {
             let ssz = tcache_write(&mut self.gossip_p, bytes);
-            let protobuf = tcache_write(&mut self.gossip_p, b"encoded frame");
+            let protobuf = tcache_write(&mut self.frame_p, b"encoded frame");
             let recv_ts = Nanos::now();
             let mut id = [0u8; 20];
             id.copy_from_slice(&bytes[..20]);
@@ -1307,7 +1320,7 @@ mod tests {
     /// at the consumer's address, so it must not be acquired before the
     /// consumer reaches its final binding.
     fn produce_block(block_bytes: &[u8], cache: &'static str) -> (TCacheReader, TCacheRead) {
-        let mut producer = TCache::producer(TCacheId::SszGossip, 1024 * 1024);
+        let mut producer = TCache::producer(TCacheId::ControlProcessing, 1024 * 1024);
         let mut res = producer.reserve(block_bytes.len(), true).unwrap();
         res.write_all(block_bytes).unwrap();
         res.flush().unwrap();
@@ -1642,6 +1655,7 @@ mod tests {
             let (mut consumer, ssz) = produce_block(&blob_block_bytes(7), cache);
             let mut rig = Rig::new(CUSTODY_COLUMNS);
             let read = consumer.acquire(ssz);
+            let frame = read.clone();
 
             let disposition = rig.tile.handle_column(
                 ColumnOutcome::Record {
@@ -1667,7 +1681,7 @@ mod tests {
                 Some(GossipSidecarFrame {
                     domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
                     msg_hash: MessageId { id: [0; MESSAGE_ID_LEN] },
-                    protobuf: ssz,
+                    protobuf: frame,
                 }),
                 &mut rig.conn.producers,
             );

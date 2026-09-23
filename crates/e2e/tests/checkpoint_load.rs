@@ -155,13 +155,13 @@ fn finalized_state_loads() {
     let genesis_time = u64::from_le_bytes(ssz[0..8].try_into().unwrap());
     let mut ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
     ticker.set_current_slot(last_slot + 1);
-    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
-    let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
-    let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
-    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
-    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
+    let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    let engine_resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 24);
+    let delivery_p = TCache::producer(TCacheId::StorageDelivery, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let tcaches = TCacheTable::from_iter(
-        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+        [&gossip_p, &rpc_p, &engine_resp_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
     );
 
     let mut tile = BeaconStateTile::new(
@@ -169,7 +169,7 @@ fn finalized_state_loads() {
         Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
         &silver_config::SyncingConfig::default(),
         tcaches,
-        TCache::producer(TCacheId::BeaconState, 1 << 25),
+        TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
         state,
     );
@@ -307,13 +307,13 @@ fn tile_apply_block_ef_fixture() {
         Duration::from_secs(12),
         Duration::from_secs(4),
     );
-    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
-    let rpc_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
-    let engine_resp_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 24);
-    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
-    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
+    let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    let engine_resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 24);
+    let delivery_p = TCache::producer(TCacheId::StorageDelivery, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let tcaches = TCacheTable::from_iter(
-        [&gossip_p, &rpc_p, &engine_resp_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+        [&gossip_p, &rpc_p, &engine_resp_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
     );
 
     let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
@@ -323,7 +323,7 @@ fn tile_apply_block_ef_fixture() {
         Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
         &silver_config::SyncingConfig::default(),
         tcaches,
-        TCache::producer(TCacheId::BeaconState, 1 << 25),
+        TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
         state,
     );

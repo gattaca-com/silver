@@ -28,6 +28,7 @@ impl SubReservationList {
             producer.reserve(count * ENTRY_BYTES, false).ok_or(SubReservationError::CacheFull)?;
         let bytes = reservation.buffer().map_err(|_| SubReservationError::Stale)?;
         let mut written = 0;
+        let mut read = reservation.read();
         for (index, entry) in entries.enumerate() {
             let entry = entry.into().ok_or(SubReservationError::InvalidLayout)?;
             if index >= count || entry.read.id != producer.cache_ref().id() {
@@ -36,13 +37,16 @@ impl SubReservationList {
             let out = &mut bytes[index * ENTRY_BYTES..(index + 1) * ENTRY_BYTES];
             out[..8].copy_from_slice(&entry.read.seq.to_le_bytes());
             out[8..].copy_from_slice(&(entry.header_bytes as u64).to_le_bytes());
+            // Entries committed before this reserve may sit below the sampled
+            // floor; the list carries them, so its promise must cover them.
+            read.floor = read.floor.min(entry.read.seq);
             written += 1;
         }
         if written != count {
             return Err(SubReservationError::InvalidLayout);
         }
         reservation.flush().map_err(|_| SubReservationError::Stale)?;
-        Ok(Self { read: reservation.read(), count })
+        Ok(Self { read, count })
     }
 
     pub fn read(self) -> TCacheRead {
@@ -77,8 +81,8 @@ impl SubReservationList {
     fn entries(self, bytes: &[u8]) -> impl ExactSizeIterator<Item = SubReservationRef> + '_ {
         bytes.chunks_exact(ENTRY_BYTES).map(move |entry| SubReservationRef {
             read: TCacheRead {
-                id: self.read.id,
                 seq: u64::from_le_bytes(entry[..8].try_into().unwrap()),
+                ..self.read
             },
             header_bytes: u64::from_le_bytes(entry[8..].try_into().unwrap()) as usize,
         })
@@ -103,7 +107,7 @@ mod tests {
 
     #[test]
     fn list_keeps_descriptors_in_one_cache_and_requires_live_strict_reads() {
-        let mut producer = TCache::producer(TCacheId::DataColumns, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer =
             Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
         let layout = SubLayout { parts: 1, first_len: 4, second_len: 2 };
@@ -115,7 +119,7 @@ mod tests {
         assert_eq!(sequences, [first.read().seq(), second.read().seq()]);
         assert_eq!(list.view(&producer).unwrap().len(), 2);
 
-        let mut other = TCache::producer(TCacheId::SszGossip, 1 << 16);
+        let mut other = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
         let mut wrong =
             Box::new(TCacheReader::single(other.cache_ref(), "", TReadMode::Retained).unwrap());
         assert!(matches!(list.acquire(&mut wrong), Err(SubReservationError::WrongConsumer)));
@@ -131,7 +135,7 @@ mod tests {
         let mut padding = producer.reserve(32 * 1024, false).unwrap();
         padding.buffer().unwrap().fill(0);
         padding.flush().unwrap();
-        consumer.advance_retention(TCacheId::DataColumns, producer.next_seq());
+        consumer.advance_retention(TCacheId::ControlSlot, producer.next_seq());
         assert_eq!(acquired.entries().len(), 2);
         drop(acquired);
         consumer.free();

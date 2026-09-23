@@ -7,7 +7,7 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
     P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
     SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError, TCacheId,
-    TCacheProducer, TCacheReader, TCacheTable, TMultiProducer, TProducer, TReadMode, block_root,
+    TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -34,7 +34,7 @@ impl ReplayStep {
 const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
 
 pub struct StorageTile {
-    rpc_producer: TMultiProducer,
+    delivery_producer: TProducer,
     beacon_state: BeaconStateReader,
     store: Store,
     genesis_validators_root: Option<B256>,
@@ -54,7 +54,6 @@ pub struct StorageTile {
     /// Flattened replay stream: each block is immediately followed by its
     /// envelope, so a gloas child's precheck sees the parent payload verified.
     replay_steps: VecDeque<ReplayStep>,
-    replay_producer: TProducer,
     replay_done: bool,
     /// Boot decision from control: `None` = waiting; gates `drive_replay` so we
     /// don't replay the on-disk fork tree before learning whether peers are
@@ -72,8 +71,7 @@ impl StorageTile {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tcaches: TCacheTable,
-        rpc_producer: TMultiProducer,
-        replay_producer: TProducer,
+        delivery_producer: TProducer,
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
         spec: Arc<SpecConfig>,
@@ -101,7 +99,7 @@ impl StorageTile {
         tracing::info!("have {} replay steps", replay_steps.len());
 
         Self {
-            rpc_producer,
+            delivery_producer,
             beacon_state,
             store,
             genesis_validators_root: None,
@@ -110,7 +108,6 @@ impl StorageTile {
             wall_slot: u64::MAX,
             persist_pending: false,
             replay_steps,
-            replay_producer,
             replay_done: !replay_from_disk,
             syncing_strategy: None,
             peers_loaded: false,
@@ -120,19 +117,31 @@ impl StorageTile {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::IncomingRpc, "ds_incoming_rpc", TReadMode::Sliding)?;
-        self.persist_reader.open(
-            TCacheId::SszGossip,
-            "ds_persist_ssz_gossip",
+        self.reader.open(
+            TCacheId::NetworkProcessing,
+            "ds_network_processing",
             TReadMode::Sliding,
         )?;
         self.persist_reader.open(
-            TCacheId::IncomingRpc,
-            "ds_persist_incoming_rpc",
+            TCacheId::ControlProcessing,
+            "ds_persist_control_processing",
             TReadMode::Sliding,
         )?;
-        self.persist_reader.open(TCacheId::DataColumns, "storage_cells", TReadMode::Sliding)?;
-        self.persist_reader.open(TCacheId::ElDataColumns, "el_data_columns", TReadMode::Sliding)
+        self.persist_reader.open(
+            TCacheId::NetworkProcessing,
+            "ds_persist_network_processing",
+            TReadMode::Sliding,
+        )?;
+        self.persist_reader.open(
+            TCacheId::ControlSlot,
+            "ds_persist_control_slot",
+            TReadMode::Sliding,
+        )?;
+        self.persist_reader.open(
+            TCacheId::ColumnsProcessing,
+            "ds_persist_columns_processing",
+            TReadMode::Sliding,
+        )
     }
 
     fn drive_replay(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -171,7 +180,7 @@ impl StorageTile {
                 }
             };
 
-            let Some(mut reservation) = self.replay_producer.reserve(len, true) else {
+            let Some(mut reservation) = self.delivery_producer.reserve(len, true) else {
                 return; // tcache full — retry next loop
             };
             let buf = match reservation.buffer() {
@@ -461,7 +470,7 @@ impl Tile<SilverSpine> for StorageTile {
             None => [0u8; 4],
         };
         if let Err(e) =
-            self.store.file_io(fork_digest_at, &mut self.rpc_producer, &mut |io| match io {
+            self.store.file_io(fork_digest_at, &mut self.delivery_producer, &mut |io| match io {
                 IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
                 IoEvent::Need(need) => adapter.produce(need),
@@ -538,14 +547,13 @@ mod tests {
 
     /// Also returns the data-columns producer the tile's persist reader is on.
     fn empty_tile_with_columns(store_dir: &str) -> (StorageTile, TProducer) {
-        let pg = TCache::producer(TCacheId::SszGossip, 1 << 16);
-        let dc = TCache::producer(TCacheId::DataColumns, 1 << 16);
-        let rpc = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
-        let el = TCache::producer(TCacheId::ElDataColumns, 1 << 16);
+        let pg = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
+        let dc = TCache::producer(TCacheId::ControlSlot, 1 << 16);
+        let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let el = TCache::producer(TCacheId::ColumnsProcessing, 1 << 16);
         let mut tile = StorageTile::new(
             TCacheTable::from_iter([&pg, &dc, &rpc, &el].map(|p| p.cache_ref())),
-            TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 16),
-            TCache::producer(TCacheId::ReplayBlocks, 1 << 16),
+            TCache::producer(TCacheId::StorageDelivery, 1 << 16),
             BeaconStateOwner::empty_test(0).reader(),
             0,
             Arc::new(SpecConfig::mainnet()),
@@ -642,15 +650,14 @@ mod tests {
         }
         std::fs::write(cols.join(format!("34_{root_b}_3.ssz")), b"c").unwrap(); // partial
 
-        let pg_tc = TCache::producer(TCacheId::SszGossip, 1 << 20);
-        let dc_tc = TCache::producer(TCacheId::DataColumns, 1 << 20);
-        let rpc_tc = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
-        let el_tc = TCache::producer(TCacheId::ElDataColumns, 1 << 20);
+        let pg_tc = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
+        let dc_tc = TCache::producer(TCacheId::ControlSlot, 1 << 20);
+        let rpc_tc = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+        let el_tc = TCache::producer(TCacheId::ColumnsProcessing, 1 << 20);
 
         let mut tile = StorageTile::new(
             TCacheTable::from_iter([&pg_tc, &dc_tc, &rpc_tc, &el_tc].map(|p| p.cache_ref())),
-            TCache::multi_producer(TCacheId::OutgoingRpc, 1 << 20),
-            TCache::producer(TCacheId::ReplayBlocks, 1 << 20),
+            TCache::producer(TCacheId::StorageDelivery, 1 << 20),
             BeaconStateOwner::empty_test(0).reader(),
             custody,
             Arc::new(SpecConfig::mainnet()),

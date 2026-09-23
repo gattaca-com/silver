@@ -268,15 +268,23 @@ impl BeaconStateTile {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::SszGossip, "bs_ssz_gossip", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::IncomingRpc, "bs_incoming_rpc", TReadMode::Sliding)?;
         self.reader.open(
-            TCacheId::IncomingEngineResp,
-            "engine_incoming_resp",
+            TCacheId::ControlProcessing,
+            "bs_control_processing",
             TReadMode::Sliding,
         )?;
-        self.reader.open(TCacheId::ReplayBlocks, "bs_replay", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::DataColumns, "bs_data_columns", TReadMode::Sliding)
+        self.reader.open(
+            TCacheId::NetworkProcessing,
+            "bs_network_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(
+            TCacheId::BoundaryProcessing,
+            "bs_boundary_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(TCacheId::StorageDelivery, "bs_storage_delivery", TReadMode::Sliding)?;
+        self.reader.open(TCacheId::ControlSlot, "bs_control_slot", TReadMode::Sliding)
     }
 
     /// A read handle on the owned state, for wiring other tiles (lock-free
@@ -833,7 +841,7 @@ impl BeaconStateTile {
                     }
                     Err(e) => tracing::error!(
                         ?e,
-                        seq = acquired.read.seq(),
+                        seq = acquired.seq(),
                         "rpc envelope buffer acquire failed"
                     ),
                 }

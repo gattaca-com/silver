@@ -18,7 +18,7 @@ pub use consumer::{
 pub use counters::TCacheCounters;
 use flux::{Timer, timing::Nanos, tracing};
 pub use id::TCacheId;
-pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
+pub use producer::{Producer, Reservation, TCacheProducer};
 pub use reader::{ReadMode, TCacheReader, TCacheTable};
 pub use sub_reservation::{
     AcquiredSubReservation, PendingSubReservation, SubLayout, SubReservation, SubReservationError,
@@ -31,6 +31,8 @@ use crate::spine::tcache::consumer::Buckets;
 
 const MAGIC: [u8; 3] = [0xEA, 0x51, 0xEE];
 const MAX_CONSUMERS: usize = 64;
+// Emitter id of a cache's producer; consumer slots take 0..MAX_CONSUMERS.
+const PRODUCER_EMITTER: u8 = MAX_CONSUMERS as u8;
 const ALIGN: usize = size_of::<Slot>();
 
 // TCacheHead (528 B) rounded up to Slot alignment (32 B).
@@ -159,10 +161,6 @@ pub enum Error {
 impl TCache {
     pub fn producer(id: TCacheId, n: usize) -> Producer {
         Producer::new(Self::alloc_heap(id, n))
-    }
-
-    pub fn multi_producer(id: TCacheId, n: usize) -> MultiProducer {
-        MultiProducer::new(Self::producer(id, n))
     }
 
     pub fn id(&self) -> TCacheId {
@@ -978,17 +976,14 @@ mod tests {
         total
     }
 
-    /// Single producer + multiple consumers + buffer wrapping. Establishes
-    /// the test machinery (header / checksum / drain) on the simple-path
-    /// `Producer` so failures in the multi-producer test are unambiguously
-    /// `MultiProducer`-specific.
+    /// Single producer + multiple consumers + buffer wrapping.
     #[test]
     fn single_producer_multi_consumer_wraps_buffer() {
         const TCACHE_SIZE: usize = 1 << 14; // 16 KB — small enough to wrap many times
         const CONSUMERS: usize = 4;
         const MSGS: u32 = 4096;
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, TCACHE_SIZE);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
             (0..CONSUMERS).map(|_| producer.cache_ref().consumer("test").unwrap()).collect();
 
@@ -1027,84 +1022,9 @@ mod tests {
         }
     }
 
-    /// `MultiProducer`: N producer threads cloning a shared multi-producer,
-    /// M consumer threads, buffer sized small enough to force many wraps.
-    /// Verifies:
-    ///   - Each consumer sees every message from every producer.
-    ///   - Per-producer messages arrive in monotonic order.
-    ///   - Payload checksums survive concurrent writes (no torn slots).
-    ///   - Total bytes seen per consumer == total bytes written across all
-    ///     producers.
-    #[test]
-    fn multi_producer_multi_consumer_wraps_buffer() {
-        const TCACHE_SIZE: usize = 1 << 14; // 16 KB — small to force wraps
-        const PRODUCERS: u32 = 4;
-        const CONSUMERS: usize = 4;
-        const MSGS_PER_PRODUCER: u32 = 4096;
-
-        let mp = TCache::multi_producer(TCacheId::OutgoingRpc, TCACHE_SIZE);
-        let mut consumers: Vec<Consumer> =
-            (0..CONSUMERS).map(|_| mp.cache_ref().consumer("test").unwrap()).collect();
-
-        // Spawn consumers BEFORE producers so they observe the full stream
-        // from seq 0 and don't miss early commits.
-        let done = Arc::new(AtomicBool::new(false));
-        let consumer_threads: Vec<_> = consumers
-            .drain(..)
-            .enumerate()
-            .map(|(i, mut c)| {
-                let done = Arc::clone(&done);
-                thread::spawn(move || {
-                    let r = drain_consumer(&mut c, &done, PRODUCERS as usize);
-                    (i, r)
-                })
-            })
-            .collect();
-
-        // Spawn producer threads, each with its own clone of the
-        // MultiProducer; allocation is shared, but payload writes are independent.
-        let producer_threads: Vec<_> = (0..PRODUCERS)
-            .map(|p| {
-                let mut mp_clone = mp.clone();
-                thread::spawn(move || {
-                    drive_producer(MSGS_PER_PRODUCER, p, 0xC0FFEE ^ (p as u64), |len, ac| {
-                        loop {
-                            if let Some(r) = mp_clone.reserve(len, ac) {
-                                return r;
-                            }
-                            thread::yield_now();
-                        }
-                    })
-                })
-            })
-            .collect();
-
-        let total_written: usize = producer_threads.into_iter().map(|h| h.join().unwrap()).sum();
-        mp.publish_head();
-        done.store(true, AOrdering::Release);
-
-        for h in consumer_threads {
-            let (i, (count, max_seq, total)) = h.join().unwrap();
-            for p in 0..PRODUCERS as usize {
-                assert_eq!(
-                    count[p], MSGS_PER_PRODUCER,
-                    "consumer {i}: producer {p} count {} != {MSGS_PER_PRODUCER}",
-                    count[p]
-                );
-                assert_eq!(
-                    max_seq[p],
-                    MSGS_PER_PRODUCER - 1,
-                    "consumer {i}: producer {p} max_seq {}",
-                    max_seq[p]
-                );
-            }
-            assert_eq!(total, total_written, "consumer {i}: byte total mismatch");
-        }
-    }
-
     #[test]
     fn produce_consume() {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 2 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 2 << 14);
         let mut consumer = producer.cache_ref().consumer("test").unwrap();
 
         let prod = std::thread::spawn(move || {

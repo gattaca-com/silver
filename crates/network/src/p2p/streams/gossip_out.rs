@@ -219,7 +219,7 @@ mod tests {
     /// the producer's cache: box the consumer so its address survives the
     /// return, and order the tuple so the consumer drops before the producer.
     fn queued_msg(name: &'static str) -> (Box<TCacheReader>, TProducer, TRead) {
-        let mut producer = TCache::producer(TCacheId::OutgoingGossip, 1 << 16);
+        let mut producer = TCache::producer(TCacheId::ControlGossip, 1 << 16);
         let mut consumer = Box::new(
             TCacheReader::single(producer.cache_ref(), name, TReadMode::SlidingManualFree).unwrap(),
         );
@@ -301,7 +301,7 @@ mod tests {
         const CAPACITY: usize = 1 << 18;
         const CHURN_BYTES: usize = 8 * 1024;
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, CAPACITY);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, CAPACITY);
         let mut consumer =
             Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
         let payload: [u8; 513] = array::from_fn(|i| i as u8);

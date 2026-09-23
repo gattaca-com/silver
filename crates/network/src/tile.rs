@@ -118,10 +118,10 @@ impl NetworkTile {
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
-        if self.inner.context.reader.is_open(TCacheId::DataColumns) {
+        if self.inner.context.reader.is_open(TCacheId::ControlSlot) {
             let reader = &mut self.inner.context.reader;
             adapter.consume(|event: RetentionEvent, _| {
-                reader.advance_retention(TCacheId::DataColumns, event.retain_from);
+                reader.advance_retention(TCacheId::ControlSlot, event.retain_from);
             });
         }
         adapter.consume(|peer_control: PeerControl, _producers| {

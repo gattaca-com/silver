@@ -476,11 +476,11 @@ mod tests {
             let mut adapter = SpineAdapter::connect_tile(&TestTile, &mut spine);
             // The consumer attaches at the current head on its first read.
             adapter.consume(|_: BeaconApiResponse, _| panic!("unexpected initial response"));
-            let incoming = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
-            let protobuf = TCache::producer(TCacheId::OutgoingGossip, 1 << 12);
+            let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 12);
+            let protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 12);
             let mut gossip = GossipHandler::new(
                 TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
-                TCache::producer(TCacheId::SszGossip, 1 << 12),
+                TCache::producer(TCacheId::ControlProcessing, 1 << 12),
                 protobuf,
                 Some(silver_common::GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
             )

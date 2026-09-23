@@ -194,7 +194,7 @@ mod tests {
     }
 
     fn unread_payload() -> TCacheRead {
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 12);
         let mut r = producer.reserve(1, true).expect("tcache reserve");
         r.increment_offset(1);
         r.read()

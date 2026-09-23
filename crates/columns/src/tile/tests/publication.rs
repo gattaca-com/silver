@@ -143,7 +143,7 @@ impl Rig {
     fn attach_cell_store(&mut self, slot: u64, columns: u128) -> CellAllocator {
         let start = Instant::now();
         let config = CellStoreConfig::new(self.tile.spec.clone(), columns, Duration::ZERO).unwrap();
-        let producer = TCache::producer(TCacheId::DataColumns, config.cache_capacity());
+        let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let tcaches = TCacheTable::from_iter([producer.cache_ref()]);
         let mut cells = CellHandler::new(config.clone(), tcaches, slot, start).unwrap();
         cells.open_tcaches().unwrap();

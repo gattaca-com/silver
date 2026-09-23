@@ -140,7 +140,7 @@ impl TCacheReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spine::tcache::{TCache, TCacheProducer};
+    use crate::spine::tcache::{PRODUCER_EMITTER, TCache, TCacheProducer};
 
     fn write(producer: &mut impl TCacheProducer, bytes: &[u8]) -> TCacheRead {
         let mut reservation = producer.reserve(bytes.len(), true).unwrap();
@@ -152,31 +152,71 @@ mod tests {
 
     #[test]
     fn routes_by_id_and_reads_before_open() {
-        let mut gossip = TCache::producer(TCacheId::SszGossip, 1 << 16);
-        let mut rpc = TCache::producer(TCacheId::IncomingRpc, 1 << 16);
+        let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
+        let mut rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
         let early = write(&mut gossip, b"early");
 
         let table = TCacheTable::from_iter([gossip.cache_ref(), rpc.cache_ref()]);
         let mut reader = TCacheReader::new(table);
-        reader.open(TCacheId::SszGossip, "g", ReadMode::Sliding).unwrap();
-        reader.open(TCacheId::IncomingRpc, "r", ReadMode::Strict).unwrap();
+        reader.open(TCacheId::ControlProcessing, "g", ReadMode::Sliding).unwrap();
+        reader.open(TCacheId::NetworkProcessing, "r", ReadMode::Strict).unwrap();
         assert!(matches!(
-            reader.open(TCacheId::ReplayBlocks, "x", ReadMode::Strict),
-            Err(Error::Unregistered(TCacheId::ReplayBlocks))
+            reader.open(TCacheId::ControlRpc, "x", ReadMode::Strict),
+            Err(Error::Unregistered(TCacheId::ControlRpc))
         ));
 
         let late = write(&mut rpc, b"rpc");
         assert_eq!(reader.acquire(early).buffer().unwrap().0, b"early");
         assert_eq!(reader.acquire_strict(late).unwrap().buffer().unwrap().0, b"rpc");
-        assert!(reader.is_strict(TCacheId::IncomingRpc));
-        assert!(!reader.is_strict(TCacheId::SszGossip) && !reader.is_strict(TCacheId::DataColumns));
+        assert!(reader.is_strict(TCacheId::NetworkProcessing));
+        assert!(
+            !reader.is_strict(TCacheId::ControlProcessing) &&
+                !reader.is_strict(TCacheId::ControlSlot)
+        );
         reader.free();
+    }
+
+    /// The stamp is the pinning consumer's slot and tail; identity ignores it.
+    #[test]
+    fn to_read_stamps_the_pinning_consumer() {
+        let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 18);
+        let table = TCacheTable::from_iter([gossip.cache_ref()]);
+        let mut first = TCacheReader::new(table);
+        let mut second = TCacheReader::new(table);
+        first.open(TCacheId::ControlProcessing, "first", ReadMode::Sliding).unwrap();
+        second.open(TCacheId::ControlProcessing, "second", ReadMode::Sliding).unwrap();
+
+        let produced = write(&mut gossip, b"x");
+        assert_eq!(produced.emitter, PRODUCER_EMITTER);
+        let pinned = second.acquire(produced);
+        let forwarded = pinned.to_read();
+        assert_eq!(forwarded, produced);
+        assert_eq!((forwarded.id, forwarded.seq), (produced.id, produced.seq));
+        assert_eq!(forwarded.emitter, 1);
+        assert_eq!(forwarded.floor, 0);
+        drop(pinned);
+
+        // Release everything behind, wrap past the guard, and the floor follows the
+        // tail.
+        let big = vec![0u8; 1 << 15];
+        let mut last = write(&mut gossip, &big);
+        for _ in 0..5 {
+            drop(second.acquire(last));
+            second.free();
+            last = write(&mut gossip, &big);
+        }
+        let pinned = second.acquire(last);
+        let forwarded = pinned.to_read();
+        assert!(0 < forwarded.floor && forwarded.floor <= forwarded.seq, "{forwarded:?}");
+        drop(pinned);
+        first.free();
+        second.free();
     }
 
     #[test]
     #[should_panic(expected = "not open")]
     fn acquire_on_unopened_id_panics() {
-        let mut gossip = TCache::producer(TCacheId::SszGossip, 1 << 16);
+        let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
         let read = write(&mut gossip, b"x");
         let mut reader = TCacheReader::new(TCacheTable::default());
         reader.acquire(read);

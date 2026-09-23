@@ -409,7 +409,7 @@ mod tests {
     }
 
     fn mk_tcache_read() -> silver_common::TCacheRead {
-        let mut producer = silver_common::TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();
@@ -428,7 +428,7 @@ mod tests {
             &mut |event| cap.0.push(event),
         );
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let payloads = [b"column".as_slice(), b"idontwant".as_slice()];
         let [protobuf, idontwant] = payloads.map(|bytes| {
             let mut reservation = producer.reserve(bytes.len(), true).unwrap();
@@ -917,7 +917,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();
@@ -957,7 +957,7 @@ mod tests {
         mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).unwrap() < -1.0);
 
-        let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 14);
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();

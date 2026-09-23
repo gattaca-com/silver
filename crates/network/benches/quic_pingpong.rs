@@ -41,16 +41,17 @@ pub fn broadcast(c: &mut Criterion) {
             x.iter_batched(
                 || {
                     let running = Arc::new(AtomicBool::new(true));
-                    let gi_producer = TCache::producer(TCacheId::IncomingGossip, 2 << 24);
+                    let gi_producer = TCache::producer(TCacheId::NetworkIngress, 2 << 24);
                     let mut gi_consumer = gi_producer.cache_ref().consumer("bench").unwrap();
-                    let mut go_producer = TCache::producer(TCacheId::OutgoingGossip, 2 << 24);
-                    let rpc_in = TCache::producer(TCacheId::IncomingRpc, 32);
-                    let rpc_out = TCache::producer(TCacheId::OutgoingRpc, 32);
+                    let mut go_producer = TCache::producer(TCacheId::ControlGossip, 2 << 24);
+                    let rpc_in = TCache::producer(TCacheId::NetworkProcessing, 32);
+                    let rpc_out = TCache::producer(TCacheId::StorageDelivery, 32);
+                    let control_rpc = TCache::producer(TCacheId::ControlRpc, 32);
                     // dummys
                     let cluster_in = TCache::producer(TCacheId::ClusterInbound, 32);
                     let cluster_out = TCache::producer(TCacheId::ClusterOutbound, 32);
                     let tcaches = TCacheTable::from_iter(
-                        [&go_producer, &rpc_out, &cluster_out].map(|p| p.cache_ref()),
+                        [&go_producer, &rpc_out, &control_rpc, &cluster_out].map(|p| p.cache_ref()),
                     );
 
                     let (mut server_tile, server_id) = {
@@ -130,16 +131,17 @@ pub fn broadcast(c: &mut Criterion) {
                     let client_endpoint =
                         Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
 
-                    let gi_producer = TCache::producer(TCacheId::IncomingGossip, 2 << 24);
+                    let gi_producer = TCache::producer(TCacheId::NetworkIngress, 2 << 24);
                     let gi_consumer = gi_producer.cache_ref().consumer("bench").unwrap();
-                    let go_producer = TCache::producer(TCacheId::OutgoingGossip, 2 << 28);
-                    let rpc_in = TCache::producer(TCacheId::IncomingRpc, 32);
-                    let rpc_out = TCache::producer(TCacheId::OutgoingRpc, 32);
+                    let go_producer = TCache::producer(TCacheId::ControlGossip, 2 << 28);
+                    let rpc_in = TCache::producer(TCacheId::NetworkProcessing, 32);
+                    let rpc_out = TCache::producer(TCacheId::StorageDelivery, 32);
+                    let control_rpc = TCache::producer(TCacheId::ControlRpc, 32);
                     // dummys
                     let cluster_in = TCache::producer(TCacheId::ClusterInbound, 32);
                     let cluster_out = TCache::producer(TCacheId::ClusterOutbound, 32);
                     let tcaches = TCacheTable::from_iter(
-                        [&go_producer, &rpc_out, &cluster_out].map(|p| p.cache_ref()),
+                        [&go_producer, &rpc_out, &control_rpc, &cluster_out].map(|p| p.cache_ref()),
                     );
 
                     let context = Context {

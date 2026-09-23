@@ -107,19 +107,19 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
     let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
-    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
-    let event_p = TCache::producer(TCacheId::IncomingRpc, 1 << 20);
-    let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 20);
-    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
-    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
+    let event_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+    let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
+    let delivery_p = TCache::producer(TCacheId::StorageDelivery, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(SpecConfig::mainnet()),
         &SyncingConfig::default(),
         TCacheTable::from_iter(
-            [&gossip_p, &event_p, &engine_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+            [&gossip_p, &event_p, &engine_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
         ),
-        TCache::producer(TCacheId::BeaconState, 1 << 20),
+        TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         verify_weak_subjectivity,
         BeaconState::empty_test(0),
     );
@@ -148,24 +148,24 @@ fn make_tile_with_producers(
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
     let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
-    let gossip_p = TCache::producer(TCacheId::SszGossip, 1 << 20);
-    let event_p = TCache::producer(TCacheId::IncomingRpc, TEST_RING_BYTES);
-    let engine_p = TCache::producer(TCacheId::IncomingEngineResp, 1 << 20);
-    let replay_p = TCache::producer(TCacheId::ReplayBlocks, 1 << 20);
-    let columns_p = TCache::producer(TCacheId::DataColumns, 1 << 16);
+    let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
+    let event_p = TCache::producer(TCacheId::NetworkProcessing, TEST_RING_BYTES);
+    let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
+    let delivery_p = TCache::producer(TCacheId::StorageDelivery, 1 << 20);
+    let columns_p = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(spec),
         &SyncingConfig::default(),
         TCacheTable::from_iter(
-            [&gossip_p, &event_p, &engine_p, &replay_p, &columns_p].map(|p| p.cache_ref()),
+            [&gossip_p, &event_p, &engine_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
         ),
-        TCache::producer(TCacheId::BeaconState, 1 << 20),
+        TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         true,
         state,
     );
     tile.open_tcaches().unwrap();
-    (tile, gossip_p, event_p, replay_p)
+    (tile, gossip_p, event_p, delivery_p)
 }
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
@@ -1208,9 +1208,10 @@ fn short_gossip_block_rejected_before_any_field_read() {
 
     for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
         let (data, read) = publish_block_bytes(&mut gp, &vec![0u8; len]);
+        let pinned = tile.reader.acquire(read);
         let feedback = tile.apply_block(
             &data,
-            read,
+            &pinned,
             BlockSource::Gossip,
             false,
             &mut adapter.producers,
@@ -1225,10 +1226,15 @@ fn short_gossip_block_rejected_before_any_field_read() {
     bytes[100..108].copy_from_slice(&11u64.to_le_bytes());
     bytes[116] = 0xFF; // unknown parent_root
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
-    let feedback =
-        tile.apply_block(&data, read, BlockSource::Gossip, false, &mut adapter.producers, |_| {
-            panic!("an unimportable block must never be relayed")
-        });
+    let pinned = tile.reader.acquire(read);
+    let feedback = tile.apply_block(
+        &data,
+        &pinned,
+        BlockSource::Gossip,
+        false,
+        &mut adapter.producers,
+        |_| panic!("an unimportable block must never be relayed"),
+    );
     assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
 }
 
@@ -1302,8 +1308,9 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
     tile.fork_choice.on_block(anchor_child(block_root, tile.last_applied));
 
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
+    let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+        tile.apply_block(&data, &pinned, BlockSource::Rpc, false, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
@@ -1366,14 +1373,16 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     // The checkpoint was loaded without decompressed pubkeys, so this import
     // bypasses proposer-signature verification.
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
+    let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
     let Feedback::BlockImported(block_root) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
+    let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, read, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+        tile.apply_block(&data, &pinned, BlockSource::Rpc, false, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
@@ -1528,9 +1537,10 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
 
         let mut relayed = false;
+        let pinned = tile.reader.acquire(read);
         let feedback = tile.apply_block(
             &data,
-            read,
+            &pinned,
             BlockSource::Gossip,
             true, // pre_verified: the signature is not what these cases are about
             &mut adapter.producers,
@@ -1608,9 +1618,10 @@ fn non_canonical_body_is_rejected_before_relay() {
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
 
         let mut relayed = false;
+        let pinned = tile.reader.acquire(read);
         let feedback = tile.apply_block(
             &data,
-            read,
+            &pinned,
             BlockSource::Gossip,
             true,
             &mut adapter.producers,
@@ -1638,9 +1649,10 @@ fn block_at_the_finalized_start_slot_is_ignored() {
         let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
         let bytes = fulu_block_with_payload(slot, stamp, 0);
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
+        let pinned = tile.reader.acquire(read);
         let feedback = tile.apply_block(
             &data,
-            read,
+            &pinned,
             BlockSource::Gossip,
             true,
             &mut adapter.producers,
@@ -3799,7 +3811,8 @@ impl ThreeForks {
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };
-        self.tile.held.stage(StagedBlock::with_state_id(parsed, id, msg.ssz, BlockSource::Gossip));
+        let ssz = self.tile.reader.acquire(msg.ssz);
+        self.tile.held.stage(StagedBlock::with_state_id(parsed, id, ssz, BlockSource::Gossip));
         id
     }
 }
@@ -3890,7 +3903,7 @@ fn staged_blocks_follow_finalization() {
     const S_ROOT: B256 = [0x05; 32];
     const S2_ROOT: B256 = [0x52; 32];
     let mut forks = ThreeForks::new();
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     let s_id = forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
     forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
 
@@ -3918,7 +3931,7 @@ fn el_invalid_drops_staged_block() {
     let (mut spine, mut adapter) = spine_adapter(&forks.tile);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
-    let mut producer = TCache::producer(TCacheId::ElDataColumns, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
@@ -3943,7 +3956,7 @@ fn el_valid_is_kept_on_a_staged_block() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut producer = TCache::producer(TCacheId::ElDataColumns, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
@@ -3966,7 +3979,7 @@ fn el_invalid_staged_block_is_remembered_as_rejected() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut producer = TCache::producer(TCacheId::ElDataColumns, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
@@ -4016,7 +4029,7 @@ fn child_of_transition_failed_block_is_rejected() {
 fn a_finalized_target_drops_staged_blocks() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     forks.tile.on_sync_update(SyncUpdate::SyncingHead { head_root: [9; 32], head_slot: 40 });
@@ -4035,7 +4048,7 @@ fn pruned_staged_block_takes_its_children() {
     const S2_ROOT: B256 = [0x52; 32];
     let mut forks = ThreeForks::new();
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
     let child = gossip_pending(&mut producer, 3);
     let parked = forks.tile.buffer_orphan(S2_ROOT, [0x53; 32], child, 3, &mut adapter.producers);
@@ -4053,7 +4066,7 @@ fn pruned_staged_block_takes_its_children() {
 fn availability_outlives_a_failed_release() {
     const S_ROOT: B256 = [0x05; 32];
     let mut forks = ThreeForks::new();
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 12);
+    let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S_ROOT, D_ROOT, forks.d_id, 3);
 
     let held = &mut forks.tile.held;

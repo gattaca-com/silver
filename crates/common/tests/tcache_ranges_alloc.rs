@@ -44,7 +44,7 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
 fn allocation_min_walk_and_out_of_order_completion_allocate_nothing() {
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 256);
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 256);
     let before = ALLOCATION_EVENTS.with(Cell::get);
     for _ in 0..128 {
         let first = producer.reserve(32, false).unwrap();
@@ -54,23 +54,6 @@ fn allocation_min_walk_and_out_of_order_completion_allocate_nothing() {
         assert!(producer.reserve(32, false).is_none());
         drop(first);
     }
-    assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);
-}
-
-#[test]
-fn multi_producer_allocation_and_reclamation_allocate_nothing() {
-    let producer = TCache::multi_producer(TCacheId::IncomingGossip, 256);
-    let mut writers: [_; 4] = array::from_fn(|_| producer.clone());
-    let before = ALLOCATION_EVENTS.with(Cell::get);
-    for _ in 0..128 {
-        let first = writers[0].reserve(32, false).unwrap();
-        for writer in &mut writers[1..] {
-            writer.reserve(32, true).unwrap().write_all(&[0xab; 32]).unwrap();
-        }
-        assert!(writers[0].reserve(32, false).is_none());
-        drop(first);
-    }
-    producer.publish_head();
     assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);
 }
 
@@ -86,13 +69,12 @@ fn separate_wrap_padding_allocates_nothing() {
         assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);
     }
 
-    check(TCache::producer(TCacheId::IncomingGossip, 256));
-    check(TCache::multi_producer(TCacheId::IncomingGossip, 256));
+    check(TCache::producer(TCacheId::NetworkIngress, 256));
 }
 
 #[test]
 fn descriptor_construction_and_acquisition_allocate_nothing() {
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
     let mut consumer =
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let now = Instant::now();
@@ -118,7 +100,7 @@ fn descriptor_construction_and_acquisition_allocate_nothing() {
 
 #[test]
 fn frame_acquisition_handoff_and_rollback_allocate_nothing() {
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
     let mut consumer =
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let source = {
@@ -178,7 +160,7 @@ fn frame_acquisition_handoff_and_rollback_allocate_nothing() {
 
 #[test]
 fn range_creation_cloning_and_dropping_allocates_nothing() {
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 16);
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
     let mut consumer =
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let mut reservation = producer.reserve(2096, true).unwrap();
@@ -210,7 +192,7 @@ fn range_creation_cloning_and_dropping_allocates_nothing() {
 
 #[test]
 fn slot_retention_acquisition_and_expiry_allocate_nothing_after_construction() {
-    let mut producer = TCache::producer(TCacheId::IncomingGossip, 1 << 18);
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
     let mut readers = array::from_fn::<_, 2, _>(|_| {
         Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap())
     });
@@ -219,7 +201,7 @@ fn slot_retention_acquisition_and_expiry_allocate_nothing_after_construction() {
     for _ in 0..512 {
         let boundary = producer.next_seq();
         for reader in &mut readers {
-            reader.advance_retention(TCacheId::IncomingGossip, boundary);
+            reader.advance_retention(TCacheId::NetworkIngress, boundary);
         }
         let mut reservation = producer.reserve(8192, false).unwrap();
         reservation.buffer().unwrap().fill(0xab);
