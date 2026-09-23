@@ -6,7 +6,7 @@ mod lh_common;
 
 use std::time::Duration;
 
-use lh_common::{build_silver_listener, drive_until, libp2p_to_silver_peer_id, pick_free_port};
+use lh_common::{build_silver_listener, drive_until, libp2p_to_silver_peer_id};
 use silver_e2e::LhClient;
 
 #[test]
@@ -32,7 +32,6 @@ fn silver_dials_libp2p() {
     let mut client = LhClient::new_listener();
     let lh_addr = client.listen_addr().expect("listener bound");
     let lh_silver_pid = libp2p_to_silver_peer_id(client.local_peer_id());
-    let _ = pick_free_port; // suppress unused-import warning when only this fn is used
 
     silver
         .network

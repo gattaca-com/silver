@@ -11,10 +11,7 @@
 //! same pattern as the gossip one-way test. No tokio runtime, no
 //! libp2p — pure silver code paths.
 
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use flux::tile::Tile;
 use silver_common::{
@@ -22,25 +19,17 @@ use silver_common::{
     RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, StreamProtocol,
     TCacheProducer, ssz_view::BLOCKS_BY_RANGE_REQ_SIZE, test_util::ShmemDir,
 };
-use silver_e2e::{PublisherStack, keypair_from_seed};
+use silver_e2e::{PublisherStack, keypair_from_seed, on_free_loopback_ports};
 
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const CHUNK_COUNT: usize = 3;
 const FORK_DIGEST: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
 
-fn pick_free_port() -> u16 {
-    std::net::UdpSocket::bind(("127.0.0.1", 0))
-        .expect("bind")
-        .local_addr()
-        .expect("local_addr")
-        .port()
-}
-
 fn build_stack(td: &ShmemDir, suffix: &str, seed: u8) -> PublisherStack {
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
-    let disc = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
     let kp = keypair_from_seed(seed);
-    let mut stack = PublisherStack::new(td.path(), suffix, addr, disc, kp).expect("silver stack");
+    let mut stack =
+        on_free_loopback_ports(|addr, disc| PublisherStack::new(td.path(), suffix, addr, disc, kp))
+            .expect("silver stack");
     // Heartbeat ping fan-out would otherwise inject background traffic
     // that races with this test's stream-id capture.
     stack.controller.set_auto_ping(false);

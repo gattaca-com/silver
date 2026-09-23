@@ -4,10 +4,7 @@
 
 #![allow(dead_code)]
 
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use flux::tile::Tile;
 use silver_common::{
@@ -15,12 +12,7 @@ use silver_common::{
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
     test_util::ShmemDir,
 };
-use silver_e2e::{LhClient, PublisherStack, keypair_from_seed};
-
-pub fn pick_free_port() -> u16 {
-    let s = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("bind");
-    s.local_addr().expect("local_addr").port()
-}
+use silver_e2e::{LhClient, PublisherStack, keypair_from_seed, on_free_loopback_ports};
 
 /// Build a silver listener on a fresh port. Returns the stack and a
 /// kept-alive tempdir. Disables the controller's heartbeat-driven
@@ -28,11 +20,11 @@ pub fn pick_free_port() -> u16 {
 /// traffic only.
 pub fn build_silver_listener(seed: u8) -> (PublisherStack, ShmemDir) {
     let tempdir = ShmemDir::new().expect("tempdir");
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
-    let disc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port());
     let kp = keypair_from_seed(seed);
-    let mut silver = PublisherStack::new(tempdir.path(), "_lh_test", addr, disc_addr, kp)
-        .expect("silver listener");
+    let mut silver = on_free_loopback_ports(|addr, disc_addr| {
+        PublisherStack::new(tempdir.path(), "_lh_test", addr, disc_addr, kp)
+    })
+    .expect("silver listener");
     silver.controller.set_auto_ping(false);
     (silver, tempdir)
 }
