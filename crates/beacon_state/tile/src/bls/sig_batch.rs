@@ -1,4 +1,4 @@
-use core::ptr;
+use core::{mem, ptr};
 
 use blst::{
     BLST_ERROR, MultiPoint, Pairing, blst_aggregated_in_g2, blst_fp12, blst_hash_to_g2, blst_p2,
@@ -6,6 +6,7 @@ use blst::{
 };
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
+use rustc_hash::FxHashMap;
 use silver_beacon_state_data::B256;
 
 use super::{
@@ -33,6 +34,7 @@ pub struct SigBatch {
     grouped_scalars: Vec<u8>,
     /// Multi-pairing accumulator.
     pairing: Pairing,
+    hashed_msgs: HashedMsgs,
     aggregator: PubkeyAggregator,
     poisoned: bool,
 }
@@ -43,6 +45,42 @@ pub struct SigBatch {
 /// 16 (bls_changes) + 1 (sync_aggregate) = 77. Round up.
 /// But for batched attestations this can be much larger..
 const SIG_BATCH_CAP: usize = 1024;
+
+/// Signing roots the hash-to-G2 cache keeps. A block signs about 13 of them,
+/// and a slot of gossip adds a handful more.
+const MAX_HASHED_MSGS: usize = 256;
+
+/// `H(msg)` in G2, cached by signing root.
+///
+/// Hashing one root to the curve costs ~98 µs. The same root is signed many
+/// times over. Every attester in a slot signs one `AttestationData`. A block's
+/// randao signs its epoch. A block's attestations arrived over gossip first.
+/// One cache serves every batch the tile verifies, so each root is hashed once.
+#[derive(Default)]
+pub struct HashedMsgs {
+    live: FxHashMap<B256, blst_p2_affine>,
+    /// The generation `live` replaced. Still read, and promoted back on a hit.
+    prev: FxHashMap<B256, blst_p2_affine>,
+}
+
+impl HashedMsgs {
+    fn get(&mut self, msg: &B256) -> blst_p2_affine {
+        if let Some(&point) = self.live.get(msg) {
+            return point;
+        }
+        let point = self.prev.get(msg).copied().unwrap_or_else(|| hash_to_g2_affine(msg));
+        // Retire the older generation instead of emptying the cache.
+        // Emptying it made the next block re-hash all ~13 of its roots at
+        // once. Flooding the cache with fresh roots only costs the hashing it
+        // would have cost anyway.
+        if self.live.len() >= MAX_HASHED_MSGS {
+            self.prev.clear();
+            mem::swap(&mut self.prev, &mut self.live);
+        }
+        self.live.insert(*msg, point);
+        point
+    }
+}
 
 impl Default for SigBatch {
     fn default() -> Self {
@@ -61,6 +99,7 @@ impl SigBatch {
             grouped_pks: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_scalars: Vec::with_capacity(SIG_BATCH_CAP * 8),
             pairing: Pairing::new(true, DST),
+            hashed_msgs: HashedMsgs::default(),
             aggregator: PubkeyAggregator::default(),
             poisoned: false,
         }
@@ -154,8 +193,7 @@ impl SigBatch {
     /// Verify all collected entries.
     ///
     /// - 0 entries → trivially true.
-    /// - 1 entry → single pre-aggregated verify (avoids the multi-pairing setup
-    ///   cost for the common case of a single sig).
+    /// - 1 entry → one pairing against the cached `H(msg)`.
     /// - 2+ entries → grouped multi-pairing with random per-tuple scalars.
     #[timed]
     pub fn verify_all(&mut self) -> bool {
@@ -164,14 +202,19 @@ impl SigBatch {
         }
         match self.msgs.len() {
             0 => true,
+            // One signature is the grouped path with one group. It needs no
+            // random scalar, because a rogue component has nothing to cancel
+            // against on its own. Signatures are subgroup-checked on the way
+            // in, by `CheckedSignature`.
             1 => {
-                // No sig group check: entries enter via `CheckedSignature`.
-                self.sigs[0].fast_aggregate_verify_pre_aggregated(
-                    false,
-                    &self.msgs[0],
-                    DST,
-                    &self.pks[0],
-                ) == BLST_ERROR::BLST_SUCCESS
+                let hashed = self.hashed_msgs.get(&self.msgs[0]);
+                let SigBatch { pks, sigs, pairing, .. } = self;
+                pairing.init(true, DST);
+                pairing.raw_aggregate(&hashed, pk_affine(&pks[0]));
+                pairing.commit();
+                let mut gtsig = blst_fp12::default();
+                unsafe { blst_aggregated_in_g2(&mut gtsig, sig_affine(&sigs[0])) };
+                pairing.finalverify(Some(&gtsig))
             }
             _ => self.verify_batch(),
         }
@@ -230,7 +273,15 @@ impl SigBatch {
         let sig_sum = self.sigs.mult(&self.rand_bytes, NBITS).to_signature();
 
         let SigBatch {
-            msgs, pks, rand_bytes, order, grouped_pks, grouped_scalars, pairing, ..
+            msgs,
+            pks,
+            rand_bytes,
+            order,
+            grouped_pks,
+            grouped_scalars,
+            pairing,
+            hashed_msgs,
+            ..
         } = self;
 
         order.clear();
@@ -248,13 +299,13 @@ impl SigBatch {
         pairing.init(true, DST);
         let mut start = 0;
         while start < n {
-            let msg = &msgs[order[start] as usize];
+            let msg = msgs[order[start] as usize];
             let mut end = start + 1;
-            while end < n && msgs[order[end] as usize] == *msg {
+            while end < n && msgs[order[end] as usize] == msg {
                 end += 1;
             }
             let pk_sum = grouped_pks[start..end].mult(&grouped_scalars[start * 8..end * 8], NBITS);
-            pairing.raw_aggregate(&hash_to_g2_affine(msg), pk_affine(&pk_sum.to_public_key()));
+            pairing.raw_aggregate(&hashed_msgs.get(&msg), pk_affine(&pk_sum.to_public_key()));
             start = end;
         }
         pairing.commit();
@@ -308,6 +359,25 @@ mod tests {
     /// weighted-sum subgroup check whenever 13 | rᵢ (~1/13 of runs, so this
     /// test flaked green against the old sum-only check). Per-sig subgroup
     /// checks must reject it deterministically.
+    /// A root the memo has served survives the generation that displaces it,
+    /// where a full clear made every live root re-hash at once.
+    #[test]
+    fn hashed_msgs_keeps_a_root_across_one_eviction() {
+        let mut memo = HashedMsgs::default();
+        let kept: B256 = [0xAB; 32];
+        let first = memo.get(&kept);
+
+        for i in 0..MAX_HASHED_MSGS as u32 {
+            let mut other = [0u8; 32];
+            other[..4].copy_from_slice(&i.to_le_bytes());
+            memo.get(&other);
+        }
+
+        assert!(!memo.live.contains_key(&kept), "the filling roots displaced it");
+        assert_eq!(memo.get(&kept), first, "still served from the retired generation");
+        assert!(memo.live.contains_key(&kept), "and promoted back");
+    }
+
     #[test]
     fn sig_batch_rejects_low_order_rogue_component() {
         // Deterministic non-subgroup point on the twist: scan x = (i, 0)
@@ -463,5 +533,23 @@ mod tests {
         batch.push_one(&pubkey_pk(1), &sign(1, &shared), shared);
         batch.push_one(&pubkey_pk(2), &sign(1, &shared), shared);
         assert!(!batch.verify_all());
+    }
+
+    /// `P + (−P) = ∞` and `e(∞, H(m)) = e(G1, ∞)`: without the aggregator's
+    /// infinity rejection an infinite signature verifies for any message.
+    #[test]
+    fn sig_batch_rejects_infinite_aggregate_pubkey() {
+        let pk = pubkey_pk(1);
+        let msg = [7u8; 32];
+
+        let mut single = SigBatch::new();
+        single.push_aggregate_subtracted([&pk], [&pk], &G2_POINT_AT_INFINITY, msg);
+        assert!(!single.verify_all());
+
+        let mut batched = SigBatch::new();
+        batched.push_aggregate_subtracted([&pk], [&pk], &G2_POINT_AT_INFINITY, msg);
+        let other = [9u8; 32];
+        batched.push_one(&pubkey_pk(2), &sign(2, &other), other);
+        assert!(!batched.verify_all());
     }
 }

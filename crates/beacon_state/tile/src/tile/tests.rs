@@ -3067,7 +3067,6 @@ fn equivocator_excluded_from_votes() {
     assert_eq!(voted_weight(&mut tile, anchor), MAX_EFFECTIVE_BALANCE);
 
     tile.fork_choice.mark_equivocating(3);
-    assert!(tile.fork_choice.is_equivocating(3));
     assert_eq!(voted_weight(&mut tile, anchor), 0);
 
     // A later attestation from an equivocator is ignored.

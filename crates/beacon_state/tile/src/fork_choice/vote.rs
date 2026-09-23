@@ -50,7 +50,7 @@ impl VoteTracker {
         self.dirty.push(validator);
     }
 
-    pub fn is_equivocating(&self, idx: usize) -> bool {
+    fn is_equivocating(&self, idx: usize) -> bool {
         let (w, b) = (idx / 64, idx % 64);
         self.equivocating.get(w).is_some_and(|word| word & (1u64 << b) != 0)
     }
@@ -209,10 +209,6 @@ impl ForkChoice {
 
     pub fn mark_equivocating(&mut self, idx: usize) {
         self.vote_tracker.mark_equivocating(idx);
-    }
-
-    pub fn is_equivocating(&self, idx: usize) -> bool {
-        self.vote_tracker.is_equivocating(idx)
     }
 
     /// Spec `on_attestation` folds a vote only once `current_slot >= slot + 1`;
