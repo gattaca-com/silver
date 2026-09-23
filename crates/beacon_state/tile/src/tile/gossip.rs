@@ -5,9 +5,9 @@ use silver_beacon_state_data::{
     gloas::PTC_SIZE,
 };
 use silver_common::{
-    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
-    GossipTopic, LOCAL_GOSSIP_STREAM_ID, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, SyncNeed,
-    TCacheRead, TRead, hex32,
+    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
+    LOCAL_GOSSIP_STREAM_ID, LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
+    NewGossipMsg, PeerEvent, SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -237,7 +237,7 @@ impl BeaconStateTile {
 
         self.seen_attesters.rotate_to(self.seen_window_epoch());
         if self.seen_attesters.contains(target_epoch, attester_index) {
-            return Err(Feedback::Ignore);
+            return Err(Feedback::DuplicateVote);
         }
 
         // Pre-Gloas single attestations encode the committee in
@@ -268,9 +268,9 @@ impl BeaconStateTile {
         }
         if subnet !=
             compute_subnet_for_attestation(
-                shuffling.committees_per_slot,
+                shuffling.committees_per_slot as u64,
                 att_slot,
-                committee_index,
+                committee_index as u64,
             )
         {
             return Err(Feedback::Reject(None));
@@ -375,7 +375,11 @@ impl BeaconStateTile {
         while let Some(m) = self.vote_batch.pop() {
             let acquired = self.reader.acquire(m.ssz);
             let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else {
-                Self::reject_local_gossip(&m, producers);
+                Self::local_verdict(
+                    &m,
+                    LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable),
+                    producers,
+                );
                 continue;
             };
             let prepared = match m.topic {
@@ -404,7 +408,14 @@ impl BeaconStateTile {
                     self.vote_pending.push((m, p));
                 }
                 Err(Feedback::Reject(_)) => Self::reject_gossip(&m, producers),
-                Err(_) => Self::reject_local_gossip(&m, producers),
+                Err(Feedback::DuplicateVote) => {
+                    Self::local_verdict(&m, LocalAttestationResult::AlreadyKnown, producers)
+                }
+                Err(_) => Self::local_verdict(
+                    &m,
+                    LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable),
+                    producers,
+                ),
             }
         }
 
@@ -421,7 +432,7 @@ impl BeaconStateTile {
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
             if p.is_seen(self) {
-                Self::reject_local_gossip(&m, producers);
+                Self::local_verdict(&m, LocalAttestationResult::AlreadyKnown, producers);
                 continue;
             }
             let (pk, sig, root) = p.sig_parts();
@@ -1263,11 +1274,7 @@ impl BeaconStateTile {
             _ => return true,
         };
         match feedback {
-            Feedback::Reject(_) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
-                p2p_peer: m.stream_id.peer(),
-                topic: m.topic,
-                hash: m.msg_hash,
-            }),
+            Feedback::Reject(_) => Self::reject_gossip(&m, producers),
             Feedback::Accept => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
@@ -1289,7 +1296,8 @@ impl BeaconStateTile {
             Feedback::BlockImported(_) |
             Feedback::AwaitData(_) |
             Feedback::AlreadyKnown(_) |
-            Feedback::Ignore => {}
+            Feedback::Ignore |
+            Feedback::DuplicateVote => {}
         }
         true
     }
@@ -1305,9 +1313,17 @@ impl BeaconStateTile {
             protobuf: m.protobuf,
             ssz: m.ssz,
         });
+        Self::local_verdict(m, LocalAttestationResult::Success, producers);
     }
 
     fn reject_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+            return Self::local_verdict(
+                m,
+                LocalAttestationResult::Failure(LocalAttestationFailure::Invalid),
+                producers,
+            );
+        }
         producers.produce(PeerEvent::P2pGossipInvalidMsg {
             p2p_peer: m.stream_id.peer(),
             topic: m.topic,
@@ -1316,10 +1332,14 @@ impl BeaconStateTile {
     }
 
     /// Network gossip ignores are deliberately silent. A local API request,
-    /// however, needs a terminal validation result so Control can complete it.
-    pub(super) fn reject_local_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+    /// however, needs a terminal verdict so Control can complete it.
+    pub(super) fn local_verdict(
+        m: &NewGossipMsg,
+        result: LocalAttestationResult,
+        producers: &mut Producers,
+    ) {
         if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
-            Self::reject_gossip(m, producers);
+            producers.produce(BeaconStateEvent::LocalGossipVerdict { hash: m.msg_hash, result });
         }
     }
 }
@@ -1336,15 +1356,6 @@ pub(super) fn is_sync_aggregator(selection_proof: &[u8; 96]) -> bool {
     let modulo = (SYNC_SUBCOMMITTEE_SIZE as u64 / TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE).max(1);
     let h = merkle::sha256(selection_proof);
     u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
-}
-
-pub(super) fn compute_subnet_for_attestation(
-    committees_per_slot: usize,
-    slot: Slot,
-    committee_index: usize,
-) -> u64 {
-    let committees_since_epoch_start = committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH);
-    (committees_since_epoch_start + committee_index as u64) % ATTESTATION_SUBNETS as u64
 }
 
 /// EF `gossip_validation` entry points for the batched vote topics: one

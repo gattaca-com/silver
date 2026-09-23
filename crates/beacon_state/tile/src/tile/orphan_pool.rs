@@ -234,7 +234,8 @@ impl BeaconStateTile {
             Feedback::BlockImported(_) |
             Feedback::AwaitData(_) |
             Feedback::AlreadyKnown(_) |
-            Feedback::Ignore => {}
+            Feedback::Ignore |
+            Feedback::DuplicateVote => {}
             _ => self.park_block(feedback, BlockSourceMsg::Rpc(sender, read), data, producers),
         }
         true

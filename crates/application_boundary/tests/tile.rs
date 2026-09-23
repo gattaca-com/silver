@@ -81,7 +81,6 @@ fn boundary_tile_with_spec(
         &Identify::default(),
         spec,
         BeaconStateOwner::published_empty_test(0).reader(),
-        [0u8; 32],
         engine_config,
         tcaches,
         resp_p,

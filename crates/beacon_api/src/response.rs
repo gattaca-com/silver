@@ -2,7 +2,13 @@ use std::{io::Write, str};
 
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
-use crate::{blocks::BlockRequest, events::ChannelSet, json::Json, router::Outcome};
+use crate::{
+    attestation_submission::{AttestationSubmission, SubmissionFailure},
+    blocks::BlockRequest,
+    events::ChannelSet,
+    json::Json,
+    router::Outcome,
+};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
@@ -34,6 +40,17 @@ impl<'a> Response<'a> {
     pub(crate) fn request_block(&mut self, request: BlockRequest) {
         debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
         self.outcome = Outcome::AwaitingBlock(request);
+    }
+
+    pub(crate) fn submit_attestations(&mut self, submission: AttestationSubmission) {
+        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
+        self.outcome = Outcome::AwaitingAttestations(submission);
+    }
+
+    pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {
+        let mut body = Vec::new();
+        Json::new(&mut body).indexed_failures(failures);
+        self.send(400, Some(JSON_CONTENT_TYPE), &[], &body);
     }
 
     pub(crate) fn outcome(self) -> Outcome {

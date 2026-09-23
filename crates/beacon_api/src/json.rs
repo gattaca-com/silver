@@ -8,6 +8,7 @@ use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Checkpoint, F
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
 use crate::{
+    attestation_data::AttestationData, attestation_submission::SubmissionFailure,
     attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuty,
     sync_duties::SyncDuty, validators::ValidatorRecord,
 };
@@ -300,6 +301,41 @@ impl Json<'_> {
         self.quoted_u64(checkpoint.epoch);
         self.key("root");
         self.hex(&checkpoint.root);
+        self.end_object();
+    }
+
+    pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {
+        self.begin_object();
+        self.key("code");
+        self.u64(400);
+        self.key("message");
+        self.string("some attestations were not published");
+        self.key("failures");
+        self.begin_array();
+        for failure in failures {
+            self.begin_object();
+            self.key("index");
+            self.u64(failure.body_index as u64);
+            self.key("message");
+            self.string(failure.message);
+            self.end_object();
+        }
+        self.end_array();
+        self.end_object();
+    }
+
+    pub(crate) fn attestation_data(&mut self, data: &AttestationData) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(data.slot);
+        self.key("index");
+        self.quoted_u64(data.index);
+        self.key("beacon_block_root");
+        self.hex(&data.beacon_block_root);
+        self.key("source");
+        self.checkpoint(&data.source);
+        self.key("target");
+        self.checkpoint(&data.target);
         self.end_object();
     }
 

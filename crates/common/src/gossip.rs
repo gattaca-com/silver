@@ -1,6 +1,6 @@
 use std::fmt;
 
-use silver_beacon_state_data::ForkName;
+use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 
 use crate::{
     Error,
@@ -122,6 +122,15 @@ impl From<GossipTopic> for String {
 
 pub const ATTESTATION_SUBNETS: usize = 64;
 pub const SYNC_COMMITTEE_SUBNETS: usize = 4;
+
+pub fn compute_subnet_for_attestation(
+    committees_per_slot: u64,
+    slot: u64,
+    committee_index: u64,
+) -> u64 {
+    let committees_since_epoch_start = committees_per_slot * (slot % SLOTS_PER_EPOCH);
+    (committees_since_epoch_start + committee_index) % ATTESTATION_SUBNETS as u64
+}
 
 const ATTESTATION_BASE: usize = 2;
 const VOLUNTARY_EXIT_SLOT: usize = ATTESTATION_BASE + ATTESTATION_SUBNETS;

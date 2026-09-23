@@ -7,12 +7,12 @@ use std::{
 };
 
 use mio::{Events, Interest, Registry, Token, event::Event};
-use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair,
-    PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheError, TCacheId, TCacheRead,
-    TCacheReader, TCacheTable, TReadMode, block_root,
+    LocalAttestationResult, PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheError, TCacheId,
+    TCacheRead, TCacheReader, TCacheTable, TReadMode, block_root,
     column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -23,6 +23,7 @@ use silver_httpcore::{
 
 use crate::{
     HeadStatus, NodeStatus,
+    attestation_submission::{AttestationSubmission, SubmissionFailure, failure_message},
     blocks::Kind,
     events::{self, Channel, ChannelSet, HeadEvent},
     head_verdict::HeadVerdict,
@@ -76,7 +77,66 @@ struct Requests {
     http: ServerConnection,
     last_activity: Instant,
     linger_since: Option<Instant>,
-    pending: Option<(u64, Kind)>,
+    pending: Option<Pending>,
+}
+
+enum Pending {
+    Block(PendingBlock),
+    Attestations(PendingAttestations),
+}
+
+struct PendingBlock {
+    request_id: u64,
+    kind: Kind,
+}
+
+/// One request id per accepted attestation, contiguous from `first_id`, so
+/// answers resolve to their body entry by offset.
+struct PendingAttestations {
+    first_id: u64,
+    body_indices: Vec<usize>,
+    answered: usize,
+    failures: Vec<SubmissionFailure>,
+}
+
+impl PendingAttestations {
+    fn offset(&self, request_id: u64) -> Option<usize> {
+        let offset = usize::try_from(request_id.checked_sub(self.first_id)?).ok()?;
+        (offset < self.body_indices.len()).then_some(offset)
+    }
+
+    fn awaits(&self, request_id: u64) -> bool {
+        self.offset(request_id).is_some()
+    }
+
+    /// Whether this was the last answer awaited. An attestation another node
+    /// already published counts as published here too, as the spec's fallback
+    /// validator clients rely on.
+    fn record(&mut self, request_id: u64, result: LocalAttestationResult) -> bool {
+        let body_index = self.body_indices[self.offset(request_id).expect("awaited")];
+        self.answered += 1;
+        if let LocalAttestationResult::Failure(failure) = result {
+            self.failures.push(SubmissionFailure { body_index, message: failure_message(failure) });
+        }
+        self.answered == self.body_indices.len()
+    }
+
+    fn respond(&self, resp: &mut Response<'_>) {
+        if self.failures.is_empty() {
+            resp.ok();
+        } else {
+            resp.indexed_failures(&self.failures);
+        }
+    }
+}
+
+impl Pending {
+    fn awaits(&self, request_id: u64) -> bool {
+        match self {
+            Self::Block(pending) => pending.request_id == request_id,
+            Self::Attestations(pending) => pending.awaits(request_id),
+        }
+    }
 }
 
 struct Subscription {
@@ -96,12 +156,15 @@ impl Connection {
         }
     }
 
+    fn pending(&self) -> Option<&Pending> {
+        match &self.state {
+            State::Requests(requests) => requests.pending.as_ref(),
+            State::Subscription(_) => None,
+        }
+    }
+
     fn awaits(&self, request_id: u64) -> bool {
-        matches!(
-            self.state,
-            State::Requests(Requests { pending: Some((id, .. )), .. })
-                if id == request_id
-        )
+        self.pending().is_some_and(|pending| pending.awaits(request_id))
     }
 
     /// Buffered requests behind the subscription are abandoned; subsequent
@@ -366,7 +429,6 @@ impl BeaconApi {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
-        anchor_root: B256,
         tcaches: TCacheTable,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
@@ -404,7 +466,7 @@ impl BeaconApi {
             connections: HashMap::new(),
             frame: Vec::new(),
             router: Router::new(ROUTES),
-            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, anchor_root),
+            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
             reader: TCacheReader::new(tcaches),
@@ -451,6 +513,7 @@ impl BeaconApi {
                 let optimistic = head_optimistic && verdict.is_none();
                 self.ctx.node_status.head = HeadStatus { slot: latest_block_slot, optimistic };
                 self.ctx.node_status.head_root = block_root;
+                self.ctx.node_status.head_payload = head_payload;
                 self.ctx.node_status.wall_slot = wall_slot;
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
@@ -639,12 +702,13 @@ impl BeaconApi {
         pushed
     }
 
-    /// The block a handler deferred to storage for: framed into the waiting
-    /// connection, or dropped if that connection closed meanwhile.
+    /// What a handler deferred to another tile: framed into the waiting
+    /// connection once everything it awaits has answered, or dropped if that
+    /// connection closed meanwhile.
     pub fn handle_response(&mut self, response: BeaconApiResponse) {
-        let BeaconApiResponse::Block { request_id, block } = response else { return };
+        let request_id = response.request_id();
         let Some(token) = self.token_awaiting(request_id) else {
-            tracing::debug!(request_id, "block served to a connection already closed");
+            tracing::debug!(request_id, "answer for a connection already closed");
             return;
         };
 
@@ -653,11 +717,28 @@ impl BeaconApi {
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
-        let (_, kind) = requests.pending.take().expect("awaiting above");
         let mut resp = Response::new(requests.http.write_buf_mut());
-        kind.respond(&mut resp, block, reader, ctx);
-
-        self.resume_writing(token);
+        let settled = match (response, requests.pending.as_mut().expect("found awaiting above")) {
+            (BeaconApiResponse::Block { block, .. }, Pending::Block(pending)) => {
+                pending.kind.respond(&mut resp, block, reader, ctx);
+                true
+            }
+            (
+                BeaconApiResponse::LocalAttestationResponse { response, .. },
+                Pending::Attestations(pending),
+            ) => {
+                let settled = pending.record(request_id, response);
+                if settled {
+                    pending.respond(&mut resp);
+                }
+                settled
+            }
+            _ => unreachable!("a request id is answered by the tile it was sent to"),
+        };
+        if settled {
+            requests.pending = None;
+            self.resume_writing(token);
+        }
     }
 
     fn token_awaiting(&self, request_id: u64) -> Option<Token> {
@@ -743,18 +824,35 @@ impl BeaconApi {
             dispatched.set(self.router.dispatch(req, &self.ctx, out));
         });
         match outcome {
-            Ok(false) => match dispatched.get() {
+            Ok(false) => match dispatched.take() {
                 Outcome::Response => {}
                 Outcome::Stream(channels) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
                     self.connections.insert(token, conn.subscribed(channels, now));
                 }
                 Outcome::AwaitingBlock(block) => {
-                    let requests = conn.requests_mut().expect("only a request handler defers");
                     let request_id = self.next_request_id;
                     self.next_request_id += 1;
-                    requests.pending = Some((request_id, block.kind));
+                    let requests = conn.requests_mut().expect("only a request handler defers");
+                    requests.pending =
+                        Some(Pending::Block(PendingBlock { request_id, kind: block.kind }));
                     emit(block.storage_request(request_id));
+                }
+                Outcome::AwaitingAttestations(AttestationSubmission { accepted, failures }) => {
+                    let first_id = self.next_request_id;
+                    self.next_request_id += accepted.len() as u64;
+                    let mut body_indices = Vec::with_capacity(accepted.len());
+                    for (offset, attestation) in accepted.iter().enumerate() {
+                        body_indices.push(attestation.body_index);
+                        emit(attestation.request(first_id + offset as u64));
+                    }
+                    let requests = conn.requests_mut().expect("only a request handler defers");
+                    requests.pending = Some(Pending::Attestations(PendingAttestations {
+                        first_id,
+                        body_indices,
+                        answered: 0,
+                        failures,
+                    }));
                 }
             },
             Ok(true) => {
@@ -841,8 +939,9 @@ mod tests {
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
-        BlockLookup, ColumnOrigin, EngineNewPayloadResp, HeadRoots, PayloadResolution, ServedBlock,
-        SszCache, TCache, TCacheId, TCacheProducer, TProducer, body_root,
+        BlockLookup, ColumnOrigin, EngineNewPayloadResp, HeadRoots, LocalAttestationFailure,
+        PayloadResolution, ServedBlock, SszCache, TCache, TCacheId, TCacheProducer, TProducer,
+        body_root,
         ssz_view::{
             BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
             DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE,
@@ -851,6 +950,7 @@ mod tests {
     use silver_httpcore::Readiness;
 
     use super::*;
+    use crate::attestation_submission::tests as submission;
 
     /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
@@ -900,7 +1000,6 @@ mod tests {
                 &Identify::default(),
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::published_empty_test(0).reader(),
-                B256::default(),
                 tcaches,
             );
             api.open_tcaches().unwrap();
@@ -2080,9 +2179,68 @@ mod tests {
 
     fn request_id(request: &BeaconApiRequest) -> u64 {
         match request {
-            BeaconApiRequest::Block { request_id, .. } => *request_id,
-            BeaconApiRequest::LocalAttestation { .. } => panic!("not a block request"),
+            BeaconApiRequest::Block { request_id, .. } |
+            BeaconApiRequest::LocalAttestation { request_id, .. } => *request_id,
         }
+    }
+
+    fn post(mut stream: impl Write, path: &str, body: &str) {
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    }
+
+    /// Every attestation of one submission is locked and validated on its own,
+    /// and the body is answered once the last of them has been.
+    fn submit_two(server: &mut Server, results: [LocalAttestationResult; 2]) -> Vec<u8> {
+        server.api.ctx = submission::ctx();
+        let client = connect(tcp_addr(server));
+        let body = format!("[{},{}]", submission::entry(1, 0), submission::entry(2, 0),);
+        post(&client, "/eth/v2/beacon/pool/attestations", &body);
+
+        pump_until(server, "both attestations were submitted", |s| s.requests.len() == 2);
+        let submitted: Vec<_> = server.requests.drain(..).collect();
+        for (request, response) in submitted.iter().zip(results) {
+            server.api.handle_response(BeaconApiResponse::LocalAttestationResponse {
+                request_id: request_id(request),
+                response,
+            });
+        }
+
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        serve(server, reader, "submission answer")
+    }
+
+    #[test]
+    fn submission_answers_200_once_every_attestation_is_published() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let response = submit_two(&mut server, [
+            LocalAttestationResult::Success,
+            LocalAttestationResult::AlreadyKnown,
+        ]);
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"), "{response:?}");
+    }
+
+    /// A body that publishes in part answers the 400 naming what did not, by
+    /// its place in the submitted array.
+    #[test]
+    fn submission_answers_400_naming_the_attestation_that_failed() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let response = submit_two(&mut server, [
+            LocalAttestationResult::Success,
+            LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation),
+        ]);
+        assert!(response.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{response:?}");
+        assert_eq!(
+            std::str::from_utf8(body(&response)).unwrap(),
+            "{\"code\":400,\"message\":\"some attestations were not published\",\"failures\":\
+             [{\"index\":1,\"message\":\"this validator already attested to another block \
+             for the slot\"}]}"
+        );
     }
 
     #[test]

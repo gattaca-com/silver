@@ -7,14 +7,15 @@ use flux::{
 use flux_profiler::timed;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch, SLOTS_PER_EPOCH,
-    Slot, SlotState, SpecConfig, StateId,
+    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch,
+    SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
-    HeadRoots, NewGossipMsg, Origin, PayloadResolution, ReplayBlock, RequestId, RpcInbound,
-    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheError, TCacheId,
-    TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode, hex32,
+    HeadRoots, LocalAttestationFailure, LocalAttestationResult, NewGossipMsg, Origin,
+    PayloadResolution, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
+    SilverSpine, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    TProducer, TRead, TReadMode, hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -61,6 +62,9 @@ pub enum Feedback {
     /// The block was added to fork choice and its status is published.
     BlockImported(B256),
     Ignore,
+    /// An ignore for a vote whose validator already has one committed for the
+    /// same epoch or slot.
+    DuplicateVote,
     /// Carries the failed `block_root` (only) when the reject came from a
     /// post-`body_root`/STF path in block validation, so PM can blacklist
     /// the chain. All other reject paths (attestation, exit, slashing,
@@ -92,6 +96,7 @@ impl Debug for Feedback {
             Self::Accept => f.write_str("Accept"),
             Self::BlockImported(r) => write!(f, "BlockImported(0x{})", hex32(r)),
             Self::Ignore => f.write_str("Ignore"),
+            Self::DuplicateVote => f.write_str("DuplicateVote"),
             Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
             Self::Reject(None) => f.write_str("Reject(None)"),
             Self::RequestParent { parent_root, block_root } => write!(
@@ -162,7 +167,6 @@ pub struct BeaconStateTile {
 
     /// Index bundle of the canonical head's post-state.
     last_applied: StateId,
-    last_applied_block_root: B256,
 
     precomputed_epochs: PrecomputedEpochs,
 
@@ -219,7 +223,7 @@ impl BeaconStateTile {
     ) -> Self {
         let mut owner = BeaconStateOwner::new(state);
         let val_cap = owner.state().validators.finalized().capacity();
-        let anchor = owner.roll_fresh();
+        let (anchor, anchor_header) = Self::roll_anchor(&mut owner);
         let mut tile = Self {
             sync_target: SyncUpdate::default(),
             ticker,
@@ -245,7 +249,6 @@ impl BeaconStateTile {
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
-            last_applied_block_root: [0u8; 32],
             precomputed_epochs: PrecomputedEpochs::default(),
             last_seen_head_root: [0u8; 32],
             emitted_head: None,
@@ -259,7 +262,7 @@ impl BeaconStateTile {
             verify_weak_subjectivity,
             reader: TCacheReader::new(tcaches),
         };
-        tile.seed_anchor(anchor, val_cap);
+        tile.seed_anchor(anchor, anchor_header, val_cap);
         tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
         tile
     }
@@ -283,7 +286,7 @@ impl BeaconStateTile {
     }
 
     pub fn head_block_root(&self) -> B256 {
-        self.last_applied_block_root
+        self.slot_state_at(self.last_applied).latest_block_root
     }
 
     pub fn fork_choice_head(&self) -> B256 {
@@ -338,34 +341,45 @@ impl BeaconStateTile {
         ssz_hash::hash_tree_root_state(&rv)
     }
 
+    /// Anchor block root. Compute on a local header copy so the state's
+    /// `latest_block_header.state_root` stays `[0;32]` — the first
+    /// post-bootstrap `process_slot` hashes that canonical state and a
+    /// patched value would shift the result.
+    fn roll_anchor(owner: &mut BeaconStateOwner) -> (StateId, BeaconBlockHeader) {
+        let mut writer = owner.fresh_fork_writer();
+        let rv = writer.read();
+        let mut header = rv.slot.state().latest_block_header;
+        if header.state_root == [0u8; 32] {
+            header.state_root = ssz_hash::hash_tree_root_state(&rv);
+        }
+        writer.view.slot.state_mut().latest_block_root =
+            ssz_hash::hash_tree_root_block_header(&header);
+        (writer.commit(), header)
+    }
+
     /// Seed fork choice from the freshly-anchored real state and publish the
     /// `anchor` — the second half of `new` for a non-stub state. (Caches are
     /// already sized for the real validator count in `new`.)
-    fn seed_anchor(&mut self, anchor: StateId, validators_capacity: usize) {
+    fn seed_anchor(
+        &mut self,
+        anchor: StateId,
+        header: BeaconBlockHeader,
+        validators_capacity: usize,
+    ) {
         let slot = self.state.state().slot_states.finalized_view().slot_number();
 
-        // Anchor block root. Compute on a local header copy so the state's
-        // `latest_block_header.state_root` stays `[0;32]` — the first
-        // post-bootstrap `process_slot` hashes that canonical state and a
-        // patched value would shift the result.
-        let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
-        let (header, block_root, execution_block_hash) = {
+        let (anchor_is_gloas, block_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
-            let state_root = ssz_hash::hash_tree_root_state(&rv);
-            let mut header = rv.slot.state().latest_block_header;
-            if header.state_root == [0u8; 32] {
-                header.state_root = state_root;
-            }
-            let execution_block_hash = if anchor_is_gloas {
-                rv.slot.state().latest_execution_payload_bid.block_hash
+            let slot_state = rv.slot.state();
+            let execution_block_hash = if rv.is_gloas() {
+                slot_state.latest_execution_payload_bid.block_hash
             } else {
-                rv.slot.state().latest_execution_payload_header.block_hash
+                slot_state.latest_execution_payload_header.block_hash
             };
-            (header, ssz_hash::hash_tree_root_block_header(&header), execution_block_hash)
+            (rv.is_gloas(), slot_state.latest_block_root, execution_block_hash)
         };
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
-        self.last_applied_block_root = block_root;
         self.last_seen_head_root = block_root;
 
         // A checkpoint state can be ahead of its latest block. Peers need
@@ -581,7 +595,7 @@ impl BeaconStateTile {
             return false;
         }
 
-        let new_id = self.state_at(self.last_applied_block_root, self.last_applied, target_slot);
+        let new_id = self.state_at(self.last_applied, target_slot);
         self.last_applied = new_id;
         self.state.publish_state_id(new_id);
         // Empty-slot epoch transitions can advance justified/finalized in the
@@ -591,8 +605,8 @@ impl BeaconStateTile {
         true
     }
 
-    fn state_at(&mut self, root: B256, from: StateId, slot: Slot) -> StateId {
-        let from = self.epoch_start_state(root, from, slot);
+    fn state_at(&mut self, from: StateId, slot: Slot) -> StateId {
+        let from = self.epoch_start_state(from, slot);
         if self.slot_state_at(from).slot == slot {
             return from;
         }
@@ -602,11 +616,13 @@ impl BeaconStateTile {
     /// `from` advanced to the first slot of `slot`'s epoch when `slot` is in a
     /// later one, else `from`.
     #[timed]
-    fn epoch_start_state(&mut self, root: B256, from: StateId, slot: Slot) -> StateId {
+    fn epoch_start_state(&mut self, from: StateId, slot: Slot) -> StateId {
         let epoch = slot / SLOTS_PER_EPOCH;
-        if epoch <= self.slot_state_at(from).slot / SLOTS_PER_EPOCH {
+        let from_state = self.slot_state_at(from);
+        if epoch <= from_state.slot / SLOTS_PER_EPOCH {
             return from;
         }
+        let root = from_state.latest_block_root;
         let (state, spec, scratch) = (&mut self.state, &self.spec, &mut self.stf_scratch);
         self.precomputed_epochs.get_or_insert(root, epoch, || {
             Self::process_slots_advance(state, spec, scratch, from, epoch * SLOTS_PER_EPOCH)
@@ -703,7 +719,11 @@ impl BeaconStateTile {
                 head_slot = self.head_state_slot(),
                 "gossip dropped: BeaconState in Syncing mode"
             );
-            Self::reject_local_gossip(&m, producers);
+            Self::local_verdict(
+                &m,
+                LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable),
+                producers,
+            );
         });
         self.reader.free();
     }

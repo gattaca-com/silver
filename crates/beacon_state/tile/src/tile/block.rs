@@ -212,7 +212,7 @@ impl BeaconStateTile {
     fn precompute_for_next_block(&mut self) {
         let block_slot = self.last_applied_block_slot();
         self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
-        self.epoch_start_state(self.last_applied_block_root, self.last_applied, block_slot + 1);
+        self.epoch_start_state(self.last_applied, block_slot + 1);
         self.precompute_justified_balances();
     }
 
@@ -414,11 +414,7 @@ impl BeaconStateTile {
 
         // The parent's epoch-start state when the block crossed a boundary;
         // `apply_block` bridges the rest.
-        let parent = self.epoch_start_state(
-            parsed.header.parent_root,
-            parsed.parent_state_id,
-            parsed.header.slot,
-        );
+        let parent = self.epoch_start_state(parsed.parent_state_id, parsed.header.slot);
 
         // Per-block attester shuffling against the pre-block state (active set
         // + seed for an epoch are fixed at its prior boundary). Done before
@@ -435,6 +431,7 @@ impl BeaconStateTile {
         let mut votes = self.stf_scratch.votes.take();
         let input = BlockInput {
             header: &parsed.header,
+            block_root: parsed.block_root,
             body: SignedBeaconBlockView::body(data),
             fork: parsed.fork,
             shuffling: &sref,
@@ -558,7 +555,6 @@ impl BeaconStateTile {
         // reads ITS post-state checkpoints — an epoch-boundary block's justified
         // advance lands this import, not one recompute later.
         self.last_applied = new_id;
-        self.last_applied_block_root = parsed.block_root;
 
         if is_gloas {
             self.notify_ptc_from_block(block_data);

@@ -52,6 +52,7 @@ impl BlockFork {
 
 pub struct BlockInput<'a> {
     pub header: &'a BeaconBlockHeader,
+    pub block_root: B256,
     pub body: &'a [u8],
     pub fork: BlockFork,
     pub shuffling: &'a ShufflingRef<'a>,
@@ -104,7 +105,7 @@ pub fn apply_block(
 
     // process_slots may have rolled the epoch tier.
     let epoch_view = fork.epoch.view_opt(fork.epoch_idx);
-    process_block_header(&mut fork.view, &epoch_view, input.header)
+    process_block_header(&mut fork.view, &epoch_view, input.header, input.block_root)
         .map_err(|e| input.invalid(e))?;
     process_block_body(cfg, fork, input, scratch, sig_batch, out)?;
 
@@ -197,14 +198,16 @@ pub fn apply_signed_block_debug(
         state_root,
         body_root,
     };
-    process_block_header(view, &epoch_view, &header).map_err(wrap)?;
+    let block_root = hash_tree_root_block_header(&header);
+    process_block_header(view, &epoch_view, &header, block_root).map_err(wrap)?;
 
     let mut curr = Vec::new();
     let mut prev = Vec::new();
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
-    let input = BlockInput { header: &header, body, fork: block_fork, shuffling: &sref };
+    let input =
+        BlockInput { header: &header, block_root, body, fork: block_fork, shuffling: &sref };
     process_block_body(cfg, fork, &input, &mut scratch, &mut sig_batch, &mut votes)?;
 
     let actual = ssz_hash::hash_tree_root_state(&fork.read());
@@ -368,6 +371,7 @@ pub fn process_block_header(
     view: &mut StateWriterView,
     epoch: &EpochView,
     header: &BeaconBlockHeader,
+    block_root: B256,
 ) -> Result<(), BlockError> {
     let BeaconBlockHeader { slot: block_slot, proposer_index, parent_root, body_root, .. } =
         *header;
@@ -405,13 +409,15 @@ pub fn process_block_header(
         return Err(BlockError::ParentRootMismatch { expected: expected_parent, got: parent_root });
     }
 
-    view.slot.state_mut().latest_block_header = BeaconBlockHeader {
+    let slot_state = view.slot.state_mut();
+    slot_state.latest_block_header = BeaconBlockHeader {
         slot: block_slot,
         proposer_index,
         parent_root,
         state_root: [0u8; 32],
         body_root,
     };
+    slot_state.latest_block_root = block_root;
 
     Ok(())
 }

@@ -112,6 +112,7 @@ pub enum OutboundKind {
     RequestEnvelope,
     Reorg,
     AttestersShuffling,
+    LocalGossipVerdict,
 }
 
 impl OutboundKind {
@@ -130,6 +131,7 @@ impl OutboundKind {
             "request_envelope" => Self::RequestEnvelope,
             "reorg" => Self::Reorg,
             "attesters_shuffling" => Self::AttestersShuffling,
+            "local_gossip_verdict" => Self::LocalGossipVerdict,
             _ => return None,
         })
     }
@@ -144,6 +146,7 @@ impl OutboundKind {
             BeaconStateEvent::BlockReceived { .. } => Self::BlockReceived,
             BeaconStateEvent::Reorg { .. } => Self::Reorg,
             BeaconStateEvent::AttestersShuffling { .. } => Self::AttestersShuffling,
+            BeaconStateEvent::LocalGossipVerdict { .. } => Self::LocalGossipVerdict,
         }
     }
 

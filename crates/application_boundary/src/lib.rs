@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_api::BeaconApi;
-use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, EngineResp, Enr, Identify, Keypair,
     PeerEvent, SilverSpine, SyncUpdate, TCacheError, TCacheTable, TProducer,
@@ -56,7 +56,6 @@ impl ApplicationBoundaryTile {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
-        anchor_root: B256,
         engine_config: EngineConfig,
         tcaches: TCacheTable,
         resp_producer: TProducer,
@@ -78,7 +77,6 @@ impl ApplicationBoundaryTile {
             identify,
             spec,
             state,
-            anchor_root,
             tcaches,
         );
         let engine = EngineApi::new(

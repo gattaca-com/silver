@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
-use silver_common::{ELSyncStatus, SyncUpdate};
+use silver_common::{ELSyncStatus, PayloadResolution, SyncUpdate};
 
 use crate::json::SyncingData;
 
@@ -7,6 +7,7 @@ use crate::json::SyncingData;
 pub struct NodeStatus {
     pub head: HeadStatus,
     pub head_root: B256,
+    pub head_payload: PayloadResolution,
     pub wall_slot: u64,
     pub finalized_epoch: u64,
     /// `None` until the control tile publishes its first target.
@@ -27,6 +28,7 @@ impl NodeStatus {
         Self {
             head: HeadStatus { slot: head_slot, optimistic: false },
             head_root,
+            head_payload: PayloadResolution::Empty,
             wall_slot: 0,
             finalized_epoch: anchor_epoch,
             target: None,

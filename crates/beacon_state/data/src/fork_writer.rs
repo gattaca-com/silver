@@ -43,4 +43,9 @@ impl BeaconState {
             longtail_idx: parent.longtail_idx,
         }
     }
+
+    pub fn fresh_fork_writer(&mut self) -> ForkWriter<'_> {
+        let (view, epoch, longtail) = self.roll_fresh_view();
+        ForkWriter { view, epoch, longtail, epoch_idx: None, longtail_idx: None }
+    }
 }

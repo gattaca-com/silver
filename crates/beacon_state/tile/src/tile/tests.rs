@@ -10,9 +10,10 @@ use silver_beacon_state_data::{
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID, MessageId,
-    P2pStreamId, PayloadResolution, PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed,
-    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
+    LocalAttestationFailure, LocalAttestationResult, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer,
+    TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -269,7 +270,9 @@ fn arm_tile_state(
 ) {
     // Anchor each tier's fork at the base (the slot tier at `start_slot`);
     // epoch stays lazy. Rolled before the owner wraps the state.
-    let mut anchor = bs.roll_fresh();
+    let mut writer = bs.fresh_fork_writer();
+    writer.view.slot.state_mut().latest_block_root = ANCHOR_ROOT;
+    let mut anchor = writer.commit();
 
     // An unrotated bundle names no seat holder, so the sync paths need the
     // seeding a real state gets from `decompose` or a period rotation. Every
@@ -284,7 +287,6 @@ fn arm_tile_state(
     tile.state = owner;
     tile.shuffling_cache = ShufflingCache::with_capacity(seeds.len());
     tile.last_applied = anchor;
-    tile.last_applied_block_root = ANCHOR_ROOT;
     tile.sync_target = SyncUpdate::Following;
 
     let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
@@ -360,7 +362,7 @@ fn precomputed_epoch_matches_an_inline_advance() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 31);
 
-    tile.epoch_start_state(tile.last_applied_block_root, tile.last_applied, 32);
+    tile.epoch_start_state(tile.last_applied, 32);
     tile.on_slot_start(32);
 
     assert_eq!(tile.head_state_root(), inline_tile_at(32).head_state_root());
@@ -371,7 +373,7 @@ fn tick_past_the_precomputed_boundary_matches_an_inline_advance() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 31);
 
-    tile.epoch_start_state(tile.last_applied_block_root, tile.last_applied, 32);
+    tile.epoch_start_state(tile.last_applied, 32);
     tile.on_slot_start(33);
 
     assert_eq!(tile.head_state_root(), inline_tile_at(33).head_state_root());
@@ -380,12 +382,12 @@ fn tick_past_the_precomputed_boundary_matches_an_inline_advance() {
 #[test]
 fn precomputed_epoch_survives_finalization() {
     let mut forks = ThreeForks::new();
-    let before = forks.tile.epoch_start_state(D_ROOT, forks.d_id, SLOTS_PER_EPOCH);
+    let before = forks.tile.epoch_start_state(forks.d_id, SLOTS_PER_EPOCH);
     let before_root = ssz_hash::hash_tree_root_state(&forks.tile.state.read_view(before));
 
     forks.tile.maybe_finalize();
 
-    let after = forks.tile.epoch_start_state(D_ROOT, forks.tile.last_applied, SLOTS_PER_EPOCH);
+    let after = forks.tile.epoch_start_state(forks.tile.last_applied, SLOTS_PER_EPOCH);
     assert_ne!(after, before, "stale bundle replaced");
     assert_eq!(ssz_hash::hash_tree_root_state(&forks.tile.state.read_view(after)), before_root);
 }
@@ -397,13 +399,13 @@ fn long_gap_advance_matches_stepping_epoch_by_epoch() {
     seed_tile(&mut stepped, 4, 31);
     let mut id = stepped.last_applied;
     for epoch in 1..=5 {
-        id = stepped.epoch_start_state(ANCHOR_ROOT, id, epoch * SLOTS_PER_EPOCH);
+        id = stepped.epoch_start_state(id, epoch * SLOTS_PER_EPOCH);
     }
     let stepped_root = ssz_hash::hash_tree_root_state(&stepped.state.read_view(id));
 
     let mut jumped = make_tile();
     seed_tile(&mut jumped, 4, 31);
-    let id = jumped.epoch_start_state(ANCHOR_ROOT, jumped.last_applied, 5 * SLOTS_PER_EPOCH);
+    let id = jumped.epoch_start_state(jumped.last_applied, 5 * SLOTS_PER_EPOCH);
 
     assert_eq!(ssz_hash::hash_tree_root_state(&jumped.state.read_view(id)), stepped_root);
 }
@@ -676,6 +678,7 @@ impl HeadRig {
     fn post_state(
         &mut self,
         parent: StateId,
+        block_root: B256,
         slot: Slot,
         previous: B256,
         current: B256,
@@ -683,6 +686,7 @@ impl HeadRig {
         let mut g = self.tile.state.write();
         let mut sw = g.slot_states.roll_from(parent.slot_idx);
         sw.state_mut().slot = slot;
+        sw.state_mut().latest_block_root = block_root;
         let slot_idx = sw.commit();
         let mut w = g.block_roots.roll_from(parent.block_roots_idx);
         w.set(PREVIOUS_DECISION_SLOT as u32, previous);
@@ -763,7 +767,7 @@ impl HeadRig {
         current: B256,
         payload: PayloadAxis,
     ) -> StateId {
-        let state_id = self.post_state(parent_state, slot, previous, current);
+        let state_id = self.post_state(parent_state, block_root, slot, previous, current);
         let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
         self.tile.fork_choice.on_block(BlockImport {
             slot,
@@ -782,7 +786,6 @@ impl HeadRig {
             is_gloas: payload.is_gloas,
         });
         self.tile.last_applied = state_id;
-        self.tile.last_applied_block_root = block_root;
         self.tile.recompute_head();
         self.tile.publish_status(&mut self.adapter.producers);
         state_id
@@ -2033,7 +2036,7 @@ fn duplicate_payload_orphan_not_rebuffered() {
 fn attestation_too_short_ignored() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    let anchor = tile.last_applied_block_root;
+    let anchor = tile.head_block_root();
     let buf = [0u8; 100];
     tile.handle_attestation(&buf, 0);
     assert_eq!(voted_weight(&mut tile, anchor), 0);
@@ -2291,8 +2294,8 @@ fn expected_subnet(tile: &BeaconStateTile, slot: Slot, ci: usize) -> u64 {
 
 fn build_agg_for_vi0(tile: &BeaconStateTile) -> Vec<u8> {
     let imm = seed_immutable(tile);
-    let beacon_block_root = tile.last_applied_block_root;
-    let target_root = tile.last_applied_block_root;
+    let beacon_block_root = tile.head_block_root();
+    let target_root = tile.head_block_root();
     let (slot, ci, pos, csize) = find_committee_for_vi0(tile);
     test_signing::sign_aggregate_and_proof(
         0,
@@ -2317,7 +2320,7 @@ fn attestation_weighs_its_block() {
     let imm = seed_immutable(&tile);
     // Vote for the (known) anchor block; target is the anchor's checkpoint
     // block, so the spec target/ancestor checks accept.
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let buf = test_signing::sign_single_attestation(
         0,
         0,
@@ -2389,7 +2392,7 @@ fn batched_att(
     validator: u32,
 ) -> ([u8; SINGLE_ATT_SIZE], u64) {
     let imm = seed_immutable(tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let (slot, ci, _, _) = find_committee_for(tile, validator);
     let subnet = expected_subnet(tile, slot, ci);
     let buf = test_signing::sign_single_attestation(
@@ -2410,7 +2413,7 @@ fn attestation_batch_flush_applies_all() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     adapter.consume(|_: PeerEvent, _| {});
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let mut expected_topics = Vec::new();
     for vi in [0u32, 1] {
@@ -2434,7 +2437,7 @@ fn attestation_batch_flush_applies_all() {
 fn attestation_batch_fallback_rejects_only_forged() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let (good, good_subnet) = batched_att(&tile, 0, 0);
     let (forged, forged_subnet) = batched_att(&tile, 2, 1);
@@ -2451,7 +2454,7 @@ fn attestation_batch_fallback_rejects_only_forged() {
 fn invalid_vote_does_not_deduplicate_later_valid_vote() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     // Both messages have the same gossip dedup key. The first is a valid BLS
     // point signed by the wrong key; only the second may establish "seen".
@@ -2466,33 +2469,86 @@ fn invalid_vote_does_not_deduplicate_later_valid_vote() {
 }
 
 #[test]
-fn ignored_local_attestation_emits_terminal_invalid() {
+fn ignored_local_attestation_emits_a_terminal_verdict() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
-    // Prime the PeerEvent cursor before producing into it.
+    // Prime both cursors before producing into their queues.
     adapter.consume(|_: PeerEvent, _| {});
+    adapter.consume(|_: BeaconStateEvent, _| {});
 
-    let (mut buf, subnet) = batched_att(&tile, 0, 0);
     // An unknown block is an ordinary gossip IGNORE, rather than a peer
-    // penalty, but a local request still needs a terminal failure result.
-    buf[32..64].fill(0xAA);
-    let mut message = gossip_att_msg(&mut gp, &buf, subnet);
+    // penalty, but a local request still needs a terminal result.
+    let (mut unknown_root, subnet) = batched_att(&tile, 0, 0);
+    unknown_root[32..64].fill(0xAA);
+    let mut message = gossip_att_msg(&mut gp, &unknown_root, subnet);
     message.stream_id = LOCAL_GOSSIP_STREAM_ID;
     message.msg_hash = MessageId { id: [0x55; 20] };
     tile.defer_vote(message, &mut adapter.producers);
     tile.flush_votes(&mut adapter.producers);
 
-    let mut invalid = Vec::new();
-    adapter.consume(|event: PeerEvent, _| {
-        if let PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash } = event {
-            invalid.push((p2p_peer, topic, hash));
+    // A second vote from an attester already committed for the epoch is
+    // already on the network, which a local request is told apart from a
+    // failure.
+    let (valid, subnet) = batched_att(&tile, 0, 0);
+    let message = gossip_att_msg(&mut gp, &valid, subnet);
+    tile.defer_vote(message, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+    let mut message = gossip_att_msg(&mut gp, &valid, subnet);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x66; 20] };
+    tile.defer_vote(message, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    let mut verdicts = Vec::new();
+    adapter.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::LocalGossipVerdict { hash, result } = event {
+            verdicts.push((hash, result));
         }
     });
-    assert_eq!(invalid, [(
-        LOCAL_GOSSIP_STREAM_ID.peer(),
-        GossipTopic::BeaconAttestation(subnet),
-        MessageId { id: [0x55; 20] },
-    )]);
+    let mut invalid = 0;
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::P2pGossipInvalidMsg { .. } = event {
+            invalid += 1;
+        }
+    });
+    assert_eq!(verdicts, [
+        (
+            MessageId { id: [0x55; 20] },
+            LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable)
+        ),
+        (MessageId { id: [0x66; 20] }, LocalAttestationResult::AlreadyKnown),
+    ]);
+    assert_eq!(invalid, 0, "a local message never counts against a peer");
+}
+
+#[test]
+fn accepted_local_attestation_is_relayed_and_emits_success() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+    adapter.consume(|_: BeaconStateEvent, _| {});
+
+    let (valid, subnet) = batched_att(&tile, 0, 0);
+    let mut message = gossip_att_msg(&mut gp, &valid, subnet);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x77; 20] };
+    tile.defer_vote(message, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    let mut verdicts = Vec::new();
+    adapter.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::LocalGossipVerdict { hash, result } = event {
+            verdicts.push((hash, result));
+        }
+    });
+    let mut relayed = 0;
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { .. } = event {
+            relayed += 1;
+        }
+    });
+    assert_eq!(verdicts, [(MessageId { id: [0x77; 20] }, LocalAttestationResult::Success)]);
+    assert_eq!(relayed, 1);
 }
 
 /// A non-attestation gossip message flushes the pending batch first, so
@@ -2501,7 +2557,7 @@ fn ignored_local_attestation_emits_terminal_invalid() {
 fn attestation_batch_flushed_before_other_gossip() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let (buf, subnet) = batched_att(&tile, 0, 0);
     let m = gossip_att_msg(&mut gp, &buf, subnet);
@@ -2520,7 +2576,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
     adapter.consume(|_: PeerEvent, _| {});
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let wall = tile.ticker.current_slot();
 
     let msg = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
@@ -2546,7 +2602,7 @@ fn sync_message_uses_gossip_clock_disparity() {
     let mut tile = make_tile_at_wall_slot(wall);
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     // During the final 500 ms, the next slot is already admissible.
     tile.ticker.set_since_genesis_ms(wall * 12_000 + 11_750);
@@ -2575,7 +2631,7 @@ fn sync_message_uses_next_committee_at_period_handoff() {
         0,
         0,
         handoff_slot - 1,
-        current.last_applied_block_root,
+        current.head_block_root(),
         &imm,
     );
     assert!(current.prepare_sync_message(&msg, 0).is_ok());
@@ -2586,7 +2642,7 @@ fn sync_message_uses_next_committee_at_period_handoff() {
         0,
         0,
         handoff_slot,
-        handoff.last_applied_block_root,
+        handoff.head_block_root(),
         &imm,
     );
     assert!(matches!(handoff.prepare_sync_message(&msg, 0), Err(Feedback::Reject(None))));
@@ -2599,8 +2655,7 @@ fn sync_message_from_non_member_is_rejected() {
     let imm = seed_immutable(&tile);
     let wall = tile.ticker.current_slot();
 
-    let msg =
-        test_signing::sign_sync_committee_message(2, 5, wall, tile.last_applied_block_root, &imm);
+    let msg = test_signing::sign_sync_committee_message(2, 5, wall, tile.head_block_root(), &imm);
     let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(0));
     tile.defer_vote(m, &mut adapter.producers);
     tile.flush_votes(&mut adapter.producers);
@@ -2612,7 +2667,7 @@ fn sync_message_forged_signature_rejected_by_fallback() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let wall = tile.ticker.current_slot();
 
     let good = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
@@ -2634,7 +2689,7 @@ fn mixed_vote_batch_applies_all_kinds() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let wall = tile.ticker.current_slot();
 
     let (att, subnet) = batched_att(&tile, 0, 0);
@@ -2683,7 +2738,7 @@ fn sync_contribution_accepted_then_superset_ignored() {
     let (slot, sub) = sync_aggregator_slot(&imm, true);
     let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(slot, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 128, slot);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
     assert_non_block_relay(
@@ -2701,7 +2756,7 @@ fn sync_contribution_dedup_is_per_subcommittee() {
     let (slot, first_sub, second_sub) = sync_aggregator_slot_for_two_subcommittees(&imm);
     let mut tile = make_tile_at_wall_slot(slot);
     seed_tile_with_keys(&mut tile, 128, slot);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let first = test_signing::sign_contribution_and_proof(0, 0, slot, first_sub, 3, 0, bbr, &imm);
     let second = test_signing::sign_contribution_and_proof(0, 0, slot, second_sub, 3, 0, bbr, &imm);
@@ -2715,7 +2770,7 @@ fn sync_contribution_non_aggregator_rejected() {
     let (slot, sub) = sync_aggregator_slot(&imm, false);
     let mut tile = make_tile_at_wall_slot(slot);
     seed_tile_with_keys(&mut tile, 128, slot);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
     assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
@@ -2727,7 +2782,7 @@ fn sync_contribution_forged_outer_signature_rejected() {
     let (slot, sub) = sync_aggregator_slot(&imm, true);
     let mut tile = make_tile_at_wall_slot(slot);
     seed_tile_with_keys(&mut tile, 128, slot);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     let mut buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
     buf[300] ^= 0x01;
@@ -2743,7 +2798,7 @@ fn ptc_rejects_non_canonical_bool_bytes() {
         0,
         0,
         slot,
-        tile.last_applied_block_root,
+        tile.head_block_root(),
         2,
         1,
         &seed_immutable(&tile),
@@ -2761,7 +2816,7 @@ fn ptc_requires_referenced_block_at_message_slot() {
         0,
         0,
         message_slot,
-        tile.last_applied_block_root,
+        tile.head_block_root(),
         1,
         1,
         &seed_immutable(&tile),
@@ -2776,7 +2831,7 @@ fn ptc_vote_records_every_matching_committee_position() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
     seed_tile_with_keys(&mut tile, 128, slot);
     adapter.consume(|_: PeerEvent, _| {});
-    let root = tile.last_applied_block_root;
+    let root = tile.head_block_root();
     let msg = test_signing::sign_payload_attestation_message(
         0,
         0,
@@ -2839,7 +2894,7 @@ fn single_att_mismatched_target_rejected() {
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root; // known anchor
+    let bbr = tile.head_block_root(); // known anchor
     let wrong_target = [0x77u8; 32];
     let buf = test_signing::sign_single_attestation(
         0,
@@ -2864,7 +2919,7 @@ fn single_att_nonzero_data_index_rejected() {
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let mut buf = test_signing::sign_single_attestation(
         0,
         0,
@@ -2891,7 +2946,7 @@ fn current_slot_vote_deferred_until_drain() {
     // Make the committee slot the current slot → the vote must defer.
     tile.ticker.set_current_slot(slot);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let buf = test_signing::sign_single_attestation(
         0,
         0,
@@ -2922,7 +2977,7 @@ fn single_att_wrong_subnet_rejected() {
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let buf = test_signing::sign_single_attestation(
         0,
         0,
@@ -2947,7 +3002,7 @@ fn single_att_repeat_attester_epoch_ignored() {
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let mut buf = test_signing::sign_single_attestation(
         0,
         0,
@@ -2962,7 +3017,7 @@ fn single_att_repeat_attester_epoch_ignored() {
     let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     let first = tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap();
 
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::DuplicateVote);
     assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap(), first);
 
     // Same attester+epoch, different source epoch (the one AttestationData
@@ -2970,7 +3025,7 @@ fn single_att_repeat_attester_epoch_ignored() {
     // not the content, so the variant must not open a new pool entry.
     buf[64..72].copy_from_slice(&1u64.to_le_bytes());
     test_signing::resign_single_attestation(0, &mut buf, &imm);
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::DuplicateVote);
     let new_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, new_root), None);
 }
@@ -2984,7 +3039,7 @@ fn single_att_failed_validation_does_not_mark_seen() {
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     // Signed with sk 1; validator 0's registry key is pubkey_pk(0).
     let bad = test_signing::sign_single_attestation(
         1,
@@ -3021,7 +3076,7 @@ fn single_att_accept_inserts_into_pool() {
     let (slot, ci, pos, csize) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let buf = test_signing::sign_single_attestation(
         0,
         0,
@@ -3052,7 +3107,7 @@ fn single_att_accept_inserts_into_pool() {
 fn equivocator_excluded_from_votes() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 8, 0);
-    let anchor = tile.last_applied_block_root;
+    let anchor = tile.head_block_root();
     let n = tile.head_validator_count();
     tile.fork_choice.record_votes(
         &VoteTarget {
@@ -3110,7 +3165,7 @@ fn voted_weight(tile: &mut BeaconStateTile, root: B256) -> u64 {
 fn votes_weigh_justified_effective_balances() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 8, 0);
-    let anchor = tile.last_applied_block_root;
+    let anchor = tile.head_block_root();
     vote_all_for(&mut tile, anchor);
     tile.recompute_head();
     assert_eq!(node_weight(&tile, anchor), 8 * MAX_EFFECTIVE_BALANCE);
@@ -3129,7 +3184,7 @@ fn votes_weigh_justified_effective_balances() {
 fn justified_moves_between_recomputes_weigh_latest_snapshot() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 8, 0);
-    let anchor = tile.last_applied_block_root;
+    let anchor = tile.head_block_root();
     vote_all_for(&mut tile, anchor);
     tile.recompute_head();
 
@@ -3174,7 +3229,7 @@ fn agg_accept() {
     let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(31, BeaconState::empty_test(0));
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
-    let beacon_block_root = tile.last_applied_block_root;
+    let beacon_block_root = tile.head_block_root();
     assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::BeaconAggregateAndProof);
     assert_eq!(voted_weight(&mut tile, beacon_block_root), MAX_EFFECTIVE_BALANCE);
 }
@@ -3194,7 +3249,7 @@ fn single_att_accept_with_nonzero_genesis_validators_root() {
 
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
 
     // Signed against the wrong gvr (= the zero one every other test uses),
     // the attestation must not verify. Runs first: a Reject leaves the
@@ -3235,7 +3290,7 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
     let subnet = expected_subnet(&tile, slot, ci);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let single = test_signing::sign_single_attestation(
         0,
         0,
@@ -3279,7 +3334,7 @@ fn agg_respects_epoch_monotonicity() {
     seed_tile_with_keys(&mut tile, 128, 0);
 
     // Validator 0 already voted at epoch 1 for a block outside the tree.
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let n = tile.head_validator_count();
     tile.fork_choice.record_votes(
         &VoteTarget {
@@ -3422,7 +3477,7 @@ fn pool_single_then_aggregate(
     ci: usize,
 ) -> Vec<u8> {
     let imm = seed_immutable(tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let buf = test_signing::sign_single_attestation(
         vi as usize % 3,
         vi as u64,
@@ -3542,7 +3597,7 @@ fn agg_union_covered_still_relays() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let imm = seed_immutable(&tile);
-    let bbr = tile.last_applied_block_root;
+    let bbr = tile.head_block_root();
     let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
     let committee = committee_of(&tile, slot, ci);
     let vi_c = *committee.iter().find(|&&v| v != vi_a && v != vi_b).expect("committee of 4");
@@ -3649,6 +3704,7 @@ impl ThreeForks {
         let balances_idx = g.balances.roll_from(parent.balances_idx).commit();
         let mut sw = g.slot_states.roll_from(parent.slot_idx);
         sw.state_mut().slot = slot;
+        sw.state_mut().latest_block_root = root;
         let slot_idx = sw.commit();
         // Slot zero is a synthetic marker for detecting reads from the
         // wrong bundle after finalization.
@@ -3705,7 +3761,6 @@ impl ThreeForks {
 
         // Head is D; finality target is F.
         forks.tile.last_applied = forks.d_id;
-        forks.tile.last_applied_block_root = D_ROOT;
         forks.tile.fork_choice.finalized_checkpoint = f_cp;
         // Republish so the seqlock control matches the new head.
         forks.tile.state.publish_state_id(forks.d_id);
@@ -4041,6 +4096,7 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
 
         let mut w = bs.slot_states.roll_from(anchor_id.slot_idx);
         w.state_mut().slot = 1;
+        w.state_mut().latest_block_root = F_ROOT;
         w.state_mut().eth1_deposit_index = 77;
         let slot_idx = w.commit();
 
@@ -4125,7 +4181,6 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
         is_gloas: false,
     });
     tile.last_applied = f_id;
-    tile.last_applied_block_root = F_ROOT;
     tile.fork_choice.finalized_checkpoint = f_cp;
     tile.state.publish_state_id(f_id);
 

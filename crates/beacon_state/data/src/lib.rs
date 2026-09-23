@@ -118,23 +118,27 @@ impl BeaconState {
     /// longtail stay lazy: `None` reads their bases) and assemble the anchor
     /// bundle — the bootstrap / pre-bootstrap head.
     pub fn roll_fresh(&mut self) -> StateId {
-        StateId {
-            epoch_idx: None,
-            longtail_idx: None,
-            balances_idx: self.balances.roll_fresh().commit(),
-            eth1_idx: self.eth1.roll_fresh().commit(),
-            pending_idx: self.pending.roll_fresh().commit(),
-            previous_participation_idx: self.previous_participation.roll_fresh().commit(),
-            current_participation_idx: self.current_participation.roll_fresh().commit(),
-            inactivity_idx: self.inactivity.roll_fresh().commit(),
-            slashings_idx: self.slashings.roll_fresh().commit(),
-            block_roots_idx: self.block_roots.roll_fresh().commit(),
-            state_roots_idx: self.state_roots.roll_fresh().commit(),
-            randao_mixes_idx: self.randao_mixes.roll_fresh().commit(),
-            slot_idx: self.slot_states.roll_fresh().commit(),
-            validators_idx: self.validators.roll_fresh().commit(),
-            builders_idx: self.builders.roll_fresh().commit(),
-        }
+        self.fresh_fork_writer().commit()
+    }
+
+    fn roll_fresh_view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
+        let view = StateWriterView {
+            imm: &self.immutable,
+            balances: self.balances.roll_fresh(),
+            eth1: self.eth1.roll_fresh(),
+            pending: self.pending.roll_fresh(),
+            previous_participation: self.previous_participation.roll_fresh(),
+            current_participation: self.current_participation.roll_fresh(),
+            inactivity: self.inactivity.roll_fresh(),
+            slashings: self.slashings.roll_fresh(),
+            block_roots: self.block_roots.roll_fresh(),
+            state_roots: self.state_roots.roll_fresh(),
+            randao_mixes: self.randao_mixes.roll_fresh(),
+            slot: self.slot_states.roll_fresh(),
+            validators: self.validators.roll_fresh(),
+            builders: self.builders.roll_fresh(),
+        };
+        (view, &mut self.epoch, &mut self.longtail)
     }
 
     /// Roll a child fork off `parent` and hold every tier's writer — ids
