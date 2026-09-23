@@ -1313,6 +1313,7 @@ impl BeaconStateTile {
             protobuf: m.protobuf,
             ssz: m.ssz,
         });
+        Self::local_verdict(m, LocalAttestationResult::Success, producers);
     }
 
     fn reject_gossip(m: &NewGossipMsg, producers: &mut Producers) {

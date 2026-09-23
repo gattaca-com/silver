@@ -5,12 +5,15 @@ use silver_common::{SLOTS_PER_EPOCH, merkle};
 
 use super::command::AttestationLockCommand;
 
-const LOCK_RING_SIZE: usize = SLOTS_PER_EPOCH as usize;
+/// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
+/// epochs.
+const LOCK_RING_SIZE: usize = 2;
 
 /// Result of applying a committed attestation selection command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockResult {
-    /// This is the first selected attestation for the validator and slot.
+    /// This is the first selected attestation for the validator and target
+    /// epoch.
     Accepted,
     /// The same signed attestation was selected previously; it does not
     /// conflict with the cluster's choice. Processing still requires temporal
@@ -19,7 +22,7 @@ pub enum LockResult {
     /// A different signed attestation was selected previously. This candidate
     /// must not enter validation or gossip publication.
     ConflictingAttestation,
-    /// The replicated retention floor or the slot ring has advanced beyond
+    /// The replicated retention floor or the epoch ring has advanced beyond
     /// this attestation.
     TooOld,
 }
@@ -31,14 +34,14 @@ pub(crate) struct AttestationLockStore {
     /// stale wall clock. Replicated stores advance this through committed
     /// commands.
     minimum_slot: u64,
-    locks: [SlotLocks; LOCK_RING_SIZE],
+    locks: [EpochLocks; LOCK_RING_SIZE],
 }
 
 #[derive(Default)]
-struct SlotLocks {
-    /// The absolute slot occupying this modulo bucket. The tag prevents a
-    /// late older command from clearing locks for a newer colliding slot.
-    slot: Option<u64>,
+struct EpochLocks {
+    /// The absolute epoch occupying this modulo bucket. The tag prevents a
+    /// late older command from clearing locks for a newer colliding epoch.
+    epoch: Option<u64>,
     /// Full-message hashes, including the signature. Comparing only the
     /// signing root would allow a later byte-distinct candidate for the same
     /// attestation data to bypass the first-candidate-wins rule.
@@ -51,14 +54,15 @@ impl AttestationLockStore {
             return LockResult::TooOld;
         }
 
-        let bucket = &mut self.locks[(cmd.key.slot % SLOTS_PER_EPOCH) as usize];
-        match bucket.slot {
-            Some(slot) if slot > cmd.key.slot => return LockResult::TooOld,
-            Some(slot) if slot < cmd.key.slot => {
+        let epoch = cmd.key.slot / SLOTS_PER_EPOCH;
+        let bucket = &mut self.locks[epoch as usize % LOCK_RING_SIZE];
+        match bucket.epoch {
+            Some(bucket_epoch) if bucket_epoch > epoch => return LockResult::TooOld,
+            Some(bucket_epoch) if bucket_epoch < epoch => {
                 bucket.attestations.clear();
-                bucket.slot = Some(cmd.key.slot);
+                bucket.epoch = Some(epoch);
             }
-            None => bucket.slot = Some(cmd.key.slot),
+            None => bucket.epoch = Some(epoch),
             Some(_) => {}
         }
 
@@ -83,7 +87,9 @@ impl AttestationLockStore {
     pub(super) fn len(&self) -> usize {
         self.locks
             .iter()
-            .filter(|bucket| bucket.slot.is_some_and(|slot| slot >= self.minimum_slot))
+            .filter(|bucket| {
+                bucket.epoch.is_some_and(|epoch| epoch >= self.minimum_slot / SLOTS_PER_EPOCH)
+            })
             .map(|bucket| bucket.attestations.len())
             .sum()
     }
@@ -140,40 +146,50 @@ mod tests {
     }
 
     #[test]
-    fn committed_minimum_slot_hides_and_rejects_old_commands() {
+    fn different_slots_in_one_target_epoch_conflict() {
         let mut store = AttestationLockStore::default();
-        assert_eq!(store.apply(&command(10, 1)), LockResult::Accepted);
-        assert_eq!(store.apply(&command(11, 2)), LockResult::Accepted);
 
-        store.advance_minimum_slot(11);
-
-        assert_eq!(store.minimum_slot(), 11);
-        assert_eq!(store.len(), 1);
-        assert_eq!(store.apply(&command(10, 3)), LockResult::TooOld);
-        assert_eq!(store.apply(&command(11, 3)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(10, 7, 1)), LockResult::Accepted);
+        assert_eq!(store.apply(&command_for(11, 7, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(11, 8, 2)), LockResult::Accepted);
+        assert_eq!(store.apply(&command_for(32, 7, 3)), LockResult::Accepted);
     }
 
     #[test]
-    fn slot_ring_reuses_a_bucket_without_losing_newer_locks() {
+    fn committed_minimum_slot_hides_and_rejects_old_commands() {
         let mut store = AttestationLockStore::default();
-        assert_eq!(store.locks.len(), 32);
+        assert_eq!(store.apply(&command(10, 1)), LockResult::Accepted);
+        assert_eq!(store.apply(&command(40, 2)), LockResult::Accepted);
+
+        store.advance_minimum_slot(40);
+
+        assert_eq!(store.minimum_slot(), 40);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.apply(&command(10, 3)), LockResult::TooOld);
+        assert_eq!(store.apply(&command(40, 3)), LockResult::ConflictingAttestation);
+    }
+
+    #[test]
+    fn epoch_ring_reuses_a_bucket_without_losing_newer_locks() {
+        let mut store = AttestationLockStore::default();
+        assert_eq!(store.locks.len(), 2);
 
         assert_eq!(store.apply(&command_for(10, 7, 1)), LockResult::Accepted);
         assert_eq!(store.apply(&command_for(10, 8, 2)), LockResult::Accepted);
-        assert_eq!(store.apply(&command_for(11, 7, 3)), LockResult::Accepted);
+        assert_eq!(store.apply(&command_for(40, 7, 3)), LockResult::Accepted);
         assert_eq!(store.len(), 3);
 
-        // Slot 42 reuses slot 10's modulo bucket and drops only that bucket.
-        assert_eq!(store.apply(&command_for(42, 9, 4)), LockResult::Accepted);
+        // Epoch 2 reuses epoch 0's modulo bucket and drops only that bucket.
+        assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::Accepted);
         assert_eq!(store.len(), 2);
-        assert_eq!(store.apply(&command_for(42, 9, 4)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(store.apply(&command_for(42, 9, 5)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(store.apply(&command_for(70, 9, 5)), LockResult::ConflictingAttestation);
 
-        // A late command for the displaced slot cannot clear slot 42.
+        // A late command for the displaced epoch cannot clear epoch 2.
         assert_eq!(store.apply(&command_for(10, 7, 6)), LockResult::TooOld);
-        assert_eq!(store.apply(&command_for(42, 9, 4)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::AlreadyAcceptedSame);
 
         // The adjacent bucket was not scanned or cleared during rollover.
-        assert_eq!(store.apply(&command_for(11, 7, 6)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(40, 7, 6)), LockResult::ConflictingAttestation);
     }
 }

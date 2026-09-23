@@ -376,10 +376,6 @@ impl Tile<SilverSpine> for Controller {
                     producers,
                 )
             });
-
-            // A local Beacon API request completes only after Beacon State's
-            // validation result has gone through the normal gossip path.
-            self.attestation_cluster.on_peer_event(&event, producers);
         });
 
         // Consume every validation outcome already queued before expiring

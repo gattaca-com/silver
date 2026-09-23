@@ -2521,6 +2521,36 @@ fn ignored_local_attestation_emits_a_terminal_verdict() {
     assert_eq!(invalid, 0, "a local message never counts against a peer");
 }
 
+#[test]
+fn accepted_local_attestation_is_relayed_and_emits_success() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+    adapter.consume(|_: BeaconStateEvent, _| {});
+
+    let (valid, subnet) = batched_att(&tile, 0, 0);
+    let mut message = gossip_att_msg(&mut gp, &valid, subnet);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x77; 20] };
+    tile.defer_vote(message, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    let mut verdicts = Vec::new();
+    adapter.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::LocalGossipVerdict { hash, result } = event {
+            verdicts.push((hash, result));
+        }
+    });
+    let mut relayed = 0;
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { .. } = event {
+            relayed += 1;
+        }
+    });
+    assert_eq!(verdicts, [(MessageId { id: [0x77; 20] }, LocalAttestationResult::Success)]);
+    assert_eq!(relayed, 1);
+}
+
 /// A non-attestation gossip message flushes the pending batch first, so
 /// queue order is preserved.
 #[test]

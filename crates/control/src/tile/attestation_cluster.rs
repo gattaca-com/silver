@@ -4,7 +4,7 @@ use flux::spine::SpineAdapter;
 use fxhash::FxHashMap;
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic,
-    LocalAttestationFailure, LocalAttestationResult, MessageId, Nanos, PeerEvent, SilverSpine,
+    LocalAttestationFailure, LocalAttestationResult, MessageId, Nanos, SilverSpine,
     SilverSpineProducers, TCacheReader, TProducer, ssz_view::SingleAttestationView,
 };
 use silver_gossip::GossipHandler;
@@ -152,16 +152,6 @@ impl AttestationClusterHandler {
                 gossip_handler,
                 producers,
             );
-        }
-    }
-
-    pub(super) fn on_peer_event(
-        &mut self,
-        event: &PeerEvent,
-        producers: &mut SilverSpineProducers,
-    ) {
-        if let PeerEvent::SendGossip { msg_hash, .. } = event {
-            self.complete_validation(*msg_hash, LocalAttestationResult::Success, producers);
         }
     }
 
@@ -555,17 +545,9 @@ mod tests {
         )]);
         assert!(standalone.gossip.pop_event().is_none());
 
-        standalone.handler.on_peer_event(
-            &PeerEvent::SendGossip {
-                originator_stream_id: message.stream_id,
-                topic: message.topic,
-                domain: message.domain,
-                ssz_cache: message.ssz_cache,
-                msg_hash: message.msg_hash,
-                recv_ts: message.recv_ts,
-                protobuf: message.protobuf,
-                ssz: message.ssz,
-            },
+        standalone.handler.complete_validation(
+            message.msg_hash,
+            LocalAttestationResult::Success,
             &mut standalone.adapter.producers,
         );
         assert_eq!(standalone.responses(), [
@@ -586,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_locks_are_per_validator_and_slot_and_survive_ring_reuse() {
+    fn standalone_locks_are_per_validator_and_epoch_and_survive_ring_reuse() {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
         standalone.handler.on_status(10, 10);
@@ -597,19 +579,26 @@ mod tests {
         standalone.submit(2, 11, 8, 2, now);
         standalone.pop_gossip();
         standalone.submit(3, 12, 7, 3, now);
+        assert_eq!(standalone.responses(), [(
+            3,
+            LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)
+        )]);
+
+        standalone.handler.on_status(40, 40);
+        standalone.submit(4, 40, 7, 4, now);
+        standalone.pop_gossip();
+        standalone.handler.on_status(70, 70);
+        standalone.submit(5, 70, 7, 5, now);
         standalone.pop_gossip();
         assert!(standalone.responses().is_empty());
 
-        standalone.handler.on_status(43, 43);
-        standalone.submit(4, 43, 7, 4, now);
-        standalone.pop_gossip();
-        standalone.submit(5, 11, 7, 5, now);
-        standalone.submit(6, 43, 7, 5, now);
-        standalone.submit(7, 12, 7, 5, now);
+        standalone.submit(6, 11, 7, 6, now);
+        standalone.submit(7, 40, 7, 6, now);
+        standalone.submit(8, 70, 7, 6, now);
         assert_eq!(standalone.responses(), [
-            (5, LocalAttestationResult::Failure(LocalAttestationFailure::TooOld)),
-            (6, LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)),
+            (6, LocalAttestationResult::Failure(LocalAttestationFailure::TooOld)),
             (7, LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)),
+            (8, LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)),
         ]);
         assert!(standalone.gossip.pop_event().is_none());
     }
