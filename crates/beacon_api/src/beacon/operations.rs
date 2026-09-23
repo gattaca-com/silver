@@ -6,10 +6,12 @@ use silver_common::{
 };
 
 use crate::{
-    ids::{Hex, Uint64, body_entries},
-    response::Response,
-    router::Request,
-    routes::ApiCtx,
+    ctx::ApiCtx,
+    http::{
+        ids::{Hex, Uint64, body_entries},
+        response::Response,
+        router::Request,
+    },
 };
 
 pub(crate) fn post_pool_attestations(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -164,8 +166,8 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        router::Outcome,
-        routes::test_ctx,
+        ctx::test_ctx,
+        http::router::Outcome,
         testing::{body, dispatch, posting, status_code},
     };
 

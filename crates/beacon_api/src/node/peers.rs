@@ -8,6 +8,11 @@ use silver_common::{Eth2Addr, IpBytes, PeerId};
 use silver_httpcore::Query;
 use smallvec::SmallVec;
 
+use crate::{
+    ctx::ApiCtx,
+    http::{response::Response, router::Request},
+};
+
 pub(crate) struct Peer {
     pub(crate) id: PeerId,
     pub(crate) ip: IpBytes,
@@ -108,3 +113,18 @@ impl PeerFilter {
         self.connected && if peer.inbound { self.inbound } else { self.outbound }
     }
 }
+
+pub(crate) fn peers(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    match PeerFilter::parse(req.query) {
+        Some(filter) => resp.json_body(|json| json.peers(ctx.peers.matching(&filter))),
+        None => resp.error(400, "invalid state or direction"),
+    }
+}
+
+pub(crate) fn peer_count(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let connected = ctx.peers.connected() as u64;
+    resp.json_body(|json| json.data_envelope(|json| json.peer_count(connected)));
+}
+
+#[cfg(test)]
+mod tests;

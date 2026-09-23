@@ -1,6 +1,6 @@
 use silver_beacon_state_data::Epoch;
 
-use crate::{
+use crate::http::{
     ids::{Uint64, body_entries, parse_uint64},
     response::Response,
     router::Request,

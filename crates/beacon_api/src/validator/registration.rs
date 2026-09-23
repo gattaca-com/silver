@@ -2,10 +2,12 @@ use serde::Deserialize;
 use silver_beacon_state_data::{BLSPubkey, BLSSignature, ExecutionAddress};
 
 use crate::{
-    ids::{body_entries, is_hex_bytes, parse_uint64},
-    response::Response,
-    router::Request,
-    routes::ApiCtx,
+    ctx::ApiCtx,
+    http::{
+        ids::{body_entries, is_hex_bytes, parse_uint64},
+        response::Response,
+        router::Request,
+    },
 };
 
 /// The phrase `UnsupportedMediaType` carries in `types/http.yaml`.
@@ -174,8 +176,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ids::MAX_BODY_IDS,
-        routes::anchor_ctx,
+        ctx::anchor_ctx,
+        http::ids::MAX_BODY_IDS,
         testing::{answer, posting},
     };
 
@@ -235,7 +237,7 @@ mod tests {
     /// the whole suite runs against a node that has published none — which is
     /// when a validator client first sends these.
     #[test]
-    fn a_well_formed_body_is_acknowledged_with_a_bodyless_200() {
+    fn well_formed_body_is_acknowledged_with_a_bodyless_200() {
         for (path, entry) in entries() {
             assert_eq!(json_post(path, &format!("[{entry}]")), BODYLESS_OK, "{path}");
             assert_eq!(json_post(path, &format!("[{entry},{entry}]")), BODYLESS_OK, "{path}");
@@ -245,14 +247,14 @@ mod tests {
     /// No schema here puts a `minItems` on its array, so an array naming
     /// nothing is still a body the node has received.
     #[test]
-    fn an_empty_array_is_acknowledged_rather_than_refused() {
+    fn empty_array_is_acknowledged_rather_than_refused() {
         for path in [REGISTER, PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
             assert_eq!(json_post(path, "[]"), BODYLESS_OK, "{path}");
         }
     }
 
     #[test]
-    fn a_body_that_is_not_the_schema_s_array_is_a_400() {
+    fn body_that_is_not_the_schema_s_array_is_a_400() {
         for path in [REGISTER, PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
             for body in ["", "not json", "{}", "null", "[[]]", "[1]"] {
                 assert_bad_request(&json_post(path, body), "invalid request body");
@@ -265,7 +267,7 @@ mod tests {
     /// the builder or the subnet would have to reject later, by which point
     /// there is no response left to say so through.
     #[test]
-    fn an_entry_whose_fields_the_schema_s_patterns_reject_is_a_400() {
+    fn entry_whose_fields_the_schema_s_patterns_reject_is_a_400() {
         let pubkey = format!("0x{}", hex::encode([0xcd; 48]));
         let short_pubkey = format!("0x{}", hex::encode([0xcd; 47]));
         for (path, entry) in [
@@ -286,7 +288,7 @@ mod tests {
     /// A field of the wrong JSON type, or under a name the schema does not
     /// declare, never reaches those checks: the array does not parse.
     #[test]
-    fn an_entry_missing_a_field_the_schema_requires_is_a_400() {
+    fn entry_missing_a_field_the_schema_requires_is_a_400() {
         for (path, entry) in [
             (REGISTER, registration().replace("\"30000000\"", "30000000")),
             (REGISTER, registration().replace("\"gas_limit\"", "\"gasLimit\"")),
@@ -303,7 +305,7 @@ mod tests {
     /// shipped client hardcodes off; were it on, any other code here would
     /// lose the registrations with no retry.
     #[test]
-    fn a_non_json_content_type_is_a_415_on_the_one_schema_that_declares_it() {
+    fn non_json_content_type_is_a_415_on_the_one_schema_that_declares_it() {
         let body = format!("[{}]", registration());
         for content_type in ["application/octet-stream", "APPLICATION/OCTET-STREAM", "text/plain"] {
             let response = post(REGISTER, Some(content_type), &body);
@@ -321,7 +323,7 @@ mod tests {
     /// The other three declare 400 and 500 and nothing else, so an SSZ body
     /// there is answered as the unreadable JSON it is.
     #[test]
-    fn a_non_json_content_type_is_never_a_415_where_no_schema_declares_one() {
+    fn non_json_content_type_is_never_a_415_where_no_schema_declares_one() {
         for path in [PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
             let response = post(path, Some("application/octet-stream"), "\u{0}\u{1}\u{2}");
             assert_bad_request(&response, "invalid request body");

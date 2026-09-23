@@ -4,13 +4,20 @@
 
 use std::io::Write;
 
-use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Checkpoint, Fork, Version};
-use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
+use silver_beacon_state_data::{
+    B256, BLSPubkey, BeaconBlockHeader, Checkpoint, FAR_FUTURE_EPOCH, Fork, ForkName, SpecConfig,
+    Version,
+};
+use silver_common::{AGENT_VERSION, ssz_view::BYTES_PER_KZG_COMMITMENT};
 
 use crate::{
-    attestation_data::AttestationData, attestation_submission::SubmissionFailure,
-    attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuty,
-    sync_duties::SyncDuty, validators::ValidatorRecord,
+    beacon::{operations::SubmissionFailure, validators::ValidatorRecord},
+    events::HeadEvent,
+    node::peers::Peer,
+    validator::{
+        attestation_data::AttestationData, attester_duties::AttesterDuty,
+        proposer_duties::ProposerDuty, sync_duties::SyncDuty,
+    },
 };
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
@@ -577,6 +584,60 @@ impl Json<'_> {
     }
 }
 
+pub(crate) fn version_body() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_object();
+    json.key("version");
+    json.string(AGENT_VERSION);
+    json.end_object();
+    json.end_object();
+    out
+}
+
+/// `GET /eth/v1/config/fork_schedule`. Unscheduled forks are omitted: the
+/// list is what this node is aware of *scheduling*, and a client that
+/// derives a signing domain from the last entry must not land on a fork
+/// that will never activate.
+pub(crate) fn fork_schedule_body(spec: &SpecConfig) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_array();
+    let mut previous_version = spec.fork_version(ForkName::Phase0);
+    for fork in ForkName::ALL {
+        let epoch = spec.fork_epoch(fork);
+        if epoch == FAR_FUTURE_EPOCH {
+            continue;
+        }
+        let current_version = spec.fork_version(fork);
+        json.fork(&Fork { previous_version, current_version, epoch });
+        previous_version = current_version;
+    }
+    json.end_array();
+    json.end_object();
+    out
+}
+
+/// `GET /eth/v1/config/deposit_contract`.
+pub(crate) fn deposit_contract_body(spec: &SpecConfig) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_object();
+    json.key("chain_id");
+    json.quoted_u64(spec.deposit_chain_id);
+    json.key("address");
+    json.hex(&spec.deposit_contract_address);
+    json.end_object();
+    json.end_object();
+    out
+}
+
 /// Whether `text` survives being spliced into JSON without escaping — the
 /// guard for compile-time field names and messages, not for user input
 /// ([`Json::string`] escapes).
@@ -677,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_appended_after_existing_bytes_gets_no_leading_comma() {
+    fn body_appended_after_existing_bytes_gets_no_leading_comma() {
         let mut out = b"HTTP-ish prefix}".to_vec();
         let mut json = Json::new(&mut out);
         json.begin_object();
@@ -703,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_column_event_without_commitments_omits_the_field() {
+    fn column_event_without_commitments_omits_the_field() {
         let body = write(|json| json.data_column_sidecar_event(&[0x9a; 32], 3, 10, None));
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["slot"], "10");

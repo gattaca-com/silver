@@ -1,8 +1,13 @@
+pub(crate) mod head_verdict;
+
 use silver_beacon_state_data::B256;
 use silver_common::{HeadRoots, PayloadResolution};
 use silver_httpcore::Query;
 
-use crate::{response::Response, router::Request, routes::ApiCtx};
+use crate::{
+    ctx::ApiCtx,
+    http::{response::Response, router::Request},
+};
 
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const EVENT_STREAM_HEADERS: &[(&str, &str)] =
@@ -98,8 +103,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::Outcome,
-        routes::anchor_ctx,
+        ctx::anchor_ctx,
+        http::router::Outcome,
         testing::{dispatch, request},
     };
 
@@ -174,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn a_topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
+    fn topic_silver_does_not_serve_refuses_the_whole_subscription_by_name() {
         let unknown = |topic: &str| Err(Refused::Unknown(topic.to_string()));
         assert_eq!(topics("topics=finalized_checkpoint"), unknown("finalized_checkpoint"));
         assert_eq!(topics("topics=block,finalized_checkpoint"), unknown("finalized_checkpoint"));
@@ -184,7 +189,7 @@ mod tests {
     /// Empty entries must not silently turn a malformed list into a valid
     /// subscription.
     #[test]
-    fn an_empty_name_is_refused_like_any_unknown_one() {
+    fn empty_name_is_refused_like_any_unknown_one() {
         let empty = Err(Refused::Unknown(String::new()));
         assert_eq!(topics("topics="), empty);
         assert_eq!(topics("topics=,"), empty);

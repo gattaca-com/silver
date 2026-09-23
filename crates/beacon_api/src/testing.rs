@@ -2,8 +2,9 @@ use silver_beacon_state_data::{B256, BLSPubkey, BlockRootsGroup, SLOTS_PER_HISTO
 use silver_httpcore::ParsedRequest;
 
 use crate::{
-    router::{Outcome, Router},
-    routes::{ApiCtx, ROUTES},
+    ctx::ApiCtx,
+    http::router::{Outcome, Router},
+    routes::ROUTES,
 };
 
 /// A request with every field a route ignores at its default, so a caller

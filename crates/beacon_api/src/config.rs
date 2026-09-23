@@ -6,11 +6,11 @@
 
 use silver_beacon_state_data::{
     BYTES_PER_LOGS_BLOOM, EFFECTIVE_BALANCE_INCREMENT, EPOCHS_PER_HISTORICAL_VECTOR,
-    EPOCHS_PER_SLASHINGS_VECTOR, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, FAR_FUTURE_EPOCH, Fork,
-    ForkName, HISTORICAL_ROOTS_LIMIT, MAX_EXTRA_DATA_BYTES, MIN_SEED_LOOKAHEAD,
-    PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
-    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SpecConfig,
-    TARGET_COMMITTEE_SIZE, VALIDATOR_REGISTRY_LIMIT,
+    EPOCHS_PER_SLASHINGS_VECTOR, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, FAR_FUTURE_EPOCH, ForkName,
+    HISTORICAL_ROOTS_LIMIT, MAX_EXTRA_DATA_BYTES, MIN_SEED_LOOKAHEAD, PENDING_CONSOLIDATIONS_LIMIT,
+    PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, SLOTS_PER_EPOCH,
+    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SpecConfig, TARGET_COMMITTEE_SIZE,
+    VALIDATOR_REGISTRY_LIMIT,
 };
 use silver_common::{
     EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS, SAMPLES_PER_SLOT, SUBNETS_PER_NODE,
@@ -21,7 +21,10 @@ use silver_common::{
     ticker::MAXIMUM_GOSSIP_CLOCK_DISPARITY,
 };
 
-use crate::json::Json;
+use crate::{
+    ctx::ApiCtx,
+    http::{json::Json, response::Response, router::Request},
+};
 
 const PRESET_BASE: &str = "mainnet";
 
@@ -299,47 +302,6 @@ pub(crate) fn spec_body(spec: &SpecConfig) -> Vec<u8> {
     out
 }
 
-/// `GET /eth/v1/config/fork_schedule`. Unscheduled forks are omitted: the
-/// list is what this node is aware of *scheduling*, and a client that
-/// derives a signing domain from the last entry must not land on a fork
-/// that will never activate.
-pub(crate) fn fork_schedule_body(spec: &SpecConfig) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut json = Json::new(&mut out);
-    json.begin_object();
-    json.key("data");
-    json.begin_array();
-    let mut previous_version = spec.fork_version(ForkName::Phase0);
-    for fork in ForkName::ALL {
-        let epoch = spec.fork_epoch(fork);
-        if epoch == FAR_FUTURE_EPOCH {
-            continue;
-        }
-        let current_version = spec.fork_version(fork);
-        json.fork(&Fork { previous_version, current_version, epoch });
-        previous_version = current_version;
-    }
-    json.end_array();
-    json.end_object();
-    out
-}
-
-/// `GET /eth/v1/config/deposit_contract`.
-pub(crate) fn deposit_contract_body(spec: &SpecConfig) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut json = Json::new(&mut out);
-    json.begin_object();
-    json.key("data");
-    json.begin_object();
-    json.key("chain_id");
-    json.quoted_u64(spec.deposit_chain_id);
-    json.key("address");
-    json.hex(&spec.deposit_contract_address);
-    json.end_object();
-    json.end_object();
-    out
-}
-
 /// The `SpecConfig` fields under their spec names. Several carry a fork suffix
 /// silver's own scalar does not, because it runs only the latest fork's
 /// variant of that quantity; the retired spellings are in
@@ -415,11 +377,49 @@ fn fork_epoch_key(fork: ForkName) -> &'static str {
     }
 }
 
+pub(crate) fn spec(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.spec);
+}
+
+pub(crate) fn fork_schedule(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.fork_schedule);
+}
+
+pub(crate) fn deposit_contract(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.deposit_contract);
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Map, Value};
 
     use super::*;
+    use crate::{
+        ctx::anchor_ctx,
+        http::json::{deposit_contract_body, fork_schedule_body},
+        testing::{answer, body, request},
+    };
+
+    /// Config is boot-time data, so these three answer before the node has a
+    /// state to read — a validator client polls them while silver is still
+    /// syncing.
+    #[test]
+    fn config_endpoints_answer_before_bootstrap() {
+        for path in [
+            "/eth/v1/config/spec",
+            "/eth/v1/config/fork_schedule",
+            "/eth/v1/config/deposit_contract",
+        ] {
+            let resp = answer(&anchor_ctx(), &request("GET", path));
+            assert!(
+                resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+                "{path}"
+            );
+            let parsed: serde_json::Value = serde_json::from_slice(body(&resp)).expect(path);
+            assert!(parsed.get("data").is_some(), "{path}");
+            assert_eq!(parsed.as_object().unwrap().len(), 1, "{path}: bare data wrapper");
+        }
+    }
 
     fn data(body: &[u8]) -> Value {
         serde_json::from_slice::<Value>(body).expect("valid JSON")["data"].clone()
@@ -477,7 +477,7 @@ mod tests {
     /// committee period from this body; Teku and Lighthouse compare the fork
     /// versions and deposit contract against their own config.
     #[test]
-    fn the_keys_validator_clients_read_are_all_present() {
+    fn keys_validator_clients_read_are_all_present() {
         let spec = spec_map(&SpecConfig::mainnet());
         for name in [
             "PRESET_BASE",
@@ -524,7 +524,7 @@ mod tests {
     /// `SLOT_DURATION_MS`, which is derived, because a client that also reads
     /// `SECONDS_PER_SLOT` rejects a body where the two disagree.
     #[test]
-    fn the_config_file_keys_silver_serves_as_literals_match_v1_6_0_mainnet() {
+    fn config_file_keys_silver_serves_as_literals_match_v1_6_0_mainnet() {
         let spec = spec_map(&SpecConfig::mainnet());
         for (name, value) in [
             ("SLOT_DURATION_MS", "12000"),

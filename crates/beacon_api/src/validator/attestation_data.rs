@@ -2,10 +2,8 @@ use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, S
 use silver_common::PayloadResolution;
 
 use crate::{
-    ids::parse_uint64,
-    response::Response,
-    router::Request,
-    routes::{ApiCtx, query_value},
+    ctx::ApiCtx,
+    http::{ids::parse_uint64, response::Response, router::Request},
 };
 
 pub(crate) struct AttestationData {
@@ -18,7 +16,7 @@ pub(crate) struct AttestationData {
 
 pub(crate) fn attestation_data(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let (Some(slot), Some(committee_index)) =
-        (uint64_query(req.query, "slot"), uint64_query(req.query, "committee_index"))
+        (uint64_query(req, "slot"), uint64_query(req, "committee_index"))
     else {
         resp.error(400, "slot and committee_index are required Uint64 query parameters");
         return;
@@ -71,8 +69,8 @@ fn payload_presence_vote(ctx: &ApiCtx, slot: Slot) -> u64 {
     u64::from(present)
 }
 
-fn uint64_query(query: &str, name: &str) -> Option<u64> {
-    parse_uint64(&query_value(query, name)?)
+fn uint64_query(req: &Request<'_>, name: &str) -> Option<u64> {
+    parse_uint64(&req.query_value(name)?)
 }
 
 #[cfg(test)]
@@ -87,9 +85,9 @@ mod tests {
     use super::*;
     use crate::{
         HeadStatus,
-        attester_duties::PostedShufflings,
-        routes::test_ctx,
+        ctx::test_ctx,
         testing::{answer, block_roots_ring, json, request, ring_root, status_code},
+        validator::attester_duties::PostedShufflings,
     };
 
     const STATE_EPOCH: u64 = 300;

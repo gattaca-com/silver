@@ -23,15 +23,19 @@ use silver_httpcore::{
 
 use crate::{
     HeadStatus, NodeStatus,
-    attestation_submission::{AttestationSubmission, SubmissionFailure, failure_message},
-    blocks::Kind,
-    events::{self, Channel, ChannelSet, HeadEvent},
-    head_verdict::HeadVerdict,
-    json::Json,
-    peers::Peer,
-    response::Response,
-    router::{Outcome, Router},
-    routes::{ApiCtx, ROUTES},
+    beacon::{
+        blocks::Kind,
+        operations::{AttestationSubmission, SubmissionFailure, failure_message},
+    },
+    ctx::ApiCtx,
+    events::{self, Channel, ChannelSet, HeadEvent, head_verdict::HeadVerdict},
+    http::{
+        json::Json,
+        response::Response,
+        router::{Outcome, Router},
+    },
+    node::peers::Peer,
+    routes::ROUTES,
 };
 
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
@@ -950,7 +954,7 @@ mod tests {
     use silver_httpcore::Readiness;
 
     use super::*;
-    use crate::attestation_submission::tests as submission;
+    use crate::beacon::operations::tests as submission;
 
     /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1100,7 +1104,7 @@ mod tests {
     /// connection allocator to probe to, so it is refused at construction.
     #[test]
     #[should_panic(expected = "does not fit a span")]
-    fn a_range_too_small_for_the_connection_cap_is_rejected() {
+    fn range_too_small_for_the_connection_cap_is_rejected() {
         Server::new(TokenRange::new(0, 8), &[Bind::parse("127.0.0.1:0")], 64, LONG_TIMEOUT);
     }
 

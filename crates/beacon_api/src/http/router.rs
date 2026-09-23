@@ -1,8 +1,12 @@
-use silver_httpcore::{ParsedRequest, frame_response};
+use std::borrow::Cow;
+
+use silver_httpcore::{ParsedRequest, Query, frame_response};
 
 use crate::{
-    attestation_submission::AttestationSubmission, blocks::BlockRequest, events::ChannelSet,
-    response::Response, routes::ApiCtx,
+    beacon::{blocks::BlockRequest, operations::AttestationSubmission},
+    ctx::ApiCtx,
+    events::ChannelSet,
+    http::response::Response,
 };
 
 const MAX_PARAMS: usize = 4;
@@ -51,7 +55,11 @@ pub(crate) struct Request<'a> {
     pub(crate) body: &'a [u8],
 }
 
-impl Request<'_> {
+impl<'a> Request<'a> {
+    pub(crate) fn query_value(&self, name: &str) -> Option<Cow<'a, str>> {
+        Query::new(self.query).find_map(|(key, value)| (key == name).then_some(value))
+    }
+
     pub(crate) fn accepts_ssz(&self) -> bool {
         self.accept.unwrap_or_default().split(',').any(|media_range| {
             media_range
@@ -221,7 +229,7 @@ fn same_match_set(a: &[Seg], b: &[Seg]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routes::anchor_ctx;
+    use crate::ctx::anchor_ctx;
 
     fn request<'a>(method: &'a str, path: &'a str) -> ParsedRequest<'a> {
         ParsedRequest {
@@ -299,7 +307,7 @@ mod tests {
     /// follow it; a header that names none at all leaves the body unlabelled,
     /// which is the same verdict as sending no header.
     #[test]
-    fn a_json_media_type_is_recognized_however_it_is_spelled() {
+    fn json_media_type_is_recognized_however_it_is_spelled() {
         for header in [
             "application/json",
             "Application/JSON",

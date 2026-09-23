@@ -3,11 +3,12 @@ use std::{io::Write, str};
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
 use crate::{
-    attestation_submission::{AttestationSubmission, SubmissionFailure},
-    blocks::BlockRequest,
+    beacon::{
+        blocks::BlockRequest,
+        operations::{AttestationSubmission, SubmissionFailure},
+    },
     events::ChannelSet,
-    json::Json,
-    router::Outcome,
+    http::{json::Json, router::Outcome},
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";

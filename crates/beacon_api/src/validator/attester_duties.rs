@@ -4,11 +4,9 @@ use silver_beacon_state_data::{
 };
 
 use crate::{
-    duties::{epoch_param, requested_indices},
-    ids::Uint64,
-    response::Response,
-    router::Request,
-    routes::ApiCtx,
+    ctx::ApiCtx,
+    http::{ids::Uint64, response::Response, router::Request},
+    validator::duties::{epoch_param, requested_indices},
 };
 
 pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -183,7 +181,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        routes::test_ctx,
+        ctx::test_ctx,
         testing::{
             answer, block_roots_ring, field, indices_body, json, posting, pubkey, ring_root,
             status_code,
