@@ -7,7 +7,7 @@ use flux::spine::SpineProducers;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipDomain, GossipTopic, IngestionTime, PeerEvent,
     SilverSpineProducers, SszCache, SyncNeed, TCacheError, TCacheId, TCacheRead, TCacheReader,
-    TCacheTable, TRead, TReadMode, Wheel,
+    TCacheTable, TRead, TReadMode, TileId, Wheel,
     cell_store::{
         CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
         ColumnRef, CommitmentContext, ContextData, DataColumnCounters, HeaderValidationRequest,
@@ -249,7 +249,7 @@ impl CellHandler {
     }
 
     pub(super) fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(TCacheId::ControlSlot, "dc_control_slot", TReadMode::Retained)
+        self.reader.open_forwarder(TileId::Columns, TCacheId::ControlSlot, TReadMode::Strict)
     }
 
     #[inline]
@@ -291,7 +291,6 @@ impl CellHandler {
                 !columns.is_empty()
             });
         }
-        self.reader.advance_retention(TCacheId::ControlSlot, event.retain_from);
     }
 
     #[inline]

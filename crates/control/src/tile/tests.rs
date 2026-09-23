@@ -4,7 +4,7 @@ use silver_chain_spec::SpecConfig;
 use silver_common::{
     ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, Keypair,
     MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
@@ -41,10 +41,12 @@ impl GossipPublications {
         let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
         let mut protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 16);
         let payload = write_bytes(&mut protobuf, bytes);
-        let outbound =
+        let mut outbound =
             TCacheReader::single(protobuf.cache_ref(), "publication_observer", TReadMode::Sliding)
                 .unwrap();
         let boundary = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
+        // Plays the network: the handler's mcache pins forward to it.
+        outbound.declare(TCacheId::ControlGossip, &[TileId::Control]);
         let tcaches = TCacheTable::from_iter(
             [&incoming, &cluster_in, &rpc, &protobuf, &boundary].map(|p| p.cache_ref()),
         );

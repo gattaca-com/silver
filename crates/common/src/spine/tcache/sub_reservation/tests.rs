@@ -7,13 +7,13 @@ use super::{
     super::{Producer, TCacheProducer},
     *,
 };
-use crate::{TCache, TCacheId, TCacheReader, TReadMode};
+use crate::{TCache, TCacheId, TCacheReader, TReadMode, test_util::follow_producer_floor};
 
 #[test]
 fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_bytes() {
     let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let mut consumer =
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let reference = producer
         .uninitialized_sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, 3, 5)
         .unwrap();
@@ -50,7 +50,7 @@ fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_b
 fn single_array_reservations_publish_without_a_second_payload() {
     let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let mut reader =
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let reference = producer
         .sub_reservation(SubLayout { parts: 1, first_len: 6, second_len: 0 }, b"", b"")
         .unwrap();
@@ -74,7 +74,7 @@ fn single_array_reservations_publish_without_a_second_payload() {
 fn closing_a_deferred_reservation_denies_initialization_and_validation() {
     let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let mut consumer =
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let reference = producer
         .uninitialized_sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, 3, 0)
         .unwrap();
@@ -144,6 +144,7 @@ fn producer_returns_an_unpinned_descriptor() {
         reservation.buffer().unwrap().fill(0xcc);
         reservation.increment_offset(4096);
         drop(consumer.acquire_strict(reservation.read()).unwrap());
+        consumer.free();
     }
     assert!(matches!(reference.acquire(&mut consumer), Err(SubReservationError::Stale)));
 }
@@ -152,7 +153,7 @@ fn producer_returns_an_unpinned_descriptor() {
 fn producer_views_stage_cancel_and_finish_without_local_pins() {
     let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
     let mut consumer =
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let reference = producer
         .sub_reservation(SubLayout { parts: 1, first_len: 4, second_len: 2 }, b"prefix", b"middle")
         .unwrap();
@@ -186,13 +187,15 @@ fn producer_views_stage_cancel_and_finish_without_local_pins() {
         Err(SubReservationError::WrongProducer)
     ));
     assert!(matches!(other.read_buffer(read), Err(super::super::Error::UnexpectedCacheRef)));
-    consumer.advance_retention(TCacheId::ControlSlot, producer.next_seq());
+    producer.retain_from(producer.next_seq());
+    follow_producer_floor(&mut consumer);
     for _ in 0..32 {
         let mut write = producer.reserve(4096, false).unwrap();
         write.buffer().unwrap().fill(0xcc);
         write.flush().unwrap();
         drop(write);
-        consumer.advance_retention(TCacheId::ControlSlot, producer.next_seq());
+        producer.retain_from(producer.next_seq());
+        follow_producer_floor(&mut consumer);
     }
     assert!(matches!(producer.view_sub_reservation(reference), Err(SubReservationError::Stale)));
     assert!(producer.read_buffer(read).is_err());
@@ -499,6 +502,7 @@ fn writers_validators_and_ranges_pin_expired_storage_until_their_last_drop() {
         reservation.buffer().unwrap().fill(0xcc);
         reservation.increment_offset(4096);
         drop(h.consumer.acquire_strict(reservation.read()).unwrap());
+        h.consumer.free();
     }
     assert!(matches!(reference.acquire(&mut h.consumer), Err(SubReservationError::Stale)));
     assert!(matches!(pending.cancel(&mut h.consumer), Err(SubReservationError::Stale)));

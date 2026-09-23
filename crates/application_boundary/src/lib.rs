@@ -5,7 +5,7 @@ use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, EngineResp, Enr, Identify, Keypair,
-    PeerEvent, SilverSpine, SyncUpdate, TCacheError, TCacheTable, TProducer,
+    PeerEvent, SilverSpine, SyncUpdate, TCacheError, TCacheProducer, TCacheTable, TProducer,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
@@ -45,6 +45,7 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
         if self.beacon.pump(events, &mut self.processing, &mut |request| adapter.produce(request)) {
             adapter.mark_work();
         }
+        self.processing.publish_head();
     }
 }
 

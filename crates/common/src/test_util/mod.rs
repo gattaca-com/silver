@@ -59,3 +59,12 @@ mod tests {
         }
     }
 }
+
+/// Lets a reader follow its producer's published floor: the first drained
+/// pass clears the mark left by consumed reads, the second takes the
+/// snapshot, the third applies it and publishes the tail.
+pub fn follow_producer_floor(reader: &mut crate::TCacheReader) {
+    for _ in 0..3 {
+        reader.free();
+    }
+}

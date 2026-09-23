@@ -15,7 +15,7 @@ use silver_common::{
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
     ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
     TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
-    hex32,
+    TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -147,7 +147,8 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
-    vote_batch: Vec<NewGossipMsg>,
+    // Pinned: the tail moves as later reads in the same pass arrive.
+    vote_batch: Vec<(NewGossipMsg, TRead)>,
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
@@ -266,23 +267,16 @@ impl BeaconStateTile {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(
-            TCacheId::ControlProcessing,
-            "bs_control_processing",
-            TReadMode::Sliding,
-        )?;
-        self.reader.open(
-            TCacheId::NetworkProcessing,
-            "bs_network_processing",
-            TReadMode::Sliding,
-        )?;
+        let bs = TileId::BeaconState;
+        self.reader.open_forwarder(bs, TCacheId::ControlProcessing, TReadMode::Sliding)?;
+        self.reader.open_forwarder(bs, TCacheId::NetworkProcessing, TReadMode::Sliding)?;
         self.reader.open(
             TCacheId::BoundaryProcessing,
             "bs_boundary_processing",
             TReadMode::Sliding,
         )?;
         self.reader.open(TCacheId::StorageDelivery, "bs_storage_delivery", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::ControlSlot, "bs_control_slot", TReadMode::Sliding)
+        self.reader.open(TCacheId::ControlSlot, "bs_control_slot", TReadMode::Strict)
     }
 
     /// A read handle on the owned state, for wiring other tiles (lock-free
@@ -788,6 +782,7 @@ impl BeaconStateTile {
 
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
+                self.expire_orphans(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();
                 let advanced = self.slot_tick(slot);
                 if advanced || self.fork_choice.find_head() != prev_head {
@@ -1112,6 +1107,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.try_detect_reorg(&mut adapter.producers);
             self.publish_status_on_head_change(&mut adapter.producers);
         }
+        self.events_producer.publish_head();
     }
 }
 

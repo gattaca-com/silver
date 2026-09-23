@@ -344,7 +344,8 @@ impl BeaconStateTile {
     }
 
     pub(super) fn defer_vote(&mut self, m: NewGossipMsg, producers: &mut Producers) {
-        self.vote_batch.push(m);
+        let pin = self.reader.acquire(m.ssz);
+        self.vote_batch.push((m, pin));
         if self.vote_batch.len() >= VOTE_BATCH_CAP {
             self.flush_votes(producers);
         }
@@ -371,9 +372,8 @@ impl BeaconStateTile {
         // Drain from the back after one in-place reversal: this preserves
         // arrival order without O(n) front-removes or another allocation.
         self.vote_batch.reverse();
-        while let Some(m) = self.vote_batch.pop() {
-            let acquired = self.reader.acquire(m.ssz);
-            let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else {
+        while let Some((m, pin)) = self.vote_batch.pop() {
+            let Some(data) = pin.buffer().ok().map(|(d, _)| d) else {
                 Self::local_verdict(&m, Feedback::Ignore, producers);
                 continue;
             };
@@ -1292,14 +1292,22 @@ impl BeaconStateTile {
                 }
                 self.publish_status(producers);
             }
-            Feedback::RequestParent { .. } => {
-                self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers)
-            }
+            Feedback::RequestParent { .. } => self.park_block(
+                feedback,
+                BlockSourceMsg::Gossip(m, acquired.clone()),
+                data,
+                producers,
+            ),
             Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers);
+                self.park_block(
+                    feedback,
+                    BlockSourceMsg::Gossip(m, acquired.clone()),
+                    data,
+                    producers,
+                );
             }
             Feedback::RequestEnvelope { block_root, att_slot } => {
                 producers.produce(SyncNeed::missing_envelope(block_root, att_slot));

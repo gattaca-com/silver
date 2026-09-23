@@ -1,12 +1,12 @@
 //! One test per production flow; see the pattern catalog in
-//! `docs/tcache-tail-watermarks.md`. `Expect::Known` marks what the
-//! sliding guard cannot do today and flips to `Holds` with floors.
+//! `docs/tcache-tail-watermarks.md`. `Expect::Known` marks what the current
+//! implementation cannot do; it flips to `Holds` with the step that fixes it.
 
 use silver_common::{TCacheId, TCacheTable, TReadMode};
 
 use crate::model::{
-    Action, Drain, Driver, Expect, NONE, Node, Then, World, Writer, check, consume, consume_one,
-    produce, wraps,
+    Action, Drain, Driver, Expect, NONE, Node, RetainFrom, Then, World, Writer, check, consume,
+    consume_one, produce, wraps,
 };
 
 const SEEDS: [u64; 4] = [1, 7, 42, 1234];
@@ -108,7 +108,8 @@ fn forward_while_pinned_one_hop() {
             vec![
                 p.script(produce(0, 0x41, 0, n)),
                 consumer("forwarder", table, consume(0, Then::ForwardPinned { link: 1 }, n)),
-                consumer("receiver", table, consume(1, Then::Acquire, n)),
+                consumer("receiver", table, consume(1, Then::Acquire, n))
+                    .declare(CACHE, &["forwarder"]),
             ],
             2,
         );
@@ -119,9 +120,8 @@ fn forward_while_pinned_one_hop() {
 
 /// Two forwarders feed one receiver from the same cache. The second pins each
 /// read on arrival and forwards it `lag` messages later, as columns does
-/// across a KZG batch. Past the guard window the receiver's acquire is below
-/// its tail and uncounted; it holds reads in batches, as storage does across
-/// I/O, so the uncounted pin shows up as reclaimed bytes at release.
+/// across a KZG batch. The receiver holds reads in batches, as storage does
+/// across I/O, so an unprotected pin shows up as reclaimed bytes at release.
 fn two_queues_into_one_consumer(lag: usize, expect: Expect) {
     let (p, table) = source();
     let n = wraps(2);
@@ -134,22 +134,25 @@ fn two_queues_into_one_consumer(lag: usize, expect: Expect) {
                     .into_iter()
                     .chain(std::iter::repeat_n(Action::ForwardOldestHeld { link: 3 }, lag)),
             ),
-            Node::new("receiver", table).open(CACHE, TReadMode::Sliding).script(
-                std::iter::repeat_n(
-                    [
-                        Action::Consume {
-                            links: [2, 3],
-                            drain: Drain::All,
-                            then: Then::Hold,
-                            count: 16,
-                        },
-                        Action::ReleaseAll,
-                        Action::Free,
-                    ],
-                    2 * n / 16,
-                )
-                .flatten(),
-            ),
+            Node::new("receiver", table)
+                .open(CACHE, TReadMode::Sliding)
+                .declare(CACHE, &["prompt", "lagging"])
+                .script(
+                    std::iter::repeat_n(
+                        [
+                            Action::Consume {
+                                links: [2, 3],
+                                drain: Drain::All,
+                                then: Then::Hold,
+                                count: 16,
+                            },
+                            Action::ReleaseAll,
+                            Action::Free,
+                        ],
+                        2 * n / 16,
+                    )
+                    .flatten(),
+                ),
         ],
         4,
     );
@@ -158,18 +161,13 @@ fn two_queues_into_one_consumer(lag: usize, expect: Expect) {
 }
 
 #[test]
-fn forward_with_delay_within_the_guard() {
+fn forward_with_short_delay() {
     two_queues_into_one_consumer(2, Expect::Holds);
 }
 
 #[test]
-fn forward_with_delay_beyond_the_guard() {
-    two_queues_into_one_consumer(
-        wraps(1) / 2,
-        Expect::Known(
-            "a forward from beyond the guard window is acquired below the tail, uncounted",
-        ),
-    );
+fn forward_with_delay_of_half_a_ring() {
+    two_queues_into_one_consumer(wraps(1) / 2, Expect::Holds);
 }
 
 #[test]
@@ -181,8 +179,9 @@ fn forward_two_hops() {
             vec![
                 p.script(produce(0, 0x61, 0, n)),
                 consumer("hop1", table, consume(0, Then::ForwardPinned { link: 1 }, n)),
-                consumer("hop2", table, consume(1, Then::ForwardPinned { link: 2 }, n)),
-                consumer("receiver", table, consume(2, Then::Acquire, n)),
+                consumer("hop2", table, consume(1, Then::ForwardPinned { link: 2 }, n))
+                    .declare(CACHE, &["hop1"]),
+                consumer("receiver", table, consume(2, Then::Acquire, n)).declare(CACHE, &["hop2"]),
             ],
             3,
         );
@@ -235,6 +234,7 @@ fn hold_bare_forward_later() {
             ]),
             Node::new("receiver", table)
                 .open(CACHE, TReadMode::Sliding)
+                .declare(CACHE, &["holder"])
                 .script([consume(1, Then::Acquire, n), consume(2, Then::Acquire, 1)]),
         ],
         3,
@@ -243,22 +243,25 @@ fn hold_bare_forward_later() {
     check(&world, Expect::Known("a bare descriptor is not pinned across the wrap"));
 }
 
-/// A consumer that is open but has nothing addressed to it holds its tail at
-/// seq 0 while the producer fills: the freeze the snapshot design removes.
+/// A consumer that is open but has nothing addressed to it must follow the
+/// producer's floor through its per-pass snapshots instead of freezing the
+/// ring at its open tail.
 #[test]
-fn idle_consumer_freezes_the_producer() {
+fn idle_consumer_follows_the_producer() {
     let (p, table) = source();
     let n = wraps(2);
     let mut world = World::new(
         vec![
             p.script(produce(0, 0x92, 0, n)),
             consumer("active", table, consume(0, Then::Acquire, n)),
-            Node::new("idle", table).open(CACHE, TReadMode::Sliding).script([Action::Free]),
+            Node::new("idle", table)
+                .open(CACHE, TReadMode::Sliding)
+                .script(std::iter::repeat_n(Action::Free, n)),
         ],
         1,
     );
     world.run(Driver::Sequential);
-    check(&world, Expect::Known("an idle consumer's tail at seq 0 blocks the producer"));
+    check(&world, Expect::Holds);
 }
 
 /// mcache: one protobuf pinned while later reads flow past a ring's worth of
@@ -311,8 +314,8 @@ fn two_readers_in_one_node_on_one_cache() {
     }
 }
 
-/// Columns with no sidecars while gossip blocks flow: the forwarder consumes
-/// but emits nothing, and must not freeze the receiver's tail.
+/// Columns with no sidecars while gossip blocks flow: the declared forwarder
+/// consumes but emits nothing, and must not freeze the receiver's tail.
 #[test]
 fn silent_forwarder_while_producer_runs() {
     let (p, table) = source();
@@ -321,7 +324,7 @@ fn silent_forwarder_while_producer_runs() {
         vec![
             p.script(broadcast(0xc1, &[0, 1], n)),
             consumer("columns", table, consume(0, Then::Acquire, n)),
-            consumer("storage", table, consume(1, Then::Acquire, n)),
+            consumer("storage", table, consume(1, Then::Acquire, n)).declare(CACHE, &["columns"]),
         ],
         2,
     );
@@ -373,24 +376,37 @@ fn consume_one_and_stop_queue_not_drained() {
     check(&world, Expect::Holds);
 }
 
-/// Cells cache: fixed boundary moved by `advance_retention`; the producer
-/// blocks on the boundary and resumes when it moves.
+/// Cells cache: the allocator retains a window by publishing its floor and
+/// re-emits old reads from inside it. The consumer must keep the window
+/// readable without pinning anything, and follow the floor once it moves so
+/// the producer regains the space.
 #[test]
-fn retained_cache() {
+fn producer_retention_window_with_reemission() {
     let (p, writer) = producer("allocator", TCacheId::ControlSlot);
     let table = World::table(&[&writer]);
-    let batch = wraps(1) / 2;
-    let advance = Action::AdvanceRetentionToConsumed { cache: TCacheId::ControlSlot };
+    let window = 8;
+    let fill = wraps(1) - window - 4;
     let mut world = World::new(
         vec![
-            p.with_writer(writer).script(produce(0, 0xf1, 0, 3 * batch)),
-            Node::new("cells", table).open(TCacheId::ControlSlot, TReadMode::Retained).script([
-                consume(0, Then::Acquire, batch),
-                advance,
-                consume(0, Then::Acquire, batch),
-                advance,
-                consume(0, Then::Acquire, batch),
-            ]),
+            p.with_writer(writer).script(
+                [Action::Retain { writer: 0, from: RetainFrom::Head }]
+                    .into_iter()
+                    .chain(produce(0, 0xf1, 0, window))
+                    .chain(produce(0, 0xf2, 0, fill))
+                    .chain([Action::EmitAgain { link: 0, index: 3 }, Action::Retain {
+                        writer: 0,
+                        from: RetainFrom::Head,
+                    }])
+                    // Everything from the new floor on is retained too, so the
+                    // next window must fit the ring on its own.
+                    .chain(produce(0, 0xf3, 0, wraps(1) - window)),
+            ),
+            Node::new("cells", table).open(TCacheId::ControlSlot, TReadMode::Strict).script(
+                [consume(0, Then::Acquire, window + fill + 1)]
+                    .into_iter()
+                    .chain(std::iter::repeat_n(Action::Free, 4))
+                    .chain([consume(0, Then::Acquire, wraps(1) - window)]),
+            ),
         ],
         1,
     );

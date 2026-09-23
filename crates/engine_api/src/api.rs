@@ -4,7 +4,7 @@ use flux::spine::SpineAdapter;
 use mio::{Events, Registry};
 use silver_common::{
     ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TCacheError, TCacheId, TCacheReader,
-    TCacheTable, TProducer, TReadMode,
+    TCacheTable, TProducer, TReadMode, TileId,
 };
 use silver_config::EngineConfig;
 use silver_httpcore::TokenRange;
@@ -29,6 +29,8 @@ pub struct EngineApi {
     scratch: Vec<u8>,
 
     first_run: bool,
+    // The previous intake ran the request queue empty; licenses snapshots.
+    drained: bool,
     healthcheck_pending: bool,
     healthcheck_deadline: Instant,
     sync_status: ELSyncStatus,
@@ -65,6 +67,7 @@ impl EngineApi {
             reader: TCacheReader::new(tcaches),
 
             first_run: true,
+            drained: true,
             healthcheck_pending: false,
             healthcheck_deadline: Instant::now(),
             sync_status: ELSyncStatus::Unknown,
@@ -78,7 +81,14 @@ impl EngineApi {
             "eng_control_processing",
             TReadMode::Sliding,
         )?;
-        self.reader.open(TCacheId::NetworkProcessing, "eng_network_processing", TReadMode::Sliding)
+        self.reader.open(
+            TCacheId::NetworkProcessing,
+            "eng_network_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState]);
+        self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState]);
+        Ok(())
     }
 
     /// Last status the EL reported to `eth_syncing`; `Unknown` until the
@@ -92,7 +102,11 @@ impl EngineApi {
         adapter: &mut SpineAdapter<SilverSpine>,
         resp_producer: &mut TProducer,
     ) {
-        self.reader.free();
+        if self.drained {
+            self.reader.free();
+        } else {
+            self.reader.free_undrained();
+        }
 
         if self.client.is_none() {
             // Unsafe no-EL testing mode: report healthy once so peers don't
@@ -105,16 +119,19 @@ impl EngineApi {
             adapter.consume(|req: EngineReq, producers| {
                 handle_request_no_el(resp_producer, &req, producers)
             });
+            self.drained = true;
             return;
         }
         // Requests stay queued on the spine while every connection is busy and
         // the pool is at max_connections; intake resumes as completions free
         // connections.
+        self.drained = false;
         while self.client.as_ref().unwrap().has_capacity() {
             let consumed = adapter.consume_one(|req: EngineReq, producers| {
                 handle_request(self.client.as_mut().unwrap(), &mut self.reader, &req, producers);
             });
             if !consumed {
+                self.drained = true;
                 break;
             }
         }

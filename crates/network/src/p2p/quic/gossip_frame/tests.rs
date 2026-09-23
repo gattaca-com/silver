@@ -10,6 +10,7 @@ use quinn_proto::StreamId;
 use silver_common::{
     AcquiredWithOffset, CacheFrameRef, CacheSegment, P2pStreamId, StreamProtocol, SubLayout,
     SubReservationRef, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer,
+    test_util::follow_producer_floor,
 };
 
 use super::*;
@@ -269,7 +270,8 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     }
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     h.columns.view_sub_reservation(assembly).unwrap().close();
-    h.context.reader.advance_retention(TCacheId::ControlSlot, h.columns.next_seq());
+    h.columns.retain_from(h.columns.next_seq());
+    follow_producer_floor(&mut h.context.reader);
     assert!(h.acquire(reference).is_none());
     let mut filled = 0;
     while let Some(mut reservation) = h.columns.reserve(8192, true) {
@@ -300,7 +302,8 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     io.retained.clear();
     assert_eq!(h.limits.owners.get(), 0);
     assert_eq!(h.wheel.active_count(), 0);
-    h.context.reader.advance_retention(TCacheId::ControlSlot, h.columns.next_seq());
+    h.columns.retain_from(h.columns.next_seq());
+    follow_producer_floor(&mut h.context.reader);
     assert!(h.columns.reserve(8192, true).is_some());
 }
 

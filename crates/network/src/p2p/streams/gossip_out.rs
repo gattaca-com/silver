@@ -373,6 +373,7 @@ mod tests {
         assert!(producer.reserve(CHURN_BYTES, true).is_none());
         drop(clone);
         assert_eq!(wheel.active_count(), 0);
+        consumer.free();
         assert!(producer.reserve(CHURN_BYTES, true).is_some());
     }
 }

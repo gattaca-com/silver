@@ -454,8 +454,15 @@ fn strict_ingress_rejects_below_tail_and_expiry_releases_parked_columns() {
         expired_slot: SLOT,
         retain_from: allocator.producer().next_seq(),
     });
+    // The tail follows the allocator's floor, not the event: it moves once
+    // the reader has taken and applied a snapshot over its next passes.
+    let boundary = allocator.producer().next_seq();
+    allocator.producer_mut().retain_from(boundary);
     rig.turn();
     assert!(rig.tile.gloas_pending_columns.is_empty());
+    for _ in 0..3 {
+        rig.turn();
+    }
     rig.cached_gossip(read, 3, domain);
     assert!(rig.tile.gloas_pending_columns.is_empty());
     assert!(rig.tile.kzg_batch.is_empty());

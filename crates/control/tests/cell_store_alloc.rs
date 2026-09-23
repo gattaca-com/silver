@@ -13,6 +13,7 @@ use silver_common::{
     GossipDomain, TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode,
     cell_store::{CellKey, CellStoreConfig, CommitmentContext, ContextData},
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
+    test_util::follow_producer_floor,
 };
 use silver_control::cell_allocator::CellAllocator;
 
@@ -58,9 +59,9 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
     let config = CellStoreConfig::new(spec, 3, Duration::ZERO).unwrap();
     let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
     let mut writer =
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let mut network =
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
     let now = Instant::now();
     let mut allocator = CellAllocator::new(config.clone(), producer, 0, now).unwrap();
     let mut store = CellStore::new(config, 0, now).unwrap();
@@ -71,11 +72,9 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
 
     for slot in 0u64..512 {
         store.advance(now + Duration::from_secs(slot), slot.saturating_sub(63), |_| {});
-        if let Some(event) =
-            allocator.advance(now + Duration::from_secs(slot), slot.saturating_sub(63))
-        {
-            writer.advance_retention(TCacheId::ControlSlot, event.retain_from);
-            network.advance_retention(TCacheId::ControlSlot, event.retain_from);
+        if allocator.advance(now + Duration::from_secs(slot), slot.saturating_sub(63)).is_some() {
+            follow_producer_floor(&mut writer);
+            follow_producer_floor(&mut network);
         }
         let mut block_root = [0; 32];
         block_root[..8].copy_from_slice(&slot.to_le_bytes());
@@ -157,9 +156,9 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
         black_box(store.column(&block_root, 0).unwrap());
     }
     store.advance(now + Duration::from_secs(512), 512, |_| {});
-    let event = allocator.advance(now + Duration::from_secs(512), 512).unwrap();
-    writer.advance_retention(TCacheId::ControlSlot, event.retain_from);
-    network.advance_retention(TCacheId::ControlSlot, event.retain_from);
+    allocator.advance(now + Duration::from_secs(512), 512).unwrap();
+    follow_producer_floor(&mut writer);
+    follow_producer_floor(&mut network);
     assert_eq!(store.counts().cells, 0);
     assert_eq!(store.counts().blocks, 0);
     assert_eq!(ALLOCATION_EVENTS.with(Cell::get) - before, 0);

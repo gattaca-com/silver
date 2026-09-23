@@ -73,6 +73,10 @@ pub struct CellIngress {
 }
 
 impl CellIngress {
+    pub fn publish_head(&self) {
+        self.allocator.publish_head();
+    }
+
     pub fn new(
         config: CellStoreConfig,
         producer: TProducer,

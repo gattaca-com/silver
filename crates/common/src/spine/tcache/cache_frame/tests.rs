@@ -4,7 +4,9 @@ use std::{
 };
 
 use super::*;
-use crate::{P2pSend, SubLayout, TCache, TCacheId, TCacheTable, TReadMode};
+use crate::{
+    P2pSend, SubLayout, TCache, TCacheId, TCacheTable, TReadMode, test_util::follow_producer_floor,
+};
 
 /// Strict on the gossip cache; retained on `columns` when given.
 fn frame_reader(gossip: &Producer, columns: Option<&Producer>) -> TCacheReader {
@@ -12,7 +14,7 @@ fn frame_reader(gossip: &Producer, columns: Option<&Producer>) -> TCacheReader {
     let mut reader = TCacheReader::new(TCacheTable::from_iter(caches));
     reader.open(TCacheId::ControlGossip, "", TReadMode::Strict).unwrap();
     if columns.is_some() {
-        reader.open(TCacheId::ControlSlot, "", TReadMode::Retained).unwrap();
+        reader.open(TCacheId::ControlSlot, "", TReadMode::Strict).unwrap();
     }
     reader
 }
@@ -115,7 +117,8 @@ fn shared_segments_expose_only_verified_subranges() {
     assert_eq!(ranges[0].as_ref(), b"el");
     assert_eq!(ranges[1].as_ref(), b"pf");
     columns.view_sub_reservation(reference).unwrap().close();
-    reader.advance_retention(TCacheId::ControlSlot, columns.next_seq());
+    columns.retain_from(columns.next_seq());
+    follow_producer_floor(&mut reader);
     assert!(view.segments().next().unwrap().acquire(&mut reader).is_none());
     assert_eq!(ranges[0].as_ref(), b"el");
 }
@@ -162,7 +165,7 @@ fn descriptor_bounds_and_sources_are_checked() {
     let view = frame.acquire(&mut reader, Instant::now()).unwrap();
     let segment = view.segments().next().unwrap();
     assert!(segment.acquire(&mut reader).is_none(), "source cache not open");
-    reader.open(TCacheId::ControlProcessing, "", TReadMode::Retained).unwrap();
+    reader.open(TCacheId::ControlProcessing, "", TReadMode::Strict).unwrap();
     assert!(segment.acquire(&mut reader).is_none(), "range past the source bytes");
 
     for bytes in [&b"not a descriptor"[..], &b"SGFRAME1\xff\xff\xff\xff\x01\x00\x00\x00"[..]] {
@@ -281,7 +284,8 @@ fn handoff_transfers_counts_and_frame_drop_releases_only_the_remainder() {
     let Some(AcquiredCacheSegment::Data(column_range)) = frame.take_next() else { panic!() };
     assert_eq!(reader.active_count(TCacheId::ControlGossip), 2);
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 2);
-    reader.advance_retention(TCacheId::ControlSlot, columns.next_seq());
+    columns.retain_from(columns.next_seq());
+    follow_producer_floor(&mut reader);
     drop(frame);
     assert_eq!(reader.active_count(TCacheId::ControlGossip), 1);
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 1);
@@ -356,7 +360,8 @@ fn shared_handoff_survives_closure_without_exposing_unverified_gaps() {
         reference.acquire(&mut reader, now).unwrap().acquire_segments(&mut reader).unwrap();
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 4);
     columns.view_sub_reservation(shared).unwrap().close();
-    reader.advance_retention(TCacheId::ControlSlot, columns.next_seq());
+    columns.retain_from(columns.next_seq());
+    follow_producer_floor(&mut reader);
     assert!(reference.acquire(&mut reader, now).unwrap().acquire_segments(&mut reader).is_none());
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 4);
     for (index, expected) in [&[0; 3][..], &[2; 4], &[10; 2], &[12; 1]].into_iter().enumerate() {

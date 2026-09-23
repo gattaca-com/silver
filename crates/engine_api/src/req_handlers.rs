@@ -165,7 +165,7 @@ fn handle_new_payload_common(
             .engine_resps
             .produce(&EngineResp::NewPayload(invalid_new_payload_resp(block_root)).into());
     }
-    reader.free();
+    reader.free_undrained();
 }
 
 #[inline]

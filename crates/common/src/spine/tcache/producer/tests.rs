@@ -157,6 +157,8 @@ fn padding_waits_for_pending_writes_and_linear_consumer_release() {
         let mut pending = producer.reserve(96, false).unwrap();
         pending.buffer().unwrap().fill(0xab);
         assert!(producer.reserve(160, false).is_none());
+        // The head is published by the owning tile, not by the failed reserve.
+        producer.publish_head();
         assert_eq!(cache.head().seq.load(Ordering::Acquire), 256);
         let padding = cache.slot_at(128);
         assert_eq!(padding.seq.load(Ordering::Acquire), 128);
@@ -190,10 +192,12 @@ fn padding_itself_must_fit_without_overwriting_consumer_data() {
             producer.reserve(96, true).unwrap().write_all(&[value; 96]).unwrap();
         }
         assert!(producer.reserve(160, false).is_none());
+        producer.publish_head();
         assert_eq!(producer.cache_ref().head().seq.load(Ordering::Acquire), 384);
         assert_eq!(consumer.read().unwrap().0, &[2; 96]);
         consumer.free();
         assert!(producer.reserve(160, false).is_none());
+        producer.publish_head();
         assert_eq!(producer.cache_ref().head().seq.load(Ordering::Acquire), 512);
         assert_eq!(consumer.read().unwrap().0, &[3; 96]);
         consumer.free();

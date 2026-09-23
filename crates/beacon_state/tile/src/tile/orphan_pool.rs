@@ -70,7 +70,8 @@ impl BeaconStateTile {
             return false;
         }
 
-        let orphan = Orphan { block_root, slot: block_slot, msg };
+        let parked_at = self.ticker.current_slot();
+        let orphan = Orphan { block_root, slot: block_slot, msg, parked_at };
         if !self.held.orphans.park(parent_root, orphan) {
             return false;
         }
@@ -90,6 +91,17 @@ impl BeaconStateTile {
             block_slot <= self.ticker.current_slot() + self.pending_bounds.future_tolerance
     }
 
+    /// Following only: while syncing, parents arrive by range, not by root,
+    /// and an orphan may legitimately wait for the range to reach it.
+    pub(super) fn expire_orphans(&mut self, wall_slot: Slot, producers: &mut Producers) {
+        self.held.orphans.expire(wall_slot, |parent, slot| {
+            producers.produce(SyncNeed::missing_block(*parent, slot));
+        });
+        self.held.payload_orphans.expire(wall_slot, |parent, slot| {
+            producers.produce(SyncNeed::missing_envelope(*parent, slot));
+        });
+    }
+
     pub(super) fn buffer_awaiting_payload(
         &mut self,
         parent_root: B256,
@@ -98,7 +110,8 @@ impl BeaconStateTile {
         msg: BlockSourceMsg,
         producers: &mut Producers,
     ) -> bool {
-        let orphan = Orphan { block_root, slot: block_slot, msg };
+        let parked_at = self.ticker.current_slot();
+        let orphan = Orphan { block_root, slot: block_slot, msg, parked_at };
         if !self.held.payload_orphans.park(parent_root, orphan) {
             return false;
         }
@@ -123,13 +136,13 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) {
-        let Orphan { block_root, slot, msg } = orphan;
+        let Orphan { block_root, slot, msg, .. } = orphan;
         let replayed = match msg {
-            BlockSourceMsg::Gossip(g) => {
-                self.handle_gossip(g.ssz, g, do_relay, pre_verified, producers)
+            BlockSourceMsg::Gossip(g, pin) => {
+                self.handle_gossip(pin.to_read(), g, do_relay, pre_verified, producers)
             }
-            BlockSourceMsg::Rpc(stream_id, ssz) => {
-                self.handle_rpc_block(stream_id, ssz, pre_verified, producers)
+            BlockSourceMsg::Rpc(stream_id, pin) => {
+                self.handle_rpc_block(stream_id, pin.to_read(), pre_verified, producers)
             }
         };
         if !replayed {
@@ -238,7 +251,12 @@ impl BeaconStateTile {
             Feedback::AlreadySeen |
             Feedback::TooOld |
             Feedback::Future => {}
-            _ => self.park_block(feedback, BlockSourceMsg::Rpc(sender, read), data, producers),
+            _ => self.park_block(
+                feedback,
+                BlockSourceMsg::Rpc(sender, acquired.clone()),
+                data,
+                producers,
+            ),
         }
         true
     }

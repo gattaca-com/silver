@@ -26,7 +26,7 @@ pub use tcache::{
     PendingSubReservation, Producer, ReadMode, Reservation, SubLayout, SubReservation,
     SubReservationError, SubReservationList, SubReservationRef, SubReservationView, SubValidation,
     SubWrite, TCache, TCacheCounters, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
-    TCacheRef, TCacheTable,
+    TCacheRef, TCacheTable, TileId,
 };
 
 use crate::cell_store::{CellStoreEvent, RetentionEvent};

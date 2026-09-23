@@ -12,8 +12,8 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheRead, TCacheReader,
-    TCacheTable, TProducer, TReadMode,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
@@ -206,6 +206,7 @@ impl Controller {
             "ctl_boundary_processing",
             TReadMode::Sliding,
         )?;
+        self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, TileId::Columns]);
         self.gossip_handler.open_tcaches()
     }
 
@@ -692,6 +693,14 @@ impl Tile<SilverSpine> for Controller {
             ) {
                 adapter.mark_work();
             }
+        }
+
+        // Every event the handler queued this loop is on the spine now.
+        self.gossip_handler.publish_heads();
+        self.rpc_producer.publish_head();
+        self.attestation_cluster.publish_head();
+        if let Some(ingress) = &self.cell_ingress {
+            ingress.publish_head();
         }
     }
 

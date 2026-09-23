@@ -6,8 +6,8 @@ use silver_common::{
     Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
     SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer,
-    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, cell_store::PartialColumnsMode,
-    msg_id_valid_snappy,
+    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    cell_store::PartialColumnsMode, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -83,7 +83,13 @@ impl GossipHandler {
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
         self.reader.open(TCacheId::NetworkIngress, "gossip_network_ingress", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::ControlGossip, "gossip_mcache", TReadMode::SlidingManualFree)
+        self.reader.open_forwarder(
+            TileId::Control,
+            TCacheId::ControlGossip,
+            TReadMode::SlidingManualFree,
+        )?;
+        self.reader.declare(TCacheId::ControlGossip, &[TileId::Columns]);
+        Ok(())
     }
 
     fn generate_ihave_messages(&mut self, now: Instant, emit: &mut impl FnMut(GossipHandlerEvent)) {
@@ -262,6 +268,11 @@ impl GossipHandler {
         self.domains.set(current, other);
     }
 
+    pub fn publish_heads(&self) {
+        self.incoming_gossip_publish.publish_head();
+        self.mcache_publish.publish_head();
+    }
+
     pub fn handle_peer_control(&mut self, peer_control: PeerControl) {
         let mut events = std::mem::take(&mut self.events);
         self.handle_peer_control_inner(peer_control, &mut |e| events.push_back(e));
@@ -393,7 +404,7 @@ impl GossipHandler {
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
         self.generate_ihave_messages(now, emit);
-        self.reader.free();
+        self.reader.free_undrained();
 
         adapter.consume(|msg: GossipMsgIn, producers| {
             did_work = true;

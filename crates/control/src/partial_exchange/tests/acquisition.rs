@@ -2,6 +2,7 @@ use silver_common::{
     ColumnOrigin, DataKind, SszCache,
     cell_store::CellKey,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView},
+    test_util::follow_producer_floor,
 };
 
 use super::*;
@@ -362,10 +363,10 @@ fn live_fulu_to_gloas_cutover_uses_new_context_group_and_requests_without_a_head
     rig.acquire();
     rig.spin();
     rig.now += Duration::from_secs(32 * 12);
-    let boundary = rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
+    rig.ingress.allocator_mut().advance(rig.now, 0).unwrap();
     rig.store.advance(rig.now, 0, |_| {});
-    rig.network.advance_retention(TCacheId::ControlSlot, boundary.retain_from);
-    rig.columns.advance_retention(TCacheId::ControlSlot, boundary.retain_from);
+    follow_producer_floor(&mut rig.network);
+    follow_producer_floor(&mut rig.columns);
     assert!(rig.acquire().is_empty());
     rig.spin();
     let next_domain = GossipDomain::new([2; 4], ForkName::Gloas);

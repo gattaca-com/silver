@@ -32,7 +32,7 @@ fn mode_off_allocates_assemblies_without_enabling_partial_exchange() {
     });
     let config = CellStoreConfig::new(spec.clone(), 1, Duration::ZERO).unwrap();
     let columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
-    let mut reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap();
+    let mut reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Strict).unwrap();
     capture.controller.spec = spec;
     capture.controller = capture
         .controller
@@ -104,7 +104,7 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
         columns.cache_ref(),
         capture.controller.gossip_handler.mcache_publish.cache_ref(),
     ]));
-    network_reader.open(TCacheId::ControlSlot, "", TReadMode::Retained).unwrap();
+    network_reader.open(TCacheId::ControlSlot, "", TReadMode::Strict).unwrap();
     network_reader.open(TCacheId::ControlGossip, "", TReadMode::Strict).unwrap();
     let mut bytes = vec![0; 56];
     bytes[8..12].copy_from_slice(&56u32.to_le_bytes());
@@ -215,7 +215,7 @@ fn partial_payload_only_frames_stage_directly_and_require_the_receive_gate_and_v
         let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
         let columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let cache = columns.cache_ref();
-        let _reader = TCacheReader::single(cache, "", TReadMode::Retained).unwrap();
+        let _reader = TCacheReader::single(cache, "", TReadMode::Strict).unwrap();
         capture.controller.spec = spec;
         capture.controller = capture
             .controller
@@ -289,7 +289,7 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
     });
     let config = CellStoreConfig::new(spec.clone(), 1, Duration::from_secs(11)).unwrap();
     let columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
-    let _reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap();
+    let _reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Strict).unwrap();
     capture.controller.spec = spec.clone();
     capture.controller = capture
         .controller

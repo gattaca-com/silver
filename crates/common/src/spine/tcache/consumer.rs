@@ -4,7 +4,9 @@ use flux::{Timer, timing::Nanos};
 
 use crate::{
     GossipMsgOut, TCacheError, TCacheId, TCacheRef,
-    spine::tcache::{IDLE_INTERVAL_NS, TCacheCounters, lag_threshold},
+    spine::tcache::{
+        IDLE_INTERVAL_NS, PRODUCER_EMITTER, TCacheCounters, bounds::Bounds, lag_threshold,
+    },
 };
 
 /// Descriptor of one TCache msg. `emitter` and `floor` carry the stamping
@@ -108,8 +110,7 @@ impl Consumer {
 
 impl Drop for Consumer {
     fn drop(&mut self) {
-        self.cache.head().tails[self.index].store(u64::MAX, Ordering::Release);
-        self.cache.record_tail(self.index, u64::MAX);
+        self.cache.release_slot(self.index);
     }
 }
 
@@ -121,9 +122,7 @@ pub struct RandomAccessConsumer {
     pub(super) name: &'static str,
     // Mapping of active / enqueued sequence numbers and reader counts.
     pub(super) active: Buckets,
-    // If set `free` is called on drop of every acquired read, ensuring the
-    // consumer tail is published.
-    pub(super) auto_free: bool,
+    pub(super) bounds: Bounds,
     /// Per-consumer flux Timer emitting `latency-tcache-{tcache}-{name}`
     /// — measures elapsed from `slot.reserve_ns` at acquire time.
     pub(super) timer: Option<Timer>,
@@ -148,34 +147,67 @@ impl RandomAccessConsumer {
         self.strict
     }
 
-    pub fn is_retained(&self) -> bool {
-        matches!(self.active.guard, TailGuard::Fixed(_))
+    pub(super) fn declare(&mut self, emitter: &'static str) {
+        self.bounds.declare(self.cache, emitter);
+        self.active.set_limit(self.bounds.limit());
     }
 
-    pub(super) fn retain(&mut self) {
-        assert!(self.strict);
-        self.active.guard = TailGuard::Fixed(self.active.tail_seq);
+    /// End of the owner's pass over its queues; see `Bounds::pass`.
+    pub(super) fn pass(&mut self, drained: bool) {
+        self.bounds.pass(self.cache, drained);
+        self.active.set_limit(self.bounds.limit());
+        self.free();
     }
 
-    /// The producer captures `seq` before reserving the next retained region.
-    /// Live reads still stop rollup before this boundary.
-    pub fn advance_retention(&mut self, seq: u64) {
-        let TailGuard::Fixed(boundary) = &mut self.active.guard else {
-            panic!("consumer has no fixed retention boundary");
-        };
-        if seq > *boundary {
-            *boundary = seq;
-            self.active.head_seq = self.active.head_seq.max(seq);
-            self.active.rollup(self.active.head_seq);
-            self.free();
+    #[inline]
+    fn note(&mut self, read: TCacheRead) {
+        if !self.bounds.note(self.cache, read.emitter, read.floor) {
+            tracing::warn!(
+                tcache = self.cache.name(),
+                consumer = self.name,
+                emitter = read.emitter,
+                emitter_name = %self.emitter_name(read.emitter),
+                seq = read.seq,
+                floor = read.floor,
+                "read from undeclared emitter"
+            );
+            debug_assert!(false, "{}: read from undeclared emitter {}", self.name, read.emitter);
         }
+        self.active.set_limit(self.bounds.limit());
+    }
+
+    fn emitter_name(&self, emitter: u8) -> String {
+        if emitter == PRODUCER_EMITTER {
+            "producer".to_owned()
+        } else {
+            self.cache.consumer_name(emitter as usize)
+        }
+    }
+
+    /// The pin is not counted: no bound protected `seq`, so the producer may
+    /// reclaim it while held. The read surfaces as `StaleSeq` at `buffer()`.
+    fn warn_acquire_below_tail(&self, read: TCacheRead) {
+        tracing::warn!(
+            tcache = self.cache.name(),
+            consumer = self.name,
+            seq = read.seq,
+            tail = self.active.tail_seq,
+            head = self.active.head_seq,
+            emitter = read.emitter,
+            emitter_name = %self.emitter_name(read.emitter),
+            floor = read.floor,
+            "acquire below tail"
+        );
     }
 
     pub fn acquire(&mut self, read: TCacheRead) -> AcquiredRead {
         let now = Nanos::now();
         self.last_read = now;
 
-        self.active.acquire(read.seq);
+        self.note(read);
+        if !self.active.acquire(read.seq) {
+            self.warn_acquire_below_tail(read);
+        }
         if let Some(timer) = &mut self.timer {
             if let Ok(reserve_ns) = self.cache.slot_ts(read.seq) {
                 timer.emit_latency_from_nanos(reserve_ns, now);
@@ -188,20 +220,18 @@ impl RandomAccessConsumer {
         let now = Nanos::now();
         self.last_read = now;
 
-        self.active
-            .acquire(read.seq)
-            .then(|| {
-                if let Some(timer) = &mut self.timer {
-                    if let Ok(reserve_ns) = self.cache.slot_ts(read.seq) {
-                        timer.emit_latency_from_nanos(reserve_ns, now);
-                    }
-                }
-                AcquiredRead { consumer: self as *const Self, read, acquired: now }
-            })
-            .and_then(|ar| {
-                // check slot seq.
-                self.cache.check_seq(read.seq).then_some(ar)
-            })
+        self.note(read);
+        if !self.active.acquire(read.seq) {
+            self.warn_acquire_below_tail(read);
+            return None;
+        }
+        if let Some(timer) = &mut self.timer {
+            if let Ok(reserve_ns) = self.cache.slot_ts(read.seq) {
+                timer.emit_latency_from_nanos(reserve_ns, now);
+            }
+        }
+        let acquired = AcquiredRead { consumer: self as *const Self, read, acquired: now };
+        self.cache.check_seq(read.seq).then_some(acquired)
     }
 
     /// Should be called periodically to publish the tail offset so it is
@@ -210,7 +240,10 @@ impl RandomAccessConsumer {
         let mut tail = self.active.tail_seq;
         if tail != u64::MAX {
             let cache_head = self.cache.head();
-            if !self.strict && self.last_read.elapsed() > IDLE_INTERVAL_NS {
+            // Only a tail held by unfreed pins is reset; one held by an emitter
+            // bound is where it should be.
+            let held_by_pins = tail < self.active.rollup_limit();
+            if !self.strict && held_by_pins && self.last_read.elapsed() > IDLE_INTERVAL_NS {
                 // check lagging
                 let head = cache_head.seq.load(Ordering::Relaxed);
                 if head.saturating_sub(tail) > self.lag_threshold {
@@ -264,8 +297,7 @@ impl std::fmt::Debug for RandomAccessConsumer {
 
 impl Drop for RandomAccessConsumer {
     fn drop(&mut self) {
-        self.cache.head().tails[self.index].store(u64::MAX, Ordering::Release);
-        self.cache.record_tail(self.index, u64::MAX);
+        self.cache.release_slot(self.index);
     }
 }
 
@@ -365,9 +397,6 @@ impl Drop for AcquiredRead {
         unsafe {
             let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
             consumer.release(self.read.seq());
-            if consumer.auto_free {
-                consumer.free();
-            }
         }
     }
 }
@@ -434,11 +463,6 @@ impl AsRef<[u8]> for AcquiredRange {
     }
 }
 
-enum TailGuard {
-    Sliding(u64),
-    Fixed(u64),
-}
-
 pub(super) struct Buckets {
     buckets: Box<[u16]>,
     tail_seq: u64,
@@ -450,9 +474,9 @@ pub(super) struct Buckets {
     // for 'strict' consumers this is set to cache length so that it never
     // triggers
     lag_threshold: u64,
-    // Sliding consumers keep 20% lookback. Retained consumers keep everything
-    // from a fixed boundary, independent of acquire order.
-    guard: TailGuard,
+    // The tail never passes the lowest emitter bound: what the producer or a
+    // forwarding consumer may still emit to this consumer.
+    limit: u64,
 }
 
 impl Buckets {
@@ -482,21 +506,25 @@ impl Buckets {
             } else {
                 lag_threshold(cache_capacity as u32)
             },
-            guard: TailGuard::Sliding(
-                (cache_capacity / 5).next_multiple_of(bucket_size).max(bucket_size),
-            ),
+            limit: seq,
+        }
+    }
+
+    pub(super) fn set_limit(&mut self, limit: u64) {
+        if limit != self.limit {
+            self.limit = limit;
+            self.rollup();
         }
     }
 
     fn acquire(&mut self, seq: u64) -> bool {
-        // Out-of-order acquire beyond the guard window: the producer may
+        // Acquire below the tail: no bound protected it, so the producer may
         // already be reclaiming this slot, and bucket_index aliases behind
-        // the tail onto in-window buckets — counting it would corrupt a
-        // live bucket (the matching release is dropped below tail). Skip;
-        // the read surfaces as StaleSeq at buffer() time.
+        // the tail onto live buckets — counting it would corrupt one (the
+        // matching release is dropped below tail). Skip; the read surfaces
+        // as StaleSeq at buffer() time.
         if self.tail_seq != u64::MAX && seq < self.tail_seq {
             TCacheCounters::AcquireBelowTail.inc();
-            tracing::warn!(seq, tail = self.tail_seq, head = self.head_seq, "acquire below tail");
             return false;
         }
         if seq < self.bucket_start_seq(self.head_seq) {
@@ -509,9 +537,9 @@ impl Buckets {
         self.head_seq = self.head_seq.max(seq);
 
         if self.tail_seq == u64::MAX {
-            self.tail_seq = self.rollup_limit(seq);
+            self.tail_seq = self.rollup_limit();
         }
-        self.rollup(seq);
+        self.rollup();
         true
     }
 
@@ -523,22 +551,19 @@ impl Buckets {
 
         let bucket_idx = self.bucket_index(seq);
         self.buckets[bucket_idx] = self.buckets[bucket_idx].saturating_sub(1);
-        self.rollup(self.head_seq);
+        self.rollup();
     }
 
     #[inline]
-    fn rollup_limit(&self, seq: u64) -> u64 {
-        match self.guard {
-            TailGuard::Sliding(distance) => self.bucket_start_seq(seq).saturating_sub(distance),
-            TailGuard::Fixed(boundary) => self.bucket_start_seq(boundary),
-        }
+    fn rollup_limit(&self) -> u64 {
+        self.bucket_start_seq(self.limit)
     }
 
-    fn rollup(&mut self, seq: u64) {
-        let limit = self.rollup_limit(seq);
+    fn rollup(&mut self) {
+        let limit = self.rollup_limit();
         while self.tail_seq < limit {
             let tail_bucket = self.bucket_index(self.tail_seq);
-            if self.head_seq - self.tail_seq > self.lag_threshold {
+            if self.head_seq.saturating_sub(self.tail_seq) > self.lag_threshold {
                 TCacheCounters::LagEviction.inc();
                 tracing::warn!(
                     lagging = self.buckets[tail_bucket],
@@ -589,15 +614,9 @@ mod tests {
     use super::*;
     use crate::spine::tcache::{Producer, TCache, producer::TCacheProducer};
 
-    fn random_access(cache: TCacheRef, auto_free: bool, strict: bool) -> RandomAccessConsumer {
+    fn random_access(cache: TCacheRef, _auto_free: bool, strict: bool) -> RandomAccessConsumer {
         let head = cache.head().seq.load(Ordering::Acquire);
-        cache.ra_consumer_from(head, "", auto_free, strict).unwrap()
-    }
-
-    fn retained(cache: TCacheRef) -> RandomAccessConsumer {
-        let mut consumer = random_access(cache, true, true);
-        consumer.retain();
-        consumer
+        cache.ra_consumer_from(head, "", strict).unwrap()
     }
 
     // ---- Buckets algorithm ----
@@ -606,66 +625,75 @@ mod tests {
     fn buckets_acquire_initialises_tail_to_bucket_boundary() {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(100);
-        // 100 lives in bucket 1 (64..128); tail starts `guard` (10% of
-        // 1024 → 128) below its bucket start, saturating at 0.
+        // The limit is still the open seq, so the tail stays there.
         assert_eq!(b.tail_seq, 0);
         assert_eq!(b.head_seq, 100);
     }
 
-    /// A late acquire within the guard window (10% of capacity behind the
-    /// newest acquire) must land at or above the tail and be tracked.
+    /// The tail follows the emitter limit over released buckets, not the
+    /// newest acquire.
     #[test]
-    fn buckets_out_of_order_acquire_within_guard() {
-        // guard = (1024/5).next_multiple_of(64) = 256.
+    fn buckets_tail_follows_the_limit() {
+        let mut b = Buckets::new(64, 1024, 0);
+        b.acquire(100);
+        b.release(100, "");
+        assert_eq!(b.tail_seq, 0);
+        b.set_limit(500);
+        assert_eq!(b.tail_seq, 448);
+    }
+
+    /// An acquire between the tail and the newest acquire is tracked.
+    #[test]
+    fn buckets_acquire_between_tail_and_newest_is_tracked() {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
         b.release(0, "");
-        b.acquire(500);
-        // Tail rolled over the released bucket but held 128 back from
-        // bucket_start(500) = 448.
+        b.set_limit(200);
         assert_eq!(b.tail_seq, 192);
-        // Late low acquire inside the window: tracked, not dropped.
+        b.acquire(500);
         b.acquire(200);
         assert!(b.tail_seq <= 200);
         b.release(200, "");
         b.release(500, "");
     }
 
-    /// An acquire below the tail (out-of-order beyond the guard window)
-    /// must not be counted: bucket_index aliases behind-tail seqs onto
-    /// live buckets and the matching release is dropped, so counting
-    /// would permanently stall the tail on a phantom holder.
+    /// An acquire below the tail must not be counted: bucket_index aliases
+    /// behind-tail seqs onto live buckets and the matching release is
+    /// dropped, so counting would permanently stall the tail on a phantom
+    /// holder.
     #[test]
     fn buckets_acquire_below_tail_dropped_without_corruption() {
-        let mut b = Buckets::new(64, 1024, 0); // guard 128, lag threshold 921
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
         b.release(0, "");
-        b.acquire(1000); // forces tail well past bucket 0 (tail = 704)
+        b.set_limit(1000);
         let tail = b.tail_seq;
-        assert!(tail >= 128);
+        assert_eq!(tail, 960);
+        b.acquire(1000);
 
         // Below-tail acquire: dropped (warn), tail untouched.
-        b.acquire(1);
+        assert!(!b.acquire(1));
         assert_eq!(b.tail_seq, tail);
         // Its release is the existing below-tail no-op.
         b.release(1, "");
 
         // seq 1 aliases onto the same ring bucket as seqs 1024..1088; had
-        // the acquire been counted, the tail would stall there forever
-        // (head - tail stays under the lag threshold, so no force-evict).
+        // the acquire been counted, the tail would stall there forever.
         b.release(1000, "");
-        b.acquire(1600);
-        assert!(b.tail_seq > 1024, "tail stalled at {} on a phantom holder", b.tail_seq);
+        b.set_limit(1600);
+        assert_eq!(b.tail_seq, 1600, "tail stalled on a phantom holder");
+        assert!(b.acquire(1600));
     }
 
     #[test]
-    fn buckets_release_advances_tail_when_head_is_ahead() {
+    fn buckets_release_advances_tail_up_to_the_limit() {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0, tail = 0
         b.acquire(500); // bucket 7, head = 500; held bucket 0 blocks rollup
+        b.set_limit(500);
         assert_eq!(b.tail_seq, 0);
         b.release(0, "");
-        assert_eq!(b.tail_seq, 192, "release did not immediately advance tail");
+        assert_eq!(b.tail_seq, 448, "release did not immediately advance tail");
     }
 
     #[test]
@@ -673,7 +701,8 @@ mod tests {
         let mut b = Buckets::new(64, 1024, 32);
         b.acquire(32); // hold the partial initial bucket
         b.acquire(64); // hold the next bucket
-        b.acquire(500); // move head far enough for rollup
+        b.acquire(500);
+        b.set_limit(500);
         assert_eq!(b.tail_seq, 32);
 
         b.release(32, "");
@@ -692,15 +721,14 @@ mod tests {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0
         b.acquire(100); // bucket 1
-        b.acquire(500); // bucket 8
-        // Release the middle first — bucket 1 empties but tail is still at 0
+        b.acquire(500); // bucket 7
+        b.set_limit(500);
+        // Release the middle first: bucket 1 empties but bucket 0 holds.
         b.release(100, "");
         assert_eq!(b.tail_seq, 0, "tail moved while bucket 0 still held");
-        // Release the head; tail jumps past bucket 0 and bucket 1 and bucket 2 (all
-        // empty)
+        // Release the head; the tail jumps over the empty buckets to the limit.
         b.release(0, "");
-        b.acquire(450);
-        assert!(b.tail_seq >= 128, "tail did not jump: {}", b.tail_seq);
+        assert_eq!(b.tail_seq, 448);
     }
 
     #[test]
@@ -708,20 +736,18 @@ mod tests {
         // threshold = 0.9 * 1024 = 921
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // hold bucket 0; never released
-        let tail_before = b.tail_seq;
+        b.set_limit(1000);
+        assert_eq!(b.tail_seq, 0, "a held bucket must stop the walk");
         // Bump head past lag threshold with a fresh acquire.
         b.acquire(1000);
-        assert!(
-            b.tail_seq > tail_before,
-            "lag eviction did not advance tail (tail={})",
-            b.tail_seq
-        );
+        assert!(b.tail_seq > 0, "lag eviction did not advance tail (tail={})", b.tail_seq);
     }
 
     #[test]
     fn buckets_release_below_tail_is_noop() {
         let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
+        b.set_limit(1000);
         b.acquire(1000); // forces tail past bucket 0
         let tail_after_eviction = b.tail_seq;
         b.release(0, ""); // 0 is now below tail — must not corrupt state
@@ -763,18 +789,32 @@ mod tests {
         consumer.free();
     }
 
+    /// Three drained passes: the first clears the mark left by consumed
+    /// reads, the second takes the producer floor snapshot, the third
+    /// applies it.
+    fn follow(consumer: &mut RandomAccessConsumer) {
+        for _ in 0..3 {
+            consumer.pass(true);
+        }
+    }
+
     #[test]
-    fn retention_advance_skips_unacquired_records_without_releasing_live_reads() {
+    fn retention_floor_holds_unacquired_records_until_the_producer_moves_it() {
         let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
-        let mut consumer = retained(producer.cache_ref());
+        producer.retain_from(0);
+        let mut consumer = random_access(producer.cache_ref(), true, true);
         let read = write_marker(&mut producer, 32, 0xab);
         let pinned = consumer.acquire_strict(read).unwrap();
         for _ in 0..20 {
             write_marker(&mut producer, 8192, 0xcd);
         }
-        let boundary = producer.next_seq();
-        consumer.advance_retention(boundary);
+        follow(&mut consumer);
         assert_eq!(consumer.active.tail_seq, 0);
+
+        let boundary = producer.next_seq();
+        producer.retain_from(boundary);
+        follow(&mut consumer);
+        assert_eq!(consumer.active.tail_seq, 0, "the pin still holds bucket 0");
         assert_eq!(pinned.buffer().unwrap().0, &[0xab; 32]);
         drop(pinned);
         assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
@@ -782,43 +822,26 @@ mod tests {
     }
 
     #[test]
-    fn fixed_retention_replaces_the_sliding_guard_on_acquire_and_drop() {
+    fn producer_retention_keeps_old_reads_readable_under_traffic() {
         let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
-        let mut consumer = retained(producer.cache_ref());
+        producer.retain_from(0);
+        let mut consumer = random_access(producer.cache_ref(), true, true);
         let old = write_marker(&mut producer, 32, 0xab);
         for _ in 0..20 {
             let newer = write_marker(&mut producer, 8192, 0xcd);
             drop(consumer.acquire_strict(newer).unwrap());
-            consumer.free();
+            consumer.pass(true);
         }
         assert_eq!(consumer.active.tail_seq, 0);
         assert_eq!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire), 0);
+        // Re-emitted later, the old read is still above the tail.
         assert_eq!(consumer.acquire_strict(old).unwrap().buffer().unwrap().0, &[0xab; 32]);
 
         let boundary = producer.next_seq();
-        consumer.advance_retention(boundary);
+        producer.retain_from(boundary);
+        follow(&mut consumer);
         assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
         assert!(consumer.acquire_strict(old).is_none());
-    }
-
-    #[test]
-    fn delayed_boundary_cannot_discard_next_region_or_move_backwards() {
-        let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
-        let mut consumer = retained(producer.cache_ref());
-        for _ in 0..10 {
-            write_marker(&mut producer, 8192, 0xab);
-        }
-        let boundary = producer.next_seq();
-        assert_ne!(boundary % consumer.active.bucket_size, 0);
-        let next = write_marker(&mut producer, 32, 0xcd);
-        for _ in 0..10 {
-            let newer = write_marker(&mut producer, 8192, 0xef);
-            drop(consumer.acquire_strict(newer).unwrap());
-        }
-        consumer.advance_retention(boundary);
-        consumer.advance_retention(boundary - 8192);
-        assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
-        assert_eq!(consumer.acquire_strict(next).unwrap().buffer().unwrap().0, &[0xcd; 32]);
     }
 
     #[test]
@@ -987,6 +1010,7 @@ mod tests {
         assert_eq!(proof.as_ref(), &[0xab; 48]);
 
         drop(proof);
+        consumer.free();
         assert!(producer.reserve(MESSAGE_LEN, true).is_some());
         assert!(consumer.acquire_strict(read).is_none());
     }

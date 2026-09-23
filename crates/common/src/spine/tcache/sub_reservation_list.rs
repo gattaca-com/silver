@@ -103,13 +103,15 @@ impl AcquiredSubReservationList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SubLayout, TCache, TCacheId, TCacheReader, TReadMode};
+    use crate::{
+        SubLayout, TCache, TCacheId, TCacheReader, TReadMode, test_util::follow_producer_floor,
+    };
 
     #[test]
     fn list_keeps_descriptors_in_one_cache_and_requires_live_strict_reads() {
         let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let mut consumer =
-            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+            Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap());
         let layout = SubLayout { parts: 1, first_len: 4, second_len: 2 };
         let first = producer.sub_reservation(layout, b"", b"").unwrap();
         let second = producer.sub_reservation(layout, b"", b"").unwrap();
@@ -121,7 +123,7 @@ mod tests {
 
         let mut other = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
         let mut wrong =
-            Box::new(TCacheReader::single(other.cache_ref(), "", TReadMode::Retained).unwrap());
+            Box::new(TCacheReader::single(other.cache_ref(), "", TReadMode::Strict).unwrap());
         assert!(matches!(list.acquire(&mut wrong), Err(SubReservationError::WrongConsumer)));
         assert!(SubReservationList::write(&mut other, [first].into_iter()).is_err());
         assert!(
@@ -135,7 +137,8 @@ mod tests {
         let mut padding = producer.reserve(32 * 1024, false).unwrap();
         padding.buffer().unwrap().fill(0);
         padding.flush().unwrap();
-        consumer.advance_retention(TCacheId::ControlSlot, producer.next_seq());
+        producer.retain_from(producer.next_seq());
+        follow_producer_floor(&mut consumer);
         assert_eq!(acquired.entries().len(), 2);
         drop(acquired);
         consumer.free();

@@ -16,6 +16,7 @@ pub use consumer::{
     AcquiredRange, AcquiredRead, AcquiredWithOffset, Consumer, RandomAccessConsumer, TCacheRead,
 };
 pub use counters::TCacheCounters;
+pub use emitters::TileId;
 use flux::{Timer, timing::Nanos, tracing};
 pub use id::TCacheId;
 pub use producer::{Producer, Reservation, TCacheProducer};
@@ -27,7 +28,7 @@ pub use sub_reservation::{
 pub use sub_reservation_list::{AcquiredSubReservationList, SubReservationList};
 use thiserror::Error;
 
-use crate::spine::tcache::consumer::Buckets;
+use crate::spine::tcache::{bounds::Bounds, consumer::Buckets};
 
 const MAGIC: [u8; 3] = [0xEA, 0x51, 0xEE];
 const MAX_CONSUMERS: usize = 64;
@@ -50,9 +51,19 @@ const fn lag_threshold(len: u32) -> u64 {
     (len as u64 / 10) * 9
 }
 
+/// Up to 32 bytes of `name` as four little-endian words; longer names are cut.
+fn pack_name(name: &str) -> [u64; 4] {
+    let mut bytes = [0u8; 32];
+    let len = name.len().min(32);
+    bytes[..len].copy_from_slice(&name.as_bytes()[..len]);
+    array::from_fn(|i| u64::from_le_bytes(bytes[i * 8..(i + 1) * 8].try_into().unwrap()))
+}
+
+mod bounds;
 mod cache_frame;
 mod consumer;
 mod counters;
+mod emitters;
 mod id;
 mod metrics;
 mod producer;
@@ -200,20 +211,7 @@ impl TCache {
 
     pub fn consumer(&self, name: &'static str) -> Result<Consumer, Error> {
         let seq = self.head().seq.load(Ordering::Acquire);
-
-        let index = self
-            .head()
-            .tails
-            .iter()
-            .position(|t| {
-                t.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
-            })
-            .ok_or(Error::MaxConsumers)?;
-
-        // Publish a baseline tail so surfer's chart has a value to plot
-        // before the consumer has actually called free.
-        self.record_tail(index, seq);
-        self.record_consumer_name(index, name);
+        let index = self.claim_slot(seq, name)?;
 
         Ok(Consumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
@@ -232,17 +230,9 @@ impl TCache {
         &self,
         seq: u64,
         name: &'static str,
-        auto_free: bool,
         strict: bool,
     ) -> Result<RandomAccessConsumer, Error> {
-        let index = self
-            .head()
-            .tails
-            .iter()
-            .position(|t| {
-                t.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
-            })
-            .ok_or(Error::MaxConsumers)?;
+        let index = self.claim_slot(seq, name)?;
 
         tracing::info!(
             tcache_name = self.name(),
@@ -250,9 +240,6 @@ impl TCache {
             index,
             "new random access consumer with tail seq {seq}"
         );
-
-        self.record_tail(index, seq);
-        self.record_consumer_name(index, name);
 
         let active = if strict {
             Buckets::strict(32 * 1024, self.len as u64, seq)
@@ -265,13 +252,84 @@ impl TCache {
             index,
             name,
             active,
-            auto_free,
+            bounds: Bounds::new(index, seq),
             timer: self.create_consumer_timer(name),
             last_read: Nanos::now(),
             last_head: seq,
             lag_threshold: lag_threshold(self.len),
             strict,
         })
+    }
+
+    /// Claims a tail slot at `seq` and publishes its name.
+    fn claim_slot(&self, seq: u64, name: &'static str) -> Result<usize, Error> {
+        let head = self.head();
+        let index = head
+            .tails
+            .iter()
+            .position(|t| {
+                t.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
+            })
+            .ok_or(Error::MaxConsumers)?;
+
+        let words = pack_name(name);
+        for (word, value) in head.names[index].iter().zip(words).skip(1) {
+            word.store(value, Ordering::Relaxed);
+        }
+        head.names[index][0].store(words[0], Ordering::Release);
+        head.claims.fetch_add(1, Ordering::Release);
+
+        // A baseline tail so surfer has a value before the first free.
+        self.record_tail(index, seq);
+        self.record_consumer_name(index, name);
+        Ok(index)
+    }
+
+    pub(super) fn release_slot(&self, index: usize) {
+        let head = self.head();
+        head.names[index][0].store(0, Ordering::Relaxed);
+        head.tails[index].store(u64::MAX, Ordering::Release);
+        self.record_tail(index, u64::MAX);
+    }
+
+    /// The claimed slot publishing `name`, if any. The empty name never
+    /// matches.
+    pub(super) fn consumer_index(&self, name: &str) -> Option<usize> {
+        let words = pack_name(name);
+        if words[0] == 0 {
+            return None;
+        }
+        let head = self.head();
+        (0..MAX_CONSUMERS).find(|&i| {
+            head.tails[i].load(Ordering::Acquire) != u64::MAX &&
+                head.names[i][0].load(Ordering::Acquire) == words[0] &&
+                head.names[i]
+                    .iter()
+                    .zip(words)
+                    .skip(1)
+                    .all(|(w, v)| w.load(Ordering::Relaxed) == v)
+        })
+    }
+
+    /// The name a claimed slot published; empty for a free or unnamed slot.
+    pub(super) fn consumer_name(&self, index: usize) -> String {
+        let head = self.head();
+        let bytes: Vec<u8> = head.names[index]
+            .iter()
+            .flat_map(|word| word.load(Ordering::Relaxed).to_le_bytes())
+            .take_while(|&b| b != 0)
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[inline]
+    pub(super) fn tail_of(&self, index: usize) -> u64 {
+        self.head().tails[index].load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub(super) fn producer_floor(&self) -> u64 {
+        self.head().floor.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -697,7 +755,10 @@ impl TCache {
         unsafe {
             let head = &mut *(ptr as *mut TCacheHead);
             head.seq = AtomicU64::new(0);
+            head.floor = AtomicU64::new(0);
+            head.claims = AtomicU64::new(0);
             head.tails = array::from_fn(|_| AtomicU64::new(u64::MAX));
+            head.names = array::from_fn(|_| array::from_fn(|_| AtomicU64::new(0)));
             // Release store — pairs with the joiner's acquire load on ready.
             head.ready.store(u64::MAX, Ordering::Release);
         }
@@ -728,7 +789,14 @@ impl TCache {
 #[repr(C)]
 pub(super) struct TCacheHead {
     seq: AtomicU64,
+    /// The producer's floor: nothing it emits later lies below. The oldest
+    /// uncommitted reservation, or the owner's retention boundary if lower.
+    floor: AtomicU64,
+    /// Bumped on every slot claim, so followers know when to re-resolve names.
+    claims: AtomicU64,
     tails: [AtomicU64; MAX_CONSUMERS],
+    /// Consumer names, 32 bytes packed little-endian; word 0 is written last.
+    names: [[AtomicU64; 4]; MAX_CONSUMERS],
     /// Written last in init_head as the readiness signal; never modified after
     /// init.
     ready: AtomicU64,

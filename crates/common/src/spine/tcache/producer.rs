@@ -11,7 +11,9 @@ pub trait TCacheProducer: SealedProducer {
     /// available.
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation>;
 
-    /// Publish the head sequence for joining consumers.
+    /// Publishes the head and the floor. Once per loop, after every committed
+    /// read of this producer has been handed to the spine: a floor published
+    /// earlier could pass a read still held by the tile.
     fn publish_head(&self);
 
     /// Commits `len` bytes filled by `write`; `None` when the cache has no
@@ -65,13 +67,36 @@ unsafe impl Sync for Producer {}
 
 impl Producer {
     pub(super) fn new(cache: Box<TCache>) -> Self {
-        let state =
-            AllocationState { seq: 0, min_allocation: 0, published_seq: 0, space: cache.len };
+        let state = AllocationState {
+            seq: 0,
+            min_allocation: 0,
+            reclaimed_seq: 0,
+            space: cache.len,
+            retain_from: u64::MAX,
+        };
         Self { cache: Box::into_raw(cache), state }
     }
 
     pub fn next_seq(&self) -> u64 {
         self.state.seq
+    }
+
+    /// Everything below `seq` may be reclaimed once consumers follow the
+    /// published floor, and nothing below it is emitted again; the caller's
+    /// retention policy, published as this producer's floor. Monotone.
+    /// Publishes at once, so the caller must have handed every committed read
+    /// to the spine, as `publish_head` requires.
+    pub fn retain_from(&mut self, seq: u64) {
+        debug_assert!(
+            self.state.retain_from == u64::MAX || seq >= self.state.retain_from,
+            "retention moved backwards"
+        );
+        self.state.retain_from = seq;
+        // Observe every commit so far, so the published floor is the boundary
+        // itself and not a stale `min_allocation` below it.
+        let cache = self.cache_ref();
+        self.state.reclaim(&cache);
+        self.state.publish_head(&cache);
     }
 
     /// A producer-side claim cannot survive an allocation, even after the view
@@ -149,18 +174,34 @@ struct AllocationState {
     seq: u64,
     // Stops reuse at the first reservation not yet observed committed or aborted.
     min_allocation: u64,
-    published_seq: u64,
+    reclaimed_seq: u64,
     space: u32,
+    // Retention boundary set by the owner; u64::MAX when none.
+    retain_from: u64,
 }
 
 impl AllocationState {
     fn publish_head(&self, cache: &TCache) {
         cache.head().seq.store(self.seq, Ordering::Release);
+        self.publish_floor(cache);
         cache.record_head(self.seq);
     }
 
+    /// The promise stamped on every read: nothing this producer emits later
+    /// lies below it. Uncommitted reservations may still be emitted, and so
+    /// may anything retained.
+    #[inline]
+    fn floor(&self) -> u64 {
+        self.min_allocation.min(self.retain_from)
+    }
+
+    fn publish_floor(&self, cache: &TCache) {
+        cache.head().floor.store(self.floor(), Ordering::Release);
+    }
+
     /// `floor` is sampled here, under the allocator's claim: `min_allocation`
-    /// bounds every reservation still uncommitted, this one included.
+    /// bounds every reservation still uncommitted, this one included, and
+    /// `retain_from` everything the owner may emit again.
     #[inline]
     fn reserve(&mut self, cache: TCacheRef, len: usize, auto_commit: bool) -> Option<Reservation> {
         if len > cache.capacity() - size_of::<Slot>() {
@@ -168,8 +209,8 @@ impl AllocationState {
         }
         let reservation_len = cache.reserve_len(self.seq, len);
         if reservation_len > self.space as usize ||
-            self.seq - self.published_seq > (cache.len >> 4) as u64
-        // for 32MB buffer, publish head for every 2MB reserved
+            self.seq - self.reclaimed_seq > (cache.len >> 4) as u64
+        // for 32MB buffer, reclaim every 2MB reserved
         {
             self.reclaim(&cache);
             if reservation_len > cache.capacity() {
@@ -186,14 +227,17 @@ impl AllocationState {
         cache.reserve(self.seq, self.space, len as u32).map(|(seq, reservation_len)| {
             self.seq += reservation_len as u64;
             self.space -= reservation_len as u32;
-            let floor = self.min_allocation;
+            let floor = self.floor();
             Reservation { cache, seq, offset: 0, committed: false, auto_commit, floor }
         })
     }
 
+    /// Publishes nothing: head and floor move together in `publish_head`,
+    /// which the owning tile calls once its committed reads are on the spine.
+    /// A floor published here, mid-batch, could pass a read the tile still
+    /// holds.
     fn reclaim(&mut self, cache: &TCache) {
-        self.publish_head(cache);
-        self.published_seq = self.seq;
+        self.reclaimed_seq = self.seq;
         while self.min_allocation < self.seq {
             let slot = cache.slot_at(cache.index(self.min_allocation));
             if slot.seq.load(Ordering::Acquire) != self.min_allocation {

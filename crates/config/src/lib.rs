@@ -152,12 +152,12 @@ pub struct Config {
     peer_score_params: ScoreParams,
     #[serde(default)]
     syncing: SyncingConfig,
-    #[serde(default = "default_usize::<268435456>")] // 2 << 27
+    #[serde(default = "default_usize::<134217728>")] // 2 << 26
     incoming_gossip_tcache_size: usize,
-    #[serde(default = "default_usize::<268435456>")] // 2 << 27
+    #[serde(default = "default_usize::<67108864>")] // 2 << 25
     outgoing_gossip_tcache_size: usize,
     /// Decompressed gossip SSZ. Parks handles too — see below, at tip volumes.
-    #[serde(default = "default_usize::<268435456>")] // 2 << 27
+    #[serde(default = "default_usize::<134217728>")] // 2 << 26
     incoming_gossip_ssz_tcache_size: usize,
     /// Inbound RPC ring: block, column-sidecar and envelope chunks; the
     /// producer wraps when full. Beacon state parks its handles, so a block
@@ -171,7 +171,7 @@ pub struct Config {
     /// floor.
     #[serde(default = "default_usize::<134217728>")] // 2 << 26
     incoming_rpc_tcache_size: usize,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<67108864>")] // 2 << 25
     outgoing_rpc_tcache_size: usize,
     #[serde(default = "default_data_dir")]
     data_storage_dir: String,
@@ -220,11 +220,11 @@ impl Config {
             discovery_config: DiscoveryConfig::default(),
             peer_score_params: ScoreParams::default(),
             syncing: SyncingConfig::default(),
-            incoming_gossip_tcache_size: 2 << 27,     // protobuf
-            outgoing_gossip_tcache_size: 2 << 27,     // protobuf
-            incoming_gossip_ssz_tcache_size: 2 << 27, // ssz
+            incoming_gossip_tcache_size: 2 << 26,     // protobuf
+            outgoing_gossip_tcache_size: 2 << 25,     // protobuf
+            incoming_gossip_ssz_tcache_size: 2 << 26, // ssz
             incoming_rpc_tcache_size: 2 << 26,        // ssz
-            outgoing_rpc_tcache_size: 2 << 24,        // ssz
+            outgoing_rpc_tcache_size: 2 << 25,        // ssz
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),
             beacon_api_bind: default_beacon_api_bind(),

@@ -15,7 +15,7 @@ use silver_common::{
     BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind, EngineResp, ForkName,
     GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
     RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed, SyncUpdate,
-    TCacheError, TCacheId, TCacheReader, TCacheTable, TRead, TReadMode, Wheel, block_root,
+    TCacheError, TCacheId, TCacheReader, TCacheTable, TRead, TReadMode, TileId, Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
         RetentionEvent, StoreError,
@@ -116,17 +116,10 @@ impl DataColumnsTile {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(
-            TCacheId::ControlProcessing,
-            "dc_control_processing",
-            TReadMode::Sliding,
-        )?;
-        self.reader.open(
-            TCacheId::NetworkProcessing,
-            "dc_network_processing",
-            TReadMode::Sliding,
-        )?;
-        self.reader.open(TCacheId::ControlGossip, "dc_control_gossip", TReadMode::Sliding)?;
+        let dc = TileId::Columns;
+        self.reader.open_forwarder(dc, TCacheId::ControlProcessing, TReadMode::Sliding)?;
+        self.reader.open_forwarder(dc, TCacheId::NetworkProcessing, TReadMode::Sliding)?;
+        self.reader.open_forwarder(dc, TCacheId::ControlGossip, TReadMode::Sliding)?;
         self.reader.open(
             TCacheId::BoundaryProcessing,
             "dc_boundary_processing",
@@ -142,6 +135,10 @@ impl DataColumnsTile {
             "dc_persist_network_processing",
             TReadMode::Sliding,
         )?;
+        self.reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState]);
+        self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState]);
+        self.persist_reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState, dc]);
+        self.persist_reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, dc]);
         if let Some(cells) = &mut self.cells {
             cells.open_tcaches()?;
         }

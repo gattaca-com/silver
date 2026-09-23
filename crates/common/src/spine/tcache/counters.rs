@@ -14,5 +14,7 @@ crate::declare_counters! {
         LagEviction,
         // Idle consumer's tail forced to the head.
         IdleReset,
+        // A read stamped by a consumer the receiver did not declare.
+        UndeclaredEmitter,
     }
 }

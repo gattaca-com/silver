@@ -36,6 +36,7 @@ impl Writer {
 }
 
 struct Open {
+    writer: usize,
     reservation: TReservation,
     tag: u8,
 }
@@ -50,8 +51,12 @@ pub struct Node {
     bare: Vec<Msg>,
     open: Vec<Open>,
     script: VecDeque<Action>,
-    // A retained consumer pins by boundary; its producer blocking is not a stall.
-    retains: bool,
+    // Every message this node emitted, for re-emission.
+    emitted: Vec<Msg>,
+    // The writer's retention floor, if set; a retained window is not a stall.
+    retain_from: Option<u64>,
+    // Consecutive failed reserves while nothing protects the ring.
+    stalled: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -133,14 +138,32 @@ pub enum Action {
         name: &'static str,
         mode: TReadMode,
     },
-    /// Advance the fixed retention boundary to the last seq this node acquired
-    /// on `cache`: everything older is done with.
-    AdvanceRetentionToConsumed {
-        cache: TCacheId,
+    /// Set `writer`'s retention floor: everything from the chosen point on
+    /// stays addressable and may be emitted again.
+    Retain {
+        writer: usize,
+        from: RetainFrom,
+    },
+    /// Emit a message this node emitted before, `index` into its history.
+    EmitAgain {
+        link: usize,
+        index: usize,
     },
     /// No-op turn, to delay a node relative to the others.
     Skip,
 }
+
+#[derive(Clone, Copy, Debug)]
+pub enum RetainFrom {
+    /// The `index`th message this node emitted.
+    Emitted(usize),
+    /// The next seq: nothing produced so far is retained.
+    Head,
+}
+
+/// Receivers follow a moved floor over a few passes, so a producer may fail
+/// to reserve for that long without anything being wrong.
+const STALL_ROUNDS: u32 = 8;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -166,7 +189,9 @@ impl Node {
             bare: Vec::new(),
             open: Vec::new(),
             script: VecDeque::new(),
-            retains: false,
+            emitted: Vec::new(),
+            retain_from: None,
+            stalled: 0,
         }
     }
 
@@ -177,12 +202,17 @@ impl Node {
 
     pub fn open(mut self, cache: TCacheId, mode: TReadMode) -> Self {
         self.reader.open(cache, self.name, mode).unwrap();
-        self.retains |= matches!(mode, TReadMode::Retained);
         self
     }
 
     pub fn script(mut self, actions: impl IntoIterator<Item = Action>) -> Self {
         self.script.extend(actions);
+        self
+    }
+
+    /// The nodes that forward reads of `cache` to this one.
+    pub fn declare(mut self, cache: TCacheId, emitters: &[&'static str]) -> Self {
+        self.reader.declare_names(cache, emitters);
         self
     }
 }
@@ -300,7 +330,13 @@ impl World {
                 if taken == 0 {
                     return Progress::Blocked;
                 }
-                self.nodes[n].reader.free();
+                let drained =
+                    links.into_iter().filter(|&l| l != NONE).all(|l| self.links[l].0.is_empty());
+                if drained {
+                    self.nodes[n].reader.free();
+                } else {
+                    self.nodes[n].reader.free_undrained();
+                }
                 if count > taken {
                     *self.nodes[n].script.front_mut().unwrap() =
                         Action::Consume { links, drain, then, count: count - taken };
@@ -327,7 +363,7 @@ impl World {
                     let seq = msg.read.seq();
                     self.violations.push(Violation::Stale { node: node.name, seq, detail });
                 }
-                self.links[link].0.push_back(msg);
+                self.links[link].0.push_back(Msg { read: read.to_read(), tag: msg.tag });
                 drop(read);
                 Progress::Advanced
             }
@@ -344,19 +380,33 @@ impl World {
                 Progress::Advanced
             }
             Action::Free => {
-                self.nodes[n].reader.free();
+                // A pass drained only if every link this node still reads is
+                // empty; a publish with messages queued must not license
+                // snapshots, as in a tile's mid-pass free.
+                if self.links_drained(n) {
+                    self.nodes[n].reader.free();
+                } else {
+                    self.nodes[n].reader.free_undrained();
+                }
                 Progress::Advanced
             }
             Action::Open { cache, name, mode } => {
                 self.nodes[n].reader.open(cache, name, mode).unwrap();
-                self.nodes[n].retains |= matches!(mode, TReadMode::Retained);
                 Progress::Advanced
             }
-            Action::AdvanceRetentionToConsumed { cache } => {
-                let Some(&seq) = self.nodes[n].consumed.get(&cache) else {
-                    return Progress::Blocked;
+            Action::Retain { writer, from } => {
+                let node = &mut self.nodes[n];
+                let seq = match from {
+                    RetainFrom::Emitted(index) => node.emitted[index].read.seq(),
+                    RetainFrom::Head => node.writers[writer].0.next_seq(),
                 };
-                self.nodes[n].reader.advance_retention(cache, seq);
+                node.writers[writer].0.retain_from(seq);
+                node.retain_from = Some(seq);
+                Progress::Advanced
+            }
+            Action::EmitAgain { link, index } => {
+                let msg = self.nodes[n].emitted[index];
+                self.links[link].0.push_back(msg);
                 Progress::Advanced
             }
             Action::Skip => Progress::Advanced,
@@ -382,11 +432,14 @@ impl World {
         if node.open.is_empty() {
             return Progress::Blocked;
         }
-        let Open { mut reservation, tag } = node.open.remove(index);
+        let Open { writer, mut reservation, tag } = node.open.remove(index);
         reservation.flush().unwrap();
-        let read = reservation.read();
+        // A tile publishes its floor once its committed reads are on the spine.
+        node.writers[writer].producer().publish_head();
+        let msg = Msg { read: reservation.read(), tag };
+        node.emitted.push(msg);
         for &link in links {
-            self.links[link].0.push_back(Msg { read, tag });
+            self.links[link].0.push_back(msg);
         }
         Progress::Advanced
     }
@@ -397,24 +450,44 @@ impl World {
             Some(mut reservation) => {
                 reservation.buffer().unwrap().fill(tag);
                 reservation.increment_offset(MSG);
-                node.open.push(Open { reservation, tag });
+                node.open.push(Open { writer, reservation, tag });
+                node.stalled = 0;
                 Progress::Advanced
             }
             None => {
                 if node.open.is_empty() && self.nothing_protects() {
-                    self.violate(Violation::Stall { node: self.nodes[n].name });
-                    // Unblock the schedule: the failure is recorded.
-                    self.nodes[n].script.pop_front();
-                    return Progress::Partial;
+                    self.nodes[n].stalled += 1;
+                    if self.nodes[n].stalled > STALL_ROUNDS {
+                        self.violate(Violation::Stall { node: self.nodes[n].name });
+                        // Unblock the schedule: the failure is recorded.
+                        self.nodes[n].script.pop_front();
+                        return Progress::Partial;
+                    }
                 }
                 Progress::Blocked
             }
         }
     }
 
+    fn links_drained(&self, n: usize) -> bool {
+        self.nodes[n]
+            .script
+            .iter()
+            .filter_map(|action| match action {
+                Action::Consume { links, .. } => Some(links.iter().copied().filter(|&l| l != NONE)),
+                _ => None,
+            })
+            .flatten()
+            .all(|l| self.links[l].0.is_empty())
+    }
+
     fn nothing_protects(&self) -> bool {
-        self.nodes.iter().all(|node| !node.retains && node.held.is_empty() && node.bare.is_empty()) &&
-            self.links.iter().all(|link| link.0.is_empty())
+        self.nodes.iter().all(|node| {
+            let retaining = node
+                .retain_from
+                .is_some_and(|from| node.writers.iter().any(|w| from < w.0.next_seq()));
+            !retaining && node.held.is_empty() && node.bare.is_empty()
+        }) && self.links.iter().all(|link| link.0.is_empty())
     }
 
     fn receive(&mut self, n: usize, msg: Msg, then: Then) {
@@ -445,12 +518,15 @@ impl World {
                         node.held.push((acquired, msg));
                         if node.held.len() > depth {
                             let (oldest, msg) = node.held.remove(0);
-                            self.links[link].0.push_back(msg);
+                            let read = oldest.to_read();
+                            self.links[link].0.push_back(Msg { read, tag: msg.tag });
                             drop(oldest);
                         }
                     }
                     Then::ForwardPinned { link } => {
-                        self.links[link].0.push_back(msg);
+                        self.links[link]
+                            .0
+                            .push_back(Msg { read: acquired.to_read(), tag: msg.tag });
                         drop(acquired);
                     }
                     _ => drop(acquired),

@@ -530,6 +530,16 @@ mod tests {
                 ));
             }
 
+            // The producer floor moved when the slow body settled and its tile
+            // published it. A consumer learns it over drained passes: the first
+            // clears the mark left by the messages it consumed, the next takes
+            // the snapshot, the third applies it and publishes the tail.
+            fast = fast.spin(&mut fast_io, &mut producer, &fast_id, later, &mut |_| {}).unwrap();
+            producer.publish_head();
+            consumer.free();
+            consumer.free();
+            consumer.free();
+
             let mut received = None;
             let fast = fast
                 .spin(&mut fast_io, &mut producer, &fast_id, later, &mut |event| {
