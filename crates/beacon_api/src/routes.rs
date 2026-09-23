@@ -1,7 +1,7 @@
 use crate::{
     beacon::{
         blocks::{block, block_header, block_root},
-        operations::post_pool_attestations,
+        operations::post_attestations,
         states::{genesis, state_finality_checkpoints, state_fork},
         validators::{get_state_validators, post_state_validators, state_validator},
     },
@@ -18,6 +18,8 @@ use crate::{
         status::{health, syncing, version},
     },
     validator::{
+        aggregate_attestation::aggregate_attestation,
+        aggregate_submission::post_aggregate_and_proofs,
         attestation_data::attestation_data,
         attester_duties::post_attester_duties,
         proposer_duties::{proposer_duties, proposer_duties_v2},
@@ -72,7 +74,9 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         post_sync_committee_subscriptions,
     ),
     (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
-    (Method::Post, "/eth/v2/beacon/pool/attestations", post_pool_attestations),
+    (Method::Post, "/eth/v2/beacon/pool/attestations", post_attestations),
+    (Method::Post, "/eth/v2/validator/aggregate_and_proofs", post_aggregate_and_proofs),
+    (Method::Get, "/eth/v2/validator/aggregate_attestation", aggregate_attestation),
     (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", proposer_duties_v2),
     (Method::Get, "/metrics", metrics),
 ];

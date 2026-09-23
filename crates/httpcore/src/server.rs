@@ -200,7 +200,10 @@ impl ServerConnection {
         &mut self.read_buf
     }
 
-    pub fn dispatch<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(&mut self, handler: &F) -> bool {
+    pub fn dispatch<F: FnMut(&ParsedRequest<'_>, &mut Vec<u8>)>(
+        &mut self,
+        handler: &mut F,
+    ) -> bool {
         let (consumed, req) =
             match ParsedRequest::parse(&self.read_buf[self.read_pos..self.read_end]) {
                 ParseOutcome::Complete { consumed, request } => (consumed, request),
@@ -251,9 +254,9 @@ impl ServerConnection {
         self.write_pos += n;
     }
 
-    pub fn after_response<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
+    pub fn after_response<F: FnMut(&ParsedRequest<'_>, &mut Vec<u8>)>(
         &mut self,
-        handler: &F,
+        handler: &mut F,
     ) -> AfterResponse {
         debug_assert!(self.write_pos == self.write_buf.len());
         match self.continuation {
@@ -356,7 +359,7 @@ mod tests {
                 }
                 Err(e) => return e,
             }
-            assert!(!conn.dispatch(&|_, _: &mut Vec<u8>| {
+            assert!(!conn.dispatch(&mut |_, _: &mut Vec<u8>| {
                 panic!("incomplete request must not dispatch")
             }));
         }
@@ -390,7 +393,7 @@ mod tests {
         let mut conn = ServerConnection::new();
         feed(&mut conn, request);
 
-        assert!(conn.dispatch(&|_, _: &mut Vec<u8>| {
+        assert!(conn.dispatch(&mut |_, _: &mut Vec<u8>| {
             panic!("a rejected request must not reach the handler")
         }));
         assert_eq!(
@@ -400,7 +403,7 @@ mod tests {
         );
 
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Linger);
         conn
     }
 
@@ -596,7 +599,7 @@ mod tests {
         }
 
         assert!(
-            !conn.dispatch(&|_, _: &mut Vec<u8>| panic!("no request can reach the handler")),
+            !conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("no request can reach the handler")),
             "an unfinished head must not dispatch"
         );
 
@@ -608,7 +611,7 @@ mod tests {
                 .as_slice()
         );
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Linger);
     }
 
     /// The body the client is still sending is read for one reason only — to
@@ -624,7 +627,11 @@ mod tests {
             space.fill(b'b');
         }
         assert!(conn.pending_write().is_empty(), "the answer stays sent, not re-framed");
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger, "nothing leaves Linger");
+        assert_eq!(
+            conn.after_response(&mut echo_path),
+            AfterResponse::Linger,
+            "nothing leaves Linger"
+        );
     }
 
     #[test]
@@ -633,12 +640,13 @@ mod tests {
         feed(&mut conn, b"GET /eth/v1/node/identity HTTP/1.1\r\nHost: local");
 
         assert!(
-            !conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete request must not dispatch"))
+            !conn
+                .dispatch(&mut |_, _: &mut Vec<u8>| panic!("incomplete request must not dispatch"))
         );
         assert!(conn.pending_write().is_empty(), "an unfinished request is not a bad one");
 
         feed(&mut conn, b"host\r\n\r\n");
-        assert!(conn.dispatch(&echo_path));
+        assert!(conn.dispatch(&mut echo_path));
         assert_eq!(
             conn.pending_write(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 21\r\n\r\n/eth/v1/node/identity"
@@ -650,7 +658,9 @@ mod tests {
         let mut conn = ServerConnection::new();
         feed(&mut conn, b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\nhalf");
 
-        assert!(!conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete body must not dispatch")));
+        assert!(
+            !conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("incomplete body must not dispatch"))
+        );
         assert!(conn.pending_write().is_empty());
     }
 
@@ -665,15 +675,15 @@ mod tests {
             b"GET /first HTTP/1.1\r\nHost: x\r\n\r\nGET /second HTTP/1.1\r\nHost: x\r\n\r\n",
         );
 
-        assert!(conn.dispatch(&|_, _: &mut Vec<u8>| {}));
+        assert!(conn.dispatch(&mut |_, _: &mut Vec<u8>| {}));
         assert!(conn.pending_write().is_empty());
 
         frame_response(conn.write_buf_mut(), "200 OK", None, b"/first");
         assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
 
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::ResponsePending);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::ResponsePending);
         assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n/second");
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
     }
 
     #[test]
@@ -681,17 +691,17 @@ mod tests {
         let mut conn = ServerConnection::new();
         feed(&mut conn, b"GET /first HTTP/1.1\r\nHost: x\r\n\r\nNOT A VALID REQUEST\r\n\r\n");
 
-        assert!(conn.dispatch(&echo_path));
+        assert!(conn.dispatch(&mut echo_path));
         assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
 
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::ResponsePending);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::ResponsePending);
         assert_eq!(
             conn.pending_write(),
             b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
         );
 
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Linger);
     }
 
     #[test]
@@ -757,7 +767,7 @@ mod tests {
         let mut conn = ServerConnection::new();
         feed(&mut conn, b"GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n");
 
-        assert!(conn.dispatch(&|_, out: &mut Vec<u8>| {
+        assert!(conn.dispatch(&mut |_, out: &mut Vec<u8>| {
             out.extend_from_slice(b"should not appear");
         }));
         assert_eq!(
@@ -766,7 +776,7 @@ mod tests {
         );
 
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Close);
     }
 
     #[test]
@@ -774,9 +784,9 @@ mod tests {
         let mut conn = ServerConnection::new();
         feed(&mut conn, b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
 
-        assert!(conn.dispatch(&echo_path));
+        assert!(conn.dispatch(&mut echo_path));
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Close);
     }
 
     #[test]
@@ -786,12 +796,12 @@ mod tests {
 
         for (i, byte) in req.iter().enumerate() {
             feed(&mut conn, &[*byte]);
-            assert_eq!(conn.dispatch(&echo_path), i == req.len() - 1, "byte {i}");
+            assert_eq!(conn.dispatch(&mut echo_path), i == req.len() - 1, "byte {i}");
         }
         assert_eq!(conn.pending_write(), b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n/metrics");
 
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
     }
 
     #[test]
@@ -799,21 +809,21 @@ mod tests {
         let mut conn = ServerConnection::new();
 
         feed(&mut conn, b"GET /first HTTP/1.1\r\nHost: x\r\n\r\nGET /sec");
-        assert!(conn.dispatch(&echo_path));
+        assert!(conn.dispatch(&mut echo_path));
         assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
 
         feed(&mut conn, b"ond HTTP/1.1\r\nHost: x\r\n\r\n");
-        assert!(conn.dispatch(&echo_path));
+        assert!(conn.dispatch(&mut echo_path));
         assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n/second");
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
     }
 
     #[test]
     fn buffered_pipelined_request_dispatched_after_drain() {
         let mut conn = ServerConnection::new();
         let calls = RefCell::new(Vec::new());
-        let handler = |req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
+        let mut handler = |req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
             calls.borrow_mut().push(req.path.to_string());
             echo_path(req, out);
         };
@@ -822,7 +832,7 @@ mod tests {
             &mut conn,
             b"GET /first HTTP/1.1\r\nHost: x\r\n\r\nGET /second HTTP/1.1\r\nHost: x\r\n\r\n",
         );
-        assert!(conn.dispatch(&handler));
+        assert!(conn.dispatch(&mut handler));
         assert_eq!(*calls.borrow(), ["/first"]);
 
         let mut written = Vec::new();
@@ -834,7 +844,7 @@ mod tests {
         }
         assert_eq!(written, b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
 
-        assert_eq!(conn.after_response(&handler), AfterResponse::ResponsePending);
+        assert_eq!(conn.after_response(&mut handler), AfterResponse::ResponsePending);
         assert_eq!(*calls.borrow(), ["/first", "/second"]);
         assert_eq!(conn.pending_write(), b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n/second");
     }
@@ -865,7 +875,7 @@ mod tests {
         }
 
         let seen = RefCell::new(0usize);
-        assert!(conn.dispatch(&|req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
+        assert!(conn.dispatch(&mut |req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
             *seen.borrow_mut() = req.body.len();
             assert!(req.body.iter().all(|&b| b == b'b'));
             frame_response(out, "200 OK", None, b"");
@@ -889,9 +899,9 @@ mod tests {
         for _ in 0..rounds {
             feed_all(&mut conn, &request[split..]);
             feed_all(&mut conn, &request[..split]);
-            assert!(conn.dispatch(&echo_path));
+            assert!(conn.dispatch(&mut echo_path));
             drain(&mut conn);
-            assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+            assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
         }
     }
 
@@ -901,11 +911,13 @@ mod tests {
         let big = vec![b'x'; 4 << 20];
         feed(&mut conn, &get_req("/big", "HTTP/1.1"));
 
-        assert!(conn.dispatch(&|_, out: &mut Vec<u8>| frame_response(out, "200 OK", None, &big)));
+        assert!(
+            conn.dispatch(&mut |_, out: &mut Vec<u8>| frame_response(out, "200 OK", None, &big))
+        );
         drain(&mut conn);
         assert!(conn.write_buf.capacity() >= big.len(), "the body was framed whole");
 
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
         assert!(
             conn.write_buf.capacity() <= WRITE_BUF_INIT,
             "{} bytes still held",
@@ -925,12 +937,13 @@ mod tests {
 
         feed_all(&mut conn, &request[..READ_BUF_INIT]);
         assert!(
-            !conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete request must not dispatch"))
+            !conn
+                .dispatch(&mut |_, _: &mut Vec<u8>| panic!("incomplete request must not dispatch"))
         );
         feed_all(&mut conn, &request[READ_BUF_INIT..]);
 
         let seen = RefCell::new(Vec::new());
-        assert!(conn.dispatch(&|req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
+        assert!(conn.dispatch(&mut |req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
             seen.borrow_mut().extend_from_slice(req.body);
             frame_response(out, "200 OK", None, b"");
         }));

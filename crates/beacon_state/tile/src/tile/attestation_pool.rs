@@ -24,7 +24,7 @@ struct AggregateKey {
     data_root: B256,
 }
 
-struct AggregateEntry {
+pub(super) struct AggregateEntry {
     data: [u8; ATTESTATION_DATA_SIZE],
     committee_len: usize,
     /// Logical participant bits only; the SSZ terminator is appended at
@@ -97,24 +97,26 @@ impl AttestationPool {
         InsertOutcome::Inserted
     }
 
-    #[allow(dead_code)] // retrieval interface for the aggregate_attestation API milestone
     #[timed]
+    pub(super) fn aggregate(
+        &self,
+        slot: Slot,
+        committee_index: u64,
+        data_root: B256,
+    ) -> Option<&AggregateEntry> {
+        self.entries.get(&AggregateKey { slot, committee_index, data_root })
+    }
+
+    #[cfg(test)]
     pub(super) fn aggregate_ssz(
         &self,
         slot: Slot,
         committee_index: u64,
         data_root: B256,
     ) -> Option<Vec<u8>> {
-        let entry = self.entries.get(&AggregateKey { slot, committee_index, data_root })?;
-        let bitlist_len = entry.committee_len / 8 + 1;
-        let mut out = Vec::with_capacity(ATTESTATION_FIXED + bitlist_len);
-        out.extend_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
-        out.extend_from_slice(&entry.data);
-        out.extend_from_slice(&entry.signature.to_signature().to_bytes());
-        out.extend_from_slice(&(1u64 << committee_index).to_le_bytes());
-        out.extend_from_slice(&entry.participant_bits);
-        out.resize(ATTESTATION_FIXED + bitlist_len, 0);
-        out[ATTESTATION_FIXED + entry.committee_len / 8] |= 1 << (entry.committee_len % 8);
+        let entry = self.aggregate(slot, committee_index, data_root)?;
+        let mut out = vec![0u8; entry.ssz_len()];
+        entry.write_ssz(committee_index, &mut out);
         Some(out)
     }
 
@@ -140,6 +142,24 @@ impl AggregateEntry {
             participant_bits,
             signature: AggregateSignature::from_signature(signature),
         }
+    }
+
+    pub(super) fn ssz_len(&self) -> usize {
+        ATTESTATION_FIXED + self.committee_len / 8 + 1
+    }
+
+    /// `out` is exactly [`Self::ssz_len`] bytes and need not be zeroed.
+    #[timed]
+    pub(super) fn write_ssz(&self, committee_index: u64, out: &mut [u8]) {
+        debug_assert_eq!(out.len(), self.ssz_len());
+        out[0..4].copy_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
+        out[4..132].copy_from_slice(&self.data);
+        out[132..228].copy_from_slice(&self.signature.to_signature().to_bytes());
+        out[228..ATTESTATION_FIXED].copy_from_slice(&(1u64 << committee_index).to_le_bytes());
+        let (bits, tail) = out[ATTESTATION_FIXED..].split_at_mut(self.participant_bits.len());
+        bits.copy_from_slice(&self.participant_bits);
+        tail.fill(0);
+        out[ATTESTATION_FIXED + self.committee_len / 8] |= 1 << (self.committee_len % 8);
     }
 
     #[timed]

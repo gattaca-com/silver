@@ -6,8 +6,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
-    LOCAL_GOSSIP_STREAM_ID, LocalAttestationFailure, LocalAttestationResult, MAX_BLOBS_PER_BLOCK,
-    NewGossipMsg, PeerEvent, SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent,
+    SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -232,12 +232,12 @@ impl BeaconStateTile {
         let committee_index = SingleAttestationView::committee_index(buf) as usize;
 
         if !self.attestation_slot_is_open(att_slot) {
-            return Err(Feedback::Ignore);
+            return Err(self.slot_window_miss(att_slot));
         }
 
         self.seen_attesters.rotate_to(self.seen_window_epoch());
         if self.seen_attesters.contains(target_epoch, attester_index) {
-            return Err(Feedback::DuplicateVote);
+            return Err(Feedback::AlreadySeen);
         }
 
         // Pre-Gloas single attestations encode the committee in
@@ -375,11 +375,7 @@ impl BeaconStateTile {
         while let Some(m) = self.vote_batch.pop() {
             let acquired = self.reader.acquire(m.ssz);
             let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else {
-                Self::local_verdict(
-                    &m,
-                    LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable),
-                    producers,
-                );
+                Self::local_verdict(&m, Feedback::Ignore, producers);
                 continue;
             };
             let prepared = match m.topic {
@@ -408,14 +404,11 @@ impl BeaconStateTile {
                     self.vote_pending.push((m, p));
                 }
                 Err(Feedback::Reject(_)) => Self::reject_gossip(&m, producers),
-                Err(Feedback::DuplicateVote) => {
-                    Self::local_verdict(&m, LocalAttestationResult::AlreadyKnown, producers)
+                Err(feedback @ Feedback::RequestEnvelope { block_root, att_slot }) => {
+                    producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
+                    Self::local_verdict(&m, feedback, producers);
                 }
-                Err(_) => Self::local_verdict(
-                    &m,
-                    LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable),
-                    producers,
-                ),
+                Err(feedback) => Self::local_verdict(&m, feedback, producers),
             }
         }
 
@@ -432,7 +425,7 @@ impl BeaconStateTile {
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
             if p.is_seen(self) {
-                Self::local_verdict(&m, LocalAttestationResult::AlreadyKnown, producers);
+                Self::local_verdict(&m, Feedback::AlreadySeen, producers);
                 continue;
             }
             let (pk, sig, root) = p.sig_parts();
@@ -481,13 +474,13 @@ impl BeaconStateTile {
             return Err(Feedback::Reject(None));
         }
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
-            return Err(Feedback::Ignore);
+            return Err(self.slot_window_miss(slot));
         }
 
         let seen = &mut self.seen_sync_msgs[subnet as usize];
         seen.rotate_to(self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY));
         if seen.contains(slot, validator as usize) {
-            return Err(Feedback::Ignore);
+            return Err(Feedback::AlreadySeen);
         }
 
         let canon_id = self.canonical_state_id();
@@ -563,17 +556,17 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
-            return Feedback::Ignore;
+            return self.slot_window_miss(slot);
         }
 
         let seen = &mut self.seen_contribution_aggregators[subcommittee as usize];
         seen.rotate_to(self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY));
         if seen.contains(slot, aggregator as usize) {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
         let coverage = self.seen_aggregates.coverage(slot, subcommittee, block_root, bits);
         if coverage == Coverage::BySuperset {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
 
         if !is_sync_aggregator(ContributionView::selection_proof(buf)) {
@@ -708,12 +701,12 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         if !self.attestation_slot_is_open(parsed.agg_slot) {
-            return Feedback::Ignore;
+            return self.slot_window_miss(parsed.agg_slot);
         }
 
         self.seen_aggregators.rotate_to(self.seen_window_epoch());
         if self.seen_aggregators.contains(parsed.att_epoch, parsed.aggregator_index) {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
 
         if parsed.committee_bits.count_ones() != 1 {
@@ -729,7 +722,7 @@ impl BeaconStateTile {
             parsed.aggregation_bits,
         );
         if coverage == Coverage::BySuperset {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
 
         if let Err(f) = self.validate_attestation_target(parsed.agg_data) {
@@ -871,7 +864,7 @@ impl BeaconStateTile {
 
         if self.fork_choice.is_payload_verified(&block_root) {
             Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
 
         // Versioned hashes come from the committed bid's KZG commitments — the
@@ -960,6 +953,14 @@ impl BeaconStateTile {
     /// Spec `is_future_slot` and Deneb's `is_current_or_previous_epoch`
     /// (EIP-7045 widened the window from 32 slots to the whole previous
     /// epoch), both with clock disparity.
+    pub(super) fn slot_window_miss(&self, slot: Slot) -> Feedback {
+        if self.ticker.is_future_slot(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            Feedback::Future
+        } else {
+            Feedback::TooOld
+        }
+    }
+
     fn attestation_slot_is_open(&self, slot: Slot) -> bool {
         let epoch_open = |epoch: Epoch| {
             self.ticker.is_within_slot_range(
@@ -1051,7 +1052,7 @@ impl BeaconStateTile {
         let vi = vi_u as usize;
 
         if self.seen_exits.contains(vi) {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
@@ -1101,7 +1102,7 @@ impl BeaconStateTile {
 
         let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
         if self.seen_proposer_slashings.contains(proposer_index) {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
@@ -1182,7 +1183,7 @@ impl BeaconStateTile {
         let vi_u = SignedBlsToExecutionChangeView::validator_index(buf);
         let vi = vi_u as usize;
         if self.seen_bls_changes.contains(vi) {
-            return Feedback::Ignore;
+            return Feedback::AlreadySeen;
         }
         if vi >= view.validators.count() {
             return Feedback::Reject(None);
@@ -1291,13 +1292,13 @@ impl BeaconStateTile {
                 self.park_block(feedback, BlockSourceMsg::Gossip(m), data, producers);
             }
             Feedback::RequestEnvelope { block_root, att_slot } => {
-                producers.produce(SyncNeed::missing_envelope(block_root, att_slot))
+                producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
+                Self::local_verdict(&m, feedback, producers);
             }
-            Feedback::BlockImported(_) |
-            Feedback::AwaitData(_) |
-            Feedback::AlreadyKnown(_) |
-            Feedback::Ignore |
-            Feedback::DuplicateVote => {}
+            Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {
+                Self::local_verdict(&m, feedback, producers)
+            }
+            Feedback::BlockImported(_) | Feedback::AwaitData(_) | Feedback::BlockKnown(_) => {}
         }
         true
     }
@@ -1313,16 +1314,12 @@ impl BeaconStateTile {
             protobuf: m.protobuf,
             ssz: m.ssz,
         });
-        Self::local_verdict(m, LocalAttestationResult::Success, producers);
+        Self::local_verdict(m, Feedback::Accept, producers);
     }
 
     fn reject_gossip(m: &NewGossipMsg, producers: &mut Producers) {
         if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
-            return Self::local_verdict(
-                m,
-                LocalAttestationResult::Failure(LocalAttestationFailure::Invalid),
-                producers,
-            );
+            return Self::local_verdict(m, Feedback::Reject(None), producers);
         }
         producers.produce(PeerEvent::P2pGossipInvalidMsg {
             p2p_peer: m.stream_id.peer(),
@@ -1333,14 +1330,21 @@ impl BeaconStateTile {
 
     /// Network gossip ignores are deliberately silent. A local API request,
     /// however, needs a terminal verdict so Control can complete it.
-    pub(super) fn local_verdict(
-        m: &NewGossipMsg,
-        result: LocalAttestationResult,
-        producers: &mut Producers,
-    ) {
-        if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
-            producers.produce(BeaconStateEvent::LocalGossipVerdict { hash: m.msg_hash, result });
+    pub(super) fn local_verdict(m: &NewGossipMsg, feedback: Feedback, producers: &mut Producers) {
+        if m.stream_id != LOCAL_GOSSIP_STREAM_ID {
+            return;
         }
+        let result = match feedback {
+            Feedback::Accept => Ok(()),
+            Feedback::Reject(_) => Err(LocalGossipFailure::Invalid),
+            // Already on the network is published, as fallback validator
+            // clients that submit to several nodes rely on.
+            Feedback::AlreadySeen => Ok(()),
+            Feedback::TooOld => Err(LocalGossipFailure::TooOld),
+            Feedback::Future => Err(LocalGossipFailure::Future),
+            _ => Err(LocalGossipFailure::Unverifiable),
+        };
+        producers.produce(BeaconStateEvent::LocalGossipVerdict { hash: m.msg_hash, result });
     }
 }
 

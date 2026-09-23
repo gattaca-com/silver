@@ -21,6 +21,9 @@ pub struct ApplicationBoundaryTile {
     readiness: Readiness,
     pub beacon: BeaconApi,
     engine: EngineApi,
+    /// The tile's one producer, shared by engine responses and the messages
+    /// the beacon api publishes.
+    processing: TProducer,
 }
 
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
@@ -34,12 +37,12 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.engine.intake(adapter);
+        self.engine.intake(adapter, &mut self.processing);
         self.readiness.wait(Duration::ZERO);
-        self.engine.spin(adapter, self.readiness.events());
+        self.engine.spin(adapter, self.readiness.events(), &mut self.processing);
         self.consume_spine_events(adapter);
         let events = self.readiness.events();
-        if self.beacon.pump(events, &mut |request| adapter.produce(request)) {
+        if self.beacon.pump(events, &mut self.processing, &mut |request| adapter.produce(request)) {
             adapter.mark_work();
         }
     }
@@ -58,7 +61,7 @@ impl ApplicationBoundaryTile {
         state: BeaconStateReader,
         engine_config: EngineConfig,
         tcaches: TCacheTable,
-        resp_producer: TProducer,
+        processing: TProducer,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
@@ -79,14 +82,8 @@ impl ApplicationBoundaryTile {
             state,
             tcaches,
         );
-        let engine = EngineApi::new(
-            readiness.registry(),
-            ENGINE_TOKENS,
-            engine_config,
-            tcaches,
-            resp_producer,
-        );
-        Self { readiness, beacon, engine }
+        let engine = EngineApi::new(readiness.registry(), ENGINE_TOKENS, engine_config, tcaches);
+        Self { readiness, beacon, engine, processing }
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -95,14 +92,15 @@ impl ApplicationBoundaryTile {
     }
 
     fn consume_spine_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let Self { beacon, engine, .. } = self;
+        let Self { beacon, engine, processing, .. } = self;
 
         adapter.consume(|event: BeaconStateEvent, _| beacon.handle_beacon_state_event(event));
         adapter.consume(|response: EngineResp, _| beacon.handle_engine_resp(response));
         adapter.consume(|event: PeerEvent, _| beacon.handle_peer_event(event));
         adapter.consume(|event: DataColumnsEvent, _| beacon.handle_data_columns_event(event));
         adapter.consume(|update: SyncUpdate, _| beacon.handle_sync_update(update));
-        adapter.consume(|response: BeaconApiResponse, _| beacon.handle_response(response));
+        adapter
+            .consume(|response: BeaconApiResponse, _| beacon.handle_response(response, processing));
 
         beacon.set_el_sync_status(engine.sync_status());
     }

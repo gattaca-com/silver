@@ -14,8 +14,8 @@ use crate::{
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
         EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        SINGLE_ATT_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
-        SignedExecutionPayloadEnvelopeView, SszView, StatusView,
+        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
+        SszView, StatusView,
     },
 };
 
@@ -74,16 +74,21 @@ pub struct ClusterMsgIn {
 }
 
 /// Work submitted by the Beacon API to tile-owned state machines.
-#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiRequest {
-    /// A signed single attestation awaiting cluster admission and Beacon
-    /// State validation.
-    LocalAttestation {
+    /// A message a validator client asked this node to publish. `ssz` points
+    /// into the `boundary_processing` tcache.
+    LocalGossip {
         request_id: u64,
-        subnet: u64,
-        ssz: [u8; SINGLE_ATT_SIZE],
+        topic: GossipTopic,
+        ssz: TCacheRead,
+    },
+    AggregateAttestation {
+        request_id: u64,
+        slot: u64,
+        committee_index: u64,
+        data_root: [u8; 32],
     },
     Block {
         request_id: u64,
@@ -103,16 +108,27 @@ pub enum BlockLookup {
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
-    LocalAttestationResponse { request_id: u64, response: LocalAttestationResult },
-    Block { request_id: u64, block: Option<ServedBlock> },
+    LocalGossipResponse {
+        request_id: u64,
+        response: LocalGossipResult,
+    },
+    /// `ssz` points into the `beacon_state` tcache.
+    AggregateAttestation {
+        request_id: u64,
+        ssz: Option<TCacheRead>,
+    },
+    Block {
+        request_id: u64,
+        block: Option<ServedBlock>,
+    },
 }
 
 impl BeaconApiResponse {
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::LocalAttestationResponse { request_id, .. } | Self::Block { request_id, .. } => {
-                *request_id
-            }
+            Self::LocalGossipResponse { request_id, .. } |
+            Self::AggregateAttestation { request_id, .. } |
+            Self::Block { request_id, .. } => *request_id,
         }
     }
 }
@@ -128,22 +144,11 @@ pub struct ServedBlock {
     pub ssz: Option<TCacheRead>,
 }
 
-/// Final result for one locally submitted attestation. `Success` is emitted
-/// only after Beacon State has validated the attestation and requested gossip
-/// publication.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(C, u8)]
-pub enum LocalAttestationResult {
-    Success,
-    AlreadyKnown,
-    Failure(LocalAttestationFailure),
-}
+pub type LocalGossipResult = Result<(), LocalGossipFailure>;
 
-/// Stable failure reason for a locally submitted attestation. The Beacon API
-/// can render request failures as the specification's indexed error response.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum LocalAttestationFailure {
+pub enum LocalGossipFailure {
     NotSynced,
     BeforeStartupFloor,
     TooOld,
@@ -1029,7 +1034,7 @@ pub enum BeaconStateEvent {
     ReplayComplete,
     LocalGossipVerdict {
         hash: MessageId,
-        result: LocalAttestationResult,
+        result: LocalGossipResult,
     },
     Status {
         ssz: [u8; STATUS_V2_SIZE],

@@ -1,14 +1,14 @@
-use std::{io::Write, str};
+use std::{io::Write, mem, str};
 
+use silver_common::{GossipTopic, LocalGossipFailure, TCacheProducer, TProducer};
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
 use crate::{
-    beacon::{
-        blocks::BlockRequest,
-        operations::{AttestationSubmission, SubmissionFailure},
-    },
+    beacon::blocks::BlockRequest,
     events::ChannelSet,
     http::{json::Json, router::Outcome},
+    submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
+    validator::aggregate_attestation::AggregateRequest,
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -17,12 +17,42 @@ const CONTENT_LENGTH_WIDTH: usize = u64::MAX.ilog10() as usize + 1;
 
 pub(crate) struct Response<'a> {
     out: &'a mut Vec<u8>,
+    submissions: &'a mut TProducer,
     outcome: Outcome,
 }
 
 impl<'a> Response<'a> {
-    pub(crate) fn new(out: &'a mut Vec<u8>) -> Self {
-        Self { out, outcome: Outcome::Response }
+    /// `submissions` carries what a handler publishes for another tile to read.
+    pub(crate) fn new(out: &'a mut Vec<u8>, submissions: &'a mut TProducer) -> Self {
+        Self { out, submissions, outcome: Outcome::Response }
+    }
+
+    /// Encodes one body entry straight into the submissions tcache and awaits
+    /// its verdict on `topic`. An entry the cache has no room for fails.
+    pub(crate) fn await_verdict(
+        &mut self,
+        body_index: usize,
+        topic: GossipTopic,
+        len: usize,
+        encode: impl FnOnce(&mut [u8]),
+    ) {
+        match self.submissions.write_with(len, encode) {
+            Some(ssz) => self.submission().accepted.push(AcceptedEntry { body_index, topic, ssz }),
+            None => self.fail_entry(body_index, failure_message(LocalGossipFailure::Internal)),
+        }
+    }
+
+    pub(crate) fn fail_entry(&mut self, body_index: usize, message: &'static str) {
+        self.submission().failures.push(SubmissionFailure { body_index, message });
+    }
+
+    fn submission(&mut self) -> &mut Submission {
+        if !matches!(self.outcome, Outcome::AwaitingVerdicts(_)) {
+            debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
+            self.outcome = Outcome::AwaitingVerdicts(Submission::default());
+        }
+        let Outcome::AwaitingVerdicts(submission) = &mut self.outcome else { unreachable!() };
+        submission
     }
 
     /// Queues the head and records the subscription; writing begins after
@@ -43,19 +73,27 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::AwaitingBlock(request);
     }
 
-    pub(crate) fn submit_attestations(&mut self, submission: AttestationSubmission) {
+    pub(crate) fn request_aggregate(&mut self, request: AggregateRequest) {
         debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingAttestations(submission);
+        self.outcome = Outcome::AwaitingAggregate(request);
     }
 
     pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {
-        let mut body = Vec::new();
-        Json::new(&mut body).indexed_failures(failures);
-        self.send(400, Some(JSON_CONTENT_TYPE), &[], &body);
+        self.json_framed(400, &[], |json| json.indexed_failures(failures));
     }
 
-    pub(crate) fn outcome(self) -> Outcome {
-        self.outcome
+    pub(crate) fn outcome(mut self) -> Outcome {
+        match mem::take(&mut self.outcome) {
+            Outcome::AwaitingVerdicts(submission) if submission.accepted.is_empty() => {
+                self.indexed_failures(&submission.failures);
+                Outcome::Response
+            }
+            outcome @ Outcome::AwaitingVerdicts(_) => {
+                self.submissions.publish_head();
+                outcome
+            }
+            outcome => outcome,
+        }
     }
 
     pub(crate) fn json(&mut self, body: &[u8]) {
@@ -67,11 +105,27 @@ impl<'a> Response<'a> {
     /// 9110 allows before a value, wide enough for any length, and the digits
     /// land once the body is rendered.
     pub(crate) fn json_body(&mut self, render: impl FnOnce(&mut Json<'_>)) {
-        write!(
-            self.out,
-            "HTTP/1.1 200 OK\r\nContent-Type: {JSON_CONTENT_TYPE}\r\nContent-Length: "
-        )
-        .unwrap();
+        self.json_framed(200, &[], render);
+    }
+
+    pub(crate) fn versioned_json(&mut self, version: &str, render: impl FnOnce(&mut Json<'_>)) {
+        self.json_framed(200, &[("Eth-Consensus-Version", version)], |json| {
+            json.versioned_envelope(version, render)
+        });
+    }
+
+    fn json_framed(
+        &mut self,
+        code: u16,
+        headers: &[(&str, &str)],
+        render: impl FnOnce(&mut Json<'_>),
+    ) {
+        let status = status_line(code).expect("a JSON body is framed under a mapped status");
+        write!(self.out, "HTTP/1.1 {status}\r\nContent-Type: {JSON_CONTENT_TYPE}\r\n").unwrap();
+        for (name, value) in headers {
+            write!(self.out, "{name}: {value}\r\n").unwrap();
+        }
+        self.out.extend_from_slice(b"Content-Length: ");
         let digits_at = self.out.len();
         self.out.extend_from_slice(&[b' '; CONTENT_LENGTH_WIDTH]);
         self.out.extend_from_slice(b"\r\n\r\n");
@@ -134,7 +188,9 @@ impl<'a> Response<'a> {
     }
 
     /// Messages can include client input, so they need JSON escaping.
+    /// An error answers now, superseding any verdicts the handler awaited.
     pub(crate) fn error(&mut self, code: u16, message: &str) {
+        self.outcome = Outcome::Response;
         let mut body = format!("{{\"code\":{code},\"message\":").into_bytes();
         Json::new(&mut body).string(message);
         body.push(b'}');
@@ -166,10 +222,11 @@ fn status_line(code: u16) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::submissions;
 
     fn framed(write: impl FnOnce(&mut Response<'_>)) -> Vec<u8> {
         let mut out = Vec::new();
-        write(&mut Response::new(&mut out));
+        write(&mut Response::new(&mut out, &mut submissions()));
         out
     }
 
@@ -185,14 +242,14 @@ mod tests {
         );
         let mut out = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
         let earlier = out.len();
-        Response::new(&mut out).json_body(|json| json.begin_array());
+        Response::new(&mut out, &mut submissions()).json_body(|json| json.begin_array());
         assert!(out[earlier..].ends_with(b"Content-Length:                    1\r\n\r\n["));
     }
 
     #[test]
     fn error_writes_status_line_and_json_body() {
         let mut out = Vec::new();
-        Response::new(&mut out).error(400, "invalid state_id");
+        Response::new(&mut out, &mut submissions()).error(400, "invalid state_id");
         let expected: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 41\r\n\r\n{\"code\":400,\"message\":\"invalid state_id\"}";
         assert_eq!(out, expected);
     }

@@ -1,12 +1,11 @@
 use std::borrow::Cow;
 
+use silver_common::TProducer;
 use silver_httpcore::{ParsedRequest, Query, frame_response};
 
 use crate::{
-    beacon::{blocks::BlockRequest, operations::AttestationSubmission},
-    ctx::ApiCtx,
-    events::ChannelSet,
-    http::response::Response,
+    beacon::blocks::BlockRequest, ctx::ApiCtx, events::ChannelSet, http::response::Response,
+    submission::Submission, validator::aggregate_attestation::AggregateRequest,
 };
 
 const MAX_PARAMS: usize = 4;
@@ -39,7 +38,8 @@ pub(crate) enum Outcome {
     Response,
     Stream(ChannelSet),
     AwaitingBlock(BlockRequest),
-    AwaitingAttestations(AttestationSubmission),
+    AwaitingAggregate(AggregateRequest),
+    AwaitingVerdicts(Submission),
 }
 
 // `method` and `path` become live with a handler that answers on more than the
@@ -163,6 +163,7 @@ impl Router {
         &self,
         req: &ParsedRequest<'_>,
         ctx: &ApiCtx,
+        submissions: &mut TProducer,
         out: &mut Vec<u8>,
     ) -> Outcome {
         let method = Method::parse(req.method);
@@ -182,12 +183,12 @@ impl Router {
                 content_type: req.content_type,
                 body: req.body,
             };
-            let mut response = Response::new(out);
+            let mut response = Response::new(out, submissions);
             (route.handler)(&request, ctx, &mut response);
             return response.outcome();
         }
         if path_known {
-            Response::new(out).error(405, "method not allowed");
+            Response::new(out, submissions).error(405, "method not allowed");
         } else {
             tracing::warn!("unknown path: {}", req.path);
             frame_response(out, "404 Not Found", None, b"");
@@ -229,7 +230,7 @@ fn same_match_set(a: &[Seg], b: &[Seg]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ctx::anchor_ctx;
+    use crate::{ctx::anchor_ctx, testing::submissions};
 
     fn request<'a>(method: &'a str, path: &'a str) -> ParsedRequest<'a> {
         ParsedRequest {
@@ -248,7 +249,7 @@ mod tests {
     fn dispatch(router: &Router, method: &str, path: &str) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(
-            router.dispatch(&request(method, path), &anchor_ctx(), &mut out),
+            router.dispatch(&request(method, path), &anchor_ctx(), &mut submissions(), &mut out),
             Outcome::Response
         );
         out
@@ -299,7 +300,10 @@ mod tests {
             version: 1,
             keep_alive: true,
         };
-        assert_eq!(router.dispatch(&req, &anchor_ctx(), &mut out), Outcome::Response);
+        assert_eq!(
+            router.dispatch(&req, &anchor_ctx(), &mut submissions(), &mut out),
+            Outcome::Response
+        );
         out
     }
 

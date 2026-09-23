@@ -1,4 +1,5 @@
 use silver_beacon_state_data::{B256, BLSPubkey, BlockRootsGroup, SLOTS_PER_HISTORICAL_ROOT};
+use silver_common::{TCache, TCacheId, TProducer};
 use silver_httpcore::ParsedRequest;
 
 use crate::{
@@ -32,9 +33,23 @@ pub(crate) fn posting<'a>(path: &'a str, body: &'a str) -> ParsedRequest<'a> {
     }
 }
 
+pub(crate) fn submissions() -> TProducer {
+    TCache::producer(TCacheId::BoundaryProcessing, 1 << 16)
+}
+
 pub(crate) fn dispatch(ctx: &ApiCtx, req: &ParsedRequest<'_>) -> (Outcome, Vec<u8>) {
+    dispatch_into(ctx, req, &mut submissions())
+}
+
+/// [`dispatch`] publishing into `submissions`, so a test can read back what
+/// the handler encoded.
+pub(crate) fn dispatch_into(
+    ctx: &ApiCtx,
+    req: &ParsedRequest<'_>,
+    submissions: &mut TProducer,
+) -> (Outcome, Vec<u8>) {
     let mut out = Vec::new();
-    let outcome = Router::new(ROUTES).dispatch(req, ctx, &mut out);
+    let outcome = Router::new(ROUTES).dispatch(req, ctx, submissions, &mut out);
     (outcome, out)
 }
 

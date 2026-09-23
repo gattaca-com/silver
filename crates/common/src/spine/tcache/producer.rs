@@ -14,6 +14,15 @@ pub trait TCacheProducer: SealedProducer {
     /// Publish the head sequence for joining consumers.
     fn publish_head(&self);
 
+    /// Commits `len` bytes filled by `write`; `None` when the cache has no
+    /// room for them.
+    fn write_with(&mut self, len: usize, write: impl FnOnce(&mut [u8])) -> Option<TCacheRead> {
+        let mut reservation = self.reserve(len, true)?;
+        write(&mut reservation.buffer().ok()?[..len]);
+        reservation.increment_offset(len);
+        Some(reservation.read())
+    }
+
     fn cache_ref(&self) -> TCacheRef {
         TCacheRef { cache: self.tcache() as *const c_void }
     }

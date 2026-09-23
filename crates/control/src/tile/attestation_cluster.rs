@@ -1,14 +1,15 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use flux::spine::SpineAdapter;
 use fxhash::FxHashMap;
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic,
-    LocalAttestationFailure, LocalAttestationResult, MessageId, Nanos, SilverSpine,
-    SilverSpineProducers, TCacheReader, TProducer, ssz_view::SingleAttestationView,
+    ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
+    SilverSpine, SilverSpineProducers, TCacheReader, TProducer,
+    ssz_view::{SINGLE_ATT_SIZE, SingleAttestationView},
 };
 use silver_gossip::GossipHandler;
 
+use super::local_validation::{LocalMessage, LocalValidation, produce_response};
 use crate::cluster::{
     AdmissionError, AttestationAdmission, AttestationCluster, AttestationClusterConfig,
     AttestationDecision, AttestationKey, AttestationLockCommand, AttestationLockStore,
@@ -16,72 +17,24 @@ use crate::cluster::{
     encode_message,
 };
 
-const LOCAL_ATTESTATION_VALIDATION_TIMEOUT: Duration = Duration::from_secs(1);
-
 #[derive(Debug, Clone, Copy)]
-struct PendingAttestation {
+pub(super) struct PendingAttestation {
     request_id: u64,
     command: AttestationLockCommand,
 }
 
-#[derive(Debug)]
-struct PendingValidation {
-    request: Option<PendingValidationRequest>,
-    duplicate_requests: Vec<PendingValidationRequest>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PendingValidationRequest {
-    request_id: u64,
-    deadline: Instant,
-}
-
-impl PendingValidation {
-    fn new(request: PendingValidationRequest) -> Self {
-        Self { request: Some(request), duplicate_requests: Vec::new() }
-    }
-
-    fn push(&mut self, request: PendingValidationRequest) {
-        self.duplicate_requests.push(request);
-    }
-
-    fn complete(self, mut emit: impl FnMut(u64)) {
-        if let Some(request) = self.request {
-            emit(request.request_id);
-        }
-        for request in self.duplicate_requests {
-            emit(request.request_id);
-        }
-    }
-
-    fn expire(&mut self, now: Instant, emit: &mut impl FnMut(u64)) -> usize {
-        let mut expired = 0;
-        if self.request.is_some_and(|request| request.deadline <= now) {
-            let request = self.request.take().unwrap();
-            emit(request.request_id);
-            expired += 1;
-        }
-        self.duplicate_requests.retain(|request| {
-            if request.deadline > now {
-                return true;
-            }
-            emit(request.request_id);
-            expired += 1;
-            false
-        });
-        expired
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        self.request
-            .map(|request| request.deadline)
-            .into_iter()
-            .chain(self.duplicate_requests.iter().map(|request| request.deadline))
-            .min()
+impl PendingAttestation {
+    pub(super) fn new(request_id: u64, subnet: u64, ssz: [u8; SINGLE_ATT_SIZE]) -> Self {
+        let key = AttestationKey {
+            attester_index: SingleAttestationView::attester_index(&ssz),
+            slot: SingleAttestationView::slot(&ssz),
+        };
+        Self { request_id, command: AttestationLockCommand { key, subnet, ssz } }
     }
 }
 
-/// Local attestation admission and validation, with optional Raft consensus.
+/// Slashing protection for local attestations: admission and a lock per
+/// validator and epoch, agreed through Raft when clustered.
 pub(super) struct AttestationClusterHandler {
     /// Encoded Raft messages are reserved here before `ClusterMsgOut` is
     /// published to the network tile.
@@ -90,8 +43,6 @@ pub(super) struct AttestationClusterHandler {
     local_locks: AttestationLockStore,
     admission: AttestationAdmission,
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
-    pending_validation: FxHashMap<MessageId, PendingValidation>,
-    next_validation_deadline: Option<Instant>,
     wall_slot: u64,
 }
 
@@ -109,8 +60,6 @@ impl AttestationClusterHandler {
             local_locks: AttestationLockStore::default(),
             admission: AttestationAdmission::new(),
             pending_attestations: FxHashMap::default(),
-            pending_validation: FxHashMap::default(),
-            next_validation_deadline: None,
             wall_slot: 0,
         })
     }
@@ -131,76 +80,6 @@ impl AttestationClusterHandler {
         tracing::info!(wall_slot, "local attestation admission enabled");
     }
 
-    pub(super) fn on_beacon_api_request(
-        &mut self,
-        request: BeaconApiRequest,
-        now: Instant,
-        gossip_handler: &mut GossipHandler,
-        producers: &mut SilverSpineProducers,
-    ) {
-        if let BeaconApiRequest::LocalAttestation { request_id, subnet, ssz } = request {
-            let key = AttestationKey {
-                attester_index: SingleAttestationView::attester_index(&ssz),
-                slot: SingleAttestationView::slot(&ssz),
-            };
-            self.handle_local_attestation(
-                PendingAttestation {
-                    request_id,
-                    command: AttestationLockCommand { key, subnet, ssz },
-                },
-                now,
-                gossip_handler,
-                producers,
-            );
-        }
-    }
-
-    pub(super) fn complete_validation(
-        &mut self,
-        msg_id: MessageId,
-        response: LocalAttestationResult,
-        producers: &mut SilverSpineProducers,
-    ) {
-        if let Some(pending) = self.pending_validation.remove(&msg_id) {
-            pending.complete(|request_id| produce_response(producers, request_id, response));
-            if self.pending_validation.is_empty() {
-                self.next_validation_deadline = None;
-            }
-        }
-    }
-
-    pub(super) fn expire_pending_validation(
-        &mut self,
-        now: Instant,
-        producers: &mut SilverSpineProducers,
-    ) {
-        if self.next_validation_deadline.is_none_or(|deadline| deadline > now) {
-            return;
-        }
-
-        let mut next_deadline = None;
-        self.pending_validation.retain(|msg_id, pending| {
-            let expired = pending.expire(now, &mut |request_id| {
-                produce_response(
-                    producers,
-                    request_id,
-                    LocalAttestationResult::Failure(LocalAttestationFailure::TimedOut),
-                );
-            });
-            if expired > 0 {
-                tracing::warn!(?msg_id, expired, "local attestation validation timed out");
-            }
-            if let Some(deadline) = pending.next_deadline() {
-                next_deadline =
-                    Some(next_deadline.map_or(deadline, |current: Instant| current.min(deadline)));
-                true
-            } else {
-                false
-            }
-        });
-        self.next_validation_deadline = next_deadline;
-    }
-
     /// Consume inbound Raft messages and pump all work currently ready in the
     /// state machine. This is called once per Control tile loop and never
     /// waits for network or timer work.
@@ -208,6 +87,7 @@ impl AttestationClusterHandler {
         &mut self,
         now: Instant,
         adapter: &mut SpineAdapter<SilverSpine>,
+        validation: &mut LocalValidation,
         gossip_handler: &mut GossipHandler,
         inbound_consumer: &mut TCacheReader,
     ) {
@@ -219,22 +99,19 @@ impl AttestationClusterHandler {
                 }
             }
         });
-        self.drive(now, gossip_handler, &mut adapter.producers);
+        self.drive(now, validation, gossip_handler, &mut adapter.producers);
     }
 
-    fn handle_local_attestation(
+    pub(super) fn on_local_attestation(
         &mut self,
         attestation: PendingAttestation,
         now: Instant,
+        validation: &mut LocalValidation,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
         if let Err(error) = self.admission.validate(attestation.command.key.slot, self.wall_slot) {
-            produce_response(
-                producers,
-                attestation.request_id,
-                LocalAttestationResult::Failure(admission_failure(error)),
-            );
+            produce_response(producers, attestation.request_id, Err(admission_failure(error)));
             tracing::warn!(
                 ?error,
                 request_id = attestation.request_id,
@@ -247,7 +124,7 @@ impl AttestationClusterHandler {
         let Some(cluster) = self.cluster.as_mut() else {
             let result = self.local_locks.apply(&attestation.command);
             let response = lock_response(result);
-            if response != LocalAttestationResult::Success {
+            if response.is_err() {
                 produce_response(producers, attestation.request_id, response);
                 tracing::warn!(
                     ?result,
@@ -257,14 +134,11 @@ impl AttestationClusterHandler {
                 );
                 return;
             }
-            inject_attestation(
-                &mut self.pending_validation,
-                &mut self.next_validation_deadline,
+            validation.submit(
+                attestation.command.local_message(attestation.request_id),
+                now,
                 gossip_handler,
                 producers,
-                now,
-                attestation.request_id,
-                attestation.command,
             );
             return;
         };
@@ -275,11 +149,7 @@ impl AttestationClusterHandler {
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
             Err(error) => {
-                produce_response(
-                    producers,
-                    attestation.request_id,
-                    LocalAttestationResult::Failure(proposal_failure(&error)),
-                );
+                produce_response(producers, attestation.request_id, Err(proposal_failure(&error)));
                 tracing::warn!(
                     ?error,
                     request_id = attestation.request_id,
@@ -347,6 +217,7 @@ impl AttestationClusterHandler {
     fn drive(
         &mut self,
         now: Instant,
+        validation: &mut LocalValidation,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
@@ -355,8 +226,6 @@ impl AttestationClusterHandler {
         };
 
         let pending_attestations = &mut self.pending_attestations;
-        let pending_validation = &mut self.pending_validation;
-        let next_validation_deadline = &mut self.next_validation_deadline;
         let outbound_producer = &mut self.outbound_producer;
         let result = cluster.spin(now, self.wall_slot, |event| match event {
             ClusterEvent::SendRaftMessage(message) => {
@@ -382,7 +251,7 @@ impl AttestationClusterHandler {
                     produce_response(
                         producers,
                         attestation.request_id,
-                        LocalAttestationResult::Failure(LocalAttestationFailure::Internal),
+                        Err(LocalGossipFailure::Internal),
                     );
                     tracing::error!(
                         ?decision.proposal_id,
@@ -392,15 +261,12 @@ impl AttestationClusterHandler {
                     return;
                 }
                 let response = decision_response(&decision);
-                if response == LocalAttestationResult::Success {
-                    inject_attestation(
-                        pending_validation,
-                        next_validation_deadline,
+                if response.is_ok() {
+                    validation.submit(
+                        decision.command.local_message(attestation.request_id),
+                        now,
                         gossip_handler,
                         producers,
-                        now,
-                        attestation.request_id,
-                        decision.command,
                     );
                 } else {
                     produce_response(producers, attestation.request_id, response);
@@ -418,7 +284,7 @@ impl AttestationClusterHandler {
                     produce_response(
                         producers,
                         attestation.request_id,
-                        LocalAttestationResult::Failure(LocalAttestationFailure::TimedOut),
+                        Err(LocalGossipFailure::TimedOut),
                     );
                     tracing::warn!(
                         ?proposal_id,
@@ -437,14 +303,10 @@ impl AttestationClusterHandler {
 
 #[cfg(test)]
 mod tests {
-    use flux::tile::Tile;
-    use silver_common::{
-        NewGossipMsg, TCache, TCacheId, TCacheProducer, TCacheTable, ssz_view::SINGLE_ATT_SIZE,
-    };
-    use silver_gossip::GossipHandlerEvent;
-    use tempfile::TempDir;
+    use silver_common::{TCache, TCacheId};
 
     use super::*;
+    use crate::tile::local_validation::{VALIDATION_TIMEOUT, tests::Harness};
 
     fn handler(now: Instant) -> AttestationClusterHandler {
         AttestationClusterHandler::new(
@@ -455,38 +317,14 @@ mod tests {
         .unwrap()
     }
 
-    struct TestTile;
-
-    impl Tile<SilverSpine> for TestTile {
-        fn loop_body(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) {}
-    }
-
     struct Standalone {
         handler: AttestationClusterHandler,
-        gossip: GossipHandler,
-        adapter: SpineAdapter<SilverSpine>,
-        _spine: Box<SilverSpine>,
-        _base: TempDir,
+        harness: Harness,
     }
 
     impl Standalone {
         fn new(now: Instant) -> Self {
-            let base = TempDir::new().unwrap();
-            let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
-            let mut adapter = SpineAdapter::connect_tile(&TestTile, &mut spine);
-            // The consumer attaches at the current head on its first read.
-            adapter.consume(|_: BeaconApiResponse, _| panic!("unexpected initial response"));
-            let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 12);
-            let protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 12);
-            let mut gossip = GossipHandler::new(
-                TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
-                TCache::producer(TCacheId::ControlProcessing, 1 << 12),
-                protobuf,
-                Some(silver_common::GossipDomain::new([1, 2, 3, 4], silver_common::ForkName::Fulu)),
-            )
-            .unwrap();
-            gossip.open_tcaches().unwrap();
-            Self { handler: handler(now), gossip, adapter, _spine: spine, _base: base }
+            Self { handler: handler(now), harness: Harness::new() }
         }
 
         fn submit(&mut self, request_id: u64, slot: u64, validator: u8, root: u8, now: Instant) {
@@ -494,30 +332,14 @@ mod tests {
             ssz[8..16].copy_from_slice(&u64::from(validator).to_le_bytes());
             ssz[16..24].copy_from_slice(&slot.to_le_bytes());
             ssz[32..64].fill(root);
-            self.handler.on_beacon_api_request(
-                BeaconApiRequest::LocalAttestation { request_id, subnet: 0, ssz },
+            let Harness { validation, gossip, adapter, .. } = &mut self.harness;
+            self.handler.on_local_attestation(
+                PendingAttestation::new(request_id, 0, ssz),
                 now,
-                &mut self.gossip,
-                &mut self.adapter.producers,
+                validation,
+                gossip,
+                &mut adapter.producers,
             );
-        }
-
-        fn pop_gossip(&mut self) -> NewGossipMsg {
-            match self.gossip.pop_event().expect("attestation enters validation") {
-                GossipHandlerEvent::NewGossip(message) => message,
-                _ => panic!("unexpected gossip event"),
-            }
-        }
-
-        fn responses(&mut self) -> Vec<(u64, LocalAttestationResult)> {
-            let mut responses = Vec::new();
-            self.adapter.consume(|response: BeaconApiResponse, _| match response {
-                BeaconApiResponse::LocalAttestationResponse { request_id, response } => {
-                    responses.push((request_id, response));
-                }
-                BeaconApiResponse::Block { .. } => {}
-            });
-            responses
         }
     }
 
@@ -529,42 +351,35 @@ mod tests {
         standalone.handler.on_status(11, 11);
 
         standalone.submit(1, 11, 7, 1, now);
-        let message = standalone.pop_gossip();
-        assert!(standalone.responses().is_empty());
+        let message = standalone.harness.pop_gossip();
+        assert!(standalone.harness.responses().is_empty());
         assert!(standalone.handler.cluster.is_none());
         assert!(standalone.handler.pending_attestations.is_empty());
 
         standalone.submit(2, 11, 7, 1, now);
-        assert_eq!(standalone.pop_gossip().msg_hash, message.msg_hash);
-        assert!(standalone.responses().is_empty());
+        assert_eq!(standalone.harness.pop_gossip().msg_hash, message.msg_hash);
+        assert!(standalone.harness.responses().is_empty());
 
         standalone.submit(3, 11, 7, 2, now);
-        assert_eq!(standalone.responses(), [(
+        assert_eq!(standalone.harness.responses(), [(
             3,
-            LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)
+            Err(LocalGossipFailure::ConflictingAttestation)
         )]);
-        assert!(standalone.gossip.pop_event().is_none());
+        assert!(standalone.harness.gossip.pop_event().is_none());
 
-        standalone.handler.complete_validation(
-            message.msg_hash,
-            LocalAttestationResult::Success,
-            &mut standalone.adapter.producers,
-        );
-        assert_eq!(standalone.responses(), [
-            (1, LocalAttestationResult::Success),
-            (2, LocalAttestationResult::Success)
-        ]);
-        assert!(standalone.handler.pending_validation.is_empty());
+        standalone.harness.complete(message.msg_hash, Ok(()));
+        assert_eq!(standalone.harness.responses(), [(1, Ok(())), (2, Ok(()))]);
+        assert!(standalone.harness.validation.is_empty());
 
         standalone.submit(4, 11, 7, 2, now);
-        assert_eq!(standalone.responses(), [(
+        assert_eq!(standalone.harness.responses(), [(
             4,
-            LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)
+            Err(LocalGossipFailure::ConflictingAttestation)
         )]);
-        assert!(standalone.gossip.pop_event().is_none());
+        assert!(standalone.harness.gossip.pop_event().is_none());
         standalone.submit(5, 11, 7, 1, now);
-        assert_eq!(standalone.pop_gossip().msg_hash, message.msg_hash);
-        assert!(standalone.responses().is_empty());
+        assert_eq!(standalone.harness.pop_gossip().msg_hash, message.msg_hash);
+        assert!(standalone.harness.responses().is_empty());
     }
 
     #[test]
@@ -575,68 +390,64 @@ mod tests {
         standalone.handler.on_status(12, 12);
 
         standalone.submit(1, 11, 7, 1, now);
-        standalone.pop_gossip();
+        standalone.harness.pop_gossip();
         standalone.submit(2, 11, 8, 2, now);
-        standalone.pop_gossip();
+        standalone.harness.pop_gossip();
         standalone.submit(3, 12, 7, 3, now);
-        assert_eq!(standalone.responses(), [(
+        assert_eq!(standalone.harness.responses(), [(
             3,
-            LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)
+            Err(LocalGossipFailure::ConflictingAttestation)
         )]);
 
         standalone.handler.on_status(40, 40);
         standalone.submit(4, 40, 7, 4, now);
-        standalone.pop_gossip();
+        standalone.harness.pop_gossip();
         standalone.handler.on_status(70, 70);
         standalone.submit(5, 70, 7, 5, now);
-        standalone.pop_gossip();
-        assert!(standalone.responses().is_empty());
+        standalone.harness.pop_gossip();
+        assert!(standalone.harness.responses().is_empty());
 
         standalone.submit(6, 11, 7, 6, now);
         standalone.submit(7, 40, 7, 6, now);
         standalone.submit(8, 70, 7, 6, now);
-        assert_eq!(standalone.responses(), [
-            (6, LocalAttestationResult::Failure(LocalAttestationFailure::TooOld)),
-            (7, LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)),
-            (8, LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)),
+        assert_eq!(standalone.harness.responses(), [
+            (6, Err(LocalGossipFailure::TooOld)),
+            (7, Err(LocalGossipFailure::ConflictingAttestation)),
+            (8, Err(LocalGossipFailure::ConflictingAttestation)),
         ]);
-        assert!(standalone.gossip.pop_event().is_none());
+        assert!(standalone.harness.gossip.pop_event().is_none());
     }
 
     #[test]
     fn standalone_keeps_locks_after_validation_failure_or_timeout() {
         for failure in [
-            LocalAttestationFailure::Invalid,
-            LocalAttestationFailure::Unverifiable,
-            LocalAttestationFailure::TimedOut,
+            LocalGossipFailure::Invalid,
+            LocalGossipFailure::Unverifiable,
+            LocalGossipFailure::TimedOut,
         ] {
             let now = Instant::now();
             let mut standalone = Standalone::new(now);
             standalone.handler.on_status(10, 10);
             standalone.handler.on_status(11, 11);
             standalone.submit(1, 11, 7, 1, now);
-            let message = standalone.pop_gossip();
+            let message = standalone.harness.pop_gossip();
 
             match failure {
-                LocalAttestationFailure::TimedOut => standalone.handler.expire_pending_validation(
-                    now + LOCAL_ATTESTATION_VALIDATION_TIMEOUT,
-                    &mut standalone.adapter.producers,
-                ),
-                failure => standalone.handler.complete_validation(
-                    message.msg_hash,
-                    LocalAttestationResult::Failure(failure),
-                    &mut standalone.adapter.producers,
-                ),
+                LocalGossipFailure::TimedOut => standalone
+                    .harness
+                    .validation
+                    .expire(now + VALIDATION_TIMEOUT, &mut standalone.harness.adapter.producers),
+                failure => standalone.harness.complete(message.msg_hash, Err(failure)),
             }
-            assert_eq!(standalone.responses(), [(1, LocalAttestationResult::Failure(failure))]);
-            assert!(standalone.handler.pending_validation.is_empty());
+            assert_eq!(standalone.harness.responses(), [(1, Err(failure))]);
+            assert!(standalone.harness.validation.is_empty());
 
-            standalone.submit(2, 11, 7, 2, now + LOCAL_ATTESTATION_VALIDATION_TIMEOUT);
-            assert_eq!(standalone.responses(), [(
+            standalone.submit(2, 11, 7, 2, now + VALIDATION_TIMEOUT);
+            assert_eq!(standalone.harness.responses(), [(
                 2,
-                LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)
+                Err(LocalGossipFailure::ConflictingAttestation)
             )]);
-            assert!(standalone.gossip.pop_event().is_none());
+            assert!(standalone.harness.gossip.pop_event().is_none());
         }
     }
 
@@ -645,40 +456,34 @@ mod tests {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
         standalone.submit(1, 11, 7, 1, now);
-        assert_eq!(standalone.responses(), [(
-            1,
-            LocalAttestationResult::Failure(LocalAttestationFailure::NotSynced)
-        )]);
+        assert_eq!(standalone.harness.responses(), [(1, Err(LocalGossipFailure::NotSynced))]);
 
         standalone.handler.on_status(10, 10);
         standalone.submit(2, 10, 7, 1, now);
         standalone.submit(3, 11, 7, 1, now);
-        assert_eq!(standalone.responses(), [
-            (2, LocalAttestationResult::Failure(LocalAttestationFailure::BeforeStartupFloor)),
-            (3, LocalAttestationResult::Failure(LocalAttestationFailure::Future)),
+        assert_eq!(standalone.harness.responses(), [
+            (2, Err(LocalGossipFailure::BeforeStartupFloor)),
+            (3, Err(LocalGossipFailure::Future)),
         ]);
-        assert!(standalone.gossip.pop_event().is_none());
+        assert!(standalone.harness.gossip.pop_event().is_none());
 
         standalone.handler.on_status(11, 11);
         standalone.submit(4, 11, 7, 2, now);
-        standalone.pop_gossip();
-        assert!(standalone.responses().is_empty(), "rejected requests must not acquire locks");
+        standalone.harness.pop_gossip();
+        assert!(
+            standalone.harness.responses().is_empty(),
+            "rejected requests must not acquire locks"
+        );
 
         standalone.handler.on_status(42, 44);
         standalone.submit(5, 11, 7, 2, now);
-        assert_eq!(standalone.responses(), [(
-            5,
-            LocalAttestationResult::Failure(LocalAttestationFailure::TooOld)
-        )]);
+        assert_eq!(standalone.harness.responses(), [(5, Err(LocalGossipFailure::TooOld))]);
 
         standalone.handler.on_status(42, 43);
         assert_eq!(standalone.handler.admission.validate(11, 43), Ok(()));
         standalone.submit(6, 11, 7, 2, now);
-        assert_eq!(standalone.responses(), [(
-            6,
-            LocalAttestationResult::Failure(LocalAttestationFailure::TooOld)
-        )]);
-        assert!(standalone.gossip.pop_event().is_none());
+        assert_eq!(standalone.harness.responses(), [(6, Err(LocalGossipFailure::TooOld))]);
+        assert!(standalone.harness.gossip.pop_event().is_none());
     }
 
     #[test]
@@ -697,149 +502,49 @@ mod tests {
         handler.on_status(20, 20);
         assert_eq!(handler.admission.validate(11, 20), Ok(()), "floor must not relatch");
     }
-
-    #[test]
-    fn pending_validation_completes_all_requests() {
-        let now = Instant::now();
-        let mut pending = PendingValidation::new(PendingValidationRequest {
-            request_id: 11,
-            deadline: now + Duration::from_secs(1),
-        });
-        pending.push(PendingValidationRequest {
-            request_id: 12,
-            deadline: now + Duration::from_secs(1),
-        });
-
-        let mut completed = Vec::new();
-        pending.complete(|request_id| completed.push(request_id));
-
-        assert_eq!(completed, [11, 12]);
-    }
-
-    #[test]
-    fn pending_validation_requests_expire_independently() {
-        let now = Instant::now();
-        let mut pending = PendingValidation::new(PendingValidationRequest {
-            request_id: 21,
-            deadline: now + Duration::from_millis(10),
-        });
-        pending.push(PendingValidationRequest {
-            request_id: 22,
-            deadline: now + Duration::from_millis(20),
-        });
-
-        let mut expired = Vec::new();
-        pending.expire(now + Duration::from_millis(10), &mut |request_id| {
-            expired.push(request_id);
-        });
-        assert_eq!(expired, [21]);
-        assert!(pending.next_deadline().is_some());
-
-        pending.expire(now + Duration::from_millis(20), &mut |request_id| {
-            expired.push(request_id);
-        });
-        assert_eq!(expired, [21, 22]);
-        assert!(pending.next_deadline().is_none());
-    }
 }
 
-fn produce_response(
-    producers: &mut SilverSpineProducers,
-    request_id: u64,
-    response: LocalAttestationResult,
-) {
-    producers
-        .beacon_api_responses
-        .produce(&BeaconApiResponse::LocalAttestationResponse { request_id, response }.into());
-}
-
-fn decision_response(decision: &AttestationDecision) -> LocalAttestationResult {
+fn decision_response(decision: &AttestationDecision) -> LocalGossipResult {
     if let Err(error) = decision.admission {
-        return LocalAttestationResult::Failure(admission_failure(error));
+        return Err(admission_failure(error));
     }
 
     lock_response(decision.result)
 }
 
-fn lock_response(result: LockResult) -> LocalAttestationResult {
+fn lock_response(result: LockResult) -> LocalGossipResult {
     match result {
-        LockResult::Accepted | LockResult::AlreadyAcceptedSame => LocalAttestationResult::Success,
-        LockResult::ConflictingAttestation => {
-            LocalAttestationResult::Failure(LocalAttestationFailure::ConflictingAttestation)
-        }
-        LockResult::TooOld => LocalAttestationResult::Failure(LocalAttestationFailure::TooOld),
+        LockResult::Accepted | LockResult::AlreadyAcceptedSame => Ok(()),
+        LockResult::ConflictingAttestation => Err(LocalGossipFailure::ConflictingAttestation),
+        LockResult::TooOld => Err(LocalGossipFailure::TooOld),
     }
 }
 
-fn proposal_failure(error: &ProposeError) -> LocalAttestationFailure {
+fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
     match error {
         ProposeError::Admission(error) => admission_failure(*error),
         ProposeError::SequenceExhausted |
         ProposeError::DeadlineOverflow |
-        ProposeError::Raft(_) => LocalAttestationFailure::Internal,
+        ProposeError::Raft(_) => LocalGossipFailure::Internal,
     }
 }
 
-fn admission_failure(error: AdmissionError) -> LocalAttestationFailure {
+fn admission_failure(error: AdmissionError) -> LocalGossipFailure {
     match error {
-        AdmissionError::StartupFloorUnset => LocalAttestationFailure::NotSynced,
-        AdmissionError::BeforeStartupFloor { .. } => LocalAttestationFailure::BeforeStartupFloor,
-        AdmissionError::TooOld { .. } => LocalAttestationFailure::TooOld,
-        AdmissionError::Future { .. } => LocalAttestationFailure::Future,
+        AdmissionError::StartupFloorUnset => LocalGossipFailure::NotSynced,
+        AdmissionError::BeforeStartupFloor { .. } => LocalGossipFailure::BeforeStartupFloor,
+        AdmissionError::TooOld { .. } => LocalGossipFailure::TooOld,
+        AdmissionError::Future { .. } => LocalGossipFailure::Future,
     }
 }
 
-fn inject_attestation(
-    pending_validation: &mut FxHashMap<MessageId, PendingValidation>,
-    next_validation_deadline: &mut Option<Instant>,
-    gossip_handler: &mut GossipHandler,
-    producers: &mut SilverSpineProducers,
-    now: Instant,
-    request_id: u64,
-    command: AttestationLockCommand,
-) {
-    let topic = GossipTopic::BeaconAttestation(command.subnet);
-    match gossip_handler.inject_local(topic, &command.ssz, Nanos::now()) {
-        Ok(Some(msg_id)) => {
-            let request = PendingValidationRequest {
-                request_id,
-                deadline: now + LOCAL_ATTESTATION_VALIDATION_TIMEOUT,
-            };
-            *next_validation_deadline = Some(
-                next_validation_deadline
-                    .map_or(request.deadline, |deadline| deadline.min(request.deadline)),
-            );
-            pending_validation
-                .entry(msg_id)
-                .and_modify(|pending| pending.push(request))
-                .or_insert_with(|| PendingValidation::new(request));
-        }
-        Ok(None) => {
-            produce_response(
-                producers,
-                request_id,
-                LocalAttestationResult::Failure(LocalAttestationFailure::Internal),
-            );
-            tracing::warn!(
-                request_id,
-                slot = command.key.slot,
-                ?topic,
-                "gossip is not ready to validate committed local attestation"
-            );
-        }
-        Err(error) => {
-            produce_response(
-                producers,
-                request_id,
-                LocalAttestationResult::Failure(LocalAttestationFailure::Internal),
-            );
-            tracing::warn!(
-                ?error,
-                request_id,
-                slot = command.key.slot,
-                ?topic,
-                "failed to inject committed local attestation for validation"
-            );
+impl AttestationLockCommand {
+    fn local_message(&self, request_id: u64) -> LocalMessage<'_> {
+        LocalMessage {
+            request_id,
+            topic: GossipTopic::BeaconAttestation(self.subnet),
+            ssz: &self.ssz,
+            slot: self.key.slot,
         }
     }
 }
