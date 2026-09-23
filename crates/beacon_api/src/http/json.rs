@@ -8,9 +8,13 @@ use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Checkpoint, F
 use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
 
 use crate::{
-    attestation_data::AttestationData, attestation_submission::SubmissionFailure,
-    attester_duties::AttesterDuty, events::HeadEvent, peers::Peer, proposer_duties::ProposerDuty,
-    sync_duties::SyncDuty, validators::ValidatorRecord,
+    beacon::{operations::SubmissionFailure, validators::ValidatorRecord},
+    events::HeadEvent,
+    node::peers::Peer,
+    validator::{
+        attestation_data::AttestationData, attester_duties::AttesterDuty,
+        proposer_duties::ProposerDuty, sync_duties::SyncDuty,
+    },
 };
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
@@ -677,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_appended_after_existing_bytes_gets_no_leading_comma() {
+    fn body_appended_after_existing_bytes_gets_no_leading_comma() {
         let mut out = b"HTTP-ish prefix}".to_vec();
         let mut json = Json::new(&mut out);
         json.begin_object();
@@ -703,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn a_column_event_without_commitments_omits_the_field() {
+    fn column_event_without_commitments_omits_the_field() {
         let body = write(|json| json.data_column_sidecar_event(&[0x9a; 32], 3, 10, None));
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["slot"], "10");

@@ -1,7 +1,17 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
-use silver_common::{ELSyncStatus, PayloadResolution, SyncUpdate};
+use silver_common::{AGENT_VERSION, ELSyncStatus, PayloadResolution, SyncUpdate};
 
-use crate::json::SyncingData;
+use crate::{
+    ctx::ApiCtx,
+    http::{
+        json::{Json, SyncingData},
+        response::Response,
+        router::Request,
+    },
+};
+
+/// The status a syncing node reports when the request names no other one.
+const DEFAULT_SYNCING_STATUS: u16 = 206;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NodeStatus {
@@ -89,3 +99,52 @@ pub struct HeadStatus {
     pub slot: u64,
     pub optimistic: bool,
 }
+
+pub(crate) fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let syncing = ctx.node_status.syncing_data();
+    resp.json_body(|json| json.data_envelope(|json| json.syncing(&syncing)));
+}
+
+pub(crate) fn version(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.version);
+}
+
+/// Health is the status code and nothing else — the schema gives this
+/// endpoint no response body at any code.
+pub(crate) fn health(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Some(syncing_status) = syncing_status(req) else {
+        resp.error(400, "invalid syncing_status");
+        return;
+    };
+    let code = match ctx.node_status.health() {
+        Health::Ready => 200,
+        Health::Syncing => syncing_status,
+    };
+    resp.status_only(code);
+}
+
+/// The optional `syncing_status` query parameter, which replaces the code a
+/// syncing node reports. `None` for a value outside the 100..=599 the schema
+/// allows, which the spec answers with a 400.
+fn syncing_status(req: &Request<'_>) -> Option<u16> {
+    match req.query_value("syncing_status") {
+        Some(value) => value.parse().ok().filter(|code| (100..=599).contains(code)),
+        None => Some(DEFAULT_SYNCING_STATUS),
+    }
+}
+
+pub(crate) fn version_body() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_object();
+    json.key("version");
+    json.string(AGENT_VERSION);
+    json.end_object();
+    json.end_object();
+    out
+}
+
+#[cfg(test)]
+pub(crate) mod tests;

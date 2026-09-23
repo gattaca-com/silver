@@ -5,11 +5,13 @@ use silver_common::{
 };
 
 use crate::{
-    ids::{parse_root, parse_uint64},
-    json::{ReadFlags, SignedHeader},
-    response::Response,
-    router::{Request, SSZ_MEDIA_TYPE},
-    routes::ApiCtx,
+    ctx::ApiCtx,
+    http::{
+        ids::{parse_root, parse_uint64},
+        json::{ReadFlags, SignedHeader},
+        response::Response,
+        router::{Request, SSZ_MEDIA_TYPE},
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,8 +160,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::Outcome,
-        routes::anchor_ctx,
+        ctx::anchor_ctx,
+        http::router::Outcome,
         testing::{dispatch, request},
     };
 

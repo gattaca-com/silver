@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, de};
 use silver_beacon_state_data::{B256, BLSPubkey};
 
-use crate::response::Response;
+use crate::http::response::Response;
 
 /// How many validators one POST body may name. No schema that takes a list of
 /// them sets a `maxItems`, and an unbounded list turns a 16 MiB body into

@@ -5,11 +5,13 @@ use silver_beacon_state_data::{
 use silver_httpcore::Query;
 
 use crate::{
-    ids::{parse_pubkey, parse_uint64},
-    json::Json,
-    response::Response,
-    router::Request,
-    routes::ApiCtx,
+    ctx::ApiCtx,
+    http::{
+        ids::{parse_pubkey, parse_uint64},
+        json::Json,
+        response::Response,
+        router::Request,
+    },
 };
 
 const MAX_VALIDATOR_IDS: usize = 32 * 1024;
@@ -332,8 +334,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        router::{Outcome, Router},
-        routes::{ROUTES, test_ctx},
+        ctx::test_ctx,
+        http::router::{Outcome, Router},
+        routes::ROUTES,
     };
 
     const HEAD_SLOT: u64 = 100 * SLOTS_PER_EPOCH;

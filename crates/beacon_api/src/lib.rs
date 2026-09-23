@@ -1,27 +1,14 @@
-mod attestation_data;
-mod attestation_submission;
-mod attester_duties;
-mod blocks;
+mod beacon;
 mod config;
-mod duties;
+mod ctx;
 mod events;
-mod head_verdict;
-mod identity;
-mod ids;
-mod json;
-mod node_status;
-mod peers;
-mod proposer_duties;
-mod response;
-mod router;
+mod http;
+mod node;
 mod routes;
 mod server;
-mod statics;
-mod sync_duties;
 #[cfg(test)]
 mod testing;
-mod validator_api;
-mod validators;
+mod validator;
 
-pub use node_status::{HeadStatus, NodeStatus};
+pub use node::status::{HeadStatus, NodeStatus};
 pub use server::BeaconApi;

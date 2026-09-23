@@ -2,7 +2,11 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot, StateReadView,
 };
 
-use crate::{duties::epoch_param, response::Response, router::Request, routes::ApiCtx};
+use crate::{
+    ctx::ApiCtx,
+    http::{response::Response, router::Request},
+    validator::duties::epoch_param,
+};
 
 pub(crate) fn proposer_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     respond(req, ctx, resp, 0);
@@ -105,7 +109,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        routes::test_ctx,
+        ctx::test_ctx,
         testing::{self, answer, block_roots_ring, request, ring_root, status_code},
     };
 

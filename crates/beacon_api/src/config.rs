@@ -21,7 +21,10 @@ use silver_common::{
     ticker::MAXIMUM_GOSSIP_CLOCK_DISPARITY,
 };
 
-use crate::json::Json;
+use crate::{
+    ctx::ApiCtx,
+    http::{json::Json, response::Response, router::Request},
+};
 
 const PRESET_BASE: &str = "mainnet";
 
@@ -415,11 +418,48 @@ fn fork_epoch_key(fork: ForkName) -> &'static str {
     }
 }
 
+pub(crate) fn spec(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.spec);
+}
+
+pub(crate) fn fork_schedule(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.fork_schedule);
+}
+
+pub(crate) fn deposit_contract(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    resp.json(&ctx.statics.deposit_contract);
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Map, Value};
 
     use super::*;
+    use crate::{
+        ctx::anchor_ctx,
+        testing::{answer, body, request},
+    };
+
+    /// Config is boot-time data, so these three answer before the node has a
+    /// state to read — a validator client polls them while silver is still
+    /// syncing.
+    #[test]
+    fn config_endpoints_answer_before_bootstrap() {
+        for path in [
+            "/eth/v1/config/spec",
+            "/eth/v1/config/fork_schedule",
+            "/eth/v1/config/deposit_contract",
+        ] {
+            let resp = answer(&anchor_ctx(), &request("GET", path));
+            assert!(
+                resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+                "{path}"
+            );
+            let parsed: serde_json::Value = serde_json::from_slice(body(&resp)).expect(path);
+            assert!(parsed.get("data").is_some(), "{path}");
+            assert_eq!(parsed.as_object().unwrap().len(), 1, "{path}: bare data wrapper");
+        }
+    }
 
     fn data(body: &[u8]) -> Value {
         serde_json::from_slice::<Value>(body).expect("valid JSON")["data"].clone()
@@ -477,7 +517,7 @@ mod tests {
     /// committee period from this body; Teku and Lighthouse compare the fork
     /// versions and deposit contract against their own config.
     #[test]
-    fn the_keys_validator_clients_read_are_all_present() {
+    fn keys_validator_clients_read_are_all_present() {
         let spec = spec_map(&SpecConfig::mainnet());
         for name in [
             "PRESET_BASE",
@@ -524,7 +564,7 @@ mod tests {
     /// `SLOT_DURATION_MS`, which is derived, because a client that also reads
     /// `SECONDS_PER_SLOT` rejects a body where the two disagree.
     #[test]
-    fn the_config_file_keys_silver_serves_as_literals_match_v1_6_0_mainnet() {
+    fn config_file_keys_silver_serves_as_literals_match_v1_6_0_mainnet() {
         let spec = spec_map(&SpecConfig::mainnet());
         for (name, value) in [
             ("SLOT_DURATION_MS", "12000"),
