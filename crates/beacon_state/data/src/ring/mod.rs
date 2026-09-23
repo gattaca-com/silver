@@ -134,13 +134,6 @@ impl<G: RingGroup> Ring<G> {
         &buf.entries[id.index() & buf.mask]
     }
 
-    #[inline]
-    pub(crate) fn get_mut(&mut self, id: Id<G>) -> &mut G::Entry {
-        let buf = self.buf_mut();
-        let mask = buf.mask;
-        &mut buf.entries[id.index() & mask]
-    }
-
     /// Allocate the next slot and hand back read access to `parent`'s — for
     /// callers that build content elsewhere and write the slot only at
     /// commit time.

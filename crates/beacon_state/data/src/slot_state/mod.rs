@@ -13,7 +13,7 @@ use flux_profiler::timed;
 use crate::{
     reanchor::finalize_full_copies,
     ring::{Id, Ring, RingGroup},
-    types::{B256, SLOTS_RING_N},
+    types::SLOTS_RING_N,
 };
 
 pub type SlotStateId = Id<SlotStateGroup>;
@@ -61,12 +61,6 @@ impl SlotStateGroup {
         fork.slot.clone_from(&finalized.slot);
         fork.epoch_balances = finalized.epoch_balances;
         SlotStateWriteView::new(finalized, fork)
-    }
-
-    /// Writes into a committed fork, which only the anchor tolerates: it is
-    /// unpublished and no block apply will ever write this field for it.
-    pub fn set_latest_block_root(&mut self, id: SlotStateId, root: B256) {
-        self.deltas.get_mut(id).slot.latest_block_root = root;
     }
 
     #[inline]

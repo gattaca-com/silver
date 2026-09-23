@@ -270,8 +270,9 @@ fn arm_tile_state(
 ) {
     // Anchor each tier's fork at the base (the slot tier at `start_slot`);
     // epoch stays lazy. Rolled before the owner wraps the state.
-    let mut anchor = bs.roll_fresh();
-    bs.slot_states.set_latest_block_root(anchor.slot_idx, ANCHOR_ROOT);
+    let mut writer = bs.fresh_fork_writer();
+    writer.view.slot.state_mut().latest_block_root = ANCHOR_ROOT;
+    let mut anchor = writer.commit();
 
     // An unrotated bundle names no seat holder, so the sync paths need the
     // seeding a real state gets from `decompose` or a period rotation. Every

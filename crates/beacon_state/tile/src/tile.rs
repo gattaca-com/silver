@@ -7,8 +7,8 @@ use flux::{
 use flux_profiler::timed;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch, SLOTS_PER_EPOCH,
-    Slot, SlotState, SpecConfig, StateId,
+    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch,
+    SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
@@ -223,7 +223,7 @@ impl BeaconStateTile {
     ) -> Self {
         let mut owner = BeaconStateOwner::new(state);
         let val_cap = owner.state().validators.finalized().capacity();
-        let anchor = owner.roll_fresh();
+        let (anchor, anchor_header) = Self::roll_anchor(&mut owner);
         let mut tile = Self {
             sync_target: SyncUpdate::default(),
             ticker,
@@ -262,7 +262,7 @@ impl BeaconStateTile {
             verify_weak_subjectivity,
             reader: TCacheReader::new(tcaches),
         };
-        tile.seed_anchor(anchor, val_cap);
+        tile.seed_anchor(anchor, anchor_header, val_cap);
         tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
         tile
     }
@@ -341,31 +341,43 @@ impl BeaconStateTile {
         ssz_hash::hash_tree_root_state(&rv)
     }
 
+    /// Anchor block root. Compute on a local header copy so the state's
+    /// `latest_block_header.state_root` stays `[0;32]` — the first
+    /// post-bootstrap `process_slot` hashes that canonical state and a
+    /// patched value would shift the result.
+    fn roll_anchor(owner: &mut BeaconStateOwner) -> (StateId, BeaconBlockHeader) {
+        let mut writer = owner.fresh_fork_writer();
+        let rv = writer.read();
+        let mut header = rv.slot.state().latest_block_header;
+        if header.state_root == [0u8; 32] {
+            header.state_root = ssz_hash::hash_tree_root_state(&rv);
+        }
+        writer.view.slot.state_mut().latest_block_root =
+            ssz_hash::hash_tree_root_block_header(&header);
+        (writer.commit(), header)
+    }
+
     /// Seed fork choice from the freshly-anchored real state and publish the
     /// `anchor` — the second half of `new` for a non-stub state. (Caches are
     /// already sized for the real validator count in `new`.)
-    fn seed_anchor(&mut self, anchor: StateId, validators_capacity: usize) {
+    fn seed_anchor(
+        &mut self,
+        anchor: StateId,
+        header: BeaconBlockHeader,
+        validators_capacity: usize,
+    ) {
         let slot = self.state.state().slot_states.finalized_view().slot_number();
 
-        // Anchor block root. Compute on a local header copy so the state's
-        // `latest_block_header.state_root` stays `[0;32]` — the first
-        // post-bootstrap `process_slot` hashes that canonical state and a
-        // patched value would shift the result.
-        let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
-        let (header, block_root, execution_block_hash) = {
+        let (anchor_is_gloas, block_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
-            let mut header = rv.slot.state().latest_block_header;
-            if header.state_root == [0u8; 32] {
-                header.state_root = ssz_hash::hash_tree_root_state(&rv);
-            }
-            let execution_block_hash = if anchor_is_gloas {
-                rv.slot.state().latest_execution_payload_bid.block_hash
+            let slot_state = rv.slot.state();
+            let execution_block_hash = if rv.is_gloas() {
+                slot_state.latest_execution_payload_bid.block_hash
             } else {
-                rv.slot.state().latest_execution_payload_header.block_hash
+                slot_state.latest_execution_payload_header.block_hash
             };
-            (header, ssz_hash::hash_tree_root_block_header(&header), execution_block_hash)
+            (rv.is_gloas(), slot_state.latest_block_root, execution_block_hash)
         };
-        self.state.write().slot_states.set_latest_block_root(anchor.slot_idx, block_root);
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_seen_head_root = block_root;

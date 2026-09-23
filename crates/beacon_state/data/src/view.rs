@@ -83,6 +83,10 @@ impl BeaconStateOwner {
         self.state.get_mut().roll_fresh()
     }
 
+    pub fn fresh_fork_writer(&mut self) -> ForkWriter<'_> {
+        self.state.get_mut().fresh_fork_writer()
+    }
+
     /// Roll an unpublished child off `parent` and hold every tier's writer.
     /// The transition mutates it, then `commit` + `publish_state_id` make the
     /// child visible (publish-last); nothing is re-opened in between.
