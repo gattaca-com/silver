@@ -8,14 +8,14 @@ use silver_common::{Enr, Identify, Keypair};
 
 use crate::{
     NodeStatus,
-    config::{deposit_contract_body, fork_schedule_body, spec_body},
+    config::spec_body,
     http::{
         ids::is_recognized_id,
-        json::{Json, ReadFlags},
+        json::{Json, ReadFlags, deposit_contract_body, fork_schedule_body, version_body},
         response::Response,
         router::Request,
     },
-    node::{identity::identity_body, peers::PeerTable, status::version_body},
+    node::{identity::identity_body, peers::PeerTable},
     validator::attester_duties::PostedShufflings,
 };
 

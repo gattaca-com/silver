@@ -1,4 +1,4 @@
-use silver_common::{ELSyncStatus, PayloadResolution, SyncUpdate};
+use silver_common::{AGENT_VERSION, ELSyncStatus, PayloadResolution, SyncUpdate};
 use silver_httpcore::ParsedRequest;
 
 use super::*;

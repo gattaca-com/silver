@@ -1,13 +1,9 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
-use silver_common::{AGENT_VERSION, ELSyncStatus, PayloadResolution, SyncUpdate};
+use silver_common::{ELSyncStatus, PayloadResolution, SyncUpdate};
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        json::{Json, SyncingData},
-        response::Response,
-        router::Request,
-    },
+    http::{json::SyncingData, response::Response, router::Request},
 };
 
 /// The status a syncing node reports when the request names no other one.
@@ -131,19 +127,6 @@ fn syncing_status(req: &Request<'_>) -> Option<u16> {
         Some(value) => value.parse().ok().filter(|code| (100..=599).contains(code)),
         None => Some(DEFAULT_SYNCING_STATUS),
     }
-}
-
-pub(crate) fn version_body() -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut json = Json::new(&mut out);
-    json.begin_object();
-    json.key("data");
-    json.begin_object();
-    json.key("version");
-    json.string(AGENT_VERSION);
-    json.end_object();
-    json.end_object();
-    out
 }
 
 #[cfg(test)]

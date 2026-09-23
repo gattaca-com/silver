@@ -4,8 +4,11 @@
 
 use std::io::Write;
 
-use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Checkpoint, Fork, Version};
-use silver_common::ssz_view::BYTES_PER_KZG_COMMITMENT;
+use silver_beacon_state_data::{
+    B256, BLSPubkey, BeaconBlockHeader, Checkpoint, FAR_FUTURE_EPOCH, Fork, ForkName, SpecConfig,
+    Version,
+};
+use silver_common::{AGENT_VERSION, ssz_view::BYTES_PER_KZG_COMMITMENT};
 
 use crate::{
     beacon::{operations::SubmissionFailure, validators::ValidatorRecord},
@@ -579,6 +582,60 @@ impl Json<'_> {
         self.checkpoint(&checkpoints.finalized);
         self.end_object();
     }
+}
+
+pub(crate) fn version_body() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_object();
+    json.key("version");
+    json.string(AGENT_VERSION);
+    json.end_object();
+    json.end_object();
+    out
+}
+
+/// `GET /eth/v1/config/fork_schedule`. Unscheduled forks are omitted: the
+/// list is what this node is aware of *scheduling*, and a client that
+/// derives a signing domain from the last entry must not land on a fork
+/// that will never activate.
+pub(crate) fn fork_schedule_body(spec: &SpecConfig) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_array();
+    let mut previous_version = spec.fork_version(ForkName::Phase0);
+    for fork in ForkName::ALL {
+        let epoch = spec.fork_epoch(fork);
+        if epoch == FAR_FUTURE_EPOCH {
+            continue;
+        }
+        let current_version = spec.fork_version(fork);
+        json.fork(&Fork { previous_version, current_version, epoch });
+        previous_version = current_version;
+    }
+    json.end_array();
+    json.end_object();
+    out
+}
+
+/// `GET /eth/v1/config/deposit_contract`.
+pub(crate) fn deposit_contract_body(spec: &SpecConfig) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut json = Json::new(&mut out);
+    json.begin_object();
+    json.key("data");
+    json.begin_object();
+    json.key("chain_id");
+    json.quoted_u64(spec.deposit_chain_id);
+    json.key("address");
+    json.hex(&spec.deposit_contract_address);
+    json.end_object();
+    json.end_object();
+    out
 }
 
 /// Whether `text` survives being spliced into JSON without escaping — the
