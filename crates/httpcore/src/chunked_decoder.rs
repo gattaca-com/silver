@@ -110,8 +110,8 @@ impl ChunkedDecoder {
         let search = &tail[..tail.len().min(MAX_LINE + 2)];
         match search.windows(2).position(|pair| pair == b"\r\n") {
             Some(i) => Ok(Some(i)),
-            None if search.len() > MAX_LINE => Err(malformed(too_long)),
-            None => Ok(None),
+            None if search.len() < MAX_LINE + 2 => Ok(None),
+            None => Err(malformed(too_long)),
         }
     }
 }
@@ -134,4 +134,28 @@ fn parse_chunk_size(line: &[u8]) -> io::Result<usize> {
 
 fn malformed(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn longest_line_split_between_cr_and_lf_waits_for_lf() {
+        let mut response = format!("1;{:x<width$}\r", "", width = MAX_LINE - 2).into_bytes();
+        let mut decoder = ChunkedDecoder::new(0);
+        decoder.decode(&mut response).unwrap();
+
+        response.extend_from_slice(b"\nx\r\n0\r\n\r\n");
+        decoder.decode(&mut response).unwrap();
+        assert!(decoder.is_complete());
+        assert_eq!(&response[decoder.decoded()], b"x");
+    }
+
+    #[test]
+    fn line_past_the_limit_is_rejected() {
+        let mut response = vec![b'0'; MAX_LINE + 2];
+        let error = ChunkedDecoder::new(0).decode(&mut response).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
 }
