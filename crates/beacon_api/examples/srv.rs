@@ -16,7 +16,6 @@ fn main() {
         [
             TCacheId::ControlProcessing,
             TCacheId::NetworkProcessing,
-            TCacheId::ColumnsProcessing,
             TCacheId::ControlSlot,
             TCacheId::StorageDelivery,
             TCacheId::BeaconStateHandoff,

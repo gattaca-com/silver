@@ -7,6 +7,7 @@ use crate::{
     SubLayout,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
+        partial_column::PARTIAL_HEADER_FIXED,
     },
 };
 
@@ -61,8 +62,14 @@ impl CellStoreConfig {
             .checked_mul(column_count)
             .and_then(|n| n.checked_mul(max_blobs))
             .ok_or(StoreError::CapacityOverflow)?;
-        let context_bytes =
-            DATA_COLUMN_SIDECAR_MIN + max_blobs * BYTES_PER_KZG_COMMITMENT + column_count * 16;
+        let context_bytes = SubLayout {
+            parts: 1,
+            first_len: PARTIAL_HEADER_FIXED + max_blobs * BYTES_PER_KZG_COMMITMENT,
+            second_len: 0,
+        }
+        .reservation_bytes(0, 0)
+        .ok_or(StoreError::CapacityOverflow)? +
+            column_count * 16;
         let column_bytes = SubLayout {
             parts: max_blobs,
             first_len: BYTES_PER_CELL,

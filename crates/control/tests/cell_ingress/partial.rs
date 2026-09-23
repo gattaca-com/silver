@@ -143,6 +143,31 @@ fn trusted_agreement_unlatches_conflict_without_rewriting_candidate_cells() {
 }
 
 #[test]
+fn trusted_context_replaces_the_first_contacts_header_without_losing_cells() {
+    let mut rig = Rig::new(ForkName::Fulu);
+    let header = |value| {
+        let mut signed = [value; 208];
+        signed[..8].copy_from_slice(&0u64.to_le_bytes());
+        let data = ContextData::Fulu {
+            signed_header: &signed,
+            inclusion_proof: &[value; 128],
+            commitments: &[value; 96],
+        };
+        let mut bytes = vec![0; data.encoded_len()];
+        data.write(&mut bytes);
+        bytes
+    };
+    let first = rig.partial(2, 1, Some(&header(0x99)), 1).0[0].pending;
+    rig.admit();
+    let columns = rig.reservations();
+    assert_eq!(columns[0].reservation.read().seq(), first.data.reservation().read().seq());
+    first.data.acquire(&mut rig.columns).unwrap().accept().unwrap();
+    let trusted_header = rig.store.availability(&ROOT, 0).unwrap().header.unwrap();
+    assert_eq!(rig.control.producer_mut().read_buffer(trusted_header).unwrap(), header(0x33));
+    assert_eq!(rig.partial(2, 2, Some(&header(0x33)), 2).0.len(), 1);
+}
+
+#[test]
 fn headers_still_reach_validation_after_a_conflicting_first_contact() {
     let mut rig = Rig::new(ForkName::Fulu);
     rig.partial(1, 1, None, 1);
@@ -198,9 +223,8 @@ fn speculative_budget_is_cumulative_and_preserves_trusted_replacement_capacity()
         allocator.optimistic(CommitmentContext { block_root: [4; 32], ..context }, domain, None, 4),
         Err(StoreError::Full)
     ));
-    let trusted = allocator
-        .allocate(AssemblyRequest { id: 1, context, domain, columns: 7, source: None }, None)
-        .unwrap();
+    let trusted =
+        allocator.allocate(AssemblyRequest { id: 1, context, domain, columns: 7 }).unwrap();
     assert_eq!(trusted.request.context, context);
     rig.now = rig.start + SLOT;
     rig.expire();
@@ -212,7 +236,7 @@ fn speculative_budget_is_cumulative_and_preserves_trusted_replacement_capacity()
 }
 
 #[test]
-fn failed_fulu_promotion_closes_every_partially_initialized_column_before_retry() {
+fn closed_optimistic_column_is_replaced_before_promotion() {
     let mut rig = Rig::new(ForkName::Fulu);
     let pending = rig.partial(2, 1, None, 1).0[0].pending;
     let allocator = rig.control.allocator_mut();
@@ -222,12 +246,12 @@ fn failed_fulu_promotion_closes_every_partially_initialized_column_before_retry(
     let mut request = None;
     rig.adapters[1].consume(|event: CellStoreEvent, _| {
         if let CellStoreEvent::Allocated { request: failed, set } = event {
-            assert!(set.is_none());
-            request = Some(failed);
+            request = Some((failed, set.unwrap()));
         }
     });
     assert!(matches!(pending.data.acquire(&mut rig.columns), Err(SubReservationError::Closed)));
-    let set = rig.control.allocator_mut().allocate(request.unwrap(), None).unwrap();
+    let (request, set) = request.unwrap();
+    assert_eq!(set.request.id, request.id);
     assert!(
         set.reservations
             .view(rig.control.allocator_mut().producer())

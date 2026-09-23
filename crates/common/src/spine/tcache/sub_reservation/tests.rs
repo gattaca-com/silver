@@ -36,7 +36,7 @@ fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_b
         view.initialize(b"bad size", b"proof").unwrap_err(),
         SubReservationError::InvalidLayout
     );
-    view.initialize(b"hdr", b"comms").unwrap();
+    acquired.initialize(b"hdr", b"comms").unwrap();
     let validation = pending.acquire(&mut consumer).unwrap();
     assert_eq!(validation.buffers(), [b"cell".as_slice(), b"pf".as_slice()]);
     validation.accept().unwrap();
@@ -44,6 +44,30 @@ fn deferred_initialization_preserves_staged_cells_and_never_rewrites_published_b
     assert_eq!(read.buffer().unwrap().0, b"hdrcellcommspf");
     assert_eq!(view.initialize(b"new", b"other").unwrap_err(), SubReservationError::Published);
     assert_eq!(read.buffer().unwrap().0, b"hdrcellcommspf");
+}
+
+#[test]
+fn single_array_reservations_publish_without_a_second_payload() {
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 16);
+    let mut reader =
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap());
+    let reference = producer
+        .sub_reservation(SubLayout { parts: 1, first_len: 6, second_len: 0 }, b"", b"")
+        .unwrap();
+    let acquired = reference.acquire(&mut reader).unwrap();
+    assert!(acquired.ranges(0).is_none());
+    assert_eq!(acquired.finish(), Err(SubReservationError::Incomplete));
+    let pending = acquired.claim(0).unwrap().write(b"header", b"").unwrap();
+    let validation = pending.acquire(&mut reader).unwrap();
+    assert_eq!(validation.buffers(), [b"header".as_slice(), b"".as_slice()]);
+    validation.accept().unwrap();
+    let ranges = acquired.ranges(0).unwrap();
+    assert_eq!(ranges[0].as_ref(), b"header");
+    assert!(ranges[1].as_ref().is_empty());
+    let read = acquired.finish().unwrap();
+    assert_eq!(producer.read_buffer(read).unwrap(), b"header");
+    producer.view_sub_reservation(reference).unwrap().close();
+    assert_eq!(ranges[0].as_ref(), b"header");
 }
 
 #[test]

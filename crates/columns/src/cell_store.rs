@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 use silver_common::{
-    GossipDomain, SubReservationRef, TCacheId, TCacheRead, TCacheReader,
+    GossipDomain, SubReservationError, SubReservationRef, TCacheId, TCacheRead, TCacheReader,
     cell_store::{
         AssemblyRequest, AssemblySet, CellKey, CellRef, CellStoreConfig, ColumnAvailability,
-        ColumnRef, CommitmentContext, ContextData, FuluContextSource, MAX_CONTEXT_BYTES,
-        StoreError,
+        ColumnRef, CommitmentContext, ContextData, MAX_CONTEXT_BYTES, StoreError,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -21,6 +20,8 @@ use crate::{BlockRoot, DataColumnCounters};
 
 #[cfg(test)]
 mod tests;
+
+const ASSEMBLY_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellMask(u128);
@@ -71,10 +72,11 @@ struct Block {
     domain: GossipDomain,
     data: [u8; MAX_CONTEXT_BYTES],
     data_len: usize,
-    source: Option<FuluContextSource>,
+    // The allocation window, which may be newer than context.slot for late EL data.
+    retention_slot: u64,
     ssz: Option<TCacheRead>,
     request: Option<u64>,
-    attempts: u8,
+    retry_at: Instant,
     active: bool,
     changed: u128,
     assembly_bytes: usize,
@@ -146,12 +148,11 @@ impl CellStore {
         context: CommitmentContext,
         domain: GossipDomain,
         data: ContextData<'_>,
-        source: Option<FuluContextSource>,
     ) -> Result<bool, StoreError> {
         if context.slot < self.min_slot {
             return Err(StoreError::BelowSlotFloor);
         }
-        if context.slot != self.slot {
+        if context.slot > self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
         if !matches!(context.format, ForkName::Fulu | ForkName::Gloas) ||
@@ -175,13 +176,26 @@ impl CellStore {
             {
                 return Err(StoreError::ConflictingContext);
             }
-            if !block.active {
-                return Err(StoreError::ContextExpired);
+            if block.active {
+                return Ok(false);
             }
-            if source.is_some() {
-                block.source = source;
+            if self.counts.contexts >= self.config.live_blocks() {
+                return Err(StoreError::Full);
             }
-            return Ok(false);
+            block.retention_slot = self.slot;
+            block.request = None;
+            block.retry_at = self.now;
+            block.active = true;
+            block.assembly_bytes = 0;
+            block.full_bytes = 0;
+            let start = index * self.config.column_indices().len();
+            for column in &mut self.columns[start..start + self.config.column_indices().len()] {
+                *column = Column::default();
+            }
+            self.counts.contexts += 1;
+            self.counts.active_slots = 1;
+            self.dirty = true;
+            return Ok(true);
         }
         if self.blocks.len() >= self.config.block_capacity() ||
             self.counts.contexts >= self.config.live_blocks()
@@ -197,10 +211,10 @@ impl CellStore {
             domain,
             data: bytes,
             data_len,
-            source,
+            retention_slot: self.slot,
             ssz: None,
             request: None,
-            attempts: 0,
+            retry_at: self.now,
             active: true,
             changed: 0,
             assembly_bytes: 0,
@@ -219,21 +233,18 @@ impl CellStore {
         let block = &mut self.blocks[index];
         if !block.active ||
             block.request.is_some() ||
-            block.attempts >= 3 ||
-            self.columns[index * self.config.column_indices().len()].assembly.is_some() ||
-            (block.context.format == ForkName::Fulu && block.source.is_none())
+            self.now < block.retry_at ||
+            self.columns[index * self.config.column_indices().len()].assembly.is_some()
         {
             return None;
         }
         self.next_request = self.next_request.checked_add(1).expect("assembly request overflow");
         block.request = Some(self.next_request);
-        block.attempts += 1;
         Some(AssemblyRequest {
             id: self.next_request,
             context: block.context,
             domain: block.domain,
             columns: self.config.columns(),
-            source: block.source,
         })
     }
 
@@ -242,6 +253,7 @@ impl CellStore {
             let block = &mut self.blocks[index];
             if block.request == Some(request.id) {
                 block.request = None;
+                block.retry_at = self.now + ASSEMBLY_RETRY_INTERVAL;
             }
         }
     }
@@ -250,7 +262,7 @@ impl CellStore {
         let Some(&index) = self.roots.get(root) else { return false };
         let block = &self.blocks[index];
         block.active &&
-            block.request.is_some() &&
+            (block.request.is_some() || self.now < block.retry_at) &&
             self.columns[index * self.config.column_indices().len()].assembly.is_none()
     }
 
@@ -284,28 +296,46 @@ impl CellStore {
             return Err(StoreError::InvalidContext);
         }
         let mut bytes = 0;
-        for reference in list.entries() {
-            bytes += reference.acquire(reader)?.len();
+        let data = ContextData::from_encoded(&block.data[..block.data_len], block.context.format)
+            .ok_or(StoreError::InvalidContext)?;
+        for (reference, &column) in list.entries().zip(self.config.column_indices()) {
+            let acquired = reference.acquire(reader)?;
+            let (prefix, length) = data.column_prefix(block.context, column);
+            let middle =
+                if block.context.format == ForkName::Fulu { data.commitments() } else { &[] };
+            acquired.initialize(&prefix[..length], middle)?;
+            bytes += acquired.len();
         }
-        if let Some(header) = set.header {
-            if header.id() != TCacheId::ControlSlot {
+        let header = if let Some(header) = set.header {
+            if header.read().id() != TCacheId::ControlSlot {
                 return Err(StoreError::WrongCache);
             }
-            let read = reader.acquire_strict(header).ok_or(StoreError::ContextExpired)?;
-            let bytes = read.buffer().map_err(|_| StoreError::ContextExpired)?.0;
-            if !self.context(&request.context.block_root).unwrap().1.matches(bytes) {
-                return Err(StoreError::InvalidContext);
+            let acquired = header.acquire(reader)?;
+            match acquired.claim(0) {
+                Ok(write) => {
+                    write.write(&block.data[..block.data_len], &[])?.acquire(reader)?.accept()?;
+                }
+                Err(SubReservationError::Published) => {
+                    let ranges = acquired.ranges(0).ok_or(StoreError::InvalidContext)?;
+                    if !data.matches(ranges[0].as_ref()) {
+                        return Err(StoreError::InvalidContext);
+                    }
+                }
+                Err(error) => return Err(error.into()),
             }
+            Some(acquired.finish()?)
         } else if request.context.format == ForkName::Fulu {
             return Err(StoreError::InvalidContext);
-        }
+        } else {
+            None
+        };
         for (column, reference) in self.columns[start..start + self.config.column_indices().len()]
             .iter_mut()
             .zip(list.entries())
         {
             column.assembly = Some(reference);
         }
-        self.blocks[index].ssz = set.header;
+        self.blocks[index].ssz = header;
         self.blocks[index].assembly_bytes = bytes;
         self.counts.bytes += bytes;
         self.dirty = true;
@@ -437,6 +467,10 @@ impl CellStore {
         self.slot_end
     }
 
+    pub(crate) fn current_slot(&self) -> u64 {
+        self.slot
+    }
+
     pub fn advance(&mut self, now: Instant, min_slot: u64, mut on_expired: impl FnMut(CellKey)) {
         assert!(now >= self.now, "cell store clock moved backwards");
         self.now = now;
@@ -503,7 +537,7 @@ impl CellStore {
 
     fn expire_before(&mut self, slot: u64, on_expired: &mut impl FnMut(CellKey)) {
         for (index, block) in &mut self.blocks {
-            if !block.active || block.context.slot >= slot {
+            if !block.active || block.retention_slot >= slot {
                 continue;
             }
             let start = index * self.config.column_indices().len();
@@ -624,7 +658,6 @@ impl Block {
         }
         self.active = false;
         self.ssz = None;
-        self.source = None;
         self.changed = 0;
         for (column, &index) in columns.iter_mut().zip(indices) {
             let mut rows = column.admitted.0;

@@ -488,11 +488,6 @@ impl BeaconApi {
             "api_network_processing",
             TReadMode::Sliding,
         )?;
-        self.reader.open(
-            TCacheId::ColumnsProcessing,
-            "api_columns_processing",
-            TReadMode::Sliding,
-        )?;
         self.reader.open(TCacheId::ControlSlot, "api_control_slot", TReadMode::Sliding)?;
         self.reader.open(TCacheId::StorageDelivery, "api_storage_delivery", TReadMode::Sliding)?;
         self.reader.open(
@@ -1001,7 +996,6 @@ mod tests {
                 [
                     TCacheId::ControlProcessing,
                     TCacheId::NetworkProcessing,
-                    TCacheId::ColumnsProcessing,
                     TCacheId::ControlSlot,
                     TCacheId::BeaconStateHandoff,
                 ]
@@ -1794,11 +1788,6 @@ mod tests {
                 SszCache::Rpc,
                 ColumnOrigin::Rpc,
                 TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
-            ),
-            (
-                SszCache::El,
-                ColumnOrigin::El,
-                TCache::producer(TCacheId::ColumnsProcessing, 1 << 16),
             ),
             (
                 SszCache::DataColumns,

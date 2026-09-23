@@ -12,12 +12,11 @@ pub enum TCacheId {
     ControlSlot,
     StorageDelivery,
     BoundaryProcessing,
-    ColumnsProcessing,
     BeaconStateHandoff,
 }
 
 impl TCacheId {
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 11;
     pub const ALL: [Self; Self::COUNT] = [
         Self::NetworkIngress,
         Self::NetworkProcessing,
@@ -29,7 +28,6 @@ impl TCacheId {
         Self::ControlSlot,
         Self::StorageDelivery,
         Self::BoundaryProcessing,
-        Self::ColumnsProcessing,
         Self::BeaconStateHandoff,
     ];
 
@@ -50,7 +48,6 @@ impl TCacheId {
             Self::ControlSlot => "control_slot",
             Self::StorageDelivery => "storage_delivery",
             Self::BoundaryProcessing => "boundary_processing",
-            Self::ColumnsProcessing => "columns_processing",
             Self::BeaconStateHandoff => "beacon_state_handoff",
         }
     }

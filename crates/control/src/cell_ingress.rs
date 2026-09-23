@@ -6,8 +6,7 @@ use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, PeerControl, PeerEvent,
     SilverSpineProducers, SszCache, TCacheProducer, TCacheReader, TProducer,
     cell_store::{
-        CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, ContextData,
-        FuluContextSource, PendingCell, StoreError,
+        CellKey, CellStoreConfig, CellStoreEvent, ColumnAvailability, PendingCell, StoreError,
     },
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
 };
@@ -37,7 +36,7 @@ pub(super) fn handle_data_column_event<F>(
         return;
     }
     let read = match ssz_cache {
-        SszCache::Rpc | SszCache::El => Some(reader.acquire(ssz)),
+        SszCache::Rpc => Some(reader.acquire(ssz)),
         SszCache::DataColumns => None,
         SszCache::Gossip => return,
     };
@@ -111,7 +110,6 @@ impl CellIngress {
         event: CellStoreEvent,
         now: Instant,
         producers: &SilverSpineProducers,
-        el_consumer: &mut TCacheReader,
     ) {
         self.spin(now, producers);
         match event {
@@ -120,14 +118,7 @@ impl CellIngress {
                 self.available.retain(|(root, _), _| *root != block_root);
             }
             CellStoreEvent::Allocate(request) => {
-                let read = match request.source {
-                    Some(FuluContextSource::ElHeader(read)) => Some(el_consumer.acquire(read)),
-                    _ => None,
-                };
-                let external = read.as_ref().and_then(|read| {
-                    ContextData::from_encoded(read.buffer().ok()?.0, ForkName::Fulu)
-                });
-                let set = match self.allocator.allocate(request, external) {
+                let set = match self.allocator.allocate(request) {
                     Ok(set) => Some(set),
                     Err(e) => {
                         tracing::debug!(?e, slot = request.context.slot, "cell allocation failed");
@@ -137,7 +128,9 @@ impl CellIngress {
                 producers.produce(CellStoreEvent::Allocated { request, set });
             }
             CellStoreEvent::Available(update)
-                if now < update.expires && update.slot >= self.min_slot =>
+                if now < update.expires &&
+                    update.slot == self.allocator.slot_window().0 &&
+                    update.slot >= self.min_slot =>
             {
                 self.update_availability(update, now);
             }
@@ -148,6 +141,7 @@ impl CellIngress {
     pub(crate) fn update_availability(&mut self, update: ColumnAvailability, now: Instant) {
         let key = (update.block_root, update.column);
         if now < update.expires &&
+            update.slot == self.allocator.slot_window().0 &&
             update.slot >= self.min_slot &&
             (self.available.contains_key(&key) || self.available.len() < self.capacity)
         {
@@ -210,7 +204,7 @@ impl CellIngress {
             return Ok(None);
         }
         let reference = self.allocator.column(key).ok_or(StoreError::UnknownCell)?;
-        if now >= reference.expires {
+        if now >= reference.expires || reference.slot != self.allocator.slot_window().0 {
             return Err(StoreError::ContextExpired);
         }
         self.allocator.stage(key, cell, proof)

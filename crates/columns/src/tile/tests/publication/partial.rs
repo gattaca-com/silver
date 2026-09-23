@@ -1,8 +1,6 @@
 use blst::min_pk::SecretKey;
 use silver_beacon_state_data::{BeaconState, EpochStateFinalized, ValSeed};
-use silver_common::cell_store::{
-    CommitmentContext, ContextData, FuluContextSource, HeaderValidationRequest,
-};
+use silver_common::cell_store::{CommitmentContext, ContextData, HeaderValidationRequest};
 
 use super::*;
 use crate::validate::{ColumnOutcome, HeaderOutcome};
@@ -152,11 +150,8 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
                 inclusion_proof: &proof,
                 commitments: &commitments,
             };
-            let mut bytes = vec![0; data.encoded_len()];
-            data.write(&mut bytes);
-            let source = FuluContextSource::Header(tcache_write(allocator.producer_mut(), &bytes));
             let store = rig.tile.cells.as_mut().unwrap().store_mut();
-            store.admit_context(context, domain, data, Some(source)).unwrap();
+            store.admit_context(context, domain, data).unwrap();
             rig.conn.produce(CellStoreEvent::Allocate(store.request_assemblies(&root).unwrap()));
             rig.tile.tracker.set_signature(root, [0; 96], [0; 4]);
         }

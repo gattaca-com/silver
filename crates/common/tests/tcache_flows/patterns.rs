@@ -404,11 +404,11 @@ fn retained_cache() {
 #[ignore = "copy-through check lands with CarriesReads"]
 fn copy_through_is_detected() {}
 
-/// A tile calling `sync()` after its consume pass. Needs the snapshot
-/// (migration step 6).
+/// A `free()` applying a pending snapshot without a licensing drain. Needs
+/// the snapshot (migration step 6).
 #[test]
-#[ignore = "snapshot ordering lands with sync()"]
-fn snapshot_taken_after_consume_must_fail() {}
+#[ignore = "snapshot licensing lands with step 6"]
+fn snapshot_applied_without_a_drain_must_fail() {}
 
 /// One pin held while the producer fills past the 90% lag threshold and
 /// wraps: the producer should block on the pin, never reclaim under it.

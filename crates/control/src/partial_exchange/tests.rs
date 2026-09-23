@@ -6,7 +6,7 @@ use silver_columns::cell_store::CellStore;
 use silver_common::{
     CacheFrameRef, GossipDomain, Keypair, P2pStreamId, PeerId, StreamProtocol, TCache, TCacheId,
     TCacheProducer, TCacheReader, TCacheTable, TReadMode,
-    cell_store::{AssemblyRequest, CommitmentContext, ContextData, FuluContextSource},
+    cell_store::{AssemblyRequest, CommitmentContext, ContextData},
     column_util::{columns_of, push_data_column_sidecar_prefix},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF, METADATA_SIZE,
@@ -87,19 +87,10 @@ impl Rig {
         } else {
             ContextData::Gloas { commitments: &commitments }
         };
-        let source = if format == ForkName::Fulu {
-            let mut reservation =
-                ingress.producer_mut().reserve(context_data.encoded_len(), false).unwrap();
-            context_data.write(reservation.buffer().unwrap());
-            reservation.flush().unwrap();
-            Some(FuluContextSource::Header(reservation.read()))
-        } else {
-            None
-        };
         let context = CommitmentContext { block_root: ROOT, slot: 0, format, blob_count: ROWS };
-        store.admit_context(context, domain, context_data, source).unwrap();
+        store.admit_context(context, domain, context_data).unwrap();
         let request = store.request_assemblies(&ROOT).unwrap();
-        let set = ingress.allocator_mut().allocate(request, None).unwrap();
+        let set = ingress.allocator_mut().allocate(request).unwrap();
         let mut columns = columns;
         store.install(set, &mut columns).unwrap();
         let mut full = Vec::new();

@@ -49,7 +49,6 @@ impl SubLayout {
     pub fn reservation_bytes(self, prefix_len: usize, middle_len: usize) -> Option<usize> {
         if self.parts > 128 ||
             self.first_len == 0 ||
-            self.second_len == 0 ||
             self.first_len > u32::MAX as usize ||
             self.second_len > u32::MAX as usize
         {
@@ -223,6 +222,10 @@ pub struct AcquiredSubReservation {
 }
 
 impl AcquiredSubReservation {
+    pub fn initialize(&self, prefix: &[u8], middle: &[u8]) -> Result<(), SubReservationError> {
+        self.view().initialize(prefix, middle)
+    }
+
     #[inline]
     fn view(&self) -> SubReservationView<'_> {
         SubReservationView {
@@ -277,6 +280,11 @@ pub struct SubReservationView<'a> {
 }
 
 impl<'a> SubReservationView<'a> {
+    #[inline]
+    pub fn is_closed(&self) -> bool {
+        self.header().closed.load(Ordering::Acquire)
+    }
+
     #[inline]
     pub(super) fn from_producer(
         producer: &'a Producer,

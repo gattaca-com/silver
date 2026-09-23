@@ -220,36 +220,19 @@ pub struct CommitmentContext {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum FuluContextSource {
-    Header(TCacheRead),
-    Sidecar(TCacheRead),
-    /// A block-derived header in the existing EL-output cache. Copied into
-    /// the data-columns cache before any assembly is published.
-    ElHeader(TCacheRead),
-}
-
-impl FuluContextSource {
-    pub fn read(self) -> TCacheRead {
-        match self {
-            Self::Header(read) | Self::Sidecar(read) | Self::ElHeader(read) => read,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
 pub struct AssemblyRequest {
     pub id: u64,
     pub context: CommitmentContext,
     pub domain: GossipDomain,
     pub columns: u128,
-    pub source: Option<FuluContextSource>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct AssemblySet {
     pub request: AssemblyRequest,
     pub reservations: SubReservationList,
-    pub header: Option<TCacheRead>,
+    /// Space for the Fulu header, filled by Columns from its validated context.
+    pub header: Option<SubReservationRef>,
     pub expires: Instant,
 }
 

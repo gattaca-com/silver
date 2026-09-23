@@ -62,15 +62,10 @@ fn boundary_tile_with_spec(
     let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
     let resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
     let tcaches = TCacheTable::from_iter(
-        [
-            TCacheId::ColumnsProcessing,
-            TCacheId::ControlSlot,
-            TCacheId::StorageDelivery,
-            TCacheId::BeaconStateHandoff,
-        ]
-        .map(|id| TCache::producer(id, 1 << 16).cache_ref())
-        .into_iter()
-        .chain([gossip_p.cache_ref(), rpc_p.cache_ref()]),
+        [TCacheId::ControlSlot, TCacheId::StorageDelivery, TCacheId::BeaconStateHandoff]
+            .map(|id| TCache::producer(id, 1 << 16).cache_ref())
+            .into_iter()
+            .chain([gossip_p.cache_ref(), rpc_p.cache_ref()]),
     );
     let tile = ApplicationBoundaryTile::new(
         std::slice::from_ref(bind),

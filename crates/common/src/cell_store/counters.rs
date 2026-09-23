@@ -12,6 +12,7 @@ crate::declare_counters! {
         DataColumnsAvailableEmitted,
         // EL-mempool blob fetch (engine_getBlobsV3)
         ElBlobsFetched,
+        // Reserved legacy counter; EL output now uses assembly metrics.
         ElColumnsBuilt,
         // Batched KZG verification: calls, sidecars per call (ratio = batch
         // size), and sidecars rejected via the per-sidecar fallback.

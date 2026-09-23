@@ -1,7 +1,7 @@
 use buffa::{Message, MessageView};
 use silver_common::{
     TCacheId, TCacheReader, TCacheTable, TReadMode,
-    cell_store::{CellStoreEvent, ColumnAvailability},
+    cell_store::{AssemblyRequest, CellStoreEvent, ColumnAvailability, CommitmentContext},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF,
         partial_column::{
@@ -17,6 +17,72 @@ use super::*;
 #[allow(dead_code, clippy::all)]
 #[rustfmt::skip]
 mod protobuf;
+
+#[test]
+fn mode_off_allocates_assemblies_without_enabling_partial_exchange() {
+    let topic = GossipTopic::DataColumnSidecar(0);
+    let mut capture = GossipPublications::new(topic, &[]);
+    let now = Instant::now();
+    let spec = Arc::new(SpecConfig {
+        fulu_fork_epoch: 0,
+        gloas_fork_epoch: 0,
+        max_blobs_per_block_electra: 2,
+        blob_schedule: Vec::new(),
+        ..SpecConfig::mainnet()
+    });
+    let config = CellStoreConfig::new(spec.clone(), 1, Duration::ZERO).unwrap();
+    let columns = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
+    let mut reader = TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap();
+    capture.controller.spec = spec;
+    capture.controller = capture
+        .controller
+        .with_data_columns_cache(config, columns, 0, now, PartialColumnsMode::Off)
+        .unwrap();
+    assert!(capture.controller.partial_exchange.is_none());
+    capture.crank();
+    let request = AssemblyRequest {
+        id: 1,
+        context: CommitmentContext {
+            block_root: [7; 32],
+            slot: 0,
+            format: ForkName::Gloas,
+            blob_count: 2,
+        },
+        domain: GossipDomain::new([0; 4], ForkName::Gloas),
+        columns: 1,
+    };
+    capture.observer.consume(|_: CellStoreEvent, _| {});
+    capture.observer.produce(CellStoreEvent::Allocate(request));
+    capture.crank();
+    let mut allocated = false;
+    capture.observer.consume(|event: CellStoreEvent, _| {
+        if let CellStoreEvent::Allocated { request: actual, set } = event {
+            assert_eq!(actual.id, request.id);
+            let set = set.unwrap();
+            assert_eq!(set.reservations.acquire(&mut reader).unwrap().entries().len(), 1);
+            allocated = true;
+        }
+    });
+    assert!(allocated);
+
+    capture.controller.gossip_handler.handle_peer_control(PeerControl::P2pGossipSubscribe {
+        p2p: PeerId::default(),
+        p2p_connection: 1,
+        topic,
+        digest: [0; 4],
+    });
+    capture.crank();
+    let mut subscriptions = 0;
+    for (_, bytes) in capture.sent() {
+        let rpc = protobuf::RPCView::decode_view(&bytes).unwrap();
+        for subscription in &rpc.subscriptions {
+            subscriptions += 1;
+            assert!(!subscription.requests_partial.unwrap_or(false));
+            assert!(!subscription.supports_sending_partial.unwrap_or(false));
+        }
+    }
+    assert!(subscriptions > 0);
+}
 
 #[test]
 fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {

@@ -1,5 +1,4 @@
 use std::{
-    io::Write,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -16,11 +15,10 @@ use silver_common::{
     BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind, EngineResp, ForkName,
     GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
     RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed, SyncUpdate,
-    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
-    Wheel, block_root,
+    TCacheError, TCacheId, TCacheReader, TCacheTable, TRead, TReadMode, Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
-        FuluContextSource, RetentionEvent, StoreError,
+        RetentionEvent, StoreError,
     },
     column_util::{self as util, KzgScratch},
     ssz_view::{BYTES_PER_KZG_COMMITMENT, NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
@@ -69,7 +67,6 @@ pub struct DataColumnsTile {
     sync_state: SyncStatus,
 
     el_fetcher: ElBlobFetcher,
-    el_column_producer: TProducer,
 
     kzg_scratch: KzgScratch,
 
@@ -88,7 +85,6 @@ impl DataColumnsTile {
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
         spec: Arc<SpecConfig>,
-        el_column_producer: TProducer,
         ticker: SlotTicker,
     ) -> Self {
         let epoch_duration =
@@ -102,7 +98,6 @@ impl DataColumnsTile {
             parent_pending_columns: Wheel::new(Duration::from_secs(24)),
             sync_state: SyncStatus::default(),
             el_fetcher: ElBlobFetcher::new(epoch_duration),
-            el_column_producer,
             kzg_scratch: KzgScratch::default(),
             cells: None,
             reader: TCacheReader::new(tcaches),
@@ -378,13 +373,7 @@ impl DataColumnsTile {
         if column.ssz_cache == SszCache::DataColumns &&
             let Some(cells) = &mut self.cells
         {
-            cells.admit_context(
-                context,
-                domain,
-                data,
-                Some(FuluContextSource::Sidecar(column.sidecar.to_read())),
-                producers,
-            );
+            cells.admit_current_context(context, domain, data, producers);
         }
     }
 
@@ -404,7 +393,7 @@ impl DataColumnsTile {
         };
         let data = ContextData::Gloas { commitments };
         if let Some(cells) = &mut self.cells {
-            cells.admit_context(context, domain, data, None, producers);
+            cells.admit_current_context(context, domain, data, producers);
         }
         if self.sync_state.is_synced() && slot > self.sync_state.data_availability_floor() {
             self.el_fetcher.try_fetch(
@@ -434,21 +423,7 @@ impl DataColumnsTile {
         if cells.store().context(&root).is_some() {
             return;
         }
-        let Some(mut write) = self.el_column_producer.reserve(data.encoded_len(), false) else {
-            return
-        };
-        let Ok(buffer) = write.buffer() else { return };
-        data.write(buffer);
-        if write.flush().is_err() {
-            return;
-        }
-        cells.admit_context(
-            context,
-            domain,
-            data,
-            Some(FuluContextSource::ElHeader(write.read())),
-            producers,
-        );
+        cells.admit_current_context(context, domain, data, producers);
     }
 
     fn drain_pending_gloas_columns(
@@ -1007,7 +982,6 @@ impl Tile<SilverSpine> for DataColumnsTile {
             self.cells.as_mut(),
             &mut self.tracker,
             &self.sync_state,
-            &mut self.el_column_producer,
             &mut adapter.producers,
         );
         if self.cells.as_ref().is_some_and(CellHandler::has_pending) {
@@ -1033,10 +1007,9 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, ForkName};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, GossipDomain, HeadChange,
-        HeadRoots, MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution,
-        StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
-        block_root_fulu,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots,
+        MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
+        TCacheId, TCacheProducer, TCacheRead, TCacheReader, TProducer, block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
             BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -1067,8 +1040,6 @@ mod tests {
         _dir: ShmemDir,
     }
 
-    const TCACHE_LEN: usize = 1024 * 1024;
-
     struct Injector;
 
     impl Tile<SilverSpine> for Injector {
@@ -1091,25 +1062,7 @@ mod tests {
             Self::with_state(custody, state.reader(), spec)
         }
 
-        fn with_el_cache(custody: u128, el_cache_len: usize) -> Self {
-            Self::build(
-                custody,
-                BeaconStateOwner::empty_test(0).reader(),
-                fulu_from_genesis(),
-                el_cache_len,
-            )
-        }
-
         fn with_state(custody: u128, beacon_state: BeaconStateReader, spec: SpecConfig) -> Self {
-            Self::build(custody, beacon_state, spec, TCACHE_LEN)
-        }
-
-        fn build(
-            custody: u128,
-            beacon_state: BeaconStateReader,
-            spec: SpecConfig,
-            el_cache_len: usize,
-        ) -> Self {
             let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1024 * 1024);
             let frame_p = TCache::producer(TCacheId::ControlGossip, 1024 * 1024);
             let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
@@ -1122,7 +1075,6 @@ mod tests {
                 beacon_state,
                 custody,
                 Arc::new(spec),
-                TCache::producer(TCacheId::ColumnsProcessing, el_cache_len),
                 SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
             );
             tile.open_tcaches().unwrap();
@@ -1301,19 +1253,6 @@ mod tests {
         block_bytes[184 + 388..184 + 392].copy_from_slice(&400u32.to_le_bytes());
         block_bytes[184 + 392..184 + 396].copy_from_slice(&448u32.to_le_bytes());
         block_bytes
-    }
-
-    /// The zero blob supports cell computation. Its placeholder proofs are
-    /// copied into sidecars without verification on the EL reconstruction path.
-    fn el_blobs_frame() -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&1u32.to_le_bytes());
-        out.push(1);
-        out.push(NUMBER_OF_COLUMNS as u8);
-        out.resize(out.len() + NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF, 0);
-        out.extend_from_slice(&(c_kzg::BYTES_PER_BLOB as u32).to_le_bytes());
-        out.resize(out.len() + c_kzg::BYTES_PER_BLOB, 0);
-        out
     }
 
     /// Callers `acquire` the returned handle themselves: a `TRead` points back
@@ -1583,62 +1522,6 @@ mod tests {
             assert_eq!(slot, 42, "the need carries the slot the engine suppresses against");
             assert_eq!(origin, Origin::Live, "tip need, not backfill");
             assert_eq!(out.available, 0, "commitments owed: nothing is available yet");
-        }
-    }
-
-    /// A refused EL sidecar reservation must leave the column missing from the
-    /// tracker, without persistence, availability, or custody-completion
-    /// events.
-    #[test]
-    fn el_column_that_fails_to_write_is_not_recorded() {
-        let block_bytes = blob_block_bytes(42);
-        let block_root = block_root_fulu(&block_bytes);
-        // Keep the cache power-of-two sized but too small for one sidecar.
-        let too_small = util::data_column_sidecar_len(1).next_power_of_two() / 2;
-        let custody_count = CUSTODY_COLUMNS.count_ones() as usize;
-
-        for (el_cache_len, want_built) in [(too_small, false), (TCACHE_LEN, true)] {
-            let mut rig = Rig::with_el_cache(CUSTODY_COLUMNS, el_cache_len);
-            rig.tile.sync_state.set_sync_target(SyncUpdate::Following);
-            // Initialize channel cursors before publishing the response so it
-            // is not skipped on the first read.
-            rig.tile.loop_body(&mut rig.conn);
-            // Supply trusted context directly to isolate the output allocation failure.
-            let mut header = [0; 208];
-            header[..8].copy_from_slice(&42u64.to_le_bytes());
-            let context =
-                CommitmentContext { block_root, slot: 42, format: ForkName::Fulu, blob_count: 1 };
-            rig.tile.el_fetcher.try_fetch(
-                context,
-                GossipDomain::new([0; 4], ForkName::Fulu),
-                ContextData::Fulu {
-                    signed_header: &header,
-                    inclusion_proof: &[0; 128],
-                    commitments: &[0; 48],
-                },
-                CUSTODY_COLUMNS,
-                &mut rig.conn.producers,
-            );
-            assert_eq!(
-                rig.drain().engine,
-                1,
-                "el_cache_len={el_cache_len}: expected a blob request"
-            );
-
-            rig.engine_blobs(block_root, 42, &el_blobs_frame());
-            rig.turn();
-            let out = rig.drain();
-
-            let (persisted, announced, still_owed) =
-                if want_built { (custody_count, 1, 0) } else { (0, 0, CUSTODY_COLUMNS) };
-            assert_eq!(out.receipts.len(), persisted, "el_cache_len={el_cache_len}");
-            assert_eq!(out.available, announced, "el_cache_len={el_cache_len}");
-            assert_eq!(out.custody_complete, announced, "el_cache_len={el_cache_len}");
-            assert_eq!(
-                rig.tile.tracker.to_request(&block_root),
-                still_owed,
-                "el_cache_len={el_cache_len}: the tracker holds only what was written"
-            );
         }
     }
 

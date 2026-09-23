@@ -117,11 +117,6 @@ impl Controller {
             "ctl_network_processing",
             TReadMode::Sliding,
         )?;
-        self.reader.open(
-            TCacheId::ColumnsProcessing,
-            "ctl_columns_processing",
-            TReadMode::Sliding,
-        )?;
         self.reader.open(TCacheId::ClusterInbound, "control_cluster_inbound", TReadMode::Strict)?;
         self.gossip_handler.open_tcaches()
     }
@@ -277,10 +272,12 @@ impl Tile<SilverSpine> for Controller {
                 );
             }
             adapter.consume(|event: CellStoreEvent, producers| {
-                ingress.handle(event, now, producers, &mut self.reader);
+                ingress.handle(event, now, producers);
                 if let Some(exchange) = &mut self.partial_exchange {
                     match event {
-                        CellStoreEvent::Allocate(request) => {
+                        CellStoreEvent::Allocate(request)
+                            if request.context.slot == ingress.slot_window().0 =>
+                        {
                             exchange.context(request, ingress.slot_window().1, now);
                         }
                         CellStoreEvent::Available(column) => {

@@ -1,19 +1,17 @@
-use std::{
-    io::Write,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     ForkName, GossipDomain, SLOTS_PER_EPOCH, SubLayout, SubReservationError, SubReservationList,
-    SubReservationRef, TCacheProducer, TCacheRead, TProducer,
+    TCacheProducer, TCacheRead, TProducer,
     cell_store::{
         AssemblyRequest, AssemblySet, CellKey, CellStoreConfig, ColumnRef, CommitmentContext,
-        ContextData, FuluContextSource, MAX_CONTEXT_BYTES, PendingCell, RetentionEvent, StoreError,
+        PendingCell, RetentionEvent, StoreError,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN,
+        partial_column::PARTIAL_HEADER_FIXED,
     },
 };
 
@@ -32,6 +30,7 @@ pub struct CellAllocator {
 #[derive(Clone, Copy)]
 struct Allocation {
     set: AssemblySet,
+    first_header: Option<TCacheRead>,
     provisional: bool,
     conflicted: bool,
 }
@@ -98,7 +97,7 @@ impl CellAllocator {
         if context.slot < self.min_slot {
             return Err(StoreError::BelowSlotFloor);
         }
-        if context.slot != self.slot {
+        if context.slot > self.slot {
             return Err(StoreError::OutsideServingSlot);
         }
         if request.columns != self.config.columns() ||
@@ -124,18 +123,15 @@ impl CellAllocator {
         header: Option<TCacheRead>,
         peer: usize,
     ) -> Result<AssemblySet, StoreError> {
-        let request = AssemblyRequest {
-            id: 0,
-            context,
-            domain,
-            columns: self.config.columns(),
-            source: header.map(FuluContextSource::Header),
-        };
+        if context.slot != self.slot {
+            return Err(StoreError::OutsideServingSlot);
+        }
+        let request = AssemblyRequest { id: 0, context, domain, columns: self.config.columns() };
         self.check_request(request)?;
         if let Some(allocation) = self.allocations.get_mut(&context.block_root) {
             let matches = allocation.set.request.context == context &&
                 allocation.set.request.domain == domain &&
-                match (allocation.set.header, header) {
+                match (allocation.first_header, header) {
                     (Some(first), Some(next)) => self
                         .producer
                         .read_buffer(first)
@@ -148,9 +144,8 @@ impl CellAllocator {
                 allocation.conflicted |= allocation.provisional;
                 return Err(StoreError::ConflictingContext);
             }
-            if allocation.provisional && allocation.set.header.is_none() {
-                allocation.set.header = header;
-                allocation.set.request.source = request.source;
+            if allocation.provisional && allocation.first_header.is_none() {
+                allocation.first_header = header;
             }
             return Ok(allocation.set);
         }
@@ -162,166 +157,91 @@ impl CellAllocator {
         // Failed and replaced speculative reservations still occupy this slot's ring.
         self.provisional_count += 1;
         self.provisional_peers.insert(peer);
-        let set = self.reserve_set(request, None, header)?;
+        let set = self.reserve_set(request)?;
         self.allocations.insert(context.block_root, Allocation {
             set,
+            first_header: header,
             provisional: true,
             conflicted: false,
         });
         Ok(set)
     }
 
-    pub fn allocate(
-        &mut self,
-        request: AssemblyRequest,
-        external: Option<ContextData<'_>>,
-    ) -> Result<AssemblySet, StoreError> {
+    pub fn allocate(&mut self, request: AssemblyRequest) -> Result<AssemblySet, StoreError> {
         self.check_request(request)?;
         let context = request.context;
-        if let Some(allocation) = self.allocations.get(&context.block_root) &&
-            !allocation.provisional
-        {
-            return if allocation.set.request.id == request.id &&
-                allocation.set.request.context == context &&
-                allocation.set.request.domain == request.domain
-            {
-                Ok(allocation.set)
-            } else {
-                Err(StoreError::ConflictingContext)
-            };
-        }
-        if self.allocations.values().filter(|a| !a.provisional).count() >= self.config.live_blocks()
-        {
-            return Err(StoreError::Full);
-        }
-
-        let mut scratch = [0; MAX_CONTEXT_BYTES];
-        let data = match context.format {
-            ForkName::Fulu => {
-                let source = request.source.ok_or(StoreError::InvalidContext)?;
-                let data = match source {
-                    FuluContextSource::ElHeader(_) => external.ok_or(StoreError::ContextExpired)?,
-                    FuluContextSource::Header(read) => {
-                        let bytes = self
-                            .producer
-                            .read_buffer(read)
-                            .map_err(|_| StoreError::ContextExpired)?;
-                        ContextData::from_encoded(bytes, ForkName::Fulu)
-                            .ok_or(StoreError::InvalidContext)?
-                    }
-                    FuluContextSource::Sidecar(read) => {
-                        let bytes = self
-                            .producer
-                            .read_buffer(read)
-                            .map_err(|_| StoreError::ContextExpired)?;
-                        ContextData::from_fulu_sidecar(bytes).ok_or(StoreError::InvalidContext)?
-                    }
-                };
-                if !data.valid_for(context) {
-                    return Err(StoreError::InvalidContext);
-                }
-                let len = data.encoded_len();
-                data.write(&mut scratch[..len]);
-                ContextData::from_encoded(&scratch[..len], ForkName::Fulu)
-                    .ok_or(StoreError::InvalidContext)?
-            }
-            ForkName::Gloas => ContextData::Gloas { commitments: &[] },
-            _ => return Err(StoreError::InvalidContext),
-        };
         if let Some(allocation) = self.allocations.get(&context.block_root).copied() {
-            let set = allocation.set;
-            let matches = set.request.context == context &&
-                set.request.domain == request.domain &&
-                set.header.is_none_or(|header| {
-                    self.producer.read_buffer(header).is_ok_and(|bytes| data.matches(bytes))
-                });
-            if matches {
-                let header = if context.format == ForkName::Fulu {
-                    match set.header {
-                        Some(header) => Some(header),
-                        None => Some(self.write_header(data)?),
-                    }
-                } else {
-                    None
-                };
-                if context.format == ForkName::Fulu {
-                    if let Err(error) = self.initialize_set(set, data) {
-                        self.close_set(set);
-                        self.allocations.remove(&context.block_root);
-                        return Err(error);
-                    }
-                }
-                let set = AssemblySet { request, header, ..set };
+            let matches = allocation.set.request.context == context &&
+                allocation.set.request.domain == request.domain;
+            let live = allocation.set.reservations.view(&self.producer).is_ok_and(|entries| {
+                allocation.set.header.into_iter().chain(entries).all(|reference| {
+                    self.producer
+                        .view_sub_reservation(reference)
+                        .is_ok_and(|view| !view.is_closed())
+                })
+            });
+            if matches && live {
+                let set = AssemblySet { request, ..allocation.set };
                 self.allocations.insert(context.block_root, Allocation {
                     set,
+                    first_header: None,
                     provisional: false,
                     conflicted: false,
                 });
                 return Ok(set);
             }
-            self.close_set(set);
+            if !matches && !allocation.provisional {
+                return Err(StoreError::ConflictingContext);
+            }
+            self.close_set(allocation.set);
             self.allocations.remove(&context.block_root);
         }
-        let header =
-            if context.format == ForkName::Fulu { Some(self.write_header(data)?) } else { None };
-        let set = self.reserve_set(request, Some(data), header)?;
+        if self.allocations.values().filter(|a| !a.provisional).count() >= self.config.live_blocks()
+        {
+            return Err(StoreError::Full);
+        }
+        let set = self.reserve_set(request)?;
         self.allocations.insert(context.block_root, Allocation {
             set,
+            first_header: None,
             provisional: false,
             conflicted: false,
         });
         Ok(set)
     }
 
-    fn initialize_set(&self, set: AssemblySet, data: ContextData<'_>) -> Result<(), StoreError> {
-        for (position, reference) in set.reservations.view(&self.producer)?.enumerate() {
-            let column = self.config.column_indices()[position];
-            let (prefix, length) = Self::column_prefix(data, set.request.context, column);
-            self.producer
-                .view_sub_reservation(reference)?
-                .initialize(&prefix[..length], data.commitments())?;
-        }
-        Ok(())
-    }
-
-    fn write_header(&mut self, data: ContextData<'_>) -> Result<TCacheRead, StoreError> {
-        let mut write =
-            self.producer.reserve(data.encoded_len(), false).ok_or(StoreError::CacheFull)?;
-        data.write(write.buffer().map_err(|_| StoreError::ContextExpired)?);
-        write.flush().map_err(|_| StoreError::ContextExpired)?;
-        Ok(write.read())
-    }
-
-    fn reserve_set(
-        &mut self,
-        request: AssemblyRequest,
-        data: Option<ContextData<'_>>,
-        header: Option<TCacheRead>,
-    ) -> Result<AssemblySet, StoreError> {
+    fn reserve_set(&mut self, request: AssemblyRequest) -> Result<AssemblySet, StoreError> {
         let context = request.context;
         let mut references = [None; 128];
+        let mut header = None;
         let result = (|| {
-            for (position, reference) in
-                references[..self.config.column_indices().len()].iter_mut().enumerate()
-            {
-                let column = self.config.column_indices()[position];
-                *reference = Some(if context.format == ForkName::Fulu && data.is_none() {
-                    self.producer.uninitialized_sub_reservation(
-                        SubLayout {
-                            parts: context.blob_count,
-                            first_len: BYTES_PER_CELL,
-                            second_len: BYTES_PER_KZG_PROOF,
-                        },
-                        DATA_COLUMN_SIDECAR_MIN,
-                        context.blob_count * BYTES_PER_KZG_COMMITMENT,
-                    )?
-                } else {
-                    self.reserve_column(
-                        data.unwrap_or(ContextData::Gloas { commitments: &[] }),
-                        context,
-                        column,
-                    )?
-                });
+            if context.format == ForkName::Fulu {
+                header = Some(self.producer.sub_reservation(
+                    SubLayout {
+                        parts: 1,
+                        first_len: PARTIAL_HEADER_FIXED +
+                            context.blob_count * BYTES_PER_KZG_COMMITMENT,
+                        second_len: 0,
+                    },
+                    b"",
+                    b"",
+                )?);
+            }
+            let (prefix_len, middle_len) = if context.format == ForkName::Fulu {
+                (DATA_COLUMN_SIDECAR_MIN, context.blob_count * BYTES_PER_KZG_COMMITMENT)
+            } else {
+                (DATA_COLUMN_SIDECAR_GLOAS_MIN, 0)
+            };
+            for reference in &mut references[..self.config.column_indices().len()] {
+                *reference = Some(self.producer.uninitialized_sub_reservation(
+                    SubLayout {
+                        parts: context.blob_count,
+                        first_len: BYTES_PER_CELL,
+                        second_len: BYTES_PER_KZG_PROOF,
+                    },
+                    prefix_len,
+                    middle_len,
+                )?);
             }
             let reservations = SubReservationList::write(
                 &mut self.producer,
@@ -332,7 +252,7 @@ impl CellAllocator {
         match result {
             Ok(set) => Ok(set),
             Err(error) => {
-                for reference in references.into_iter().flatten() {
+                for reference in header.into_iter().chain(references.into_iter().flatten()) {
                     if let Ok(view) = self.producer.view_sub_reservation(reference) {
                         view.close();
                     }
@@ -340,55 +260,6 @@ impl CellAllocator {
                 Err(error)
             }
         }
-    }
-
-    fn reserve_column(
-        &mut self,
-        data: ContextData<'_>,
-        context: CommitmentContext,
-        column: usize,
-    ) -> Result<SubReservationRef, SubReservationError> {
-        let layout = SubLayout {
-            parts: context.blob_count,
-            first_len: BYTES_PER_CELL,
-            second_len: BYTES_PER_KZG_PROOF,
-        };
-        let (prefix, length) = Self::column_prefix(data, context, column);
-        let middle = if context.format == ForkName::Fulu { data.commitments() } else { &[] };
-        self.producer.sub_reservation(layout, &prefix[..length], middle)
-    }
-
-    fn column_prefix(
-        data: ContextData<'_>,
-        context: CommitmentContext,
-        column: usize,
-    ) -> ([u8; DATA_COLUMN_SIDECAR_MIN], usize) {
-        let mut prefix = [0; DATA_COLUMN_SIDECAR_MIN];
-        prefix[..8].copy_from_slice(&(column as u64).to_le_bytes());
-        let length = match data {
-            ContextData::Fulu { signed_header, inclusion_proof, commitments } => {
-                let cells_end = DATA_COLUMN_SIDECAR_MIN + context.blob_count * BYTES_PER_CELL;
-                prefix[8..12].copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
-                prefix[12..16].copy_from_slice(&(cells_end as u32).to_le_bytes());
-                prefix[16..20]
-                    .copy_from_slice(&((cells_end + commitments.len()) as u32).to_le_bytes());
-                prefix[20..228].copy_from_slice(signed_header);
-                prefix[228..356].copy_from_slice(inclusion_proof);
-                DATA_COLUMN_SIDECAR_MIN
-            }
-            ContextData::Gloas { .. } => {
-                prefix[8..12]
-                    .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
-                prefix[12..16].copy_from_slice(
-                    &((DATA_COLUMN_SIDECAR_GLOAS_MIN + context.blob_count * BYTES_PER_CELL) as u32)
-                        .to_le_bytes(),
-                );
-                prefix[16..24].copy_from_slice(&context.slot.to_le_bytes());
-                prefix[24..56].copy_from_slice(&context.block_root);
-                DATA_COLUMN_SIDECAR_GLOAS_MIN
-            }
-        };
-        (prefix, length)
     }
 
     pub fn column(&self, key: CellKey) -> Option<ColumnRef> {
@@ -480,6 +351,11 @@ impl CellAllocator {
     }
 
     fn close_set(&self, set: AssemblySet) {
+        if let Some(header) = set.header &&
+            let Ok(view) = self.producer.view_sub_reservation(header)
+        {
+            view.close();
+        }
         if let Ok(references) = set.reservations.view(&self.producer) {
             for reference in references {
                 if let Ok(view) = self.producer.view_sub_reservation(reference) {

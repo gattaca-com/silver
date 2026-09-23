@@ -10,8 +10,8 @@ use silver_common::{
     TCacheTable, TRead, TReadMode, Wheel,
     cell_store::{
         CellOrigin, CellStoreConfig, CellStoreEvent, CellValidationOutcome, CellValidationRequest,
-        ColumnRef, CommitmentContext, ContextData, DataColumnCounters, FuluContextSource,
-        HeaderValidationRequest, RetentionEvent, StoreError,
+        ColumnRef, CommitmentContext, ContextData, DataColumnCounters, HeaderValidationRequest,
+        RetentionEvent, StoreError,
     },
     column_util::{SidecarIdentity, columns_of},
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF},
@@ -306,15 +306,25 @@ impl CellHandler {
         producers.produce(CellStoreEvent::RejectedContext { block_root });
     }
 
-    pub(super) fn admit_context(
+    pub(super) fn admit_current_context(
         &mut self,
         context: CommitmentContext,
         domain: GossipDomain,
         data: ContextData<'_>,
-        source: Option<FuluContextSource>,
         producers: &SilverSpineProducers,
     ) -> bool {
-        if let Err(error) = self.store.admit_context(context, domain, data, source) {
+        context.slot == self.store.current_slot() &&
+            self.admit_context(context, domain, data, producers)
+    }
+
+    pub(crate) fn admit_context(
+        &mut self,
+        context: CommitmentContext,
+        domain: GossipDomain,
+        data: ContextData<'_>,
+        producers: &SilverSpineProducers,
+    ) -> bool {
+        if let Err(error) = self.store.admit_context(context, domain, data) {
             tracing::debug!(?error, slot = context.slot, "cell context not admitted");
             return false;
         }
@@ -348,8 +358,7 @@ impl CellHandler {
             format: domain.format(),
             blob_count: data.commitments().len() / BYTES_PER_KZG_COMMITMENT,
         };
-        let source = (!p.is_gloas).then_some(FuluContextSource::Sidecar(p.sidecar.to_read()));
-        if !self.admit_context(context, domain, data, source, producers) {
+        if !self.admit_current_context(context, domain, data, producers) {
             return;
         }
         match self.store.retain_full(
@@ -471,13 +480,7 @@ impl CellHandler {
                         data,
                         tracker.to_request(&context.block_root),
                     );
-                    if self.admit_context(
-                        context,
-                        request.domain,
-                        data,
-                        Some(FuluContextSource::Header(request.ssz)),
-                        producers,
-                    ) {
+                    if self.admit_current_context(context, request.domain, data, producers) {
                         DataColumnCounters::PartialHeadersAccepted.inc();
                         Self::verdict(request.origin, request.block_root, true, producers);
                     }

@@ -175,7 +175,6 @@ impl ColumnsRig {
             beacon.reader(),
             u128::MAX,
             Arc::new(spec),
-            TCache::producer(TCacheId::ColumnsProcessing, 1 << 16),
             ticker,
         );
         tile.open_tcaches().unwrap();

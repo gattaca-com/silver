@@ -1,6 +1,8 @@
+use std::io::Write;
+
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{
-    SilverSpine, TCache, TCacheId, TCacheReader, TCacheTable, TReadMode,
+    SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode,
     test_util::{ShmemDir, SynthBlock},
 };
 
@@ -16,7 +18,6 @@ struct Rig {
     fetcher: ElBlobFetcher,
     reader: TCacheReader,
     response: TProducer,
-    output: TProducer,
     adapter: SpineAdapter<SilverSpine>,
     _spine: Box<SilverSpine>,
     _dir: ShmemDir,
@@ -35,7 +36,6 @@ impl Rig {
             fetcher: ElBlobFetcher::new(Duration::from_secs(60)),
             reader,
             response,
-            output: TCache::producer(TCacheId::NetworkIngress, 1 << 16),
             adapter,
             _spine: spine,
             _dir: dir,
@@ -60,7 +60,7 @@ impl Rig {
                 block_root: root,
                 slot,
                 ok: true,
-                blobs_present: 0,
+                blobs_present: 1,
                 data: write.read(),
             },
             &mut self.reader,
@@ -94,6 +94,24 @@ fn wrong_slot_cannot_consume_the_request_and_completion_remains_deduplicated() {
 }
 
 #[test]
+fn empty_el_response_does_not_wait_for_an_assembly_or_restart_the_request() {
+    let mut rig = Rig::new();
+    rig.request([1; 32]);
+    assert_eq!(rig.requests(), 1);
+    let mut write = rig.response.reserve(4, true).unwrap();
+    write.write_all(&0u32.to_le_bytes()).unwrap();
+    let data = write.read();
+    rig.fetcher.handle_response(
+        EngineGetBlobsResp { block_root: [1; 32], slot: 7, ok: true, blobs_present: 0, data },
+        &mut rig.reader,
+    );
+    assert!(rig.fetcher.responses.is_empty());
+    assert!(rig.fetcher.pending.is_empty());
+    rig.request([1; 32]);
+    assert_eq!(rig.requests(), 0);
+}
+
+#[test]
 fn response_pins_are_bounded_and_expired_responses_are_released() {
     let mut rig = Rig::new();
     for index in 0..=MAX_RESPONSES {
@@ -110,7 +128,6 @@ fn response_pins_are_bounded_and_expired_responses_are_released() {
         None,
         &mut ColumnTracker::new(1, Duration::from_secs(60)),
         &SyncStatus::default(),
-        &mut rig.output,
         &mut rig.adapter.producers,
     );
     rig.reader.free();
@@ -158,8 +175,8 @@ fn forced_tail_advance_invalidates_a_queued_response_before_its_bytes_are_reused
         None,
         &mut ColumnTracker::new(1, Duration::from_secs(60)),
         &SyncStatus::default(),
-        &mut rig.output,
         &mut rig.adapter.producers,
     );
-    assert!(rig.fetcher.responses.is_empty());
+    assert_eq!(rig.fetcher.responses.len(), 1);
+    assert_eq!(rig.fetcher.responses[0].fetch.context.block_root, [2; 32]);
 }
