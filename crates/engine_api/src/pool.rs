@@ -634,7 +634,7 @@ mod tests {
             });
             el.pump();
             if !responded && !el.requests.is_empty() {
-                assert_eq!(el.requests[0].method, "engine_getBlobsV2");
+                assert_eq!(el.requests[0].method, "engine_getBlobsV3");
                 let result = format!(r#"[{{"blob":"{blob}"}}]"#);
                 el.respond_chunked(0, &result, 1 << 10);
                 responded = true;
