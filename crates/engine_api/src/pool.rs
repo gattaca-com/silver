@@ -380,7 +380,7 @@ mod tests {
     use super::*;
     use crate::{
         EngineClient,
-        client::{ReqKind, send_fcu},
+        client::{ReqKind, get_blobs, send_fcu},
         test_el::{FCU_VALID_RESULT, FakeEl, write_jwt},
         types::ForkchoiceState,
     };
@@ -606,6 +606,45 @@ mod tests {
             completed.is_some()
         });
         assert_eq!(completed.unwrap(), [4u8; 32]);
+    }
+
+    #[test]
+    fn chunked_response_completes_the_rpc_with_the_decoded_body() {
+        let dir = TempDir::new().unwrap();
+        let jwt_path = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let mut el = FakeEl::uds(&socket);
+
+        let mut client = Client::uds(&socket, &jwt_path, 32, LONG_TIMEOUT);
+        let block_root = [5u8; 32];
+        // A response the socket buffer holds in one write: `respond_chunked`
+        // blocks, and this single-threaded harness cannot drain concurrently.
+        let blob = format!("0x{}", "ab".repeat(2048));
+        get_blobs(&mut client.engine, simd_json::json!([["0x00"]]), block_root, 11);
+
+        let mut responded = false;
+        let mut completed: Option<Vec<u8>> = None;
+        spin_until("chunked getBlobs round trip", || {
+            client.poll(|kind, response| {
+                let ReqKind::GetBlobs { block_root: root, slot } = kind else {
+                    panic!("unexpected completion")
+                };
+                assert_eq!((root, slot), (block_root, 11));
+                completed = Some(response.expect("getBlobs response").to_vec());
+            });
+            el.pump();
+            if !responded && !el.requests.is_empty() {
+                assert_eq!(el.requests[0].method, "engine_getBlobsV3");
+                let result = format!(r#"[{{"blob":"{blob}"}}]"#);
+                el.respond_chunked(0, &result, 1 << 10);
+                responded = true;
+            }
+            completed.is_some()
+        });
+
+        let body = String::from_utf8(completed.unwrap()).unwrap();
+        assert!(body.starts_with(r#"{"jsonrpc":"2.0","id":"#), "framing stripped from the body");
+        assert!(body.ends_with(&format!(r#""result":[{{"blob":"{blob}"}}]}}"#)));
     }
 
     /// A range with no room for the healthcheck's overshoot would have the

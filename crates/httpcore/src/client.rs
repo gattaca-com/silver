@@ -1,4 +1,9 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    ops::Range,
+};
+
+use crate::chunked_decoder::ChunkedDecoder;
 
 // 4096 covers any realistic HTTP response header block; once headers are
 // parsed, reads are sized to exactly the remaining Content-Length.
@@ -10,8 +15,35 @@ pub struct ClientConnection {
     read_buf: Vec<u8>,
     read_end: usize,
     read_offset: usize,
-    response_header_end: usize,
-    response_total: usize,
+    framing: Framing,
+}
+
+enum Framing {
+    Head,
+    Length { body_start: usize, total: usize },
+    Chunked(ChunkedDecoder),
+}
+
+impl Framing {
+    fn read_len(&self, buffered: usize) -> usize {
+        match self {
+            Self::Head => HEADER_READ_LEN,
+            Self::Length { total, .. } => total - buffered,
+            Self::Chunked(decoder) => decoder.read_hint(),
+        }
+    }
+
+    fn complete_body(&self, buffered: usize) -> Option<(Range<usize>, usize)> {
+        match self {
+            Self::Head => None,
+            Self::Length { body_start, total } => {
+                (buffered >= *total).then_some((*body_start..*total, *total))
+            }
+            Self::Chunked(decoder) => {
+                decoder.is_complete().then(|| (decoder.decoded(), decoder.consumed()))
+            }
+        }
+    }
 }
 
 impl ClientConnection {
@@ -22,8 +54,7 @@ impl ClientConnection {
             read_buf: Vec::with_capacity(read_capacity),
             read_end: 0,
             read_offset: 0,
-            response_header_end: 0,
-            response_total: 0,
+            framing: Framing::Head,
         }
     }
 
@@ -51,11 +82,7 @@ impl ClientConnection {
             self.read_end = 0;
             self.read_offset = 0;
         }
-        let want = if self.response_total > 0 {
-            self.response_total - (self.read_end - self.read_offset)
-        } else {
-            HEADER_READ_LEN
-        };
+        let want = self.framing.read_len(self.read_end - self.read_offset);
         debug_assert!(want > 0, "complete response pending: take_response before reading more");
         if self.read_buf.len() < self.read_end + want {
             self.read_buf.resize(self.read_end + want, 0);
@@ -66,26 +93,24 @@ impl ClientConnection {
     pub fn commit_read(&mut self, n: usize) -> io::Result<()> {
         debug_assert!(self.read_end + n <= self.read_buf.len());
         self.read_end += n;
-        if self.response_total == 0 {
-            if let Some((header_end, content_length)) =
-                parse_response_head(&self.read_buf[self.read_offset..self.read_end])?
-            {
-                self.response_header_end = header_end;
-                self.response_total = header_end + content_length;
+        if matches!(self.framing, Framing::Head) {
+            match parse_response_head(&self.read_buf[self.read_offset..self.read_end])? {
+                Some(framing) => self.framing = framing,
+                None => return Ok(()),
             }
+        }
+        if let Framing::Chunked(decoder) = &mut self.framing {
+            decoder.decode(&mut self.read_buf[self.read_offset..self.read_end])?;
         }
         Ok(())
     }
 
     pub fn take_response(&mut self) -> Option<&mut [u8]> {
-        if self.response_total == 0 || self.read_end - self.read_offset < self.response_total {
-            return None;
-        }
-        let start = self.read_offset + self.response_header_end;
-        let end = self.read_offset + self.response_total;
-        self.read_offset = end;
-        self.response_header_end = 0;
-        self.response_total = 0;
+        let (body, consumed) = self.framing.complete_body(self.read_end - self.read_offset)?;
+        let start = self.read_offset + body.start;
+        let end = self.read_offset + body.end;
+        self.read_offset += consumed;
+        self.framing = Framing::Head;
         Some(&mut self.read_buf[start..end])
     }
 
@@ -94,15 +119,14 @@ impl ClientConnection {
         self.write_pos = 0;
         self.read_end = 0;
         self.read_offset = 0;
-        self.response_header_end = 0;
-        self.response_total = 0;
+        self.framing = Framing::Head;
     }
 }
 
-// Returns (header_end, content_length) when headers are complete, None if
-// partial. Content-Length framing only: a response without it is an error,
-// chunked transfer encoding is unsupported.
-fn parse_response_head(buf: &[u8]) -> io::Result<Option<(usize, usize)>> {
+// Returns the body framing when headers are complete, None if partial. A
+// response that declares neither Content-Length nor chunked encoding is an
+// error: its body would only be delimited by the connection closing.
+fn parse_response_head(buf: &[u8]) -> io::Result<Option<Framing>> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp = httparse::Response::new(&mut headers);
     let header_end = match resp.parse(buf) {
@@ -110,10 +134,28 @@ fn parse_response_head(buf: &[u8]) -> io::Result<Option<(usize, usize)>> {
         Ok(httparse::Status::Partial) => return Ok(None),
         Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("httparse: {e}"))),
     };
-    match headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-length")) {
-        Some(h) if !h.value.is_empty() && h.value.iter().all(|b| b.is_ascii_digit()) => {
-            let cl = h.value.iter().copied().fold(0usize, |acc, b| acc * 10 + (b - b'0') as usize);
-            Ok(Some((header_end, cl)))
+
+    let mut content_length = None;
+    let mut chunked = false;
+    for header in resp.headers.iter() {
+        if header.name.eq_ignore_ascii_case("content-length") {
+            content_length = Some(header.value);
+        } else if header.name.eq_ignore_ascii_case("transfer-encoding") {
+            chunked |= header
+                .value
+                .split(|b| *b == b',')
+                .any(|coding| coding.trim_ascii().eq_ignore_ascii_case(b"chunked"));
+        }
+    }
+
+    // RFC 9112 6.1: Transfer-Encoding overrides any Content-Length.
+    if chunked {
+        return Ok(Some(Framing::Chunked(ChunkedDecoder::new(header_end))));
+    }
+    match content_length {
+        Some(value) if !value.is_empty() && value.iter().all(|b| b.is_ascii_digit()) => {
+            let cl = value.iter().copied().fold(0usize, |acc, b| acc * 10 + (b - b'0') as usize);
+            Ok(Some(Framing::Length { body_start: header_end, total: header_end + cl }))
         }
         Some(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length")),
         None => Err(io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length")),
@@ -173,6 +215,32 @@ mod tests {
         assert_eq!(n, bytes.len(), "test chunk exceeds offered read space");
         space[..n].copy_from_slice(bytes);
         conn.commit_read(n)
+    }
+
+    fn feed_all(conn: &mut ClientConnection, bytes: &[u8]) -> io::Result<()> {
+        let mut sent = 0;
+        while sent < bytes.len() {
+            let space = conn.read_space();
+            let n = space.len().min(bytes.len() - sent);
+            space[..n].copy_from_slice(&bytes[sent..sent + n]);
+            conn.commit_read(n)?;
+            sent += n;
+        }
+        Ok(())
+    }
+
+    const CHUNKED_HEAD: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+    fn chunked_response(chunks: &[&[u8]]) -> Vec<u8> {
+        let mut buf = CHUNKED_HEAD.to_vec();
+        for chunk in chunks {
+            buf.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+            buf.extend_from_slice(chunk);
+            buf.extend_from_slice(b"\r\n");
+        }
+        buf.extend_from_slice(b"0\r\n\r\n");
+        buf
     }
 
     // Captured verbatim from the engine crate's `build_request_into` before the
@@ -339,5 +407,86 @@ mod tests {
 
         feed(&mut conn, &make_response(b"{}")).unwrap();
         assert_eq!(conn.take_response().unwrap(), b"{}");
+    }
+
+    #[test]
+    fn chunked_single_chunk_decodes_to_the_body() {
+        let mut conn = machine();
+        let body = br#"{"jsonrpc":"2.0","result":[{"blob":"0xabcd"}]}"#;
+        feed_all(&mut conn, &chunked_response(&[body])).unwrap();
+        assert_eq!(conn.take_response().unwrap(), body.as_ref());
+        assert!(conn.take_response().is_none());
+    }
+
+    #[test]
+    fn chunked_several_chunks_join_into_one_contiguous_body() {
+        let mut conn = machine();
+        let parts: [&[u8]; 3] =
+            [br#"{"result":["#, br#"{"blob":"0x01"},"#, br#"{"blob":"0x02"}]}"#];
+        feed_all(&mut conn, &chunked_response(&parts)).unwrap();
+        assert_eq!(conn.take_response().unwrap(), parts.concat());
+    }
+
+    /// Every framing boundary — header block, size line, chunk data, the
+    /// terminating zero chunk — lands on a separate `commit_read`, and the
+    /// response stays incomplete until the last byte of the terminator.
+    #[test]
+    fn chunked_response_fed_one_byte_at_a_time() {
+        let mut conn = machine();
+        let parts: [&[u8]; 2] = [b"first-half", b"second-half"];
+        let response = chunked_response(&parts);
+
+        for (i, byte) in response.iter().enumerate() {
+            assert!(conn.take_response().is_none(), "byte {i}");
+            feed(&mut conn, &[*byte]).unwrap();
+        }
+        assert_eq!(conn.take_response().unwrap(), parts.concat());
+    }
+
+    #[test]
+    fn chunked_body_larger_than_the_header_read_length() {
+        let mut conn = machine();
+        let chunk = vec![b'x'; 256 << 10];
+        feed_all(&mut conn, &chunked_response(&[&chunk, &chunk])).unwrap();
+        assert_eq!(conn.take_response().unwrap(), [chunk.clone(), chunk].concat());
+    }
+
+    #[test]
+    fn a_chunked_response_after_a_content_length_one_decodes() {
+        let mut conn = machine();
+        feed(&mut conn, &make_response(br#"{"result":null}"#)).unwrap();
+        assert_eq!(conn.take_response().unwrap(), br#"{"result":null}"#.as_ref());
+        feed_all(&mut conn, &chunked_response(&[b"blobs"])).unwrap();
+        assert_eq!(conn.take_response().unwrap(), b"blobs");
+    }
+
+    #[test]
+    fn non_hex_chunk_size_is_error() {
+        let mut conn = machine();
+        let mut response = CHUNKED_HEAD.to_vec();
+        response.extend_from_slice(b"zz\r\npayload\r\n");
+        let err = feed(&mut conn, &response).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "invalid chunk size");
+    }
+
+    #[test]
+    fn chunk_data_not_followed_by_crlf_is_error() {
+        let mut conn = machine();
+        let mut response = CHUNKED_HEAD.to_vec();
+        response.extend_from_slice(b"4\r\ndataXX0\r\n\r\n");
+        let err = feed(&mut conn, &response).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "chunk data not terminated by CRLF");
+    }
+
+    /// An unterminated size line must fail rather than buffer without bound.
+    #[test]
+    fn oversized_chunk_size_line_is_error() {
+        let mut conn = machine();
+        feed(&mut conn, CHUNKED_HEAD).unwrap();
+        let err = feed_all(&mut conn, &vec![b'0'; 2048]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "chunk size line too long");
     }
 }

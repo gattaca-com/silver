@@ -134,14 +134,36 @@ impl FakeEl {
     }
 
     pub fn respond(&mut self, request_index: usize, result_json: &str) {
-        let request = &self.requests[request_index];
-        let body = format!(r#"{{"jsonrpc":"2.0","id":{},"result":{result_json}}}"#, request.id);
+        let body = self.result_body(request_index, result_json);
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
-        let stream = self.conns[request.conn].as_mut().expect("respond on closed connection");
-        let mut bytes = response.as_bytes();
+        self.send(request_index, response.as_bytes());
+    }
+
+    pub fn respond_chunked(&mut self, request_index: usize, result_json: &str, chunk_len: usize) {
+        let body = self.result_body(request_index, result_json);
+        let mut response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
+                .to_vec();
+        for chunk in body.as_bytes().chunks(chunk_len) {
+            response.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+            response.extend_from_slice(chunk);
+            response.extend_from_slice(b"\r\n");
+        }
+        response.extend_from_slice(b"0\r\n\r\n");
+        self.send(request_index, &response);
+    }
+
+    fn result_body(&self, request_index: usize, result_json: &str) -> String {
+        let id = self.requests[request_index].id;
+        format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result_json}}}"#)
+    }
+
+    fn send(&mut self, request_index: usize, mut bytes: &[u8]) {
+        let conn = self.requests[request_index].conn;
+        let stream = self.conns[conn].as_mut().expect("respond on closed connection");
         while !bytes.is_empty() {
             match stream.write(bytes) {
                 Ok(n) => bytes = &bytes[n..],
