@@ -22,8 +22,8 @@ use silver_common::{
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
-    attestation_pool::InsertOutcome, held_blocks::BlockSourceMsg, seen_aggregates::Coverage,
-    sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
+    attestation_pool::InsertOutcome, fork_data_roots::ForkDataRoots, held_blocks::BlockSourceMsg,
+    seen_aggregates::Coverage, sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
@@ -585,8 +585,7 @@ impl BeaconStateTile {
         }
 
         let fv = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
-        let fork_data_root =
-            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let fork_data_root = self.fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         let sr_sp = bls::compute_signing_root(
@@ -780,6 +779,7 @@ impl BeaconStateTile {
             &parsed,
             &committees,
             data_root,
+            &mut self.fork_data_roots,
             &mut self.sig_batch,
         ) {
             return Feedback::Reject(None);
@@ -1010,11 +1010,11 @@ impl BeaconStateTile {
         parsed: &ParsedAggregateAndProof<'_>,
         committees: &stf::AttestedCommittees<'_>,
         data_root: B256,
+        fork_data_roots: &mut ForkDataRoots,
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
         let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
-        let fork_data_root =
-            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let fork_data_root = fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).

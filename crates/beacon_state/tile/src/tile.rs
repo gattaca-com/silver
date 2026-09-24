@@ -16,7 +16,7 @@ use silver_common::{
     ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
     TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
     hex32,
-    ssz_view::STATUS_V2_SIZE,
+    ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
 use silver_config::{PendingBounds, SyncingConfig};
@@ -607,15 +607,13 @@ impl BeaconStateTile {
         beacon_block_root: B256,
         producers: &mut Producers,
     ) {
-        let contribution = self.sync_contribution_pool.contribution_ssz(
-            slot,
-            subcommittee_index,
-            beacon_block_root,
-        );
+        let contribution =
+            self.sync_contribution_pool.contribution(slot, subcommittee_index, beacon_block_root);
         let ssz = contribution.and_then(|contribution| {
-            let written = self
-                .events_producer
-                .write_with(contribution.len(), |buffer| buffer.copy_from_slice(&contribution));
+            let written =
+                self.events_producer.write_with(SYNC_COMMITTEE_CONTRIBUTION_SIZE, |buffer| {
+                    contribution.write_ssz(buffer.try_into().expect("reserved to size"))
+                });
             match written {
                 Some(_) => self.events_producer.publish_head(),
                 None => tracing::error!(

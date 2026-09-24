@@ -126,11 +126,11 @@ impl Controller {
         &mut self,
         request_id: u64,
         topic: GossipTopic,
-        ssz: TCacheRead,
+        ssz_read: TCacheRead,
         now: Instant,
         producers: &mut SilverSpineProducers,
     ) {
-        let acquired = self.reader.acquire(ssz);
+        let acquired = self.reader.acquire(ssz_read);
         let Ok((ssz, _)) = acquired.buffer() else {
             tracing::error!(request_id, ?topic, "submitted message overwritten before it was read");
             return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
@@ -160,7 +160,7 @@ impl Controller {
             GossipTopic::BeaconAggregateAndProof => {
                 let slot = SignedAggregateAndProofView::agg_slot(ssz);
                 self.local_validation.submit(
-                    LocalMessage { request_id, topic, ssz, slot },
+                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
                     producers,
@@ -181,7 +181,7 @@ impl Controller {
                 };
                 let slot = SignedContributionAndProofView::slot(contribution);
                 self.local_validation.submit(
-                    LocalMessage { request_id, topic, ssz, slot },
+                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
                     producers,

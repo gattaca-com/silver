@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use fxhash::FxHashMap;
 use silver_common::{
     BeaconApiResponse, GossipTopic, LocalGossipFailure, LocalGossipResult, MessageId, Nanos,
-    SilverSpineProducers,
+    SilverSpineProducers, TCacheRead,
 };
 use silver_gossip::GossipHandler;
 
@@ -22,6 +22,7 @@ pub(super) struct LocalMessage<'a> {
     pub(super) request_id: u64,
     pub(super) topic: GossipTopic,
     pub(super) ssz: &'a [u8],
+    pub(super) ssz_read: Option<TCacheRead>,
     pub(super) slot: u64,
 }
 
@@ -33,8 +34,8 @@ impl LocalValidation {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        let LocalMessage { request_id, topic, ssz, slot } = message;
-        match gossip_handler.inject_local(topic, ssz, Nanos::now()) {
+        let LocalMessage { request_id, topic, ssz, ssz_read, slot } = message;
+        match gossip_handler.inject_local(topic, ssz, ssz_read, Nanos::now()) {
             Ok(Some(msg_id)) => {
                 let request =
                     PendingValidationRequest { request_id, deadline: now + VALIDATION_TIMEOUT };
@@ -214,7 +215,7 @@ pub(super) mod tests {
         let mut aggregate = [0u8; SIGNED_AGG_PROOF_MIN + 1];
         aggregate[SIGNED_AGG_PROOF_MIN] = 1;
         let topic = GossipTopic::BeaconAggregateAndProof;
-        let message = LocalMessage { request_id, topic, ssz: &aggregate, slot: 0 };
+        let message = LocalMessage { request_id, topic, ssz: &aggregate, ssz_read: None, slot: 0 };
         let Harness { validation, gossip, adapter, .. } = harness;
         validation.submit(message, Instant::now(), gossip, &mut adapter.producers);
     }
@@ -244,7 +245,8 @@ pub(super) mod tests {
         let aggregate = [0u8; SIGNED_AGG_PROOF_MIN + 1];
         for (request_id, at) in [(21, now), (22, now + Duration::from_millis(10))] {
             let topic = GossipTopic::BeaconAggregateAndProof;
-            let message = LocalMessage { request_id, topic, ssz: &aggregate, slot: 0 };
+            let message =
+                LocalMessage { request_id, topic, ssz: &aggregate, ssz_read: None, slot: 0 };
             let Harness { validation, gossip, adapter, .. } = &mut harness;
             validation.submit(message, at, gossip, &mut adapter.producers);
         }
