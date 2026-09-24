@@ -20,12 +20,12 @@ pub(crate) fn proposer_duties_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Res
 }
 
 fn respond(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>, epochs_back: u64) {
-    let Some(epoch) = epoch_param(req, resp) else {
-        return;
-    };
     if !ctx.follows_chain(resp) {
         return;
     }
+    let Some(epoch) = epoch_param(req, resp) else {
+        return;
+    };
 
     let head_root = ctx.node_status.head_root;
     let duties = ctx.read_state(|view| {
@@ -245,7 +245,7 @@ mod tests {
             let path = format!("/eth/{version}/validator/duties/proposer/{STATE_EPOCH}");
             assert_eq!(status_code(&get_from(&ctx, &path)), "503", "{path}");
         }
-        assert_eq!(status_code(&get_from(&ctx, "/eth/v1/validator/duties/proposer/abc")), "400");
+        assert_eq!(status_code(&get_from(&ctx, "/eth/v1/validator/duties/proposer/abc")), "503");
     }
 
     #[test]

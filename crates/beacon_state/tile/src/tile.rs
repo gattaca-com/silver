@@ -599,6 +599,36 @@ impl BeaconStateTile {
         producers.produce(BeaconApiResponse::AggregateAttestation { request_id, ssz });
     }
 
+    fn serve_contribution(
+        &mut self,
+        request_id: u64,
+        slot: Slot,
+        subcommittee_index: u64,
+        beacon_block_root: B256,
+        producers: &mut Producers,
+    ) {
+        let contribution = self.sync_contribution_pool.contribution_ssz(
+            slot,
+            subcommittee_index,
+            beacon_block_root,
+        );
+        let ssz = contribution.and_then(|contribution| {
+            let written = self
+                .events_producer
+                .write_with(contribution.len(), |buffer| buffer.copy_from_slice(&contribution));
+            match written {
+                Some(_) => self.events_producer.publish_head(),
+                None => tracing::error!(
+                    slot,
+                    subcommittee_index,
+                    "beacon_state tcache full; contribution not served"
+                ),
+            }
+            written
+        });
+        producers.produce(BeaconApiResponse::SyncCommitteeContribution { request_id, ssz });
+    }
+
     fn post_shufflings(&mut self, producers: &mut Producers) {
         let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
         let producer = &mut self.events_producer;
@@ -774,16 +804,26 @@ impl BeaconStateTile {
             TickEvent::None => {}
         }
 
-        adapter.consume(|request: BeaconApiRequest, producers| {
-            if let BeaconApiRequest::AggregateAttestation {
+        adapter.consume(|request: BeaconApiRequest, producers| match request {
+            BeaconApiRequest::AggregateAttestation {
                 request_id,
                 slot,
                 committee_index,
                 data_root,
-            } = request
-            {
-                self.serve_aggregate(request_id, slot, committee_index, data_root, producers);
-            }
+            } => self.serve_aggregate(request_id, slot, committee_index, data_root, producers),
+            BeaconApiRequest::SyncCommitteeContribution {
+                request_id,
+                slot,
+                subcommittee_index,
+                beacon_block_root,
+            } => self.serve_contribution(
+                request_id,
+                slot,
+                subcommittee_index,
+                beacon_block_root,
+                producers,
+            ),
+            BeaconApiRequest::LocalGossip { .. } | BeaconApiRequest::Block { .. } => {}
         });
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));

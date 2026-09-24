@@ -636,6 +636,9 @@ impl BeaconStateTile {
 
         self.seen_aggregates.record(slot, subcommittee, block_root, bits);
         self.seen_contribution_aggregators[subcommittee as usize].mark(slot, aggregator as usize);
+        // Not pooled: aggregators build contributions from messages alone.
+        // TODO: Proposing will want them, to fill the sync aggregate with messages
+        // the mesh never delivered here.
         Feedback::Accept
     }
 

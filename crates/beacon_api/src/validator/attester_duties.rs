@@ -10,15 +10,15 @@ use crate::{
 };
 
 pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     let Some(epoch) = epoch_param(req, resp) else {
         return;
     };
     let Some(indices) = requested_indices(req, resp) else {
         return;
     };
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let state_epoch = ctx.read_state(|view| view.slot.current_epoch());
     if epoch < state_epoch || epoch > state_epoch + 1 {
         resp.error(400, "attester duties cover the head state's epoch and the one after it");

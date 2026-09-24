@@ -199,6 +199,7 @@ pub(super) mod tests {
                     responses.push((request_id, response));
                 }
                 BeaconApiResponse::AggregateAttestation { .. } |
+                BeaconApiResponse::SyncCommitteeContribution { .. } |
                 BeaconApiResponse::Block { .. } => {}
             });
             responses

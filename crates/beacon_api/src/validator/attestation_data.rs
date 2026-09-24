@@ -37,15 +37,15 @@ pub(crate) struct CommitteeQuery {
 
 impl CommitteeQuery {
     pub(crate) fn parse(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) -> Option<Self> {
+        if !ctx.follows_chain(resp) {
+            return None;
+        }
         let (Some(slot), Some(committee_index)) =
             (uint64_query(req, "slot"), uint64_query(req, "committee_index"))
         else {
             resp.error(400, "slot and committee_index are required Uint64 query parameters");
             return None;
         };
-        if !ctx.follows_chain(resp) {
-            return None;
-        }
         if ctx.node_status.execution_optimistic() {
             resp.error(503, "the head is optimistic, and validators must not attest to it");
             return None;
@@ -167,7 +167,7 @@ struct CheckpointJson {
     root: B256,
 }
 
-fn uint64_query(req: &Request<'_>, name: &str) -> Option<u64> {
+pub(crate) fn uint64_query(req: &Request<'_>, name: &str) -> Option<u64> {
     parse_uint64(&req.query_value(name)?)
 }
 

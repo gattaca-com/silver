@@ -15,7 +15,10 @@ use silver_common::{
     SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheRead, TCacheReader,
     TCacheTable, TProducer, TReadMode,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
-    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, StatusView},
+    ssz_view::{
+        METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedContributionAndProofView,
+        StatusView,
+    },
     ticker::SlotTicker,
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -156,6 +159,27 @@ impl Controller {
             }
             GossipTopic::BeaconAggregateAndProof => {
                 let slot = SignedAggregateAndProofView::agg_slot(ssz);
+                self.local_validation.submit(
+                    LocalMessage { request_id, topic, ssz, slot },
+                    now,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
+            GossipTopic::SyncCommitteeContributionAndProof => {
+                let Ok(contribution) = ssz.try_into() else {
+                    tracing::error!(
+                        request_id,
+                        len = ssz.len(),
+                        "submitted contribution is misframed"
+                    );
+                    return produce_response(
+                        producers,
+                        request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                };
+                let slot = SignedContributionAndProofView::slot(contribution);
                 self.local_validation.submit(
                     LocalMessage { request_id, topic, ssz, slot },
                     now,
@@ -388,7 +412,9 @@ impl Tile<SilverSpine> for Controller {
             BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
                 self.on_local_gossip(request_id, topic, ssz, now, producers)
             }
-            BeaconApiRequest::AggregateAttestation { .. } | BeaconApiRequest::Block { .. } => {}
+            BeaconApiRequest::AggregateAttestation { .. } |
+            BeaconApiRequest::SyncCommitteeContribution { .. } |
+            BeaconApiRequest::Block { .. } => {}
         });
 
         self.attestation_cluster.spin(

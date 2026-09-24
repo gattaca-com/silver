@@ -79,7 +79,6 @@ impl SyncContributionPool {
     /// validator will wrap in `ContributionAndProof` and sign. The surrounding
     /// selection proof and validator signatures intentionally remain outside
     /// this pool.
-    #[allow(dead_code)] // retrieval interface for the local-validator milestone
     #[timed]
     pub(super) fn contribution_ssz(
         &self,

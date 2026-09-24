@@ -10,7 +10,10 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     AGENT_VERSION,
-    ssz_view::{AttestationView, BYTES_PER_KZG_COMMITMENT},
+    ssz_view::{
+        AttestationView, BYTES_PER_KZG_COMMITMENT, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
+        SyncCommitteeContributionView,
+    },
 };
 
 use crate::{
@@ -369,6 +372,24 @@ impl Json<'_> {
         self.hex(AttestationView::signature(ssz));
         self.key("committee_bits");
         self.hex(AttestationView::committee_bits(ssz));
+        self.end_object();
+    }
+
+    pub(crate) fn sync_committee_contribution(
+        &mut self,
+        ssz: &[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE],
+    ) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(SyncCommitteeContributionView::slot(ssz));
+        self.key("beacon_block_root");
+        self.hex(SyncCommitteeContributionView::beacon_block_root(ssz));
+        self.key("subcommittee_index");
+        self.quoted_u64(SyncCommitteeContributionView::subcommittee_index(ssz));
+        self.key("aggregation_bits");
+        self.hex(SyncCommitteeContributionView::aggregation_bits(ssz));
+        self.key("signature");
+        self.hex(SyncCommitteeContributionView::signature(ssz));
         self.end_object();
     }
 

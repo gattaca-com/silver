@@ -33,7 +33,7 @@ use crate::{
     node::peers::Peer,
     routes::ROUTES,
     submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
-    validator::aggregate_attestation::AggregateRequest,
+    validator::{aggregate_attestation::AggregateRequest, sync_contribution::ContributionRequest},
 };
 
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
@@ -85,6 +85,7 @@ struct Requests {
 enum Pending {
     Block { request_id: u64, kind: Kind },
     Aggregate { request_id: u64, request: AggregateRequest },
+    Contribution { request_id: u64, request: ContributionRequest },
     Submission(PendingSubmission),
 }
 
@@ -144,6 +145,10 @@ impl Pending {
                 emit(request.state_request(first_id));
                 (Self::Aggregate { request_id: first_id, request }, 1)
             }
+            Outcome::AwaitingContribution(request) => {
+                emit(request.state_request(first_id));
+                (Self::Contribution { request_id: first_id, request }, 1)
+            }
             Outcome::AwaitingVerdicts(Submission { accepted, failures }) => {
                 for &AcceptedEntry { body_index, topic, ssz } in &accepted {
                     let request_id = first_id + body_index as u64;
@@ -161,7 +166,8 @@ impl Pending {
     fn awaits(&self, request_id: u64) -> bool {
         match self {
             Self::Block { request_id: awaited, .. } |
-            Self::Aggregate { request_id: awaited, .. } => *awaited == request_id,
+            Self::Aggregate { request_id: awaited, .. } |
+            Self::Contribution { request_id: awaited, .. } => *awaited == request_id,
             Self::Submission(pending) => pending.awaits(request_id),
         }
     }
@@ -771,6 +777,13 @@ impl BeaconApi {
                 true
             }
             (
+                BeaconApiResponse::SyncCommitteeContribution { ssz, .. },
+                Pending::Contribution { request, .. },
+            ) => {
+                request.respond(&mut resp, ssz, reader);
+                true
+            }
+            (
                 BeaconApiResponse::LocalGossipResponse { response, .. },
                 Pending::Submission(pending),
             ) => {
@@ -981,7 +994,7 @@ mod tests {
         ssz_view::{
             ATTESTATION_FIXED, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
             DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN,
-            STATUS_V2_SIZE,
+            STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
         },
     };
     use silver_httpcore::Readiness;
@@ -2229,7 +2242,8 @@ mod tests {
         match request {
             BeaconApiRequest::Block { request_id, .. } |
             BeaconApiRequest::LocalGossip { request_id, .. } |
-            BeaconApiRequest::AggregateAttestation { request_id, .. } => *request_id,
+            BeaconApiRequest::AggregateAttestation { request_id, .. } |
+            BeaconApiRequest::SyncCommitteeContribution { request_id, .. } => *request_id,
         }
     }
 
@@ -2489,6 +2503,74 @@ mod tests {
         let client = connect(tcp_addr(&server));
         let request_id = get_aggregate(&mut server, &client);
         server.answer(BeaconApiResponse::AggregateAttestation { request_id, ssz: None });
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "404 response");
+        assert!(response.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{response:?}");
+    }
+
+    fn get_contribution(server: &mut Server, client: &TcpStream) -> u64 {
+        server.api.ctx = submission::ctx();
+        get(
+            client,
+            &format!(
+                "/eth/v1/validator/sync_committee_contribution?slot={}&subcommittee_index=1\
+                 &beacon_block_root={}",
+                submission::SLOT,
+                root_hex(0xab)
+            ),
+        );
+        let BeaconApiRequest::SyncCommitteeContribution {
+            request_id,
+            slot,
+            subcommittee_index,
+            beacon_block_root,
+        } = deferred_request(server)
+        else {
+            panic!("the contribution is asked of the state tile")
+        };
+        assert_eq!(
+            (slot, subcommittee_index, beacon_block_root),
+            (submission::SLOT, 1, [0xab; 32])
+        );
+        request_id
+    }
+
+    #[test]
+    fn contribution_waits_for_the_state_tile_then_answers_json() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client = connect(tcp_addr(&server));
+        let request_id = get_contribution(&mut server, &client);
+
+        let mut contribution = [0u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE];
+        contribution[0..8].copy_from_slice(&submission::SLOT.to_le_bytes());
+        contribution[8..40].fill(0xab);
+        contribution[40..48].copy_from_slice(&1u64.to_le_bytes());
+        contribution[48] = 0b0000_0101;
+        contribution[64..].fill(0x44);
+        let ssz = server.serve_bytes(&contribution);
+        server.answer(BeaconApiResponse::SyncCommitteeContribution { request_id, ssz: Some(ssz) });
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "contribution response");
+        assert!(
+            response.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
+        let data = &parsed["data"];
+        assert_eq!(data["slot"], submission::SLOT.to_string());
+        assert_eq!(data["beacon_block_root"], root_hex(0xab));
+        assert_eq!(data["subcommittee_index"], "1");
+        assert_eq!(data["aggregation_bits"], format!("0x05{}", "00".repeat(15)));
+        assert_eq!(data["signature"], format!("0x{}", "44".repeat(96)));
+    }
+
+    #[test]
+    fn contribution_the_pool_does_not_hold_is_a_404() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client = connect(tcp_addr(&server));
+        let request_id = get_contribution(&mut server, &client);
+        server.answer(BeaconApiResponse::SyncCommitteeContribution { request_id, ssz: None });
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "404 response");
         assert!(response.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{response:?}");
