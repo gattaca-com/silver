@@ -33,7 +33,10 @@ use crate::{
     node::peers::Peer,
     routes::ROUTES,
     submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
-    validator::{aggregate_attestation::AggregateRequest, sync_contribution::ContributionRequest},
+    validator::{
+        aggregate_attestation::AggregateRequest,
+        sync_contribution::SyncCommitteeContributionRequest,
+    },
 };
 
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
@@ -85,7 +88,7 @@ struct Requests {
 enum Pending {
     Block { request_id: u64, kind: Kind },
     Aggregate { request_id: u64, request: AggregateRequest },
-    Contribution { request_id: u64, request: ContributionRequest },
+    Contribution { request_id: u64, request: SyncCommitteeContributionRequest },
     Submission(PendingSubmission),
 }
 

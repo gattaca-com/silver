@@ -18,27 +18,27 @@ pub(crate) fn post_contribution_and_proofs(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    post_submission::<SubmittedContribution>(req, ctx, resp);
+    post_submission::<SignedSyncCommitteeContribution>(req, ctx, resp);
 }
 
 #[derive(Deserialize)]
-struct SubmittedContribution {
-    message: SubmittedContributionAndProof,
+struct SignedSyncCommitteeContribution {
+    message: SyncCommitteeContributionAndProof,
     #[serde(deserialize_with = "bytes")]
     signature: [u8; 96],
 }
 
 #[derive(Deserialize)]
-struct SubmittedContributionAndProof {
+struct SyncCommitteeContributionAndProof {
     #[serde(deserialize_with = "uint64")]
     aggregator_index: u64,
-    contribution: SubmittedSyncContribution,
+    contribution: SyncCommitteeContribution,
     #[serde(deserialize_with = "bytes")]
     selection_proof: [u8; 96],
 }
 
 #[derive(Deserialize)]
-struct SubmittedSyncContribution {
+struct SyncCommitteeContribution {
     #[serde(deserialize_with = "uint64")]
     slot: u64,
     #[serde(deserialize_with = "bytes")]
@@ -51,7 +51,7 @@ struct SubmittedSyncContribution {
     signature: [u8; 96],
 }
 
-impl SubmittedEntry for SubmittedContribution {
+impl SubmittedEntry for SignedSyncCommitteeContribution {
     fn accept(&self, _ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
         if self.message.contribution.subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 {
             return Err("subcommittee_index is past the sync subcommittee count");
@@ -79,7 +79,7 @@ impl SubmittedEntry for SubmittedContribution {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{TCacheProducer, ssz_view::SignedContributionAndProofView};
+    use silver_common::{TCacheProducer, ssz_view::SignedSyncCommitteeProofView};
 
     use super::*;
     use crate::{
@@ -118,14 +118,14 @@ mod tests {
         assert_eq!(accepted.topic, GossipTopic::SyncCommitteeContributionAndProof);
         let ssz = submissions.read_buffer(accepted.ssz).unwrap();
         let ssz: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE] = ssz.try_into().unwrap();
-        assert_eq!(SignedContributionAndProofView::aggregator_index(ssz), 7);
-        assert_eq!(SignedContributionAndProofView::slot(ssz), SLOT);
-        assert_eq!(SignedContributionAndProofView::beacon_block_root(ssz), &[0x11; 32]);
-        assert_eq!(SignedContributionAndProofView::subcommittee_index(ssz), 2);
-        assert_eq!(SignedContributionAndProofView::aggregation_bits(ssz), &[0x0f; 16]);
-        assert_eq!(SignedContributionAndProofView::contribution_signature(ssz), &[0x44; 96]);
-        assert_eq!(SignedContributionAndProofView::selection_proof(ssz), &[0x55; 96]);
-        assert_eq!(SignedContributionAndProofView::signature(ssz), &[0x66; 96]);
+        assert_eq!(SignedSyncCommitteeProofView::aggregator_index(ssz), 7);
+        assert_eq!(SignedSyncCommitteeProofView::slot(ssz), SLOT);
+        assert_eq!(SignedSyncCommitteeProofView::beacon_block_root(ssz), &[0x11; 32]);
+        assert_eq!(SignedSyncCommitteeProofView::subcommittee_index(ssz), 2);
+        assert_eq!(SignedSyncCommitteeProofView::aggregation_bits(ssz), &[0x0f; 16]);
+        assert_eq!(SignedSyncCommitteeProofView::contribution_signature(ssz), &[0x44; 96]);
+        assert_eq!(SignedSyncCommitteeProofView::selection_proof(ssz), &[0x55; 96]);
+        assert_eq!(SignedSyncCommitteeProofView::signature(ssz), &[0x66; 96]);
     }
 
     #[test]

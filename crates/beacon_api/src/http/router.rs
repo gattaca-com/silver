@@ -9,7 +9,10 @@ use crate::{
     events::ChannelSet,
     http::response::Response,
     submission::Submission,
-    validator::{aggregate_attestation::AggregateRequest, sync_contribution::ContributionRequest},
+    validator::{
+        aggregate_attestation::AggregateRequest,
+        sync_contribution::SyncCommitteeContributionRequest,
+    },
 };
 
 const MAX_PARAMS: usize = 4;
@@ -43,7 +46,7 @@ pub(crate) enum Outcome {
     Stream(ChannelSet),
     AwaitingBlock(BlockRequest),
     AwaitingAggregate(AggregateRequest),
-    AwaitingContribution(ContributionRequest),
+    AwaitingContribution(SyncCommitteeContributionRequest),
     AwaitingVerdicts(Submission),
 }
 

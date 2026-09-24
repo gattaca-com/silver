@@ -31,17 +31,21 @@ pub(crate) fn sync_committee_contribution(
         return;
     }
 
-    resp.request_contribution(ContributionRequest { slot, subcommittee_index, beacon_block_root });
+    resp.request_contribution(SyncCommitteeContributionRequest {
+        slot,
+        subcommittee_index,
+        beacon_block_root,
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ContributionRequest {
+pub(crate) struct SyncCommitteeContributionRequest {
     pub(crate) slot: Slot,
     pub(crate) subcommittee_index: u64,
     pub(crate) beacon_block_root: B256,
 }
 
-impl ContributionRequest {
+impl SyncCommitteeContributionRequest {
     pub(crate) fn state_request(self, request_id: u64) -> BeaconApiRequest {
         BeaconApiRequest::SyncCommitteeContribution {
             request_id,
@@ -107,7 +111,7 @@ mod tests {
         assert!(out.is_empty());
         assert_eq!(
             outcome,
-            Outcome::AwaitingContribution(ContributionRequest {
+            Outcome::AwaitingContribution(SyncCommitteeContributionRequest {
                 slot: SLOT,
                 subcommittee_index: 3,
                 beacon_block_root: [0xab; 32],

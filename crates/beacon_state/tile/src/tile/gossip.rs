@@ -14,9 +14,8 @@ use silver_common::{
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
         SYNC_COMMITTEE_MSG_SIZE, SignedBlsToExecutionChangeView,
-        SignedContributionAndProofView as ContributionView,
-        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedVoluntaryExitView,
-        SingleAttestationView, SyncCommitteeView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedSyncCommitteeProofView,
+        SignedVoluntaryExitView, SingleAttestationView, SyncCommitteeView,
     },
 };
 
@@ -546,11 +545,11 @@ impl BeaconStateTile {
         }
         let buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE] =
             data[..SIGNED_CONTRIBUTION_AND_PROOF_SIZE].try_into().unwrap();
-        let slot = ContributionView::slot(buf);
-        let subcommittee = ContributionView::subcommittee_index(buf);
-        let aggregator = ContributionView::aggregator_index(buf);
-        let block_root = *ContributionView::beacon_block_root(buf);
-        let bits = ContributionView::aggregation_bits(buf);
+        let slot = SignedSyncCommitteeProofView::slot(buf);
+        let subcommittee = SignedSyncCommitteeProofView::subcommittee_index(buf);
+        let aggregator = SignedSyncCommitteeProofView::aggregator_index(buf);
+        let block_root = *SignedSyncCommitteeProofView::beacon_block_root(buf);
+        let bits = SignedSyncCommitteeProofView::aggregation_bits(buf);
 
         if subcommittee >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
             return Feedback::Reject(None);
@@ -569,7 +568,7 @@ impl BeaconStateTile {
             return Feedback::AlreadySeen;
         }
 
-        if !is_sync_aggregator(ContributionView::selection_proof(buf)) {
+        if !is_sync_aggregator(SignedSyncCommitteeProofView::selection_proof(buf)) {
             return Feedback::Reject(None);
         }
 
@@ -597,12 +596,12 @@ impl BeaconStateTile {
             &block_root,
             subcommittee,
             bits,
-            ContributionView::contribution_signature(buf),
+            SignedSyncCommitteeProofView::contribution_signature(buf),
         );
         let cap_root = ssz_hash::hash_tree_root_contribution_and_proof(
             aggregator,
             &contribution_root,
-            ContributionView::selection_proof(buf),
+            SignedSyncCommitteeProofView::selection_proof(buf),
         );
         let sr_outer =
             bls::compute_signing_root(&cap_root, &domain(bls::DOMAIN_CONTRIBUTION_AND_PROOF));
@@ -612,8 +611,16 @@ impl BeaconStateTile {
         let mut unknown = false;
         self.sig_batch.clear();
         let aggregator_pk = view.validators.pubkey_decompressed(aggregator as usize);
-        self.sig_batch.push_one(aggregator_pk, ContributionView::selection_proof(buf), sr_sp);
-        self.sig_batch.push_one(aggregator_pk, ContributionView::signature(buf), sr_outer);
+        self.sig_batch.push_one(
+            aggregator_pk,
+            SignedSyncCommitteeProofView::selection_proof(buf),
+            sr_sp,
+        );
+        self.sig_batch.push_one(
+            aggregator_pk,
+            SignedSyncCommitteeProofView::signature(buf),
+            sr_outer,
+        );
         self.sig_batch.push_aggregate(
             (0..SYNC_SUBCOMMITTEE_SIZE).filter_map(|i| {
                 if bits[i / 8] & (1 << (i % 8)) == 0 {
@@ -626,7 +633,7 @@ impl BeaconStateTile {
                 };
                 Some(view.validators.pubkey_decompressed(vi))
             }),
-            ContributionView::contribution_signature(buf),
+            SignedSyncCommitteeProofView::contribution_signature(buf),
             sr_agg,
         );
         if unknown || participants == 0 || !self.sig_batch.verify_all() {

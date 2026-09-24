@@ -16,7 +16,7 @@ use silver_common::{
     TCacheTable, TProducer, TReadMode,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
-        METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedContributionAndProofView,
+        METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
         StatusView,
     },
     ticker::SlotTicker,
@@ -167,7 +167,7 @@ impl Controller {
                 )
             }
             GossipTopic::SyncCommitteeContributionAndProof => {
-                let Ok(contribution) = ssz.try_into() else {
+                let Ok(proof) = ssz.try_into() else {
                     tracing::error!(
                         request_id,
                         len = ssz.len(),
@@ -179,7 +179,7 @@ impl Controller {
                         Err(LocalGossipFailure::Internal),
                     );
                 };
-                let slot = SignedContributionAndProofView::slot(contribution);
+                let slot = SignedSyncCommitteeProofView::slot(proof);
                 self.local_validation.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,

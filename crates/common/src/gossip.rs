@@ -17,8 +17,8 @@ use crate::{
         SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_PROPOSER_PREFERENCES_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
         SignedAggregateAndProofView, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
-        SignedContributionAndProofView, SignedExecutionPayloadBidView,
-        SignedExecutionPayloadEnvelopeView, SignedProposerPreferencesView, SignedVoluntaryExitView,
+        SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
+        SignedProposerPreferencesView, SignedSyncCommitteeProofView, SignedVoluntaryExitView,
         SingleAttestationView, SszView, SyncCommitteeView,
     },
 };
@@ -272,7 +272,7 @@ impl GossipTopic {
             Self::ProposerSlashing => SszView::ProposerSlashing(ProposerSlashingView),
             Self::AttesterSlashing => SszView::AttesterSlashing(AttesterSlashingView),
             Self::SyncCommitteeContributionAndProof => {
-                SszView::SignedContributionAndProof(SignedContributionAndProofView)
+                SszView::SignedSyncCommitteeProof(SignedSyncCommitteeProofView)
             }
             Self::SyncCommittee(_) => SszView::SyncCommittee(SyncCommitteeView),
             Self::BlsToExecutionChange => {
