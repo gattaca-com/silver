@@ -392,8 +392,12 @@ impl PeerManager {
         }
     }
 
-    pub fn activate_topics(&mut self, topics: &[GossipTopic], emit: &mut impl FnMut(PeerControl)) {
-        for &topic in topics {
+    pub fn activate_topics(
+        &mut self,
+        topics: impl IntoIterator<Item = GossipTopic>,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        for topic in topics {
             if self.our_topics.contains(&topic) {
                 continue;
             }
@@ -417,6 +421,60 @@ impl PeerManager {
         let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
         self.required_attnets = attnets;
         self.required_syncnets = syncnets;
+    }
+
+    pub fn deactivate_topics(
+        &mut self,
+        topics: impl IntoIterator<Item = GossipTopic>,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        for topic in topics {
+            let Some(index) = self.our_topics.iter().position(|&ours| ours == topic) else {
+                continue;
+            };
+            self.our_topics.remove(index);
+            while let Some((conn, digest)) = self.mesh.get(&topic).and_then(|meshes| {
+                meshes.iter().find_map(|mesh| Some((*mesh.peers.last()?, mesh.digest)))
+            }) {
+                let Some(peer_id) = self.peers.get(&conn).map(|peer| peer.peer_id) else {
+                    self.leave_mesh_digest(conn, topic, digest);
+                    continue;
+                };
+                self.do_prune(
+                    conn,
+                    peer_id,
+                    topic,
+                    digest,
+                    now,
+                    self.params.unsubscribe_backoff,
+                    "topic left",
+                    emit,
+                );
+            }
+            self.mesh.remove(&topic);
+            for digest in self.active_gossip_digests.into_iter().flatten() {
+                for (&conn, peer) in &self.peers {
+                    emit(PeerControl::P2pGossipUnsubscribe {
+                        p2p: peer.peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest,
+                    });
+                }
+            }
+        }
+        let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
+        self.required_attnets = attnets;
+        self.required_syncnets = syncnets;
+        for (deficit, required) in self.deficit_attnets.iter_mut().zip(attnets) {
+            *deficit &= required;
+        }
+        self.deficit_syncnets &= syncnets;
+    }
+
+    pub fn topic_rejoin_wait(&self) -> Duration {
+        self.params.unsubscribe_backoff + self.params.heartbeat_interval
     }
 
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
@@ -576,7 +634,16 @@ impl PeerManager {
                 crate::PeerCounters::MeshGraftBackoffViolation.inc();
                 self.add_behaviour_penalty(conn, 1.0, "graft during prune backoff");
             }
-            self.do_prune(conn, peer_id, topic, digest, now, "graft refused", emit);
+            self.do_prune(
+                conn,
+                peer_id,
+                topic,
+                digest,
+                now,
+                self.params.prune_backoff,
+                "graft refused",
+                emit,
+            );
             tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
     }
@@ -736,6 +803,7 @@ impl PeerManager {
         topic: GossipTopic,
         digest: [u8; 4],
         now: Instant,
+        backoff: Duration,
         reason: &'static str,
         emit: &mut impl FnMut(PeerControl),
     ) {
@@ -745,7 +813,7 @@ impl PeerManager {
             .and_then(|p| p.topic_stats.get(&topic))
             .and_then(|t| t.meshed_since);
         let was_in_mesh = self.leave_mesh_digest(conn, topic, digest);
-        self.set_backoff(conn, topic, now, self.params.prune_backoff);
+        self.set_backoff(conn, topic, now, backoff);
         // Advertise what we will actually enforce, not the nominal param:
         // `set_backoff` keeps any longer deadline already recorded, and a
         // shorter advertisement would invite a re-GRAFT we then penalise.
@@ -908,7 +976,16 @@ impl PeerManager {
             })
             .collect();
         for (conn, peer_id) in peers {
-            self.do_prune(conn, peer_id, topic, digest, now, "negative score", emit);
+            self.do_prune(
+                conn,
+                peer_id,
+                topic,
+                digest,
+                now,
+                self.params.prune_backoff,
+                "negative score",
+                emit,
+            );
         }
     }
 
@@ -1018,7 +1095,16 @@ impl PeerManager {
             .unwrap_or_default();
         ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         for (conn, _, peer_id) in ranked.into_iter().take(excess) {
-            self.do_prune(conn, peer_id, topic, digest, now, "mesh capped", emit);
+            self.do_prune(
+                conn,
+                peer_id,
+                topic,
+                digest,
+                now,
+                self.params.prune_backoff,
+                "mesh capped",
+                emit,
+            );
         }
     }
 
@@ -1150,6 +1236,26 @@ mod tests {
         for e in &subs {
             assert!(matches!(e, PeerControl::P2pGossipSubscribe { .. }));
         }
+    }
+
+    #[test]
+    fn deactivate_prunes_mesh_then_unsubscribes() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconAttestation(5);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.on_subscribe(1, topic, [0; 4], now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.test_mesh(topic), &[1]);
+
+        cap.0.clear();
+        mgr.deactivate_topics([topic], now, &mut |c| cap.0.push(c));
+        assert!(matches!(cap.0.as_slice(), [
+            PeerControl::P2pGossipPrune { p2p_connection: 1, backoff_seconds: Some(10), .. },
+            PeerControl::P2pGossipUnsubscribe { p2p_connection: 1, .. },
+        ]));
+        assert!(mgr.our_topics.is_empty());
+        assert!(!mgr.mesh.contains_key(&topic));
+        assert_eq!(mgr.required_attnets, [0; 8]);
     }
 
     /// Capability updates and unsubscribe affect only their own digest.
@@ -1471,9 +1577,16 @@ mod tests {
         connect(&mut mgr, &mut cap, 2, 2, now);
         let backoff = mgr.params.prune_backoff;
         for conn in [1, 2] {
-            mgr.do_prune(conn, peer_id(conn as u8), topic, [0; 4], now, "test", &mut |event| {
-                cap.0.push(event)
-            });
+            mgr.do_prune(
+                conn,
+                peer_id(conn as u8),
+                topic,
+                [0; 4],
+                now,
+                backoff,
+                "test",
+                &mut |event| cap.0.push(event),
+            );
         }
 
         mgr.handle_event(

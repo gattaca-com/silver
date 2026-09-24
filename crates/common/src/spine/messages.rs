@@ -73,8 +73,7 @@ pub struct ClusterMsgIn {
     pub data: TCacheRead,
 }
 
-/// Work submitted by the Beacon API to tile-owned state machines.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, u8)]
 pub enum BeaconApiRequest {
     /// A message a validator client asked this node to publish. `ssz` points
@@ -101,6 +100,31 @@ pub enum BeaconApiRequest {
         lookup: BlockLookup,
         with_bytes: bool,
     },
+    AttestationSubscriptions {
+        subscriptions: TCacheRead,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotSubnets {
+    pub slot: u64,
+    pub subnets: u64,
+}
+
+impl SlotSubnets {
+    pub const SIZE: usize = 2 * size_of::<u64>();
+
+    pub fn encode(&self, out: &mut [u8]) {
+        out[..8].copy_from_slice(&self.slot.to_le_bytes());
+        out[8..Self::SIZE].copy_from_slice(&self.subnets.to_le_bytes());
+    }
+
+    pub fn decode_all(bytes: &[u8]) -> impl Iterator<Item = Self> {
+        bytes.chunks_exact(Self::SIZE).map(|record| Self {
+            slot: u64::from_le_bytes(record[..8].try_into().expect("8 bytes")),
+            subnets: u64::from_le_bytes(record[8..].try_into().expect("8 bytes")),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,7 +134,6 @@ pub enum BlockLookup {
     Slot(u64),
 }
 
-/// Completion of work submitted through [`BeaconApiRequest`].
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {

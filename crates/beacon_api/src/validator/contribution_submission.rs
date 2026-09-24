@@ -52,11 +52,11 @@ struct SyncCommitteeContribution {
 }
 
 impl SubmittedEntry for SignedSyncCommitteeContribution {
-    fn accept(&self, _ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
+    fn accept(&self, _ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
         if self.message.contribution.subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 {
             return Err("subcommittee_index is past the sync subcommittee count");
         }
-        Ok(GossipTopic::SyncCommitteeContributionAndProof)
+        Ok([GossipTopic::SyncCommitteeContributionAndProof])
     }
 
     fn ssz_len(&self) -> usize {
@@ -143,7 +143,7 @@ mod tests {
         assert_eq!(failed, [(1, "subcommittee_index is past the sync subcommittee count")]);
 
         let (outcome, response) = dispatch(&ctx, &posting(PATH, &format!("[{}]", entry(past))));
-        assert_eq!(outcome, Outcome::Response);
+        assert_eq!(outcome, Outcome::Response(None));
         assert_eq!(status_code(&response), "400");
         let parsed: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
         assert_eq!(parsed["failures"][0]["index"], 0);

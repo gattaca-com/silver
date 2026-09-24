@@ -2763,8 +2763,8 @@ fn sync_message_uses_gossip_clock_disparity() {
 fn sync_message_uses_next_committee_at_period_handoff() {
     let period_slots = EPOCHS_PER_SYNC_COMMITTEE_PERIOD * SLOTS_PER_EPOCH;
     let handoff_slot = period_slots - 1;
-    assert!(!super::gossip::uses_next_sync_committee(handoff_slot - 1));
-    assert!(super::gossip::uses_next_sync_committee(handoff_slot));
+    assert!(!silver_beacon_state_data::uses_next_sync_committee(handoff_slot - 1));
+    assert!(silver_beacon_state_data::uses_next_sync_committee(handoff_slot));
 
     // The test state's cached current committee contains validator 0, while
     // its default next-committee pubkeys do not. The same current member is

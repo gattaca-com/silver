@@ -402,7 +402,7 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(
             Router::new(ROUTES).dispatch(&req, &ctx(), &mut submissions(), &mut out),
-            Outcome::Response
+            Outcome::Response(None)
         );
         out
     }

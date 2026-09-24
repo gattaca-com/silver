@@ -1,9 +1,10 @@
-use std::fmt;
+use std::{fmt, ops::RangeInclusive};
 
+pub use silver_beacon_state_data::SYNC_COMMITTEE_SUBNETS;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 
 use crate::{
-    Error,
+    Error, SlotSubnets,
     ssz_view::{
         ATTESTER_SLASHING_MAX, ATTESTER_SLASHING_MIN, AttesterSlashingView,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MAX, DataColumnSidecarFuluView,
@@ -121,7 +122,41 @@ impl From<GossipTopic> for String {
 }
 
 pub const ATTESTATION_SUBNETS: usize = 64;
-pub const SYNC_COMMITTEE_SUBNETS: usize = 4;
+
+pub struct SubnetsBySlot {
+    slots: [SlotSubnets; Self::SLOTS],
+}
+
+impl Default for SubnetsBySlot {
+    fn default() -> Self {
+        Self { slots: [SlotSubnets::default(); Self::SLOTS] }
+    }
+}
+
+impl SubnetsBySlot {
+    /// A slot evicts the one `SLOTS` before it.
+    pub const SLOTS: usize = 3 * SLOTS_PER_EPOCH as usize;
+
+    pub fn insert(&mut self, added: SlotSubnets) {
+        let held = &mut self.slots[added.slot as usize % Self::SLOTS];
+        if held.slot != added.slot {
+            *held = SlotSubnets { slot: added.slot, subnets: 0 };
+        }
+        held.subnets |= added.subnets;
+    }
+
+    pub fn held(&self) -> impl Iterator<Item = &SlotSubnets> {
+        self.slots.iter().filter(|held| held.subnets != 0)
+    }
+
+    pub fn subnets_in(&self, slots: RangeInclusive<u64>) -> u64 {
+        slots
+            .filter_map(|slot| {
+                Some(self.slots[slot as usize % Self::SLOTS]).filter(|held| held.slot == slot)
+            })
+            .fold(0, |mask, held| mask | held.subnets)
+    }
+}
 
 pub fn compute_subnet_for_attestation(
     committees_per_slot: u64,
