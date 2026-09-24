@@ -337,6 +337,7 @@ mod tests {
         ctx::test_ctx,
         http::router::{Outcome, Router},
         routes::ROUTES,
+        testing::submissions,
     };
 
     const HEAD_SLOT: u64 = 100 * SLOTS_PER_EPOCH;
@@ -399,7 +400,10 @@ mod tests {
             keep_alive: true,
         };
         let mut out = Vec::new();
-        assert_eq!(Router::new(ROUTES).dispatch(&req, &ctx(), &mut out), Outcome::Response);
+        assert_eq!(
+            Router::new(ROUTES).dispatch(&req, &ctx(), &mut submissions(), &mut out),
+            Outcome::Response
+        );
         out
     }
 

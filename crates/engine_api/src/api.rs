@@ -24,7 +24,6 @@ pub struct EngineApi {
     /// [`EngineConfig::unsafe_no_el`].
     pub client: Option<EngineClient>,
     reader: TCacheReader,
-    resp_producer: TProducer,
     // Reusable scratch buffer for the JSON→SSZ response conversions: cleared on
     // each use, capacity retained across calls.
     scratch: Vec<u8>,
@@ -47,7 +46,6 @@ impl EngineApi {
         tokens: TokenRange,
         config: EngineConfig,
         tcaches: TCacheTable,
-        resp_producer: TProducer,
     ) -> Self {
         let client = if config.unsafe_no_el {
             tracing::warn!("engine api in UNSAFE no-EL testing mode: answering all requests VALID");
@@ -65,7 +63,6 @@ impl EngineApi {
         Self {
             client,
             reader: TCacheReader::new(tcaches),
-            resp_producer,
 
             first_run: true,
             healthcheck_pending: false,
@@ -90,7 +87,11 @@ impl EngineApi {
         self.sync_status
     }
 
-    pub fn intake(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    pub fn intake(
+        &mut self,
+        adapter: &mut SpineAdapter<SilverSpine>,
+        resp_producer: &mut TProducer,
+    ) {
         self.reader.free();
 
         if self.client.is_none() {
@@ -101,7 +102,6 @@ impl EngineApi {
                 self.sync_status = ELSyncStatus::Synced;
                 self.first_run = false;
             }
-            let resp_producer = &mut self.resp_producer;
             adapter.consume(|req: EngineReq, producers| {
                 handle_request_no_el(resp_producer, &req, producers)
             });
@@ -120,13 +120,17 @@ impl EngineApi {
         }
     }
 
-    pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>, events: &Events) {
+    pub fn spin(
+        &mut self,
+        adapter: &mut SpineAdapter<SilverSpine>,
+        events: &Events,
+        resp_producer: &mut TProducer,
+    ) {
         let mut negotiated_get_payload_method: Option<&'static str> = None;
 
         {
             let Self {
                 client,
-                resp_producer,
                 scratch,
                 first_run,
                 healthcheck_pending,

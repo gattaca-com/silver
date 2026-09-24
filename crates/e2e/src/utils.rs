@@ -180,7 +180,11 @@ impl PmBsHarness {
             pm,
             gossip_handler,
             TCache::producer(TCacheId::ControlRpc, 32),
-            TCacheTable::from_iter([rpc_p.cache_ref(), cluster_in.cache_ref()]),
+            TCacheTable::from_iter([
+                rpc_p.cache_ref(),
+                cluster_in.cache_ref(),
+                TCache::producer(TCacheId::BoundaryProcessing, 32).cache_ref(),
+            ]),
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),

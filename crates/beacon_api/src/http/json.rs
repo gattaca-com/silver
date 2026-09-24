@@ -8,12 +8,16 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, BeaconBlockHeader, Checkpoint, FAR_FUTURE_EPOCH, Fork, ForkName, SpecConfig,
     Version,
 };
-use silver_common::{AGENT_VERSION, ssz_view::BYTES_PER_KZG_COMMITMENT};
+use silver_common::{
+    AGENT_VERSION,
+    ssz_view::{AttestationView, BYTES_PER_KZG_COMMITMENT},
+};
 
 use crate::{
-    beacon::{operations::SubmissionFailure, validators::ValidatorRecord},
+    beacon::validators::ValidatorRecord,
     events::HeadEvent,
     node::peers::Peer,
+    submission::SubmissionFailure,
     validator::{
         attestation_data::AttestationData, attester_duties::AttesterDuty,
         proposer_duties::ProposerDuty, sync_duties::SyncDuty,
@@ -235,6 +239,15 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn versioned_envelope(&mut self, version: &str, data: impl FnOnce(&mut Self)) {
+        self.begin_object();
+        self.key("version");
+        self.string(version);
+        self.key("data");
+        data(self);
+        self.end_object();
+    }
+
     pub(crate) fn flagged_envelope(&mut self, flags: ReadFlags, data: impl FnOnce(&mut Self)) {
         self.begin_object();
         self.key("execution_optimistic");
@@ -316,7 +329,7 @@ impl Json<'_> {
         self.key("code");
         self.u64(400);
         self.key("message");
-        self.string("some attestations were not published");
+        self.string("some entries were not published");
         self.key("failures");
         self.begin_array();
         for failure in failures {
@@ -343,6 +356,19 @@ impl Json<'_> {
         self.checkpoint(&data.source);
         self.key("target");
         self.checkpoint(&data.target);
+        self.end_object();
+    }
+
+    pub(crate) fn attestation(&mut self, ssz: &[u8]) {
+        self.begin_object();
+        self.key("aggregation_bits");
+        self.hex(AttestationView::aggregation_bits(ssz));
+        self.key("data");
+        self.attestation_data(&AttestationView::data(ssz).into());
+        self.key("signature");
+        self.hex(AttestationView::signature(ssz));
+        self.key("committee_bits");
+        self.hex(AttestationView::committee_bits(ssz));
         self.end_object();
     }
 

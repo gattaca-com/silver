@@ -6,6 +6,7 @@ mod http;
 mod node;
 mod routes;
 mod server;
+mod submission;
 #[cfg(test)]
 mod testing;
 mod validator;

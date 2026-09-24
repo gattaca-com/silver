@@ -11,9 +11,9 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
-    LocalAttestationFailure, LocalAttestationResult, MessageId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer,
-    TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
+    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
+    TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -1020,6 +1020,25 @@ fn a_non_head_import_publishes_a_status_naming_the_head_it_did_not_take() {
     assert_eq!(rig.crank().last_head(), head_a(true));
 }
 
+/// The published state is the head's: a sibling that loses fork choice does
+/// not take it, and a verdict that moves the head moves the state with it.
+#[test]
+fn published_state_follows_the_fork_choice_head() {
+    let mut rig = HeadRig::new();
+    let published_root =
+        |rig: &HeadRig| rig.tile.reader().read(|view| view.slot.state().latest_block_root).unwrap();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    rig.import(B_ROOT, 71, B_PREVIOUS, B_CURRENT);
+    assert_eq!(rig.tile.fork_choice_head(), A_ROOT);
+    assert_eq!(rig.tile.head_block_root(), A_ROOT);
+    assert_eq!(published_root(&rig), A_ROOT);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
+    let _ = rig.crank();
+    assert_eq!(rig.tile.head_block_root(), B_ROOT);
+    assert_eq!(published_root(&rig), B_ROOT);
+}
+
 #[test]
 fn a_verdict_after_an_import_observation_is_not_lost() {
     let mut rig = HeadRig::new();
@@ -1313,7 +1332,7 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
         tile.apply_block(&data, &pinned, BlockSource::Rpc, false, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
-    assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
+    assert_eq!(feedback, Feedback::BlockKnown(block_root));
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
 }
 
@@ -1385,7 +1404,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
         tile.apply_block(&data, &pinned, BlockSource::Rpc, false, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
-    assert_eq!(feedback, Feedback::AlreadyKnown(block_root));
+    assert_eq!(feedback, Feedback::BlockKnown(block_root));
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
 }
 
@@ -2524,11 +2543,8 @@ fn ignored_local_attestation_emits_a_terminal_verdict() {
         }
     });
     assert_eq!(verdicts, [
-        (
-            MessageId { id: [0x55; 20] },
-            LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable)
-        ),
-        (MessageId { id: [0x66; 20] }, LocalAttestationResult::AlreadyKnown),
+        (MessageId { id: [0x55; 20] }, Err(LocalGossipFailure::Unverifiable)),
+        (MessageId { id: [0x66; 20] }, Ok(())),
     ]);
     assert_eq!(invalid, 0, "a local message never counts against a peer");
 }
@@ -2559,8 +2575,89 @@ fn accepted_local_attestation_is_relayed_and_emits_success() {
             relayed += 1;
         }
     });
-    assert_eq!(verdicts, [(MessageId { id: [0x77; 20] }, LocalAttestationResult::Success)]);
+    assert_eq!(verdicts, [(MessageId { id: [0x77; 20] }, Ok(()))]);
     assert_eq!(relayed, 1);
+}
+
+/// A vote naming a payload not yet seen asks for the envelope, and a local
+/// one still gets its terminal verdict.
+#[test]
+fn vote_on_an_unseen_payload_requests_the_envelope() {
+    let spec = SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let (mut tile, mut gp, _rp, _spine, mut adapter) =
+        tile_with_producers_on(31, BeaconState::empty_test(0), spec);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: SyncNeed, _| {});
+    adapter.consume(|_: BeaconStateEvent, _| {});
+
+    let unseen = [0x42; 32];
+    tile.fork_choice.on_block(BlockImport {
+        bid_block_hash: unseen,
+        payload_verified: false,
+        is_gloas: true,
+        ..anchor_child(unseen, tile.last_applied)
+    });
+
+    let (mut payload_present, subnet) = batched_att(&tile, 0, 0);
+    payload_present[24] = 1;
+    payload_present[32..64].copy_from_slice(&unseen);
+    let mut message = gossip_att_msg(&mut gp, &payload_present, subnet);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x88; 20] };
+    tile.defer_vote(message, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    let mut requested = Vec::new();
+    adapter.consume(|need: SyncNeed, _| {
+        if let SyncNeed::Missing { root, slot, kind: DataKind::Envelope, .. } = need {
+            requested.push((root, slot));
+        }
+    });
+    let att_slot = SingleAttestationView::slot(&payload_present);
+    assert_eq!(requested, [(unseen, att_slot)]);
+    let mut verdicts = Vec::new();
+    adapter.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::LocalGossipVerdict { hash, result } = event {
+            verdicts.push((hash, result));
+        }
+    });
+    assert_eq!(verdicts, [(MessageId { id: [0x88; 20] }, Err(LocalGossipFailure::Unverifiable))]);
+}
+
+/// A local aggregate is told apart the same way: a gossip IGNORE it cannot
+/// verify is a failure, and one the network already covers is not.
+#[test]
+fn ignored_local_aggregate_emits_a_terminal_verdict() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+    adapter.consume(|_: BeaconStateEvent, _| {});
+    let aggregate = build_agg_for_vi0(&tile);
+
+    let mut unknown_root = aggregate.clone();
+    unknown_root[228..260].fill(0xAA);
+    let mut message = gossip_msg(&mut gp, &unknown_root, GossipTopic::BeaconAggregateAndProof);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x55; 20] };
+    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+
+    let message = gossip_msg(&mut gp, &aggregate, GossipTopic::BeaconAggregateAndProof);
+    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    let mut message = gossip_msg(&mut gp, &aggregate, GossipTopic::BeaconAggregateAndProof);
+    message.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    message.msg_hash = MessageId { id: [0x66; 20] };
+    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+
+    let mut verdicts = Vec::new();
+    adapter.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::LocalGossipVerdict { hash, result } = event {
+            verdicts.push((hash, result));
+        }
+    });
+    assert_eq!(verdicts, [
+        (MessageId { id: [0x55; 20] }, Err(LocalGossipFailure::Unverifiable)),
+        (MessageId { id: [0x66; 20] }, Ok(())),
+    ]);
 }
 
 /// A non-attestation gossip message flushes the pending batch first, so
@@ -2623,7 +2720,7 @@ fn sync_message_uses_gossip_clock_disparity() {
 
     // Outside that window it is still from the future.
     tile.ticker.set_since_genesis_ms(wall * 12_000 + 10_000);
-    assert!(matches!(tile.prepare_sync_message(&next, 0), Err(Feedback::Ignore)));
+    assert!(matches!(tile.prepare_sync_message(&next, 0), Err(Feedback::Future)));
 }
 
 #[test]
@@ -2759,7 +2856,7 @@ fn sync_contribution_accepted_then_superset_ignored() {
         &buf,
         GossipTopic::SyncCommitteeContributionAndProof,
     );
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Ignore));
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::AlreadySeen));
 }
 
 #[test]
@@ -3029,7 +3126,7 @@ fn single_att_repeat_attester_epoch_ignored() {
     let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     let first = tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap();
 
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::DuplicateVote);
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::AlreadySeen);
     assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap(), first);
 
     // Same attester+epoch, different source epoch (the one AttestationData
@@ -3037,7 +3134,7 @@ fn single_att_repeat_attester_epoch_ignored() {
     // not the content, so the variant must not open a new pool entry.
     buf[64..72].copy_from_slice(&1u64.to_le_bytes());
     test_signing::resign_single_attestation(0, &mut buf, &imm);
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::DuplicateVote);
+    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::AlreadySeen);
     let new_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
     assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, new_root), None);
 }
@@ -3376,7 +3473,7 @@ fn agg_slot_too_old_ignored() {
     assert!(
         SignedAggregateAndProofView::agg_slot(&buf) / SLOTS_PER_EPOCH + 1 < 100 / SLOTS_PER_EPOCH
     );
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::TooOld);
 }
 
 #[test]
@@ -3386,7 +3483,7 @@ fn agg_slot_too_future_ignored() {
     let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001;
     buf[212] = 5; // slot = 5 > wall (0)
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Future);
 }
 
 #[test]
@@ -3432,7 +3529,7 @@ fn agg_repeat_aggregator_epoch_ignored() {
     seed_tile_with_keys(&mut tile, 128, 0);
     let buf = build_agg_for_vi0(&tile);
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::AlreadySeen);
 }
 
 /// A rejected aggregate must not mark the aggregator seen, or a forged
@@ -3541,7 +3638,10 @@ fn agg_repeat_keys_on_aggregator_not_bytes() {
     // fully valid, same (aggregator, target epoch).
     let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
     assert_ne!(agg_two, agg_one);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)), Feedback::Ignore);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
+        Feedback::AlreadySeen
+    );
 }
 
 /// Neither admission rule keys on the attestation data alone: aggregates
@@ -3577,8 +3677,14 @@ fn agg_subset_from_other_aggregator_ignored() {
 
     // Both from an aggregator the epoch has not seen, so only the
     // coverage rule can be what ignores them.
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)), Feedback::Ignore);
-    assert_eq!(tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_one)), Feedback::Ignore);
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)),
+        Feedback::AlreadySeen
+    );
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_one)),
+        Feedback::AlreadySeen
+    );
 }
 
 /// The superset gate fires before signature verification: a covered
@@ -3598,7 +3704,7 @@ fn agg_superset_gate_precedes_signature_verify() {
 
     let mut forged = wrap_by(&imm, vi_b, &agg_one);
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
-    assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::Ignore);
+    assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::AlreadySeen);
 }
 
 /// Union-covered bits (inside the OR of seen patterns, ⊆ none singly)

@@ -181,7 +181,7 @@ mod tests {
     fn subscribed(now: Instant) -> ChunkedResponse {
         let mut conn = ServerConnection::new();
         feed(&mut conn, b"GET /eth/v1/events?topics=block HTTP/1.1\r\nHost: x\r\n\r\n");
-        assert!(conn.dispatch(&subscribe_head));
+        assert!(conn.dispatch(&mut subscribe_head));
         conn.into_stream(now)
     }
 
@@ -686,7 +686,7 @@ mod tests {
             conn.commit_read(n);
             rest = &rest[n..];
         }
-        assert!(conn.dispatch(&subscribe_head));
+        assert!(conn.dispatch(&mut subscribe_head));
 
         let mut stream = conn.into_stream(t0);
         assert_eq!(stream.discard_space().len(), DISCARD_LEN);
@@ -739,7 +739,7 @@ mod tests {
             &mut conn,
             b"GET /eth/v1/events HTTP/1.1\r\nHost: x\r\n\r\nGET /eth/v1/node/version HTTP/1.1\r\nHost: x\r\n\r\n",
         );
-        assert!(conn.dispatch(&subscribe_head));
+        assert!(conn.dispatch(&mut subscribe_head));
         let mut stream = conn.into_stream(t0);
 
         assert_eq!(stream.pending_write(), HEAD, "the pipelined request got no answer");
@@ -758,7 +758,7 @@ mod tests {
         let mut conn = ServerConnection::new();
         let read_buf = feed(&mut conn, b"GET /eth/v1/events HTTP/1.1\r\nHost: x\r\n\r\n");
         let head_len = Cell::new(0);
-        assert!(conn.dispatch(&|req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
+        assert!(conn.dispatch(&mut |req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
             subscribe_head(req, out);
             head_len.set(out.len());
         }));

@@ -44,8 +44,9 @@ impl GossipPublications {
         let outbound =
             TCacheReader::single(protobuf.cache_ref(), "publication_observer", TReadMode::Sliding)
                 .unwrap();
+        let boundary = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
         let tcaches = TCacheTable::from_iter(
-            [&incoming, &cluster_in, &rpc, &protobuf].map(|p| p.cache_ref()),
+            [&incoming, &cluster_in, &rpc, &protobuf, &boundary].map(|p| p.cache_ref()),
         );
         let mut controller = Controller::new(
             PeerManager::new(

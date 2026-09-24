@@ -111,7 +111,7 @@ impl BeaconStateTile {
             }
             Err(e) => {
                 let f = e.feedback();
-                if let Feedback::AlreadyKnown(block_root) = f {
+                if let Feedback::BlockKnown(block_root) = f {
                     self.emit_block_received(
                         data,
                         block_root,
@@ -555,9 +555,10 @@ impl BeaconStateTile {
 
         self.held.discard_available(&parsed.block_root);
 
-        // Adopt the new block as head before recompute so `lift_checkpoints`
-        // reads ITS post-state checkpoints — an epoch-boundary block's justified
-        // advance lands this import, not one recompute later.
+        // Adopt the new block before recompute so `lift_checkpoints` reads ITS
+        // post-state checkpoints — an epoch-boundary block's justified advance
+        // lands this import, not one recompute later. Recompute moves
+        // `last_applied` back to the head if this block lost.
         self.last_applied = new_id;
 
         if is_gloas {
@@ -565,7 +566,9 @@ impl BeaconStateTile {
         }
 
         self.recompute_head();
-        self.state.publish_state_id(new_id);
+        if self.last_applied == new_id {
+            self.state.publish_state_id(new_id);
+        }
 
         self.maybe_finalize();
     }
@@ -618,7 +621,7 @@ impl BeaconStateTile {
 
         let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
         if self.fork_choice.find_node_idx(&block_root).is_some() {
-            return Err(PrecheckError::AlreadyKnown { block_root });
+            return Err(PrecheckError::BlockKnown { block_root });
         }
         if self.held.is_staged(&block_root) {
             return Err(PrecheckError::AwaitingData { block_root });

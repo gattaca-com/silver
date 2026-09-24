@@ -71,6 +71,20 @@ impl BeaconStateTile {
         self.lift_checkpoints();
         self.refresh_justified_balances();
         self.fork_choice.recompute_head();
+        self.follow_head();
+    }
+
+    /// A block that lost fork choice, or a reorg by weight alone, leaves
+    /// `last_applied` off the head; move it to the head's state, advanced as
+    /// far as `last_applied` was.
+    fn follow_head(&mut self) {
+        let head = self.canonical_state_id();
+        let head_slot = self.slot_state_at(head).slot;
+        if self.slot_state_at(head).latest_block_root == self.head_block_root() {
+            return;
+        }
+        self.last_applied = self.state_at(head, head_slot.max(self.head_state_slot()));
+        self.state.publish_state_id(self.last_applied);
     }
 
     pub(super) fn try_detect_reorg(&mut self, producers: &mut Producers) {
@@ -186,12 +200,12 @@ impl BeaconStateTile {
         let da = PayloadAttestationData::blob_data_available(data);
 
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
-            return Err(Feedback::Ignore);
+            return Err(self.slot_window_miss(slot));
         }
         self.seen_ptc
             .rotate_to(self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY));
         if self.seen_ptc.contains(slot, validator_index as usize) {
-            return Err(Feedback::Ignore);
+            return Err(Feedback::AlreadySeen);
         }
 
         let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {

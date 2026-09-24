@@ -11,11 +11,11 @@ use silver_beacon_state_data::{
     SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange,
-    HeadRoots, LocalAttestationFailure, LocalAttestationResult, NewGossipMsg, Origin,
-    PayloadResolution, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
-    SilverSpine, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
-    TProducer, TRead, TReadMode, hex32,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
+    EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
+    ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
+    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
+    hex32,
     ssz_view::STATUS_V2_SIZE,
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -57,25 +57,18 @@ mod sync_contribution_pool;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
-    /// The message was accepted; the caller publishes the status.
     Accept,
-    /// The block was added to fork choice and its status is published.
-    BlockImported(B256),
-    Ignore,
-    /// An ignore for a vote whose validator already has one committed for the
-    /// same epoch or slot.
-    DuplicateVote,
     /// Carries the failed `block_root` (only) when the reject came from a
     /// post-`body_root`/STF path in block validation, so PM can blacklist
-    /// the chain. All other reject paths (attestation, exit, slashing,
-    /// pre-hash block fails) use `Reject(None)`.
+    /// the chain.
     Reject(Option<B256>),
+    /// The block was added to fork choice and its status is published.
+    BlockImported(B256),
+    BlockKnown(B256),
     RequestParent {
         parent_root: B256,
         block_root: B256,
     },
-    /// State transition committed; fork-choice import waits on the block's
-    /// data columns.
     AwaitData(B256),
     AwaitParentPayload {
         parent_root: B256,
@@ -85,7 +78,10 @@ pub enum Feedback {
         block_root: B256,
         att_slot: Slot,
     },
-    AlreadyKnown(B256),
+    Ignore,
+    AlreadySeen,
+    TooOld,
+    Future,
 }
 
 // Manual Debug to hex-encode the `B256` roots (`B256 = [u8; 32]`, whose
@@ -96,7 +92,9 @@ impl Debug for Feedback {
             Self::Accept => f.write_str("Accept"),
             Self::BlockImported(r) => write!(f, "BlockImported(0x{})", hex32(r)),
             Self::Ignore => f.write_str("Ignore"),
-            Self::DuplicateVote => f.write_str("DuplicateVote"),
+            Self::AlreadySeen => f.write_str("AlreadySeen"),
+            Self::TooOld => f.write_str("TooOld"),
+            Self::Future => f.write_str("Future"),
             Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
             Self::Reject(None) => f.write_str("Reject(None)"),
             Self::RequestParent { parent_root, block_root } => write!(
@@ -115,7 +113,7 @@ impl Debug for Feedback {
             Self::RequestEnvelope { block_root, att_slot } => {
                 write!(f, "RequestEnvelope(0x{}, att_slot={att_slot})", hex32(block_root))
             }
-            Self::AlreadyKnown(r) => write!(f, "AlreadyKnown(0x{})", hex32(r)),
+            Self::BlockKnown(r) => write!(f, "BlockKnown(0x{})", hex32(r)),
         }
     }
 }
@@ -576,6 +574,31 @@ impl BeaconStateTile {
         producers.produce(event);
     }
 
+    fn serve_aggregate(
+        &mut self,
+        request_id: u64,
+        slot: Slot,
+        committee_index: u64,
+        data_root: B256,
+        producers: &mut Producers,
+    ) {
+        let entry = self.attestation_pool.aggregate(slot, committee_index, data_root);
+        let ssz = entry.and_then(|entry| {
+            let written = self
+                .events_producer
+                .write_with(entry.ssz_len(), |buffer| entry.write_ssz(committee_index, buffer));
+            if written.is_none() {
+                tracing::error!(
+                    slot,
+                    committee_index,
+                    "beacon_state tcache full; aggregate not served"
+                );
+            }
+            written
+        });
+        producers.produce(BeaconApiResponse::AggregateAttestation { request_id, ssz });
+    }
+
     fn post_shufflings(&mut self, producers: &mut Producers) {
         let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
         let producer = &mut self.events_producer;
@@ -727,11 +750,7 @@ impl BeaconStateTile {
                 head_slot = self.head_state_slot(),
                 "gossip dropped: BeaconState in Syncing mode"
             );
-            Self::local_verdict(
-                &m,
-                LocalAttestationResult::Failure(LocalAttestationFailure::Unverifiable),
-                producers,
-            );
+            Self::local_verdict(&m, Feedback::Ignore, producers);
         });
         self.reader.free();
     }
@@ -754,6 +773,18 @@ impl BeaconStateTile {
             TickEvent::PreparePayload(_) => {}
             TickEvent::None => {}
         }
+
+        adapter.consume(|request: BeaconApiRequest, producers| {
+            if let BeaconApiRequest::AggregateAttestation {
+                request_id,
+                slot,
+                committee_index,
+                data_root,
+            } = request
+            {
+                self.serve_aggregate(request_id, slot, committee_index, data_root, producers);
+            }
+        });
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
         self.flush_votes(&mut adapter.producers);
@@ -1006,7 +1037,7 @@ impl BeaconStateTile {
                     return Feedback::Accept;
                 }
                 if self.fork_choice.is_payload_verified(&block_root) {
-                    return Feedback::Ignore;
+                    return Feedback::AlreadySeen;
                 }
                 self.fork_choice.mark_payload_verified(&block_root);
                 self.recompute_head();

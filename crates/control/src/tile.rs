@@ -9,18 +9,23 @@ use flux::{
 };
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, P2pSend,
-    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
-    RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SyncNeed,
-    SyncUpdate, TCacheError, TCacheId, TCacheReader, TCacheTable, TProducer, TReadMode,
+    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
+    LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheRead, TCacheReader,
+    TCacheTable, TProducer, TReadMode,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
-    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
+    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, StatusView},
     ticker::SlotTicker,
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
 use silver_peer::PeerManager;
 
-use self::{attestation_cluster::AttestationClusterHandler, gossip_schedule::GossipSchedule};
+use self::{
+    attestation_cluster::{AttestationClusterHandler, PendingAttestation},
+    gossip_schedule::GossipSchedule,
+    local_validation::{LocalMessage, LocalValidation, produce_response},
+};
 use crate::{
     cell_ingress::{CellIngress, handle_data_column_event},
     cluster::{AttestationClusterConfig, ClusterError},
@@ -30,6 +35,7 @@ use crate::{
 
 mod attestation_cluster;
 mod gossip_schedule;
+mod local_validation;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -45,6 +51,7 @@ pub struct Controller {
     sync_engine: SyncEngine,
     rpc_producer: TProducer,
     attestation_cluster: AttestationClusterHandler,
+    local_validation: LocalValidation,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
@@ -97,6 +104,7 @@ impl Controller {
             sync_engine,
             rpc_producer,
             attestation_cluster,
+            local_validation: LocalValidation::default(),
             last_tick: now,
             last_ping: now,
             last_status: now,
@@ -111,6 +119,57 @@ impl Controller {
         })
     }
 
+    fn on_local_gossip(
+        &mut self,
+        request_id: u64,
+        topic: GossipTopic,
+        ssz: TCacheRead,
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let acquired = self.reader.acquire(ssz);
+        let Ok((ssz, _)) = acquired.buffer() else {
+            tracing::error!(request_id, ?topic, "submitted message overwritten before it was read");
+            return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
+        };
+        match topic {
+            GossipTopic::BeaconAttestation(subnet) => {
+                let Ok(ssz) = ssz.try_into() else {
+                    tracing::error!(
+                        request_id,
+                        len = ssz.len(),
+                        "submitted attestation is misframed"
+                    );
+                    return produce_response(
+                        producers,
+                        request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                };
+                self.attestation_cluster.on_local_attestation(
+                    PendingAttestation::new(request_id, subnet, ssz),
+                    now,
+                    &mut self.local_validation,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
+            GossipTopic::BeaconAggregateAndProof => {
+                let slot = SignedAggregateAndProofView::agg_slot(ssz);
+                self.local_validation.submit(
+                    LocalMessage { request_id, topic, ssz, slot },
+                    now,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
+            topic => {
+                tracing::error!(request_id, ?topic, "no local submission path for the topic");
+                produce_response(producers, request_id, Err(LocalGossipFailure::Internal))
+            }
+        }
+    }
+
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
         self.reader.open(
             TCacheId::NetworkProcessing,
@@ -118,6 +177,11 @@ impl Controller {
             TReadMode::Sliding,
         )?;
         self.reader.open(TCacheId::ClusterInbound, "control_cluster_inbound", TReadMode::Strict)?;
+        self.reader.open(
+            TCacheId::BoundaryProcessing,
+            "ctl_boundary_processing",
+            TReadMode::Sliding,
+        )?;
         self.gossip_handler.open_tcaches()
     }
 
@@ -309,7 +373,7 @@ impl Tile<SilverSpine> for Controller {
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
                 BeaconStateEvent::LocalGossipVerdict { hash, result } => {
-                    self.attestation_cluster.complete_validation(hash, result, producers)
+                    self.local_validation.complete(hash, result, producers)
                 }
                 // PM keeps the reject for peer eviction (Status backing a
                 // rejected chain); the engine owns target invalidation.
@@ -320,16 +384,20 @@ impl Tile<SilverSpine> for Controller {
             }
         });
 
-        adapter.consume(|request: BeaconApiRequest, producers| {
-            self.attestation_cluster.on_beacon_api_request(
-                request,
-                now,
-                &mut self.gossip_handler,
-                producers,
-            );
+        adapter.consume(|request: BeaconApiRequest, producers| match request {
+            BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
+                self.on_local_gossip(request_id, topic, ssz, now, producers)
+            }
+            BeaconApiRequest::AggregateAttestation { .. } | BeaconApiRequest::Block { .. } => {}
         });
 
-        self.attestation_cluster.spin(now, adapter, &mut self.gossip_handler, &mut self.reader);
+        self.attestation_cluster.spin(
+            now,
+            adapter,
+            &mut self.local_validation,
+            &mut self.gossip_handler,
+            &mut self.reader,
+        );
 
         adapter.consume(|need: SyncNeed, _producers| self.sync_engine.on_sync_need(need, now));
 
@@ -384,7 +452,7 @@ impl Tile<SilverSpine> for Controller {
 
         // Consume every validation outcome already queued before expiring
         // requests, so an event arriving at the deadline wins the race.
-        self.attestation_cluster.expire_pending_validation(now, &mut adapter.producers);
+        self.local_validation.expire(now, &mut adapter.producers);
 
         adapter.consume(|rpc: RpcInbound, producers| {
             self.sync_engine.rpc_event(&rpc, self.peer_manager.our_fork_digest());

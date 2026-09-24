@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
 
 use crate::{
     ctx::ApiCtx,
-    http::{ids::Uint64, response::Response, router::Request},
+    http::{response::Response, router::Request},
     validator::duties::{epoch_param, requested_indices},
 };
 
@@ -32,7 +32,7 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
             json.restart();
             json.sync_duties(
                 execution_optimistic,
-                indices.iter().filter_map(|&Uint64(index)| seats.duty(&view, index)),
+                indices.iter().filter_map(|&index| seats.duty(&view, index)),
             );
         });
     });

@@ -1,195 +1,75 @@
 use serde::Deserialize;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{
-    BeaconApiRequest, LocalAttestationFailure, compute_subnet_for_attestation,
-    ssz_view::SINGLE_ATT_SIZE,
-};
+use silver_common::{GossipTopic, compute_subnet_for_attestation, ssz_view::SINGLE_ATT_SIZE};
 
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{Hex, Uint64, body_entries},
+        ids::{bytes, uint64},
         response::Response,
         router::Request,
     },
+    submission::{SubmittedEntry, post_submission},
+    validator::attestation_data::AttestationData,
 };
 
-pub(crate) fn post_pool_attestations(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !req.body_is_json() {
-        resp.error(415, "only application/json bodies are read");
-        return;
-    }
-    if !ctx.follows_chain(resp) {
-        return;
-    }
-    let Some(submitted) = body_entries::<SubmittedAttestation>(req.body, resp) else {
-        return;
-    };
-    if submitted.is_empty() {
-        resp.error(400, "the body must name at least one attestation");
-        return;
-    }
-
-    let submission = AttestationSubmission::prepare(ctx, &submitted);
-    if submission.accepted.is_empty() {
-        resp.indexed_failures(&submission.failures);
-        return;
-    }
-
-    resp.submit_attestations(submission);
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AcceptedAttestation {
-    pub(crate) body_index: usize,
-    pub(crate) subnet: u64,
-    pub(crate) ssz: [u8; SINGLE_ATT_SIZE],
-}
-
-impl AcceptedAttestation {
-    pub(crate) fn request(&self, request_id: u64) -> BeaconApiRequest {
-        BeaconApiRequest::LocalAttestation { request_id, subnet: self.subnet, ssz: self.ssz }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct SubmissionFailure {
-    pub(crate) body_index: usize,
-    pub(crate) message: &'static str,
-}
-
-/// A submission is not all-or-nothing: the endpoint publishes the entries it
-/// can and answers a 400 listing the failed ones by their index in the body.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AttestationSubmission {
-    pub(crate) accepted: Vec<AcceptedAttestation>,
-    pub(crate) failures: Vec<SubmissionFailure>,
-}
-
-impl AttestationSubmission {
-    fn prepare(ctx: &ApiCtx, submitted: &[SubmittedAttestation]) -> Self {
-        let mut accepted = Vec::with_capacity(submitted.len());
-        let mut failures = Vec::with_capacity(submitted.len());
-        for (body_index, attestation) in submitted.iter().enumerate() {
-            match attestation.accept(ctx, body_index) {
-                Ok(attestation) => accepted.push(attestation),
-                Err(message) => failures.push(SubmissionFailure { body_index, message }),
-            }
-        }
-        Self { accepted, failures }
-    }
+pub(crate) fn post_attestations(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    post_submission::<SubmittedAttestation>(req, ctx, resp);
 }
 
 #[derive(Deserialize)]
 struct SubmittedAttestation {
-    committee_index: Uint64,
-    attester_index: Uint64,
-    data: SubmittedData,
-    signature: Hex<96>,
+    #[serde(deserialize_with = "uint64")]
+    committee_index: u64,
+    #[serde(deserialize_with = "uint64")]
+    attester_index: u64,
+    data: AttestationData,
+    #[serde(deserialize_with = "bytes")]
+    signature: [u8; 96],
 }
 
-#[derive(Deserialize)]
-struct SubmittedData {
-    slot: Uint64,
-    index: Uint64,
-    beacon_block_root: Hex<32>,
-    source: SubmittedCheckpoint,
-    target: SubmittedCheckpoint,
-}
-
-#[derive(Deserialize)]
-struct SubmittedCheckpoint {
-    epoch: Uint64,
-    root: Hex<32>,
-}
-
-impl SubmittedAttestation {
-    fn accept(&self, ctx: &ApiCtx, body_index: usize) -> Result<AcceptedAttestation, &'static str> {
-        let slot = self.data.slot.0;
+impl SubmittedEntry for SubmittedAttestation {
+    fn accept(&self, ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
+        let slot = self.data.slot;
         let committees_per_slot = ctx
             .shufflings
             .committees_per_slot(slot / SLOTS_PER_EPOCH)
             .ok_or("no committee shuffling for the attestation's epoch")?;
-        if self.committee_index.0 >= committees_per_slot {
+        if self.committee_index >= committees_per_slot {
             return Err("committee_index is past the epoch's committee count");
         }
-        Ok(AcceptedAttestation {
-            body_index,
-            subnet: compute_subnet_for_attestation(
-                committees_per_slot,
-                slot,
-                self.committee_index.0,
-            ),
-            ssz: self.encode(),
-        })
+        let subnet =
+            compute_subnet_for_attestation(committees_per_slot, slot, self.committee_index);
+        Ok(GossipTopic::BeaconAttestation(subnet))
     }
 
-    fn encode(&self) -> [u8; SINGLE_ATT_SIZE] {
-        let mut ssz = [0u8; SINGLE_ATT_SIZE];
-        ssz[0..8].copy_from_slice(&self.committee_index.0.to_le_bytes());
-        ssz[8..16].copy_from_slice(&self.attester_index.0.to_le_bytes());
-        ssz[16..24].copy_from_slice(&self.data.slot.0.to_le_bytes());
-        ssz[24..32].copy_from_slice(&self.data.index.0.to_le_bytes());
-        ssz[32..64].copy_from_slice(&self.data.beacon_block_root.0);
-        ssz[64..72].copy_from_slice(&self.data.source.epoch.0.to_le_bytes());
-        ssz[72..104].copy_from_slice(&self.data.source.root.0);
-        ssz[104..112].copy_from_slice(&self.data.target.epoch.0.to_le_bytes());
-        ssz[112..144].copy_from_slice(&self.data.target.root.0);
-        ssz[144..240].copy_from_slice(&self.signature.0);
-        ssz
+    fn ssz_len(&self) -> usize {
+        SINGLE_ATT_SIZE
     }
-}
 
-pub(crate) fn failure_message(failure: LocalAttestationFailure) -> &'static str {
-    match failure {
-        LocalAttestationFailure::NotSynced => "the node is not synced",
-        LocalAttestationFailure::BeforeStartupFloor => "older than the node's startup floor",
-        LocalAttestationFailure::TooOld => "too old to publish",
-        LocalAttestationFailure::Future => "too far in the future to publish",
-        LocalAttestationFailure::ConflictingAttestation => {
-            "this validator already attested to another block for the slot"
-        }
-        LocalAttestationFailure::TimedOut => "validation did not complete in time",
-        LocalAttestationFailure::Invalid => "rejected as invalid",
-        LocalAttestationFailure::Unverifiable => {
-            "the node does not know the attested block, its target or the committee"
-        }
-        LocalAttestationFailure::Internal => "the node could not publish it",
+    fn encode(&self, ssz: &mut [u8]) {
+        debug_assert_eq!(ssz.len(), self.ssz_len());
+        ssz[0..8].copy_from_slice(&self.committee_index.to_le_bytes());
+        ssz[8..16].copy_from_slice(&self.attester_index.to_le_bytes());
+        self.data.encode((&mut ssz[16..144]).try_into().expect("128 bytes"));
+        ssz[144..240].copy_from_slice(&self.signature);
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
-    use silver_common::{SyncUpdate, ssz_view::SingleAttestationView};
+    use silver_common::{TCacheProducer, ssz_view::SingleAttestationView};
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
-        ctx::test_ctx,
         http::router::Outcome,
-        testing::{body, dispatch, posting, status_code},
+        submission::{
+            SubmissionFailure,
+            tests::{SLOT, ctx, posted_committees},
+        },
+        testing::{body, dispatch, dispatch_into, posting, status_code, submissions},
     };
-
-    const ACTIVE: usize = 4;
-    const SLOT: u64 = 300 * SLOTS_PER_EPOCH + 5;
-
-    /// A following node with the submitted slot's shuffling posted.
-    pub(crate) fn ctx() -> ApiCtx {
-        let owner = BeaconStateOwner::published_empty_test(SLOT);
-        let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
-        ctx.node_status.target = Some(SyncUpdate::Following);
-        ctx.shufflings.record(SLOT / SLOTS_PER_EPOCH, &[0u8; ACTIVE * size_of::<u32>()]);
-        ctx
-    }
-
-    /// How many committees the posted active set shuffles into, which bounds
-    /// the committee index a submission may name.
-    fn posted_committees(ctx: &ApiCtx) -> u64 {
-        ctx.shufflings
-            .committees_per_slot(SLOT / SLOTS_PER_EPOCH)
-            .expect("the fixture posts a shuffling")
-    }
 
     /// One entry of the array a validator client posts, spelled as the
     /// schemas do.
@@ -212,13 +92,6 @@ pub(crate) mod tests {
         dispatch(ctx, &posting("/eth/v2/beacon/pool/attestations", body))
     }
 
-    fn accepted(ctx: &ApiCtx, body: &str) -> Vec<AcceptedAttestation> {
-        match submit(ctx, body).0 {
-            Outcome::AwaitingAttestations(submission) => submission.accepted,
-            outcome => panic!("{outcome:?}"),
-        }
-    }
-
     fn json_failures(response: &[u8]) -> Vec<serde_json::Value> {
         assert_eq!(status_code(response), "400");
         let parsed: serde_json::Value = serde_json::from_slice(body(response)).unwrap();
@@ -229,15 +102,21 @@ pub(crate) mod tests {
     fn accepted_attestation_carries_its_subnet_and_the_ssz() {
         let ctx = ctx();
         let body = format!("[{}]", entry(2, 0));
-        let [attestation] = accepted(&ctx, &body).try_into().expect("one accepted");
+        let mut submissions = submissions();
+        let posted = posting("/eth/v2/beacon/pool/attestations", &body);
+        let Outcome::AwaitingVerdicts(submission) =
+            dispatch_into(&ctx, &posted, &mut submissions).0
+        else {
+            panic!("the attestation defers")
+        };
+        let [attestation] = submission.accepted.as_slice() else { panic!("one accepted") };
 
         assert_eq!(attestation.body_index, 0);
-        assert_eq!(
-            attestation.subnet,
-            compute_subnet_for_attestation(posted_committees(&ctx), SLOT, 0)
-        );
+        let subnet = compute_subnet_for_attestation(posted_committees(&ctx), SLOT, 0);
+        assert_eq!(attestation.topic, GossipTopic::BeaconAttestation(subnet));
 
-        let ssz = &attestation.ssz;
+        let ssz: &[u8; SINGLE_ATT_SIZE] =
+            submissions.read_buffer(attestation.ssz).unwrap().try_into().unwrap();
         assert_eq!(SingleAttestationView::committee_index(ssz), 0);
         assert_eq!(SingleAttestationView::attester_index(ssz), 2);
         assert_eq!(SingleAttestationView::slot(ssz), SLOT);
@@ -258,7 +137,7 @@ pub(crate) mod tests {
         let past_the_count = posted_committees(&ctx);
         let body =
             format!("[{},{},{}]", entry(1, past_the_count), entry(1, 0), entry(2, past_the_count),);
-        let Outcome::AwaitingAttestations(submission) = submit(&ctx, &body).0 else {
+        let Outcome::AwaitingVerdicts(submission) = submit(&ctx, &body).0 else {
             panic!("the resolvable entry defers")
         };
         assert_eq!(submission.accepted.len(), 1);

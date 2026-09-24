@@ -76,18 +76,15 @@ impl<'a> EpochShuffling<'a> {
         emit: impl FnOnce(BeaconStateEvent),
     ) -> bool {
         let len = size_of_val(self.shuffled);
-        let Some(mut reservation) = producer.reserve(len, true) else {
+        let Some(indices) = producer.write_with(len, |buffer| {
+            for (bytes, index) in buffer.chunks_exact_mut(size_of::<u32>()).zip(self.shuffled) {
+                bytes.copy_from_slice(&index.to_le_bytes());
+            }
+        }) else {
             tracing::warn!(epoch, len, "beacon_state tcache full; shuffling not posted");
             return false;
         };
-        let Ok(buffer) = reservation.buffer() else {
-            return false;
-        };
-        for (bytes, index) in buffer.chunks_exact_mut(size_of::<u32>()).zip(self.shuffled) {
-            bytes.copy_from_slice(&index.to_le_bytes());
-        }
-        reservation.increment_offset(len);
-        emit(BeaconStateEvent::AttestersShuffling { epoch, indices: reservation.read() });
+        emit(BeaconStateEvent::AttestersShuffling { epoch, indices });
         true
     }
 

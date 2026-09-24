@@ -39,7 +39,7 @@ pub enum PrecheckError {
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
     PastSlot { block_slot: Slot, parent_slot: Slot },
     #[error("block already imported: block_root=0x{}", b256_hex(block_root))]
-    AlreadyKnown { block_root: B256 },
+    BlockKnown { block_root: B256 },
     #[error("block awaiting data availability: block_root=0x{}", b256_hex(block_root))]
     AwaitingData { block_root: B256 },
     #[error("block already rejected: block_root=0x{} reason={reason:?}", b256_hex(block_root))]
@@ -105,7 +105,7 @@ impl PrecheckError {
             Self::Rejected { reason: RejectReason::InvalidPayload, .. } |
             Self::ParentRejected { reason: RejectReason::InvalidPayload, .. } => Feedback::Ignore,
             Self::PastSlot { .. } => Feedback::Reject(None),
-            Self::AlreadyKnown { block_root } => Feedback::AlreadyKnown(block_root),
+            Self::BlockKnown { block_root } => Feedback::BlockKnown(block_root),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
