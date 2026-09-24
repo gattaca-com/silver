@@ -587,13 +587,12 @@ impl BeaconStateTile {
             let written = self
                 .events_producer
                 .write_with(entry.ssz_len(), |buffer| entry.write_ssz(committee_index, buffer));
-            match written {
-                Some(_) => self.events_producer.publish_head(),
-                None => tracing::error!(
+            if written.is_none() {
+                tracing::error!(
                     slot,
                     committee_index,
                     "beacon_state tcache full; aggregate not served"
-                ),
+                );
             }
             written
         });

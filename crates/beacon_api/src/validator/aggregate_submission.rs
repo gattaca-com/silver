@@ -7,11 +7,12 @@ use silver_common::{
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{BoundedHex, Hex, Uint64},
+        ids::{BoundedHex, bytes, uint64},
         response::Response,
         router::Request,
     },
-    submission::{SubmittedData, SubmittedEntry, post_submission},
+    submission::{SubmittedEntry, post_submission},
+    validator::attestation_data::AttestationData,
 };
 
 /// A bitlist over one committee: its members and the terminator.
@@ -31,28 +32,33 @@ pub(crate) fn post_aggregate_and_proofs(req: &Request<'_>, ctx: &ApiCtx, resp: &
 #[derive(Deserialize)]
 struct SubmittedAggregate {
     message: SubmittedAggregateAndProof,
-    signature: Hex<96>,
+    #[serde(deserialize_with = "bytes")]
+    signature: [u8; 96],
 }
 
 #[derive(Deserialize)]
 struct SubmittedAggregateAndProof {
-    aggregator_index: Uint64,
+    #[serde(deserialize_with = "uint64")]
+    aggregator_index: u64,
     aggregate: SubmittedAggregateAttestation,
-    selection_proof: Hex<96>,
+    #[serde(deserialize_with = "bytes")]
+    selection_proof: [u8; 96],
 }
 
 #[derive(Deserialize)]
 struct SubmittedAggregateAttestation {
     aggregation_bits: BoundedHex<MAX_AGGREGATION_BITS_LEN>,
-    data: SubmittedData,
-    signature: Hex<96>,
-    committee_bits: Hex<8>,
+    data: AttestationData,
+    #[serde(deserialize_with = "bytes")]
+    signature: [u8; 96],
+    #[serde(deserialize_with = "bytes")]
+    committee_bits: [u8; 8],
 }
 
 impl SubmittedEntry for SubmittedAggregate {
     fn accept(&self, _ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
         let aggregate = &self.message.aggregate;
-        if u64::from_le_bytes(aggregate.committee_bits.0).count_ones() != 1 {
+        if u64::from_le_bytes(aggregate.committee_bits).count_ones() != 1 {
             return Err("committee_bits must name exactly one committee");
         }
         let bits = aggregate.aggregation_bits.as_bytes();
@@ -70,18 +76,18 @@ impl SubmittedEntry for SubmittedAggregate {
         let aggregate = &self.message.aggregate;
         debug_assert_eq!(ssz.len(), self.ssz_len());
         ssz[0..4].copy_from_slice(&(MESSAGE_AT as u32).to_le_bytes());
-        ssz[4..MESSAGE_AT].copy_from_slice(&self.signature.0);
+        ssz[4..MESSAGE_AT].copy_from_slice(&self.signature);
 
         let message = &mut ssz[MESSAGE_AT..];
-        message[0..8].copy_from_slice(&self.message.aggregator_index.0.to_le_bytes());
+        message[0..8].copy_from_slice(&self.message.aggregator_index.to_le_bytes());
         message[8..12].copy_from_slice(&(AGGREGATE_IN_MESSAGE as u32).to_le_bytes());
-        message[12..AGGREGATE_IN_MESSAGE].copy_from_slice(&self.message.selection_proof.0);
+        message[12..AGGREGATE_IN_MESSAGE].copy_from_slice(&self.message.selection_proof);
 
         let attestation = &mut message[AGGREGATE_IN_MESSAGE..];
         attestation[0..4].copy_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
         aggregate.data.encode((&mut attestation[4..132]).try_into().expect("128 bytes"));
-        attestation[132..228].copy_from_slice(&aggregate.signature.0);
-        attestation[228..ATTESTATION_FIXED].copy_from_slice(&aggregate.committee_bits.0);
+        attestation[132..228].copy_from_slice(&aggregate.signature);
+        attestation[228..ATTESTATION_FIXED].copy_from_slice(&aggregate.committee_bits);
         attestation[ATTESTATION_FIXED..].copy_from_slice(aggregate.aggregation_bits.as_bytes());
     }
 }

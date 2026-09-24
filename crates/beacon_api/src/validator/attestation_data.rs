@@ -1,16 +1,30 @@
-use silver_beacon_state_data::{B256, Checkpoint, SLOTS_PER_EPOCH, Slot, StateReadView};
-use silver_common::{PayloadResolution, ssz_view::AttestationDataView};
+use serde::Deserialize;
+use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, StateReadView};
+use silver_common::{
+    PayloadResolution,
+    ssz_view::{ATTESTATION_DATA_SIZE, AttestationDataView},
+};
 
 use crate::{
     ctx::ApiCtx,
-    http::{ids::parse_uint64, response::Response, router::Request},
+    http::{
+        ids::{bytes, parse_uint64, uint64},
+        response::Response,
+        router::Request,
+    },
 };
 
+#[derive(Deserialize)]
 pub(crate) struct AttestationData {
+    #[serde(deserialize_with = "uint64")]
     pub(crate) slot: Slot,
+    #[serde(deserialize_with = "uint64")]
     pub(crate) index: u64,
+    #[serde(deserialize_with = "bytes")]
     pub(crate) beacon_block_root: B256,
+    #[serde(deserialize_with = "CheckpointJson::deserialize")]
     pub(crate) source: Checkpoint,
+    #[serde(deserialize_with = "CheckpointJson::deserialize")]
     pub(crate) target: Checkpoint,
 }
 
@@ -120,6 +134,18 @@ impl AttestationData {
     }
 }
 
+impl AttestationData {
+    pub(crate) fn encode(&self, out: &mut [u8; ATTESTATION_DATA_SIZE]) {
+        out[0..8].copy_from_slice(&self.slot.to_le_bytes());
+        out[8..16].copy_from_slice(&self.index.to_le_bytes());
+        out[16..48].copy_from_slice(&self.beacon_block_root);
+        out[48..56].copy_from_slice(&self.source.epoch.to_le_bytes());
+        out[56..88].copy_from_slice(&self.source.root);
+        out[88..96].copy_from_slice(&self.target.epoch.to_le_bytes());
+        out[96..128].copy_from_slice(&self.target.root);
+    }
+}
+
 impl From<AttestationDataView<'_>> for AttestationData {
     fn from(view: AttestationDataView<'_>) -> Self {
         Self {
@@ -130,6 +156,15 @@ impl From<AttestationDataView<'_>> for AttestationData {
             target: Checkpoint { epoch: view.target_epoch(), root: *view.target_root() },
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "Checkpoint")]
+struct CheckpointJson {
+    #[serde(deserialize_with = "uint64")]
+    epoch: Epoch,
+    #[serde(deserialize_with = "bytes")]
+    root: B256,
 }
 
 fn uint64_query(req: &Request<'_>, name: &str) -> Option<u64> {

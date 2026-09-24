@@ -5,11 +5,12 @@ use silver_common::{GossipTopic, compute_subnet_for_attestation, ssz_view::SINGL
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{Hex, Uint64},
+        ids::{bytes, uint64},
         response::Response,
         router::Request,
     },
-    submission::{SubmittedData, SubmittedEntry, post_submission},
+    submission::{SubmittedEntry, post_submission},
+    validator::attestation_data::AttestationData,
 };
 
 pub(crate) fn post_attestations(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -18,24 +19,27 @@ pub(crate) fn post_attestations(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Resp
 
 #[derive(Deserialize)]
 struct SubmittedAttestation {
-    committee_index: Uint64,
-    attester_index: Uint64,
-    data: SubmittedData,
-    signature: Hex<96>,
+    #[serde(deserialize_with = "uint64")]
+    committee_index: u64,
+    #[serde(deserialize_with = "uint64")]
+    attester_index: u64,
+    data: AttestationData,
+    #[serde(deserialize_with = "bytes")]
+    signature: [u8; 96],
 }
 
 impl SubmittedEntry for SubmittedAttestation {
     fn accept(&self, ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
-        let slot = self.data.slot.0;
+        let slot = self.data.slot;
         let committees_per_slot = ctx
             .shufflings
             .committees_per_slot(slot / SLOTS_PER_EPOCH)
             .ok_or("no committee shuffling for the attestation's epoch")?;
-        if self.committee_index.0 >= committees_per_slot {
+        if self.committee_index >= committees_per_slot {
             return Err("committee_index is past the epoch's committee count");
         }
         let subnet =
-            compute_subnet_for_attestation(committees_per_slot, slot, self.committee_index.0);
+            compute_subnet_for_attestation(committees_per_slot, slot, self.committee_index);
         Ok(GossipTopic::BeaconAttestation(subnet))
     }
 
@@ -45,10 +49,10 @@ impl SubmittedEntry for SubmittedAttestation {
 
     fn encode(&self, ssz: &mut [u8]) {
         debug_assert_eq!(ssz.len(), self.ssz_len());
-        ssz[0..8].copy_from_slice(&self.committee_index.0.to_le_bytes());
-        ssz[8..16].copy_from_slice(&self.attester_index.0.to_le_bytes());
+        ssz[0..8].copy_from_slice(&self.committee_index.to_le_bytes());
+        ssz[8..16].copy_from_slice(&self.attester_index.to_le_bytes());
         self.data.encode((&mut ssz[16..144]).try_into().expect("128 bytes"));
-        ssz[144..240].copy_from_slice(&self.signature.0);
+        ssz[144..240].copy_from_slice(&self.signature);
     }
 }
 

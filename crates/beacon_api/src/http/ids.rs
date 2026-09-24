@@ -76,24 +76,17 @@ impl<'de, F: FnMut(usize, T), T: Deserialize<'de>> Visitor<'de> for Entries<'_, 
 }
 
 /// The schemas' `Uint64`: a decimal inside a JSON string.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Uint64(pub(crate) u64);
-
-impl<'de> Deserialize<'de> for Uint64 {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <&str>::deserialize(deserializer)?;
-        parse_uint64(text).map(Self).ok_or_else(|| de::Error::custom("not a Uint64"))
-    }
+pub(crate) fn uint64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let text = <&str>::deserialize(deserializer)?;
+    parse_uint64(text).ok_or_else(|| de::Error::custom("not a Uint64"))
 }
 
 /// The schemas' `Bytes`: `0x`-prefixed hex spelling exactly `N` bytes.
-pub(crate) struct Hex<const N: usize>(pub(crate) [u8; N]);
-
-impl<'de, const N: usize> Deserialize<'de> for Hex<N> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <&str>::deserialize(deserializer)?;
-        parse_hex(text).map(Self).ok_or_else(|| de::Error::custom("not a byte string"))
-    }
+pub(crate) fn bytes<'de, D: Deserializer<'de>, const N: usize>(
+    deserializer: D,
+) -> Result<[u8; N], D::Error> {
+    let text = <&str>::deserialize(deserializer)?;
+    parse_hex(text).ok_or_else(|| de::Error::custom("not a byte string"))
 }
 
 /// The schemas' variable-length `Bytes`: `0x`-prefixed hex of at most `N`
