@@ -26,5 +26,6 @@ pub use lh_client::LhClient;
 pub use lh_gossip::LhGossipClient;
 pub use stack::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, keypair_from_seed,
+    on_free_loopback_ports,
 };
 pub use stats::Stats;

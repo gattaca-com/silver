@@ -5,7 +5,8 @@
 //! two stacks coexist in one process.
 
 use std::{
-    net::SocketAddr,
+    io,
+    net::{Ipv4Addr, SocketAddr, UdpSocket},
     sync::{Arc, atomic::AtomicUsize},
 };
 
@@ -165,6 +166,36 @@ struct StackKeepAlive {
     rpc_out_producer: Option<TProducer>,
     // Gossip-out reader — alive on publisher side.
     gossip_out_ra: Option<TCacheReader>,
+}
+
+/// A port read back from a port-0 bind is free again before the stack binds
+/// it, so a concurrent test can take it first. That collision is retried on
+/// a fresh pair.
+pub fn on_free_loopback_ports<T>(
+    mut build: impl FnMut(SocketAddr, SocketAddr) -> io::Result<T>,
+) -> io::Result<T> {
+    const ATTEMPTS: usize = 8;
+    let mut attempt = 1;
+    loop {
+        let (addr, disc_addr) = free_loopback_pair()?;
+        match build(addr, disc_addr) {
+            Err(e) if attempt < ATTEMPTS && is_addr_in_use(&e) => attempt += 1,
+            built => return built,
+        }
+    }
+}
+
+/// Both sockets are held until both ports are read, so the two differ.
+fn free_loopback_pair() -> io::Result<(SocketAddr, SocketAddr)> {
+    let a = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let b = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    Ok((a.local_addr()?, b.local_addr()?))
+}
+
+fn is_addr_in_use(e: &io::Error) -> bool {
+    let inner = e.get_ref().and_then(|inner| inner.downcast_ref::<io::Error>());
+    e.kind() == io::ErrorKind::AddrInUse ||
+        inner.is_some_and(|inner| inner.kind() == io::ErrorKind::AddrInUse)
 }
 
 /// Build a keypair deterministically from a single-byte salt — makes test
@@ -454,5 +485,25 @@ impl EchoStack {
                 gossip_out_ra: None,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use silver_common::test_util::ShmemDir;
+
+    use super::*;
+
+    #[test]
+    fn occupied_port_is_addr_in_use() {
+        let taken = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = taken.local_addr().unwrap();
+        let (_, disc_addr) = free_loopback_pair().unwrap();
+        let dir = ShmemDir::new().unwrap();
+
+        let err = PublisherStack::new(dir.path(), "_in_use", addr, disc_addr, keypair_from_seed(1))
+            .err()
+            .expect("bind on an occupied port");
+        assert!(is_addr_in_use(&err), "{err:?}");
     }
 }

@@ -2,7 +2,6 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -17,7 +16,7 @@ use silver_common::{
 
 use crate::{
     inject::{InjectError, build_publish_frame, snappy_compress},
-    stack::{EchoStack, PublisherStack, keypair_from_seed},
+    stack::{EchoStack, PublisherStack, keypair_from_seed, on_free_loopback_ports},
 };
 
 /// Sentinel in the publisher's peer-handle slot indicating "not yet known".
@@ -51,27 +50,19 @@ impl TwoStackHarness {
         let publisher_kp = keypair_from_seed(1);
         let echo_kp = keypair_from_seed(2);
 
-        let publisher_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
-        let echo_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
-        let publisher_disc_addr =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
-        let echo_disc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
-
-        let publisher = PublisherStack::new(
-            tempdir.path(),
-            "_pub",
-            publisher_addr,
-            publisher_disc_addr,
-            publisher_kp,
-        )?;
-        let echo = EchoStack::new(
-            tempdir.path(),
-            "_echo",
-            echo_addr,
-            echo_disc_addr,
-            echo_kp,
-            fork_digest_hex.clone(),
-        )?;
+        let publisher = on_free_loopback_ports(|addr, disc_addr| {
+            PublisherStack::new(tempdir.path(), "_pub", addr, disc_addr, publisher_kp)
+        })?;
+        let echo = on_free_loopback_ports(|addr, disc_addr| {
+            EchoStack::new(
+                tempdir.path(),
+                "_echo",
+                addr,
+                disc_addr,
+                echo_kp,
+                fork_digest_hex.clone(),
+            )
+        })?;
 
         Ok(Self {
             publisher,
@@ -211,11 +202,4 @@ impl TwoStackHarness {
         self.publisher.injector_adapter.produce(P2pSend::Gossip(msg));
         true
     }
-}
-
-/// Bind a fresh UDP socket to port 0, read back the OS-assigned port, drop
-/// the socket. Race window is small; acceptable for tests.
-fn pick_free_port() -> io::Result<u16> {
-    let s = std::net::UdpSocket::bind(("127.0.0.1", 0))?;
-    s.local_addr().map(|a| a.port())
 }

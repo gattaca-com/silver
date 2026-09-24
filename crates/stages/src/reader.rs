@@ -99,15 +99,23 @@ impl StageReader {
     }
 
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
-        if let EngineReq::NewPayload(req) = *m.data() {
-            self.roots.entry(req.block_root).or_insert(Tracked::new(req.slot));
-            self.out.push(StageEvent {
-                stage: Stage::ElSent { source: req.block_source },
-                ts: m.tracking_timestamp().publish_t(),
-                block_root: req.block_root,
-                slot: Some(req.slot),
-            });
-        }
+        let (block_root, slot, source) = match *m.data() {
+            EngineReq::NewPayload(req) => {
+                self.roots.entry(req.block_root).or_insert(Tracked::new(req.slot));
+                (req.block_root, Some(req.slot), req.block_source)
+            }
+            EngineReq::NewPayloadEnvelope(req) => {
+                let slot = self.roots.get(&req.block_root).map(|t| t.slot);
+                (req.block_root, slot, req.block_source)
+            }
+            _ => return,
+        };
+        self.out.push(StageEvent {
+            stage: Stage::ElSent { source },
+            ts: m.tracking_timestamp().publish_t(),
+            block_root,
+            slot,
+        });
     }
 
     fn on_engine_resp(&mut self, m: &InternalMessage<EngineResp>) {
@@ -172,8 +180,9 @@ impl StageReader {
 mod tests {
     use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
     use silver_common::{
-        BlockSource, BlockStage, ColumnOrigin, DataKind, EngineNewPayloadReq, EngineNewPayloadResp,
-        PayloadValidationStatus, SszCache, TCache, TCacheId, TCacheProducer, TCacheRead,
+        BlockSource, BlockStage, ColumnOrigin, DataKind, EngineNewPayloadEnvelopeReq,
+        EngineNewPayloadReq, EngineNewPayloadResp, MAX_BLOBS_PER_BLOCK, PayloadValidationStatus,
+        SszCache, TCache, TCacheId, TCacheProducer, TCacheRead,
     };
 
     use super::*;
@@ -376,6 +385,28 @@ mod tests {
         reader.on_engine_resp(&msg(verdict(root, PayloadValidationStatus::Valid), at(6, 600)));
 
         assert_eq!(find(&reader.out, "el_verdict").slot, Some(6));
+    }
+
+    /// A Gloas payload reaches the EL with its envelope, after the block
+    /// that seeded the slot.
+    #[test]
+    fn envelope_new_payload_is_el_sent() {
+        let mut reader = StageReader::default();
+        let root = [11u8; 32];
+        let envelope = EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
+            data: unread_payload(),
+            block_root: root,
+            block_source: BlockSource::Rpc,
+            hash_count: 0,
+            versioned_hashes: [[0; 32]; MAX_BLOBS_PER_BLOCK],
+        });
+
+        reader.on_beacon_state(&msg(imported(root, 7, BlockSource::Gossip), at(7, 300)));
+        reader.on_engine_req(&msg(envelope, at(7, 1_200)));
+
+        let sent = find(&reader.out, "el_sent");
+        assert!(matches!(sent.stage, Stage::ElSent { source: BlockSource::Rpc }));
+        assert_eq!(sent.slot, Some(7));
     }
 
     #[test]

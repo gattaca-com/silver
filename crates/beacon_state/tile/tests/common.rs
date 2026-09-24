@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -11,12 +12,17 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu, hash_tree_root_state},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, GossipTopic, MessageId, NewGossipMsg,
-    P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncNeed,
-    SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer, hex32,
-    ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
+    BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineFcuReq, EngineNewPayloadResp,
+    EngineReq, EngineResp, GossipTopic, MessageId, NewGossipMsg, Origin, P2pStreamId,
+    PayloadValidationStatus, PeerEvent, RequestId, RpcInbound, RpcResponseInbound, SilverSpine,
+    StreamProtocol, SyncNeed, SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer,
+    block_root_gloas, hex32,
+    ssz_view::{
+        BeaconBlockBodyGloasView, ExecutionPayloadBidView, STATUS_V2_SIZE, SignedBeaconBlockView,
+        SignedExecutionPayloadBidView,
+    },
     test_util::ShmemDir,
     ticker::SlotTicker,
 };
@@ -40,6 +46,9 @@ pub struct Setup {
     /// as 0). The harness forces `wall_slot >= checkpoint_slot + 3` so
     /// bootstrap picks Syncing rather than Following.
     pub slots_missing: u64,
+    /// Activates Gloas from genesis alongside Fulu.
+    #[serde(default)]
+    pub gloas: bool,
     pub steps: Vec<Step>,
 }
 
@@ -52,6 +61,13 @@ pub enum Step {
     GossipBlock { from: String },
     /// Inject an RPC BlocksByRange response chunk.
     BlocksRangeResp { from: String },
+    /// Inject `blocks_0..blocks_{blocks_count}` of an EF case as RPC
+    /// BlocksByRange chunks, stepping after each.
+    EfBlocks { case: String },
+    /// Inject an RPC ExecutionPayloadEnvelopesByRoot response chunk.
+    EnvelopeResp { from: String },
+    /// Inject the EL's newPayload verdict for `block_root`.
+    EngineVerdict { block_root: String, status: String },
     /// Inject a `DataColumnsAvailable` for the block at `from`.
     DataColumnsAvailable { from: String },
     /// Turn the RPC ring over, so a block held only by its ring handle is gone.
@@ -76,6 +92,10 @@ pub struct Checks {
     pub outbound_has: Vec<String>,
     #[serde(default)]
     pub outbound_lacks: Vec<String>,
+    /// The last FCU's finalized hash is the finalized block's bid
+    /// `parent_block_hash`, and that block is not the anchor.
+    #[serde(default)]
+    pub fcu_finalized_is_bid_parent: bool,
 }
 
 struct Injector;
@@ -93,6 +113,9 @@ pub struct Harness {
     // Kept alive to back the tile's replay consumer; unused by these tests.
     _replay_in_producer: TProducer,
     outbound_log: Vec<OutboundKind>,
+    last_fcu: Option<EngineFcuReq>,
+    bid_parent_hashes: HashMap<B256, B256>,
+    gloas: bool,
     _spine: Box<SilverSpine>,
     _base_dir: ShmemDir,
 }
@@ -113,6 +136,10 @@ pub enum OutboundKind {
     Reorg,
     AttestersShuffling,
     LocalGossipVerdict,
+    NewPayload,
+    NewPayloadEnvelope,
+    Fcu,
+    RpcMisbehaviour,
 }
 
 impl OutboundKind {
@@ -132,6 +159,10 @@ impl OutboundKind {
             "reorg" => Self::Reorg,
             "attesters_shuffling" => Self::AttestersShuffling,
             "local_gossip_verdict" => Self::LocalGossipVerdict,
+            "new_payload" => Self::NewPayload,
+            "new_payload_envelope" => Self::NewPayloadEnvelope,
+            "fcu" => Self::Fcu,
+            "rpc_misbehaviour" => Self::RpcMisbehaviour,
             _ => return None,
         })
     }
@@ -163,6 +194,17 @@ impl OutboundKind {
         }
     }
 
+    fn classify_engine(req: &EngineReq) -> Option<Self> {
+        match req {
+            EngineReq::NewPayload(_) => Some(Self::NewPayload),
+            EngineReq::NewPayloadEnvelope(_) => Some(Self::NewPayloadEnvelope),
+            EngineReq::Fcu(_) => Some(Self::Fcu),
+            EngineReq::PreparePayload(_) | EngineReq::GetPayload(_) | EngineReq::GetBlobs(_) => {
+                None
+            }
+        }
+    }
+
     fn classify_need(need: &SyncNeed) -> Option<Self> {
         match need {
             SyncNeed::Missing { kind: DataKind::Block, .. } => Some(Self::RequestBlock),
@@ -183,21 +225,28 @@ fn fulu_from_genesis() -> SpecConfig {
     SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
 }
 
+fn gloas_from_genesis() -> SpecConfig {
+    SpecConfig { gloas_fork_epoch: 0, ..fulu_from_genesis() }
+}
+
 impl Harness {
-    pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
-        Self::build(wall_slot, |ticker, tcaches| {
-            let state = BeaconState::from_checkpoint(checkpoint_ssz, &fulu_from_genesis(), &[])
+    pub fn new(wall_slot: u64, checkpoint_ssz: &[u8], gloas: bool) -> Self {
+        let spec = if gloas { gloas_from_genesis() } else { fulu_from_genesis() };
+        let mut h = Self::build(wall_slot, |ticker, tcaches| {
+            let state = BeaconState::from_checkpoint(checkpoint_ssz, &spec, &[])
                 .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
             BeaconStateTile::new(
                 ticker,
-                Arc::new(fulu_from_genesis()),
+                Arc::new(spec.clone()),
                 &SyncingConfig::default(),
                 tcaches,
                 TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
                 true,
                 state,
             )
-        })
+        });
+        h.gloas = gloas;
+        h
     }
 
     fn build<F>(wall_slot: u64, build_tile: F) -> Self
@@ -245,6 +294,7 @@ impl Harness {
         inj_adapter.consume(|_: BeaconStateEvent, _| {});
         inj_adapter.consume(|_: PeerEvent, _| {});
         inj_adapter.consume(|_: SyncNeed, _| {});
+        inj_adapter.consume(|_: EngineReq, _| {});
 
         Self {
             tile,
@@ -254,6 +304,9 @@ impl Harness {
             rpc_in_producer,
             _replay_in_producer: replay_in_producer,
             outbound_log: Vec::new(),
+            last_fcu: None,
+            bid_parent_hashes: HashMap::new(),
+            gloas: false,
             _spine: spine,
             _base_dir: base,
         }
@@ -275,9 +328,16 @@ impl Harness {
                 log.push(kind);
             }
         });
-        self.inj_adapter.consume(|ev: PeerEvent, _| {
-            if let PeerEvent::SendGossip { .. } = ev {
-                log.push(OutboundKind::SendGossip);
+        self.inj_adapter.consume(|ev: PeerEvent, _| match ev {
+            PeerEvent::SendGossip { .. } => log.push(OutboundKind::SendGossip),
+            PeerEvent::RpcMisbehaviour { .. } => log.push(OutboundKind::RpcMisbehaviour),
+            _ => {}
+        });
+        let last_fcu = &mut self.last_fcu;
+        self.inj_adapter.consume(|req: EngineReq, _| {
+            log.extend(OutboundKind::classify_engine(&req));
+            if let EngineReq::Fcu(fcu) = req {
+                *last_fcu = Some(fcu);
             }
         });
     }
@@ -315,6 +375,9 @@ impl Harness {
     }
 
     pub fn inject_blocks_range_resp(&mut self, ssz: &[u8]) {
+        if self.gloas {
+            self.bid_parent_hashes.insert(block_root_gloas(ssz), bid_parent_block_hash(ssz));
+        }
         let len = ssz.len();
         let tcache = Self::inj_reserve(&mut self.rpc_in_producer, len, |buf| {
             buf[..len].copy_from_slice(ssz)
@@ -326,6 +389,30 @@ impl Harness {
                 fork_digest: [0, 0, 0, 0],
                 ssz: tcache,
             },
+        }));
+    }
+
+    pub fn inject_envelope_resp(&mut self, ssz: &[u8]) {
+        let len = ssz.len();
+        let tcache = Self::inj_reserve(&mut self.rpc_in_producer, len, |buf| {
+            buf[..len].copy_from_slice(ssz)
+        });
+        let id = RequestId { kind: DataKind::Envelope, origin: Origin::Live, seq: 0 };
+        self.inj_adapter.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id: id.into(),
+            stream_id: null_stream_id(),
+            response: silver_common::RpcResponse::ExecutionPayloadEnvelope {
+                fork_digest: [0, 0, 0, 0],
+                ssz: tcache,
+            },
+        }));
+    }
+
+    pub fn inject_engine_verdict(&mut self, block_root: B256, status: PayloadValidationStatus) {
+        self.inj_adapter.produce(EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root,
+            status,
+            latest_valid_hash: [0u8; 32],
         }));
     }
 
@@ -424,6 +511,20 @@ impl Harness {
                 self.outbound_log,
             );
         }
+        if c.fcu_finalized_is_bid_parent {
+            let finalized_root = self.tile.fork_choice_finalized_root();
+            let expected = self.bid_parent_hashes.get(&finalized_root).unwrap_or_else(|| {
+                panic!("finalized block {} was not injected", hex32(&finalized_root))
+            });
+            let fcu = self.last_fcu.expect("expected an FCU");
+            assert_eq!(
+                fcu.finalized_block_hash,
+                *expected,
+                "FCU finalized hash {} is not the bid parent {}",
+                hex32(&fcu.finalized_block_hash),
+                hex32(expected),
+            );
+        }
         self.outbound_log.clear();
     }
 }
@@ -442,6 +543,8 @@ pub fn run_scenario(case_dir: &Path) {
     for p in t.startup_checkpoint.iter().chain(t.steps.iter().filter_map(|s| match s {
         Step::GossipBlock { from } |
         Step::BlocksRangeResp { from } |
+        Step::EnvelopeResp { from } |
+        Step::EfBlocks { case: from } |
         Step::DataColumnsAvailable { from } |
         Step::StateRootMatches { from } => Some(from),
         _ => None,
@@ -467,7 +570,7 @@ pub fn run_scenario(case_dir: &Path) {
     // Force Syncing: bootstrap compares `wall_slot > slot + 2`.
     let wall_slot = checkpoint_slot + t.slots_missing.max(3);
 
-    let mut h = Harness::new(wall_slot, &checkpoint_ssz);
+    let mut h = Harness::new(wall_slot, &checkpoint_ssz, t.gloas);
     // First `step` to let the tile do its post-bootstrap work (emit sync req
     // if needed) before the scenario's explicit steps run.
     h.step();
@@ -482,6 +585,26 @@ pub fn run_scenario(case_dir: &Path) {
             Step::BlocksRangeResp { from } => {
                 let ssz = snappy_decode(&resolve(from));
                 h.inject_blocks_range_resp(&ssz);
+            }
+            Step::EfBlocks { case } => {
+                let dir = resolve(case);
+                for i in 0..ef_blocks_count(&dir) {
+                    let ssz = snappy_decode(&dir.join(format!("blocks_{i}.ssz_snappy")));
+                    h.inject_blocks_range_resp(&ssz);
+                    h.step();
+                }
+            }
+            Step::EnvelopeResp { from } => {
+                let ssz = snappy_decode(&resolve(from));
+                h.inject_envelope_resp(&ssz);
+            }
+            Step::EngineVerdict { block_root, status } => {
+                let status = match status.as_str() {
+                    "valid" => PayloadValidationStatus::Valid,
+                    "invalid" => PayloadValidationStatus::Invalid,
+                    other => panic!("unknown verdict: {other}"),
+                };
+                h.inject_engine_verdict(parse_b256(block_root), status);
             }
             Step::DataColumnsAvailable { from } => {
                 let ssz = snappy_decode(&resolve(from));
@@ -515,6 +638,23 @@ pub fn run_scenario(case_dir: &Path) {
             }
         }
     }
+}
+
+fn ef_blocks_count(case_dir: &Path) -> usize {
+    #[derive(Deserialize)]
+    struct Meta {
+        blocks_count: usize,
+    }
+    let meta = fs::read_to_string(case_dir.join("meta.yaml")).expect("read meta.yaml");
+    serde_yml::from_str::<Meta>(&meta).expect("parse meta.yaml").blocks_count
+}
+
+fn bid_parent_block_hash(signed_block: &[u8]) -> B256 {
+    let body = SignedBeaconBlockView::body(signed_block);
+    let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
+    let bid_end = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
+    let bid = SignedExecutionPayloadBidView::message(&body[bid_off..bid_end]);
+    *ExecutionPayloadBidView::parent_block_hash(bid)
 }
 
 fn parse_b256(s: &str) -> [u8; 32] {
