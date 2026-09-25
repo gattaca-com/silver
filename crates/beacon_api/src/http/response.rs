@@ -8,7 +8,10 @@ use crate::{
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
-    validator::aggregate_attestation::AggregateRequest,
+    validator::{
+        aggregate_attestation::AggregateRequest,
+        sync_contribution::SyncCommitteeContributionRequest,
+    },
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -76,6 +79,11 @@ impl<'a> Response<'a> {
     pub(crate) fn request_aggregate(&mut self, request: AggregateRequest) {
         debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
         self.outcome = Outcome::AwaitingAggregate(request);
+    }
+
+    pub(crate) fn request_contribution(&mut self, request: SyncCommitteeContributionRequest) {
+        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
+        self.outcome = Outcome::AwaitingContribution(request);
     }
 
     pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {

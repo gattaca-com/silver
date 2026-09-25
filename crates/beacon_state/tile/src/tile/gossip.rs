@@ -14,16 +14,15 @@ use silver_common::{
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
         SYNC_COMMITTEE_MSG_SIZE, SignedBlsToExecutionChangeView,
-        SignedContributionAndProofView as ContributionView,
-        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedVoluntaryExitView,
-        SingleAttestationView, SyncCommitteeView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedSyncCommitteeProofView,
+        SignedVoluntaryExitView, SingleAttestationView, SyncCommitteeView,
     },
 };
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
-    attestation_pool::InsertOutcome, held_blocks::BlockSourceMsg, seen_aggregates::Coverage,
-    sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
+    attestation_pool::InsertOutcome, fork_data_roots::ForkDataRoots, held_blocks::BlockSourceMsg,
+    seen_aggregates::Coverage, sync_contribution_pool::SYNC_SUBCOMMITTEE_MASK_WORDS,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
@@ -546,11 +545,11 @@ impl BeaconStateTile {
         }
         let buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE] =
             data[..SIGNED_CONTRIBUTION_AND_PROOF_SIZE].try_into().unwrap();
-        let slot = ContributionView::slot(buf);
-        let subcommittee = ContributionView::subcommittee_index(buf);
-        let aggregator = ContributionView::aggregator_index(buf);
-        let block_root = *ContributionView::beacon_block_root(buf);
-        let bits = ContributionView::aggregation_bits(buf);
+        let slot = SignedSyncCommitteeProofView::slot(buf);
+        let subcommittee = SignedSyncCommitteeProofView::subcommittee_index(buf);
+        let aggregator = SignedSyncCommitteeProofView::aggregator_index(buf);
+        let block_root = *SignedSyncCommitteeProofView::beacon_block_root(buf);
+        let bits = SignedSyncCommitteeProofView::aggregation_bits(buf);
 
         if subcommittee >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
             return Feedback::Reject(None);
@@ -569,7 +568,7 @@ impl BeaconStateTile {
             return Feedback::AlreadySeen;
         }
 
-        if !is_sync_aggregator(ContributionView::selection_proof(buf)) {
+        if !is_sync_aggregator(SignedSyncCommitteeProofView::selection_proof(buf)) {
             return Feedback::Reject(None);
         }
 
@@ -585,8 +584,7 @@ impl BeaconStateTile {
         }
 
         let fv = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
-        let fork_data_root =
-            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let fork_data_root = self.fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         let sr_sp = bls::compute_signing_root(
@@ -598,12 +596,12 @@ impl BeaconStateTile {
             &block_root,
             subcommittee,
             bits,
-            ContributionView::contribution_signature(buf),
+            SignedSyncCommitteeProofView::contribution_signature(buf),
         );
         let cap_root = ssz_hash::hash_tree_root_contribution_and_proof(
             aggregator,
             &contribution_root,
-            ContributionView::selection_proof(buf),
+            SignedSyncCommitteeProofView::selection_proof(buf),
         );
         let sr_outer =
             bls::compute_signing_root(&cap_root, &domain(bls::DOMAIN_CONTRIBUTION_AND_PROOF));
@@ -613,8 +611,16 @@ impl BeaconStateTile {
         let mut unknown = false;
         self.sig_batch.clear();
         let aggregator_pk = view.validators.pubkey_decompressed(aggregator as usize);
-        self.sig_batch.push_one(aggregator_pk, ContributionView::selection_proof(buf), sr_sp);
-        self.sig_batch.push_one(aggregator_pk, ContributionView::signature(buf), sr_outer);
+        self.sig_batch.push_one(
+            aggregator_pk,
+            SignedSyncCommitteeProofView::selection_proof(buf),
+            sr_sp,
+        );
+        self.sig_batch.push_one(
+            aggregator_pk,
+            SignedSyncCommitteeProofView::signature(buf),
+            sr_outer,
+        );
         self.sig_batch.push_aggregate(
             (0..SYNC_SUBCOMMITTEE_SIZE).filter_map(|i| {
                 if bits[i / 8] & (1 << (i % 8)) == 0 {
@@ -627,7 +633,7 @@ impl BeaconStateTile {
                 };
                 Some(view.validators.pubkey_decompressed(vi))
             }),
-            ContributionView::contribution_signature(buf),
+            SignedSyncCommitteeProofView::contribution_signature(buf),
             sr_agg,
         );
         if unknown || participants == 0 || !self.sig_batch.verify_all() {
@@ -636,6 +642,9 @@ impl BeaconStateTile {
 
         self.seen_aggregates.record(slot, subcommittee, block_root, bits);
         self.seen_contribution_aggregators[subcommittee as usize].mark(slot, aggregator as usize);
+        // Not pooled: aggregators build contributions from messages alone.
+        // TODO: Proposing will want them, to fill the sync aggregate with messages
+        // the mesh never delivered here.
         Feedback::Accept
     }
 
@@ -777,6 +786,7 @@ impl BeaconStateTile {
             &parsed,
             &committees,
             data_root,
+            &mut self.fork_data_roots,
             &mut self.sig_batch,
         ) {
             return Feedback::Reject(None);
@@ -1007,11 +1017,11 @@ impl BeaconStateTile {
         parsed: &ParsedAggregateAndProof<'_>,
         committees: &stf::AttestedCommittees<'_>,
         data_root: B256,
+        fork_data_roots: &mut ForkDataRoots,
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
         let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
-        let fork_data_root =
-            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let fork_data_root = fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).

@@ -90,6 +90,12 @@ pub enum BeaconApiRequest {
         committee_index: u64,
         data_root: [u8; 32],
     },
+    SyncCommitteeContribution {
+        request_id: u64,
+        slot: u64,
+        subcommittee_index: u64,
+        beacon_block_root: [u8; 32],
+    },
     Block {
         request_id: u64,
         lookup: BlockLookup,
@@ -117,6 +123,11 @@ pub enum BeaconApiResponse {
         request_id: u64,
         ssz: Option<TCacheRead>,
     },
+    /// `ssz` points into the `beacon_state` tcache.
+    SyncCommitteeContribution {
+        request_id: u64,
+        ssz: Option<TCacheRead>,
+    },
     Block {
         request_id: u64,
         block: Option<ServedBlock>,
@@ -128,6 +139,7 @@ impl BeaconApiResponse {
         match self {
             Self::LocalGossipResponse { request_id, .. } |
             Self::AggregateAttestation { request_id, .. } |
+            Self::SyncCommitteeContribution { request_id, .. } |
             Self::Block { request_id, .. } => *request_id,
         }
     }

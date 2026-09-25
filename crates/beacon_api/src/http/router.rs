@@ -4,8 +4,15 @@ use silver_common::TProducer;
 use silver_httpcore::{ParsedRequest, Query, frame_response};
 
 use crate::{
-    beacon::blocks::BlockRequest, ctx::ApiCtx, events::ChannelSet, http::response::Response,
-    submission::Submission, validator::aggregate_attestation::AggregateRequest,
+    beacon::blocks::BlockRequest,
+    ctx::ApiCtx,
+    events::ChannelSet,
+    http::response::Response,
+    submission::Submission,
+    validator::{
+        aggregate_attestation::AggregateRequest,
+        sync_contribution::SyncCommitteeContributionRequest,
+    },
 };
 
 const MAX_PARAMS: usize = 4;
@@ -39,6 +46,7 @@ pub(crate) enum Outcome {
     Stream(ChannelSet),
     AwaitingBlock(BlockRequest),
     AwaitingAggregate(AggregateRequest),
+    AwaitingContribution(SyncCommitteeContributionRequest),
     AwaitingVerdicts(Submission),
 }
 

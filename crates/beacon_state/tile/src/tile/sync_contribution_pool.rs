@@ -75,37 +75,41 @@ impl SyncContributionPool {
         InsertOutcome::Inserted
     }
 
-    /// Materializes the unsigned `SyncCommitteeContribution` that a selected
-    /// validator will wrap in `ContributionAndProof` and sign. The surrounding
-    /// selection proof and validator signatures intentionally remain outside
-    /// this pool.
-    #[allow(dead_code)] // retrieval interface for the local-validator milestone
-    #[timed]
-    pub(super) fn contribution_ssz(
+    pub(super) fn contribution(
         &self,
         slot: Slot,
         subcommittee_index: u64,
         beacon_block_root: B256,
-    ) -> Option<[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]> {
-        let entry =
-            self.entries.get(&ContributionKey { slot, subcommittee_index, beacon_block_root })?;
-        let mut out = [0u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE];
-        out[0..8].copy_from_slice(&slot.to_le_bytes());
-        out[8..40].copy_from_slice(&beacon_block_root);
-        out[40..48].copy_from_slice(&subcommittee_index.to_le_bytes());
-        for (i, word) in entry.aggregation_bits.iter().enumerate() {
-            let start = 48 + i * 8;
-            out[start..start + 8].copy_from_slice(&word.to_le_bytes());
-        }
-        let signature_offset = 48 + AGGREGATION_BITS_BYTES;
-        out[signature_offset..].copy_from_slice(&entry.signature.to_signature().to_bytes());
-        Some(out)
+    ) -> Option<PooledContribution<'_>> {
+        let key = ContributionKey { slot, subcommittee_index, beacon_block_root };
+        self.entries.get(&key).map(|entry| PooledContribution { key, entry })
     }
 
     #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.floor = floor;
         self.entries.retain(|key, _| key.slot >= floor);
+    }
+}
+
+pub(super) struct PooledContribution<'a> {
+    key: ContributionKey,
+    entry: &'a ContributionEntry,
+}
+
+impl PooledContribution<'_> {
+    #[timed]
+    pub(super) fn write_ssz(&self, out: &mut [u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]) {
+        let ContributionKey { slot, subcommittee_index, beacon_block_root } = self.key;
+        out[0..8].copy_from_slice(&slot.to_le_bytes());
+        out[8..40].copy_from_slice(&beacon_block_root);
+        out[40..48].copy_from_slice(&subcommittee_index.to_le_bytes());
+        for (i, word) in self.entry.aggregation_bits.iter().enumerate() {
+            let start = 48 + i * 8;
+            out[start..start + 8].copy_from_slice(&word.to_le_bytes());
+        }
+        let signature_offset = 48 + AGGREGATION_BITS_BYTES;
+        out[signature_offset..].copy_from_slice(&self.entry.signature.to_signature().to_bytes());
     }
 }
 
@@ -158,6 +162,20 @@ mod tests {
 
     use super::*;
     use crate::{bls, test_signing};
+
+    impl SyncContributionPool {
+        pub(in crate::tile) fn contribution_ssz(
+            &self,
+            slot: Slot,
+            subcommittee_index: u64,
+            beacon_block_root: B256,
+        ) -> Option<[u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE]> {
+            let contribution = self.contribution(slot, subcommittee_index, beacon_block_root)?;
+            let mut out = [0u8; SYNC_COMMITTEE_CONTRIBUTION_SIZE];
+            contribution.write_ssz(&mut out);
+            Some(out)
+        }
+    }
 
     const SLOT: Slot = 3;
     const SUBCOMMITTEE: u64 = 1;

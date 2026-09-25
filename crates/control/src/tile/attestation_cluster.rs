@@ -544,6 +544,7 @@ impl AttestationLockCommand {
             request_id,
             topic: GossipTopic::BeaconAttestation(self.subnet),
             ssz: &self.ssz,
+            ssz_read: None,
             slot: self.key.slot,
         }
     }

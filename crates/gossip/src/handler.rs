@@ -146,8 +146,7 @@ impl GossipHandler {
             tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
             return None;
         }
-        self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
-        let n = match self.snap_encoder.compress(ssz, &mut self.snap_scratch) {
+        let n = match self.compress(ssz) {
             Ok(n) => n,
             Err(e) => {
                 tracing::error!(?e, ?topic, "publish snappy compress failed");
@@ -186,6 +185,7 @@ impl GossipHandler {
         &mut self,
         topic: GossipTopic,
         ssz: &[u8],
+        ssz_read: Option<TCacheRead>,
         recv_ts: Nanos,
     ) -> Result<Option<MessageId>, Error> {
         let Some((domain, wire)) = self.domains.current_wire(topic) else {
@@ -195,16 +195,22 @@ impl GossipHandler {
             return Err(Error::GossipPayloadTooLarge);
         }
 
-        self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
-        let compressed_len = self.snap_encoder.compress(ssz, &mut self.snap_scratch)?;
+        let compressed_len = self.compress(ssz)?;
         let compressed = &self.snap_scratch[..compressed_len];
         let msg_id = msg_id_valid_snappy(&wire, ssz);
         let fast_hash = self.dedup_cache.contains_fast(&wire, compressed).ok();
 
-        let mut ssz_reservation =
-            self.incoming_gossip_publish.reserve(ssz.len(), false).ok_or(Error::BufferTooSmall)?;
-        ssz_reservation.write_all(ssz)?;
-        let ssz_read = ssz_reservation.read();
+        let (ssz_read, ssz_reservation) = match ssz_read {
+            Some(read) => (read, None),
+            None => {
+                let mut reservation = self
+                    .incoming_gossip_publish
+                    .reserve(ssz.len(), false)
+                    .ok_or(Error::BufferTooSmall)?;
+                reservation.write_all(ssz)?;
+                (reservation.read(), Some(reservation))
+            }
+        };
 
         // From here onward a network duplicate must not race this local
         // candidate into Beacon State first. Roll the entry back if either
@@ -221,7 +227,7 @@ impl GossipHandler {
                     return Err(error);
                 }
             };
-        if let Err(error) = ssz_reservation.flush() {
+        if let Err(error) = ssz_reservation.map_or(Ok(()), |mut reservation| reservation.flush()) {
             if inserted {
                 self.dedup_cache.remove(fast_hash.unwrap(), &msg_id);
             }
@@ -239,6 +245,14 @@ impl GossipHandler {
             protobuf,
         }));
         Ok(Some(msg_id))
+    }
+
+    fn compress(&mut self, ssz: &[u8]) -> Result<usize, snap::Error> {
+        let bound = snap::raw::max_compress_len(ssz.len());
+        if self.snap_scratch.len() < bound {
+            self.snap_scratch.resize(bound, 0);
+        }
+        self.snap_encoder.compress(ssz, &mut self.snap_scratch)
     }
 
     /// Replace the routable domains: `current` plus at most one
@@ -700,7 +714,7 @@ mod tests {
         let ssz = [42; SINGLE_ATT_SIZE];
 
         let msg_id = handler
-            .inject_local(topic, &ssz, Nanos::now())
+            .inject_local(topic, &ssz, None, Nanos::now())
             .expect("local injection")
             .expect("new message");
         let message = match handler.pop_event().expect("new gossip event") {
@@ -720,7 +734,7 @@ mod tests {
         assert!(handler.dedup_cache.has(&msg_id));
         assert!(!handler.mcache.has(&msg_id));
 
-        assert_eq!(handler.inject_local(topic, &ssz, Nanos::now()).unwrap(), Some(msg_id));
+        assert_eq!(handler.inject_local(topic, &ssz, None, Nanos::now()).unwrap(), Some(msg_id));
         let duplicate = match handler.pop_event().expect("duplicate local gossip event") {
             GossipHandlerEvent::NewGossip(message) => message,
             GossipHandlerEvent::PartialMetadata(_) |

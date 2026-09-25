@@ -196,33 +196,27 @@ fn signed_contribution_and_proof() {
         let m = &v["message"];
         let c = &m["contribution"];
 
+        assert_eq!(SignedSyncCommitteeProofView::aggregator_index(buf), u(&m["aggregator_index"]));
+        assert_eq!(SignedSyncCommitteeProofView::slot(buf), u(&c["slot"]));
         assert_eq!(
-            SignedContributionAndProofView::aggregator_index(buf),
-            u(&m["aggregator_index"])
-        );
-        assert_eq!(SignedContributionAndProofView::slot(buf), u(&c["slot"]));
-        assert_eq!(
-            *SignedContributionAndProofView::beacon_block_root(buf),
+            *SignedSyncCommitteeProofView::beacon_block_root(buf),
             b32(&c["beacon_block_root"])
         );
         assert_eq!(
-            SignedContributionAndProofView::subcommittee_index(buf),
+            SignedSyncCommitteeProofView::subcommittee_index(buf),
             u(&c["subcommittee_index"])
         );
         // Bitvector[SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 128] → 16 B
         assert_eq!(
-            SignedContributionAndProofView::aggregation_bits(buf)[..],
+            SignedSyncCommitteeProofView::aggregation_bits(buf)[..],
             b(&c["aggregation_bits"], 16)[..]
         );
         assert_eq!(
-            *SignedContributionAndProofView::contribution_signature(buf),
+            *SignedSyncCommitteeProofView::contribution_signature(buf),
             b96(&c["signature"])
         );
-        assert_eq!(
-            *SignedContributionAndProofView::selection_proof(buf),
-            b96(&m["selection_proof"])
-        );
-        assert_eq!(*SignedContributionAndProofView::signature(buf), b96(&v["signature"]));
+        assert_eq!(*SignedSyncCommitteeProofView::selection_proof(buf), b96(&m["selection_proof"]));
+        assert_eq!(*SignedSyncCommitteeProofView::signature(buf), b96(&v["signature"]));
     }
 }
 

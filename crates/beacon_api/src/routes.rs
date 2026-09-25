@@ -22,11 +22,13 @@ use crate::{
         aggregate_submission::post_aggregate_and_proofs,
         attestation_data::attestation_data,
         attester_duties::post_attester_duties,
+        contribution_submission::post_contribution_and_proofs,
         proposer_duties::{proposer_duties, proposer_duties_v2},
         registration::{
             post_beacon_committee_subscriptions, post_prepare_beacon_proposer,
             post_register_validator, post_sync_committee_subscriptions,
         },
+        sync_contribution::sync_committee_contribution,
         sync_duties::post_sync_duties,
     },
 };
@@ -62,12 +64,14 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         "/eth/v1/validator/beacon_committee_subscriptions",
         post_beacon_committee_subscriptions,
     ),
+    (Method::Post, "/eth/v1/validator/contribution_and_proofs", post_contribution_and_proofs),
     (Method::Post, "/eth/v1/validator/duties/attester/{epoch}", post_attester_duties),
     (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", proposer_duties),
     (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", post_sync_duties),
     (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
     (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),
     (Method::Post, "/eth/v1/validator/register_validator", post_register_validator),
+    (Method::Get, "/eth/v1/validator/sync_committee_contribution", sync_committee_contribution),
     (
         Method::Post,
         "/eth/v1/validator/sync_committee_subscriptions",

@@ -11,11 +11,11 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    if !req.body_is_json() {
-        resp.error(415, "only application/json bodies are read");
+    if !ctx.follows_chain(resp) {
         return;
     }
-    if !ctx.follows_chain(resp) {
+    if !req.body_is_json() {
+        resp.error(415, "only application/json bodies are read");
         return;
     }
 

@@ -5,7 +5,7 @@ pub enum SszView {
     ProposerSlashing(ProposerSlashingView),
     SignedVoluntaryExit(SignedVoluntaryExitView),
     SyncCommittee(SyncCommitteeView),
-    SignedContributionAndProof(SignedContributionAndProofView),
+    SignedSyncCommitteeProof(SignedSyncCommitteeProofView),
     SignedBlsToExecutionChange(SignedBlsToExecutionChangeView),
     SignedBeaconBlock(SignedBeaconBlockView),
     SignedAggregateAndProof(SignedAggregateAndProofView),
@@ -505,9 +505,9 @@ pub const SIGNED_CONTRIBUTION_AND_PROOF_SIZE: usize = 360;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
-pub struct SignedContributionAndProofView;
+pub struct SignedSyncCommitteeProofView;
 
-impl SignedContributionAndProofView {
+impl SignedSyncCommitteeProofView {
     #[inline]
     pub fn aggregator_index(buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE]) -> u64 {
         u64_le(buf, 0)
