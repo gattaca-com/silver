@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
@@ -100,8 +100,12 @@ pub enum BeaconApiRequest {
         lookup: BlockLookup,
         with_bytes: bool,
     },
-    AttestationSubscriptions {
+    BeaconCommitteeSubscriptions {
         subscriptions: TCacheRead,
+    },
+    /// The epoch each sync subnet is wanted until, exclusive; 0 where none is.
+    SyncCommitteeSubscriptions {
+        until_epochs: [u64; SYNC_COMMITTEE_SUBNETS],
     },
 }
 

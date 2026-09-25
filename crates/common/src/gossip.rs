@@ -1,5 +1,6 @@
 use std::{fmt, ops::RangeInclusive};
 
+use serde::{Deserialize, Serialize};
 pub use silver_beacon_state_data::SYNC_COMMITTEE_SUBNETS;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 
@@ -122,6 +123,14 @@ impl From<GossipTopic> for String {
 }
 
 pub const ATTESTATION_SUBNETS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncCommitteeSubnets {
+    #[default]
+    All,
+    OnDemand,
+}
 
 pub struct SubnetsBySlot {
     slots: [SlotSubnets; Self::SLOTS],

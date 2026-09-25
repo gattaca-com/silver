@@ -13,11 +13,11 @@ pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_chain_spec::ForkName;
-pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
     Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
     SUBNETS_PER_NODE, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
 };
+pub use silver_common::{SyncCommitteeSubnets, cell_store::PartialColumnsMode};
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
 mod chain_config;
@@ -139,6 +139,8 @@ pub struct Config {
     attestation_subnet_count: u8,
     #[serde(default)]
     partial_columns: PartialColumnsMode,
+    #[serde(default)]
+    sync_committee_subnets: SyncCommitteeSubnets,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
     supported_protocols: Vec<String>,
@@ -214,6 +216,7 @@ impl Config {
             data_column_custody_group_count: SAMPLES_PER_SLOT,
             attestation_subnet_count: SUBNETS_PER_NODE as u8,
             partial_columns: PartialColumnsMode::Off,
+            sync_committee_subnets: SyncCommitteeSubnets::All,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
@@ -538,6 +541,10 @@ impl Config {
 
     pub fn partial_columns(&self) -> PartialColumnsMode {
         self.partial_columns
+    }
+
+    pub fn sync_committee_subnets(&self) -> SyncCommitteeSubnets {
+        self.sync_committee_subnets
     }
 
     pub fn trusted_peers(&self) -> &[Enr] {

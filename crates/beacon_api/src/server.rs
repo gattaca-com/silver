@@ -2358,7 +2358,8 @@ mod tests {
             BeaconApiRequest::LocalGossip { request_id, .. } |
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
             BeaconApiRequest::SyncCommitteeContribution { request_id, .. } => *request_id,
-            BeaconApiRequest::AttestationSubscriptions { .. } => unreachable!("never answered"),
+            BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
+            BeaconApiRequest::SyncCommitteeSubscriptions { .. } => unreachable!("never answered"),
         }
     }
 

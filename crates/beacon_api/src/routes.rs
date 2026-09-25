@@ -25,11 +25,10 @@ use crate::{
         attester_duties::post_attester_duties,
         contribution_submission::post_contribution_and_proofs,
         proposer_duties::{proposer_duties, proposer_duties_v2},
-        registration::{
-            post_prepare_beacon_proposer, post_register_validator,
-            post_sync_committee_subscriptions,
+        registration::{post_prepare_beacon_proposer, post_register_validator},
+        subnet_subscriptions::{
+            post_beacon_committee_subscriptions, post_sync_committee_subscriptions,
         },
-        subnet_subscriptions::post_beacon_committee_subscriptions,
         sync_contribution::sync_committee_contribution,
         sync_duties::post_sync_duties,
     },

@@ -814,7 +814,8 @@ impl BeaconStateTile {
             ),
             BeaconApiRequest::LocalGossip { .. } |
             BeaconApiRequest::Block { .. } |
-            BeaconApiRequest::AttestationSubscriptions { .. } => {}
+            BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
+            BeaconApiRequest::SyncCommitteeSubscriptions { .. } => {}
         });
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));

@@ -12,8 +12,8 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
-    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    SilverSpineProducers, SlotSubnets, SyncCommitteeSubnets, SyncNeed, SyncUpdate, TCacheError,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
@@ -26,9 +26,9 @@ use silver_peer::PeerManager;
 
 use self::{
     attestation_cluster::{AttestationClusterHandler, PendingAttestation},
-    attnet_duties::AttnetDuties,
     gossip_schedule::GossipSchedule,
     local_validation::{LocalMessage, LocalValidation, produce_response},
+    subnet_duties::SubnetDuties,
 };
 use crate::{
     cell_ingress::{CellIngress, handle_data_column_event},
@@ -38,9 +38,9 @@ use crate::{
 };
 
 mod attestation_cluster;
-mod attnet_duties;
 mod gossip_schedule;
 mod local_validation;
+mod subnet_duties;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -71,9 +71,9 @@ pub struct Controller {
     /// Long-lived subnet topics advertised (ENR/MetaData) from boot but
     /// subscribed only once the node is Following — grafted-while-syncing
     /// meshes would earn P3 deficit at peers since nothing validates or
-    /// forwards until then. Drained into the PM on the first transition.
-    pending_subnet_topics: Vec<GossipTopic>,
-    attnet_duties: AttnetDuties,
+    /// forwards until then. Cleared on the first transition.
+    long_lived_pending: bool,
+    subnet_duties: SubnetDuties,
     cell_ingress: Option<CellIngress>,
     partial_exchange: Option<PartialExchange>,
     /// Chain schedule, used to resolve the active gossip fork domain from
@@ -99,6 +99,8 @@ impl Controller {
         cluster_config: Option<AttestationClusterConfig>,
         sync_engine: SyncEngine,
         spec: Arc<SpecConfig>,
+        long_lived_attnets: [u8; 8],
+        sync_committee_subnets: SyncCommitteeSubnets,
     ) -> Result<Self, ClusterError> {
         let now = Instant::now();
         let attestation_cluster =
@@ -116,8 +118,11 @@ impl Controller {
             last_status: now,
             last_peer_persist: now,
             auto_ping: true,
-            pending_subnet_topics: Vec::new(),
-            attnet_duties: AttnetDuties::default(),
+            long_lived_pending: true,
+            subnet_duties: SubnetDuties::new(
+                u64::from_le_bytes(long_lived_attnets),
+                sync_committee_subnets,
+            ),
             cell_ingress: None,
             partial_exchange: None,
             spec,
@@ -226,8 +231,26 @@ impl Controller {
             return;
         };
         for slot_subnets in SlotSubnets::decode_all(bytes) {
-            self.attnet_duties.add(slot_subnets, wall_slot);
+            self.subnet_duties.add(slot_subnets, wall_slot);
         }
+    }
+
+    fn advance_duty_subnets(
+        &mut self,
+        wall_slot: u64,
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let emit = &mut |evt| {
+            handle_peer_control(&mut self.gossip_handler, &mut self.rpc_producer, evt, producers)
+        };
+        let Some(changes) = self.subnet_duties.advance(wall_slot) else {
+            return;
+        };
+        tracing::debug!(wall_slot, ?changes, "duty subnets changed");
+        self.peer_manager.set_duty_attnets(changes.attesting);
+        self.peer_manager.activate_topics(changes.joined(), emit);
+        self.peer_manager.deactivate_topics(changes.left(), now, emit);
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -261,13 +284,8 @@ impl Controller {
         Ok(self)
     }
 
-    pub fn set_pending_subnet_topics(&mut self, topics: Vec<GossipTopic>) {
-        self.attnet_duties.set_long_lived(&topics);
-        self.pending_subnet_topics = topics;
-    }
-
     pub fn set_gossip_clock(&mut self, ticker: SlotTicker, genesis_validators_root: &[u8; 32]) {
-        self.attnet_duties
+        self.subnet_duties
             .set_rejoin_wait(self.peer_manager.topic_rejoin_wait(), ticker.slot_duration());
         self.gossip_schedule =
             Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
@@ -460,10 +478,13 @@ impl Tile<SilverSpine> for Controller {
             BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
                 self.on_local_gossip(request_id, topic, ssz, now, producers)
             }
-            BeaconApiRequest::AttestationSubscriptions { subscriptions } => {
+            BeaconApiRequest::BeaconCommitteeSubscriptions { subscriptions } => {
                 if let Some(wall_slot) = wall_slot {
                     self.on_attestation_subscriptions(subscriptions, wall_slot);
                 }
+            }
+            BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs } => {
+                self.subnet_duties.add_sync(until_epochs)
             }
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |
@@ -562,10 +583,15 @@ impl Tile<SilverSpine> for Controller {
         }
 
         let following = matches!(self.sync_engine.current_target(), Some(SyncUpdate::Following));
-        if !self.pending_subnet_topics.is_empty() && following {
-            let topics = std::mem::take(&mut self.pending_subnet_topics);
-            tracing::info!(?topics, "activating long-lived subnet subscriptions");
-            self.peer_manager.activate_topics(topics.iter().copied(), &mut |evt| {
+        if self.long_lived_pending && following {
+            self.long_lived_pending = false;
+            let long_lived = self.subnet_duties.long_lived();
+            tracing::info!(
+                attnets = format_args!("{:#x}", long_lived.attnets),
+                syncnets = format_args!("{:#b}", long_lived.syncnets),
+                "activating long-lived subnet subscriptions"
+            );
+            self.peer_manager.activate_topics(long_lived.topics(), &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,
                     &mut self.rpc_producer,
@@ -574,22 +600,8 @@ impl Tile<SilverSpine> for Controller {
                 )
             });
         }
-        if following &&
-            let Some(wall_slot) = wall_slot &&
-            let Some(changes) = self.attnet_duties.advance(wall_slot)
-        {
-            tracing::debug!(wall_slot, ?changes, "attestation duty subnets changed");
-            self.peer_manager.set_duty_attnets(changes.attesting);
-            let emit = &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            };
-            self.peer_manager.activate_topics(changes.joined(), emit);
-            self.peer_manager.deactivate_topics(changes.left(), now, emit);
+        if following && let Some(wall_slot) = wall_slot {
+            self.advance_duty_subnets(wall_slot, now, &mut adapter.producers);
         }
 
         // Syncing → Following edge: fan out Status to every peer

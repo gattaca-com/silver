@@ -276,6 +276,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             spec.clone(),
         ),
         spec.clone(),
+        subnets,
+        config.sync_committee_subnets(),
     )?;
     control_tile = control_tile
         .with_data_columns_cache(
@@ -286,15 +288,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             partial_columns,
         )
         .map_err(|error| format!("cell store construction: {error:?}"))?;
-    control_tile.set_pending_subnet_topics(
-        silver_common::attnet_subnets(subnets)
-            .map(silver_common::GossipTopic::BeaconAttestation)
-            .chain(
-                (0..silver_common::SYNC_COMMITTEE_SUBNETS as u64)
-                    .map(silver_common::GossipTopic::SyncCommittee),
-            )
-            .collect(),
-    );
 
     // A finalized checkpoint state is mandatory (no genesis or runtime sync):
     // an empty/absent blob falls through to `decompose`, which errors here and

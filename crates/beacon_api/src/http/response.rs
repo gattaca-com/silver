@@ -97,12 +97,14 @@ impl<'a> Response<'a> {
         request: impl FnOnce(TCacheRead) -> BeaconApiRequest,
     ) {
         match self.submissions.write_with(len, encode) {
-            Some(read) => {
-                self.ok();
-                self.outcome = Outcome::Response(Some(request(read)));
-            }
+            Some(read) => self.notify(request(read)),
             None => self.error(500, "api submissions cache full"),
         }
+    }
+
+    pub(crate) fn notify(&mut self, request: BeaconApiRequest) {
+        self.ok();
+        self.outcome = Outcome::Response(Some(request));
     }
 
     pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {

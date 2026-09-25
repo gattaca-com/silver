@@ -1,7 +1,13 @@
-use serde::Deserialize;
+use std::fmt;
+
+use serde::{
+    Deserialize, Deserializer,
+    de::{SeqAccess, Visitor},
+};
+use silver_beacon_state_data::{SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE};
 use silver_common::{
-    BeaconApiRequest, SlotSubnets, SubnetsBySlot, compute_subnet_for_attestation,
-    ssz_view::MAX_COMMITTEES_PER_SLOT,
+    BeaconApiRequest, SYNC_COMMITTEE_SUBNETS, SlotSubnets, SubnetsBySlot,
+    compute_subnet_for_attestation, ssz_view::MAX_COMMITTEES_PER_SLOT,
 };
 
 use crate::{
@@ -39,7 +45,7 @@ pub(crate) fn post_beacon_committee_subscriptions(
                 slot.encode(record);
             }
         },
-        |subscriptions| BeaconApiRequest::AttestationSubscriptions { subscriptions },
+        |subscriptions| BeaconApiRequest::BeaconCommitteeSubscriptions { subscriptions },
     );
 }
 
@@ -70,6 +76,64 @@ impl CommitteeSubscription {
     }
 }
 
+pub(crate) fn post_sync_committee_subscriptions(
+    req: &Request<'_>,
+    _ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+) {
+    let mut until_epochs = [0; SYNC_COMMITTEE_SUBNETS];
+    let parsed = each_body_entry(req.body, |_, entry: SyncCommitteeSubscription| {
+        for (subnet, until_epoch) in until_epochs.iter_mut().enumerate() {
+            if entry.subnets >> subnet & 1 == 1 {
+                *until_epoch = entry.until_epoch.max(*until_epoch);
+            }
+        }
+    });
+    if let Err(message) = parsed {
+        return resp.error(400, message);
+    }
+    if until_epochs == [0; SYNC_COMMITTEE_SUBNETS] {
+        return resp.ok();
+    }
+    resp.notify(BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs });
+}
+
+#[derive(Deserialize)]
+struct SyncCommitteeSubscription {
+    #[serde(rename = "sync_committee_indices", deserialize_with = "sync_subnets")]
+    subnets: u8,
+    #[serde(deserialize_with = "uint64")]
+    until_epoch: u64,
+}
+
+/// Indices past the committee name no subnet and are skipped.
+fn sync_subnets<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    #[derive(Deserialize)]
+    struct Index(#[serde(deserialize_with = "uint64")] u64);
+
+    struct Subnets;
+
+    impl<'de> Visitor<'de> for Subnets {
+        type Value = u8;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an array of Uint64")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<u8, A::Error> {
+            let mut subnets = 0;
+            while let Some(Index(index)) = seq.next_element()? {
+                if index < SYNC_COMMITTEE_SIZE as u64 {
+                    subnets |= 1 << (index as usize / SYNC_SUBCOMMITTEE_SIZE);
+                }
+            }
+            Ok(subnets)
+        }
+    }
+
+    deserializer.deserialize_seq(Subnets)
+}
+
 #[cfg(test)]
 mod tests {
     use silver_common::TCacheProducer;
@@ -82,6 +146,7 @@ mod tests {
     };
 
     const PATH: &str = "/eth/v1/validator/beacon_committee_subscriptions";
+    const SYNC_PATH: &str = "/eth/v1/validator/sync_committee_subscriptions";
 
     fn entry(
         committee_index: u64,
@@ -97,7 +162,11 @@ mod tests {
     }
 
     fn post(body: &str) -> (Outcome, Vec<u8>) {
-        dispatch(&anchor_ctx(), &posting(PATH, body))
+        post_to(PATH, body)
+    }
+
+    fn post_to(path: &str, body: &str) -> (Outcome, Vec<u8>) {
+        dispatch(&anchor_ctx(), &posting(path, body))
     }
 
     #[test]
@@ -112,8 +181,9 @@ mod tests {
         let (outcome, response) =
             dispatch_into(&anchor_ctx(), &posting(PATH, &body), &mut submissions);
         assert_eq!(status_code(&response), "200");
-        let Outcome::Response(Some(BeaconApiRequest::AttestationSubscriptions { subscriptions })) =
-            outcome
+        let Outcome::Response(Some(BeaconApiRequest::BeaconCommitteeSubscriptions {
+            subscriptions,
+        })) = outcome
         else {
             panic!("{outcome:?}")
         };
@@ -143,8 +213,9 @@ mod tests {
         let (outcome, response) =
             dispatch_into(&anchor_ctx(), &posting(PATH, &format!("[{body}]")), &mut submissions);
         assert_eq!(status_code(&response), "200");
-        let Outcome::Response(Some(BeaconApiRequest::AttestationSubscriptions { subscriptions })) =
-            outcome
+        let Outcome::Response(Some(BeaconApiRequest::BeaconCommitteeSubscriptions {
+            subscriptions,
+        })) = outcome
         else {
             panic!("{outcome:?}")
         };
@@ -165,6 +236,53 @@ mod tests {
         ] {
             let (outcome, response) = post(&body);
             assert_eq!(outcome, Outcome::Response(None));
+            assert_eq!(status_code(&response), "400", "{body}");
+        }
+    }
+
+    fn sync_entry(indices: &str, until_epoch: &str) -> String {
+        format!(
+            "{{\"validator_index\":\"1\",\"sync_committee_indices\":[{indices}],\
+             \"until_epoch\":{until_epoch}}}"
+        )
+    }
+
+    #[test]
+    fn sync_subscriptions_keep_the_latest_epoch_per_subnet() {
+        let body = format!(
+            "[{},{},{}]",
+            sync_entry("\"0\",\"300\"", "\"10\""),
+            sync_entry("\"5\"", "\"12\""),
+            sync_entry("\"512\"", "\"99\""),
+        );
+        let (outcome, response) = post_to(SYNC_PATH, &body);
+        assert_eq!(status_code(&response), "200");
+        assert_eq!(
+            outcome,
+            Outcome::Response(Some(BeaconApiRequest::SyncCommitteeSubscriptions {
+                until_epochs: [12, 0, 10, 0]
+            }))
+        );
+    }
+
+    #[test]
+    fn sync_subscriptions_naming_no_subnet_send_nothing() {
+        for body in ["[]".to_owned(), format!("[{}]", sync_entry("", "\"10\""))] {
+            let (outcome, response) = post_to(SYNC_PATH, &body);
+            assert_eq!(outcome, Outcome::Response(None), "{body}");
+            assert_eq!(status_code(&response), "200", "{body}");
+        }
+    }
+
+    #[test]
+    fn malformed_sync_subscriptions_are_a_400() {
+        for body in [
+            format!("[{}]", sync_entry("\"7.0\"", "\"10\"")),
+            format!("[{}]", sync_entry("\"7\"", "10")),
+            "{}".to_owned(),
+        ] {
+            let (outcome, response) = post_to(SYNC_PATH, &body);
+            assert_eq!(outcome, Outcome::Response(None), "{body}");
             assert_eq!(status_code(&response), "400", "{body}");
         }
     }
