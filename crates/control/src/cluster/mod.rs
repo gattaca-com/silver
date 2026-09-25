@@ -6,6 +6,8 @@ mod command;
 mod generated;
 mod lock_store;
 mod node;
+#[cfg(target_os = "linux")]
+mod storage;
 mod wire;
 
 pub use admission::AdmissionError;
@@ -17,4 +19,6 @@ pub use node::{
     AttestationCluster, AttestationClusterConfig, AttestationDecision, ClusterError, ClusterEvent,
     ProposalId, ProposeError,
 };
+#[cfg(target_os = "linux")]
+pub use storage::{ClusterStorage, ClusterStorageEvent, RecoveredStorage, StorageIdentity};
 pub(crate) use wire::{decode_message, encode_message};
