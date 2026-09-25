@@ -404,7 +404,6 @@ impl GossipHandler {
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
         self.generate_ihave_messages(now, emit);
-        self.reader.free_undrained();
 
         adapter.consume(|msg: GossipMsgIn, producers| {
             did_work = true;
