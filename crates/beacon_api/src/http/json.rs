@@ -11,8 +11,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     AGENT_VERSION,
     ssz_view::{
-        AttestationView, BYTES_PER_KZG_COMMITMENT, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
-        SyncCommitteeContributionView,
+        AttestationView, BYTES_PER_KZG_COMMITMENT, SINGLE_ATT_SIZE,
+        SYNC_COMMITTEE_CONTRIBUTION_SIZE, SingleAttestationView, SyncCommitteeContributionView,
     },
 };
 
@@ -468,6 +468,19 @@ impl Json<'_> {
         self.quoted_u64(slot);
         self.key("block");
         self.hex(block_root);
+        self.end_object();
+    }
+
+    pub(crate) fn single_attestation_event(&mut self, ssz: &[u8; SINGLE_ATT_SIZE]) {
+        self.begin_object();
+        self.key("committee_index");
+        self.quoted_u64(SingleAttestationView::committee_index(ssz));
+        self.key("attester_index");
+        self.quoted_u64(SingleAttestationView::attester_index(ssz));
+        self.key("data");
+        self.attestation_data(&SingleAttestationView::data(ssz).into());
+        self.key("signature");
+        self.hex(SingleAttestationView::signature(ssz));
         self.end_object();
     }
 

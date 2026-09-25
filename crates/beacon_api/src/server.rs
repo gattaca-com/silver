@@ -628,8 +628,36 @@ impl BeaconApi {
             PeerEvent::SendGossip { topic: GossipTopic::BeaconBlock, ssz, .. } => {
                 self.publish_relayed_block(ssz)
             }
+            PeerEvent::SendGossip { topic: GossipTopic::BeaconAttestation(_), ssz, .. } => {
+                self.publish_relayed_attestation(ssz)
+            }
             _ => {}
         }
+    }
+
+    /// Attestations arrive at thousands per slot, so the tcache read and
+    /// render are skipped unless someone listens.
+    fn publish_relayed_attestation(&mut self, ssz: TCacheRead) {
+        if !self.has_subscriber(Channel::SingleAttestation) {
+            return;
+        }
+        let attestation = self.reader.acquire(ssz);
+        match attestation.buffer() {
+            Ok((buf, _)) => match buf.try_into() {
+                Ok(buf) => self.publish(Channel::SingleAttestation, "single_attestation", |json| {
+                    json.single_attestation_event(buf)
+                }),
+                Err(_) => tracing::warn!(len = buf.len(), "relayed attestation is misframed"),
+            },
+            Err(e) => tracing::warn!(?e, "relayed attestation unavailable to single_attestation"),
+        }
+    }
+
+    fn has_subscriber(&self, channel: Channel) -> bool {
+        self.connections.values().any(|conn| match &conn.state {
+            State::Subscription(subscription) => subscription.channels.contains(channel),
+            State::Requests(_) => false,
+        })
     }
 
     fn publish_relayed_block(&mut self, ssz: TCacheRead) {
@@ -991,13 +1019,13 @@ mod tests {
     use serde_json::Value;
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
-        BlockLookup, ColumnOrigin, EngineNewPayloadResp, HeadRoots, LocalGossipFailure,
-        PayloadResolution, ServedBlock, SszCache, TCache, TCacheId, TCacheProducer, TProducer,
-        body_root,
+        BlockLookup, ColumnOrigin, EngineNewPayloadResp, ForkName, GossipDomain, HeadRoots,
+        LocalGossipFailure, MessageId, Nanos, P2pStreamId, PayloadResolution, ServedBlock,
+        SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TProducer, body_root,
         ssz_view::{
             ATTESTATION_FIXED, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
             DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN,
-            STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
+            SINGLE_ATT_SIZE, STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
         },
     };
     use silver_httpcore::Readiness;
@@ -1934,6 +1962,69 @@ mod tests {
                 Some(list) => assert_eq!(event.data["kzg_commitments"], serde_json::json!(list)),
                 None => assert!(event.data.get("kzg_commitments").is_none()),
             }
+        }
+    }
+
+    fn single_attestation_ssz(attester_index: u64, committee_index: u64) -> [u8; SINGLE_ATT_SIZE] {
+        let mut ssz = [0; SINGLE_ATT_SIZE];
+        ssz[0..8].copy_from_slice(&committee_index.to_le_bytes());
+        ssz[8..16].copy_from_slice(&attester_index.to_le_bytes());
+        ssz[16..24].copy_from_slice(&submission::SLOT.to_le_bytes());
+        ssz[32..64].fill(0x11);
+        ssz[64..72].copy_from_slice(&298u64.to_le_bytes());
+        ssz[72..104].fill(0x22);
+        ssz[104..112].copy_from_slice(&300u64.to_le_bytes());
+        ssz[112..144].fill(0x33);
+        ssz[144..240].fill(0x44);
+        ssz
+    }
+
+    fn relayed(topic: GossipTopic, ssz: TCacheRead) -> PeerEvent {
+        PeerEvent::SendGossip {
+            originator_stream_id: P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false),
+            topic,
+            domain: GossipDomain::new([0; 4], ForkName::Fulu),
+            ssz_cache: SszCache::Gossip,
+            msg_hash: MessageId { id: [0; 20] },
+            recv_ts: Nanos::now(),
+            protobuf: ssz,
+            ssz,
+        }
+    }
+
+    #[test]
+    fn relayed_attestations_render_as_the_posted_json() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
+        server.api.reader = TCacheReader::new(TCacheTable::from_iter([gossip.cache_ref()]));
+        server
+            .api
+            .reader
+            .open(TCacheId::ControlProcessing, "api_test", TReadMode::Sliding)
+            .unwrap();
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "single_attestation");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let attesters = [(2, 0), (7, 3)];
+        for (attester_index, committee_index) in attesters {
+            let ssz = single_attestation_ssz(attester_index, committee_index);
+            let mut reservation = gossip.reserve(ssz.len(), true).unwrap();
+            reservation.write_all(&ssz).unwrap();
+            reservation.flush().unwrap();
+            let ssz = reservation.read();
+            server.api.handle_peer_event(relayed(GossipTopic::BeaconAttestation(5), ssz));
+        }
+        finish_events(&mut server);
+
+        let events = serve(&mut server, reader, "attestation events and marker");
+        assert_eq!(events.len(), attesters.len());
+        for (event, (attester_index, committee_index)) in events.iter().zip(attesters) {
+            assert_eq!(event.topic, "single_attestation");
+            let posted: Value =
+                serde_json::from_str(&entry(attester_index, committee_index)).unwrap();
+            assert_eq!(event.data, posted);
         }
     }
 

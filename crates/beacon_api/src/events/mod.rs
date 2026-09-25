@@ -22,6 +22,7 @@ pub(crate) enum Channel {
     HeadV2,
     BlockGossip,
     DataColumnSidecar,
+    SingleAttestation,
 }
 
 /// `epoch_transition` compares this head with the publisher's previous
@@ -93,6 +94,7 @@ fn channel(topic: &str) -> Option<Channel> {
         "head_v2" => Some(Channel::HeadV2),
         "block_gossip" => Some(Channel::BlockGossip),
         "data_column_sidecar" => Some(Channel::DataColumnSidecar),
+        "single_attestation" => Some(Channel::SingleAttestation),
         _ => None,
     }
 }
