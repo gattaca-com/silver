@@ -5,6 +5,7 @@ use raft::eraftpb::{Entry, HardState};
 
 use super::super::{
     generated,
+    persistence::RecoveredStorage,
     wire::{from_wire_entry, to_wire_entry},
 };
 
@@ -62,14 +63,6 @@ impl StorageIdentity {
         }
         cursor.finish()
     }
-}
-
-#[derive(Debug, Default)]
-pub struct RecoveredStorage {
-    pub hard_state: HardState,
-    /// Includes the uncommitted suffix; replay only entries through
-    /// `hard_state.commit` into the state machine.
-    pub entries: Vec<Entry>,
 }
 
 #[derive(Debug, Clone, Default)]
