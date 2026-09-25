@@ -193,6 +193,11 @@ pub(super) enum EnvelopeCheck {
     Reject,
 }
 
+pub(super) struct BatchedVote {
+    pub vote: NewGossipMsg,
+    pub pin: TRead,
+}
+
 impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
@@ -343,9 +348,9 @@ impl BeaconStateTile {
         self.seen_attesters.mark(p.target.target_epoch, p.attester as usize);
     }
 
-    pub(super) fn defer_vote(&mut self, m: NewGossipMsg, producers: &mut Producers) {
-        let pin = self.reader.acquire(m.ssz);
-        self.vote_batch.push((m, pin));
+    pub(super) fn defer_vote(&mut self, vote: NewGossipMsg, producers: &mut Producers) {
+        let pin = self.reader.acquire(vote.ssz);
+        self.vote_batch.push(BatchedVote { vote, pin });
         if self.vote_batch.len() >= VOTE_BATCH_CAP {
             self.flush_votes(producers);
         }
@@ -372,12 +377,12 @@ impl BeaconStateTile {
         // Drain from the back after one in-place reversal: this preserves
         // arrival order without O(n) front-removes or another allocation.
         self.vote_batch.reverse();
-        while let Some((m, pin)) = self.vote_batch.pop() {
+        while let Some(BatchedVote { vote, pin }) = self.vote_batch.pop() {
             let Some(data) = pin.buffer().ok().map(|(d, _)| d) else {
-                Self::local_verdict(&m, Feedback::Ignore, producers);
+                Self::local_verdict(&vote, Feedback::Ignore, producers);
                 continue;
             };
-            let prepared = match m.topic {
+            let prepared = match vote.topic {
                 GossipTopic::BeaconAttestation(subnet) => {
                     self.prepare_attestation(data, subnet).map(PreparedVote::Attestation)
                 }
@@ -400,14 +405,14 @@ impl BeaconStateTile {
                         let (pk, sig, root) = p.sig_parts();
                         self.sig_batch.push_parsed(pk, sig, *root);
                     }
-                    self.vote_pending.push((m, p));
+                    self.vote_pending.push((vote, p));
                 }
-                Err(Feedback::Reject(_)) => Self::reject_gossip(&m, producers),
+                Err(Feedback::Reject(_)) => Self::reject_gossip(&vote, producers),
                 Err(feedback @ Feedback::RequestEnvelope { block_root, att_slot }) => {
                     producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
-                    Self::local_verdict(&m, feedback, producers);
+                    Self::local_verdict(&vote, feedback, producers);
                 }
-                Err(feedback) => Self::local_verdict(&m, feedback, producers),
+                Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
         }
 

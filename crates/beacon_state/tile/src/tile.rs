@@ -29,6 +29,7 @@ use crate::{
         attestation_pool::AttestationPool,
         attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots,
+        gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
         precomputed_epochs::PrecomputedEpochs,
         seen_aggregates::SeenAggregates,
@@ -148,7 +149,7 @@ pub struct BeaconStateTile {
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
     // Pinned: the tail moves as later reads in the same pass arrive.
-    vote_batch: Vec<(NewGossipMsg, TRead)>,
+    vote_batch: Vec<BatchedVote>,
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
