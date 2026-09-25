@@ -608,13 +608,12 @@ impl BeaconStateTile {
                 self.events_producer.write_with(SYNC_COMMITTEE_CONTRIBUTION_SIZE, |buffer| {
                     contribution.write_ssz(buffer.try_into().expect("reserved to size"))
                 });
-            match written {
-                Some(_) => self.events_producer.publish_head(),
-                None => tracing::error!(
+            if written.is_none() {
+                tracing::error!(
                     slot,
                     subcommittee_index,
                     "beacon_state tcache full; contribution not served"
-                ),
+                );
             }
             written
         });
