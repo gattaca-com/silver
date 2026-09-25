@@ -7,6 +7,8 @@ mod generated;
 mod lock_store;
 mod node;
 mod persistence;
+mod raft_storage;
+mod snapshot_transfers;
 #[cfg(target_os = "linux")]
 mod storage;
 mod wire;

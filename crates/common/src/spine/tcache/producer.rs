@@ -209,7 +209,7 @@ impl AllocationState {
     /// not depend on when `read()` is called.
     #[inline]
     fn reserve(&mut self, cache: TCacheRef, len: usize, auto_commit: bool) -> Option<Reservation> {
-        if len > cache.capacity() - size_of::<Slot>() {
+        if len > cache.max_payload_len() {
             return None;
         }
         let reservation_len = cache.reserve_len(self.seq, len);

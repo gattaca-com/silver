@@ -1,15 +1,17 @@
 use std::io;
 
 use buffa::Message as _;
-use raft::eraftpb::{Entry, HardState};
+use raft::eraftpb::{Entry, HardState, Snapshot};
 
 use super::super::{
     generated,
     persistence::RecoveredStorage,
-    wire::{from_wire_entry, to_wire_entry},
+    raft_storage::validate_snapshot,
+    wire::{from_wire_entry, from_wire_snapshot, to_wire_entry, to_wire_snapshot},
 };
 
-const MAGIC: &[u8; 8] = b"SLVRAFT\x01";
+const MAGIC: &[u8; 8] = b"SLVRAFT\x02";
+const LEGACY_MAGIC: &[u8; 8] = b"SLVRAFT\x01";
 const FRAME_HEADER_LEN: usize = 16;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const READ_CHUNK_BYTES: usize = 64 * 1024;
@@ -38,6 +40,14 @@ impl StorageIdentity {
     }
 
     pub(super) fn write(&self, output: &mut Vec<u8>) {
+        self.write_header(output, false);
+    }
+
+    pub(super) fn write_checkpoint(&self, output: &mut Vec<u8>) {
+        self.write_header(output, true);
+    }
+
+    fn write_header(&self, output: &mut Vec<u8>, checkpoint: bool) {
         let start = Frame::start(output);
         output.extend_from_slice(MAGIC);
         output.extend_from_slice(&self.node_id.to_le_bytes());
@@ -45,12 +55,18 @@ impl StorageIdentity {
         for voter in &self.voters {
             output.extend_from_slice(&voter.to_le_bytes());
         }
+        output.push(u8::from(checkpoint));
         Frame::finish(output, start);
     }
 
-    fn verify(&self, payload: &[u8]) -> io::Result<()> {
+    pub(super) fn validate_snapshot(&self, snapshot: &Snapshot) -> io::Result<()> {
+        validate_snapshot(snapshot, &self.voters)
+    }
+
+    fn verify(&self, payload: &[u8]) -> io::Result<bool> {
         let mut cursor = Cursor(payload);
-        if cursor.take(MAGIC.len())? != MAGIC {
+        let magic = cursor.take(MAGIC.len())?;
+        if magic != MAGIC && magic != LEGACY_MAGIC {
             return Err(invalid_data("unsupported Raft journal format"));
         }
         if cursor.u64()? != self.node_id || cursor.u32()? as usize != self.voters.len() {
@@ -61,11 +77,21 @@ impl StorageIdentity {
                 return Err(invalid_data("Raft journal voters do not match configuration"));
             }
         }
-        cursor.finish()
+        let checkpoint = if magic == LEGACY_MAGIC {
+            false
+        } else {
+            match cursor.take(1)?[0] {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid_data("invalid Raft journal header kind")),
+            }
+        };
+        cursor.finish()?;
+        Ok(checkpoint)
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct LogState {
     pub hard_state: HardState,
     pub last_index: u64,
@@ -73,6 +99,21 @@ pub(super) struct LogState {
 }
 
 impl LogState {
+    pub fn from_snapshot(snapshot: &Snapshot, hard_state: &HardState) -> io::Result<Self> {
+        let metadata = snapshot.get_metadata();
+        if metadata.index == 0 ||
+            metadata.index == u64::MAX ||
+            metadata.term == 0 ||
+            metadata.term > hard_state.term ||
+            metadata.index > hard_state.commit
+        {
+            return Err(invalid_data("Raft snapshot is inconsistent with hard state"));
+        }
+        let mut state = hard_state.clone();
+        state.commit = metadata.index;
+        Ok(Self { hard_state: state, last_index: metadata.index, last_term: metadata.term })
+    }
+
     pub fn next(&self, entries: &[Entry], hard_state: Option<&HardState>) -> io::Result<Self> {
         let hard_state = hard_state.unwrap_or(&self.hard_state);
         if hard_state.term < self.hard_state.term ||
@@ -123,7 +164,13 @@ impl LogState {
 pub(super) struct Record<'a> {
     entries: &'a [Entry],
     hard_state: Option<&'a HardState>,
+    snapshot: Option<&'a Snapshot>,
     payload_len: usize,
+}
+
+struct DecodedRecord {
+    hard_state: Option<HardState>,
+    snapshot: Option<Snapshot>,
 }
 
 impl<'a> Record<'a> {
@@ -139,17 +186,43 @@ impl<'a> Record<'a> {
                 return Err(invalid_data("Raft journal record exceeds 64 MiB"));
             }
         }
-        Ok(Self { entries, hard_state, payload_len })
+        Ok(Self { entries, hard_state, snapshot: None, payload_len })
+    }
+
+    pub fn checkpoint(
+        snapshot: &'a Snapshot,
+        entries: &'a [Entry],
+        hard_state: &'a HardState,
+    ) -> io::Result<Self> {
+        let mut record = Self::new(entries, Some(hard_state))?;
+        if snapshot.data.len() > MAX_RECORD_BYTES {
+            return Err(invalid_data("Raft snapshot exceeds journal limit"));
+        }
+        record.payload_len += 4 + to_wire_snapshot(snapshot.clone()).compute_size() as usize;
+        if record.payload_len > MAX_RECORD_BYTES {
+            return Err(invalid_data("Raft checkpoint exceeds journal limit"));
+        }
+        record.snapshot = Some(snapshot);
+        Ok(record)
+    }
+
+    pub fn len(&self) -> u64 {
+        (FRAME_HEADER_LEN + self.payload_len) as u64
     }
 
     pub fn write(&self, output: &mut Vec<u8>) {
         output.reserve(FRAME_HEADER_LEN + self.payload_len);
         let start = Frame::start(output);
-        output.push(u8::from(self.hard_state.is_some()));
+        output.push(u8::from(self.hard_state.is_some()) | (u8::from(self.snapshot.is_some()) << 1));
         if let Some(state) = self.hard_state {
             output.extend_from_slice(&state.term.to_le_bytes());
             output.extend_from_slice(&state.vote.to_le_bytes());
             output.extend_from_slice(&state.commit.to_le_bytes());
+        }
+        if let Some(snapshot) = self.snapshot {
+            let snapshot = to_wire_snapshot(snapshot.clone());
+            output.extend_from_slice(&snapshot.compute_size().to_le_bytes());
+            snapshot.write_to(output);
         }
         output.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
         for entry in self.entries {
@@ -160,17 +233,26 @@ impl<'a> Record<'a> {
         Frame::finish(output, start);
     }
 
-    fn decode(payload: &[u8], entries: &mut Vec<Entry>) -> io::Result<Option<HardState>> {
+    fn decode(payload: &[u8], entries: &mut Vec<Entry>) -> io::Result<DecodedRecord> {
         let mut cursor = Cursor(payload);
-        let state = match cursor.take(1)?[0] {
+        let flags = cursor.take(1)?[0];
+        let hard_state = match flags {
             0 => None,
-            1 => Some(HardState {
+            1 | 3 => Some(HardState {
                 term: cursor.u64()?,
                 vote: cursor.u64()?,
                 commit: cursor.u64()?,
                 ..HardState::default()
             }),
             _ => return Err(invalid_data("invalid Raft hard state tag")),
+        };
+        let snapshot = if flags & 2 != 0 {
+            let len = cursor.u32()? as usize;
+            let snapshot = generated::Snapshot::decode_from_slice(cursor.take(len)?)
+                .map_err(|_| invalid_data("invalid Raft snapshot protobuf"))?;
+            Some(from_wire_snapshot(snapshot).map_err(|_| invalid_data("invalid Raft snapshot"))?)
+        } else {
+            None
         };
         let count = cursor.u32()? as usize;
         if count > cursor.0.len() / 4 {
@@ -185,7 +267,7 @@ impl<'a> Record<'a> {
                 .push(from_wire_entry(entry).map_err(|_| invalid_data("invalid Raft entry type"))?);
         }
         cursor.finish()?;
-        Ok(state)
+        Ok(DecodedRecord { hard_state, snapshot })
     }
 }
 
@@ -193,10 +275,12 @@ pub(super) struct JournalReplay {
     identity: StorageIdentity,
     buffer: Vec<u8>,
     header_read: bool,
+    checkpoint_required: bool,
     record_entries: Vec<Entry>,
     pub recovered: RecoveredStorage,
     pub log: LogState,
     pub valid_len: u64,
+    pub appended_bytes: u64,
 }
 
 impl JournalReplay {
@@ -205,10 +289,12 @@ impl JournalReplay {
             identity,
             buffer: Vec::with_capacity(READ_CHUNK_BYTES),
             header_read: false,
+            checkpoint_required: false,
             record_entries: Vec::new(),
             recovered: RecoveredStorage::default(),
             log: LogState::default(),
             valid_len: 0,
+            appended_bytes: 0,
         }
     }
 
@@ -217,15 +303,55 @@ impl JournalReplay {
         let mut consumed = 0;
         while let Some(frame) = Frame::read(&self.buffer[consumed..])? {
             if !self.header_read {
-                self.identity.verify(frame.payload)?;
+                self.checkpoint_required = self.identity.verify(frame.payload)?;
                 self.header_read = true;
             } else {
-                let hard_state = Record::decode(frame.payload, &mut self.record_entries)?;
-                let next = self.log.next(&self.record_entries, hard_state.as_ref())?;
+                let record = Record::decode(frame.payload, &mut self.record_entries)?;
+                if record.snapshot.is_none() {
+                    self.appended_bytes += (FRAME_HEADER_LEN + frame.payload.len()) as u64;
+                }
+                if self.checkpoint_required &&
+                    self.recovered.snapshot.is_empty() &&
+                    record.snapshot.is_none()
+                {
+                    return Err(invalid_data("Raft journal is missing its checkpoint"));
+                }
+                if let Some(snapshot) = record.snapshot {
+                    if !self.checkpoint_required ||
+                        self.log.last_index != 0 ||
+                        self.log.hard_state != HardState::default()
+                    {
+                        return Err(invalid_data("Raft checkpoint must precede journal appends"));
+                    }
+                    self.identity.validate_snapshot(&snapshot)?;
+                    self.log = LogState::from_snapshot(
+                        &snapshot,
+                        record
+                            .hard_state
+                            .as_ref()
+                            .ok_or_else(|| invalid_data("checkpoint has no hard state"))?,
+                    )?;
+                    self.recovered.snapshot = snapshot;
+                }
+                let next = self.log.next(&self.record_entries, record.hard_state.as_ref())?;
                 if let Some(first) = self.record_entries.first() {
-                    let retain = usize::try_from(first.index - 1)
-                        .map_err(|_| invalid_data("Raft index exceeds address space"))?;
-                    if retain > 0 && self.recovered.entries[retain - 1].term > first.term {
+                    let base = self.recovered.snapshot.get_metadata().index + 1;
+                    let retain = usize::try_from(
+                        first
+                            .index
+                            .checked_sub(base)
+                            .ok_or_else(|| invalid_data("append precedes Raft snapshot"))?,
+                    )
+                    .map_err(|_| invalid_data("Raft index exceeds address space"))?;
+                    if retain > self.recovered.entries.len() {
+                        return Err(invalid_data("Raft append leaves a gap after snapshot"));
+                    }
+                    let previous_term = if retain == 0 {
+                        self.recovered.snapshot.get_metadata().term
+                    } else {
+                        self.recovered.entries[retain - 1].term
+                    };
+                    if previous_term > first.term {
                         return Err(invalid_data("Raft entry terms regressed across an append"));
                     }
                     self.recovered.entries.truncate(retain);
@@ -244,6 +370,9 @@ impl JournalReplay {
     pub fn finish(&self) -> io::Result<bool> {
         if !self.header_read {
             return Err(invalid_data("Raft journal has no complete identity header"));
+        }
+        if self.checkpoint_required && self.recovered.snapshot.is_empty() {
+            return Err(invalid_data("Raft journal has no complete checkpoint"));
         }
         Ok(!self.buffer.is_empty())
     }
