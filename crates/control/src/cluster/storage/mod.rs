@@ -3,9 +3,11 @@ mod journal;
 use std::{io, path::Path};
 
 use flux_disk::{DiskConfig, DiskEvent, DiskIo, FileToken, OpenOptions, OperationId};
+pub use journal::StorageIdentity;
 use journal::{JournalReplay, LogState, READ_CHUNK_BYTES, Record};
-pub use journal::{RecoveredStorage, StorageIdentity};
 use raft::eraftpb::{Entry, HardState};
+
+use super::persistence::RecoveredStorage;
 
 #[derive(Debug)]
 pub enum ClusterStorageEvent {

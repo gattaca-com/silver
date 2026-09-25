@@ -2,6 +2,7 @@ use std::{
     error::Error,
     io,
     net::IpAddr,
+    path::Path,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -28,13 +29,17 @@ use silver_common::{
     tracing::initialise_tracing_log,
 };
 use silver_config::Config;
-use silver_control::{Controller, cluster::AttestationClusterConfig, sync_engine::SyncEngine};
+use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
 use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
+
+use crate::cluster::ClusterStartup;
+
+mod cluster;
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -134,19 +139,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     local_enr.set_attnets(subnets, keypair.secret_key())?;
 
     // Cluster configuration
-    let (cluster_config, cluster_nodes) = config
+    let cluster_startup = config
         .cluster_config()
-        .map(|c| {
-            let voters = c.nodes.clone();
-            let node_id = match voters.iter().find(|(_, enr)| enr.node_id() == local_enr.node_id())
-            {
-                Some((id, _)) => *id,
-                None => return Err("no local node configured in cluster config"),
-            };
-            Ok((AttestationClusterConfig::new(node_id, voters.keys().copied().collect()), voters))
+        .map(|cluster| {
+            ClusterStartup::new(cluster, &local_enr, Path::new(config.data_storage_dir()))
         })
-        .transpose()?
-        .unzip();
+        .transpose()?;
+    let cluster_nodes = config.cluster_config().map(|cluster| cluster.nodes.clone());
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
@@ -268,7 +267,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         control_rpc_producer,
         tcaches,
         cluster_outbound_producer,
-        cluster_config,
+        cluster_startup.as_ref().map(|cluster| cluster.config.clone()),
         SyncEngine::new(
             config.syncing_config(),
             booting_from_local_checkpoint,

@@ -4801,6 +4801,7 @@ dependencies = [
  "silver_network",
  "silver_peer",
  "silver_storage",
+ "tempfile",
  "tracing",
 ]
 
@@ -4982,6 +4983,7 @@ dependencies = [
  "flux-disk",
  "fxhash",
  "raft",
+ "rand 0.8.6",
  "silver_chain_spec",
  "silver_columns",
  "silver_common",

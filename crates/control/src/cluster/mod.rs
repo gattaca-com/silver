@@ -6,6 +6,7 @@ mod command;
 mod generated;
 mod lock_store;
 mod node;
+mod persistence;
 #[cfg(target_os = "linux")]
 mod storage;
 mod wire;
@@ -19,6 +20,7 @@ pub use node::{
     AttestationCluster, AttestationClusterConfig, AttestationDecision, ClusterError, ClusterEvent,
     ProposalId, ProposeError,
 };
+pub use persistence::{ClusterStorageConfig, RecoveredStorage};
 #[cfg(target_os = "linux")]
-pub use storage::{ClusterStorage, ClusterStorageEvent, RecoveredStorage, StorageIdentity};
+pub use storage::{ClusterStorage, ClusterStorageEvent, StorageIdentity};
 pub(crate) use wire::{decode_message, encode_message};
