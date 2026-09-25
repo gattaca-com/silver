@@ -13,11 +13,11 @@ pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_chain_spec::ForkName;
+pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
     Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
     SUBNETS_PER_NODE, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
 };
-pub use silver_common::{SyncCommitteeSubnets, cell_store::PartialColumnsMode};
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
 mod chain_config;
@@ -41,6 +41,23 @@ const fn default_u32<const V: u32>() -> u32 {
 
 const fn default_u64<const V: u64>() -> u64 {
     V
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncCommitteeSubnets {
+    #[default]
+    All,
+    OnDemand,
+}
+
+impl SyncCommitteeSubnets {
+    pub fn long_lived(self) -> u8 {
+        match self {
+            Self::All => (1 << SYNC_COMMITTEE_SUBNETS) - 1,
+            Self::OnDemand => 0,
+        }
+    }
 }
 
 /// The mainnet Fulu digest, for the default run that names no config file.
@@ -403,7 +420,6 @@ impl Config {
         builder.eth2(eth2);
         // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
         builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
-        builder.syncnets((1u8 << SYNC_COMMITTEE_SUBNETS) - 1);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);
@@ -682,6 +698,7 @@ mod tests {
         let mut enr = cfg.enr().unwrap();
         let key = cfg.keypair().unwrap();
         enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
+        enr.set_syncnets(SyncCommitteeSubnets::All.long_lived(), key.secret_key()).unwrap();
         // Unpadded base64: 4 chars per 3 bytes.
         let bytes = enr.size();
         assert!(bytes <= 300, "ENR is {bytes} bytes, discv5 caps records at 300");

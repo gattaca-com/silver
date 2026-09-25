@@ -319,10 +319,14 @@ impl BeaconStateTile {
                     // Pair only the first candidate for each dedup key, but
                     // retain later candidates. If that representative makes
                     // the batch fail, fallback verification can still find a
-                    // later valid candidate for the same key.
+                    // later valid candidate for the same key. A sync message
+                    // on several subnets carries one signature, paired once.
                     let key = p.dedup_key();
-                    if !self.vote_pending.iter().any(|(_, q)| q.dedup_key() == key) {
-                        let (pk, sig, root) = p.sig_parts();
+                    let (pk, sig, root) = p.sig_parts();
+                    let paired = self.vote_pending.iter().any(|(_, q)| q.dedup_key() == key) ||
+                        matches!(p, PreparedVote::SyncMessage(_)) &&
+                            self.sig_batch.contains(pk, sig, root);
+                    if !paired {
                         self.sig_batch.push_parsed(pk, sig, *root);
                     }
                     self.vote_pending.push((vote, p));

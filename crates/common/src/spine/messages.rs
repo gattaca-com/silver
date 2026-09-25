@@ -901,6 +901,9 @@ pub enum PeerControl {
         epoch: u64,
         enr_fork_id: [u8; 16],
     },
+    UpdateEnrSyncnets {
+        syncnets: u8,
+    },
     P2pGossipSubscribe {
         p2p: PeerId,
         p2p_connection: usize,

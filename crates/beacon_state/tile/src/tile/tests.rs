@@ -2830,6 +2830,27 @@ fn sync_message_forged_signature_rejected_by_fallback() {
 }
 
 #[test]
+fn sync_message_on_several_subnets_applies_on_each() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.head_block_root();
+    let wall = tile.ticker.current_slot();
+
+    let msg = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
+    for subnet in [0, 2] {
+        let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(subnet));
+        tile.defer_vote(m, &mut adapter.producers);
+    }
+
+    tile.flush_votes(&mut adapter.producers);
+    for subnet in [0, 2] {
+        assert!(tile.seen_sync_msgs[subnet].contains(wall, 0), "{subnet}");
+        assert!(tile.sync_contribution_pool.contribution_ssz(wall, subnet as u64, bbr).is_some());
+    }
+}
+
+#[test]
 fn mixed_vote_batch_applies_all_kinds() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);

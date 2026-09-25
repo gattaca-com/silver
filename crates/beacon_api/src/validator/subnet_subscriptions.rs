@@ -4,7 +4,9 @@ use serde::{
     Deserialize, Deserializer,
     de::{SeqAccess, Visitor},
 };
-use silver_beacon_state_data::{SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE};
+use silver_beacon_state_data::{
+    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE,
+};
 use silver_common::{
     BeaconApiRequest, SYNC_COMMITTEE_SUBNETS, SlotSubnets, SubnetsBySlot,
     compute_subnet_for_attestation, ssz_view::MAX_COMMITTEES_PER_SLOT,
@@ -21,12 +23,14 @@ use crate::{
 
 pub(crate) fn post_beacon_committee_subscriptions(
     req: &Request<'_>,
-    _ctx: &ApiCtx,
+    ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
+    let window = SubnetsBySlot::window(ctx.node_status.wall_slot);
     let mut by_slot = SubnetsBySlot::default();
     let parsed = each_body_entry(req.body, |_, entry: CommitteeSubscription| {
-        if let Some(slot_subnets) = entry.slot_subnets() {
+        if let Some(slot_subnets) = entry.slot_subnets().filter(|held| window.contains(&held.slot))
+        {
             by_slot.insert(slot_subnets);
         }
     });
@@ -78,11 +82,17 @@ impl CommitteeSubscription {
 
 pub(crate) fn post_sync_committee_subscriptions(
     req: &Request<'_>,
-    _ctx: &ApiCtx,
+    ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
+    let wall_epoch = ctx.node_status.wall_slot / SLOTS_PER_EPOCH;
+    let period_start = wall_epoch - wall_epoch % EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+    let valid_until = wall_epoch + 1..=period_start + 2 * EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+
     let mut until_epochs = [0; SYNC_COMMITTEE_SUBNETS];
+    let mut out_of_range = false;
     let parsed = each_body_entry(req.body, |_, entry: SyncCommitteeSubscription| {
+        out_of_range |= !valid_until.contains(&entry.until_epoch);
         for (subnet, until_epoch) in until_epochs.iter_mut().enumerate() {
             if entry.subnets >> subnet & 1 == 1 {
                 *until_epoch = entry.until_epoch.max(*until_epoch);
@@ -91,6 +101,10 @@ pub(crate) fn post_sync_committee_subscriptions(
     });
     if let Err(message) = parsed {
         return resp.error(400, message);
+    }
+    if out_of_range {
+        return resp
+            .error(400, "until_epoch is not within the current or next sync committee period");
     }
     if until_epochs == [0; SYNC_COMMITTEE_SUBNETS] {
         return resp.ok();
@@ -204,24 +218,16 @@ mod tests {
     }
 
     #[test]
-    fn slot_evicts_the_one_a_ring_length_before_it() {
-        let body = (0..=SubnetsBySlot::SLOTS as u64)
-            .map(|slot| entry(0, 1, slot, false))
-            .reduce(|body, entry| body + "," + &entry)
-            .unwrap();
-        let mut submissions = submissions();
-        let (outcome, response) =
-            dispatch_into(&anchor_ctx(), &posting(PATH, &format!("[{body}]")), &mut submissions);
-        assert_eq!(status_code(&response), "200");
-        let Outcome::Response(Some(BeaconApiRequest::BeaconCommitteeSubscriptions {
-            subscriptions,
-        })) = outcome
-        else {
-            panic!("{outcome:?}")
-        };
-        let written = submissions.read_buffer(subscriptions).unwrap();
-        assert_eq!(SlotSubnets::decode_all(written).count(), SubnetsBySlot::SLOTS);
-        assert!(SlotSubnets::decode_all(written).all(|held| held.slot != 0));
+    fn slots_outside_the_lookahead_from_the_wall_slot_are_dropped() {
+        let mut ctx = anchor_ctx();
+        ctx.node_status.wall_slot = 100;
+        let last = 100 + SubnetsBySlot::LOOKAHEAD_SLOTS;
+        for (slot, forwarded) in [(99, false), (100, true), (last, true), (last + 1, false)] {
+            let body = format!("[{}]", entry(0, 1, slot, false));
+            let (outcome, response) = dispatch(&ctx, &posting(PATH, &body));
+            assert_eq!(status_code(&response), "200", "{slot}");
+            assert_eq!(outcome != Outcome::Response(None), forwarded, "{slot}");
+        }
     }
 
     #[test]
@@ -271,6 +277,24 @@ mod tests {
             let (outcome, response) = post_to(SYNC_PATH, &body);
             assert_eq!(outcome, Outcome::Response(None), "{body}");
             assert_eq!(status_code(&response), "200", "{body}");
+        }
+    }
+
+    #[test]
+    fn sync_subscriptions_past_or_beyond_the_next_period_are_a_400() {
+        let mut ctx = anchor_ctx();
+        let wall_epoch = EPOCHS_PER_SYNC_COMMITTEE_PERIOD + 7;
+        ctx.node_status.wall_slot = wall_epoch * SLOTS_PER_EPOCH;
+        let last_valid = 3 * EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        for (until_epoch, status) in [
+            (wall_epoch, "400"),
+            (wall_epoch + 1, "200"),
+            (last_valid, "200"),
+            (last_valid + 1, "400"),
+        ] {
+            let body = format!("[{}]", sync_entry("\"0\"", &format!("\"{until_epoch}\"")));
+            let (_, response) = dispatch(&ctx, &posting(SYNC_PATH, &body));
+            assert_eq!(status_code(&response), status, "{until_epoch}");
         }
     }
 

@@ -11,8 +11,8 @@ use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateReader
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, SilverSpine, StreamProtocol, SyncCommitteeSubnets, TCache, TCacheId,
-    TCacheProducer, TCacheRead, TCacheTable, TProducer,
+    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead,
+    TCacheTable, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
@@ -189,8 +189,8 @@ impl PmBsHarness {
             None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
-            [0; 8],
-            SyncCommitteeSubnets::OnDemand,
+            0,
+            0,
         )
         .expect("controller");
         ctl.open_tcaches().expect("ctl tcaches");

@@ -21,8 +21,8 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
-    TCacheTable,
+    APP_NAME, Enr, GossipTopic, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer,
+    TCacheReader, TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
@@ -124,14 +124,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         chain_config.playload_lookahead(),
     );
 
-    // Long-lived attnets: advertised from boot (peer retention exempts us
+    // Long-lived subnets: advertised from boot (peer retention exempts us
     // from excess-peer pruning); the gossip subscriptions themselves
-    // activate once Following — see `Controller::pending_subnet_topics`.
+    // activate once Following — see `Controller::long_lived_pending`.
     let boot_wall_slot = ticker.current_slot();
     let boot_epoch = boot_wall_slot / SLOTS_PER_EPOCH;
     let attnet_count = config.attestation_subnet_count();
     let subnets = local_enr.node_id().attestation_subnets(boot_epoch, attnet_count);
     local_enr.set_attnets(subnets, keypair.secret_key())?;
+    let mut gossip_topics = config.gossip_topics()?;
+    let mut long_lived_attnets = u64::from_le_bytes(subnets);
+    let mut long_lived_syncnets = config.sync_committee_subnets().long_lived();
+    // Configured subnet topics subscribe at boot, so duties never leave them.
+    for topic in &gossip_topics {
+        match *topic {
+            GossipTopic::BeaconAttestation(subnet) => long_lived_attnets |= 1 << subnet,
+            GossipTopic::SyncCommittee(subnet) => long_lived_syncnets |= 1 << subnet,
+            _ => {}
+        }
+    }
+    local_enr.set_syncnets(long_lived_syncnets, keypair.secret_key())?;
 
     // Cluster configuration
     let (cluster_config, cluster_nodes) = config
@@ -196,10 +208,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let das_custody_groups = local_enr
         .node_id()
         .custody_groups(local_enr.cgc().unwrap_or(silver_common::SAMPLES_PER_SLOT as u64) as u8);
-    let mut gossip_topics = config.gossip_topics()?;
     for i in 0..128 {
         if das_custody_groups & (1 << i) != 0 {
-            gossip_topics.push(silver_common::GossipTopic::DataColumnSidecar(i));
+            gossip_topics.push(GossipTopic::DataColumnSidecar(i));
         }
     }
 
@@ -276,8 +287,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             spec.clone(),
         ),
         spec.clone(),
-        subnets,
-        config.sync_committee_subnets(),
+        long_lived_attnets,
+        long_lived_syncnets,
     )?;
     control_tile = control_tile
         .with_data_columns_cache(

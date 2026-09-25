@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use silver_beacon_state_data::SyncSubcommittee;
 use silver_common::{GossipTopic, SYNC_COMMITTEE_SUBNETS, ssz_view::SYNC_COMMITTEE_MSG_SIZE};
 
 use crate::{
@@ -35,8 +34,13 @@ struct SubmittedSyncCommitteeMessage {
 impl SubmittedEntry for SubmittedSyncCommitteeMessage {
     fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
         let subnets = ctx.read_state(|view| {
-            usize::try_from(self.validator_index)
-                .map_or(0, |validator| SyncSubcommittee::subnets_of(&view, validator))
+            usize::try_from(self.validator_index).map_or(0, |validator| {
+                view.longtail.sync_committees().subnets_of(
+                    view.slot.slot_number(),
+                    validator,
+                    &view.validators,
+                )
+            })
         });
         if subnets == 0 {
             return Err("the validator holds no seat in the sync committee");

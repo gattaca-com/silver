@@ -12,9 +12,8 @@ pub use crate::{
         GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain,
         GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE,
         MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE, MESSAGE_ID_LEN, MessageId, MessageIdHasher,
-        SYNC_COMMITTEE_SUBNETS, SubnetsBySlot, SyncCommitteeSubnets,
-        compute_subnet_for_attestation, gossip_topic_for_counter_slot, msg_id_invalid_snappy,
-        msg_id_valid_snappy,
+        SYNC_COMMITTEE_SUBNETS, SubnetsBySlot, compute_subnet_for_attestation,
+        gossip_topic_for_counter_slot, msg_id_invalid_snappy, msg_id_valid_snappy,
     },
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
     identity::{

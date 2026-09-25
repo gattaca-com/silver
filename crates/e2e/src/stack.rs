@@ -14,9 +14,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_beacon_state_data::SpecConfig;
 use silver_common::{
-    Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, SyncCommitteeSubnets, TCache,
-    TCacheId, TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode,
-    ssz_view::METADATA_SIZE,
+    Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer,
+    TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode, ssz_view::METADATA_SIZE,
 };
 use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
 use silver_control::{Controller, sync_engine::SyncEngine};
@@ -322,8 +321,8 @@ impl PublisherStack {
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
-            [0; 8],
-            SyncCommitteeSubnets::OnDemand,
+            0,
+            0,
         )
         .map_err(std::io::Error::other)?;
         controller.open_tcaches().map_err(std::io::Error::other)?;
@@ -462,8 +461,8 @@ impl EchoStack {
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
-            [0; 8],
-            SyncCommitteeSubnets::OnDemand,
+            0,
+            0,
         )
         .map_err(std::io::Error::other)?;
         controller.open_tcaches().map_err(std::io::Error::other)?;

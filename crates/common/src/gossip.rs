@@ -1,6 +1,5 @@
 use std::{fmt, ops::RangeInclusive};
 
-use serde::{Deserialize, Serialize};
 pub use silver_beacon_state_data::SYNC_COMMITTEE_SUBNETS;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 
@@ -124,14 +123,6 @@ impl From<GossipTopic> for String {
 
 pub const ATTESTATION_SUBNETS: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SyncCommitteeSubnets {
-    #[default]
-    All,
-    OnDemand,
-}
-
 pub struct SubnetsBySlot {
     slots: [SlotSubnets; Self::SLOTS],
 }
@@ -143,8 +134,18 @@ impl Default for SubnetsBySlot {
 }
 
 impl SubnetsBySlot {
-    /// A slot evicts the one `SLOTS` before it.
-    pub const SLOTS: usize = 3 * SLOTS_PER_EPOCH as usize;
+    pub const LOOKAHEAD_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
+    /// A duty's subnet is kept this long after its slot.
+    pub const LINGER_SLOTS: u64 = 1;
+    /// A slot evicts the one `SLOTS` before it, so every slot from
+    /// `LINGER_SLOTS` behind the wall slot to [`Self::window`]'s end has its
+    /// own entry.
+    pub const SLOTS: usize = (Self::LINGER_SLOTS + Self::LOOKAHEAD_SLOTS) as usize + 1;
+
+    /// The duty slots worth adding at `wall_slot`.
+    pub fn window(wall_slot: u64) -> RangeInclusive<u64> {
+        wall_slot..=wall_slot + Self::LOOKAHEAD_SLOTS
+    }
 
     pub fn insert(&mut self, added: SlotSubnets) {
         debug_assert_eq!(added.aggregating & !added.attesting, 0);

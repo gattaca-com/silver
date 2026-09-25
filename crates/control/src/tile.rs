@@ -12,8 +12,8 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SlotSubnets, SyncCommitteeSubnets, SyncNeed, SyncUpdate, TCacheError,
-    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
+    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
@@ -28,7 +28,7 @@ use self::{
     attestation_cluster::{AttestationClusterHandler, PendingAttestation},
     gossip_schedule::GossipSchedule,
     local_validation::{LocalMessage, LocalValidation, produce_response},
-    subnet_duties::SubnetDuties,
+    subnet_duties::{SubnetDuties, Subnets},
 };
 use crate::{
     cell_ingress::{CellIngress, handle_data_column_event},
@@ -68,10 +68,10 @@ pub struct Controller {
     /// targeted RPC assertions.
     auto_ping: bool,
 
-    /// Long-lived subnet topics advertised (ENR/MetaData) from boot but
+    /// Long-lived subnets are advertised (ENR/MetaData) from boot but
     /// subscribed only once the node is Following — grafted-while-syncing
     /// meshes would earn P3 deficit at peers since nothing validates or
-    /// forwards until then. Cleared on the first transition.
+    /// forwards until then.
     long_lived_pending: bool,
     subnet_duties: SubnetDuties,
     cell_ingress: Option<CellIngress>,
@@ -99,8 +99,8 @@ impl Controller {
         cluster_config: Option<AttestationClusterConfig>,
         sync_engine: SyncEngine,
         spec: Arc<SpecConfig>,
-        long_lived_attnets: [u8; 8],
-        sync_committee_subnets: SyncCommitteeSubnets,
+        long_lived_attnets: u64,
+        long_lived_syncnets: u8,
     ) -> Result<Self, ClusterError> {
         let now = Instant::now();
         let attestation_cluster =
@@ -119,10 +119,10 @@ impl Controller {
             last_peer_persist: now,
             auto_ping: true,
             long_lived_pending: true,
-            subnet_duties: SubnetDuties::new(
-                u64::from_le_bytes(long_lived_attnets),
-                sync_committee_subnets,
-            ),
+            subnet_duties: SubnetDuties::new(Subnets {
+                attnets: long_lived_attnets,
+                syncnets: long_lived_syncnets,
+            }),
             cell_ingress: None,
             partial_exchange: None,
             spec,
@@ -248,9 +248,13 @@ impl Controller {
             return;
         };
         tracing::debug!(wall_slot, ?changes, "duty subnets changed");
-        self.peer_manager.set_duty_attnets(changes.attesting);
-        self.peer_manager.activate_topics(changes.joined(), emit);
-        self.peer_manager.deactivate_topics(changes.left(), now, emit);
+        self.peer_manager.update_duty_subnets(
+            changes.attesting,
+            changes.joined(),
+            changes.left(),
+            now,
+            emit,
+        );
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {

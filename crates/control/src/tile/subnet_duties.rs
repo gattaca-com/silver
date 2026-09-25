@@ -2,13 +2,10 @@ use std::time::Duration;
 
 use silver_common::{
     ATTESTATION_SUBNETS, GossipTopic, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS, SlotSubnets,
-    SubnetsBySlot, SyncCommitteeSubnets,
+    SubnetsBySlot,
 };
 
 const LEAD_SLOTS: u64 = 4;
-const LINGER_SLOTS: u64 = 1;
-const LOOKAHEAD_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
-const _: () = assert!(LINGER_SLOTS + LOOKAHEAD_SLOTS < SubnetsBySlot::SLOTS as u64);
 
 #[derive(Default)]
 pub(super) struct SubnetDuties {
@@ -59,15 +56,8 @@ impl SubnetChanges {
 }
 
 impl SubnetDuties {
-    pub(super) fn new(
-        long_lived_attnets: u64,
-        sync_committee_subnets: SyncCommitteeSubnets,
-    ) -> Self {
-        let syncnets = match sync_committee_subnets {
-            SyncCommitteeSubnets::All => (1 << SYNC_COMMITTEE_SUBNETS) - 1,
-            SyncCommitteeSubnets::OnDemand => 0,
-        };
-        Self { long_lived: Subnets { attnets: long_lived_attnets, syncnets }, ..Self::default() }
+    pub(super) fn new(long_lived: Subnets) -> Self {
+        Self { long_lived, ..Self::default() }
     }
 
     pub(super) fn long_lived(&self) -> Subnets {
@@ -80,7 +70,7 @@ impl SubnetDuties {
     }
 
     pub(super) fn add(&mut self, added: SlotSubnets, wall_slot: u64) {
-        if added.slot < wall_slot || added.slot > wall_slot + LOOKAHEAD_SLOTS {
+        if !SubnetsBySlot::window(wall_slot).contains(&added.slot) {
             return;
         }
         self.duties.insert(added);
@@ -136,7 +126,7 @@ impl SubnetDuties {
         extra_lead_slots: u64,
         subnets: impl Fn(&SlotSubnets) -> u64,
     ) -> u64 {
-        let first = wall_slot.saturating_sub(LINGER_SLOTS);
+        let first = wall_slot.saturating_sub(SubnetsBySlot::LINGER_SLOTS);
         let last = wall_slot + LEAD_SLOTS + extra_lead_slots;
         self.duties.subnets_in(first..=last, subnets)
     }
@@ -182,7 +172,7 @@ mod tests {
 
     #[test]
     fn duty_subnet_is_held_from_lead_to_linger_except_long_lived() {
-        let mut duties = SubnetDuties::new(1 << 1, SyncCommitteeSubnets::OnDemand);
+        let mut duties = SubnetDuties::new(Subnets { attnets: 1 << 1, syncnets: 0 });
         duties.add(aggregating(110, &[1, 5]), 100);
 
         assert_eq!(duties.advance(100), None);
@@ -221,7 +211,7 @@ mod tests {
     fn past_and_distant_duties_are_ignored() {
         let mut duties = SubnetDuties::default();
         duties.add(aggregating(99, &[0]), 100);
-        duties.add(aggregating(100 + LOOKAHEAD_SLOTS + 1, &[0]), 100);
+        duties.add(aggregating(100 + SubnetsBySlot::LOOKAHEAD_SLOTS + 1, &[0]), 100);
         assert_eq!(duties.advance(100), None);
         assert_eq!(duties.duties.held().count(), 0);
     }
@@ -242,7 +232,7 @@ mod tests {
 
     #[test]
     fn long_lived_sync_subnets_are_never_joined_or_left() {
-        let mut duties = SubnetDuties::new(0, SyncCommitteeSubnets::All);
+        let mut duties = SubnetDuties::new(Subnets { attnets: 0, syncnets: 0b1111 });
         duties.add_sync([12, 12, 12, 12]);
         assert_eq!(duties.advance(9 * SLOTS_PER_EPOCH), None);
         assert_eq!(duties.advance(12 * SLOTS_PER_EPOCH), None);

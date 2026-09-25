@@ -11,7 +11,7 @@ use std::{
 use silver_common::{
     AgentString, Enr, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId, RpcOutbound,
     RpcSeverity, StreamProtocol, SyncUpdate,
-    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
+    ssz_view::{METADATA_SIZE, MetadataView, STATUS_V2_SIZE},
 };
 use silver_config::{ScoreParams, SyncingConfig};
 
@@ -130,19 +130,18 @@ pub struct PeerManager {
     /// engine selects one.
     current_target: SyncUpdate,
 
-    /// SSZ Bitvector[64] of attestation subnets we subscribe to, derived
-    /// once from `our_topics`. Bit N set ↔ `BeaconAttestation(N) ∈
-    /// our_topics`. Matched bitwise against an ENR's `attnets` to detect
-    /// peers that can fill our attnet mesh.
+    /// SSZ Bitvector[64] of attestation subnets we need peers on: the ones
+    /// we subscribe to plus the duty subnets we only publish on. Matched
+    /// bitwise against an ENR's `attnets` to find peers covering them.
     required_attnets: [u8; 8],
     /// SSZ Bitvector[N] of sync-committee subnets we subscribe to (same
     /// scheme as `required_attnets`). N is small — the eth2 spec uses 4 —
     /// and the wire encoding is one byte; we keep that one byte here too.
     required_syncnets: u8,
-    /// Subnets whose mesh was still short of `d` after the last sweep —
-    /// i.e. we ran out of connected subscribers, not out of graft slots.
-    /// Same bit layout as `required_*`; peers covering one of these dial
-    /// past the ordinary caps.
+    /// Subnets still short of `d` peers after the last sweep: a mesh we ran
+    /// out of connected subscribers to fill, or a duty subnet with too few
+    /// subscribers to publish to. Same bit layout as `required_*`; peers
+    /// covering one of these dial past the ordinary caps.
     deficit_attnets: [u8; 8],
     deficit_syncnets: u8,
     deficit_columns: u128,
@@ -194,6 +193,9 @@ pub struct PeerManager {
     /// Our local beacon status and metadata.
     status: Option<[u8; STATUS_V2_SIZE]>,
     metadata: [u8; METADATA_SIZE],
+    /// Advertised from boot although their topics subscribe only once
+    /// Following.
+    long_lived_syncnets: u8,
     earliest_available_slot: u64,
 
     /// Our data-column custody set (bitmask of column indices), derived from
@@ -275,6 +277,7 @@ impl PeerManager {
             last_discovery: now,
             database,
             status: None,
+            long_lived_syncnets: MetadataView::syncnets(&metadata),
             metadata,
             earliest_available_slot: u64::MAX,
             custody_columns,
@@ -456,6 +459,7 @@ impl PeerManager {
             }
             PeerEvent::DiscExternalAddress { address: _, seq } => {
                 // update metadata seq number so that it matches ENR
+                let seq = seq.max(MetadataView::seq_number(&self.metadata));
                 self.metadata[..8].copy_from_slice(&seq.to_le_bytes());
             }
             PeerEvent::NewGossip { p2p_peer, topic, msg_hash, recv_ts, idontwant } => {

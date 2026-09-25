@@ -1,8 +1,7 @@
 use crate::{
     StateReadView, ValidatorsView,
     types::{
-        BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
-        SYNC_SUBCOMMITTEE_SIZE, Slot,
+        BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_SIZE, Slot,
     },
 };
 
@@ -35,15 +34,6 @@ impl<'a> SyncSubcommittee<'a> {
         } else {
             Self::Current(&committees.indices()[base..end])
         }
-    }
-
-    pub fn subnets_of(view: &StateReadView<'a>, validator: usize) -> u8 {
-        if validator >= view.validators.count() {
-            return 0;
-        }
-        (0..SYNC_COMMITTEE_SUBNETS)
-            .filter(|&subnet| Self::of(view, subnet).contains(validator, &view.validators))
-            .fold(0, |subnets, subnet| subnets | 1 << subnet)
     }
 
     pub fn contains(&self, validator: usize, validators: &ValidatorsView<'_>) -> bool {

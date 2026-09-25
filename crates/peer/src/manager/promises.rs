@@ -330,13 +330,8 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         let meshed = self.mesh.get(&topic).and_then(|m| m.get(digest));
-        let Some(meshed_peers) = meshed.filter(|mesh| !mesh.peers.is_empty()) else {
-            if sender == LOCAL_GOSSIP_STREAM_ID.peer() {
-                self.fan_out_to_subscribers(msg_hash, topic, digest, tcache, emit);
-            }
-            return;
-        };
-        for peer in &meshed_peers.peers {
+        let mesh_len = meshed.map_or(0, |mesh| mesh.peers.len());
+        for peer in meshed.into_iter().flat_map(|mesh| &mesh.peers) {
             let Some(peer_state) = self.peers.get_mut(peer) else {
                 continue;
             };
@@ -361,24 +356,33 @@ impl PeerManager {
             crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: *peer, tcache })));
         }
+
+        let d = self.params.d as usize;
+        if sender == LOCAL_GOSSIP_STREAM_ID.peer() && mesh_len < d {
+            self.fan_out_to_subscribers(msg_hash, topic, digest, tcache, d - mesh_len, emit);
+        }
     }
 
+    /// Tops a short or absent mesh up to `d` for our own messages.
     fn fan_out_to_subscribers(
         &mut self,
         msg_hash: MessageId,
         topic: GossipTopic,
         digest: [u8; 4],
         tcache: TCacheRead,
+        count: usize,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let d = self.params.d as usize;
+        let meshed =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map_or(&[][..], |m| &m.peers);
         let publish_threshold = self.params.publish_threshold;
-        let subscribers = self.peers.iter().filter(|(_, peer)| {
-            peer.subscriptions.contains_key(&(digest, topic)) &&
+        let subscribers = self.peers.iter().filter(|&(conn, peer)| {
+            !meshed.contains(conn) &&
+                peer.subscriptions.contains_key(&(digest, topic)) &&
                 peer.cached_score >= publish_threshold &&
                 !peer.msg_cache_contains(&msg_hash)
         });
-        for (&peer_id, _) in subscribers.take(d) {
+        for (&peer_id, _) in subscribers.take(count) {
             crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, tcache })));
         }
@@ -1369,7 +1373,7 @@ mod tests {
     }
 
     #[test]
-    fn local_message_without_a_mesh_fans_out_to_subscribers() {
+    fn local_message_tops_a_short_mesh_up_with_subscribers() {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.d = 2;
@@ -1420,5 +1424,13 @@ mod tests {
             silver_common::P2pStreamId::new(1, 0, silver_common::StreamProtocol::GossipSub, false);
         send(&mut mgr, &mut cap, forwarded);
         assert_eq!(recipients(&cap).count(), 0, "{:?}", cap.0);
+
+        mgr.test_mesh_extend(topic, [1]);
+        send(&mut mgr, &mut cap, LOCAL_GOSSIP_STREAM_ID);
+        let mut sent: Vec<_> = recipients(&cap).collect();
+        sent.sort();
+        assert_eq!(sent.len(), 2, "{:?}", cap.0);
+        assert_eq!(sent[0], 1, "the mesh peer gets it: {:?}", cap.0);
+        assert!((2..=3).contains(&sent[1]), "{:?}", cap.0);
     }
 }

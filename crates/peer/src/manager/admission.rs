@@ -288,9 +288,7 @@ impl PeerManager {
     }
 
     fn has_subnet_deficit(&self) -> bool {
-        self.deficit_attnets.iter().any(|&subnets| subnets != 0) ||
-            self.deficit_syncnets != 0 ||
-            self.deficit_columns != 0
+        self.deficit_attnets.iter().any(|&subnets| subnets != 0) || self.deficit_syncnets != 0
     }
 
     pub(super) fn maybe_request_discovery(
@@ -1154,6 +1152,10 @@ mod tests {
         cap.0.clear();
 
         now += mgr.params.discovery_query_interval + Duration::from_secs(1);
+        mgr.maybe_request_discovery(now, &mut |c| cap.0.push(c));
+        assert!(cap.0.is_empty(), "{:?}", cap.0);
+
+        mgr.deficit_columns = 1;
         mgr.maybe_request_discovery(now, &mut |c| cap.0.push(c));
         assert!(cap.0.is_empty(), "{:?}", cap.0);
 
