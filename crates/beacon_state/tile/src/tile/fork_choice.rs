@@ -62,7 +62,7 @@ impl BeaconStateTile {
 
     #[timed]
     pub(super) fn recompute_head(&mut self) {
-        self.fork_choice.set_current_slot(self.ticker.current_slot());
+        self.fork_choice.on_tick(self.ticker.current_slot());
         // Lift first: an epoch-boundary block's post-state may advance the
         // justified checkpoint, and `lift_checkpoints` reads the head post-state
         // (`last_applied`). Lifting before the refresh lets
@@ -111,15 +111,13 @@ impl BeaconStateTile {
     /// post-state often names checkpoints from blocks we never imported.
     pub(super) fn lift_checkpoints(&mut self) {
         let (j, f) = self.head_checkpoints();
-        self.fork_choice.lift_justified(j);
-        self.fork_choice.lift_finalized(f);
+        self.fork_choice.update_checkpoints(j, f);
     }
 
-    /// Spec `on_tick`, fork-choice only: expire proposer boost, make the
-    /// previous slot's deferred votes eligible, and refold the head.
+    /// Spec `on_tick`, fork-choice only: make the previous slot's deferred
+    /// votes eligible, then advance the store time and refold the head.
     #[timed]
     pub(super) fn fork_choice_tick(&mut self) {
-        self.fork_choice.expire_proposer_boost();
         let n = self.head_validator_count();
         self.fork_choice.drain_pending_votes(n, self.ticker.current_slot());
         self.recompute_head();

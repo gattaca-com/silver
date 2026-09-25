@@ -1408,6 +1408,26 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::AlreadyKnown)]);
 }
 
+/// A timely block imported before its slot's tick still takes the proposer
+/// boost: the store time advances before the block joins, as in the spec.
+#[test]
+fn block_before_slot_tick_takes_proposer_boost() {
+    let (pre_ssz, block_ssz, _) = sanity_fixture("attestation");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) =
+        tile_with_producers_on(slot - 1, state, SpecConfig::mainnet());
+    tile.fork_choice.set_proposer_boost(tile.head_block_root());
+
+    tile.ticker.set_current_slot(slot);
+    let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
+    let pinned = tile.reader.acquire(read);
+    let feedback =
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+
+    assert_eq!(feedback, Feedback::BlockImported(tile.fork_choice.proposer_boost_root));
+}
+
 #[cfg(feature = "ef_tests")]
 #[test]
 fn an_imported_block_publishes_its_own_head_metadata() {

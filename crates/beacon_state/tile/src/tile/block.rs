@@ -497,6 +497,9 @@ impl BeaconStateTile {
             (PayloadStatus::Full, execution_block_hash, true)
         };
 
+        let current_slot = self.ticker.current_slot();
+        self.fork_choice.on_tick(current_slot);
+
         // Fold block-included attestations into the LMD vote tracker.
         let n = self.head_validator_count();
         for (target, validators) in votes.votes.iter() {
@@ -536,7 +539,6 @@ impl BeaconStateTile {
         // when it shares the head's shuffling dependent root, so a block whose
         // proposer was chosen on another branch cannot pull the head over. Set
         // before `recompute_head` so `apply_score_changes` folds it in.
-        let current_slot = self.ticker.current_slot();
         let before_deadline = self.ticker.is_before_attesting_interval(is_gloas);
         let same_dependent_root = || {
             let epoch = current_slot / SLOTS_PER_EPOCH;
