@@ -11,8 +11,8 @@ use std::{
 use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
-    GossipTopic, IpBytes, P2pSend, PeerControl, PeerId, PeerScores, PeerTopicScores,
-    RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
+    ATTESTATION_SUBNETS, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId, PeerScores,
+    PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
 };
 
 use super::{
@@ -418,9 +418,7 @@ impl PeerManager {
                 }
             }
         }
-        let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
-        self.required_attnets = attnets;
-        self.required_syncnets = syncnets;
+        self.refresh_required_subnets();
     }
 
     pub fn deactivate_topics(
@@ -464,13 +462,23 @@ impl PeerManager {
                 }
             }
         }
-        let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
-        self.required_attnets = attnets;
-        self.required_syncnets = syncnets;
-        for (deficit, required) in self.deficit_attnets.iter_mut().zip(attnets) {
+        self.refresh_required_subnets();
+        for (deficit, required) in self.deficit_attnets.iter_mut().zip(self.required_attnets) {
             *deficit &= required;
         }
-        self.deficit_syncnets &= syncnets;
+        self.deficit_syncnets &= self.required_syncnets;
+    }
+
+    pub fn set_duty_attnets(&mut self, subnets: u64) {
+        self.duty_attnets = subnets;
+        self.refresh_required_subnets();
+    }
+
+    fn refresh_required_subnets(&mut self) {
+        let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
+        let attnets = u64::from_le_bytes(attnets) | self.duty_attnets;
+        self.required_attnets = attnets.to_le_bytes();
+        self.required_syncnets = syncnets;
     }
 
     pub fn topic_rejoin_wait(&self) -> Duration {
@@ -945,7 +953,9 @@ impl PeerManager {
                 _ => {}
             }
         }
-        self.deficit_attnets = deficit_attnets;
+        let deficit_attnets =
+            u64::from_le_bytes(deficit_attnets) | self.duty_attnets_short_of_subscribers();
+        self.deficit_attnets = deficit_attnets.to_le_bytes();
         self.deficit_syncnets = deficit_syncnets;
         self.deficit_columns = deficit_columns;
         crate::PeerCounters::MeshSubnetDeficits.set(deficits);
@@ -953,6 +963,29 @@ impl PeerManager {
         if opportunistic_graft_due {
             self.last_opportunistic_graft = now;
         }
+    }
+
+    fn duty_attnets_short_of_subscribers(&self) -> u64 {
+        if self.duty_attnets == 0 {
+            return 0;
+        }
+        let digest = self.current_digest();
+        let mut subscribers = [0u8; ATTESTATION_SUBNETS];
+        for peer in self.peers.values() {
+            for &(peer_digest, topic) in peer.subscriptions.keys() {
+                if let GossipTopic::BeaconAttestation(subnet) = topic &&
+                    peer_digest == digest &&
+                    let Some(count) = subscribers.get_mut(subnet as usize)
+                {
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+        (0..ATTESTATION_SUBNETS)
+            .filter(|&subnet| {
+                self.duty_attnets >> subnet & 1 == 1 && subscribers[subnet] < self.params.d
+            })
+            .fold(0, |mask, subnet| mask | 1 << subnet)
     }
 
     fn prune_negative_mesh_peers(
@@ -1236,6 +1269,23 @@ mod tests {
         for e in &subs {
             assert!(matches!(e, PeerControl::P2pGossipSubscribe { .. }));
         }
+    }
+
+    #[test]
+    fn duty_subnet_without_enough_subscribers_is_a_deficit() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.d = 1;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let covered = GossipTopic::BeaconAttestation(5);
+        mgr.on_subscribe(1, covered, [0; 4], now, &mut |c| cap.0.push(c));
+
+        mgr.set_duty_attnets(1 << 5 | 1 << 6);
+        assert_eq!(mgr.required_attnets, (1u64 << 5 | 1 << 6).to_le_bytes());
+        mgr.manage_mesh(now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.deficit_attnets, (1u64 << 6).to_le_bytes());
+        assert!(mgr.mesh.get(&covered).is_none());
     }
 
     #[test]

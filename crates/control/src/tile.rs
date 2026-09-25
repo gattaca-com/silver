@@ -579,6 +579,7 @@ impl Tile<SilverSpine> for Controller {
             let Some(changes) = self.attnet_duties.advance(wall_slot)
         {
             tracing::debug!(wall_slot, ?changes, "attestation duty subnets changed");
+            self.peer_manager.set_duty_attnets(changes.attesting);
             let emit = &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,

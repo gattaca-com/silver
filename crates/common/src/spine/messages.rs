@@ -108,21 +108,27 @@ pub enum BeaconApiRequest {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SlotSubnets {
     pub slot: u64,
-    pub subnets: u64,
+    pub attesting: u64,
+    pub aggregating: u64,
 }
 
 impl SlotSubnets {
-    pub const SIZE: usize = 2 * size_of::<u64>();
+    pub const SIZE: usize = 3 * size_of::<u64>();
 
     pub fn encode(&self, out: &mut [u8]) {
         out[..8].copy_from_slice(&self.slot.to_le_bytes());
-        out[8..Self::SIZE].copy_from_slice(&self.subnets.to_le_bytes());
+        out[8..16].copy_from_slice(&self.attesting.to_le_bytes());
+        out[16..Self::SIZE].copy_from_slice(&self.aggregating.to_le_bytes());
     }
 
     pub fn decode_all(bytes: &[u8]) -> impl Iterator<Item = Self> {
-        bytes.chunks_exact(Self::SIZE).map(|record| Self {
-            slot: u64::from_le_bytes(record[..8].try_into().expect("8 bytes")),
-            subnets: u64::from_le_bytes(record[8..].try_into().expect("8 bytes")),
+        let word = |record: &[u8], at: usize| {
+            u64::from_le_bytes(record[at..at + 8].try_into().expect("8 bytes"))
+        };
+        bytes.chunks_exact(Self::SIZE).map(move |record| Self {
+            slot: word(record, 0),
+            attesting: word(record, 8),
+            aggregating: word(record, 16),
         })
     }
 }

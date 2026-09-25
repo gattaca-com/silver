@@ -90,7 +90,7 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::AwaitingContribution(request);
     }
 
-    pub(crate) fn notify(
+    pub(crate) fn submit(
         &mut self,
         len: usize,
         encode: impl FnOnce(&mut [u8]),

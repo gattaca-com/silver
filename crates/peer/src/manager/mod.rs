@@ -146,6 +146,9 @@ pub struct PeerManager {
     deficit_attnets: [u8; 8],
     deficit_syncnets: u8,
     deficit_columns: u128,
+    /// Attestation subnets where a local validator publishes: they need
+    /// subscribed peers for fanout, not a mesh.
+    duty_attnets: u64,
 
     /// IPs of peers we've graylisted out, keyed by ban time. Discovery hits
     /// matching one of these IPs are dropped before we issue a dial. Entries
@@ -264,6 +267,7 @@ impl PeerManager {
             deficit_attnets: [0u8; 8],
             deficit_syncnets: 0,
             deficit_columns: 0,
+            duty_attnets: 0,
             params,
             last_heartbeat: now,
             last_opportunistic_graft: now,
