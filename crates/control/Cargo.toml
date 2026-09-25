@@ -17,6 +17,10 @@ silver_peer.workspace = true
 fxhash.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+crc32c.workspace = true
+flux-disk.workspace = true
+
 [build-dependencies]
 buffa-build = "0.2.0"
 
