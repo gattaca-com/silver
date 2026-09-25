@@ -10,6 +10,7 @@ buffa.workspace = true
 bytes.workspace = true
 flux.workspace = true
 raft.workspace = true
+rand.workspace = true
 silver_chain_spec.workspace = true
 silver_common.workspace = true
 silver_gossip.workspace = true

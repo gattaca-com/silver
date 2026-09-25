@@ -81,7 +81,7 @@ impl AttestationClusterHandler {
             let initialized = cluster.set_startup_wall_slot(wall_slot);
             debug_assert!(initialized, "handler and cluster startup floors latch together");
         }
-        tracing::info!(wall_slot, "local attestation admission enabled");
+        tracing::info!(wall_slot, "local attestation startup floor latched");
     }
 
     /// Consume inbound Raft messages and pump all work currently ready in the
@@ -189,6 +189,9 @@ impl AttestationClusterHandler {
             );
             return;
         };
+        if !cluster.is_ready() {
+            return;
+        }
         let message = match decode_message(bytes) {
             Ok(message) => message,
             Err(error) => {
@@ -301,6 +304,13 @@ impl AttestationClusterHandler {
         });
         if let Err(error) = result {
             tracing::error!(?error, "attestation cluster spin failed");
+            for (_, attestation) in self.pending_attestations.drain() {
+                produce_response(
+                    producers,
+                    attestation.request_id,
+                    Err(LocalGossipFailure::Internal),
+                );
+            }
         }
     }
 }
@@ -310,7 +320,10 @@ mod tests {
     use silver_common::{TCache, TCacheId};
 
     use super::*;
-    use crate::tile::local_validation::{VALIDATION_TIMEOUT, tests::Harness};
+    use crate::{
+        cluster::ClusterStorageConfig,
+        tile::local_validation::{VALIDATION_TIMEOUT, tests::Harness},
+    };
 
     fn handler(now: Instant) -> AttestationClusterHandler {
         AttestationClusterHandler::new(
@@ -506,6 +519,67 @@ mod tests {
         handler.on_status(20, 20);
         assert_eq!(handler.admission.validate(11, 20), Ok(()), "floor must not relatch");
     }
+
+    #[test]
+    fn failed_cluster_rejects_pending_and_new_requests_without_standalone_fallback() {
+        let now = Instant::now();
+        let mut handler = handler(now);
+        let mut harness = Harness::new();
+        handler.cluster = Some(
+            AttestationCluster::in_memory(
+                AttestationClusterConfig::new(
+                    1,
+                    vec![1],
+                    ClusterStorageConfig::Create("unused-test-journal".into()),
+                ),
+                now,
+            )
+            .unwrap(),
+        );
+        handler.on_status(10, 10);
+        handler.on_status(11, 11);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+        handler.drive(
+            now,
+            &mut harness.validation,
+            &mut harness.gossip,
+            &mut harness.adapter.producers,
+        );
+
+        let mut ssz = [0; SINGLE_ATT_SIZE];
+        ssz[16..24].copy_from_slice(&11u64.to_le_bytes());
+        let attestation = PendingAttestation::new(1, 0, ssz);
+        handler.on_local_attestation(
+            attestation,
+            now,
+            &mut harness.validation,
+            &mut harness.gossip,
+            &mut harness.adapter.producers,
+        );
+        assert_eq!(handler.pending_attestations.len(), 1);
+        assert!(harness.responses().is_empty());
+        handler.cluster.as_mut().unwrap().fail_persistence();
+        handler.drive(
+            now,
+            &mut harness.validation,
+            &mut harness.gossip,
+            &mut harness.adapter.producers,
+        );
+        assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::Internal))]);
+        assert!(handler.pending_attestations.is_empty());
+        assert!(handler.cluster.as_ref().unwrap().is_failed());
+
+        handler.on_local_attestation(
+            PendingAttestation { request_id: 2, ..attestation },
+            now,
+            &mut harness.validation,
+            &mut harness.gossip,
+            &mut harness.adapter.producers,
+        );
+        assert_eq!(harness.responses(), [(2, Err(LocalGossipFailure::Internal))]);
+        assert!(harness.gossip.pop_event().is_none());
+        assert!(harness.validation.is_empty());
+    }
 }
 
 fn decision_response(decision: &AttestationDecision) -> LocalGossipResult {
@@ -527,6 +601,8 @@ fn lock_response(result: LockResult) -> LocalGossipResult {
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
     match error {
         ProposeError::Admission(error) => admission_failure(*error),
+        ProposeError::NotReady |
+        ProposeError::Failed |
         ProposeError::SequenceExhausted |
         ProposeError::DeadlineOverflow |
         ProposeError::Raft(_) => LocalGossipFailure::Internal,
