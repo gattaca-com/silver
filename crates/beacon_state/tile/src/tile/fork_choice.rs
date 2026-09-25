@@ -114,8 +114,8 @@ impl BeaconStateTile {
         self.fork_choice.update_checkpoints(j, f);
     }
 
-    /// Spec `on_tick`, fork-choice only: make the previous slot's deferred
-    /// votes eligible, then advance the store time and refold the head.
+    /// Slot-start hook: fold the previous slot's deferred votes, then advance
+    /// the store time and refold the head.
     #[timed]
     pub(super) fn fork_choice_tick(&mut self) {
         let n = self.head_validator_count();
