@@ -24,6 +24,58 @@ fn header() -> Vec<u8> {
     bytes
 }
 
+fn snapshot(index: u64, term: u64) -> Snapshot {
+    let mut snapshot = Snapshot { data: vec![7; 100].into(), ..Snapshot::default() };
+    let metadata = snapshot.mut_metadata();
+    metadata.index = index;
+    metadata.term = term;
+    metadata.mut_conf_state().voters = vec![1, 2, 3];
+    snapshot
+}
+
+#[test]
+fn checkpoint_replays_a_compacted_base_and_replaces_only_the_uncommitted_suffix() {
+    let snapshot = snapshot(10, 2);
+    let mut bytes = Vec::new();
+    identity().write_checkpoint(&mut bytes);
+    Record::checkpoint(&snapshot, &[entry(11, 2), entry(12, 2)], &state(2, 1, 11))
+        .unwrap()
+        .write(&mut bytes);
+    append(&mut bytes, &[entry(12, 3)], Some(&state(3, 1, 12)));
+    let recovered = replay(&bytes).unwrap().recovered;
+    assert_eq!(recovered.snapshot, snapshot);
+    assert_eq!(recovered.entries, vec![entry(11, 2), entry(12, 3)]);
+    assert_eq!(recovered.hard_state, state(3, 1, 12));
+}
+
+#[test]
+fn an_incomplete_checkpoint_is_never_recovered_as_an_empty_voter() {
+    let mut bytes = Vec::new();
+    identity().write_checkpoint(&mut bytes);
+    Record::checkpoint(&snapshot(10, 2), &[], &state(2, 1, 10)).unwrap().write(&mut bytes);
+    for length in 0..bytes.len() {
+        assert!(replay(&bytes[..length]).is_err(), "accepted truncated checkpoint at {length}");
+    }
+    assert!(replay(&bytes).is_ok());
+    let valid = bytes.len();
+    append(&mut bytes, &[entry(11, 2)], Some(&state(2, 1, 10)));
+    for length in valid..bytes.len() {
+        let recovered = replay(&bytes[..length]).unwrap().recovered;
+        assert_eq!(recovered.snapshot.get_metadata().index, 10);
+        assert!(recovered.entries.is_empty());
+    }
+}
+
+#[test]
+fn legacy_journal_headers_remain_readable() {
+    let mut bytes = header();
+    bytes[FRAME_HEADER_LEN..FRAME_HEADER_LEN + MAGIC.len()].copy_from_slice(LEGACY_MAGIC);
+    bytes.pop();
+    Frame::finish(&mut bytes, 0);
+    append(&mut bytes, &[entry(1, 1)], Some(&state(1, 1, 1)));
+    assert_eq!(replay(&bytes).unwrap().recovered.entries, vec![entry(1, 1)]);
+}
+
 fn append(bytes: &mut Vec<u8>, entries: &[Entry], hard_state: Option<&HardState>) {
     Record::new(entries, hard_state).unwrap().write(bytes);
 }
@@ -159,7 +211,7 @@ fn checksummed_records_cannot_overwrite_commits_or_introduce_gaps() {
 #[test]
 fn unknown_format_and_malformed_batches_fail_closed() {
     let mut bytes = header();
-    bytes[FRAME_HEADER_LEN + MAGIC.len() - 1] = 2;
+    bytes[FRAME_HEADER_LEN + MAGIC.len() - 1] = 0xff;
     Frame::finish(&mut bytes, 0);
     assert!(replay(&bytes).is_err());
 

@@ -232,7 +232,7 @@ mod disk {
             ClusterEvent::AttestationCommitted(decision) if decision.result == LockResult::Accepted
         )));
         let node = cluster.node.as_ref().unwrap();
-        let hard_state = node.store().rl().hard_state().clone();
+        let hard_state = node.store().memory.rl().hard_state().clone();
         assert_eq!(hard_state.commit, node.raft.raft_log.applied);
         drop(cluster);
 

@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use silver_common::{P2pStreamId, TCacheProducer, TProducer, TReservation};
+use silver_common::{
+    MAX_CLUSTER_MESSAGE_BYTES, P2pStreamId, TCacheProducer, TProducer, TReservation,
+};
 
 use crate::{
     NetEvent,
@@ -11,10 +13,10 @@ pub(crate) const BODY_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(crate) enum ClusterRead {
-    /// Reading 2-byte length prefix.
+    /// Reading 4-byte length prefix.
     ReadingLength {
         raft_id: u64,
-        buf: [u8; 2],
+        buf: [u8; 4],
         read: usize,
     },
     /// Have read length but buffer needs to be allocated.
@@ -40,7 +42,7 @@ enum Spin {
 
 impl ClusterRead {
     pub(crate) fn new(raft_id: u64) -> Self {
-        Self::ReadingLength { raft_id, buf: [0u8; 2], read: 0 }
+        Self::ReadingLength { raft_id, buf: [0u8; 4], read: 0 }
     }
 
     pub(crate) fn spin<S, F>(
@@ -95,9 +97,14 @@ impl ClusterRead {
                 }
 
                 if read == buf.len() {
-                    let length = u16::from_le_bytes(buf) as usize;
+                    let length = u32::from_le_bytes(buf) as usize;
                     if length == 0 {
                         return Err(StreamError::ClusterFrameZeroSize);
+                    }
+                    if length > MAX_CLUSTER_MESSAGE_BYTES ||
+                        length > tcache.cache_ref().max_payload_len()
+                    {
+                        return Err(StreamError::ClusterFrameTooLarge);
                     }
                     return Ok(Spin::Next(Self::AllocBody { raft_id, length, fail_count: 0 }));
                 }
@@ -133,7 +140,7 @@ impl ClusterRead {
                     assert!(reservation.is_committed());
                     emit(NetEvent::Cluster { stream: *p2p_id, raft_id, msg: reservation.read() });
                     // Continue into the next frame.
-                    return Ok(Spin::Next(Self::ReadingLength { raft_id, buf: [0u8; 2], read: 0 }));
+                    return Ok(Spin::Next(Self::ReadingLength { raft_id, buf: [0u8; 4], read: 0 }));
                 }
                 Ok(Spin::Ok(Self::ReadingBody { raft_id, reservation, remaining, last_read }))
             }

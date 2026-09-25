@@ -6,9 +6,8 @@ use std::{
 };
 
 use raft::{
-    Config, RawNode, StateRole,
+    Config, RawNode, SnapshotStatus, StateRole,
     eraftpb::{Entry, EntryType, Message},
-    storage::MemStorage,
 };
 
 #[cfg(any(target_os = "linux", test))]
@@ -18,6 +17,8 @@ use super::{
     command::{AttestationLockCommand, CommandDecodeError, ReplicatedCommand},
     lock_store::{AttestationLockStore, LockResult},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
+    raft_storage::{RaftStorage, RestoredSnapshot},
+    snapshot_transfers::SnapshotTransfers,
 };
 
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -39,6 +40,7 @@ pub struct AttestationClusterConfig {
     /// Maximum time between accepting a local proposal and observing its
     /// commit on this node.
     pub proposal_timeout: Duration,
+    pub snapshot_interval: u64,
 }
 
 impl AttestationClusterConfig {
@@ -51,6 +53,7 @@ impl AttestationClusterConfig {
             heartbeat_ticks: DEFAULT_HEARTBEAT_TICKS,
             election_ticks: DEFAULT_ELECTION_TICKS,
             proposal_timeout: DEFAULT_PROPOSAL_TIMEOUT,
+            snapshot_interval: 4096,
         }
     }
 
@@ -63,6 +66,9 @@ impl AttestationClusterConfig {
         }
         if self.proposal_timeout.is_zero() {
             return Err(ClusterError::InvalidConfig("Raft proposal timeout must be non-zero"));
+        }
+        if self.snapshot_interval == 0 {
+            return Err(ClusterError::InvalidConfig("Raft snapshot interval must be non-zero"));
         }
         if self.voters.is_empty() {
             return Err(ClusterError::InvalidConfig("Raft voter set must not be empty"));
@@ -208,7 +214,7 @@ pub enum ClusterError {
     Command(CommandDecodeError),
     InvalidProposalContextLength(usize),
     UnsupportedEntry(EntryType),
-    SnapshotsUnsupported,
+    Snapshot(io::Error),
     Storage(io::Error),
     NotReady,
     Failed,
@@ -232,9 +238,7 @@ impl fmt::Display for ClusterError {
             Self::UnsupportedEntry(entry_type) => {
                 write!(f, "unsupported committed Raft entry type {entry_type:?}")
             }
-            Self::SnapshotsUnsupported => {
-                f.write_str("attestation Raft snapshots are not supported")
-            }
+            Self::Snapshot(error) => write!(f, "invalid attestation Raft snapshot: {error}"),
         }
     }
 }
@@ -244,12 +248,12 @@ impl Error for ClusterError {
         match self {
             Self::Raft(error) => Some(error),
             Self::Storage(error) => Some(error),
+            Self::Snapshot(error) => Some(error),
             Self::Command(error) => Some(error),
             Self::InvalidConfig(_) |
             Self::NotReady |
             Self::Failed |
             Self::UnsupportedEntry(_) |
-            Self::SnapshotsUnsupported |
             Self::InvalidProposalContextLength(_) => None,
         }
     }
@@ -266,7 +270,7 @@ impl From<raft::Error> for ClusterError {
 /// `spin` is a pump: callers invoke it once per Control tile loop. It executes
 /// only work that is ready at that point and always returns without waiting.
 pub struct AttestationCluster {
-    node: Option<RawNode<MemStorage>>,
+    node: Option<RawNode<RaftStorage>>,
     config: AttestationClusterConfig,
     persistence: Persistence,
     failed: bool,
@@ -277,6 +281,7 @@ pub struct AttestationCluster {
     next_tick: Instant,
     pending_proposals: VecDeque<PendingProposal>,
     pending_minimum_slot: Option<u64>,
+    snapshot_transfers: SnapshotTransfers,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -315,6 +320,7 @@ impl AttestationCluster {
             next_tick,
             pending_proposals: VecDeque::new(),
             pending_minimum_slot: None,
+            snapshot_transfers: SnapshotTransfers::default(),
         }
     }
 
@@ -397,6 +403,7 @@ impl AttestationCluster {
             let Some(node) = self.node.as_mut()
         {
             node.report_unreachable(node_id);
+            node.report_snapshot(node_id, SnapshotStatus::Failure);
         }
     }
 
@@ -483,15 +490,39 @@ impl AttestationCluster {
         if self.node.is_none() {
             return Ok(());
         }
+        if let Some(node) = self.node.as_mut() {
+            self.snapshot_transfers.expire(node, now);
+        }
         self.tick_elapsed(now);
         self.maybe_propose_minimum_slot(wall_slot)?;
 
         while !self.persistence.is_pending() && self.node.as_ref().is_some_and(RawNode::has_ready) {
-            self.process_ready(emit)?;
+            self.process_ready(now, emit)?;
             self.poll_persistence(now, wall_slot, emit)?;
         }
 
-        Ok(())
+        self.maybe_compact()
+    }
+
+    fn maybe_compact(&mut self) -> Result<(), ClusterError> {
+        if self.persistence.is_pending() {
+            return Ok(());
+        }
+        let Some(node) = &self.node else {
+            return Ok(());
+        };
+        let applied = node.raft.raft_log.applied;
+        if applied == 0 ||
+            (applied.saturating_sub(node.store().snapshot_index()) <
+                self.config.snapshot_interval &&
+                !self.persistence.compaction_due())
+        {
+            return Ok(());
+        }
+        let data = self.state.encode_snapshot().map_err(ClusterError::Snapshot)?;
+        let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
+        let entries = node.store().suffix(applied)?;
+        self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)
     }
 
     fn tick_elapsed(&mut self, now: Instant) {
@@ -535,19 +566,33 @@ impl AttestationCluster {
         Ok(())
     }
 
-    fn process_ready(&mut self, emit: &mut impl FnMut(ClusterEvent)) -> Result<(), ClusterError> {
+    fn process_ready(
+        &mut self,
+        now: Instant,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) -> Result<(), ClusterError> {
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
         let mut ready = node.ready();
 
+        let snapshot = if ready.snapshot().is_empty() {
+            None
+        } else {
+            let restored = RestoredSnapshot::decode(ready.snapshot(), &self.config.voters)
+                .map_err(ClusterError::Snapshot)?;
+            if restored.locks.minimum_slot() < self.state.minimum_slot() {
+                return Err(ClusterError::Snapshot(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "snapshot retention floor regressed",
+                )));
+            }
+            Some(restored)
+        };
+        self.persistence.submit(&mut ready, snapshot).map_err(ClusterError::Storage)?;
         if !ready.snapshot().is_empty() {
-            // Refuse snapshots until lock-state snapshot encoding and compaction are
-            // implemented.
-            return Err(ClusterError::SnapshotsUnsupported);
+            node.mut_store().install_snapshot(ready.snapshot().clone())?;
         }
-
-        self.persistence.submit(&mut ready).map_err(ClusterError::Storage)?;
         {
-            let mut storage = node.mut_store().wl();
+            let mut storage = node.mut_store().memory.wl();
             storage.append(ready.entries())?;
             if let Some(hard_state) = ready.hs() {
                 storage.set_hardstate(hard_state.clone());
@@ -555,6 +600,7 @@ impl AttestationCluster {
         }
 
         for message in ready.take_messages() {
+            self.snapshot_transfers.sent(&message, now);
             emit(ClusterEvent::SendRaftMessage(message));
         }
         // Release Ready immediately so step/propose/tick remain legal during disk I/O.
@@ -575,6 +621,16 @@ impl AttestationCluster {
             Some(PersistenceEvent::Persisted(ready)) => {
                 self.complete_ready(ready, now, wall_slot, emit)
             }
+            Some(PersistenceEvent::Compacted(snapshot)) => {
+                let index = snapshot.get_metadata().index;
+                self.node.as_mut().ok_or(ClusterError::NotReady)?.mut_store().compact(snapshot)?;
+                tracing::debug!(
+                    node_id = self.config.node_id,
+                    index,
+                    "attestation Raft journal compacted"
+                );
+                Ok(())
+            }
             None => Ok(()),
         }
     }
@@ -584,11 +640,16 @@ impl AttestationCluster {
         if self.node.is_some() {
             return Err(ClusterError::InvalidConfig("Raft already recovered"));
         }
-        let memory =
-            MemStorage::new_with_conf_state((self.config.voters.clone(), Vec::<u64>::new()));
-        memory.wl().append(&recovered.entries)?;
+        let mut storage = RaftStorage::new(self.config.voters.clone());
+        if !recovered.snapshot.is_empty() {
+            self.state = RestoredSnapshot::decode(&recovered.snapshot, &self.config.voters)
+                .map_err(ClusterError::Snapshot)?
+                .locks;
+            storage.install_snapshot(recovered.snapshot)?;
+        }
+        storage.memory.wl().append(&recovered.entries)?;
         let commit = recovered.hard_state.commit;
-        memory.wl().set_hardstate(recovered.hard_state);
+        storage.memory.wl().set_hardstate(recovered.hard_state);
         self.apply_entries(
             recovered.entries.into_iter().take_while(|entry| entry.index <= commit),
             now,
@@ -597,7 +658,7 @@ impl AttestationCluster {
         )?;
         let mut config = self.config.raft_config();
         config.applied = commit;
-        self.node = Some(RawNode::with_default_logger(&config, memory)?);
+        self.node = Some(RawNode::with_default_logger(&config, storage)?);
         self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         tracing::info!(node_id = self.config.node_id, commit, "attestation Raft storage recovered");
         Ok(())
@@ -612,10 +673,16 @@ impl AttestationCluster {
     ) -> Result<(), ClusterError> {
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
         node.on_persist_ready(ready.number);
+        let snapshot_index = ready.snapshot.as_ref().map(|snapshot| snapshot.index);
+        if let Some(snapshot) = ready.snapshot {
+            self.state = snapshot.locks;
+            self.pending_minimum_slot = None;
+        }
         for message in ready.messages {
+            self.snapshot_transfers.sent(&message, now);
             emit(ClusterEvent::SendRaftMessage(message));
         }
-        let applied = ready.committed_entries.last().map(|entry| entry.index);
+        let applied = ready.committed_entries.last().map(|entry| entry.index).or(snapshot_index);
         self.apply_entries(ready.committed_entries, now, wall_slot, emit)?;
         if let Some(applied) = applied {
             self.node.as_mut().ok_or(ClusterError::NotReady)?.advance_apply_to(applied);
@@ -687,6 +754,10 @@ impl AttestationCluster {
 #[cfg(test)]
 #[path = "node/persistence_tests.rs"]
 mod persistence_tests;
+
+#[cfg(test)]
+#[path = "node/snapshot_tests.rs"]
+mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1,11 +1,16 @@
 mod journal;
+mod replacement;
 
-use std::{io, path::Path};
+use std::{
+    io, mem,
+    path::{Path, PathBuf},
+};
 
 use flux_disk::{DiskConfig, DiskEvent, DiskIo, FileToken, OpenOptions, OperationId};
 pub use journal::StorageIdentity;
 use journal::{JournalReplay, LogState, READ_CHUNK_BYTES, Record};
-use raft::eraftpb::{Entry, HardState};
+use raft::eraftpb::{Entry, HardState, Snapshot};
+use replacement::Replacement;
 
 use super::persistence::RecoveredStorage;
 
@@ -13,6 +18,7 @@ use super::persistence::RecoveredStorage;
 pub enum ClusterStorageEvent {
     Recovered(RecoveredStorage),
     Persisted { ready_number: u64 },
+    Compacted { index: u64 },
 }
 
 /// Keeps one persistence batch in flight. Completion always means durable, not
@@ -43,13 +49,17 @@ impl ClusterStorage {
         let directory = disk.open_directory(parent)?;
         let file = disk.open(path, OpenOptions::new().read(true).write(true).create_new(create))?;
         let (phase, replay) = if create {
-            (Phase::Creating(identity), None)
+            (Phase::Creating(identity.clone()), None)
         } else {
-            (Phase::ReadNext { offset: 0 }, Some(JournalReplay::new(identity)))
+            (Phase::ReadNext { offset: 0 }, Some(JournalReplay::new(identity.clone())))
         };
         let mut state = StorageState {
             file,
             directory,
+            path: path.to_path_buf(),
+            identity,
+            retired_file: None,
+            appended_bytes: 0,
             phase,
             replay,
             recovered: None,
@@ -62,6 +72,73 @@ impl ClusterStorage {
 
     pub fn is_ready(&self) -> bool {
         matches!(self.state.phase, Phase::Ready)
+    }
+
+    pub fn appended_bytes(&self) -> u64 {
+        self.state.appended_bytes
+    }
+
+    pub fn checkpoint(
+        &mut self,
+        ready_number: Option<u64>,
+        snapshot: &Snapshot,
+        entries: &[Entry],
+        hard_state: &HardState,
+    ) -> io::Result<()> {
+        if !self.is_ready() {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "Raft storage is busy"));
+        }
+        if ready_number.is_some_and(|number| number <= self.state.last_ready_number) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Raft Ready numbers must increase",
+            ));
+        }
+        let previous = &self.state.log.hard_state;
+        if hard_state.term < previous.term ||
+            hard_state.commit < previous.commit ||
+            (hard_state.term == previous.term &&
+                previous.vote != 0 &&
+                hard_state.vote != previous.vote)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "checkpoint hard state regressed",
+            ));
+        }
+        let next =
+            LogState::from_snapshot(snapshot, hard_state)?.next(entries, Some(hard_state))?;
+        if ready_number.is_none() &&
+            (snapshot.get_metadata().index > previous.commit || next != self.state.log)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local checkpoint must preserve the durable log suffix and hard state",
+            ));
+        }
+        if ready_number.is_some() && snapshot.get_metadata().index < previous.commit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "incoming snapshot precedes durable commit",
+            ));
+        }
+        let replacement = Replacement::new(
+            &mut self.disk,
+            &self.state.path,
+            &self.state.identity,
+            snapshot,
+            entries,
+            hard_state,
+            ready_number,
+        );
+        match replacement {
+            Ok(replacement) => self.state.phase = Phase::Replacing(replacement),
+            Err(error) => {
+                self.state.phase = Phase::Failed;
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     /// Entries are a contiguous append or an uncommitted suffix replacement, as
@@ -86,6 +163,7 @@ impl ClusterStorage {
         }
         let next = self.state.log.next(entries, hard_state)?;
         let record = Record::new(entries, hard_state)?;
+        self.state.appended_bytes = self.state.appended_bytes.saturating_add(record.len());
         if !self.disk.write_with(self.state.file, |output| record.write(output)) {
             self.state.phase = Phase::Failed;
             return Err(failed());
@@ -132,12 +210,17 @@ enum Phase {
     SyncingDirectory { sync: OperationId },
     Ready,
     SyncingBatch { sync: OperationId, ready_number: u64, next: LogState },
+    Replacing(Replacement),
     Failed,
 }
 
 struct StorageState {
     file: FileToken,
     directory: FileToken,
+    path: PathBuf,
+    identity: StorageIdentity,
+    retired_file: Option<FileToken>,
+    appended_bytes: u64,
     phase: Phase,
     replay: Option<JournalReplay>,
     recovered: Option<RecoveredStorage>,
@@ -147,7 +230,15 @@ struct StorageState {
 
 impl StorageState {
     fn advance(&mut self, disk: &mut DiskIo) -> io::Result<()> {
-        match &self.phase {
+        if let Some(file) = self.retired_file.take() &&
+            !disk.close(file)
+        {
+            return Err(failed());
+        }
+        match &mut self.phase {
+            Phase::Replacing(replacement) => {
+                replacement.advance(disk, &self.path, self.directory)?
+            }
             Phase::Creating(identity) => {
                 if !disk.write_with(self.file, |output| identity.write(output)) {
                     return Err(failed());
@@ -188,11 +279,29 @@ impl StorageState {
         if matches!(self.phase, Phase::Failed) {
             return Ok(None);
         }
-        match event {
-            DiskEvent::Failed { op, error, .. } => {
-                self.phase = Phase::Failed;
-                return Err(io::Error::new(error.kind(), format!("Raft journal {op:?}: {error}")));
+        if let DiskEvent::Failed { op, error, .. } = event {
+            self.phase = Phase::Failed;
+            return Err(io::Error::new(error.kind(), format!("Raft journal {op:?}: {error}")));
+        }
+        if let Phase::Replacing(replacement) = &mut self.phase {
+            if !replacement.on_event(event, self.directory)? {
+                return Ok(None);
             }
+            let Phase::Replacing(replacement) = mem::replace(&mut self.phase, Phase::Ready) else {
+                return Err(failed());
+            };
+            self.retired_file = Some(mem::replace(&mut self.file, replacement.file));
+            self.log = replacement.log;
+            self.appended_bytes = 0;
+            return Ok(Some(match replacement.ready_number {
+                Some(ready_number) => {
+                    self.last_ready_number = ready_number;
+                    ClusterStorageEvent::Persisted { ready_number }
+                }
+                None => ClusterStorageEvent::Compacted { index: replacement.index },
+            }));
+        }
+        match event {
             DiskEvent::Read { file, offset, payload, eof } => {
                 if file != self.file ||
                     !matches!(self.phase, Phase::Reading { offset: expected } if expected == offset)
@@ -205,6 +314,7 @@ impl StorageState {
                     let truncate = replay.finish()?;
                     let replay = self.replay.take().ok_or_else(failed)?;
                     self.log = replay.log;
+                    self.appended_bytes = replay.appended_bytes;
                     self.recovered = Some(replay.recovered);
                     self.phase = Phase::Repair { truncate, valid_len: replay.valid_len };
                 } else {
@@ -249,5 +359,7 @@ fn failed() -> io::Error {
     )
 }
 
+#[cfg(test)]
+mod compaction_tests;
 #[cfg(test)]
 mod tests;

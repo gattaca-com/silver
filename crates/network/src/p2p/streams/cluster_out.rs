@@ -1,4 +1,4 @@
-use silver_common::{P2pStreamId, TRead};
+use silver_common::{MAX_CLUSTER_MESSAGE_BYTES, P2pStreamId, TRead};
 
 use super::StreamIo;
 use crate::p2p::{quic::Leased, streams::StreamError};
@@ -7,7 +7,7 @@ use crate::p2p::{quic::Leased, streams::StreamError};
 pub enum ClusterWrite {
     Idle,
     WritingLength {
-        buffer: [u8; 2],
+        buffer: [u8; 4],
         written: usize,
         message: Leased<TRead>,
     },
@@ -49,10 +49,10 @@ impl ClusterWrite {
             Self::Idle => match io.cluster_next() {
                 Some(message) => {
                     let len = message.len()?;
-                    if len > u16::MAX as usize {
+                    if len > MAX_CLUSTER_MESSAGE_BYTES {
                         return Err(StreamError::ClusterFrameTooLarge);
                     }
-                    let len = len as u16;
+                    let len = len as u32;
                     Ok(Spin::Next(Self::WritingLength {
                         buffer: len.to_le_bytes(),
                         written: 0,

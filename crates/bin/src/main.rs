@@ -22,8 +22,8 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader,
-    TCacheTable,
+    APP_NAME, Enr, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify, SilverSpine, TCache, TCacheId,
+    TCacheProducer, TCacheReader, TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
@@ -104,10 +104,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCacheId::BoundaryProcessing,
         config.engine_config().incoming_engine_resp_tcache_size,
     );
-    let cluster_inbound_producer =
-        TCache::producer(TCacheId::ClusterInbound, CLUSTER_MESSAGE_TCACHE_SIZE);
+    let cluster_cache_bytes = if config.cluster_config().is_some() {
+        4 * MAX_CLUSTER_MESSAGE_BYTES
+    } else {
+        CLUSTER_MESSAGE_TCACHE_SIZE
+    };
+    let cluster_inbound_producer = TCache::producer(TCacheId::ClusterInbound, cluster_cache_bytes);
     let cluster_outbound_producer =
-        TCache::producer(TCacheId::ClusterOutbound, CLUSTER_MESSAGE_TCACHE_SIZE);
+        TCache::producer(TCacheId::ClusterOutbound, cluster_cache_bytes);
     let control_rpc_producer = TCache::producer(TCacheId::ControlRpc, CONTROL_RPC_TCACHE_SIZE);
     let storage_delivery_producer =
         TCache::producer(TCacheId::StorageDelivery, config.outgoing_rpc_tcache_size());

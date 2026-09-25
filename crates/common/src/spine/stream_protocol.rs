@@ -171,7 +171,7 @@ impl StreamProtocol {
             StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
                 b"\x48/eth2/beacon_chain/req/execution_payload_envelopes_by_root/1/ssz_snappy\n"
             }
-            StreamProtocol::Cluster => b"\x0f/cluster/1.0.0\n",
+            StreamProtocol::Cluster => b"\x0f/cluster/2.0.0\n",
         }
     }
 

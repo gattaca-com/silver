@@ -1426,13 +1426,17 @@ mod tests {
 
     impl PeerHarness {
         fn new() -> Self {
+            Self::with_cluster_size(TCACHE_BYTES)
+        }
+
+        fn with_cluster_size(cluster_bytes: usize) -> Self {
             let gossip_in_p = TCache::producer(TCacheId::NetworkIngress, TCACHE_BYTES);
             let gossip_in_c = gossip_in_p.cache_ref().consumer("peer_gossip_in").unwrap();
             let gossip_out_p = TCache::producer(TCacheId::ControlGossip, TCACHE_BYTES);
             let rpc_in_p = TCache::producer(TCacheId::NetworkProcessing, TCACHE_BYTES);
             let rpc_out_producer = TCache::producer(TCacheId::StorageDelivery, TCACHE_BYTES);
-            let cluster_in = TCache::producer(TCacheId::ClusterInbound, TCACHE_BYTES);
-            let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, TCACHE_BYTES);
+            let cluster_in = TCache::producer(TCacheId::ClusterInbound, cluster_bytes);
+            let cluster_out_producer = TCache::producer(TCacheId::ClusterOutbound, cluster_bytes);
             let columns = TCache::producer(TCacheId::ControlSlot, 1 << 16);
             let tcaches = TCacheTable::from_iter(
                 [&gossip_out_p, &rpc_out_producer, &cluster_out_producer, &columns]
@@ -1826,6 +1830,52 @@ mod tests {
 
         assert!(!pair.client_peer.connection.is_closed());
         assert!(!pair.client_peer.streams.contains_key(&stream));
+    }
+
+    #[test]
+    fn cluster_frames_above_u16_size_round_trip_and_preserve_the_next_frame() {
+        let mut client_h = PeerHarness::with_cluster_size(1 << 20);
+        let mut server_h = PeerHarness::with_cluster_size(1 << 20);
+        let mut pair = PeerPair::new();
+        let client_key = Keypair::from_secret(&[2; 32]).unwrap();
+        let server_key = Keypair::from_secret(&[1; 32]).unwrap();
+        let mut client_nodes =
+            ClusterNodes::new(HashMap::from([(2, Enr::empty(server_key.secret_key()).unwrap())]));
+        client_nodes.connected(pair.client_peer.id());
+        client_h.context.cluster_nodes = Some(client_nodes);
+        let mut server_nodes =
+            ClusterNodes::new(HashMap::from([(1, Enr::empty(client_key.secret_key()).unwrap())]));
+        server_nodes.connected(pair.server_peer.id());
+        server_h.context.cluster_nodes = Some(server_nodes);
+
+        let body = vec![0x79; 128 * 1024];
+        assert!(matches!(client_h.send_cluster(&body, &mut pair.client_peer), SendResult::Ok));
+        assert!(matches!(client_h.send_cluster(b"next", &mut pair.client_peer), SendResult::Ok));
+        let now = Instant::now();
+        let mut received = Vec::new();
+        for tick in 0..500 {
+            pair.step(
+                now + Duration::from_millis(tick * 2),
+                &mut client_h,
+                &mut server_h,
+                &mut |_| {},
+                &mut |event| {
+                    if let NetEvent::Cluster { raft_id, msg, .. } = event {
+                        assert_eq!(raft_id, 1);
+                        received.push(msg);
+                    }
+                },
+            );
+            if received.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(received.len(), 2);
+        let producer = &server_h.context.cluster_inbound_producer;
+        assert_eq!(producer.read_buffer(received[0]).unwrap(), body);
+        assert_eq!(producer.read_buffer(received[1]).unwrap(), b"next");
+        assert!(!pair.client_peer.is_closed());
+        assert!(!pair.server_peer.is_closed());
     }
 
     #[test]

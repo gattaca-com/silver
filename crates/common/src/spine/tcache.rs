@@ -187,6 +187,11 @@ impl TCache {
         self.len as usize
     }
 
+    #[inline]
+    pub fn max_payload_len(&self) -> usize {
+        self.capacity() - size_of::<Slot>()
+    }
+
     /// Attach to a named shmem segment as a producer, creating it if needed.
     /// Either side (producer or consumer) may start first. `n` must be
     /// identical on both sides.

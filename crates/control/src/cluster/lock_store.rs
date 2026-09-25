@@ -1,13 +1,15 @@
-use std::collections::hash_map::Entry;
+use std::{collections::hash_map::Entry, io};
 
 use fxhash::FxHashMap;
-use silver_common::{SLOTS_PER_EPOCH, merkle};
+use silver_common::{MAX_CLUSTER_MESSAGE_BYTES, SLOTS_PER_EPOCH, merkle};
 
 use super::command::AttestationLockCommand;
 
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
 const LOCK_RING_SIZE: usize = 2;
+const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x01";
+const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
 
 /// Result of applying a committed attestation selection command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +30,7 @@ pub enum LockResult {
 }
 
 /// Anti-equivocation state shared by standalone and replicated admission.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct AttestationLockStore {
     /// Commands below this slot are rejected even if proposed by a node with a
     /// stale wall clock. Replicated stores advance this through committed
@@ -37,7 +39,7 @@ pub(crate) struct AttestationLockStore {
     locks: [EpochLocks; LOCK_RING_SIZE],
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct EpochLocks {
     /// The absolute epoch occupying this modulo bucket. The tag prevents a
     /// late older command from clearing locks for a newer colliding epoch.
@@ -83,6 +85,84 @@ impl AttestationLockStore {
         self.minimum_slot
     }
 
+    pub(super) fn encode_snapshot(&self) -> io::Result<Vec<u8>> {
+        let retained = |bucket: &EpochLocks| {
+            bucket.epoch.is_some_and(|epoch| epoch >= self.minimum_slot / SLOTS_PER_EPOCH)
+        };
+        let count: usize = self
+            .locks
+            .iter()
+            .filter(|bucket| retained(bucket))
+            .map(|bucket| bucket.attestations.len())
+            .sum();
+        let length = count
+            .checked_mul(40)
+            .and_then(|n| n.checked_add(16 + LOCK_RING_SIZE * 13))
+            .filter(|n| *n <= MAX_SNAPSHOT_BYTES)
+            .ok_or_else(|| invalid_snapshot("attestation lock snapshot exceeds transport limit"))?;
+        let mut bytes = Vec::with_capacity(length);
+        bytes.extend_from_slice(SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&self.minimum_slot.to_le_bytes());
+        for bucket in &self.locks {
+            let Some(epoch) = bucket.epoch else {
+                bytes.push(0);
+                continue;
+            };
+            // Keep the epoch tag even when its locks expired: it prevents ring reuse by
+            // older commands.
+            bytes.push(1);
+            bytes.extend_from_slice(&epoch.to_le_bytes());
+            let count = if retained(bucket) { bucket.attestations.len() } else { 0 };
+            bytes.extend_from_slice(&(count as u32).to_le_bytes());
+            if count != 0 {
+                for (validator, hash) in &bucket.attestations {
+                    bytes.extend_from_slice(&validator.to_le_bytes());
+                    bytes.extend_from_slice(hash);
+                }
+            }
+        }
+        Ok(bytes)
+    }
+
+    pub(super) fn decode_snapshot(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() > MAX_SNAPSHOT_BYTES {
+            return Err(invalid_snapshot("attestation lock snapshot exceeds transport limit"));
+        }
+        let mut cursor = SnapshotCursor(bytes);
+        if &cursor.take::<8>()? != SNAPSHOT_MAGIC {
+            return Err(invalid_snapshot("unsupported attestation lock snapshot"));
+        }
+        let mut store =
+            Self { minimum_slot: u64::from_le_bytes(cursor.take()?), ..Self::default() };
+        for (index, bucket) in store.locks.iter_mut().enumerate() {
+            match cursor.take::<1>()?[0] {
+                0 => continue,
+                1 => {}
+                _ => return Err(invalid_snapshot("invalid snapshot epoch tag")),
+            }
+            let epoch = u64::from_le_bytes(cursor.take()?);
+            if epoch as usize % LOCK_RING_SIZE != index {
+                return Err(invalid_snapshot("snapshot epoch is in the wrong ring bucket"));
+            }
+            bucket.epoch = Some(epoch);
+            let count = u32::from_le_bytes(cursor.take()?) as usize;
+            if count > cursor.0.len() / 40 {
+                return Err(invalid_snapshot("invalid snapshot lock count"));
+            }
+            bucket.attestations.reserve(count);
+            for _ in 0..count {
+                let validator = u64::from_le_bytes(cursor.take()?);
+                if bucket.attestations.insert(validator, cursor.take()?).is_some() {
+                    return Err(invalid_snapshot("duplicate validator in snapshot epoch"));
+                }
+            }
+        }
+        if !cursor.0.is_empty() {
+            return Err(invalid_snapshot("trailing attestation snapshot bytes"));
+        }
+        Ok(store)
+    }
+
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.locks
@@ -105,6 +185,23 @@ impl AttestationLockStore {
     }
 }
 
+struct SnapshotCursor<'a>(&'a [u8]);
+
+impl SnapshotCursor<'_> {
+    fn take<const N: usize>(&mut self) -> io::Result<[u8; N]> {
+        let (bytes, rest) = self
+            .0
+            .split_at_checked(N)
+            .ok_or_else(|| invalid_snapshot("truncated attestation snapshot"))?;
+        self.0 = rest;
+        bytes.try_into().map_err(|_| invalid_snapshot("invalid attestation snapshot field"))
+    }
+}
+
+fn invalid_snapshot(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +219,55 @@ mod tests {
             subnet: u64::from(root) % silver_common::ATTESTATION_SUBNETS as u64,
             ssz,
         }
+    }
+
+    #[test]
+    fn snapshot_preserves_epoch_locks_floor_and_ring_reuse_protection() {
+        let mut store = AttestationLockStore::default();
+        store.apply(&command_for(10, 7, 1));
+        store.apply(&command_for(40, 8, 2));
+        store.advance_minimum_slot(20);
+        let mut restored =
+            AttestationLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        assert_eq!(restored.minimum_slot(), 20);
+        assert_eq!(restored.apply(&command_for(10, 7, 1)), LockResult::TooOld);
+        assert_eq!(restored.apply(&command_for(21, 7, 3)), LockResult::ConflictingAttestation);
+        assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::AlreadyAcceptedSame);
+
+        store.apply(&command_for(100, 9, 4));
+        let mut restored =
+            AttestationLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::TooOld);
+        assert_eq!(restored.apply(&command_for(100, 9, 4)), LockResult::AlreadyAcceptedSame);
+        store.advance_minimum_slot(128);
+        let bytes = store.encode_snapshot().unwrap();
+        assert!(bytes.len() < 64, "expired hashes should not be serialized");
+        let restored = AttestationLockStore::decode_snapshot(&bytes).unwrap();
+        assert_eq!(restored.minimum_slot(), 128);
+    }
+
+    #[test]
+    fn malformed_lock_snapshots_are_rejected() {
+        let mut store = AttestationLockStore::default();
+        store.apply(&command_for(10, 7, 1));
+        let bytes = store.encode_snapshot().unwrap();
+        for len in 0..bytes.len() {
+            assert!(AttestationLockStore::decode_snapshot(&bytes[..len]).is_err());
+        }
+        let mut invalid = bytes.clone();
+        invalid.push(0);
+        assert!(AttestationLockStore::decode_snapshot(&invalid).is_err());
+        let mut invalid = bytes.clone();
+        invalid[16] = 2;
+        assert!(AttestationLockStore::decode_snapshot(&invalid).is_err());
+        let mut invalid = bytes.clone();
+        invalid[17] = 1;
+        assert!(AttestationLockStore::decode_snapshot(&invalid).is_err());
+        let mut duplicate = bytes;
+        duplicate[25..29].copy_from_slice(&2u32.to_le_bytes());
+        let record = duplicate[29..69].to_vec();
+        duplicate.splice(69..69, record);
+        assert!(AttestationLockStore::decode_snapshot(&duplicate).is_err());
     }
 
     #[test]

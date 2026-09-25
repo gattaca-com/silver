@@ -83,3 +83,5 @@ pub use flux::timing::{IngestionTime, Nanos};
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};
 
 pub const APP_NAME: &str = "silver";
+
+pub const MAX_CLUSTER_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
