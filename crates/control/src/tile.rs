@@ -345,6 +345,12 @@ impl Controller {
 
 impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.gossip_handler.loop_start();
+        self.rpc_producer.loop_start();
+        self.attestation_cluster.loop_start();
+        if let Some(ingress) = &mut self.cell_ingress {
+            ingress.loop_start();
+        }
         let now = Instant::now();
         self.advance_gossip_domains(&mut adapter.producers);
         self.reader.free();
@@ -693,14 +699,6 @@ impl Tile<SilverSpine> for Controller {
             ) {
                 adapter.mark_work();
             }
-        }
-
-        // Every event the handler queued this loop is on the spine now.
-        self.gossip_handler.publish_heads();
-        self.rpc_producer.publish_head();
-        self.attestation_cluster.publish_head();
-        if let Some(ingress) = &self.cell_ingress {
-            ingress.publish_head();
         }
     }
 

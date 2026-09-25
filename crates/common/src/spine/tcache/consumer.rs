@@ -764,6 +764,7 @@ mod tests {
             buf.fill(marker);
         }
         r.increment_offset(len);
+        p.loop_start();
         read
     }
 
@@ -773,7 +774,7 @@ mod tests {
     fn acquire_release_cycle_reads_buffer() {
         let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let mut consumer = random_access(producer.cache_ref(), false, false);
-        producer.publish_head();
+        producer.loop_start();
 
         let reads: Vec<TCacheRead> =
             (0..4).map(|i| write_marker(&mut producer, 256, i as u8)).collect();
@@ -802,6 +803,7 @@ mod tests {
     fn retention_floor_holds_unacquired_records_until_the_producer_moves_it() {
         let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         producer.retain_from(0);
+        producer.loop_start();
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let read = write_marker(&mut producer, 32, 0xab);
         let pinned = consumer.acquire_strict(read).unwrap();
@@ -813,6 +815,7 @@ mod tests {
 
         let boundary = producer.next_seq();
         producer.retain_from(boundary);
+        producer.loop_start();
         follow(&mut consumer);
         assert_eq!(consumer.active.tail_seq, 0, "the pin still holds bucket 0");
         assert_eq!(pinned.buffer().unwrap().0, &[0xab; 32]);
@@ -825,6 +828,7 @@ mod tests {
     fn producer_retention_keeps_old_reads_readable_under_traffic() {
         let mut producer = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         producer.retain_from(0);
+        producer.loop_start();
         let mut consumer = random_access(producer.cache_ref(), true, true);
         let old = write_marker(&mut producer, 32, 0xab);
         for _ in 0..20 {
@@ -839,6 +843,7 @@ mod tests {
 
         let boundary = producer.next_seq();
         producer.retain_from(boundary);
+        producer.loop_start();
         follow(&mut consumer);
         assert_eq!(consumer.active.tail_seq, consumer.active.bucket_start_seq(boundary));
         assert!(consumer.acquire_strict(old).is_none());
@@ -995,7 +1000,9 @@ mod tests {
         drop(acquired);
 
         let mut produced = 0;
-        while let Some(mut reservation) = producer.reserve(MESSAGE_LEN, true) {
+        loop {
+            producer.loop_start();
+            let Some(mut reservation) = producer.reserve(MESSAGE_LEN, true) else { break };
             reservation.buffer().unwrap().fill(0xcd);
             reservation.increment_offset(MESSAGE_LEN);
             drop(consumer.acquire_strict(reservation.read()).unwrap());
@@ -1083,7 +1090,7 @@ mod tests {
 
         let mut producer = TCache::producer(TCacheId::NetworkIngress, CACHE);
         let mut consumer = random_access(producer.cache_ref(), false, false);
-        producer.publish_head();
+        producer.loop_start();
 
         let mut held: Vec<AcquiredRead> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1093,6 +1100,7 @@ mod tests {
                 Instant::now() < deadline,
                 "producer stalled at msg {produced}; lag eviction failed"
             );
+            producer.loop_start();
             if let Some(mut r) = producer.reserve(MSG_LEN, true) {
                 let read = r.read();
                 r.buffer().unwrap().fill(0xab);

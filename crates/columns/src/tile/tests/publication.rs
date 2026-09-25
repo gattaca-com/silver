@@ -458,6 +458,7 @@ fn strict_ingress_rejects_below_tail_and_expiry_releases_parked_columns() {
     // the reader has taken and applied a snapshot over its next passes.
     let boundary = allocator.producer().next_seq();
     allocator.producer_mut().retain_from(boundary);
+    allocator.producer_mut().loop_start();
     rig.turn();
     assert!(rig.tile.gloas_pending_columns.is_empty());
     for _ in 0..3 {

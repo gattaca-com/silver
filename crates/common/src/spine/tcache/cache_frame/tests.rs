@@ -118,6 +118,7 @@ fn shared_segments_expose_only_verified_subranges() {
     assert_eq!(ranges[1].as_ref(), b"pf");
     columns.view_sub_reservation(reference).unwrap().close();
     columns.retain_from(columns.next_seq());
+    columns.loop_start();
     follow_producer_floor(&mut reader);
     assert!(view.segments().next().unwrap().acquire(&mut reader).is_none());
     assert_eq!(ranges[0].as_ref(), b"el");
@@ -285,6 +286,7 @@ fn handoff_transfers_counts_and_frame_drop_releases_only_the_remainder() {
     assert_eq!(reader.active_count(TCacheId::ControlGossip), 2);
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 2);
     columns.retain_from(columns.next_seq());
+    columns.loop_start();
     follow_producer_floor(&mut reader);
     drop(frame);
     assert_eq!(reader.active_count(TCacheId::ControlGossip), 1);
@@ -361,6 +363,7 @@ fn shared_handoff_survives_closure_without_exposing_unverified_gaps() {
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 4);
     columns.view_sub_reservation(shared).unwrap().close();
     columns.retain_from(columns.next_seq());
+    columns.loop_start();
     follow_producer_floor(&mut reader);
     assert!(reference.acquire(&mut reader, now).unwrap().acquire_segments(&mut reader).is_none());
     assert_eq!(reader.active_count(TCacheId::ControlSlot), 4);

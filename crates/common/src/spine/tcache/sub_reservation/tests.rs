@@ -140,6 +140,7 @@ fn producer_returns_an_unpinned_descriptor() {
     drop(reference.acquire(&mut consumer).unwrap());
 
     for _ in 0..64 {
+        producer.loop_start();
         let mut reservation = producer.reserve(4096, true).unwrap();
         reservation.buffer().unwrap().fill(0xcc);
         reservation.increment_offset(4096);
@@ -188,6 +189,7 @@ fn producer_views_stage_cancel_and_finish_without_local_pins() {
     ));
     assert!(matches!(other.read_buffer(read), Err(super::super::Error::UnexpectedCacheRef)));
     producer.retain_from(producer.next_seq());
+    producer.loop_start();
     follow_producer_floor(&mut consumer);
     for _ in 0..32 {
         let mut write = producer.reserve(4096, false).unwrap();
@@ -195,6 +197,7 @@ fn producer_views_stage_cancel_and_finish_without_local_pins() {
         write.flush().unwrap();
         drop(write);
         producer.retain_from(producer.next_seq());
+        producer.loop_start();
         follow_producer_floor(&mut consumer);
     }
     assert!(matches!(producer.view_sub_reservation(reference), Err(SubReservationError::Stale)));
@@ -479,6 +482,7 @@ fn writers_validators_and_ranges_pin_expired_storage_until_their_last_drop() {
     h.owner.take();
     let mut blocked = false;
     for _ in 0..64 {
+        h.producer.loop_start();
         let Some(mut reservation) = h.producer.reserve(4096, true) else {
             blocked = true;
             break;
@@ -498,6 +502,7 @@ fn writers_validators_and_ranges_pin_expired_storage_until_their_last_drop() {
     drop(ranges);
     h.consumer.free();
     for _ in 0..64 {
+        h.producer.loop_start();
         let mut reservation = h.producer.reserve(4096, true).unwrap();
         reservation.buffer().unwrap().fill(0xcc);
         reservation.increment_offset(4096);

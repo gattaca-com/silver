@@ -200,6 +200,7 @@ fn slot_retention_acquisition_and_expiry_allocate_nothing_after_construction() {
 
     for _ in 0..512 {
         producer.retain_from(producer.next_seq());
+        producer.loop_start();
         for reader in &mut readers {
             follow_producer_floor(reader);
         }

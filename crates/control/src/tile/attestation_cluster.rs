@@ -47,8 +47,8 @@ pub(super) struct AttestationClusterHandler {
 }
 
 impl AttestationClusterHandler {
-    pub(super) fn publish_head(&self) {
-        self.outbound_producer.publish_head();
+    pub(super) fn loop_start(&mut self) {
+        self.outbound_producer.loop_start();
     }
 
     pub(super) fn new(

@@ -171,6 +171,8 @@ impl Rig {
 
     fn expire(&mut self) -> RetentionEvent {
         self.control.spin(self.now, &self.adapters[0].producers);
+        // The next loop: the floor may now cover what the expiry released.
+        self.control.loop_start();
         self.store.advance(self.now, 0, |_| {});
         let mut boundary = None;
         self.adapters[1].consume(|event: RetentionEvent, _| {

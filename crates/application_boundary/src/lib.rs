@@ -37,6 +37,7 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.processing.loop_start();
         self.engine.intake(adapter, &mut self.processing);
         self.readiness.wait(Duration::ZERO);
         self.engine.spin(adapter, self.readiness.events(), &mut self.processing);
@@ -45,7 +46,6 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
         if self.beacon.pump(events, &mut self.processing, &mut |request| adapter.produce(request)) {
             adapter.mark_work();
         }
-        self.processing.publish_head();
     }
 }
 

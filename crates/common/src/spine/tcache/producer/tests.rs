@@ -157,9 +157,6 @@ fn padding_waits_for_pending_writes_and_linear_consumer_release() {
         let mut pending = producer.reserve(96, false).unwrap();
         pending.buffer().unwrap().fill(0xab);
         assert!(producer.reserve(160, false).is_none());
-        // The head is published by the owning tile, not by the failed reserve.
-        producer.publish_head();
-        assert_eq!(cache.head().seq.load(Ordering::Acquire), 256);
         let padding = cache.slot_at(128);
         assert_eq!(padding.seq.load(Ordering::Acquire), 128);
         assert_eq!(padding.reservation_len, 128);
@@ -192,12 +189,12 @@ fn padding_itself_must_fit_without_overwriting_consumer_data() {
             producer.reserve(96, true).unwrap().write_all(&[value; 96]).unwrap();
         }
         assert!(producer.reserve(160, false).is_none());
-        producer.publish_head();
+        producer.loop_start();
         assert_eq!(producer.cache_ref().head().seq.load(Ordering::Acquire), 384);
         assert_eq!(consumer.read().unwrap().0, &[2; 96]);
         consumer.free();
         assert!(producer.reserve(160, false).is_none());
-        producer.publish_head();
+        producer.loop_start();
         assert_eq!(producer.cache_ref().head().seq.load(Ordering::Acquire), 512);
         assert_eq!(consumer.read().unwrap().0, &[3; 96]);
         consumer.free();
@@ -234,15 +231,19 @@ fn reservation_read_stamps_the_emitter_and_the_reserve_time_floor() {
 
     first.write_all(&[0xaa; 32]).unwrap();
     first.flush().unwrap();
+    // Stamped from the loop-start sample: the oldest reservation still
+    // uncommitted when the loop began, not the tail.
     let next = producer.reserve(32, false).unwrap();
-    assert_eq!(next.seq(), 256);
-    // Sampled at reserve: the oldest uncommitted reservation, not the tail.
+    assert_eq!(next.read().floor, 0, "no loop has started since the first commit");
+    drop(next);
+    producer.loop_start();
+    let next = producer.reserve(32, false).unwrap();
     assert_eq!(next.read().floor, third.seq());
     assert!(next.read().floor <= next.seq());
 
+    // A commit inside the loop does not move the stamp; the next loop does.
     third.flush().unwrap();
-    // A later reserve moves the floor; the descriptor already taken does not.
+    drop(next);
     let later = producer.reserve(32, false).unwrap();
-    assert_eq!(later.read().floor, next.seq());
-    assert_eq!(next.read().floor, third.seq());
+    assert_eq!(later.read().floor, third.seq());
 }

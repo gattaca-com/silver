@@ -326,6 +326,7 @@ impl Tile<SilverSpine> for StorageTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.delivery_producer.loop_start();
         adapter.consume(|d: SyncingStrategy, _| self.syncing_strategy = Some(d));
         self.drive_replay(adapter);
 
@@ -483,7 +484,6 @@ impl Tile<SilverSpine> for StorageTile {
                 "storage store file i/o failed"
             );
         }
-        self.delivery_producer.publish_head();
     }
 }
 
@@ -581,7 +581,7 @@ mod tests {
         }
         // The producing tile publishes at its loop end; then two passes here:
         // snapshot the producer floor, then apply it.
-        producer.publish_head();
+        producer.loop_start();
         tile.loop_body(&mut adapter);
         tile.loop_body(&mut adapter);
         assert!(producer.reserve(1024, false).is_some());

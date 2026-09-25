@@ -36,8 +36,8 @@ struct Allocation {
 }
 
 impl CellAllocator {
-    pub fn publish_head(&self) {
-        self.producer.publish_head();
+    pub fn loop_start(&mut self) {
+        self.producer.loop_start();
     }
 
     pub fn new(

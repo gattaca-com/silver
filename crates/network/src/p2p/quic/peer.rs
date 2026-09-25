@@ -2252,6 +2252,7 @@ mod tests {
             SendResult::Ok
         ));
         client_h.columns.retain_from(client_h.columns.next_seq());
+        client_h.columns.loop_start();
         follow_producer_floor(&mut client_h.context.reader);
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         let wire: Vec<_> = server_h.received.values().flatten().copied().collect();

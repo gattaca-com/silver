@@ -1079,7 +1079,7 @@ mod tests {
                 thread::yield_now();
             }
         });
-        producer.publish_head();
+        producer.loop_start();
         done.store(true, AOrdering::Release);
 
         for h in consumer_threads {

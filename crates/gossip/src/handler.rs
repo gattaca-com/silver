@@ -268,9 +268,9 @@ impl GossipHandler {
         self.domains.set(current, other);
     }
 
-    pub fn publish_heads(&self) {
-        self.incoming_gossip_publish.publish_head();
-        self.mcache_publish.publish_head();
+    pub fn loop_start(&mut self) {
+        self.incoming_gossip_publish.loop_start();
+        self.mcache_publish.loop_start();
     }
 
     pub fn handle_peer_control(&mut self, peer_control: PeerControl) {

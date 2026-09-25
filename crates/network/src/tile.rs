@@ -116,6 +116,7 @@ impl NetworkTile {
     }
 
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.inner.context.loop_start();
         // Consume peer control messages
         let now = Instant::now();
         adapter.consume(|peer_control: PeerControl, _producers| {
@@ -280,7 +281,6 @@ impl NetworkTile {
                 break;
             };
         }
-        self.inner.context.publish_heads();
     }
 }
 

@@ -1269,7 +1269,7 @@ fn idle_boundary_follows_the_object_rings_producer_floors() {
             assert!(written < 1_000, "the ring never filled");
         }
         // The producing tile publishes at its loop end.
-        producer.publish_head();
+        producer.loop_start();
     };
     fill(&mut gossip);
     fill(&mut rpc);

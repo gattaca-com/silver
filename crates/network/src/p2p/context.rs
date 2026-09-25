@@ -37,10 +37,10 @@ impl Context {
         Ok(())
     }
 
-    pub fn publish_heads(&self) {
-        self.gossip_producer.publish_head();
-        self.rpc_producer.publish_head();
-        self.cluster_inbound_producer.publish_head();
+    pub fn loop_start(&mut self) {
+        self.gossip_producer.loop_start();
+        self.rpc_producer.loop_start();
+        self.cluster_inbound_producer.loop_start();
     }
 
     pub fn cluster_peer(&self, raft_id: u64) -> Option<usize> {

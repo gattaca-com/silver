@@ -73,6 +73,7 @@ fn cell_admission_expiry_and_block_churn_allocate_nothing() {
     for slot in 0u64..512 {
         store.advance(now + Duration::from_secs(slot), slot.saturating_sub(63), |_| {});
         if allocator.advance(now + Duration::from_secs(slot), slot.saturating_sub(63)).is_some() {
+            allocator.loop_start();
             follow_producer_floor(&mut writer);
             follow_producer_floor(&mut network);
         }

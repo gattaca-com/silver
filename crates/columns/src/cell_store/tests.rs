@@ -152,6 +152,7 @@ impl Harness {
         let boundary = self.allocator.advance(now, min_slot);
         self.store.advance(now, min_slot, on_expired);
         if boundary.is_some() {
+            self.allocator.loop_start();
             follow_producer_floor(&mut self.consumer);
         }
     }
@@ -954,6 +955,7 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
     assert_eq!(h.store.counts().cells, 0);
 
     for _ in 0..64 {
+        ingress.loop_start();
         let mut reservation = ingress.reserve(4096, true).unwrap();
         reservation.buffer().unwrap().fill(0xcc);
         reservation.increment_offset(4096);

@@ -177,7 +177,7 @@ mod tests {
         let read = reservation.read();
         reservation.buffer().unwrap().copy_from_slice(bytes);
         reservation.increment_offset(bytes.len());
-        producer.publish_head();
+        producer.loop_start();
         read
     }
 

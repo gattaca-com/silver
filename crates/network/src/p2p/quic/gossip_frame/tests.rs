@@ -271,6 +271,7 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     h.columns.view_sub_reservation(assembly).unwrap().close();
     h.columns.retain_from(h.columns.next_seq());
+    h.columns.loop_start();
     follow_producer_floor(&mut h.context.reader);
     assert!(h.acquire(reference).is_none());
     let mut filled = 0;
@@ -303,6 +304,7 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     assert_eq!(h.limits.owners.get(), 0);
     assert_eq!(h.wheel.active_count(), 0);
     h.columns.retain_from(h.columns.next_seq());
+    h.columns.loop_start();
     follow_producer_floor(&mut h.context.reader);
     assert!(h.columns.reserve(8192, true).is_some());
 }

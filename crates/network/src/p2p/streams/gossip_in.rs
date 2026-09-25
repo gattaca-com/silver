@@ -535,7 +535,7 @@ mod tests {
             // clears the mark left by the messages it consumed, the next takes
             // the snapshot, the third applies it and publishes the tail.
             fast = fast.spin(&mut fast_io, &mut producer, &fast_id, later, &mut |_| {}).unwrap();
-            producer.publish_head();
+            producer.loop_start();
             consumer.free();
             consumer.free();
             consumer.free();

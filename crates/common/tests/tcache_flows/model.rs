@@ -36,7 +36,6 @@ impl Writer {
 }
 
 struct Open {
-    writer: usize,
     reservation: TReservation,
     tag: u8,
 }
@@ -302,6 +301,10 @@ impl World {
     }
 
     fn step(&mut self, n: usize) -> Progress {
+        // A step is one loop of the node's tile.
+        for writer in &mut self.nodes[n].writers {
+            writer.producer().loop_start();
+        }
         let Some(&action) = self.nodes[n].script.front() else { return Progress::Blocked };
         let progress = match action {
             Action::Reserve { writer, tag } => self.reserve(n, writer, tag),
@@ -432,10 +435,8 @@ impl World {
         if node.open.is_empty() {
             return Progress::Blocked;
         }
-        let Open { writer, mut reservation, tag } = node.open.remove(index);
+        let Open { mut reservation, tag } = node.open.remove(index);
         reservation.flush().unwrap();
-        // A tile publishes its floor once its committed reads are on the spine.
-        node.writers[writer].producer().publish_head();
         let msg = Msg { read: reservation.read(), tag };
         node.emitted.push(msg);
         for &link in links {
@@ -450,7 +451,7 @@ impl World {
             Some(mut reservation) => {
                 reservation.buffer().unwrap().fill(tag);
                 reservation.increment_offset(MSG);
-                node.open.push(Open { writer, reservation, tag });
+                node.open.push(Open { reservation, tag });
                 node.stalled = 0;
                 Progress::Advanced
             }

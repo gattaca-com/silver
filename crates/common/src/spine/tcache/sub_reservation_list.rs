@@ -138,6 +138,7 @@ mod tests {
         padding.buffer().unwrap().fill(0);
         padding.flush().unwrap();
         producer.retain_from(producer.next_seq());
+        producer.loop_start();
         follow_producer_floor(&mut consumer);
         assert_eq!(acquired.entries().len(), 2);
         drop(acquired);

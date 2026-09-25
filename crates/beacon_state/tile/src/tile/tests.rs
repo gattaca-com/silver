@@ -183,7 +183,7 @@ fn gossip_pending(
     }
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     let pin = tile.reader.acquire(read);
     BlockSourceMsg::Gossip(
         NewGossipMsg {
@@ -1274,7 +1274,7 @@ fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCac
     }
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     (bytes.to_vec(), read)
 }
 
@@ -1935,7 +1935,7 @@ fn rpc_envelope(producer: &mut TProducer, block_root: B256) -> silver_common::TC
     }
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     read
 }
 
@@ -2425,7 +2425,7 @@ fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     read
 }
 
@@ -2438,7 +2438,7 @@ fn gossip_att_msg(
     r.buffer().unwrap()[..att.len()].copy_from_slice(att);
     r.increment_offset(att.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconAttestation(subnet),

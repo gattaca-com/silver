@@ -90,7 +90,7 @@ pub fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     r.buffer().expect("tcache buffer").copy_from_slice(bytes);
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     read
 }
 
