@@ -38,6 +38,8 @@ pub struct ForkChoice {
     pub lookup: NodeLookup,
     pub finalized_checkpoint: Checkpoint,
     pub justified_checkpoint: Checkpoint,
+    unrealized_justified_checkpoint: Checkpoint,
+    unrealized_finalized_checkpoint: Checkpoint,
 
     // Spec proposer boost. `*_root`/`*_score` is the *current* target, set on a
     // timely current-slot block import and zeroed at the next slot boundary.
@@ -131,6 +133,8 @@ impl ForkChoice {
             lookup,
             finalized_checkpoint,
             justified_checkpoint,
+            unrealized_justified_checkpoint: justified_checkpoint,
+            unrealized_finalized_checkpoint: finalized_checkpoint,
             proposer_boost_root: [0u8; 32],
             proposer_boost_score: 0,
             applied_boost_root: [0u8; 32],
@@ -185,6 +189,7 @@ impl ForkChoice {
             ptc: PtcVotes::default(),
         });
         self.lookup.insert(b.block_root, node_idx);
+        self.pull_up_tip(b.slot, b.unrealized_justified, b.unrealized_finalized);
 
         // Propagate best-child/best-descendant up to the root so find_head is
         // correct even before apply_score_changes (the new node carries no
@@ -322,7 +327,29 @@ impl ForkChoice {
         }
     }
 
+    /// Spec `compute_pulled_up_tip`: a prior-epoch block's unrealized
+    /// checkpoints are already realized. Without it, every tip past an
+    /// unrealized justification is non-viable until the next epoch starts.
+    fn pull_up_tip(&mut self, slot: Slot, justified: Checkpoint, finalized: Checkpoint) {
+        if justified.epoch > self.unrealized_justified_checkpoint.epoch {
+            self.unrealized_justified_checkpoint = justified;
+        }
+        if finalized.epoch > self.unrealized_finalized_checkpoint.epoch {
+            self.unrealized_finalized_checkpoint = finalized;
+        }
+        if slot / SLOTS_PER_EPOCH < self.current_epoch() {
+            self.lift_justified(justified);
+            self.lift_finalized(finalized);
+        }
+    }
+
+    /// Spec `on_tick_per_slot`: entering a new epoch realizes the store's
+    /// unrealized checkpoints, before any head is selected at the new time.
     pub fn set_current_slot(&mut self, slot: Slot) {
+        if slot / SLOTS_PER_EPOCH > self.current_epoch() {
+            self.lift_justified(self.unrealized_justified_checkpoint);
+            self.lift_finalized(self.unrealized_finalized_checkpoint);
+        }
         self.current_slot = slot;
         self.head_moved = true;
     }

@@ -115,37 +115,14 @@ impl BeaconStateTile {
         self.fork_choice.lift_finalized(f);
     }
 
-    /// Spec `on_tick_per_slot` epoch-boundary pull-up: lift store
-    /// justified/finalized from the head node's *unrealized* checkpoints
-    /// (monotone, resident-only). For the canonical head this largely
-    /// duplicates the realized `lift_checkpoints` after the eager
-    /// `on_slot_start` advance; the value is consistency when the head node
-    /// itself hasn't crossed the boundary yet.
-    fn lift_unrealized_checkpoints(&mut self) {
-        let head = self.fork_choice.find_head();
-        let Some(idx) = self.fork_choice.find_node_idx(&head) else {
-            return;
-        };
-        let n = self.fork_choice.node(idx);
-        let (uj, uf) = (n.checkpoints.unrealized_justified, n.checkpoints.unrealized_finalized);
-        self.fork_choice.lift_justified(uj);
-        self.fork_choice.lift_finalized(uf);
-    }
-
     /// Spec `on_tick`, fork-choice only: expire proposer boost, make the
-    /// previous slot's deferred votes eligible, refold the head, and at an
-    /// epoch boundary pull up unrealized checkpoints.
+    /// previous slot's deferred votes eligible, and refold the head.
     #[timed]
     pub(super) fn fork_choice_tick(&mut self) {
-        let prev_epoch = self.fork_choice.current_epoch();
-        let new_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
         self.fork_choice.expire_proposer_boost();
         let n = self.head_validator_count();
         self.fork_choice.drain_pending_votes(n, self.ticker.current_slot());
         self.recompute_head();
-        if new_epoch > prev_epoch {
-            self.lift_unrealized_checkpoints();
-        }
     }
 
     /// Index bundle of fork-choice's canonical tip. For gossip-object

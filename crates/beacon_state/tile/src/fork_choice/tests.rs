@@ -699,6 +699,75 @@ fn viability_unrealized_justified_and_plus_two() {
     assert_eq!(fc.find_head(), root(3));
 }
 
+/// Anchored at epoch 1 so the genesis exception to the justified rule never
+/// applies, with block A (`root(2)`) opening epoch 2.
+fn anchored_at_epoch_one() -> ForkChoice {
+    let c = cp(1, 1);
+    let mut fc = ForkChoice::init(
+        c,
+        c,
+        SLOTS_PER_EPOCH,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
+    fc.on_block(block(2 * SLOTS_PER_EPOCH, root(2), root(1), c, c));
+    fc
+}
+
+fn unrealized_justified(slot: Slot, block_root: B256, justified: Checkpoint) -> BlockImport {
+    let c = cp(1, 1);
+    BlockImport { unrealized_justified: justified, ..block(slot, block_root, root(2), c, c) }
+}
+
+/// Spec `pull_up_past_epoch_block`: a prior-epoch block's unrealized
+/// justification is realized at import, so the block can be the head even
+/// when its voting source is far behind the current epoch.
+#[test]
+fn a_prior_epoch_block_pulls_up_on_import() {
+    let mut fc = anchored_at_epoch_one();
+    fc.set_current_slot(5 * SLOTS_PER_EPOCH);
+
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 1, root(3), cp(2, 2)));
+
+    assert_eq!(fc.justified_checkpoint, cp(2, 2));
+    assert_eq!(fc.find_head(), root(3));
+}
+
+/// Spec `not_pull_up_current_epoch_block` and `pull_up_on_tick`: a
+/// current-epoch block's unrealized justification waits for the next epoch.
+#[test]
+fn a_current_epoch_block_pulls_up_at_the_next_epoch() {
+    let mut fc = anchored_at_epoch_one();
+    fc.set_current_slot(2 * SLOTS_PER_EPOCH + 1);
+
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 1, root(3), cp(2, 2)));
+    assert_eq!(fc.justified_checkpoint, cp(1, 1));
+
+    fc.set_current_slot(3 * SLOTS_PER_EPOCH - 1);
+    assert_eq!(fc.justified_checkpoint, cp(1, 1));
+
+    fc.set_current_slot(3 * SLOTS_PER_EPOCH);
+    assert_eq!(fc.justified_checkpoint, cp(2, 2));
+}
+
+/// The epoch pull-up realizes the best unrealized justification of any
+/// imported block, whichever block is the head.
+#[test]
+fn the_epoch_pull_up_takes_the_best_unrealized_justification() {
+    let mut fc = anchored_at_epoch_one();
+    fc.set_current_slot(2 * SLOTS_PER_EPOCH + 2);
+
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 1, root(3), cp(2, 2)));
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 2, root(4), cp(1, 1)));
+
+    fc.set_current_slot(3 * SLOTS_PER_EPOCH);
+    assert_eq!(fc.justified_checkpoint, cp(2, 2));
+}
+
 // ---- [Gloas] payload-axis tests ----
 
 /// `vote_branch` classifies a vote into a payload bucket: a past-block vote
