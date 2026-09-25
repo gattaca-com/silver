@@ -251,9 +251,13 @@ impl History {
         let mut child_payload = coverage
             .child_payload(anchor)
             .or_else(|| unfinalized.child_payload_parent(head.slot, head.root, &anchor));
+        let column_floor = self.floors(head.finalized_slot).columns;
         let mut wanted = anchor;
         while let Some((facts, ssz)) = self.linker.take(&wanted) {
-            let needs = facts.needs(&self.spec, child_payload);
+            let mut needs = facts.needs(&self.spec, child_payload);
+            // Columns past retention are never fetched, so owing them would
+            // hold the walk on this window until finality prunes the debt.
+            needs.columns &= facts.slot >= column_floor;
             let block = Block::new(facts, needs, head.finalized_slot, head.finalized_root);
             write_queue.push_back(PendingWrite::BackfillBlock { block, ssz });
             child_payload = Some(facts.payload.parent_payload_hash);

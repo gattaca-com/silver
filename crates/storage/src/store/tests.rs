@@ -1427,3 +1427,25 @@ fn rebuild_across_the_fork_misses_envelopes_only_above_it() {
     assert!(!bit(&prefill, prefill.envelopes, 32));
     let _ = std::fs::remove_dir_all(&store_path);
 }
+
+/// A blob block backfilled under the column floor owes no columns. If it did,
+/// the walk would wait on the window it sits in until finality moved.
+#[test]
+fn backfilled_blob_block_under_the_column_floor_owes_no_columns() {
+    let temp = TempDir::new().unwrap();
+    let mut store = load_fulu_custodying(temp.path().to_str().unwrap().to_owned(), 0b1);
+
+    let slot = 64u64;
+    let block = blob_block(slot, [0x42; 32]);
+    let root = block_root_fulu(&block);
+    let mut staged = stage("below_column_floor", &block, 1);
+
+    // Finality far enough above that the block is past column retention.
+    store.head.finalized_slot = slot + super::COLUMN_SLOTS_RETAINED + 32;
+    store.head.finalized_root = root;
+    store.backfill_block(staged.consumer.acquire(staged.reads[0]));
+    drain(&mut store).unwrap();
+
+    assert_eq!(store.finalized.slot_of(&root), Some(slot), "the block landed");
+    assert_eq!(store.finalized.coverage().columns_missing(slot), 0);
+}
