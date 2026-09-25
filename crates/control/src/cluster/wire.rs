@@ -92,7 +92,7 @@ fn to_wire_message(mut message: Message) -> wire::Message {
     }
 }
 
-fn to_wire_entry(entry: Entry) -> wire::Entry {
+pub(super) fn to_wire_entry(entry: Entry) -> wire::Entry {
     wire::Entry {
         entry_type: (entry.entry_type as i32).into(),
         term: entry.term,
@@ -165,7 +165,7 @@ fn from_wire_message(message: wire::Message) -> Result<Message, DecodeError> {
     Ok(decoded)
 }
 
-fn from_wire_entry(entry: wire::Entry) -> Result<Entry, DecodeError> {
+pub(super) fn from_wire_entry(entry: wire::Entry) -> Result<Entry, DecodeError> {
     let mut decoded = Entry::default();
     decoded.set_entry_type(entry_type(entry.entry_type.to_i32())?);
     decoded.set_term(entry.term);
