@@ -52,7 +52,7 @@ impl<W> PinnedAppenderWriter<W> {
             return;
         }
         self.booted = true;
-        thread_boot(self.log_core, None);
+        thread_boot(self.log_core.as_slice(), None);
     }
 }
 

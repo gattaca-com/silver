@@ -646,7 +646,7 @@ fn viability_genesis_exception() {
     fc.on_block(block(64, root(2), root(1), cp(1, 9), g));
     let a = fc.find_node_idx(&root(2)).unwrap();
     fc.nodes[a].checkpoints.unrealized_justified = cp(1, 9);
-    fc.set_current_slot(10 * SLOTS_PER_EPOCH); // +2 would filter cp(1, ..), but store is at genesis
+    fc.on_tick(10 * SLOTS_PER_EPOCH); // +2 would filter cp(1, ..), but store is at genesis
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(2));
@@ -677,26 +677,96 @@ fn viability_unrealized_justified_and_plus_two() {
     fc.on_block(block(65, root(3), root(2), cp(1, 9), g));
     let c = fc.find_node_idx(&root(3)).unwrap();
 
-    // current_epoch 4: C is prior-epoch -> voting source is its unrealized
-    // justified. Caught up to epoch 2 -> viable -> head = C.
-    fc.set_current_slot(4 * SLOTS_PER_EPOCH);
-    fc.nodes[c].checkpoints.unrealized_justified = cp(2, 2);
+    // Stale unrealized (epoch 1) at current_epoch 3: C is prior-epoch, so its
+    // voting source is its unrealized justified. +2 boundary: 1 + 2 >= 3 ->
+    // viable -> head = C.
+    fc.on_tick(3 * SLOTS_PER_EPOCH);
+    fc.nodes[c].checkpoints.unrealized_justified = cp(1, 9);
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 
-    // Stale unrealized (epoch 1): 1 != 2 and 1 + 2 < 4 -> filtered -> head
-    // falls back to A.
-    fc.nodes[c].checkpoints.unrealized_justified = cp(1, 9);
+    // current_epoch 4: 1 != 2 and 1 + 2 < 4 -> filtered -> head falls back
+    // to A.
+    fc.on_tick(4 * SLOTS_PER_EPOCH);
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(2));
 
-    // +2 boundary: at current_epoch 3, 1 + 2 >= 3 -> viable again.
-    fc.set_current_slot(3 * SLOTS_PER_EPOCH);
+    // Unrealized caught up to epoch 2 -> viable -> head = C.
+    fc.nodes[c].checkpoints.unrealized_justified = cp(2, 2);
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
+}
+
+/// Anchored at epoch 1 so the genesis exception to the justified rule never
+/// applies, with block A (`root(2)`) opening epoch 2.
+fn anchored_at_epoch_one() -> ForkChoice {
+    let c = cp(1, 1);
+    let mut fc = ForkChoice::init(
+        c,
+        c,
+        SLOTS_PER_EPOCH,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
+    fc.on_block(block(2 * SLOTS_PER_EPOCH, root(2), root(1), c, c));
+    fc
+}
+
+fn unrealized_justified(slot: Slot, block_root: B256, justified: Checkpoint) -> BlockImport {
+    let c = cp(1, 1);
+    BlockImport { unrealized_justified: justified, ..block(slot, block_root, root(2), c, c) }
+}
+
+/// A prior-epoch block's unrealized justification is realized at import, so
+/// the block can be the head even when its voting source is far behind the
+/// current epoch.
+#[test]
+fn pull_up_past_epoch_block() {
+    let mut fc = anchored_at_epoch_one();
+    fc.on_tick(5 * SLOTS_PER_EPOCH);
+
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 1, root(3), cp(2, 2)));
+
+    assert_eq!(fc.justified_checkpoint, cp(2, 2));
+    assert_eq!(fc.find_head(), root(3));
+}
+
+/// A current-epoch block's unrealized justification waits for the next epoch
+/// (also spec `not_pull_up_current_epoch_block`).
+#[test]
+fn pull_up_on_tick() {
+    let mut fc = anchored_at_epoch_one();
+    fc.on_tick(2 * SLOTS_PER_EPOCH + 1);
+
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 1, root(3), cp(2, 2)));
+    assert_eq!(fc.justified_checkpoint, cp(1, 1));
+
+    fc.on_tick(3 * SLOTS_PER_EPOCH - 1);
+    assert_eq!(fc.justified_checkpoint, cp(1, 1));
+
+    fc.on_tick(3 * SLOTS_PER_EPOCH);
+    assert_eq!(fc.justified_checkpoint, cp(2, 2));
+}
+
+/// The epoch pull-up realizes the best unrealized justification of any
+/// imported block, whichever block is the head.
+#[test]
+fn pull_up_takes_best_unrealized() {
+    let mut fc = anchored_at_epoch_one();
+    fc.on_tick(2 * SLOTS_PER_EPOCH + 2);
+
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 1, root(3), cp(2, 2)));
+    fc.on_block(unrealized_justified(2 * SLOTS_PER_EPOCH + 2, root(4), cp(1, 1)));
+
+    fc.on_tick(3 * SLOTS_PER_EPOCH);
+    assert_eq!(fc.justified_checkpoint, cp(2, 2));
 }
 
 // ---- [Gloas] payload-axis tests ----
@@ -796,7 +866,7 @@ fn gloas_tie_broken_by_should_extend_payload() {
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true)); // C_e
     // A (slot 1) is the previous-slot payload decision (current slot 2), where
     // `should_extend_payload` governs regardless of subtree weight.
-    fc.set_current_slot(2);
+    fc.on_tick(2);
 
     // Equal weight on both branchs → tie.
     let mut d = vec![WeightDelta::default(); fc.nodes.len()];

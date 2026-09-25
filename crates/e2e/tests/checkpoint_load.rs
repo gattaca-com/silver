@@ -229,29 +229,28 @@ fn finalized_state_loads() {
         return;
     }
 
-    let mut prev_head = head;
+    let mut prev_block_root = head;
     for (block_slot, block_ssz) in blocks.drain(..) {
         // parent_root sits at offset 116 in SignedBeaconBlock SSZ.
         let parent_root: [u8; 32] = block_ssz[116..148].try_into().unwrap();
         assert_eq!(
             parent_root,
-            prev_head,
-            "block at slot {block_slot}: parent_root 0x{} != prev head 0x{}",
+            prev_block_root,
+            "block at slot {block_slot}: parent_root 0x{} != prev block 0x{}",
             hex(&parent_root),
-            hex(&prev_head),
+            hex(&prev_block_root),
         );
 
         let feedback = tile.try_apply_block(&block_ssz);
-        assert!(
-            matches!(feedback, Feedback::BlockImported(_)),
-            "block at slot {block_slot} not accepted (got {feedback:?})",
-        );
+        let Feedback::BlockImported(block_root) = feedback else {
+            panic!("block at slot {block_slot} not accepted (got {feedback:?})");
+        };
         assert!(
             tile.head_state_slot() >= block_slot,
             "head did not advance to applied block slot {block_slot}",
         );
 
-        prev_head = tile.head_block_root();
+        prev_block_root = block_root;
     }
 
     // Cross-check the final post-state root against a canonical beacon API.

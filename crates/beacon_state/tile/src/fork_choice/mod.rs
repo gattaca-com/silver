@@ -38,6 +38,8 @@ pub struct ForkChoice {
     pub lookup: NodeLookup,
     pub finalized_checkpoint: Checkpoint,
     pub justified_checkpoint: Checkpoint,
+    unrealized_justified_checkpoint: Checkpoint,
+    unrealized_finalized_checkpoint: Checkpoint,
 
     // Spec proposer boost. `*_root`/`*_score` is the *current* target, set on a
     // timely current-slot block import and zeroed at the next slot boundary.
@@ -131,6 +133,8 @@ impl ForkChoice {
             lookup,
             finalized_checkpoint,
             justified_checkpoint,
+            unrealized_justified_checkpoint: justified_checkpoint,
+            unrealized_finalized_checkpoint: finalized_checkpoint,
             proposer_boost_root: [0u8; 32],
             proposer_boost_score: 0,
             applied_boost_root: [0u8; 32],
@@ -138,7 +142,7 @@ impl ForkChoice {
             vote_tracker: VoteTracker::with_capacity(capacity),
             pending_votes: VoteBatch::with_capacity(capacity / SLOTS_PER_EPOCH as usize),
             justified: JustifiedBalances::with_capacity(capacity),
-            current_slot: 0,
+            current_slot: finalized_slot,
             weight_deltas: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
             head_moved: false,
         }
@@ -185,6 +189,7 @@ impl ForkChoice {
             ptc: PtcVotes::default(),
         });
         self.lookup.insert(b.block_root, node_idx);
+        self.compute_pulled_up_tip(b.slot, b.unrealized_justified, b.unrealized_finalized);
 
         // Propagate best-child/best-descendant up to the root so find_head is
         // correct even before apply_score_changes (the new node carries no
@@ -303,11 +308,6 @@ impl ForkChoice {
         self.head_moved = true;
     }
 
-    pub fn expire_proposer_boost(&mut self) {
-        self.proposer_boost_root = [0u8; 32];
-        self.head_moved = true;
-    }
-
     pub fn lift_justified(&mut self, cp: Checkpoint) {
         if cp.epoch > self.justified_checkpoint.epoch && self.find_node_idx(&cp.root).is_some() {
             self.justified_checkpoint = cp;
@@ -322,9 +322,55 @@ impl ForkChoice {
         }
     }
 
-    pub fn set_current_slot(&mut self, slot: Slot) {
-        self.current_slot = slot;
+    /// Spec `update_checkpoints`, for roots resident in the tree only.
+    pub fn update_checkpoints(&mut self, justified: Checkpoint, finalized: Checkpoint) {
+        self.lift_justified(justified);
+        self.lift_finalized(finalized);
+    }
+
+    /// Spec `update_unrealized_checkpoints`.
+    fn update_unrealized_checkpoints(&mut self, justified: Checkpoint, finalized: Checkpoint) {
+        if justified.epoch > self.unrealized_justified_checkpoint.epoch {
+            self.unrealized_justified_checkpoint = justified;
+        }
+        if finalized.epoch > self.unrealized_finalized_checkpoint.epoch {
+            self.unrealized_finalized_checkpoint = finalized;
+        }
+    }
+
+    /// Spec `compute_pulled_up_tip`, given the block's unrealized checkpoints.
+    fn compute_pulled_up_tip(&mut self, slot: Slot, justified: Checkpoint, finalized: Checkpoint) {
+        self.update_unrealized_checkpoints(justified, finalized);
+
+        let block_epoch = slot / SLOTS_PER_EPOCH;
+        if block_epoch < self.current_epoch() {
+            self.update_checkpoints(justified, finalized);
+        }
+    }
+
+    /// Spec `on_tick`, in slots.
+    pub fn on_tick(&mut self, slot: Slot) {
+        while self.current_slot < slot {
+            self.on_tick_per_slot(self.current_slot + 1);
+        }
         self.head_moved = true;
+    }
+
+    /// Spec `on_tick_per_slot`, in slots.
+    fn on_tick_per_slot(&mut self, current_slot: Slot) {
+        let previous_slot = self.current_slot;
+        self.current_slot = current_slot;
+
+        if current_slot > previous_slot {
+            self.proposer_boost_root = [0u8; 32];
+        }
+
+        if current_slot > previous_slot && current_slot.is_multiple_of(SLOTS_PER_EPOCH) {
+            self.update_checkpoints(
+                self.unrealized_justified_checkpoint,
+                self.unrealized_finalized_checkpoint,
+            );
+        }
     }
 
     #[inline]
