@@ -1263,6 +1263,7 @@ mod tests {
         CacheFrameError, CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut,
         Keypair, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCache, TCacheId,
         TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode,
+        test_util::follow_producer_floor,
     };
 
     use super::*;
@@ -2217,7 +2218,7 @@ mod tests {
         let mut client_h = PeerHarness::new();
         let mut server_h = PeerHarness::new();
         client_h.reopen(TCacheId::ControlGossip, TReadMode::Strict);
-        client_h.context.reader.open(TCacheId::ControlSlot, "", TReadMode::Retained).unwrap();
+        client_h.context.reader.open(TCacheId::ControlSlot, "", TReadMode::Strict).unwrap();
         let limits = Box::new(SegmentedGossipLimits::new(2));
         let mut pair = PeerPair::new();
         // RPC.subscriptions = [{ subscribe: true, topicID: "t" }].
@@ -2250,10 +2251,9 @@ mod tests {
             ),
             SendResult::Ok
         ));
-        client_h
-            .context
-            .reader
-            .advance_retention(TCacheId::ControlSlot, client_h.columns.next_seq());
+        client_h.columns.retain_from(client_h.columns.next_seq());
+        client_h.columns.loop_start();
+        follow_producer_floor(&mut client_h.context.reader);
         wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
         let wire: Vec<_> = server_h.received.values().flatten().copied().collect();
         let mut expected = vec![0x1a, 4, 0x32, 2, 0x50, 1];

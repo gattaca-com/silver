@@ -3,7 +3,7 @@ use std::collections::hash_map::Entry;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot, StateId};
 use silver_common::{
-    BlockSource, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TCacheRead, hex32,
+    BlockSource, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TRead, hex32,
 };
 use silver_config::PendingBounds;
 
@@ -11,22 +11,33 @@ use super::block::StagedBlock;
 use crate::error::RejectReason;
 
 const MAX_ORPHANS_PER_PARENT: usize = 4;
+/// A parent still missing this many wall slots after the park is not coming
+/// over gossip; sync fetches it and the pins stop holding the ring.
+pub(super) const ORPHAN_TIMEOUT_SLOTS: Slot = 2;
 
 pub(super) struct Orphan {
     pub(super) block_root: B256,
     pub(super) slot: Slot,
     pub(super) msg: BlockSourceMsg,
+    pub(super) parked_at: Slot,
 }
 
+impl Orphan {
+    fn expired(&self, wall_slot: Slot) -> bool {
+        wall_slot > self.parked_at + ORPHAN_TIMEOUT_SLOTS
+    }
+}
+
+/// The block's bytes stay pinned until it is replayed or dropped.
 pub(super) enum BlockSourceMsg {
-    Gossip(NewGossipMsg),
-    Rpc(P2pStreamId, TCacheRead),
+    Gossip(NewGossipMsg, TRead),
+    Rpc(P2pStreamId, TRead),
 }
 
 impl BlockSourceMsg {
     pub(super) fn source(&self) -> BlockSource {
         match self {
-            Self::Gossip(_) => BlockSource::Gossip,
+            Self::Gossip(..) => BlockSource::Gossip,
             Self::Rpc(..) => BlockSource::Rpc,
         }
     }
@@ -84,6 +95,28 @@ impl OrphanPool {
         self.by_parent.retain(|_, orphans| {
             orphans.retain(|orphan| orphan.slot > finalized_slot);
             !orphans.is_empty()
+        });
+    }
+
+    /// Drops orphans parked longer than `ORPHAN_TIMEOUT_SLOTS`; `expired` is
+    /// called once per parent left with no children, with a dropped child's
+    /// slot, so the parent can be requested again.
+    pub(super) fn expire(&mut self, wall_slot: Slot, mut expired: impl FnMut(&B256, Slot)) {
+        self.by_parent.retain(|parent, orphans| {
+            let Some(first) = orphans.iter().find(|o| o.expired(wall_slot)) else { return true };
+            let slot = first.slot;
+            tracing::warn!(
+                parent = hex32(parent),
+                dropped = orphans.iter().filter(|o| o.expired(wall_slot)).count(),
+                wall_slot,
+                "orphans expired: parent still missing"
+            );
+            orphans.retain(|o| !o.expired(wall_slot));
+            if orphans.is_empty() {
+                expired(parent, slot);
+                return false;
+            }
+            true
         });
     }
 }

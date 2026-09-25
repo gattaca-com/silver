@@ -96,10 +96,6 @@ impl<'a> Response<'a> {
                 self.indexed_failures(&submission.failures);
                 Outcome::Response
             }
-            outcome @ Outcome::AwaitingVerdicts(_) => {
-                self.submissions.publish_head();
-                outcome
-            }
             outcome => outcome,
         }
     }

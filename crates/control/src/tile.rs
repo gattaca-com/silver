@@ -12,8 +12,8 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheRead, TCacheReader,
-    TCacheTable, TProducer, TReadMode,
+    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
@@ -206,6 +206,7 @@ impl Controller {
             "ctl_boundary_processing",
             TReadMode::Sliding,
         )?;
+        self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, TileId::Columns]);
         self.gossip_handler.open_tcaches()
     }
 
@@ -344,6 +345,12 @@ impl Controller {
 
 impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.gossip_handler.loop_start();
+        self.rpc_producer.loop_start();
+        self.attestation_cluster.loop_start();
+        if let Some(ingress) = &mut self.cell_ingress {
+            ingress.loop_start();
+        }
         let now = Instant::now();
         self.advance_gossip_domains(&mut adapter.producers);
         self.reader.free();

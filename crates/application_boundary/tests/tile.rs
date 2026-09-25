@@ -1251,7 +1251,7 @@ fn late_subscriber_receives_only_relay_requests_published_after_it() {
 }
 
 #[test]
-fn idle_boundary_lets_the_object_rings_evict_its_consumers() {
+fn idle_boundary_follows_the_object_rings_producer_floors() {
     let base = ShmemDir::new().unwrap();
     let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
     let (mut tile, mut gossip, mut rpc) =
@@ -1268,13 +1268,15 @@ fn idle_boundary_lets_the_object_rings_evict_its_consumers() {
             written += 1;
             assert!(written < 1_000, "the ring never filled");
         }
+        // The producing tile publishes at its loop end.
+        producer.loop_start();
     };
     fill(&mut gossip);
     fill(&mut rpc);
 
-    // Tail advancement requires inactivity beyond the cache's five-second idle
-    // interval.
-    std::thread::sleep(Duration::from_millis(5_100));
+    // An idle reader follows the published producer floor over two passes:
+    // the first takes the snapshot, the second applies it.
+    tile.loop_body(&mut adapter);
     tile.loop_body(&mut adapter);
     assert!(gossip.reserve(chunk.len(), false).is_some(), "the gossip ring is held by the tile");
     assert!(rpc.reserve(chunk.len(), false).is_some(), "the RPC ring is held by the tile");

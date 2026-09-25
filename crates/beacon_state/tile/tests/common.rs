@@ -353,7 +353,7 @@ impl Harness {
         }
         r.increment_offset(len);
         let read = r.read();
-        producer.publish_head();
+        producer.loop_start();
         read
     }
 

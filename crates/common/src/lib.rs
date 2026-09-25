@@ -41,7 +41,7 @@ pub use crate::{
         SubLayout, SubReservation, SubReservationError, SubReservationList, SubReservationRef,
         SubReservationView, SubValidation, SubWrite, SyncNeed, SyncUpdate, SyncingStrategy, TCache,
         TCacheCounters, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheRef, TCacheTable,
-        WithdrawalInline,
+        TileId, WithdrawalInline,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
     wheel::Wheel,

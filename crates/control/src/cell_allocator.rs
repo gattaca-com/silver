@@ -36,6 +36,10 @@ struct Allocation {
 }
 
 impl CellAllocator {
+    pub fn loop_start(&mut self) {
+        self.producer.loop_start();
+    }
+
     pub fn new(
         config: CellStoreConfig,
         producer: TProducer,
@@ -45,6 +49,10 @@ impl CellAllocator {
         if producer.cache_ref().capacity() < config.cache_capacity() {
             return Err(StoreError::CacheTooSmall);
         }
+        // Cells are addressed and re-emitted for as long as their slot is
+        // retained, so the retention boundary is this producer's floor.
+        let mut producer = producer;
+        producer.retain_from(producer.next_seq());
         Ok(Self {
             allocations: FxHashMap::with_capacity_and_hasher(
                 2 * config.live_blocks(),
@@ -319,6 +327,7 @@ impl CellAllocator {
             return None;
         }
         let retain_from = self.producer.next_seq();
+        self.producer.retain_from(retain_from);
         let expired_slot = self.slot;
         self.close();
         self.allocations.clear();

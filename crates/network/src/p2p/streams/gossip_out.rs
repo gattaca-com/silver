@@ -334,7 +334,9 @@ mod tests {
         assert_eq!(wheel.active_count(), 2, "blocked attempts must release their child owner");
 
         let mut produced = 0;
-        while let Some(mut reservation) = producer.reserve(CHURN_BYTES, true) {
+        loop {
+            producer.loop_start();
+            let Some(mut reservation) = producer.reserve(CHURN_BYTES, true) else { break };
             reservation.buffer().unwrap().fill(0xee);
             reservation.increment_offset(CHURN_BYTES);
             drop(consumer.acquire_strict(reservation.read()).unwrap());
@@ -373,6 +375,7 @@ mod tests {
         assert!(producer.reserve(CHURN_BYTES, true).is_none());
         drop(clone);
         assert_eq!(wheel.active_count(), 0);
+        consumer.free();
         assert!(producer.reserve(CHURN_BYTES, true).is_some());
     }
 }

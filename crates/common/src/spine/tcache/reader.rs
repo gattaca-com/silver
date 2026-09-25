@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use super::{AcquiredRead, Error, RandomAccessConsumer, TCacheId, TCacheRead, TCacheRef};
+use super::{AcquiredRead, Error, RandomAccessConsumer, TCacheId, TCacheRead, TCacheRef, TileId};
 
 #[derive(Copy, Clone, Default)]
 pub struct TCacheTable([Option<TCacheRef>; TCacheId::COUNT]);
@@ -26,13 +26,13 @@ impl FromIterator<TCacheRef> for TCacheTable {
 #[derive(Copy, Clone, Debug)]
 pub enum ReadMode {
     Sliding,
-    /// Tail published only on explicit `free`, not on every read drop.
+    /// Identical to `Sliding` since tails publish only at the reader's
+    /// `free()`; kept to mark readers that hold pins across passes.
     SlidingManualFree,
     /// Never force-reset on idle, so a stalled consumer blocks the producer.
-    /// Only for high-throughput consumers.
+    /// Only for high-throughput consumers, and for caches whose producer
+    /// retains by `retain_from`.
     Strict,
-    /// Strict, with a fixed retention boundary moved by `advance_retention`.
-    Retained,
 }
 
 /// The only way to read a TCache: one consumer per id, routed by
@@ -66,17 +66,43 @@ impl TCacheReader {
         let head = cache.head().seq.load(Ordering::Acquire);
         let tail = head.saturating_sub(cache.capacity() as u64);
         let consumer = match mode {
-            ReadMode::Sliding => cache.ra_consumer_from(tail, name, true, false)?,
-            ReadMode::SlidingManualFree => cache.ra_consumer_from(tail, name, false, false)?,
-            ReadMode::Strict => cache.ra_consumer_from(tail, name, true, true)?,
-            ReadMode::Retained => {
-                let mut consumer = cache.ra_consumer_from(tail, name, true, true)?;
-                consumer.retain();
-                consumer
+            ReadMode::Sliding | ReadMode::SlidingManualFree => {
+                cache.ra_consumer_from(tail, name, false)?
             }
+            ReadMode::Strict => cache.ra_consumer_from(tail, name, true)?,
         };
         *slot = Some(consumer);
         Ok(())
+    }
+
+    /// Opens the consumer through which `tile` forwards reads of `id`, under
+    /// the name receivers declare.
+    pub fn open_forwarder(
+        &mut self,
+        tile: TileId,
+        id: TCacheId,
+        mode: ReadMode,
+    ) -> Result<(), Error> {
+        self.open(id, tile.emitter(id), mode)
+    }
+
+    /// The tiles that forward reads of `id` to this reader. A declared
+    /// emitter bounds the tail from the moment its slot is claimed.
+    pub fn declare(&mut self, id: TCacheId, emitters: &[TileId]) {
+        let consumer = self.consumer(id);
+        for tile in emitters {
+            consumer.declare(tile.emitter(id));
+        }
+    }
+
+    /// `declare` by consumer name, for harnesses whose forwarders are not
+    /// tiles.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn declare_names(&mut self, id: TCacheId, emitters: &[&'static str]) {
+        let consumer = self.consumer(id);
+        for emitter in emitters {
+            consumer.declare(emitter);
+        }
     }
 
     pub fn is_open(&self, id: TCacheId) -> bool {
@@ -102,15 +128,6 @@ impl TCacheReader {
         self.consumers[id as usize].as_ref().is_some_and(RandomAccessConsumer::is_strict)
     }
 
-    /// False when `id` is not open.
-    pub fn is_retained(&self, id: TCacheId) -> bool {
-        self.consumers[id as usize].as_ref().is_some_and(RandomAccessConsumer::is_retained)
-    }
-
-    pub fn advance_retention(&mut self, id: TCacheId, seq: u64) {
-        self.consumer(id).advance_retention(seq);
-    }
-
     #[cfg(test)]
     pub(super) fn active_count(&self, id: TCacheId) -> usize {
         self.consumers[id as usize].as_ref().map_or(0, RandomAccessConsumer::active_count)
@@ -130,9 +147,22 @@ impl TCacheReader {
         &self.tcaches
     }
 
+    /// Once per pass, after every queue carrying reads of these caches ran
+    /// empty at least once since the previous call. Publishes the tails and
+    /// lets emitter snapshots taken before the drain take effect.
     pub fn free(&mut self) {
+        self.pass(true);
+    }
+
+    /// A publish after a pass that left a queue undrained; snapshots stay
+    /// pending. Also for extra publishes inside a pass.
+    pub fn free_undrained(&mut self) {
+        self.pass(false);
+    }
+
+    fn pass(&mut self, drained: bool) {
         for consumer in self.consumers.iter_mut().flatten() {
-            consumer.free();
+            consumer.pass(drained);
         }
     }
 }
@@ -147,6 +177,7 @@ mod tests {
         let read = reservation.read();
         reservation.buffer().unwrap().copy_from_slice(bytes);
         reservation.increment_offset(bytes.len());
+        producer.loop_start();
         read
     }
 
@@ -211,6 +242,45 @@ mod tests {
         drop(pinned);
         first.free();
         second.free();
+    }
+
+    /// A reader with nothing addressed to it follows its declared emitter
+    /// and the producer floor, one drained pass after taking the snapshot.
+    #[test]
+    fn idle_reader_follows_declared_emitter_after_a_drained_pass() {
+        let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 18);
+        let table = TCacheTable::from_iter([gossip.cache_ref()]);
+        let mut forwarder = TCacheReader::new(table);
+        let mut receiver = TCacheReader::new(table);
+        forwarder
+            .open_forwarder(TileId::BeaconState, TCacheId::ControlProcessing, ReadMode::Sliding)
+            .unwrap();
+        receiver.open(TCacheId::ControlProcessing, "receiver", ReadMode::Sliding).unwrap();
+        receiver.declare(TCacheId::ControlProcessing, &[TileId::BeaconState]);
+        let slot = |reader: &TCacheReader| {
+            reader.consumers[TCacheId::ControlProcessing as usize].as_ref().unwrap().index
+        };
+        let cache = gossip.cache_ref();
+
+        let big = vec![0u8; 1 << 15];
+        for _ in 0..6 {
+            let read = write(&mut gossip, &big);
+            drop(forwarder.acquire(read));
+            forwarder.free();
+        }
+        assert!(cache.tail_of(slot(&forwarder)) > 0);
+
+        // Undrained passes take snapshots but never apply them.
+        receiver.free_undrained();
+        receiver.free_undrained();
+        assert_eq!(cache.tail_of(slot(&receiver)), 0);
+
+        // The first drained pass licenses the snapshot; the tail moves to
+        // the lower of the forwarder's tail and the producer floor.
+        receiver.free();
+        let followed = cache.tail_of(slot(&receiver));
+        assert!(followed > 0, "receiver did not follow");
+        assert!(followed <= cache.tail_of(slot(&forwarder)).min(cache.producer_floor()));
     }
 
     #[test]

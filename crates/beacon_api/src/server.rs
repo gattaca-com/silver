@@ -11,7 +11,7 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
     ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair, LocalGossipResult,
     PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheError, TCacheId, TCacheRead,
-    TCacheReader, TCacheTable, TProducer, TReadMode, block_root,
+    TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
     column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -527,7 +527,12 @@ impl BeaconApi {
             TCacheId::BeaconStateHandoff,
             "api_beacon_state_handoff",
             TReadMode::Sliding,
-        )
+        )?;
+        let forwarders = [TileId::BeaconState, TileId::Columns];
+        self.reader.declare(TCacheId::ControlProcessing, &forwarders);
+        self.reader.declare(TCacheId::NetworkProcessing, &forwarders);
+        self.reader.declare(TCacheId::ControlSlot, &[TileId::Columns]);
+        Ok(())
     }
 
     pub fn local_addrs(&self) -> Vec<Bind> {

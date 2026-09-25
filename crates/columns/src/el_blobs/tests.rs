@@ -166,6 +166,7 @@ fn forced_tail_advance_invalidates_a_queued_response_before_its_bytes_are_reused
     let mut padding = rig.response.reserve(240 * 1024, false).unwrap();
     padding.buffer().unwrap().fill(0);
     padding.flush().unwrap();
+    rig.response.loop_start();
     rig.request([2; 32]);
     rig.response([2; 32], 7);
     let old = &rig.fetcher.responses[0].read;

@@ -58,6 +58,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         Cell::from("min_tail"),
         Cell::from("capacity"),
         Cell::from("length"),
+        Cell::from("max_length"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::White))
     .height(1);
@@ -71,7 +72,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let tail_w = 12usize;
     let cap_w = 12usize;
     let len_w = 12usize;
-    let bar_w = inner_w.saturating_sub(name_w + head_w + tail_w + cap_w + len_w + 5); // 5 cell gaps
+    let max_w = 12usize;
+    // 6 cell gaps
+    let bar_w = inner_w.saturating_sub(name_w + head_w + tail_w + cap_w + len_w + max_w + 6);
 
     let rows: Vec<Row> = app
         .tcaches
@@ -97,6 +100,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.min_tail_seq)))),
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.capacity)))),
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.length())))),
+                Cell::from(Span::raw(format!("{:>10}", fmt_bytes(set.max_length)))),
             ])
             .height(1)
         })
@@ -109,6 +113,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(tail_w as u16),
         Constraint::Length(cap_w as u16),
         Constraint::Length(len_w as u16),
+        Constraint::Length(max_w as u16),
     ];
     let table = Table::new(rows, widths).header(header).block(block);
     app.tcaches_table_state.select(Some(app.tcaches_selection));
@@ -233,35 +238,17 @@ struct TCacheView<'a> {
     name: &'a str,
     capacity: u64,
     head_seq: u64,
-    /// Minimum of every non-sentinel tail. If all tails are still at
-    /// the `u64::MAX` sentinel (no consumer ever called free yet),
-    /// falls back to `head_seq` so length renders as 0.
     min_tail_seq: u64,
 }
 
 impl<'a> TCacheView<'a> {
     fn from(set: &'a CounterSet) -> Self {
-        let capacity = set.current.first().copied().unwrap_or(0);
-        let head_seq = set.current.get(1).copied().unwrap_or(0);
-        // Distinguish "no real consumer" from "consumer caught up":
-        // - At least one real (non-sentinel) tail → use the minimum. Sentinel slots are
-        //   unused; treat them as `head_seq` so they don't drag the minimum.
-        // - All tails are sentinel → no consumer has ever published progress on this
-        //   TCache. Show the ring contents as the producer sees them: from `head -
-        //   capacity` up to `head` (clamped at 0 for pre-wrap producers).
-        let any_real = set.current.iter().skip(2).any(|&t| t != u64::MAX);
-        let min_tail_seq = if any_real {
-            set.current
-                .iter()
-                .skip(2)
-                .copied()
-                .map(|t| if t == u64::MAX { head_seq } else { t })
-                .min()
-                .unwrap_or(head_seq)
-        } else {
-            head_seq.saturating_sub(capacity)
-        };
-        Self { name: &set.name, capacity, head_seq, min_tail_seq }
+        Self {
+            name: &set.name,
+            capacity: set.current.first().copied().unwrap_or(0),
+            head_seq: set.current.get(1).copied().unwrap_or(0),
+            min_tail_seq: set.tcache_min_tail(),
+        }
     }
 
     fn display_name(&self) -> String {

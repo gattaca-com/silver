@@ -274,7 +274,7 @@ mod tests {
     fn full_retention_cache_falls_back_to_normal_gossip_ingress() {
         let mut columns = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let _retained =
-            Box::new(TCacheReader::single(columns.cache_ref(), "", TReadMode::Retained).unwrap());
+            Box::new(TCacheReader::single(columns.cache_ref(), "", TReadMode::Strict).unwrap());
         while let Some(mut reservation) = columns.reserve(1024, false) {
             reservation.buffer().unwrap().fill(0);
             reservation.flush().unwrap();

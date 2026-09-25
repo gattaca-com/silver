@@ -9,7 +9,7 @@ use std::{
 
 use silver_common::{
     AcquiredCacheSegment, CacheFrameRef, CacheSegment, TCache, TCacheId, TCacheProducer,
-    TCacheReader, TReadMode,
+    TCacheReader, TReadMode, test_util::follow_producer_floor,
 };
 
 thread_local! {
@@ -194,14 +194,15 @@ fn range_creation_cloning_and_dropping_allocates_nothing() {
 fn slot_retention_acquisition_and_expiry_allocate_nothing_after_construction() {
     let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 18);
     let mut readers = array::from_fn::<_, 2, _>(|_| {
-        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Retained).unwrap())
+        Box::new(TCacheReader::single(producer.cache_ref(), "", TReadMode::Strict).unwrap())
     });
     let before = ALLOCATION_EVENTS.with(Cell::get);
 
     for _ in 0..512 {
-        let boundary = producer.next_seq();
+        producer.retain_from(producer.next_seq());
+        producer.loop_start();
         for reader in &mut readers {
-            reader.advance_retention(TCacheId::NetworkIngress, boundary);
+            follow_producer_floor(reader);
         }
         let mut reservation = producer.reserve(8192, false).unwrap();
         reservation.buffer().unwrap().fill(0xab);

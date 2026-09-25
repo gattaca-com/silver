@@ -15,7 +15,7 @@ use silver_common::{
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
     ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
     TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
-    hex32,
+    TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -29,6 +29,7 @@ use crate::{
         attestation_pool::AttestationPool,
         attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots,
+        gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
         precomputed_epochs::PrecomputedEpochs,
         seen_aggregates::SeenAggregates,
@@ -147,7 +148,8 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
-    vote_batch: Vec<NewGossipMsg>,
+    // Pinned: the tail moves as later reads in the same pass arrive.
+    vote_batch: Vec<BatchedVote>,
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
@@ -266,23 +268,16 @@ impl BeaconStateTile {
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
-        self.reader.open(
-            TCacheId::ControlProcessing,
-            "bs_control_processing",
-            TReadMode::Sliding,
-        )?;
-        self.reader.open(
-            TCacheId::NetworkProcessing,
-            "bs_network_processing",
-            TReadMode::Sliding,
-        )?;
+        let bs = TileId::BeaconState;
+        self.reader.open_forwarder(bs, TCacheId::ControlProcessing, TReadMode::Sliding)?;
+        self.reader.open_forwarder(bs, TCacheId::NetworkProcessing, TReadMode::Sliding)?;
         self.reader.open(
             TCacheId::BoundaryProcessing,
             "bs_boundary_processing",
             TReadMode::Sliding,
         )?;
         self.reader.open(TCacheId::StorageDelivery, "bs_storage_delivery", TReadMode::Sliding)?;
-        self.reader.open(TCacheId::ControlSlot, "bs_control_slot", TReadMode::Sliding)
+        self.reader.open(TCacheId::ControlSlot, "bs_control_slot", TReadMode::Strict)
     }
 
     /// A read handle on the owned state, for wiring other tiles (lock-free
@@ -614,13 +609,12 @@ impl BeaconStateTile {
                 self.events_producer.write_with(SYNC_COMMITTEE_CONTRIBUTION_SIZE, |buffer| {
                     contribution.write_ssz(buffer.try_into().expect("reserved to size"))
                 });
-            match written {
-                Some(_) => self.events_producer.publish_head(),
-                None => tracing::error!(
+            if written.is_none() {
+                tracing::error!(
                     slot,
                     subcommittee_index,
                     "beacon_state tcache full; contribution not served"
-                ),
+                );
             }
             written
         });
@@ -630,11 +624,7 @@ impl BeaconStateTile {
     fn post_shufflings(&mut self, producers: &mut Producers) {
         let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
         let producer = &mut self.events_producer;
-        let posted =
-            self.shuffling_cache.post_fresh(head_epoch, producer, |event| producers.produce(event));
-        if posted {
-            producer.publish_head();
-        }
+        self.shuffling_cache.post_fresh(head_epoch, producer, |event| producers.produce(event));
     }
 
     /// Covers changes since the last Status, including execution verdicts.
@@ -788,6 +778,7 @@ impl BeaconStateTile {
 
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
+                self.expire_orphans(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();
                 let advanced = self.slot_tick(slot);
                 if advanced || self.fork_choice.find_head() != prev_head {
@@ -1096,6 +1087,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.events_producer.loop_start();
         if !self.initial_status_emitted {
             tracing::info!("producing initial status");
             self.publish_status(&mut adapter.producers);

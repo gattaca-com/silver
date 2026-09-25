@@ -4,7 +4,7 @@ use flux::spine::SpineAdapter;
 use fxhash::FxHashMap;
 use silver_common::{
     ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
-    SilverSpine, SilverSpineProducers, TCacheReader, TProducer,
+    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer,
     ssz_view::{SINGLE_ATT_SIZE, SingleAttestationView},
 };
 use silver_gossip::GossipHandler;
@@ -47,6 +47,10 @@ pub(super) struct AttestationClusterHandler {
 }
 
 impl AttestationClusterHandler {
+    pub(super) fn loop_start(&mut self) {
+        self.outbound_producer.loop_start();
+    }
+
     pub(super) fn new(
         outbound_producer: TProducer,
         config: Option<AttestationClusterConfig>,

@@ -6,6 +6,7 @@ use silver_common::{
     TReservation,
     cell_store::{AcquiredCell, CELL_RECORD_BYTES, PendingCell},
     column_util::push_data_column_sidecar_prefix,
+    test_util::follow_producer_floor,
 };
 use silver_control::cell_allocator::CellAllocator;
 
@@ -54,7 +55,7 @@ impl Harness {
     fn at_slot(config: CellStoreConfig, slot: u64) -> Self {
         let producer = TCache::producer(TCacheId::ControlSlot, config.cache_capacity());
         let cache = producer.cache_ref();
-        let consumer = Box::new(TCacheReader::single(cache, "", TReadMode::Retained).unwrap());
+        let consumer = Box::new(TCacheReader::single(cache, "", TReadMode::Strict).unwrap());
         let start = Instant::now();
         Self {
             allocator: CellAllocator::new(config.clone(), producer, slot, start).unwrap(),
@@ -150,8 +151,9 @@ impl Harness {
     fn advance(&mut self, now: Instant, min_slot: u64, on_expired: impl FnMut(CellKey)) {
         let boundary = self.allocator.advance(now, min_slot);
         self.store.advance(now, min_slot, on_expired);
-        if let Some(event) = boundary {
-            self.consumer.advance_retention(TCacheId::ControlSlot, event.retain_from);
+        if boundary.is_some() {
+            self.allocator.loop_start();
+            follow_producer_floor(&mut self.consumer);
         }
     }
 
@@ -953,10 +955,12 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
     assert_eq!(h.store.counts().cells, 0);
 
     for _ in 0..64 {
+        ingress.loop_start();
         let mut reservation = ingress.reserve(4096, true).unwrap();
         reservation.buffer().unwrap().fill(0xcc);
         reservation.increment_offset(4096);
         drop(incoming.acquire_strict(reservation.read()).unwrap());
+        incoming.free();
     }
     assert!(ingress.read_buffer(old).is_err(), "the ingress buffer must actually have been reused");
     let validation = pending.data.acquire(&mut h.consumer).unwrap();
@@ -971,7 +975,7 @@ fn ingress_is_copied_before_validation_and_can_be_reused_immediately() {
 #[test]
 fn independent_ingress_writers_ignore_duplicates_and_retry_failed_validation() {
     let mut h = Harness::new(2, 3);
-    let mut el = Box::new(TCacheReader::single(h.cache, "", TReadMode::Retained).unwrap());
+    let mut el = Box::new(TCacheReader::single(h.cache, "", TReadMode::Strict).unwrap());
     h.context(ROOT, 0, 2);
     let columns: Vec<_> = h.store.reservations(&ROOT).collect();
     assert_eq!(columns.len(), 2);
@@ -1021,7 +1025,7 @@ fn full_sidecars_are_retained_without_copying_and_match_completed_assemblies() {
         let config =
             CellStoreConfig::new(Arc::new(Harness::spec(2)), 1 << 3, Duration::ZERO).unwrap();
         let mut h = Harness::at_slot(config, slot);
-        let mut network = Box::new(TCacheReader::single(h.cache, "", TReadMode::Retained).unwrap());
+        let mut network = Box::new(TCacheReader::single(h.cache, "", TReadMode::Strict).unwrap());
         h.context(ROOT, slot, 2);
         let (old_cell, _) = h.insert(key(3, 0));
         let assembly_send = old_cell.acquire(&mut network).unwrap();

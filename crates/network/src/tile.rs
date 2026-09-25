@@ -16,7 +16,7 @@ use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
     PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine,
-    TCacheError, TCacheId, cell_store::RetentionEvent,
+    TCacheError,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -116,14 +116,9 @@ impl NetworkTile {
     }
 
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.inner.context.loop_start();
         // Consume peer control messages
         let now = Instant::now();
-        if self.inner.context.reader.is_open(TCacheId::ControlSlot) {
-            let reader = &mut self.inner.context.reader;
-            adapter.consume(|event: RetentionEvent, _| {
-                reader.advance_retention(TCacheId::ControlSlot, event.retain_from);
-            });
-        }
         adapter.consume(|peer_control: PeerControl, _producers| {
             self.handle_peer_control(peer_control, now);
         });
@@ -213,6 +208,7 @@ impl NetworkTile {
 
         let mut rpcs = 0;
         let mut gossips = 0;
+        self.inner.send_drained = false;
 
         loop {
             if rpcs > MAX_PENDING_OUTBOUND_RPC_MSGS || gossips > MAX_PENDING_OUTBOUND_GOSSIP_MSGS {
@@ -281,6 +277,7 @@ impl NetworkTile {
                     });
                 }
             }) {
+                self.inner.send_drained = true;
                 break;
             };
         }
@@ -356,6 +353,8 @@ where
     context: Context,
     disc_socket: Socket,
     discovery: D,
+    // The last send pass ran the `P2pSend` queue empty; licenses snapshots.
+    send_drained: bool,
 }
 
 impl<D> NetworkTileInner<D>
@@ -380,6 +379,7 @@ where
             context,
             disc_socket,
             discovery,
+            send_drained: true,
         })
     }
 
@@ -488,7 +488,11 @@ where
             other => on_event(Event::Discovery(other)),
         });
 
-        self.context.reader.free();
+        if self.send_drained {
+            self.context.reader.free();
+        } else {
+            self.context.reader.free_undrained();
+        }
         did_work
     }
 }

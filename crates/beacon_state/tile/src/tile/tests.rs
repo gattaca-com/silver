@@ -27,7 +27,7 @@ use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContribu
 
 use super::{
     block::{ParsedBlock, StagedBlock},
-    held_blocks::BlockSourceMsg,
+    held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
     *,
 };
 use crate::{
@@ -170,7 +170,11 @@ fn make_tile_with_producers(
 
 /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
 /// as a buffered gossip orphan whose slot the tile can read back.
-fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
+fn gossip_pending(
+    tile: &mut BeaconStateTile,
+    producer: &mut TProducer,
+    slot: u64,
+) -> BlockSourceMsg {
     let mut bytes = empty_block();
     bytes[100..108].copy_from_slice(&slot.to_le_bytes());
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
@@ -179,17 +183,21 @@ fn gossip_pending(producer: &mut TProducer, slot: u64) -> BlockSourceMsg {
     }
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
-    BlockSourceMsg::Gossip(NewGossipMsg {
-        stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
-        topic: GossipTopic::BeaconBlock,
-        domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
-        ssz_cache: silver_common::SszCache::Gossip,
-        msg_hash: MessageId { id: [0u8; 20] },
-        recv_ts: Nanos(0),
-        ssz: read,
-        protobuf: read,
-    })
+    producer.loop_start();
+    let pin = tile.reader.acquire(read);
+    BlockSourceMsg::Gossip(
+        NewGossipMsg {
+            stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+            topic: GossipTopic::BeaconBlock,
+            domain: silver_common::GossipDomain::new([0; 4], silver_common::ForkName::Fulu),
+            ssz_cache: silver_common::SszCache::Gossip,
+            msg_hash: MessageId { id: [0u8; 20] },
+            recv_ts: Nanos(0),
+            ssz: read,
+            protobuf: read,
+        },
+        pin,
+    )
 }
 
 fn placeholder_pubkey(i: usize) -> BLSPubkey {
@@ -1266,7 +1274,7 @@ fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCac
     }
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     (bytes.to_vec(), read)
 }
 
@@ -1812,7 +1820,8 @@ fn buffer_orphan_idx(
     let parent = root_with(idx, 0x00);
     let block_root = root_with(idx, 0xFF);
     let slot = tile.head_state_slot() + 1;
-    tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, producers);
+    let msg = gossip_pending(tile, gp, slot);
+    tile.buffer_orphan(parent, block_root, msg, slot, producers);
 }
 
 /// Signed block just well-formed enough to reach the parent lookup: the
@@ -1836,19 +1845,6 @@ fn live_block_response(ssz: TCacheRead) -> RpcInbound {
     })
 }
 
-/// Stream junk responses through the tile until every slot of the RPC ring
-/// is rewritten. Each one fails the size check and is released like real
-/// traffic, so the consumer tail follows the producer and the ring wraps.
-fn lap_rpc_ring(tile: &mut BeaconStateTile, rp: &mut TProducer, producers: &mut Producers) {
-    const JUNK_BYTES: usize = 1 << 16;
-    let junk = vec![0u8; JUNK_BYTES];
-    for _ in 0..(TEST_RING_BYTES / JUNK_BYTES + 2) {
-        let (_, ssz) = publish_block_bytes(rp, &junk);
-        tile.on_rpc_inbound(live_block_response(ssz), producers);
-        tile.reader.free();
-    }
-}
-
 fn missing_blocks(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, u64)> {
     let mut needs = Vec::new();
     sink.consume(|need: SyncNeed, _| {
@@ -1859,11 +1855,12 @@ fn missing_blocks(sink: &mut SpineAdapter<SilverSpine>) -> Vec<(B256, u64)> {
     needs
 }
 
-/// A parked child's bytes live only in the RPC ring. If the ring turns over
-/// before its parent imports, the replay has nothing to apply; the child must
-/// then be asked for again, or sync waits on a block nobody will re-deliver.
+/// A parked child's bytes live only in the RPC ring. They are pinned while it
+/// is parked, so the ring blocks at the child instead of turning over it, and
+/// the replay always finds them.
 #[test]
-fn lapped_orphan_is_re_requested_on_replay() {
+fn parked_orphan_pins_its_bytes_until_replay() {
+    const JUNK_BYTES: usize = 1 << 16;
     let (mut tile, _gp, mut rp, mut spine, mut adapter) = tile_with_producers(200);
     seed_tile(&mut tile, 4, 10);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
@@ -1875,17 +1872,50 @@ fn lapped_orphan_is_re_requested_on_replay() {
     tile.on_rpc_inbound(live_block_response(ssz), &mut adapter.producers);
     assert_eq!(missing_blocks(&mut sink), [(parent_root, 11)], "the child chases its parent");
 
-    lap_rpc_ring(&mut tile, &mut rp, &mut adapter.producers);
+    // Junk responses fail the size check and are released like real traffic;
+    // the tail follows them up to the pinned child and the producer blocks.
+    let junk = vec![0u8; JUNK_BYTES];
+    let mut produced = 0;
+    while let Some(mut r) = rp.reserve(JUNK_BYTES, true) {
+        r.buffer().unwrap().copy_from_slice(&junk);
+        r.increment_offset(JUNK_BYTES);
+        tile.on_rpc_inbound(live_block_response(r.read()), &mut adapter.producers);
+        tile.reader.free();
+        produced += 1;
+        assert!(produced <= TEST_RING_BYTES / JUNK_BYTES, "the ring turned over the parked child");
+    }
     assert!(missing_blocks(&mut sink).is_empty(), "junk asks for nothing");
 
+    // The parent is still unknown here, so the intact child parks again and
+    // chases it; a lapped child would have had to ask for itself.
     tile.replay_orphans(parent_root, &mut adapter.producers);
+    assert_eq!(missing_blocks(&mut sink), [(parent_root, 11)], "the replayed child is intact");
+    assert_eq!(tile.held.orphans.parents(), 1);
+}
 
-    assert_eq!(
-        missing_blocks(&mut sink),
-        [(block_root_fulu(&child), 11)],
-        "the lapped child is re-requested"
-    );
-    assert!(tile.held.orphans.parents() == 0, "nothing stays parked under an imported parent");
+/// An orphan whose parent never arrives is dropped `ORPHAN_TIMEOUT_SLOTS`
+/// wall slots after the park, releasing its pin, and the parent is asked for
+/// again.
+#[test]
+fn orphans_expire_while_following() {
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    sink.consume(|_: SyncNeed, _| {});
+    let (parent, block_root) = (root_with(0, 0x00), root_with(0, 0xFF));
+    let slot = tile.head_state_slot() + 1;
+    let msg = gossip_pending(&mut tile, &mut gp, slot);
+    tile.buffer_orphan(parent, block_root, msg, slot, &mut adapter.producers);
+    assert_eq!(missing_blocks(&mut sink), [(parent, slot)]);
+    let parked_at = tile.ticker.current_slot();
+
+    tile.expire_orphans(parked_at + ORPHAN_TIMEOUT_SLOTS, &mut adapter.producers);
+    assert_eq!(tile.held.orphans.parents(), 1, "kept within the timeout");
+    assert!(missing_blocks(&mut sink).is_empty());
+
+    tile.expire_orphans(parked_at + ORPHAN_TIMEOUT_SLOTS + 1, &mut adapter.producers);
+    assert_eq!(tile.held.orphans.parents(), 0, "dropped after the timeout");
+    assert_eq!(missing_blocks(&mut sink), [(parent, slot)], "the parent is requested again");
 }
 
 /// Signed envelope just well-formed enough to reach the block lookup: the
@@ -1905,7 +1935,7 @@ fn rpc_envelope(producer: &mut TProducer, block_root: B256) -> silver_common::TC
     }
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     read
 }
 
@@ -2008,24 +2038,14 @@ fn orphan_too_far_ahead_falls_back_to_syncing() {
 
     // At the edge of the gap: still buffered (by-root backtrack).
     let edge = head + limit;
-    tile.buffer_orphan(
-        root_with(0, 0x00),
-        root_with(0, 0xFF),
-        gossip_pending(&mut gp, edge),
-        edge,
-        &mut adapter.producers,
-    );
+    let msg = gossip_pending(&mut tile, &mut gp, edge);
+    tile.buffer_orphan(root_with(0, 0x00), root_with(0, 0xFF), msg, edge, &mut adapter.producers);
     assert_eq!(tile.held.orphans.parents(), 1, "edge orphan buffered");
 
     // One slot past the gap: refused before insert, syncing takes over.
     let beyond = head + limit + 1;
-    tile.buffer_orphan(
-        root_with(1, 0x00),
-        root_with(1, 0xFF),
-        gossip_pending(&mut gp, beyond),
-        beyond,
-        &mut adapter.producers,
-    );
+    let msg = gossip_pending(&mut tile, &mut gp, beyond);
+    tile.buffer_orphan(root_with(1, 0x00), root_with(1, 0xFF), msg, beyond, &mut adapter.producers);
     assert_eq!(tile.held.orphans.parents(), 1, "too-far orphan not buffered");
 }
 
@@ -2039,13 +2059,8 @@ fn orphan_too_far_ahead_is_refused_while_syncing_too() {
     tile.sync_target = SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] };
     let beyond = tile.head_state_slot() + tile.pending_bounds.max_chain_len as u64 + 1;
 
-    tile.buffer_orphan(
-        root_with(1, 0x00),
-        root_with(1, 0xFF),
-        gossip_pending(&mut gp, beyond),
-        beyond,
-        &mut adapter.producers,
-    );
+    let msg = gossip_pending(&mut tile, &mut gp, beyond);
+    tile.buffer_orphan(root_with(1, 0x00), root_with(1, 0xFF), msg, beyond, &mut adapter.producers);
 
     assert!(tile.held.orphans.parents() == 0, "a far-ahead orphan is left to the range walk");
 }
@@ -2057,7 +2072,8 @@ fn duplicate_orphan_not_rebuffered() {
     let (parent, block_root) = (root_with(0, 0x00), root_with(0, 0xFF));
     let slot = tile.head_state_slot() + 1;
     let buffer = |tile: &mut BeaconStateTile, gp: &mut TProducer, prods: &mut Producers| {
-        tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, prods);
+        let msg = gossip_pending(tile, gp, slot);
+        tile.buffer_orphan(parent, block_root, msg, slot, prods);
     };
     buffer(&mut tile, &mut gp, &mut adapter.producers);
     buffer(&mut tile, &mut gp, &mut adapter.producers);
@@ -2075,7 +2091,7 @@ fn duplicate_payload_orphan_not_rebuffered() {
     let (parent, block_root) = (root_with(0, 0x00), root_with(0, 0xFF));
     let slot = tile.head_state_slot() + 1;
     for _ in 0..2 {
-        let pending = gossip_pending(&mut gp, slot);
+        let pending = gossip_pending(&mut tile, &mut gp, slot);
         tile.buffer_awaiting_payload(parent, block_root, slot, pending, &mut adapter.producers);
     }
     assert_eq!(tile.held.payload_orphans.take(&parent).len(), 1, "duplicate block_root dropped");
@@ -2409,7 +2425,7 @@ fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     r.buffer().unwrap()[..bytes.len()].copy_from_slice(bytes);
     r.increment_offset(bytes.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     read
 }
 
@@ -2422,7 +2438,7 @@ fn gossip_att_msg(
     r.buffer().unwrap()[..att.len()].copy_from_slice(att);
     r.increment_offset(att.len());
     let read = r.read();
-    producer.publish_head();
+    producer.loop_start();
     NewGossipMsg {
         stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
         topic: GossipTopic::BeaconAttestation(subnet),
@@ -3921,7 +3937,9 @@ impl ThreeForks {
         slot: Slot,
     ) -> StateId {
         let id = self.roll(parent, slot, root);
-        let BlockSourceMsg::Gossip(msg) = gossip_pending(producer, slot) else { unreachable!() };
+        let BlockSourceMsg::Gossip(_, ssz) = gossip_pending(&mut self.tile, producer, slot) else {
+            unreachable!()
+        };
         let parsed = ParsedBlock {
             header: BeaconBlockHeader {
                 slot,
@@ -3937,7 +3955,6 @@ impl ThreeForks {
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };
-        let ssz = self.tile.reader.acquire(msg.ssz);
         self.tile.held.stage(StagedBlock::with_state_id(parsed, id, ssz, BlockSource::Gossip));
         id
     }
@@ -4176,7 +4193,7 @@ fn pruned_staged_block_takes_its_children() {
     let (_spine, mut adapter) = spine_adapter(&forks.tile);
     let mut producer = TCache::producer(TCacheId::ControlProcessing, 1 << 12);
     forks.stage(&mut producer, S2_ROOT, F2_ROOT, forks.f2_id, 2);
-    let child = gossip_pending(&mut producer, 3);
+    let child = gossip_pending(&mut forks.tile, &mut producer, 3);
     let parked = forks.tile.buffer_orphan(S2_ROOT, [0x53; 32], child, 3, &mut adapter.producers);
     assert!(parked, "child parked on S2");
 

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use fxhash::FxHashMap;
 use silver_common::{
-    Enr, PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheReader, TProducer, TReadMode,
+    Enr, PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheProducer, TCacheReader, TProducer,
+    TReadMode, TileId,
 };
 
 use crate::RemotePeer;
@@ -30,9 +31,16 @@ impl Context {
             TReadMode::Strict,
         )?;
         if self.partial_columns {
-            self.reader.open(TCacheId::ControlSlot, "p2p_control_slot", TReadMode::Retained)?;
+            self.reader.open(TCacheId::ControlSlot, "p2p_control_slot", TReadMode::Strict)?;
         }
+        self.reader.declare(TCacheId::ControlGossip, &[TileId::Control, TileId::Columns]);
         Ok(())
+    }
+
+    pub fn loop_start(&mut self) {
+        self.gossip_producer.loop_start();
+        self.rpc_producer.loop_start();
+        self.cluster_inbound_producer.loop_start();
     }
 
     pub fn cluster_peer(&self, raft_id: u64) -> Option<usize> {

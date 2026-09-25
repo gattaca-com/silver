@@ -50,6 +50,8 @@ pub struct CounterSet {
     map_bytes: usize,
     /// Last sampled values, one per slot.
     pub current: Vec<u64>,
+    /// Highest `tcache_length()` seen since open; meaningless for other sets.
+    pub max_length: u64,
     /// Previous sample — for delta-vs-tick rendering.
     pub previous: Vec<u64>,
     /// Values at the start of the current bucket.
@@ -117,6 +119,7 @@ impl CounterSet {
             slot_count,
             map_bytes,
             current: vec![0; slot_count],
+            max_length: 0,
             previous: vec![0; slot_count],
             bucket_start: vec![0; slot_count],
             history: (0..slot_count).map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN)).collect(),
@@ -184,6 +187,29 @@ impl CounterSet {
 
     pub fn slot_count(&self) -> usize {
         self.slot_count
+    }
+
+    /// Lowest published tail of a tcache set. Sentinel slots are unused and
+    /// do not drag the minimum; with no consumer published at all, the ring
+    /// holds what the producer sees, `head - capacity` clamped at 0.
+    pub fn tcache_min_tail(&self) -> u64 {
+        let capacity = self.current.first().copied().unwrap_or(0);
+        let head = self.current.get(1).copied().unwrap_or(0);
+        let tails = || self.current.iter().skip(2).copied();
+        if tails().any(|t| t != u64::MAX) {
+            tails().map(|t| if t == u64::MAX { head } else { t }).min().unwrap_or(head)
+        } else {
+            head.saturating_sub(capacity)
+        }
+    }
+
+    pub fn tcache_length(&self) -> u64 {
+        self.current.get(1).copied().unwrap_or(0).saturating_sub(self.tcache_min_tail())
+    }
+
+    pub fn sample_tcache(&mut self) {
+        self.sample();
+        self.max_length = self.max_length.max(self.tcache_length());
     }
 
     /// Traffic counters are monotonic so rows appear and stay; gauge

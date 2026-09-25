@@ -7,7 +7,7 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
     P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
     SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError, TCacheId,
-    TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, block_root,
+    TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -136,7 +136,12 @@ impl StorageTile {
             TCacheId::ControlSlot,
             "ds_persist_control_slot",
             TReadMode::Sliding,
-        )
+        )?;
+        let forwarders = [TileId::BeaconState, TileId::Columns];
+        self.persist_reader.declare(TCacheId::ControlProcessing, &forwarders);
+        self.persist_reader.declare(TCacheId::NetworkProcessing, &forwarders);
+        self.persist_reader.declare(TCacheId::ControlSlot, &[TileId::Columns]);
+        Ok(())
     }
 
     fn drive_replay(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -321,6 +326,7 @@ impl Tile<SilverSpine> for StorageTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.delivery_producer.loop_start();
         adapter.consume(|d: SyncingStrategy, _| self.syncing_strategy = Some(d));
         self.drive_replay(adapter);
 
@@ -505,7 +511,7 @@ impl IoEvent {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, thread, time::Duration};
+    use std::io::Write;
 
     use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{DataColumnsEvent, TCache, TCacheId, TCacheProducer, test_util::ShmemDir};
@@ -559,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_storage_releases_the_data_columns_cache_without_persist_events() {
+    fn idle_storage_follows_the_data_columns_floor_without_persist_events() {
         let directory = TempDir::new().unwrap();
         let (mut tile, mut producer) = empty_tile_with_columns(directory.path().to_str().unwrap());
         let base = ShmemDir::new().unwrap();
@@ -573,7 +579,10 @@ mod tests {
             written += 1;
             assert!(written < 1000);
         }
-        thread::sleep(Duration::from_millis(5100));
+        // The producing tile publishes at its loop end; then two passes here:
+        // snapshot the producer floor, then apply it.
+        producer.loop_start();
+        tile.loop_body(&mut adapter);
         tile.loop_body(&mut adapter);
         assert!(producer.reserve(1024, false).is_some());
     }

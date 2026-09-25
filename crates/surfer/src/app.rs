@@ -284,7 +284,7 @@ impl App {
             c.sample();
         }
         for c in &mut self.tcaches {
-            c.sample();
+            c.sample_tcache();
         }
         for t in &mut self.timings {
             t.drain();
