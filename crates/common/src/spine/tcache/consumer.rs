@@ -15,7 +15,7 @@ use crate::{
 #[repr(C)]
 pub struct TCacheRead {
     pub(super) id: TCacheId,
-    // Consumer slot, or MAX_CONSUMERS + producer clone.
+    // Consumer slot, or PRODUCER_EMITTER.
     pub(super) emitter: u8,
     pub(super) seq: u64,
     pub(super) floor: u64,
@@ -103,8 +103,7 @@ impl Consumer {
             self.last_read = Nanos::now();
         }
 
-        self.cache.head().tails[self.index].store(self.seq, Ordering::Release);
-        self.cache.record_tail(self.index, self.seq);
+        self.cache.publish_tail(self.index, self.seq);
     }
 }
 
@@ -130,6 +129,8 @@ pub struct RandomAccessConsumer {
     pub(super) last_head: u64,
     pub(super) lag_threshold: u64,
     pub(super) strict: bool,
+    // Last tail stored to the head: an unchanged tail is not stored again.
+    pub(super) published_tail: u64,
 }
 
 impl RandomAccessConsumer {
@@ -261,8 +262,10 @@ impl RandomAccessConsumer {
                 self.last_head = head;
             }
 
-            cache_head.tails[self.index].store(tail, Ordering::Release);
-            self.cache.record_tail(self.index, tail);
+            if tail != self.published_tail {
+                self.published_tail = tail;
+                self.cache.publish_tail(self.index, tail);
+            }
         }
     }
 
@@ -837,7 +840,7 @@ mod tests {
             consumer.pass(true);
         }
         assert_eq!(consumer.active.tail_seq, 0);
-        assert_eq!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire), 0);
+        assert_eq!(consumer.cache.tail_of(consumer.index), 0);
         // Re-emitted later, the old read is still above the tail.
         assert_eq!(consumer.acquire_strict(old).unwrap().buffer().unwrap().0, &[0xab; 32]);
 
@@ -954,12 +957,12 @@ mod tests {
         assert_eq!(consumer.active.buckets[bucket], 1);
         assert_eq!(cell_clone.as_ref(), &[0xab; 2048]);
         consumer.free();
-        assert_eq!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire), 0);
+        assert_eq!(consumer.cache.tail_of(consumer.index), 0);
 
         drop(cell_clone);
         assert_eq!(consumer.active.buckets[bucket], 0);
         consumer.free();
-        assert!(consumer.cache.head().tails[consumer.index].load(Ordering::Acquire) > read.seq());
+        assert!(consumer.cache.tail_of(consumer.index) > read.seq());
     }
 
     #[test]
