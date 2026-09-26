@@ -27,7 +27,7 @@ use silver_peer::PeerManager;
 use self::{
     attestation_cluster::{AttestationClusterHandler, PendingAttestation},
     gossip_schedule::GossipSchedule,
-    local_validation::{LocalMessage, LocalValidation, produce_response},
+    local_gossip::{LocalGossipHandler, LocalMessage, produce_response},
     subnet_duties::{SubnetDuties, Subnets},
 };
 use crate::{
@@ -39,7 +39,7 @@ use crate::{
 
 mod attestation_cluster;
 mod gossip_schedule;
-mod local_validation;
+mod local_gossip;
 mod subnet_duties;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
@@ -56,7 +56,7 @@ pub struct Controller {
     sync_engine: SyncEngine,
     rpc_producer: TProducer,
     attestation_cluster: AttestationClusterHandler,
-    local_validation: LocalValidation,
+    local_gossip: LocalGossipHandler,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
@@ -112,7 +112,7 @@ impl Controller {
             sync_engine,
             rpc_producer,
             attestation_cluster,
-            local_validation: LocalValidation::default(),
+            local_gossip: LocalGossipHandler::default(),
             last_tick: now,
             last_ping: now,
             last_status: now,
@@ -161,7 +161,7 @@ impl Controller {
                 self.attestation_cluster.on_local_attestation(
                     PendingAttestation::new(request_id, subnet, ssz),
                     now,
-                    &mut self.local_validation,
+                    &mut self.local_gossip,
                     &mut self.gossip_handler,
                     producers,
                 )
@@ -180,7 +180,7 @@ impl Controller {
                     );
                 };
                 let slot = SyncCommitteeView::slot(message);
-                self.local_validation.submit(
+                self.local_gossip.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
@@ -189,7 +189,7 @@ impl Controller {
             }
             GossipTopic::BeaconAggregateAndProof => {
                 let slot = SignedAggregateAndProofView::agg_slot(ssz);
-                self.local_validation.submit(
+                self.local_gossip.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
@@ -210,7 +210,7 @@ impl Controller {
                     );
                 };
                 let slot = SignedSyncCommitteeProofView::slot(proof);
-                self.local_validation.submit(
+                self.local_gossip.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
@@ -465,7 +465,7 @@ impl Tile<SilverSpine> for Controller {
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
                 BeaconStateEvent::LocalGossipVerdict { hash, result } => {
-                    self.local_validation.complete(hash, result, producers)
+                    self.local_gossip.complete(hash, result, producers)
                 }
                 // PM keeps the reject for peer eviction (Status backing a
                 // rejected chain); the engine owns target invalidation.
@@ -498,7 +498,7 @@ impl Tile<SilverSpine> for Controller {
         self.attestation_cluster.spin(
             now,
             adapter,
-            &mut self.local_validation,
+            &mut self.local_gossip,
             &mut self.gossip_handler,
             &mut self.reader,
         );
@@ -556,7 +556,7 @@ impl Tile<SilverSpine> for Controller {
 
         // Consume every validation outcome already queued before expiring
         // requests, so an event arriving at the deadline wins the race.
-        self.local_validation.expire(now, &mut adapter.producers);
+        self.local_gossip.expire(now, &mut adapter.producers);
 
         adapter.consume(|rpc: RpcInbound, producers| {
             self.sync_engine.rpc_event(&rpc, self.peer_manager.our_fork_digest());
