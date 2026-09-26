@@ -31,12 +31,14 @@ use thiserror::Error;
 use crate::spine::tcache::{bounds::Bounds, consumer::Buckets};
 
 const MAGIC: [u8; 3] = [0xEA, 0x51, 0xEE];
-const MAX_CONSUMERS: usize = 64;
+const MAX_CONSUMERS: usize = 32;
+// Consumer name bytes: the rest of the consumer's line after its tail.
+const NAME_WORDS: usize = 7;
 // Emitter id of a cache's producer; consumer slots take 0..MAX_CONSUMERS.
 const PRODUCER_EMITTER: u8 = MAX_CONSUMERS as u8;
 const ALIGN: usize = size_of::<Slot>();
 
-// TCacheHead (528 B) rounded up to Slot alignment (32 B).
+// TCacheHead rounded up to Slot alignment.
 const DATA_OFFSET: usize = const {
     let h = size_of::<TCacheHead>();
     let a = size_of::<Slot>();
@@ -51,10 +53,11 @@ const fn lag_threshold(len: u32) -> u64 {
     (len as u64 / 10) * 9
 }
 
-/// Up to 32 bytes of `name` as four little-endian words; longer names are cut.
-fn pack_name(name: &str) -> [u64; 4] {
-    let mut bytes = [0u8; 32];
-    let len = name.len().min(32);
+/// Up to `NAME_WORDS * 8` bytes of `name` as little-endian words; longer names
+/// are cut.
+fn pack_name(name: &str) -> [u64; NAME_WORDS] {
+    let mut bytes = [0u8; NAME_WORDS * 8];
+    let len = name.len().min(bytes.len());
     bytes[..len].copy_from_slice(&name.as_bytes()[..len]);
     array::from_fn(|i| u64::from_le_bytes(bytes[i * 8..(i + 1) * 8].try_into().unwrap()))
 }
@@ -258,6 +261,7 @@ impl TCache {
             last_head: seq,
             lag_threshold: lag_threshold(self.len),
             strict,
+            published_tail: seq,
         })
     }
 
@@ -265,18 +269,19 @@ impl TCache {
     fn claim_slot(&self, seq: u64, name: &'static str) -> Result<usize, Error> {
         let head = self.head();
         let index = head
-            .tails
+            .consumers
             .iter()
-            .position(|t| {
-                t.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
+            .position(|c| {
+                c.tail.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
             })
             .ok_or(Error::MaxConsumers)?;
 
         let words = pack_name(name);
-        for (word, value) in head.names[index].iter().zip(words).skip(1) {
+        let slot = &head.consumers[index];
+        for (word, value) in slot.name.iter().zip(words).skip(1) {
             word.store(value, Ordering::Relaxed);
         }
-        head.names[index][0].store(words[0], Ordering::Release);
+        slot.name[0].store(words[0], Ordering::Release);
         head.claims.fetch_add(1, Ordering::Release);
 
         // A baseline tail so surfer has a value before the first free.
@@ -287,8 +292,8 @@ impl TCache {
 
     pub(super) fn release_slot(&self, index: usize) {
         let head = self.head();
-        head.names[index][0].store(0, Ordering::Relaxed);
-        head.tails[index].store(u64::MAX, Ordering::Release);
+        head.consumers[index].name[0].store(0, Ordering::Relaxed);
+        head.consumers[index].tail.store(u64::MAX, Ordering::Release);
         self.record_tail(index, u64::MAX);
     }
 
@@ -300,21 +305,18 @@ impl TCache {
             return None;
         }
         let head = self.head();
-        (0..MAX_CONSUMERS).find(|&i| {
-            head.tails[i].load(Ordering::Acquire) != u64::MAX &&
-                head.names[i][0].load(Ordering::Acquire) == words[0] &&
-                head.names[i]
-                    .iter()
-                    .zip(words)
-                    .skip(1)
-                    .all(|(w, v)| w.load(Ordering::Relaxed) == v)
+        head.consumers.iter().position(|c| {
+            c.tail.load(Ordering::Acquire) != u64::MAX &&
+                c.name[0].load(Ordering::Acquire) == words[0] &&
+                c.name.iter().zip(words).skip(1).all(|(w, v)| w.load(Ordering::Relaxed) == v)
         })
     }
 
     /// The name a claimed slot published; empty for a free or unnamed slot.
     pub(super) fn consumer_name(&self, index: usize) -> String {
         let head = self.head();
-        let bytes: Vec<u8> = head.names[index]
+        let bytes: Vec<u8> = head.consumers[index]
+            .name
             .iter()
             .flat_map(|word| word.load(Ordering::Relaxed).to_le_bytes())
             .take_while(|&b| b != 0)
@@ -323,8 +325,14 @@ impl TCache {
     }
 
     #[inline]
+    pub(super) fn publish_tail(&self, index: usize, tail: u64) {
+        self.head().consumers[index].tail.store(tail, Ordering::Release);
+        self.record_tail(index, tail);
+    }
+
+    #[inline]
     pub(super) fn tail_of(&self, index: usize) -> u64 {
-        self.head().tails[index].load(Ordering::Acquire)
+        self.head().consumers[index].tail.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -368,8 +376,8 @@ impl TCache {
 
     fn min_tail(&self, seq: u64) -> u64 {
         let mut min = seq;
-        for tail in &self.head().tails {
-            min = min.min(tail.load(Ordering::Acquire));
+        for consumer in &self.head().consumers {
+            min = min.min(consumer.tail.load(Ordering::Acquire));
         }
         min
     }
@@ -601,7 +609,7 @@ impl TCache {
             "n must be a power-of-two multiple of {ALIGN}"
         );
         let total = DATA_OFFSET + size;
-        let layout = Layout::from_size_align(total, ALIGN).unwrap();
+        let layout = Layout::from_size_align(total, ALIGN.max(align_of::<TCacheHead>())).unwrap();
         let name = id.name();
         let label = format!("tcache-write-{}", name);
         let timer = Some(flux::Timer::new("silver", &label));
@@ -757,8 +765,10 @@ impl TCache {
             head.seq = AtomicU64::new(0);
             head.floor = AtomicU64::new(0);
             head.claims = AtomicU64::new(0);
-            head.tails = array::from_fn(|_| AtomicU64::new(u64::MAX));
-            head.names = array::from_fn(|_| array::from_fn(|_| AtomicU64::new(0)));
+            head.consumers = array::from_fn(|_| ConsumerSlot {
+                tail: AtomicU64::new(u64::MAX),
+                name: array::from_fn(|_| AtomicU64::new(0)),
+            });
             // Release store — pairs with the joiner's acquire load on ready.
             head.ready.store(u64::MAX, Ordering::Release);
         }
@@ -775,7 +785,7 @@ impl TCache {
     /// A seq of 0 is interpreted as "no real progress" and is mapped
     /// to the `u64::MAX` sentinel — surfer then treats it as
     /// "tail == head" rather than dragging `min_tail` to 0. The
-    /// in-memory `head.tails[idx]` is unaffected; this is purely the
+    /// in-memory tail is unaffected; this is purely the
     /// metrics view.
     #[inline]
     pub(super) fn record_tail(&self, idx: usize, seq: u64) {
@@ -786,7 +796,17 @@ impl TCache {
     }
 }
 
-#[repr(C)]
+/// A consumer's tail and name share one line; no two consumers share one.
+#[repr(C, align(64))]
+struct ConsumerSlot {
+    tail: AtomicU64,
+    /// Packed little-endian; word 0 is written last.
+    name: [AtomicU64; NAME_WORDS],
+}
+
+/// The producer's fields share one line; the consumers' tails sit on lines of
+/// their own, so a consumer's store invalidates no other party's line.
+#[repr(C, align(64))]
 pub(super) struct TCacheHead {
     seq: AtomicU64,
     /// The producer's floor: nothing it emits later lies below. The oldest
@@ -794,13 +814,13 @@ pub(super) struct TCacheHead {
     floor: AtomicU64,
     /// Bumped on every slot claim, so followers know when to re-resolve names.
     claims: AtomicU64,
-    tails: [AtomicU64; MAX_CONSUMERS],
-    /// Consumer names, 32 bytes packed little-endian; word 0 is written last.
-    names: [[AtomicU64; 4]; MAX_CONSUMERS],
+    consumers: [ConsumerSlot; MAX_CONSUMERS],
     /// Written last in init_head as the readiness signal; never modified after
     /// init.
     ready: AtomicU64,
 }
+
+const _: () = assert!(size_of::<ConsumerSlot>() == 64);
 
 #[repr(C)]
 struct Slot {
