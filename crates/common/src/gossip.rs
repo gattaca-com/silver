@@ -1,9 +1,10 @@
-use std::fmt;
+use std::{fmt, ops::RangeInclusive};
 
+pub use silver_beacon_state_data::SYNC_COMMITTEE_SUBNETS;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 
 use crate::{
-    Error,
+    Error, SlotSubnets,
     ssz_view::{
         ATTESTER_SLASHING_MAX, ATTESTER_SLASHING_MIN, AttesterSlashingView,
         DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MAX, DataColumnSidecarFuluView,
@@ -121,7 +122,57 @@ impl From<GossipTopic> for String {
 }
 
 pub const ATTESTATION_SUBNETS: usize = 64;
-pub const SYNC_COMMITTEE_SUBNETS: usize = 4;
+
+pub struct SubnetsBySlot {
+    slots: [SlotSubnets; Self::SLOTS],
+}
+
+impl Default for SubnetsBySlot {
+    fn default() -> Self {
+        Self { slots: [SlotSubnets::default(); Self::SLOTS] }
+    }
+}
+
+impl SubnetsBySlot {
+    pub const LOOKAHEAD_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
+    /// A duty's subnet is kept this long after its slot.
+    pub const LINGER_SLOTS: u64 = 1;
+    /// A slot evicts the one `SLOTS` before it, so every slot from
+    /// `LINGER_SLOTS` behind the wall slot to [`Self::window`]'s end has its
+    /// own entry.
+    pub const SLOTS: usize = (Self::LINGER_SLOTS + Self::LOOKAHEAD_SLOTS) as usize + 1;
+
+    /// The duty slots worth adding at `wall_slot`.
+    pub fn window(wall_slot: u64) -> RangeInclusive<u64> {
+        wall_slot..=wall_slot + Self::LOOKAHEAD_SLOTS
+    }
+
+    pub fn insert(&mut self, added: SlotSubnets) {
+        debug_assert_eq!(added.aggregating & !added.attesting, 0);
+        let held = &mut self.slots[added.slot as usize % Self::SLOTS];
+        if held.slot != added.slot {
+            *held = SlotSubnets { slot: added.slot, ..SlotSubnets::default() };
+        }
+        held.attesting |= added.attesting;
+        held.aggregating |= added.aggregating;
+    }
+
+    pub fn held(&self) -> impl Iterator<Item = &SlotSubnets> {
+        self.slots.iter().filter(|held| held.attesting != 0)
+    }
+
+    pub fn subnets_in(
+        &self,
+        slots: RangeInclusive<u64>,
+        subnets: impl Fn(&SlotSubnets) -> u64,
+    ) -> u64 {
+        slots
+            .filter_map(|slot| {
+                Some(&self.slots[slot as usize % Self::SLOTS]).filter(|held| held.slot == slot)
+            })
+            .fold(0, |mask, held| mask | subnets(held))
+    }
+}
 
 pub fn compute_subnet_for_attestation(
     committees_per_slot: u64,

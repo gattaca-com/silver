@@ -287,12 +287,16 @@ impl PeerManager {
         emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: conn });
     }
 
+    fn has_subnet_deficit(&self) -> bool {
+        self.deficit_attnets.iter().any(|&subnets| subnets != 0) || self.deficit_syncnets != 0
+    }
+
     pub(super) fn maybe_request_discovery(
         &mut self,
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if self.peers.len() >= self.params.target_peers {
+        if self.peers.len() >= self.params.target_peers && !self.has_subnet_deficit() {
             return;
         }
         if now.saturating_duration_since(self.last_discovery) < self.params.discovery_query_interval
@@ -1136,6 +1140,28 @@ mod tests {
             "throttle should suppress second emission, got {:?}",
             cap.0
         );
+    }
+
+    #[test]
+    fn at_target_only_a_subnet_deficit_requests_discovery() {
+        let mut now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.target_peers = 1;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        cap.0.clear();
+
+        now += mgr.params.discovery_query_interval + Duration::from_secs(1);
+        mgr.maybe_request_discovery(now, &mut |c| cap.0.push(c));
+        assert!(cap.0.is_empty(), "{:?}", cap.0);
+
+        mgr.deficit_columns = 1;
+        mgr.maybe_request_discovery(now, &mut |c| cap.0.push(c));
+        assert!(cap.0.is_empty(), "{:?}", cap.0);
+
+        mgr.deficit_syncnets = 1 << 2;
+        mgr.maybe_request_discovery(now, &mut |c| cap.0.push(c));
+        assert!(matches!(cap.0.as_slice(), [PeerControl::DiscoverNodes]), "{:?}", cap.0);
     }
 
     #[test]

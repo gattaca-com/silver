@@ -45,38 +45,6 @@ pub(crate) fn post_prepare_beacon_proposer(
     resp.ok();
 }
 
-pub(crate) fn post_beacon_committee_subscriptions(
-    req: &Request<'_>,
-    _ctx: &ApiCtx,
-    resp: &mut Response<'_>,
-) {
-    let Some(subscriptions) = received(req.body, resp, CommitteeSubscription::well_formed) else {
-        return;
-    };
-    tracing::debug!(
-        count = subscriptions.len(),
-        aggregators = subscriptions.iter().filter(|entry| entry.is_aggregator).count(),
-        "committee subscriptions discarded: silver steers no attestation subnet"
-    );
-    resp.ok();
-}
-
-pub(crate) fn post_sync_committee_subscriptions(
-    req: &Request<'_>,
-    _ctx: &ApiCtx,
-    resp: &mut Response<'_>,
-) {
-    let Some(subscriptions) = received(req.body, resp, SyncCommitteeSubscription::well_formed)
-    else {
-        return;
-    };
-    tracing::debug!(
-        count = subscriptions.len(),
-        "sync committee subscriptions discarded: silver steers no sync subnet"
-    );
-    resp.ok();
-}
-
 /// The entries a body carries, or `None` having answered the 400 its schema
 /// declares.
 fn received<'a, T: Deserialize<'a>>(
@@ -134,42 +102,6 @@ impl ProposerPreparation<'_> {
     }
 }
 
-/// One entry of `SubscribeToBeaconCommitteeSubnetRequestBody`.
-#[derive(Deserialize)]
-struct CommitteeSubscription<'a> {
-    validator_index: &'a str,
-    committee_index: &'a str,
-    committees_at_slot: &'a str,
-    slot: &'a str,
-    is_aggregator: bool,
-}
-
-impl CommitteeSubscription<'_> {
-    fn well_formed(&self) -> bool {
-        [self.validator_index, self.committee_index, self.committees_at_slot, self.slot]
-            .iter()
-            .all(|text| parse_uint64(text).is_some())
-    }
-}
-
-/// `Altair.SyncCommitteeSubscription`; the schema puts no minimum on
-/// `sync_committee_indices`.
-#[derive(Deserialize)]
-struct SyncCommitteeSubscription<'a> {
-    validator_index: &'a str,
-    #[serde(borrow)]
-    sync_committee_indices: Vec<&'a str>,
-    until_epoch: &'a str,
-}
-
-impl SyncCommitteeSubscription<'_> {
-    fn well_formed(&self) -> bool {
-        parse_uint64(self.validator_index).is_some() &&
-            parse_uint64(self.until_epoch).is_some() &&
-            self.sync_committee_indices.iter().all(|text| parse_uint64(text).is_some())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use silver_httpcore::ParsedRequest;
@@ -183,16 +115,8 @@ mod tests {
 
     const REGISTER: &str = "/eth/v1/validator/register_validator";
     const PREPARE: &str = "/eth/v1/validator/prepare_beacon_proposer";
-    const COMMITTEE_SUBS: &str = "/eth/v1/validator/beacon_committee_subscriptions";
-    const SYNC_SUBS: &str = "/eth/v1/validator/sync_committee_subscriptions";
 
     const BODYLESS_OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-
-    const COMMITTEE_SUBSCRIPTION: &str = "{\"validator_index\":\"1\",\"committee_index\":\"2\",\
-         \"committees_at_slot\":\"64\",\"slot\":\"12345\",\"is_aggregator\":true}";
-
-    const SYNC_SUBSCRIPTION: &str = "{\"validator_index\":\"1\",\
-         \"sync_committee_indices\":[\"0\",\"7\"],\"until_epoch\":\"300\"}";
 
     fn registration() -> String {
         format!(
@@ -209,13 +133,8 @@ mod tests {
     }
 
     /// One well-formed entry per endpoint.
-    fn entries() -> [(&'static str, String); 4] {
-        [
-            (REGISTER, registration()),
-            (PREPARE, preparation()),
-            (COMMITTEE_SUBS, COMMITTEE_SUBSCRIPTION.to_owned()),
-            (SYNC_SUBS, SYNC_SUBSCRIPTION.to_owned()),
-        ]
+    fn entries() -> [(&'static str, String); 2] {
+        [(REGISTER, registration()), (PREPARE, preparation())]
     }
 
     fn post(path: &str, content_type: Option<&str>, body: &str) -> Vec<u8> {
@@ -232,8 +151,8 @@ mod tests {
         assert!(text.ends_with(&format!("{{\"code\":400,\"message\":\"{message}\"}}")), "{text}");
     }
 
-    /// Every receipt endpoint answers the same bodyless 200: none of the four
-    /// schemas declares content under it. None reads beacon state either, so
+    /// Every receipt endpoint answers the same bodyless 200: neither schema
+    /// declares content under it. Neither reads beacon state, so
     /// the whole suite runs against a node that has published none — which is
     /// when a validator client first sends these.
     #[test]
@@ -248,14 +167,14 @@ mod tests {
     /// nothing is still a body the node has received.
     #[test]
     fn empty_array_is_acknowledged_rather_than_refused() {
-        for path in [REGISTER, PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
+        for path in [REGISTER, PREPARE] {
             assert_eq!(json_post(path, "[]"), BODYLESS_OK, "{path}");
         }
     }
 
     #[test]
     fn body_that_is_not_the_schema_s_array_is_a_400() {
-        for path in [REGISTER, PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
+        for path in [REGISTER, PREPARE] {
             for body in ["", "not json", "{}", "null", "[[]]", "[1]"] {
                 assert_bad_request(&json_post(path, body), "invalid request body");
             }
@@ -277,8 +196,6 @@ mod tests {
             (PREPARE, preparation().replace("\"1\"", "\"-1\"")),
             (PREPARE, preparation().replace("\"1\"", "\"+1\"")),
             (PREPARE, preparation().replace("0xabab", "0xzzzz")),
-            (COMMITTEE_SUBS, COMMITTEE_SUBSCRIPTION.replace("\"64\"", "\"banana\"")),
-            (SYNC_SUBS, SYNC_SUBSCRIPTION.replace("\"7\"", "\"7.0\"")),
         ] {
             let response = json_post(path, &format!("[{entry}]"));
             assert_bad_request(&response, "invalid entry in request body");
@@ -292,8 +209,6 @@ mod tests {
         for (path, entry) in [
             (REGISTER, registration().replace("\"30000000\"", "30000000")),
             (REGISTER, registration().replace("\"gas_limit\"", "\"gasLimit\"")),
-            (COMMITTEE_SUBS, COMMITTEE_SUBSCRIPTION.replace("true", "\"true\"")),
-            (SYNC_SUBS, SYNC_SUBSCRIPTION.replace("\"300\"", "300")),
         ] {
             let response = json_post(path, &format!("[{entry}]"));
             assert_bad_request(&response, "invalid request body");
@@ -320,14 +235,12 @@ mod tests {
         }
     }
 
-    /// The other three declare 400 and 500 and nothing else, so an SSZ body
+    /// The other declares 400 and 500 and nothing else, so an SSZ body
     /// there is answered as the unreadable JSON it is.
     #[test]
     fn non_json_content_type_is_never_a_415_where_no_schema_declares_one() {
-        for path in [PREPARE, COMMITTEE_SUBS, SYNC_SUBS] {
-            let response = post(path, Some("application/octet-stream"), "\u{0}\u{1}\u{2}");
-            assert_bad_request(&response, "invalid request body");
-        }
+        let response = post(PREPARE, Some("application/octet-stream"), "\u{0}\u{1}\u{2}");
+        assert_bad_request(&response, "invalid request body");
     }
 
     /// The cap answers before the entries are read, so an array no registry

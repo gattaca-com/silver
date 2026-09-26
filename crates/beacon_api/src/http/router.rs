@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use silver_common::TProducer;
+use silver_common::{BeaconApiRequest, TProducer};
 use silver_httpcore::{ParsedRequest, Query, frame_response};
 
 use crate::{
@@ -38,16 +38,21 @@ impl Method {
 
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 #[must_use = "Stream and the awaiting outcomes leave the connection waiting on the caller"]
 pub(crate) enum Outcome {
-    #[default]
-    Response,
+    Response(Option<BeaconApiRequest>),
     Stream(ChannelSet),
     AwaitingBlock(BlockRequest),
     AwaitingAggregate(AggregateRequest),
     AwaitingContribution(SyncCommitteeContributionRequest),
     AwaitingVerdicts(Submission),
+}
+
+impl Default for Outcome {
+    fn default() -> Self {
+        Self::Response(None)
+    }
 }
 
 // `method` and `path` become live with a handler that answers on more than the
@@ -201,7 +206,7 @@ impl Router {
             tracing::warn!("unknown path: {}", req.path);
             frame_response(out, "404 Not Found", None, b"");
         }
-        Outcome::Response
+        Outcome::Response(None)
     }
 }
 
@@ -258,7 +263,7 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(
             router.dispatch(&request(method, path), &anchor_ctx(), &mut submissions(), &mut out),
-            Outcome::Response
+            Outcome::Response(None)
         );
         out
     }
@@ -310,7 +315,7 @@ mod tests {
         };
         assert_eq!(
             router.dispatch(&req, &anchor_ctx(), &mut submissions(), &mut out),
-            Outcome::Response
+            Outcome::Response(None)
         );
         out
     }

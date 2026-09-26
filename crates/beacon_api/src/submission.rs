@@ -20,8 +20,8 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     }
 
     let parsed = each_body_entry(req.body, |body_index, entry: T| match entry.accept(ctx) {
-        Ok(topic) => {
-            resp.await_verdict(body_index, topic, entry.ssz_len(), |out| entry.encode(out))
+        Ok(topics) => {
+            resp.await_verdicts(body_index, topics, entry.ssz_len(), |out| entry.encode(out))
         }
         Err(message) => resp.fail_entry(body_index, message),
     });
@@ -34,8 +34,8 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
 
 /// A body entry this node can publish.
 pub(crate) trait SubmittedEntry {
-    /// The topic the entry is published on, or why it is not.
-    fn accept(&self, ctx: &ApiCtx) -> Result<GossipTopic, &'static str>;
+    /// The topics the entry is published on, or why it is not.
+    fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str>;
 
     fn ssz_len(&self) -> usize;
 
@@ -62,6 +62,14 @@ pub(crate) struct SubmissionFailure {
 pub(crate) struct Submission {
     pub(crate) accepted: Vec<AcceptedEntry>,
     pub(crate) failures: Vec<SubmissionFailure>,
+}
+
+impl Submission {
+    pub(crate) fn body_len(&self) -> usize {
+        let accepted = self.accepted.iter().map(|entry| entry.body_index);
+        let failed = self.failures.iter().map(|failure| failure.body_index);
+        accepted.chain(failed).max().map_or(0, |last| last + 1)
+    }
 }
 
 pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {

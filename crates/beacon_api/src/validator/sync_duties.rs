@@ -136,7 +136,7 @@ impl SyncDuty<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use silver_beacon_state_data::{
         BeaconState, BeaconStateOwner, EpochStateFinalized, SLOTS_PER_EPOCH, SpecConfig,
         SyncCommittee, SyncCommittees, ValSeed,
@@ -176,7 +176,7 @@ mod tests {
 
     /// The period's own committee rotates from validator 0, the next one from
     /// validator 1.
-    fn ctx() -> ApiCtx {
+    pub(crate) fn ctx() -> ApiCtx {
         let seeds: Vec<_> =
             (0..VALIDATORS).map(|i| ValSeed { pubkey: pubkey(i), ..ValSeed::default() }).collect();
         let mut state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, STATE_SLOT);

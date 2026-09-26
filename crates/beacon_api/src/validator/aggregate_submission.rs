@@ -56,7 +56,7 @@ struct SubmittedAggregateAttestation {
 }
 
 impl SubmittedEntry for SubmittedAggregate {
-    fn accept(&self, _ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
+    fn accept(&self, _ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
         let aggregate = &self.message.aggregate;
         if u64::from_le_bytes(aggregate.committee_bits).count_ones() != 1 {
             return Err("committee_bits must name exactly one committee");
@@ -65,7 +65,7 @@ impl SubmittedEntry for SubmittedAggregate {
         if bits.last().is_none_or(|&last| last == 0) {
             return Err("aggregation_bits is not a bitlist over one committee");
         }
-        Ok(GossipTopic::BeaconAggregateAndProof)
+        Ok([GossipTopic::BeaconAggregateAndProof])
     }
 
     fn ssz_len(&self) -> usize {
@@ -185,7 +185,7 @@ mod tests {
         ]);
 
         let (outcome, response) = submit(&ctx, &format!("[{}]", entry("1a05", "0000000000000000")));
-        assert_eq!(outcome, Outcome::Response);
+        assert_eq!(outcome, Outcome::Response(None));
         assert_eq!(status_code(&response), "400");
         let parsed: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
         assert_eq!(parsed["failures"][0]["index"], 0);
@@ -202,7 +202,7 @@ mod tests {
         let too_long = "01".repeat(MAX_AGGREGATION_BITS_LEN + 1);
         let (outcome, response) =
             submit(&ctx(), &format!("[{}]", entry(&too_long, "0400000000000000")));
-        assert_eq!(outcome, Outcome::Response);
+        assert_eq!(outcome, Outcome::Response(None));
         assert_eq!(status_code(&response), "400");
     }
 }

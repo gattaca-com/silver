@@ -12,12 +12,12 @@ use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
     LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
-    TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
+    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
-        StatusView,
+        StatusView, SyncCommitteeView,
     },
     ticker::SlotTicker,
 };
@@ -27,7 +27,8 @@ use silver_peer::PeerManager;
 use self::{
     attestation_cluster::{AttestationClusterHandler, PendingAttestation},
     gossip_schedule::GossipSchedule,
-    local_validation::{LocalMessage, LocalValidation, produce_response},
+    local_gossip::{LocalGossipHandler, LocalMessage, produce_response},
+    subnet_duties::{SubnetDuties, Subnets},
 };
 use crate::{
     cell_ingress::{CellIngress, handle_data_column_event},
@@ -38,7 +39,8 @@ use crate::{
 
 mod attestation_cluster;
 mod gossip_schedule;
-mod local_validation;
+mod local_gossip;
+mod subnet_duties;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -54,7 +56,7 @@ pub struct Controller {
     sync_engine: SyncEngine,
     rpc_producer: TProducer,
     attestation_cluster: AttestationClusterHandler,
-    local_validation: LocalValidation,
+    local_gossip: LocalGossipHandler,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
@@ -66,11 +68,12 @@ pub struct Controller {
     /// targeted RPC assertions.
     auto_ping: bool,
 
-    /// Long-lived subnet topics advertised (ENR/MetaData) from boot but
+    /// Long-lived subnets are advertised (ENR/MetaData) from boot but
     /// subscribed only once the node is Following — grafted-while-syncing
     /// meshes would earn P3 deficit at peers since nothing validates or
-    /// forwards until then. Drained into the PM on the first transition.
-    pending_subnet_topics: Vec<GossipTopic>,
+    /// forwards until then.
+    long_lived_pending: bool,
+    subnet_duties: SubnetDuties,
     cell_ingress: Option<CellIngress>,
     partial_exchange: Option<PartialExchange>,
     /// Chain schedule, used to resolve the active gossip fork domain from
@@ -96,6 +99,8 @@ impl Controller {
         cluster_config: Option<AttestationClusterConfig>,
         sync_engine: SyncEngine,
         spec: Arc<SpecConfig>,
+        long_lived_attnets: u64,
+        long_lived_syncnets: u8,
     ) -> Result<Self, ClusterError> {
         let now = Instant::now();
         let attestation_cluster =
@@ -107,13 +112,17 @@ impl Controller {
             sync_engine,
             rpc_producer,
             attestation_cluster,
-            local_validation: LocalValidation::default(),
+            local_gossip: LocalGossipHandler::default(),
             last_tick: now,
             last_ping: now,
             last_status: now,
             last_peer_persist: now,
             auto_ping: true,
-            pending_subnet_topics: Vec::new(),
+            long_lived_pending: true,
+            subnet_duties: SubnetDuties::new(Subnets {
+                attnets: long_lived_attnets,
+                syncnets: long_lived_syncnets,
+            }),
             cell_ingress: None,
             partial_exchange: None,
             spec,
@@ -152,14 +161,35 @@ impl Controller {
                 self.attestation_cluster.on_local_attestation(
                     PendingAttestation::new(request_id, subnet, ssz),
                     now,
-                    &mut self.local_validation,
+                    &mut self.local_gossip,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
+            GossipTopic::SyncCommittee(_) => {
+                let Ok(message) = ssz.try_into() else {
+                    tracing::error!(
+                        request_id,
+                        len = ssz.len(),
+                        "submitted sync committee message is misframed"
+                    );
+                    return produce_response(
+                        producers,
+                        request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                };
+                let slot = SyncCommitteeView::slot(message);
+                self.local_gossip.submit(
+                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    now,
                     &mut self.gossip_handler,
                     producers,
                 )
             }
             GossipTopic::BeaconAggregateAndProof => {
                 let slot = SignedAggregateAndProofView::agg_slot(ssz);
-                self.local_validation.submit(
+                self.local_gossip.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
@@ -180,7 +210,7 @@ impl Controller {
                     );
                 };
                 let slot = SignedSyncCommitteeProofView::slot(proof);
-                self.local_validation.submit(
+                self.local_gossip.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
                     &mut self.gossip_handler,
@@ -192,6 +222,39 @@ impl Controller {
                 produce_response(producers, request_id, Err(LocalGossipFailure::Internal))
             }
         }
+    }
+
+    fn on_attestation_subscriptions(&mut self, subscriptions: TCacheRead, wall_slot: u64) {
+        let acquired = self.reader.acquire(subscriptions);
+        let Ok((bytes, _)) = acquired.buffer() else {
+            tracing::error!("submitted subscriptions overwritten before they were read");
+            return;
+        };
+        for slot_subnets in SlotSubnets::decode_all(bytes) {
+            self.subnet_duties.add(slot_subnets, wall_slot);
+        }
+    }
+
+    fn advance_duty_subnets(
+        &mut self,
+        wall_slot: u64,
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let emit = &mut |evt| {
+            handle_peer_control(&mut self.gossip_handler, &mut self.rpc_producer, evt, producers)
+        };
+        let Some(changes) = self.subnet_duties.advance(wall_slot) else {
+            return;
+        };
+        tracing::debug!(wall_slot, ?changes, "duty subnets changed");
+        self.peer_manager.update_duty_subnets(
+            changes.attesting,
+            changes.joined(),
+            changes.left(),
+            now,
+            emit,
+        );
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {
@@ -225,11 +288,9 @@ impl Controller {
         Ok(self)
     }
 
-    pub fn set_pending_subnet_topics(&mut self, topics: Vec<GossipTopic>) {
-        self.pending_subnet_topics = topics;
-    }
-
     pub fn set_gossip_clock(&mut self, ticker: SlotTicker, genesis_validators_root: &[u8; 32]) {
+        self.subnet_duties
+            .set_rejoin_wait(self.peer_manager.topic_rejoin_wait(), ticker.slot_duration());
         self.gossip_schedule =
             Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
     }
@@ -404,7 +465,7 @@ impl Tile<SilverSpine> for Controller {
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
                 BeaconStateEvent::LocalGossipVerdict { hash, result } => {
-                    self.local_validation.complete(hash, result, producers)
+                    self.local_gossip.complete(hash, result, producers)
                 }
                 // PM keeps the reject for peer eviction (Status backing a
                 // rejected chain); the engine owns target invalidation.
@@ -415,9 +476,19 @@ impl Tile<SilverSpine> for Controller {
             }
         });
 
+        let wall_slot =
+            self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
         adapter.consume(|request: BeaconApiRequest, producers| match request {
             BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
                 self.on_local_gossip(request_id, topic, ssz, now, producers)
+            }
+            BeaconApiRequest::BeaconCommitteeSubscriptions { subscriptions } => {
+                if let Some(wall_slot) = wall_slot {
+                    self.on_attestation_subscriptions(subscriptions, wall_slot);
+                }
+            }
+            BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs } => {
+                self.subnet_duties.add_sync(until_epochs)
             }
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |
@@ -427,7 +498,7 @@ impl Tile<SilverSpine> for Controller {
         self.attestation_cluster.spin(
             now,
             adapter,
-            &mut self.local_validation,
+            &mut self.local_gossip,
             &mut self.gossip_handler,
             &mut self.reader,
         );
@@ -485,7 +556,7 @@ impl Tile<SilverSpine> for Controller {
 
         // Consume every validation outcome already queued before expiring
         // requests, so an event arriving at the deadline wins the race.
-        self.local_validation.expire(now, &mut adapter.producers);
+        self.local_gossip.expire(now, &mut adapter.producers);
 
         adapter.consume(|rpc: RpcInbound, producers| {
             self.sync_engine.rpc_event(&rpc, self.peer_manager.our_fork_digest());
@@ -515,12 +586,16 @@ impl Tile<SilverSpine> for Controller {
             adapter.produce(strategy);
         }
 
-        if !self.pending_subnet_topics.is_empty() &&
-            matches!(self.sync_engine.current_target(), Some(SyncUpdate::Following))
-        {
-            let topics = std::mem::take(&mut self.pending_subnet_topics);
-            tracing::info!(?topics, "activating long-lived subnet subscriptions");
-            self.peer_manager.activate_topics(&topics, &mut |evt| {
+        let following = matches!(self.sync_engine.current_target(), Some(SyncUpdate::Following));
+        if self.long_lived_pending && following {
+            self.long_lived_pending = false;
+            let long_lived = self.subnet_duties.long_lived();
+            tracing::info!(
+                attnets = format_args!("{:#x}", long_lived.attnets),
+                syncnets = format_args!("{:#b}", long_lived.syncnets),
+                "activating long-lived subnet subscriptions"
+            );
+            self.peer_manager.activate_topics(long_lived.topics(), &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,
                     &mut self.rpc_producer,
@@ -528,6 +603,9 @@ impl Tile<SilverSpine> for Controller {
                     &mut adapter.producers,
                 )
             });
+        }
+        if following && let Some(wall_slot) = wall_slot {
+            self.advance_duty_subnets(wall_slot, now, &mut adapter.producers);
         }
 
         // Syncing → Following edge: fan out Status to every peer

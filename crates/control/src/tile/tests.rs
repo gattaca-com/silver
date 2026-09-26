@@ -4,7 +4,7 @@ use silver_chain_spec::SpecConfig;
 use silver_common::{
     ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, Keypair,
     MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
     test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
@@ -74,6 +74,8 @@ impl GossipPublications {
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
+            0,
+            0,
         )
         .unwrap();
         controller.open_tcaches().unwrap();

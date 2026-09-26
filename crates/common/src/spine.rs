@@ -12,8 +12,8 @@ pub use messages::{
     PREFILL_SLOTS, PayloadResolution, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores,
     PeerStats, PeerStatus, PeerTopicScores, Prefill, ReplayBlock, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    RpcResponseOutbound, RpcSeverity, SelfBuiltGossip, ServedBlock, SszCache, SyncNeed, SyncUpdate,
-    SyncingStrategy, WithdrawalInline,
+    RpcResponseOutbound, RpcSeverity, SelfBuiltGossip, ServedBlock, SlotSubnets, SszCache,
+    SyncNeed, SyncUpdate, SyncingStrategy, WithdrawalInline,
 };
 pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
 pub use stream_protocol::{

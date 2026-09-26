@@ -12,7 +12,7 @@ pub(super) const VALIDATION_TIMEOUT: Duration = Duration::from_secs(1);
 /// Locally submitted gossip messages awaiting Beacon State's verdict. Requests
 /// that inject identical bytes share one message id and complete together.
 #[derive(Default)]
-pub(super) struct LocalValidation {
+pub(super) struct LocalGossipHandler {
     pending: FxHashMap<MessageId, Vec<PendingValidationRequest>>,
     next_deadline: Option<Instant>,
 }
@@ -26,7 +26,7 @@ pub(super) struct LocalMessage<'a> {
     pub(super) slot: u64,
 }
 
-impl LocalValidation {
+impl LocalGossipHandler {
     pub(super) fn submit(
         &mut self,
         message: LocalMessage<'_>,
@@ -153,7 +153,7 @@ pub(super) mod tests {
 
     /// A gossip handler and a spine to inject into and answer through.
     pub(in crate::tile) struct Harness {
-        pub(in crate::tile) validation: LocalValidation,
+        pub(in crate::tile) local_gossip: LocalGossipHandler,
         pub(in crate::tile) gossip: GossipHandler,
         pub(in crate::tile) adapter: SpineAdapter<SilverSpine>,
         _spine: Box<SilverSpine>,
@@ -178,7 +178,7 @@ pub(super) mod tests {
             .unwrap();
             gossip.open_tcaches().unwrap();
             Self {
-                validation: LocalValidation::default(),
+                local_gossip: LocalGossipHandler::default(),
                 gossip,
                 adapter,
                 _spine: spine,
@@ -207,7 +207,7 @@ pub(super) mod tests {
         }
 
         pub(in crate::tile) fn complete(&mut self, msg_id: MessageId, response: LocalGossipResult) {
-            self.validation.complete(msg_id, response, &mut self.adapter.producers);
+            self.local_gossip.complete(msg_id, response, &mut self.adapter.producers);
         }
     }
 
@@ -216,8 +216,8 @@ pub(super) mod tests {
         aggregate[SIGNED_AGG_PROOF_MIN] = 1;
         let topic = GossipTopic::BeaconAggregateAndProof;
         let message = LocalMessage { request_id, topic, ssz: &aggregate, ssz_read: None, slot: 0 };
-        let Harness { validation, gossip, adapter, .. } = harness;
-        validation.submit(message, Instant::now(), gossip, &mut adapter.producers);
+        let Harness { local_gossip, gossip, adapter, .. } = harness;
+        local_gossip.submit(message, Instant::now(), gossip, &mut adapter.producers);
     }
 
     /// The same message submitted twice shares one validation, and every
@@ -234,7 +234,7 @@ pub(super) mod tests {
 
         harness.complete(message.msg_hash, Ok(()));
         assert_eq!(harness.responses(), [(1, Ok(())), (2, Ok(()))]);
-        assert!(harness.validation.is_empty());
+        assert!(harness.local_gossip.is_empty());
     }
 
     /// Requests sharing a message expire on their own deadlines.
@@ -247,19 +247,19 @@ pub(super) mod tests {
             let topic = GossipTopic::BeaconAggregateAndProof;
             let message =
                 LocalMessage { request_id, topic, ssz: &aggregate, ssz_read: None, slot: 0 };
-            let Harness { validation, gossip, adapter, .. } = &mut harness;
-            validation.submit(message, at, gossip, &mut adapter.producers);
+            let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+            local_gossip.submit(message, at, gossip, &mut adapter.producers);
         }
 
-        let Harness { validation, adapter, .. } = &mut harness;
-        validation.expire(now + VALIDATION_TIMEOUT, &mut adapter.producers);
+        let Harness { local_gossip, adapter, .. } = &mut harness;
+        local_gossip.expire(now + VALIDATION_TIMEOUT, &mut adapter.producers);
         assert_eq!(harness.responses(), [(21, Err(LocalGossipFailure::TimedOut))]);
-        assert!(!harness.validation.is_empty());
+        assert!(!harness.local_gossip.is_empty());
 
-        let Harness { validation, adapter, .. } = &mut harness;
-        validation
+        let Harness { local_gossip, adapter, .. } = &mut harness;
+        local_gossip
             .expire(now + VALIDATION_TIMEOUT + Duration::from_millis(10), &mut adapter.producers);
         assert_eq!(harness.responses(), [(22, Err(LocalGossipFailure::TimedOut))]);
-        assert!(harness.validation.is_empty());
+        assert!(harness.local_gossip.is_empty());
     }
 }

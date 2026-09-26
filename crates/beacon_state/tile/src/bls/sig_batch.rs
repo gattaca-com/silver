@@ -142,6 +142,14 @@ impl SigBatch {
         self.sigs.push(*sig.as_sig());
     }
 
+    pub fn contains(&self, pubkey: &PublicKey, sig: CheckedSignature, signing_root: &B256) -> bool {
+        (0..self.msgs.len()).any(|index| {
+            &self.msgs[index] == signing_root &&
+                &self.pks[index] == pubkey &&
+                &self.sigs[index] == sig.as_sig()
+        })
+    }
+
     pub fn push_aggregate<'a, I>(&mut self, participants: I, sig: &[u8; 96], signing_root: B256)
     where
         I: IntoIterator<Item = &'a PublicKey>,
@@ -376,6 +384,21 @@ mod tests {
         assert!(!memo.live.contains_key(&kept), "the filling roots displaced it");
         assert_eq!(memo.get(&kept), first, "still served from the retired generation");
         assert!(memo.live.contains_key(&kept), "and promoted back");
+    }
+
+    #[test]
+    fn contains_matches_only_the_exact_pubkey_signature_and_root() {
+        let root: B256 = [7; 32];
+        let other_root: B256 = [8; 32];
+        let signature = CheckedSignature::parse(&sign(0, &root)).unwrap();
+        let mut batch = SigBatch::new();
+        batch.push_parsed(&pubkey_pk(0), signature, root);
+
+        assert!(batch.contains(&pubkey_pk(0), signature, &root));
+        assert!(!batch.contains(&pubkey_pk(1), signature, &root));
+        assert!(!batch.contains(&pubkey_pk(0), signature, &other_root));
+        let other = CheckedSignature::parse(&sign(0, &other_root)).unwrap();
+        assert!(!batch.contains(&pubkey_pk(0), other, &root));
     }
 
     #[test]
