@@ -1049,7 +1049,7 @@ impl BeaconStateTile {
         if proposer_index >= view.validators.count() {
             return Feedback::Reject(None);
         }
-        if !stf::is_slashable_validator(&view.validators, proposer_index as u32, current_epoch) {
+        if !view.validators.is_slashable(proposer_index, current_epoch) {
             return Feedback::Reject(None);
         }
 

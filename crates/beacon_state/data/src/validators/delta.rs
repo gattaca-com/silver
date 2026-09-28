@@ -317,6 +317,13 @@ impl<'a> ValidatorsView<'a> {
             .unwrap_or_else(|| self.base_or(ix, |b, i| b.withdrawable_epoch[i], FAR_FUTURE_EPOCH))
     }
 
+    #[inline]
+    pub fn is_slashable(&self, ix: usize, epoch: Epoch) -> bool {
+        !self.is_slashed(ix) &&
+            self.activation_epoch(ix) <= epoch &&
+            epoch < self.withdrawable_epoch(ix)
+    }
+
     /// Resolve a pubkey to its absolute index: finalized index first, then a
     /// linear scan of the fork's appended records (bounded by deposits-since-
     /// finalization).

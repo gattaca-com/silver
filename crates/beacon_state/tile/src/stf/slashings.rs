@@ -16,10 +16,7 @@ use crate::{
     bls::{self, SigBatch},
     error::{AttesterSlashingError, ProposerSlashingError, Result},
     ssz_hash::{self, hash_tree_root_block_header},
-    stf::{
-        for_each_ssz_list_item, get_beacon_proposer_index, initiate_validator_exit,
-        is_slashable_validator,
-    },
+    stf::{for_each_ssz_list_item, get_beacon_proposer_index, initiate_validator_exit},
     validate,
 };
 
@@ -79,10 +76,8 @@ pub fn collect_sigs_proposer_slashings(
     Ok(())
 }
 
-/// Pass 2 — validate per-entry preconditions and slash. BLS already
-/// verified. `is_slashable_validator` re-check picks up within-block
-/// mutations (a same-vi double slashing rejects on the second entry
-/// because the first one already set the slashed flag).
+/// Requires verified BLS signatures. Rechecks slashability after earlier
+/// entries, so a second slashing of the same validator rejects the block.
 pub fn process_proposer_slashings(
     view: &mut StateWriterView,
     epoch: EpochView,
@@ -102,7 +97,7 @@ pub fn process_proposer_slashings(
         if (vi as usize) >= n {
             return Err(ProposerSlashingError::ValidatorOutOfRange { vi: vi as usize, count: n });
         }
-        if !is_slashable_validator(&view.validators.reader(), vi, current_epoch) {
+        if !view.validators.reader().is_slashable(vi as usize, current_epoch) {
             return Err(ProposerSlashingError::NotSlashable {
                 vi: vi as usize,
                 pubkey: *view.validators.pubkey(vi as usize),
@@ -277,7 +272,7 @@ pub fn process_attester_slashings(
             let start = slashed_sink.len();
             let validators = view.validators.reader();
             for_each_sorted_intersection(i1, i2, |vi| {
-                if vi < n && is_slashable_validator(&validators, vi as u32, current_epoch) {
+                if vi < n && validators.is_slashable(vi, current_epoch) {
                     slashed_sink.push(vi as u32);
                 }
                 false
@@ -351,7 +346,7 @@ pub fn validate_attester_slashing_for_gossip(
         let vi32 = vi as u32;
         if vi < count {
             equivocating_out.push(vi32);
-            if is_slashable_validator(&validators, vi32, current_epoch) {
+            if validators.is_slashable(vi, current_epoch) {
                 any_slashable = true;
             }
         }
