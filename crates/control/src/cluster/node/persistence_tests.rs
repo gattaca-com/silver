@@ -4,8 +4,8 @@ use silver_common::ssz_view::SINGLE_ATT_SIZE;
 use super::*;
 use crate::cluster::AttestationKey;
 
-fn config(node_id: u64, voters: Vec<u64>) -> AttestationClusterConfig {
-    AttestationClusterConfig::new(
+fn config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
+    SlashingProtectionConfig::new(
         node_id,
         voters,
         ClusterStorageConfig::Create("unused-test-journal".into()),
@@ -18,13 +18,13 @@ fn command(slot: u64, root: u8) -> AttestationLockCommand {
     AttestationLockCommand { key: AttestationKey { attester_index: 7, slot }, subnet: 0, ssz }
 }
 
-fn memory(now: Instant, voters: Vec<u64>) -> AttestationCluster {
-    let mut cluster = AttestationCluster::in_memory(config(1, voters), now).unwrap();
+fn memory(now: Instant, voters: Vec<u64>) -> SlashingProtectionCluster {
+    let mut cluster = SlashingProtectionCluster::in_memory(config(1, voters), now).unwrap();
     cluster.set_startup_wall_slot(9);
     cluster
 }
 
-fn leader(now: Instant) -> AttestationCluster {
+fn leader(now: Instant) -> SlashingProtectionCluster {
     let mut cluster = memory(now, vec![1]);
     cluster.campaign().unwrap();
     cluster.spin(now, 10, |_| {}).unwrap();
@@ -32,7 +32,7 @@ fn leader(now: Instant) -> AttestationCluster {
     cluster
 }
 
-fn events(cluster: &mut AttestationCluster, now: Instant) -> Vec<ClusterEvent> {
+fn events(cluster: &mut SlashingProtectionCluster, now: Instant) -> Vec<ClusterEvent> {
     let mut events = Vec::new();
     cluster.spin(now, 10, |event| events.push(event)).unwrap();
     events
@@ -98,7 +98,7 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
     cluster.persistence.paused = false;
     assert!(events(&mut cluster, later).is_empty());
     assert_eq!(cluster.state.len(), 2);
-    assert_eq!(cluster.state.apply(&command(10, 3)), LockResult::ConflictingAttestation);
+    assert_eq!(cluster.state.apply(&command(10, 3)), LockResult::Conflicting);
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn previous_incarnation_cannot_complete_a_new_request_with_the_same_sequence() {
         .unwrap();
     assert_eq!(cluster.pending_proposals(), 1);
     assert!(events(&mut cluster, now).iter().any(|event| matches!(event,
-        ClusterEvent::AttestationCommitted(decision) if decision.proposal_id == current && decision.result == LockResult::ConflictingAttestation
+        ClusterEvent::AttestationCommitted(decision) if decision.proposal_id == current && decision.result == LockResult::Conflicting
     )));
     assert_eq!(cluster.pending_proposals(), 0);
 }
@@ -181,7 +181,7 @@ mod disk {
         create: bool,
         node: u64,
         voters: Vec<u64>,
-    ) -> AttestationClusterConfig {
+    ) -> SlashingProtectionConfig {
         let mut config = config(node, voters);
         config.storage = if create {
             ClusterStorageConfig::Create(path.into())
@@ -191,13 +191,17 @@ mod disk {
         config
     }
 
-    fn quiet(cluster: &AttestationCluster) -> bool {
+    fn quiet(cluster: &SlashingProtectionCluster) -> bool {
         cluster.is_ready() &&
             !cluster.persistence.is_pending() &&
             !cluster.node.as_ref().unwrap().has_ready()
     }
 
-    fn drain(cluster: &mut AttestationCluster, now: Instant, slot: u64) -> Vec<ClusterEvent> {
+    fn drain(
+        cluster: &mut SlashingProtectionCluster,
+        now: Instant,
+        slot: u64,
+    ) -> Vec<ClusterEvent> {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut events = Vec::new();
         loop {
@@ -216,7 +220,7 @@ mod disk {
         let path = dir.path().join("raft.wal");
         let now = Instant::now();
         let mut cluster =
-            AttestationCluster::new(stored_config(&path, true, 1, vec![1]), now).unwrap();
+            SlashingProtectionCluster::new(stored_config(&path, true, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(99);
         assert!(matches!(cluster.campaign(), Err(ClusterError::NotReady)));
         assert!(matches!(cluster.step(Message::default()), Err(ClusterError::NotReady)));
@@ -237,7 +241,7 @@ mod disk {
         drop(cluster);
 
         let mut cluster =
-            AttestationCluster::new(stored_config(&path, false, 1, vec![1]), now).unwrap();
+            SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(104);
         assert!(drain(&mut cluster, now, 105).is_empty());
         assert_eq!(cluster.state.len(), 1);
@@ -249,7 +253,7 @@ mod disk {
         let new_id = cluster.propose_attestation(command(105, 2), 105, now).unwrap();
         assert_ne!(old_id, new_id);
         assert!(drain(&mut cluster, now, 105).iter().any(|event| matches!(event,
-            ClusterEvent::AttestationCommitted(decision) if decision.proposal_id == new_id && decision.result == LockResult::ConflictingAttestation
+            ClusterEvent::AttestationCommitted(decision) if decision.proposal_id == new_id && decision.result == LockResult::Conflicting
         )));
     }
 
@@ -259,7 +263,8 @@ mod disk {
         let path = directory.path().join("raft.wal");
         let now = Instant::now();
         let mut cluster =
-            AttestationCluster::new(stored_config(&path, true, 1, vec![1, 2, 3]), now).unwrap();
+            SlashingProtectionCluster::new(stored_config(&path, true, 1, vec![1, 2, 3]), now)
+                .unwrap();
         drain(&mut cluster, now, 10);
         let context = ProposalId { origin_node_id: 2, sequence: 1, incarnation: [1; 16] }.encode();
         cluster
@@ -284,7 +289,8 @@ mod disk {
         drop(cluster);
 
         let mut cluster =
-            AttestationCluster::new(stored_config(&path, false, 1, vec![1, 2, 3]), now).unwrap();
+            SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1, 2, 3]), now)
+                .unwrap();
         assert!(drain(&mut cluster, now, 10).is_empty());
         assert_eq!(cluster.state.len(), 0);
         assert_eq!(cluster.node.as_ref().unwrap().raft.raft_log.last_index(), 1);
@@ -309,11 +315,12 @@ mod disk {
         drain(&mut cluster, now, 10);
         assert_eq!(cluster.state.len(), 1);
         assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(cluster.state.apply(&command(10, 1)), LockResult::ConflictingAttestation);
+        assert_eq!(cluster.state.apply(&command(10, 1)), LockResult::Conflicting);
         drop(cluster);
 
         let mut cluster =
-            AttestationCluster::new(stored_config(&path, false, 1, vec![1, 2, 3]), now).unwrap();
+            SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1, 2, 3]), now)
+                .unwrap();
         assert!(drain(&mut cluster, now, 10).is_empty());
         assert_eq!(cluster.state.len(), 1);
         assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::AlreadyAcceptedSame);
@@ -325,7 +332,7 @@ mod disk {
         let path = dir.path().join("missing.wal");
         let now = Instant::now();
         let mut cluster =
-            AttestationCluster::new(stored_config(&path, false, 1, vec![1]), now).unwrap();
+            SlashingProtectionCluster::new(stored_config(&path, false, 1, vec![1]), now).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !cluster.is_failed() {
             let _ = cluster.spin(now, 10, |_| panic!("unrecovered node emitted work"));
@@ -346,9 +353,11 @@ mod disk {
             .iter()
             .zip(&paths)
             .map(|(id, path)| {
-                let mut node =
-                    AttestationCluster::new(stored_config(path, true, *id, voters.clone()), now)
-                        .unwrap();
+                let mut node = SlashingProtectionCluster::new(
+                    stored_config(path, true, *id, voters.clone()),
+                    now,
+                )
+                .unwrap();
                 node.set_startup_wall_slot(9);
                 drain(&mut node, now, 10);
                 node
@@ -356,7 +365,7 @@ mod disk {
             .collect();
         let mut messages = Vec::new();
         let mut decisions = Vec::new();
-        let mut pump = |nodes: &mut [AttestationCluster]| {
+        let mut pump = |nodes: &mut [SlashingProtectionCluster]| {
             for node in nodes.iter_mut() {
                 node.spin(now, 10, |event| match event {
                     ClusterEvent::SendRaftMessage(message) => messages.push(message),
@@ -392,12 +401,14 @@ mod disk {
         assert!(decisions[0].may_validate());
         drop(nodes);
         for (id, path) in voters.iter().zip(&paths) {
-            let mut node =
-                AttestationCluster::new(stored_config(path, false, *id, voters.clone()), now)
-                    .unwrap();
+            let mut node = SlashingProtectionCluster::new(
+                stored_config(path, false, *id, voters.clone()),
+                now,
+            )
+            .unwrap();
             assert!(drain(&mut node, now, 10).is_empty());
             assert_eq!(node.state.len(), 1);
-            assert_eq!(node.state.apply(&command(10, 5)), LockResult::ConflictingAttestation);
+            assert_eq!(node.state.apply(&command(10, 5)), LockResult::Conflicting);
         }
     }
 }

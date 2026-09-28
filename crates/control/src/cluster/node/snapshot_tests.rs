@@ -7,8 +7,8 @@ use silver_common::ssz_view::SINGLE_ATT_SIZE;
 use super::*;
 use crate::cluster::AttestationKey;
 
-fn config(id: u64) -> AttestationClusterConfig {
-    let mut config = AttestationClusterConfig::new(
+fn config(id: u64) -> SlashingProtectionConfig {
+    let mut config = SlashingProtectionConfig::new(
         id,
         vec![1, 2, 3],
         ClusterStorageConfig::Create("unused-test-journal".into()),
@@ -26,7 +26,7 @@ fn command(validator: u64, root: u8) -> AttestationLockCommand {
 }
 
 fn snapshot(index: u64) -> Snapshot {
-    let mut state = AttestationLockStore::default();
+    let mut state = SlashingLockStore::default();
     state.advance_minimum_slot(68);
     state.apply(&command(7, 1));
     let mut snapshot =
@@ -50,14 +50,14 @@ fn snapshot_message(snapshot: Snapshot) -> Message {
     message
 }
 
-fn quiet(node: &AttestationCluster) -> bool {
+fn quiet(node: &SlashingProtectionCluster) -> bool {
     node.is_ready() && !node.persistence.is_pending() && !node.node.as_ref().unwrap().has_ready()
 }
 
 #[test]
 fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     let now = Instant::now();
-    let mut node = AttestationCluster::in_memory(config(1), now).unwrap();
+    let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
     node.set_startup_wall_slot(99);
     node.persistence.paused = true;
     node.step(snapshot_message(snapshot(10))).unwrap();
@@ -71,7 +71,7 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
         if message.msg_type == MessageType::MsgAppendResponse && message.index == 10)));
     assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 10);
     assert_eq!(node.state.minimum_slot(), 68);
-    assert_eq!(node.state.apply(&command(7, 2)), LockResult::ConflictingAttestation);
+    assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
     assert!(
         node.admission.validate(99, 100).is_err(),
         "snapshot must not replace startup admission"
@@ -82,7 +82,7 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
 fn invalid_snapshot_payload_or_membership_stops_participation() {
     for bad_membership in [false, true] {
         let now = Instant::now();
-        let mut node = AttestationCluster::in_memory(config(1), now).unwrap();
+        let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
         let mut snapshot = snapshot(10);
         if bad_membership {
             snapshot.mut_metadata().mut_conf_state().voters = vec![1, 4];
@@ -112,7 +112,7 @@ fn storage_serves_captured_state_not_a_snapshot_at_an_unapplied_commit() {
 }
 
 struct Network {
-    nodes: Vec<AttestationCluster>,
+    nodes: Vec<SlashingProtectionCluster>,
     now: Instant,
     isolated: Option<u64>,
     drop_snapshot: bool,
@@ -122,7 +122,7 @@ struct Network {
 }
 
 impl Network {
-    fn new(nodes: Vec<AttestationCluster>, now: Instant) -> Self {
+    fn new(nodes: Vec<SlashingProtectionCluster>, now: Instant) -> Self {
         Self {
             nodes,
             now,
@@ -215,14 +215,15 @@ impl Network {
 #[test]
 fn a_lost_snapshot_is_retried_and_a_lagging_follower_catches_up() {
     let now = Instant::now();
-    let nodes = (1..=3).map(|id| AttestationCluster::in_memory(config(id), now).unwrap()).collect();
+    let nodes =
+        (1..=3).map(|id| SlashingProtectionCluster::in_memory(config(id), now).unwrap()).collect();
     let mut network = Network::new(nodes, now);
     network.populate_with_one_follower_offline();
     network.drop_snapshot = true;
     network.reconnect();
     assert!(network.snapshots >= 2);
     for node in &mut network.nodes {
-        assert_eq!(node.state.apply(&command(7, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
     }
     let request = network.nodes[2].propose_attestation(command(50, 1), 100, network.now).unwrap();
     network.settle();
@@ -237,7 +238,8 @@ fn a_lost_snapshot_is_retried_and_a_lagging_follower_catches_up() {
 #[test]
 fn a_lost_snapshot_ack_does_not_stall_replication() {
     let now = Instant::now();
-    let nodes = (1..=3).map(|id| AttestationCluster::in_memory(config(id), now).unwrap()).collect();
+    let nodes =
+        (1..=3).map(|id| SlashingProtectionCluster::in_memory(config(id), now).unwrap()).collect();
     let mut network = Network::new(nodes, now);
     network.populate_with_one_follower_offline();
     network.drop_snapshot_ack = true;
@@ -274,7 +276,7 @@ fn durable_snapshot_catch_up_survives_a_full_cluster_restart() {
             let mut config = config(id);
             config.storage =
                 ClusterStorageConfig::Create(directory.path().join(format!("{id}.wal")));
-            AttestationCluster::new(config, now).unwrap()
+            SlashingProtectionCluster::new(config, now).unwrap()
         })
         .collect();
     let mut network = Network::new(nodes, now);
@@ -286,7 +288,7 @@ fn durable_snapshot_catch_up_survives_a_full_cluster_restart() {
         .map(|id| {
             let mut config = config(id);
             config.storage = ClusterStorageConfig::Open(directory.path().join(format!("{id}.wal")));
-            AttestationCluster::new(config, now).unwrap()
+            SlashingProtectionCluster::new(config, now).unwrap()
         })
         .collect();
     let mut network = Network::new(nodes, now);
@@ -295,7 +297,7 @@ fn durable_snapshot_catch_up_survives_a_full_cluster_restart() {
     for node in &mut network.nodes {
         assert_eq!(node.state.len(), 24);
         assert_eq!(node.state.minimum_slot(), 68);
-        assert_eq!(node.state.apply(&command(7, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(node.state.apply(&command(7, 2)), LockResult::Conflicting);
         assert!(node.node.as_ref().unwrap().store().snapshot_index() > 0);
     }
 }

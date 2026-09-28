@@ -38,11 +38,11 @@ impl Error for AdmissionError {}
 /// is immutable thereafter. The age floor advances with wall time and permits
 /// at most one epoch of past slots.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AttestationAdmission {
+pub(crate) struct SlashingAdmission {
     startup_floor: Option<u64>,
 }
 
-impl AttestationAdmission {
+impl SlashingAdmission {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn admission_has_startup_age_and_future_bounds() {
-        let mut admission = AttestationAdmission::new();
+        let mut admission = SlashingAdmission::new();
 
         assert_eq!(admission.validate(100, 100), Err(AdmissionError::StartupFloorUnset));
         assert!(admission.set_startup_wall_slot(100));

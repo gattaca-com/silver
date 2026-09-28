@@ -7,10 +7,10 @@ use std::{
 
 use silver_common::Enr;
 use silver_config::ClusterConfig;
-use silver_control::cluster::{AttestationClusterConfig, ClusterStorageConfig};
+use silver_control::cluster::{ClusterStorageConfig, SlashingProtectionConfig};
 
 pub struct ClusterStartup {
-    pub config: AttestationClusterConfig,
+    pub config: SlashingProtectionConfig,
     _journal_lock: File,
 }
 
@@ -34,7 +34,7 @@ impl ClusterStartup {
             ClusterStorageConfig::Open(path)
         };
         Ok(Self {
-            config: AttestationClusterConfig::new(
+            config: SlashingProtectionConfig::new(
                 node_id,
                 config.nodes.keys().copied().collect(),
                 storage,

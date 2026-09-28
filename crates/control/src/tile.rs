@@ -25,21 +25,21 @@ use silver_gossip::{GossipHandler, GossipHandlerEvent};
 use silver_peer::PeerManager;
 
 use self::{
-    attestation_cluster::{AttestationClusterHandler, PendingAttestation},
     gossip_schedule::GossipSchedule,
     local_gossip::{LocalGossipHandler, LocalMessage, produce_response},
+    slashing_protection::{PendingAttestation, SlashingProtectionHandler},
     subnet_duties::{SubnetDuties, Subnets},
 };
 use crate::{
     cell_ingress::{CellIngress, handle_data_column_event},
-    cluster::{AttestationClusterConfig, ClusterError},
+    cluster::{ClusterError, SlashingProtectionConfig},
     partial_exchange::PartialExchange,
     sync_engine::{SyncAction, SyncEngine},
 };
 
-mod attestation_cluster;
 mod gossip_schedule;
 mod local_gossip;
+mod slashing_protection;
 mod subnet_duties;
 
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
@@ -55,7 +55,7 @@ pub struct Controller {
     /// (peer-pick, caps, send) and owns column sync.
     sync_engine: SyncEngine,
     rpc_producer: TProducer,
-    attestation_cluster: AttestationClusterHandler,
+    slashing_protection: SlashingProtectionHandler,
     local_gossip: LocalGossipHandler,
     last_tick: Instant,
     last_ping: Instant,
@@ -96,22 +96,22 @@ impl Controller {
         rpc_producer: TProducer,
         tcaches: TCacheTable,
         cluster_outbound_producer: TProducer,
-        cluster_config: Option<AttestationClusterConfig>,
+        cluster_config: Option<SlashingProtectionConfig>,
         sync_engine: SyncEngine,
         spec: Arc<SpecConfig>,
         long_lived_attnets: u64,
         long_lived_syncnets: u8,
     ) -> Result<Self, ClusterError> {
         let now = Instant::now();
-        let attestation_cluster =
-            AttestationClusterHandler::new(cluster_outbound_producer, cluster_config, now)?;
+        let slashing_protection =
+            SlashingProtectionHandler::new(cluster_outbound_producer, cluster_config, now)?;
 
         Ok(Self {
             peer_manager,
             gossip_handler,
             sync_engine,
             rpc_producer,
-            attestation_cluster,
+            slashing_protection,
             local_gossip: LocalGossipHandler::default(),
             last_tick: now,
             last_ping: now,
@@ -158,7 +158,7 @@ impl Controller {
                         Err(LocalGossipFailure::Internal),
                     );
                 };
-                self.attestation_cluster.on_local_attestation(
+                self.slashing_protection.on_local_attestation(
                     PendingAttestation::new(request_id, subnet, ssz),
                     now,
                     &mut self.local_gossip,
@@ -408,7 +408,7 @@ impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.gossip_handler.loop_start();
         self.rpc_producer.loop_start();
-        self.attestation_cluster.loop_start();
+        self.slashing_protection.loop_start();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.loop_start();
         }
@@ -461,7 +461,7 @@ impl Tile<SilverSpine> for Controller {
 
             match beacon_event {
                 BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot, .. } => {
-                    self.attestation_cluster.on_status(StatusView::head_slot(&ssz), wall_slot);
+                    self.slashing_protection.on_status(StatusView::head_slot(&ssz), wall_slot);
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
                 BeaconStateEvent::LocalGossipVerdict { hash, result } => {
@@ -495,7 +495,7 @@ impl Tile<SilverSpine> for Controller {
             BeaconApiRequest::Block { .. } => {}
         });
 
-        self.attestation_cluster.spin(
+        self.slashing_protection.spin(
             now,
             adapter,
             &mut self.local_gossip,

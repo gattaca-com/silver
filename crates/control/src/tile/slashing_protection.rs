@@ -11,10 +11,9 @@ use silver_gossip::GossipHandler;
 
 use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
-    AdmissionError, AttestationAdmission, AttestationCluster, AttestationClusterConfig,
-    AttestationDecision, AttestationKey, AttestationLockCommand, AttestationLockStore,
-    ClusterError, ClusterEvent, LockResult, ProposalId, ProposeError, decode_message,
-    encode_message,
+    AdmissionError, AttestationDecision, AttestationKey, AttestationLockCommand, ClusterError,
+    ClusterEvent, LockResult, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
+    SlashingProtectionCluster, SlashingProtectionConfig, decode_message, encode_message,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -35,34 +34,35 @@ impl PendingAttestation {
 
 /// Slashing protection for local attestations: admission and a lock per
 /// validator and epoch, agreed through Raft when clustered.
-pub(super) struct AttestationClusterHandler {
+pub(super) struct SlashingProtectionHandler {
     /// Encoded Raft messages are reserved here before `ClusterMsgOut` is
     /// published to the network tile.
     outbound_producer: TProducer,
-    cluster: Option<AttestationCluster>,
-    local_locks: AttestationLockStore,
-    admission: AttestationAdmission,
+    cluster: Option<SlashingProtectionCluster>,
+    local_locks: SlashingLockStore,
+    admission: SlashingAdmission,
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
     wall_slot: u64,
 }
 
-impl AttestationClusterHandler {
+impl SlashingProtectionHandler {
     pub(super) fn loop_start(&mut self) {
         self.outbound_producer.loop_start();
     }
 
     pub(super) fn new(
         outbound_producer: TProducer,
-        config: Option<AttestationClusterConfig>,
+        config: Option<SlashingProtectionConfig>,
         now: Instant,
     ) -> Result<Self, ClusterError> {
-        let cluster = config.map(|config| AttestationCluster::new(config, now)).transpose()?;
+        let cluster =
+            config.map(|config| SlashingProtectionCluster::new(config, now)).transpose()?;
 
         Ok(Self {
             outbound_producer,
             cluster,
-            local_locks: AttestationLockStore::default(),
-            admission: AttestationAdmission::new(),
+            local_locks: SlashingLockStore::default(),
+            admission: SlashingAdmission::new(),
             pending_attestations: FxHashMap::default(),
             wall_slot: 0,
         })
@@ -71,7 +71,7 @@ impl AttestationClusterHandler {
     pub(super) fn on_status(&mut self, head_slot: u64, wall_slot: u64) {
         self.wall_slot = wall_slot;
         if self.cluster.is_none() {
-            self.local_locks.advance_minimum_slot(AttestationAdmission::age_floor(wall_slot));
+            self.local_locks.advance_minimum_slot(SlashingAdmission::age_floor(wall_slot));
         }
         if head_slot != wall_slot || !self.admission.set_startup_wall_slot(wall_slot) {
             return;
@@ -303,7 +303,7 @@ impl AttestationClusterHandler {
             }
         });
         if let Err(error) = result {
-            tracing::error!(?error, "attestation cluster spin failed");
+            tracing::error!(?error, "slashing protection spin failed");
             for (_, attestation) in self.pending_attestations.drain() {
                 produce_response(
                     producers,
@@ -325,8 +325,8 @@ mod tests {
         tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
     };
 
-    fn handler(now: Instant) -> AttestationClusterHandler {
-        AttestationClusterHandler::new(
+    fn handler(now: Instant) -> SlashingProtectionHandler {
+        SlashingProtectionHandler::new(
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,
             now,
@@ -335,7 +335,7 @@ mod tests {
     }
 
     struct Standalone {
-        handler: AttestationClusterHandler,
+        handler: SlashingProtectionHandler,
         harness: Harness,
     }
 
@@ -526,8 +526,8 @@ mod tests {
         let mut handler = handler(now);
         let mut harness = Harness::new();
         handler.cluster = Some(
-            AttestationCluster::in_memory(
-                AttestationClusterConfig::new(
+            SlashingProtectionCluster::in_memory(
+                SlashingProtectionConfig::new(
                     1,
                     vec![1],
                     ClusterStorageConfig::Create("unused-test-journal".into()),
@@ -593,7 +593,7 @@ fn decision_response(decision: &AttestationDecision) -> LocalGossipResult {
 fn lock_response(result: LockResult) -> LocalGossipResult {
     match result {
         LockResult::Accepted | LockResult::AlreadyAcceptedSame => Ok(()),
-        LockResult::ConflictingAttestation => Err(LocalGossipFailure::ConflictingAttestation),
+        LockResult::Conflicting => Err(LocalGossipFailure::ConflictingAttestation),
         LockResult::TooOld => Err(LocalGossipFailure::TooOld),
     }
 }

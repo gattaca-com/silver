@@ -13,9 +13,9 @@ use raft::{
 #[cfg(any(target_os = "linux", test))]
 use super::persistence::RecoveredStorage;
 use super::{
-    admission::{AdmissionError, AttestationAdmission},
+    admission::{AdmissionError, SlashingAdmission},
     command::{AttestationLockCommand, CommandDecodeError, ReplicatedCommand},
-    lock_store::{AttestationLockStore, LockResult},
+    lock_store::{LockResult, SlashingLockStore},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
     raft_storage::{RaftStorage, RestoredSnapshot},
     snapshot_transfers::SnapshotTransfers,
@@ -30,7 +30,7 @@ const PROPOSAL_CONTEXT_LEN: usize = 32;
 
 /// Static Raft membership and timing configuration.
 #[derive(Debug, Clone)]
-pub struct AttestationClusterConfig {
+pub struct SlashingProtectionConfig {
     pub node_id: u64,
     pub voters: Vec<u64>,
     pub storage: ClusterStorageConfig,
@@ -43,7 +43,7 @@ pub struct AttestationClusterConfig {
     pub snapshot_interval: u64,
 }
 
-impl AttestationClusterConfig {
+impl SlashingProtectionConfig {
     pub fn new(node_id: u64, voters: Vec<u64>, storage: ClusterStorageConfig) -> Self {
         Self {
             node_id,
@@ -162,7 +162,8 @@ impl AttestationDecision {
     }
 }
 
-/// Work produced by one nonblocking [`AttestationCluster::spin`] invocation.
+/// Work produced by one nonblocking [`SlashingProtectionCluster::spin`]
+/// invocation.
 #[derive(Debug)]
 pub enum ClusterEvent {
     SendRaftMessage(Message),
@@ -224,7 +225,7 @@ impl fmt::Display for ClusterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidConfig(message) => {
-                write!(f, "invalid attestation cluster config: {message}")
+                write!(f, "invalid slashing protection config: {message}")
             }
             Self::Raft(error) => error.fmt(f),
             Self::Storage(error) => write!(f, "Raft storage failed: {error}"),
@@ -238,7 +239,9 @@ impl fmt::Display for ClusterError {
             Self::UnsupportedEntry(entry_type) => {
                 write!(f, "unsupported committed Raft entry type {entry_type:?}")
             }
-            Self::Snapshot(error) => write!(f, "invalid attestation Raft snapshot: {error}"),
+            Self::Snapshot(error) => {
+                write!(f, "invalid slashing protection Raft snapshot: {error}")
+            }
         }
     }
 }
@@ -265,17 +268,17 @@ impl From<raft::Error> for ClusterError {
     }
 }
 
-/// Single-threaded driver for the attestation Raft group.
+/// Single-threaded driver for the slashing protection Raft group.
 ///
 /// `spin` is a pump: callers invoke it once per Control tile loop. It executes
 /// only work that is ready at that point and always returns without waiting.
-pub struct AttestationCluster {
+pub struct SlashingProtectionCluster {
     node: Option<RawNode<RaftStorage>>,
-    config: AttestationClusterConfig,
+    config: SlashingProtectionConfig,
     persistence: Persistence,
     failed: bool,
-    state: AttestationLockStore,
-    admission: AttestationAdmission,
+    state: SlashingLockStore,
+    admission: SlashingAdmission,
     incarnation: [u8; 16],
     next_proposal_sequence: u64,
     next_tick: Instant,
@@ -290,18 +293,18 @@ struct PendingProposal {
     deadline: Instant,
 }
 
-impl AttestationCluster {
+impl SlashingProtectionCluster {
     /// Construct the Raft node with local attestation admission disabled.
     /// Recovery must complete before Raft participation. Local requests also
     /// require a synced startup floor.
-    pub fn new(config: AttestationClusterConfig, now: Instant) -> Result<Self, ClusterError> {
+    pub fn new(config: SlashingProtectionConfig, now: Instant) -> Result<Self, ClusterError> {
         config.validate()?;
         let persistence = Persistence::new(&config).map_err(ClusterError::Storage)?;
         Ok(Self::with_persistence(config, persistence, now))
     }
 
     fn with_persistence(
-        config: AttestationClusterConfig,
+        config: SlashingProtectionConfig,
         persistence: Persistence,
         now: Instant,
     ) -> Self {
@@ -313,8 +316,8 @@ impl AttestationCluster {
             config,
             persistence,
             failed: false,
-            state: AttestationLockStore::default(),
-            admission: AttestationAdmission::new(),
+            state: SlashingLockStore::default(),
+            admission: SlashingAdmission::new(),
             incarnation,
             next_proposal_sequence: 1,
             next_tick,
@@ -326,7 +329,7 @@ impl AttestationCluster {
 
     #[cfg(test)]
     pub(crate) fn in_memory(
-        config: AttestationClusterConfig,
+        config: SlashingProtectionConfig,
         now: Instant,
     ) -> Result<Self, ClusterError> {
         config.validate()?;
@@ -371,7 +374,7 @@ impl AttestationCluster {
     }
 
     #[cfg(test)]
-    fn state(&self) -> &AttestationLockStore {
+    fn state(&self) -> &SlashingLockStore {
         &self.state
     }
 
@@ -549,7 +552,7 @@ impl AttestationCluster {
             return Ok(());
         }
 
-        let desired = AttestationAdmission::age_floor(wall_slot);
+        let desired = SlashingAdmission::age_floor(wall_slot);
         if desired <= self.state.minimum_slot() {
             self.pending_minimum_slot = None;
             return Ok(());
@@ -774,8 +777,8 @@ mod tests {
         }
     }
 
-    fn test_config(node_id: u64, voters: Vec<u64>) -> AttestationClusterConfig {
-        let mut config = AttestationClusterConfig::new(
+    fn test_config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
+        let mut config = SlashingProtectionConfig::new(
             node_id,
             voters,
             ClusterStorageConfig::Create("unused-test-journal".into()),
@@ -787,17 +790,17 @@ mod tests {
     }
 
     fn initialized_cluster(
-        config: AttestationClusterConfig,
+        config: SlashingProtectionConfig,
         startup_wall_slot: u64,
         now: Instant,
-    ) -> AttestationCluster {
-        let mut cluster = AttestationCluster::in_memory(config, now).unwrap();
+    ) -> SlashingProtectionCluster {
+        let mut cluster = SlashingProtectionCluster::in_memory(config, now).unwrap();
         assert!(cluster.set_startup_wall_slot(startup_wall_slot));
         cluster
     }
 
     fn pump(
-        clusters: &mut [AttestationCluster],
+        clusters: &mut [SlashingProtectionCluster],
         now: Instant,
         wall_slot: u64,
         decisions: &mut Vec<(u64, AttestationDecision)>,
@@ -881,7 +884,7 @@ mod tests {
         assert_eq!(timed_out, [proposal_id]);
         assert_eq!(cluster.pending_proposals(), 0);
         assert_eq!(cluster.state().len(), 1);
-        assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::Conflicting);
     }
 
     #[test]
@@ -905,14 +908,15 @@ mod tests {
         assert_eq!(results, [
             LockResult::Accepted,
             LockResult::AlreadyAcceptedSame,
-            LockResult::ConflictingAttestation,
+            LockResult::Conflicting,
         ]);
     }
 
     #[test]
     fn proposal_checks_local_admission_before_raft() {
         let now = Instant::now();
-        let mut cluster = AttestationCluster::in_memory(test_config(1, vec![1]), now).unwrap();
+        let mut cluster =
+            SlashingProtectionCluster::in_memory(test_config(1, vec![1]), now).unwrap();
         cluster.campaign().unwrap();
 
         assert!(matches!(

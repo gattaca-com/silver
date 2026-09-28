@@ -23,7 +23,7 @@ pub enum LockResult {
     AlreadyAcceptedSame,
     /// A different signed attestation was selected previously. This candidate
     /// must not enter validation or gossip publication.
-    ConflictingAttestation,
+    Conflicting,
     /// The replicated retention floor or the epoch ring has advanced beyond
     /// this attestation.
     TooOld,
@@ -31,7 +31,7 @@ pub enum LockResult {
 
 /// Anti-equivocation state shared by standalone and replicated admission.
 #[derive(Debug, Default)]
-pub(crate) struct AttestationLockStore {
+pub(crate) struct SlashingLockStore {
     /// Commands below this slot are rejected even if proposed by a node with a
     /// stale wall clock. Replicated stores advance this through committed
     /// commands.
@@ -50,7 +50,7 @@ struct EpochLocks {
     attestations: FxHashMap<u64, [u8; 32]>,
 }
 
-impl AttestationLockStore {
+impl SlashingLockStore {
     pub(crate) fn apply(&mut self, cmd: &AttestationLockCommand) -> LockResult {
         if cmd.key.slot < self.minimum_slot {
             return LockResult::TooOld;
@@ -77,7 +77,7 @@ impl AttestationLockStore {
             Entry::Occupied(entry) if entry.get() == &attestation_hash => {
                 LockResult::AlreadyAcceptedSame
             }
-            Entry::Occupied(_) => LockResult::ConflictingAttestation,
+            Entry::Occupied(_) => LockResult::Conflicting,
         }
     }
 
@@ -223,87 +223,87 @@ mod tests {
 
     #[test]
     fn snapshot_preserves_epoch_locks_floor_and_ring_reuse_protection() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         store.apply(&command_for(10, 7, 1));
         store.apply(&command_for(40, 8, 2));
         store.advance_minimum_slot(20);
         let mut restored =
-            AttestationLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
         assert_eq!(restored.minimum_slot(), 20);
         assert_eq!(restored.apply(&command_for(10, 7, 1)), LockResult::TooOld);
-        assert_eq!(restored.apply(&command_for(21, 7, 3)), LockResult::ConflictingAttestation);
+        assert_eq!(restored.apply(&command_for(21, 7, 3)), LockResult::Conflicting);
         assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::AlreadyAcceptedSame);
 
         store.apply(&command_for(100, 9, 4));
         let mut restored =
-            AttestationLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
         assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::TooOld);
         assert_eq!(restored.apply(&command_for(100, 9, 4)), LockResult::AlreadyAcceptedSame);
         store.advance_minimum_slot(128);
         let bytes = store.encode_snapshot().unwrap();
         assert!(bytes.len() < 64, "expired hashes should not be serialized");
-        let restored = AttestationLockStore::decode_snapshot(&bytes).unwrap();
+        let restored = SlashingLockStore::decode_snapshot(&bytes).unwrap();
         assert_eq!(restored.minimum_slot(), 128);
     }
 
     #[test]
     fn malformed_lock_snapshots_are_rejected() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         store.apply(&command_for(10, 7, 1));
         let bytes = store.encode_snapshot().unwrap();
         for len in 0..bytes.len() {
-            assert!(AttestationLockStore::decode_snapshot(&bytes[..len]).is_err());
+            assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
         }
         let mut invalid = bytes.clone();
         invalid.push(0);
-        assert!(AttestationLockStore::decode_snapshot(&invalid).is_err());
+        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
         let mut invalid = bytes.clone();
         invalid[16] = 2;
-        assert!(AttestationLockStore::decode_snapshot(&invalid).is_err());
+        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
         let mut invalid = bytes.clone();
         invalid[17] = 1;
-        assert!(AttestationLockStore::decode_snapshot(&invalid).is_err());
+        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
         let mut duplicate = bytes;
         duplicate[25..29].copy_from_slice(&2u32.to_le_bytes());
         let record = duplicate[29..69].to_vec();
         duplicate.splice(69..69, record);
-        assert!(AttestationLockStore::decode_snapshot(&duplicate).is_err());
+        assert!(SlashingLockStore::decode_snapshot(&duplicate).is_err());
     }
 
     #[test]
     fn selection_results_distinguish_same_and_conflicting_attestations() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
 
         assert_eq!(store.apply(&command(12, 1)), LockResult::Accepted);
         assert_eq!(store.apply(&command(12, 1)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(store.apply(&command(12, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command(12, 2)), LockResult::Conflicting);
         assert_eq!(store.len(), 1);
     }
 
     #[test]
     fn different_signed_bytes_conflict() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         let first = command(12, 1);
         let mut different = first;
         different.ssz[1] = 1;
 
         assert_eq!(store.apply(&first), LockResult::Accepted);
-        assert_eq!(store.apply(&different), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&different), LockResult::Conflicting);
     }
 
     #[test]
     fn different_slots_in_one_target_epoch_conflict() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
 
         assert_eq!(store.apply(&command_for(10, 7, 1)), LockResult::Accepted);
-        assert_eq!(store.apply(&command_for(11, 7, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(11, 7, 2)), LockResult::Conflicting);
         assert_eq!(store.apply(&command_for(11, 8, 2)), LockResult::Accepted);
         assert_eq!(store.apply(&command_for(32, 7, 3)), LockResult::Accepted);
     }
 
     #[test]
     fn committed_minimum_slot_hides_and_rejects_old_commands() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         assert_eq!(store.apply(&command(10, 1)), LockResult::Accepted);
         assert_eq!(store.apply(&command(40, 2)), LockResult::Accepted);
 
@@ -312,12 +312,12 @@ mod tests {
         assert_eq!(store.minimum_slot(), 40);
         assert_eq!(store.len(), 1);
         assert_eq!(store.apply(&command(10, 3)), LockResult::TooOld);
-        assert_eq!(store.apply(&command(40, 3)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command(40, 3)), LockResult::Conflicting);
     }
 
     #[test]
     fn epoch_ring_reuses_a_bucket_without_losing_newer_locks() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         assert_eq!(store.locks.len(), 2);
 
         assert_eq!(store.apply(&command_for(10, 7, 1)), LockResult::Accepted);
@@ -329,13 +329,13 @@ mod tests {
         assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::Accepted);
         assert_eq!(store.len(), 2);
         assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(store.apply(&command_for(70, 9, 5)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(70, 9, 5)), LockResult::Conflicting);
 
         // A late command for the displaced epoch cannot clear epoch 2.
         assert_eq!(store.apply(&command_for(10, 7, 6)), LockResult::TooOld);
         assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::AlreadyAcceptedSame);
 
         // The adjacent bucket was not scanned or cleared during rollover.
-        assert_eq!(store.apply(&command_for(40, 7, 6)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(40, 7, 6)), LockResult::Conflicting);
     }
 }
