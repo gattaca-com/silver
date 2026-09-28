@@ -666,6 +666,12 @@ pub(crate) fn json_get_payload_to_tcache(
     let bb = result
         .get("blobsBundle")
         .ok_or_else(|| crate::EngineError::Ssz("missing blobsBundle".into()))?;
+    let block_value = parse_u256_le(
+        result
+            .get("blockValue")
+            .and_then(|v| v.into_string())
+            .ok_or_else(|| crate::EngineError::Ssz("missing blockValue".into()))?,
+    )?;
     let should_override =
         result.get("shouldOverrideBuilder").and_then(|v| v.as_bool()).unwrap_or(false);
     let exec_requests = result.get("executionRequests").and_then(|v| v.as_array());
@@ -761,6 +767,7 @@ pub(crate) fn json_get_payload_to_tcache(
     let requests_len = (out.len() - requests_len_at - 4) as u32;
     out[requests_len_at..requests_len_at + 4].copy_from_slice(&requests_len.to_le_bytes());
 
+    out.extend_from_slice(&block_value);
     Ok(())
 }
 
@@ -1002,7 +1009,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":[{proofs}],"blobs":["0x{blob0}","0x{blob1}"]}},"shouldOverrideBuilder":false,"executionRequests":["0x01{withdrawal}","0x02{consolidation}"]}}}}"#
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":[{proofs}],"blobs":["0x{blob0}","0x{blob1}"]}},"blockValue":"0x1bc16d674ec80000","shouldOverrideBuilder":false,"executionRequests":["0x01{withdrawal}","0x02{consolidation}"]}}}}"#
         )
         .into_bytes()
     }
@@ -1552,6 +1559,9 @@ mod tests {
         }
         expected.extend_from_slice(&[0xaa; 76]);
         expected.extend_from_slice(&[0xbb; 116]);
+        let mut block_value = [0; 32];
+        block_value[..8].copy_from_slice(&2_000_000_000_000_000_000u64.to_le_bytes());
+        expected.extend_from_slice(&block_value);
         assert_eq!(out, expected);
     }
 

@@ -93,6 +93,24 @@ pub fn apply_block(
     sig_batch: &mut SigBatch,
     out: &mut BlockVotes,
 ) -> Result<()> {
+    let actual = post_state_root(cfg, fork, input, scratch, sig_batch, out)?;
+    let expected = input.header.state_root;
+    if actual != expected {
+        return Err(input.invalid(BlockError::PostStateRootMismatch { expected, got: actual }));
+    }
+    Ok(())
+}
+
+/// [`apply_block`] without checking `header.state_root`, which a proposer
+/// fills from the result.
+pub fn post_state_root(
+    cfg: &SpecConfig,
+    fork: &mut ForkWriter,
+    input: &BlockInput<'_>,
+    scratch: &mut StfScratch,
+    sig_batch: &mut SigBatch,
+    out: &mut BlockVotes,
+) -> Result<B256> {
     let block_slot = input.header.slot;
     check_slot_after_header(&fork.view.slot.reader(), block_slot).map_err(|e| input.invalid(e))?;
     let head_slot = fork.view.slot.state().slot;
@@ -109,12 +127,7 @@ pub fn apply_block(
         .map_err(|e| input.invalid(e))?;
     process_block_body(cfg, fork, input, scratch, sig_batch, out)?;
 
-    let actual = ssz_hash::hash_tree_root_state(&fork.read());
-    let expected = input.header.state_root;
-    if actual != expected {
-        return Err(input.invalid(BlockError::PostStateRootMismatch { expected, got: actual }));
-    }
-    Ok(())
+    Ok(ssz_hash::hash_tree_root_state(&fork.read()))
 }
 
 /// Full-block apply for the EF spec suites: verifies the proposer signature

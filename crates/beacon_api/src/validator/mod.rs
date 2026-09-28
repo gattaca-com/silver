@@ -4,6 +4,7 @@ pub(crate) mod attestation_data;
 pub(crate) mod attester_duties;
 pub(crate) mod contribution_submission;
 pub(crate) mod duties;
+pub(crate) mod produce_block;
 pub(crate) mod proposer_duties;
 pub(crate) mod registration;
 pub(crate) mod subnet_subscriptions;

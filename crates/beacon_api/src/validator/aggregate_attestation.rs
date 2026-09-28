@@ -3,7 +3,11 @@ use silver_common::{BeaconApiRequest, TCacheRead, TCacheReader};
 
 use crate::{
     ctx::ApiCtx,
-    http::{ids::parse_root, response::Response, router::Request},
+    http::{
+        ids::parse_root,
+        response::Response,
+        router::{Outcome, Request},
+    },
     validator::attestation_data::CommitteeQuery,
 };
 
@@ -18,7 +22,7 @@ pub(crate) fn aggregate_attestation(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
         return;
     };
 
-    resp.request_aggregate(AggregateRequest { committee, data_root });
+    resp.defer(Outcome::AwaitingAggregate(AggregateRequest { committee, data_root }));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

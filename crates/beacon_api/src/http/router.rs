@@ -10,7 +10,7 @@ use crate::{
     http::response::Response,
     submission::Submission,
     validator::{
-        aggregate_attestation::AggregateRequest,
+        aggregate_attestation::AggregateRequest, produce_block::ProduceBlockRequest,
         sync_contribution::SyncCommitteeContributionRequest,
     },
 };
@@ -46,6 +46,7 @@ pub(crate) enum Outcome {
     AwaitingBlock(BlockRequest),
     AwaitingAggregate(AggregateRequest),
     AwaitingContribution(SyncCommitteeContributionRequest),
+    AwaitingProducedBlock(ProduceBlockRequest),
     AwaitingVerdicts(Submission),
 }
 

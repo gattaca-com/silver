@@ -202,6 +202,7 @@ pub(super) mod tests {
                 BeaconApiResponse::AggregateAttestation { .. } |
                 BeaconApiResponse::SyncCommitteeContribution { .. } |
                 BeaconApiResponse::Block { .. } => {}
+                BeaconApiResponse::ProducedBlock { .. } => {}
             });
             responses
         }

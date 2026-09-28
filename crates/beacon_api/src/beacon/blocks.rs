@@ -10,7 +10,7 @@ use crate::{
         ids::{parse_root, parse_uint64},
         json::{ReadFlags, SignedHeader},
         response::Response,
-        router::{Request, SSZ_MEDIA_TYPE},
+        router::{Outcome, Request, SSZ_MEDIA_TYPE},
     },
 };
 
@@ -32,18 +32,18 @@ pub(crate) fn block(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !req.accepts_ssz() {
         return resp.error(406, "only application/octet-stream is served");
     }
-    resp.request_block(BlockRequest { lookup, kind: Kind::Ssz });
+    resp.defer(Outcome::AwaitingBlock(BlockRequest { lookup, kind: Kind::Ssz }));
 }
 
 pub(crate) fn block_root(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if let Some(lookup) = requested_block(req, ctx, resp) {
-        resp.request_block(BlockRequest { lookup, kind: Kind::Root });
+        resp.defer(Outcome::AwaitingBlock(BlockRequest { lookup, kind: Kind::Root }));
     }
 }
 
 pub(crate) fn block_header(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if let Some(lookup) = requested_block(req, ctx, resp) {
-        resp.request_block(BlockRequest { lookup, kind: Kind::Header });
+        resp.defer(Outcome::AwaitingBlock(BlockRequest { lookup, kind: Kind::Header }));
     }
 }
 
@@ -161,7 +161,6 @@ mod tests {
     use super::*;
     use crate::{
         ctx::anchor_ctx,
-        http::router::Outcome,
         testing::{dispatch, request},
     };
 

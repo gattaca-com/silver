@@ -133,7 +133,7 @@ pub(crate) fn parse_execution_address(text: &str) -> Option<ExecutionAddress> {
     parse_hex(text)
 }
 
-fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(crate) fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let mut bytes = [0u8; N];
     hex::decode_to_slice(text.strip_prefix("0x")?, &mut bytes).ok()?;
     Some(bytes)

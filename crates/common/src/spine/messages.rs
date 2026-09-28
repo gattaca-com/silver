@@ -12,10 +12,10 @@ use crate::{
     P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
     column_util::columns_of,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
-        SszView, StatusView,
+        BLOCKS_BY_RANGE_REQ_SIZE, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
+        DC_BY_RANGE_REQ_MAX, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE,
+        METADATA_SIZE, NUMBER_OF_COLUMNS, PING_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
+        SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, SszView, StatusView,
     },
 };
 
@@ -110,6 +110,12 @@ pub enum BeaconApiRequest {
     ProposerPreparations {
         preparations: TCacheRead,
     },
+    ProduceBlock {
+        request_id: u64,
+        slot: u64,
+        randao_reveal: [u8; 96],
+        graffiti: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +196,10 @@ pub enum BeaconApiResponse {
         request_id: u64,
         block: Option<ServedBlock>,
     },
+    ProducedBlock {
+        request_id: u64,
+        block: Result<ProducedBlock, ProduceBlockFailure>,
+    },
 }
 
 impl BeaconApiResponse {
@@ -198,9 +208,30 @@ impl BeaconApiResponse {
             Self::LocalGossipResponse { request_id, .. } |
             Self::AggregateAttestation { request_id, .. } |
             Self::SyncCommitteeContribution { request_id, .. } |
-            Self::Block { request_id, .. } => *request_id,
+            Self::Block { request_id, .. } |
+            Self::ProducedBlock { request_id, .. } => *request_id,
         }
     }
+}
+
+/// `contents` is the SSZ `BlockContents` in the `beacon_state` tcache.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ProducedBlock {
+    pub contents: TCacheRead,
+    /// Little-endian wei.
+    pub execution_payload_value: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ProduceBlockFailure {
+    SlotNotProposable,
+    NoFeeRecipient,
+    PayloadUnavailable,
+    Superseded,
+    Invalid,
+    Internal,
 }
 
 /// `ssz` points into the `outgoing_rpc` tcache.
@@ -1305,12 +1336,74 @@ pub struct EngineGetPayloadReq {
     pub payload_id: [u8; 8],
 }
 
-/// Response to `EngineGetPayloadReq`
+/// Response to `EngineGetPayloadReq`.
+/// When `ok` is true, `data` is a TCache slot holding a [`PayloadFrame`].
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadResp {
     pub id: u64,
     pub data: Option<TCacheRead>,
+}
+
+/// The `engine_getPayloadV5` result as the engine tile frames it:
+/// `[u32 len][ExecutionPayload]`, `[u8 n]` then per blob
+/// `{commitment, NUMBER_OF_COLUMNS cell proofs, [u32 len][blob]}`,
+/// `[u8 shouldOverrideBuilder]`, `[u32 len][ExecutionRequests]`, and the
+/// little-endian `blockValue`.
+pub struct PayloadFrame<'a> {
+    pub execution_payload: &'a [u8],
+    blobs: &'a [u8],
+    pub blob_count: usize,
+    pub execution_requests: &'a [u8],
+    pub block_value: [u8; 32],
+}
+
+pub struct FramedBlob<'a> {
+    pub commitment: &'a [u8; BYTES_PER_KZG_COMMITMENT],
+    pub cell_proofs: &'a [u8],
+    pub blob: &'a [u8],
+}
+
+impl<'a> PayloadFrame<'a> {
+    const CELL_PROOFS_LEN: usize = NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF;
+
+    pub fn parse(frame: &'a [u8]) -> Option<Self> {
+        let (execution_payload, rest) = Self::length_prefixed(frame)?;
+        let (&blob_count, mut rest) = rest.split_first()?;
+        let blobs_start = rest;
+        for _ in 0..blob_count {
+            let fixed = BYTES_PER_KZG_COMMITMENT + Self::CELL_PROOFS_LEN;
+            (_, rest) = Self::length_prefixed(rest.get(fixed..)?)?;
+        }
+        let blobs = &blobs_start[..blobs_start.len() - rest.len()];
+        let (_should_override, rest) = rest.split_first()?;
+        let (execution_requests, rest) = Self::length_prefixed(rest)?;
+        let block_value = rest.try_into().ok()?;
+        Some(Self {
+            execution_payload,
+            blobs,
+            blob_count: blob_count as usize,
+            execution_requests,
+            block_value,
+        })
+    }
+
+    pub fn blobs(&self) -> impl Iterator<Item = FramedBlob<'a>> + use<'a> {
+        let mut rest = self.blobs;
+        (0..self.blob_count).map(move |_| {
+            let (commitment, after) = rest.split_first_chunk::<BYTES_PER_KZG_COMMITMENT>().unwrap();
+            let (cell_proofs, after) = after.split_at(Self::CELL_PROOFS_LEN);
+            let (blob, after) = Self::length_prefixed(after).unwrap();
+            rest = after;
+            FramedBlob { commitment, cell_proofs, blob }
+        })
+    }
+
+    fn length_prefixed(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+        let (len, rest) = bytes.split_first_chunk::<4>()?;
+        let len = u32::from_le_bytes(*len) as usize;
+        (rest.len() >= len).then(|| rest.split_at(len))
+    }
 }
 
 /// `engine_getBlobsV3` request. `hashes[..hash_count]` are the versioned hashes

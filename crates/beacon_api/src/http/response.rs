@@ -6,14 +6,9 @@ use silver_common::{
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
 use crate::{
-    beacon::blocks::BlockRequest,
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
-    validator::{
-        aggregate_attestation::AggregateRequest,
-        sync_contribution::SyncCommitteeContributionRequest,
-    },
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -55,8 +50,7 @@ impl<'a> Response<'a> {
 
     fn submission(&mut self) -> &mut Submission {
         if !matches!(self.outcome, Outcome::AwaitingVerdicts(_)) {
-            debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-            self.outcome = Outcome::AwaitingVerdicts(Submission::default());
+            self.defer(Outcome::AwaitingVerdicts(Submission::default()));
         }
         let Outcome::AwaitingVerdicts(submission) = &mut self.outcome else { unreachable!() };
         submission
@@ -75,19 +69,9 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::Stream(channels);
     }
 
-    pub(crate) fn request_block(&mut self, request: BlockRequest) {
+    pub(crate) fn defer(&mut self, outcome: Outcome) {
         debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingBlock(request);
-    }
-
-    pub(crate) fn request_aggregate(&mut self, request: AggregateRequest) {
-        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingAggregate(request);
-    }
-
-    pub(crate) fn request_contribution(&mut self, request: SyncCommitteeContributionRequest) {
-        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingContribution(request);
+        self.outcome = outcome;
     }
 
     pub(crate) fn submit(

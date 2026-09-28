@@ -10,9 +10,10 @@ use silver_beacon_state_data::{
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
-    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
+    BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
+    EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
+    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
+    PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
     TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -28,6 +29,7 @@ use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContribu
 
 use super::{
     block::{ParsedBlock, StagedBlock},
+    block_production::BlockRequest,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
     *,
 };
@@ -4720,7 +4722,7 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     engine_requests(&mut sink);
     register_proposer(&mut tile, 0, [7; 20]);
 
-    tile.prepare_payload(11, &mut adapter.producers);
+    assert!(tile.prepare_payload(11, &mut adapter.producers).is_ok());
 
     let [EngineReq::PreparePayload(request)] = engine_requests(&mut sink)[..] else {
         panic!("expected one payload preparation");
@@ -4775,7 +4777,151 @@ fn unregistered_proposer_gets_no_payload_prepared() {
     engine_requests(&mut sink);
     register_proposer(&mut tile, 1, [7; 20]);
 
-    tile.prepare_payload(11, &mut adapter.producers);
+    assert_eq!(
+        tile.prepare_payload(11, &mut adapter.producers),
+        Err(ProduceBlockFailure::NoFeeRecipient)
+    );
 
     assert!(engine_requests(&mut sink).is_empty());
+}
+
+fn block_request(slot: Slot) -> BlockRequest {
+    BlockRequest { request_id: 5, slot, randao_reveal: [0; 96], graffiti: [0; 32] }
+}
+
+/// Each answer's request id and failure, `None` for a produced block.
+fn produced_blocks(
+    sink: &mut SpineAdapter<SilverSpine>,
+) -> Vec<(u64, Option<ProduceBlockFailure>)> {
+    let mut answers = Vec::new();
+    sink.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::ProducedBlock { request_id, block } = response {
+            answers.push((request_id, block.err()));
+        }
+    });
+    answers
+}
+
+fn prepared(tile: &mut BeaconStateTile, id: u64, payload_id: [u8; 8], producers: &mut Producers) {
+    let response = EnginePreparePayloadResp { id, payload_id: Some(payload_id) };
+    tile.handle_engine_response(EngineResp::PreparePayload(response), producers);
+}
+
+fn no_payload(tile: &mut BeaconStateTile, id: u64, producers: &mut Producers) {
+    let response = EngineGetPayloadResp { id, data: None };
+    tile.handle_engine_response(EngineResp::GetPayload(response), producers);
+}
+
+fn production_rig()
+-> (BeaconStateTile, TestSpine, SpineAdapter<SilverSpine>, SpineAdapter<SilverSpine>) {
+    let (mut tile, _gp, _rp, mut spine, adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    produced_blocks(&mut sink);
+    (tile, spine, adapter, sink)
+}
+
+#[test]
+fn block_for_an_unregistered_proposer_is_refused() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+
+    tile.produce_block(block_request(11), &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::NoFeeRecipient))]);
+    assert!(engine_requests(&mut sink).is_empty());
+}
+
+#[test]
+fn block_for_a_slot_the_head_already_holds_is_refused() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(block_request(tile.last_applied_block_slot()), &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::SlotNotProposable))]);
+}
+
+/// No preparation tick ran, so the payload is prepared on demand, then
+/// fetched under the id the EL returned.
+#[test]
+fn block_without_a_prepared_payload_prepares_one_then_fetches_it() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(block_request(11), &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [9; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload fetch");
+    };
+    assert_eq!(fetch.payload_id, [9; 8]);
+    assert!(produced_blocks(&mut sink).is_empty());
+
+    no_payload(&mut tile, fetch.id, &mut adapter.producers);
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::PayloadUnavailable))]);
+}
+
+#[test]
+fn block_with_a_prepared_payload_fetches_it_directly() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+    assert!(tile.prepare_payload(11, &mut adapter.producers).is_ok());
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [3; 8], &mut adapter.producers);
+
+    tile.produce_block(block_request(11), &mut adapter.producers);
+
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected only a payload fetch");
+    };
+    assert_eq!(fetch.payload_id, [3; 8]);
+}
+
+/// A retry for the block being built waits on the same build, and one
+/// answer settles both.
+#[test]
+fn repeated_request_joins_the_build_in_flight() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(block_request(11), &mut adapter.producers);
+    tile.produce_block(BlockRequest { request_id: 6, ..block_request(11) }, &mut adapter.producers);
+
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [9; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload fetch");
+    };
+    no_payload(&mut tile, fetch.id, &mut adapter.producers);
+    let failure = Some(ProduceBlockFailure::PayloadUnavailable);
+    assert_eq!(produced_blocks(&mut sink), [(5, failure), (6, failure)]);
+}
+
+#[test]
+fn request_for_another_block_supersedes_the_build() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(block_request(11), &mut adapter.producers);
+    let [EngineReq::PreparePayload(first)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    let other_graffiti = BlockRequest { request_id: 6, graffiti: [1; 32], ..block_request(11) };
+    tile.produce_block(other_graffiti, &mut adapter.producers);
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::Superseded))]);
+
+    prepared(&mut tile, first.id, [9; 8], &mut adapter.producers);
+    assert!(
+        !engine_requests(&mut sink)
+            .iter()
+            .any(|request| matches!(request, EngineReq::GetPayload(_))),
+        "the superseded preparation fetches nothing"
+    );
 }
