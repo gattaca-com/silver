@@ -1,14 +1,12 @@
 use blst::min_pk::{AggregateSignature, Signature};
 use rustc_hash::FxHashMap;
-use silver_beacon_state_data::{B256, SYNC_COMMITTEE_SIZE, Slot};
+use silver_beacon_state_data::{B256, SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot};
 use silver_common::{
     SYNC_COMMITTEE_SUBNETS, metrics::timed, ssz_view::SYNC_COMMITTEE_CONTRIBUTION_SIZE,
 };
 
 use super::attestation_pool::InsertOutcome;
 
-const SYNC_SUBCOMMITTEE_SIZE: usize = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNETS;
-pub(super) const SYNC_SUBCOMMITTEE_MASK_WORDS: usize = SYNC_SUBCOMMITTEE_SIZE.div_ceil(64);
 const AGGREGATION_BITS_BYTES: usize = SYNC_SUBCOMMITTEE_SIZE.div_ceil(8);
 
 /// Retention is two slots (current + previous), with four subcommittees

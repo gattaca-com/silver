@@ -198,7 +198,7 @@ mod tests {
         for accept in [None, Some("application/json")] {
             let [(body, _), (root, _), (header, _)] = routes(&format!("0x{}", "ab".repeat(32)));
             let (outcome, out) = get(&body, accept);
-            assert_eq!(outcome, Outcome::Response);
+            assert_eq!(outcome, Outcome::Response(None));
             assert!(out.starts_with(b"HTTP/1.1 406 Not Acceptable\r\n"), "{accept:?}");
             for path in [root, header] {
                 let (outcome, _) = get(&path, accept);
@@ -230,7 +230,7 @@ mod tests {
         for block_id in ["justified", "finalized", "genesis"] {
             for (path, _) in routes(block_id) {
                 let (outcome, out) = get(&path, Some("application/octet-stream"));
-                assert_eq!(outcome, Outcome::Response, "{path}");
+                assert_eq!(outcome, Outcome::Response(None), "{path}");
                 assert!(out.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{path}");
             }
         }

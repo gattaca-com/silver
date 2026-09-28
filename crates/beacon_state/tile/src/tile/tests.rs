@@ -2763,8 +2763,8 @@ fn sync_message_uses_gossip_clock_disparity() {
 fn sync_message_uses_next_committee_at_period_handoff() {
     let period_slots = EPOCHS_PER_SYNC_COMMITTEE_PERIOD * SLOTS_PER_EPOCH;
     let handoff_slot = period_slots - 1;
-    assert!(!super::gossip::uses_next_sync_committee(handoff_slot - 1));
-    assert!(super::gossip::uses_next_sync_committee(handoff_slot));
+    assert!(!silver_beacon_state_data::uses_next_sync_committee(handoff_slot - 1));
+    assert!(silver_beacon_state_data::uses_next_sync_committee(handoff_slot));
 
     // The test state's cached current committee contains validator 0, while
     // its default next-committee pubkeys do not. The same current member is
@@ -2827,6 +2827,27 @@ fn sync_message_forged_signature_rejected_by_fallback() {
     assert!(!tile.seen_sync_msgs[2].contains(wall, 0), "forgery rejected");
     assert!(tile.sync_contribution_pool.contribution_ssz(wall, 0, bbr).is_some());
     assert_eq!(tile.sync_contribution_pool.contribution_ssz(wall, 2, bbr), None);
+}
+
+#[test]
+fn sync_message_on_several_subnets_applies_on_each() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.head_block_root();
+    let wall = tile.ticker.current_slot();
+
+    let msg = test_signing::sign_sync_committee_message(0, 0, wall, bbr, &imm);
+    for subnet in [0, 2] {
+        let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(subnet));
+        tile.defer_vote(m, &mut adapter.producers);
+    }
+
+    tile.flush_votes(&mut adapter.producers);
+    for subnet in [0, 2] {
+        assert!(tile.seen_sync_msgs[subnet].contains(wall, 0), "{subnet}");
+        assert!(tile.sync_contribution_pool.contribution_ssz(wall, subnet as u64, bbr).is_some());
+    }
 }
 
 #[test]

@@ -11,8 +11,9 @@ use std::{
 use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
-    GossipTopic, IpBytes, P2pSend, PeerControl, PeerId, PeerScores, PeerTopicScores,
-    RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
+    ATTESTATION_SUBNETS, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId, PeerScores,
+    PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
+    ssz_view::MetadataView,
 };
 
 use super::{
@@ -392,8 +393,37 @@ impl PeerManager {
         }
     }
 
-    pub fn activate_topics(&mut self, topics: &[GossipTopic], emit: &mut impl FnMut(PeerControl)) {
-        for &topic in topics {
+    pub fn activate_topics(
+        &mut self,
+        topics: impl IntoIterator<Item = GossipTopic>,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        self.subscribe_topics(topics, emit);
+        self.on_subscriptions_changed(emit);
+    }
+
+    /// `attesting` are the attestation subnets local validators publish on
+    /// soon, which need subscribed peers but no mesh.
+    pub fn update_duty_subnets(
+        &mut self,
+        attesting: u64,
+        joined: impl IntoIterator<Item = GossipTopic>,
+        left: impl IntoIterator<Item = GossipTopic>,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        self.duty_attnets = attesting;
+        self.subscribe_topics(joined, emit);
+        self.unsubscribe_topics(left, now, emit);
+        self.on_subscriptions_changed(emit);
+    }
+
+    fn subscribe_topics(
+        &mut self,
+        topics: impl IntoIterator<Item = GossipTopic>,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        for topic in topics {
             if self.our_topics.contains(&topic) {
                 continue;
             }
@@ -414,9 +444,76 @@ impl PeerManager {
                 }
             }
         }
+    }
+
+    fn unsubscribe_topics(
+        &mut self,
+        topics: impl IntoIterator<Item = GossipTopic>,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        for topic in topics {
+            let Some(index) = self.our_topics.iter().position(|&ours| ours == topic) else {
+                continue;
+            };
+            self.our_topics.remove(index);
+            while let Some((conn, digest)) = self.mesh.get(&topic).and_then(|meshes| {
+                meshes.iter().find_map(|mesh| Some((*mesh.peers.last()?, mesh.digest)))
+            }) {
+                let Some(peer_id) = self.peers.get(&conn).map(|peer| peer.peer_id) else {
+                    self.leave_mesh_digest(conn, topic, digest);
+                    continue;
+                };
+                self.do_prune(
+                    conn,
+                    peer_id,
+                    topic,
+                    digest,
+                    now,
+                    self.params.unsubscribe_backoff,
+                    "topic left",
+                    emit,
+                );
+            }
+            self.mesh.remove(&topic);
+            for digest in self.active_gossip_digests.into_iter().flatten() {
+                for (&conn, peer) in &self.peers {
+                    emit(PeerControl::P2pGossipUnsubscribe {
+                        p2p: peer.peer_id,
+                        p2p_connection: conn,
+                        topic,
+                        digest,
+                    });
+                }
+            }
+        }
+    }
+
+    fn on_subscriptions_changed(&mut self, emit: &mut impl FnMut(PeerControl)) {
         let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
-        self.required_attnets = attnets;
+        let attnets = u64::from_le_bytes(attnets) | self.duty_attnets;
+        self.required_attnets = attnets.to_le_bytes();
         self.required_syncnets = syncnets;
+        for (deficit, required) in self.deficit_attnets.iter_mut().zip(self.required_attnets) {
+            *deficit &= required;
+        }
+        self.deficit_syncnets &= self.required_syncnets;
+        self.advertise_syncnets(emit);
+    }
+
+    fn advertise_syncnets(&mut self, emit: &mut impl FnMut(PeerControl)) {
+        let syncnets = self.long_lived_syncnets | self.required_syncnets;
+        if syncnets == MetadataView::syncnets(&self.metadata) {
+            return;
+        }
+        let seq = MetadataView::seq_number(&self.metadata) + 1;
+        self.metadata[..8].copy_from_slice(&seq.to_le_bytes());
+        self.metadata[16] = syncnets;
+        emit(PeerControl::UpdateEnrSyncnets { syncnets });
+    }
+
+    pub fn topic_rejoin_wait(&self) -> Duration {
+        self.params.unsubscribe_backoff + self.params.heartbeat_interval
     }
 
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
@@ -576,7 +673,16 @@ impl PeerManager {
                 crate::PeerCounters::MeshGraftBackoffViolation.inc();
                 self.add_behaviour_penalty(conn, 1.0, "graft during prune backoff");
             }
-            self.do_prune(conn, peer_id, topic, digest, now, "graft refused", emit);
+            self.do_prune(
+                conn,
+                peer_id,
+                topic,
+                digest,
+                now,
+                self.params.prune_backoff,
+                "graft refused",
+                emit,
+            );
             tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
     }
@@ -736,6 +842,7 @@ impl PeerManager {
         topic: GossipTopic,
         digest: [u8; 4],
         now: Instant,
+        backoff: Duration,
         reason: &'static str,
         emit: &mut impl FnMut(PeerControl),
     ) {
@@ -745,7 +852,7 @@ impl PeerManager {
             .and_then(|p| p.topic_stats.get(&topic))
             .and_then(|t| t.meshed_since);
         let was_in_mesh = self.leave_mesh_digest(conn, topic, digest);
-        self.set_backoff(conn, topic, now, self.params.prune_backoff);
+        self.set_backoff(conn, topic, now, backoff);
         // Advertise what we will actually enforce, not the nominal param:
         // `set_backoff` keeps any longer deadline already recorded, and a
         // shorter advertisement would invite a re-GRAFT we then penalise.
@@ -877,7 +984,10 @@ impl PeerManager {
                 _ => {}
             }
         }
-        self.deficit_attnets = deficit_attnets;
+        let mesh_deficit_attnets = u64::from_le_bytes(deficit_attnets);
+        let duty_deficit_attnets = self.duty_attnets_short_of_subscribers() & !mesh_deficit_attnets;
+        deficits += u64::from(duty_deficit_attnets.count_ones());
+        self.deficit_attnets = (mesh_deficit_attnets | duty_deficit_attnets).to_le_bytes();
         self.deficit_syncnets = deficit_syncnets;
         self.deficit_columns = deficit_columns;
         crate::PeerCounters::MeshSubnetDeficits.set(deficits);
@@ -885,6 +995,20 @@ impl PeerManager {
         if opportunistic_graft_due {
             self.last_opportunistic_graft = now;
         }
+    }
+
+    fn duty_attnets_short_of_subscribers(&self) -> u64 {
+        let digest = self.current_digest();
+        let d = self.params.d as usize;
+        (0..ATTESTATION_SUBNETS as u64)
+            .filter(|&subnet| self.duty_attnets >> subnet & 1 == 1)
+            .filter(|&subnet| {
+                let key = (digest, GossipTopic::BeaconAttestation(subnet));
+                let subscribers =
+                    self.peers.values().filter(|peer| peer.subscriptions.contains_key(&key));
+                subscribers.take(d).count() < d
+            })
+            .fold(0, |mask, subnet| mask | 1 << subnet)
     }
 
     fn prune_negative_mesh_peers(
@@ -908,7 +1032,16 @@ impl PeerManager {
             })
             .collect();
         for (conn, peer_id) in peers {
-            self.do_prune(conn, peer_id, topic, digest, now, "negative score", emit);
+            self.do_prune(
+                conn,
+                peer_id,
+                topic,
+                digest,
+                now,
+                self.params.prune_backoff,
+                "negative score",
+                emit,
+            );
         }
     }
 
@@ -1018,7 +1151,16 @@ impl PeerManager {
             .unwrap_or_default();
         ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         for (conn, _, peer_id) in ranked.into_iter().take(excess) {
-            self.do_prune(conn, peer_id, topic, digest, now, "mesh capped", emit);
+            self.do_prune(
+                conn,
+                peer_id,
+                topic,
+                digest,
+                now,
+                self.params.prune_backoff,
+                "mesh capped",
+                emit,
+            );
         }
     }
 
@@ -1119,8 +1261,8 @@ fn median(values: &mut [f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::PeerEvent;
-    use silver_config::ScoreParams;
+    use silver_common::{PeerEvent, ssz_view::METADATA_SIZE};
+    use silver_config::{ScoreParams, SyncingConfig};
 
     use super::*;
     use crate::manager::fixture::*;
@@ -1150,6 +1292,85 @@ mod tests {
         for e in &subs {
             assert!(matches!(e, PeerControl::P2pGossipSubscribe { .. }));
         }
+    }
+
+    #[test]
+    fn duty_subnet_without_enough_subscribers_is_a_deficit() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.d = 1;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let covered = GossipTopic::BeaconAttestation(5);
+        mgr.on_subscribe(1, covered, [0; 4], now, &mut |c| cap.0.push(c));
+
+        mgr.update_duty_subnets(1 << 5 | 1 << 6, [], [], now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.required_attnets, (1u64 << 5 | 1 << 6).to_le_bytes());
+        mgr.manage_mesh(now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.deficit_attnets, (1u64 << 6).to_le_bytes());
+        assert!(mgr.mesh.get(&covered).is_none());
+    }
+
+    #[test]
+    fn deactivate_prunes_mesh_then_unsubscribes() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconAttestation(5);
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.on_subscribe(1, topic, [0; 4], now, &mut |c| cap.0.push(c));
+        assert_eq!(mgr.test_mesh(topic), &[1]);
+
+        cap.0.clear();
+        mgr.update_duty_subnets(0, [], [topic], now, &mut |c| cap.0.push(c));
+        assert!(matches!(cap.0.as_slice(), [
+            PeerControl::P2pGossipPrune { p2p_connection: 1, backoff_seconds: Some(10), .. },
+            PeerControl::P2pGossipUnsubscribe { p2p_connection: 1, .. },
+        ]));
+        assert!(mgr.our_topics.is_empty());
+        assert!(!mgr.mesh.contains_key(&topic));
+        assert_eq!(mgr.required_attnets, [0; 8]);
+    }
+
+    #[test]
+    fn syncnets_advertise_long_lived_and_subscribed_subnets() {
+        let now = Instant::now();
+        let mut metadata = [0u8; METADATA_SIZE];
+        metadata[..8].copy_from_slice(&7u64.to_le_bytes());
+        metadata[16] = 0b0001;
+        let mut mgr = PeerManager::new(
+            peer_id(99),
+            vec![],
+            vec![],
+            ScoreParams::default(),
+            SyncingConfig::default(),
+            [0u8; 4],
+            metadata,
+            0,
+        );
+        let mut cap = Captured::default();
+        let syncnet_updates = |cap: &Captured| -> Vec<u8> {
+            cap.0
+                .iter()
+                .filter_map(|event| match event {
+                    PeerControl::UpdateEnrSyncnets { syncnets } => Some(*syncnets),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        mgr.activate_topics([GossipTopic::SyncCommittee(0)], &mut |c| cap.0.push(c));
+        assert!(syncnet_updates(&cap).is_empty(), "long-lived subnet is already advertised");
+
+        mgr.activate_topics([GossipTopic::SyncCommittee(2)], &mut |c| cap.0.push(c));
+        assert_eq!(syncnet_updates(&cap), [0b0101]);
+        assert_eq!(MetadataView::syncnets(mgr.metadata()), 0b0101);
+        assert_eq!(MetadataView::seq_number(mgr.metadata()), 8);
+
+        cap.0.clear();
+        let left = [GossipTopic::SyncCommittee(0), GossipTopic::SyncCommittee(2)];
+        mgr.update_duty_subnets(0, [], left, now, &mut |c| cap.0.push(c));
+        assert_eq!(syncnet_updates(&cap), [0b0001]);
+        assert_eq!(MetadataView::seq_number(mgr.metadata()), 9);
     }
 
     /// Capability updates and unsubscribe affect only their own digest.
@@ -1471,9 +1692,16 @@ mod tests {
         connect(&mut mgr, &mut cap, 2, 2, now);
         let backoff = mgr.params.prune_backoff;
         for conn in [1, 2] {
-            mgr.do_prune(conn, peer_id(conn as u8), topic, [0; 4], now, "test", &mut |event| {
-                cap.0.push(event)
-            });
+            mgr.do_prune(
+                conn,
+                peer_id(conn as u8),
+                topic,
+                [0; 4],
+                now,
+                backoff,
+                "test",
+                &mut |event| cap.0.push(event),
+            );
         }
 
         mgr.handle_event(

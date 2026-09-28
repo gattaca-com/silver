@@ -91,6 +91,8 @@ pub struct ScoreParams {
 
     /// Backoff applied after a PRUNE before re-grafting the same peer.
     pub prune_backoff: Duration,
+    /// Backoff advertised in the PRUNE sent when we leave a topic.
+    pub unsubscribe_backoff: Duration,
 
     // ── Peer pool sizing ─────────────────────────────────────────────────
     /// Desired live-peer count. Below this, discovery hits trigger a dial
@@ -192,6 +194,7 @@ impl Default for ScoreParams {
             d_lazy: 6,
 
             prune_backoff: Duration::from_secs(60),
+            unsubscribe_backoff: Duration::from_secs(10),
 
             target_peers: 300,
             max_priority_peers: 500,

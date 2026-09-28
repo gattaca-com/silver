@@ -1,6 +1,8 @@
 use std::{io::Write, mem, str};
 
-use silver_common::{GossipTopic, LocalGossipFailure, TCacheProducer, TProducer};
+use silver_common::{
+    BeaconApiRequest, GossipTopic, LocalGossipFailure, TCacheProducer, TCacheRead, TProducer,
+};
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
 use crate::{
@@ -27,22 +29,24 @@ pub(crate) struct Response<'a> {
 impl<'a> Response<'a> {
     /// `submissions` carries what a handler publishes for another tile to read.
     pub(crate) fn new(out: &'a mut Vec<u8>, submissions: &'a mut TProducer) -> Self {
-        Self { out, submissions, outcome: Outcome::Response }
+        Self { out, submissions, outcome: Outcome::Response(None) }
     }
 
     /// Encodes one body entry straight into the submissions tcache and awaits
-    /// its verdict on `topic`. An entry the cache has no room for fails.
-    pub(crate) fn await_verdict(
+    /// its verdict on each of `topics`. An entry the cache has no room for
+    /// fails.
+    pub(crate) fn await_verdicts(
         &mut self,
         body_index: usize,
-        topic: GossipTopic,
+        topics: impl IntoIterator<Item = GossipTopic>,
         len: usize,
         encode: impl FnOnce(&mut [u8]),
     ) {
-        match self.submissions.write_with(len, encode) {
-            Some(ssz) => self.submission().accepted.push(AcceptedEntry { body_index, topic, ssz }),
-            None => self.fail_entry(body_index, failure_message(LocalGossipFailure::Internal)),
-        }
+        let Some(ssz) = self.submissions.write_with(len, encode) else {
+            return self.fail_entry(body_index, failure_message(LocalGossipFailure::Internal));
+        };
+        let accepted = &mut self.submission().accepted;
+        accepted.extend(topics.into_iter().map(|topic| AcceptedEntry { body_index, topic, ssz }));
     }
 
     pub(crate) fn fail_entry(&mut self, body_index: usize, message: &'static str) {
@@ -86,6 +90,23 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::AwaitingContribution(request);
     }
 
+    pub(crate) fn submit(
+        &mut self,
+        len: usize,
+        encode: impl FnOnce(&mut [u8]),
+        request: impl FnOnce(TCacheRead) -> BeaconApiRequest,
+    ) {
+        match self.submissions.write_with(len, encode) {
+            Some(read) => self.notify(request(read)),
+            None => self.error(500, "api submissions cache full"),
+        }
+    }
+
+    pub(crate) fn notify(&mut self, request: BeaconApiRequest) {
+        self.ok();
+        self.outcome = Outcome::Response(Some(request));
+    }
+
     pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {
         self.json_framed(400, &[], |json| json.indexed_failures(failures));
     }
@@ -94,7 +115,7 @@ impl<'a> Response<'a> {
         match mem::take(&mut self.outcome) {
             Outcome::AwaitingVerdicts(submission) if submission.accepted.is_empty() => {
                 self.indexed_failures(&submission.failures);
-                Outcome::Response
+                Outcome::Response(None)
             }
             outcome => outcome,
         }
@@ -194,7 +215,7 @@ impl<'a> Response<'a> {
     /// Messages can include client input, so they need JSON escaping.
     /// An error answers now, superseding any verdicts the handler awaited.
     pub(crate) fn error(&mut self, code: u16, message: &str) {
-        self.outcome = Outcome::Response;
+        self.outcome = Outcome::Response(None);
         let mut body = format!("{{\"code\":{code},\"message\":").into_bytes();
         Json::new(&mut body).string(message);
         body.push(b'}');

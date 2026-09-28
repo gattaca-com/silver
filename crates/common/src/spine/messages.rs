@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
@@ -73,8 +73,7 @@ pub struct ClusterMsgIn {
     pub data: TCacheRead,
 }
 
-/// Work submitted by the Beacon API to tile-owned state machines.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, u8)]
 pub enum BeaconApiRequest {
     /// A message a validator client asked this node to publish. `ssz` points
@@ -101,6 +100,41 @@ pub enum BeaconApiRequest {
         lookup: BlockLookup,
         with_bytes: bool,
     },
+    BeaconCommitteeSubscriptions {
+        subscriptions: TCacheRead,
+    },
+    /// The epoch each sync subnet is wanted until, exclusive; 0 where none is.
+    SyncCommitteeSubscriptions {
+        until_epochs: [u64; SYNC_COMMITTEE_SUBNETS],
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotSubnets {
+    pub slot: u64,
+    pub attesting: u64,
+    pub aggregating: u64,
+}
+
+impl SlotSubnets {
+    pub const SIZE: usize = 3 * size_of::<u64>();
+
+    pub fn encode(&self, out: &mut [u8]) {
+        out[..8].copy_from_slice(&self.slot.to_le_bytes());
+        out[8..16].copy_from_slice(&self.attesting.to_le_bytes());
+        out[16..Self::SIZE].copy_from_slice(&self.aggregating.to_le_bytes());
+    }
+
+    pub fn decode_all(bytes: &[u8]) -> impl Iterator<Item = Self> {
+        let word = |record: &[u8], at: usize| {
+            u64::from_le_bytes(record[at..at + 8].try_into().expect("8 bytes"))
+        };
+        bytes.chunks_exact(Self::SIZE).map(move |record| Self {
+            slot: word(record, 0),
+            attesting: word(record, 8),
+            aggregating: word(record, 16),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,7 +144,6 @@ pub enum BlockLookup {
     Slot(u64),
 }
 
-/// Completion of work submitted through [`BeaconApiRequest`].
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
@@ -867,6 +900,9 @@ pub enum PeerControl {
     UpdateEnrForkId {
         epoch: u64,
         enr_fork_id: [u8; 16],
+    },
+    UpdateEnrSyncnets {
+        syncnets: u8,
     },
     P2pGossipSubscribe {
         p2p: PeerId,

@@ -32,7 +32,7 @@ use crate::{
     },
     node::peers::Peer,
     routes::ROUTES,
-    submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
+    submission::{AcceptedEntry, SubmissionFailure, failure_message},
     validator::{
         aggregate_attestation::AggregateRequest,
         sync_contribution::SyncCommitteeContributionRequest,
@@ -116,7 +116,9 @@ impl PendingSubmission {
     fn record(&mut self, request_id: u64, result: LocalGossipResult) -> bool {
         let body_index = self.body_index(request_id).expect("awaited");
         self.unanswered -= 1;
-        if let Err(failure) = result {
+        if let Err(failure) = result &&
+            !self.failures.iter().any(|failed| failed.body_index == body_index)
+        {
             self.failures.push(SubmissionFailure { body_index, message: failure_message(failure) });
         }
         self.unanswered == 0
@@ -152,17 +154,23 @@ impl Pending {
                 emit(request.state_request(first_id));
                 (Self::Contribution { request_id: first_id, request }, 1)
             }
-            Outcome::AwaitingVerdicts(Submission { accepted, failures }) => {
-                for &AcceptedEntry { body_index, topic, ssz } in &accepted {
+            Outcome::AwaitingVerdicts(submission) => {
+                for &AcceptedEntry { body_index, topic, ssz } in &submission.accepted {
                     let request_id = first_id + body_index as u64;
                     emit(BeaconApiRequest::LocalGossip { request_id, topic, ssz });
                 }
-                let body_len = accepted.len() + failures.len();
-                let pending =
-                    PendingSubmission { first_id, body_len, unanswered: accepted.len(), failures };
+                let body_len = submission.body_len();
+                let pending = PendingSubmission {
+                    first_id,
+                    body_len,
+                    unanswered: submission.accepted.len(),
+                    failures: submission.failures,
+                };
                 (Self::Submission(pending), body_len as u64)
             }
-            Outcome::Response | Outcome::Stream(_) => unreachable!("answered without deferring"),
+            Outcome::Response(_) | Outcome::Stream(_) => {
+                unreachable!("answered without deferring")
+            }
         }
     }
 
@@ -921,14 +929,17 @@ impl BeaconApi {
     ) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
-        let mut dispatched = Outcome::Response;
+        let mut dispatched = Outcome::Response(None);
         let Self { registry, router, ctx, .. } = self;
         let outcome = conn.handle_event(registry, event, now, &mut |req, out| {
             dispatched = router.dispatch(req, ctx, submissions, out);
         });
+        if let Outcome::Response(Some(request)) = dispatched {
+            emit(request);
+        }
         match outcome {
             Ok(false) => match dispatched {
-                Outcome::Response => {}
+                Outcome::Response(_) => {}
                 Outcome::Stream(channels) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
                     self.connections.insert(token, conn.subscribed(channels, now));
@@ -1036,7 +1047,11 @@ mod tests {
     use silver_httpcore::Readiness;
 
     use super::*;
-    use crate::{beacon::operations::tests::entry, submission::tests as submission};
+    use crate::{
+        beacon::operations::tests::entry,
+        submission::{Submission, tests as submission},
+        testing::submissions,
+    };
 
     /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
@@ -2343,6 +2358,8 @@ mod tests {
             BeaconApiRequest::LocalGossip { request_id, .. } |
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
             BeaconApiRequest::SyncCommitteeContribution { request_id, .. } => *request_id,
+            BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
+            BeaconApiRequest::SyncCommitteeSubscriptions { .. } => unreachable!("never answered"),
         }
     }
 
@@ -2398,6 +2415,27 @@ mod tests {
              [{\"index\":1,\"message\":\"this validator already attested to another block \
              for the slot\"}]}"
         );
+    }
+
+    #[test]
+    fn entry_published_on_several_topics_takes_one_request_id() {
+        let ssz = submissions().write_with(1, |_| {}).unwrap();
+        let accepted = [(0, 0), (0, 1), (1, 2)]
+            .map(|(body_index, subnet)| AcceptedEntry {
+                body_index,
+                topic: GossipTopic::SyncCommittee(subnet),
+                ssz,
+            })
+            .into();
+        let failures = vec![SubmissionFailure { body_index: 2, message: "refused" }];
+        let mut ids = Vec::new();
+        let (_, ids_used) = Pending::defer(
+            Outcome::AwaitingVerdicts(Submission { accepted, failures }),
+            10,
+            &mut |request| ids.push(request_id(&request)),
+        );
+        assert_eq!(ids, [10, 10, 11]);
+        assert_eq!(ids_used, 3);
     }
 
     #[test]

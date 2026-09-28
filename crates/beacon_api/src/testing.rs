@@ -56,7 +56,7 @@ pub(crate) fn dispatch_into(
 /// What a route that answers in one response wrote.
 pub(crate) fn answer(ctx: &ApiCtx, req: &ParsedRequest<'_>) -> Vec<u8> {
     let (outcome, out) = dispatch(ctx, req);
-    assert_eq!(outcome, Outcome::Response);
+    assert_eq!(outcome, Outcome::Response(None));
     out
 }
 

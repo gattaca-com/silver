@@ -43,6 +43,23 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncCommitteeSubnets {
+    #[default]
+    All,
+    OnDemand,
+}
+
+impl SyncCommitteeSubnets {
+    pub fn long_lived(self) -> u8 {
+        match self {
+            Self::All => (1 << SYNC_COMMITTEE_SUBNETS) - 1,
+            Self::OnDemand => 0,
+        }
+    }
+}
+
 /// The mainnet Fulu digest, for the default run that names no config file.
 const fn default_mainnet_fork_digest() -> [u8; 4] {
     [0x8c, 0x9f, 0x62, 0xfe]
@@ -139,6 +156,8 @@ pub struct Config {
     attestation_subnet_count: u8,
     #[serde(default)]
     partial_columns: PartialColumnsMode,
+    #[serde(default)]
+    sync_committee_subnets: SyncCommitteeSubnets,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
     supported_protocols: Vec<String>,
@@ -214,6 +233,7 @@ impl Config {
             data_column_custody_group_count: SAMPLES_PER_SLOT,
             attestation_subnet_count: SUBNETS_PER_NODE as u8,
             partial_columns: PartialColumnsMode::Off,
+            sync_committee_subnets: SyncCommitteeSubnets::All,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
@@ -400,7 +420,6 @@ impl Config {
         builder.eth2(eth2);
         // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
         builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
-        builder.syncnets((1u8 << SYNC_COMMITTEE_SUBNETS) - 1);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);
@@ -540,6 +559,10 @@ impl Config {
         self.partial_columns
     }
 
+    pub fn sync_committee_subnets(&self) -> SyncCommitteeSubnets {
+        self.sync_committee_subnets
+    }
+
     pub fn trusted_peers(&self) -> &[Enr] {
         &self.trusted_peers
     }
@@ -675,6 +698,7 @@ mod tests {
         let mut enr = cfg.enr().unwrap();
         let key = cfg.keypair().unwrap();
         enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
+        enr.set_syncnets(SyncCommitteeSubnets::All.long_lived(), key.secret_key()).unwrap();
         // Unpadded base64: 4 chars per 3 bytes.
         let bytes = enr.size();
         assert!(bytes <= 300, "ENR is {bytes} bytes, discv5 caps records at 300");

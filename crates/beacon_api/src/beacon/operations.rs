@@ -29,7 +29,7 @@ struct SubmittedAttestation {
 }
 
 impl SubmittedEntry for SubmittedAttestation {
-    fn accept(&self, ctx: &ApiCtx) -> Result<GossipTopic, &'static str> {
+    fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
         let slot = self.data.slot;
         let committees_per_slot = ctx
             .shufflings
@@ -40,7 +40,7 @@ impl SubmittedEntry for SubmittedAttestation {
         }
         let subnet =
             compute_subnet_for_attestation(committees_per_slot, slot, self.committee_index);
-        Ok(GossipTopic::BeaconAttestation(subnet))
+        Ok([GossipTopic::BeaconAttestation(subnet)])
     }
 
     fn ssz_len(&self) -> usize {
@@ -156,7 +156,7 @@ pub(crate) mod tests {
         let ctx = ctx();
         let body = format!("[{}]", entry(1, posted_committees(&ctx)));
         let (outcome, response) = submit(&ctx, &body);
-        assert_eq!(outcome, Outcome::Response);
+        assert_eq!(outcome, Outcome::Response(None));
         assert_eq!(status_code(&response), "400");
 
         let failures = json_failures(&response);

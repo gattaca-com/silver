@@ -130,7 +130,7 @@ mod tests {
             &query(SLOT, SYNC_COMMITTEE_SUBNETS as u64),
         ] {
             let (outcome, out) = get(&ctx, query);
-            assert_eq!(outcome, Outcome::Response, "{query}");
+            assert_eq!(outcome, Outcome::Response(None), "{query}");
             assert_eq!(status_code(&out), "400", "{query}");
         }
     }

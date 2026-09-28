@@ -321,6 +321,8 @@ impl PublisherStack {
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
+            0,
+            0,
         )
         .map_err(std::io::Error::other)?;
         controller.open_tcaches().map_err(std::io::Error::other)?;
@@ -459,6 +461,8 @@ impl EchoStack {
             None,
             SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
+            0,
+            0,
         )
         .map_err(std::io::Error::other)?;
         controller.open_tcaches().map_err(std::io::Error::other)?;

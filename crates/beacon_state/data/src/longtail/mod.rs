@@ -1,6 +1,7 @@
 mod delta;
 mod finalized;
 mod sync_committees;
+mod sync_subcommittee;
 #[cfg(test)]
 mod tests;
 
@@ -9,6 +10,9 @@ pub use finalized::LongtailState;
 use flux_profiler::timed;
 use parking_lot::Mutex;
 pub use sync_committees::SyncCommittees;
+pub use sync_subcommittee::{
+    SYNC_SUBCOMMITTEE_MASK_WORDS, SyncSubcommittee, uses_next_sync_committee,
+};
 
 use crate::{
     reanchor::reanchor_survivors,

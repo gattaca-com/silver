@@ -9,7 +9,7 @@ use silver_common::{
 };
 use silver_gossip::GossipHandler;
 
-use super::local_validation::{LocalMessage, LocalValidation, produce_response};
+use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
     AdmissionError, AttestationAdmission, AttestationCluster, AttestationClusterConfig,
     AttestationDecision, AttestationKey, AttestationLockCommand, AttestationLockStore,
@@ -91,7 +91,7 @@ impl AttestationClusterHandler {
         &mut self,
         now: Instant,
         adapter: &mut SpineAdapter<SilverSpine>,
-        validation: &mut LocalValidation,
+        local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         inbound_consumer: &mut TCacheReader,
     ) {
@@ -103,14 +103,14 @@ impl AttestationClusterHandler {
                 }
             }
         });
-        self.drive(now, validation, gossip_handler, &mut adapter.producers);
+        self.drive(now, local_gossip, gossip_handler, &mut adapter.producers);
     }
 
     pub(super) fn on_local_attestation(
         &mut self,
         attestation: PendingAttestation,
         now: Instant,
-        validation: &mut LocalValidation,
+        local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
@@ -138,7 +138,7 @@ impl AttestationClusterHandler {
                 );
                 return;
             }
-            validation.submit(
+            local_gossip.submit(
                 attestation.command.local_message(attestation.request_id),
                 now,
                 gossip_handler,
@@ -221,7 +221,7 @@ impl AttestationClusterHandler {
     fn drive(
         &mut self,
         now: Instant,
-        validation: &mut LocalValidation,
+        local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
@@ -266,7 +266,7 @@ impl AttestationClusterHandler {
                 }
                 let response = decision_response(&decision);
                 if response.is_ok() {
-                    validation.submit(
+                    local_gossip.submit(
                         decision.command.local_message(attestation.request_id),
                         now,
                         gossip_handler,
@@ -310,7 +310,7 @@ mod tests {
     use silver_common::{TCache, TCacheId};
 
     use super::*;
-    use crate::tile::local_validation::{VALIDATION_TIMEOUT, tests::Harness};
+    use crate::tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness};
 
     fn handler(now: Instant) -> AttestationClusterHandler {
         AttestationClusterHandler::new(
@@ -336,11 +336,11 @@ mod tests {
             ssz[8..16].copy_from_slice(&u64::from(validator).to_le_bytes());
             ssz[16..24].copy_from_slice(&slot.to_le_bytes());
             ssz[32..64].fill(root);
-            let Harness { validation, gossip, adapter, .. } = &mut self.harness;
+            let Harness { local_gossip, gossip, adapter, .. } = &mut self.harness;
             self.handler.on_local_attestation(
                 PendingAttestation::new(request_id, 0, ssz),
                 now,
-                validation,
+                local_gossip,
                 gossip,
                 &mut adapter.producers,
             );
@@ -373,7 +373,7 @@ mod tests {
 
         standalone.harness.complete(message.msg_hash, Ok(()));
         assert_eq!(standalone.harness.responses(), [(1, Ok(())), (2, Ok(()))]);
-        assert!(standalone.harness.validation.is_empty());
+        assert!(standalone.harness.local_gossip.is_empty());
 
         standalone.submit(4, 11, 7, 2, now);
         assert_eq!(standalone.harness.responses(), [(
@@ -439,12 +439,12 @@ mod tests {
             match failure {
                 LocalGossipFailure::TimedOut => standalone
                     .harness
-                    .validation
+                    .local_gossip
                     .expire(now + VALIDATION_TIMEOUT, &mut standalone.harness.adapter.producers),
                 failure => standalone.harness.complete(message.msg_hash, Err(failure)),
             }
             assert_eq!(standalone.harness.responses(), [(1, Err(failure))]);
-            assert!(standalone.harness.validation.is_empty());
+            assert!(standalone.harness.local_gossip.is_empty());
 
             standalone.submit(2, 11, 7, 2, now + VALIDATION_TIMEOUT);
             assert_eq!(standalone.harness.responses(), [(

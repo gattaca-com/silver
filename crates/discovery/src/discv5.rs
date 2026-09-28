@@ -328,13 +328,17 @@ impl DiscV5 {
             if changed {
                 let socket = SocketAddr::new(ip, port);
                 if let Ok(seq) = self.local_enr.set_udp_socket(socket, &self.local_key) {
-                    let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-                    self.local_enr.encode(&mut raw);
-                    self.local_enr_raw = raw;
+                    self.reencode_local_enr();
                     self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket, seq));
                 }
             }
         }
+    }
+
+    fn reencode_local_enr(&mut self) {
+        let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+        self.local_enr.encode(&mut raw);
+        self.local_enr_raw = raw;
     }
 
     fn on_nodes(
@@ -1069,10 +1073,20 @@ impl Discovery for DiscV5 {
             tracing::error!(?e, "failed to update local ENR eth2 field");
             return;
         }
-        let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-        self.local_enr.encode(&mut raw);
-        self.local_enr_raw = raw;
+        self.reencode_local_enr();
         tracing::info!("advanced local ENR fork digest to {}", fork_digest_hex(&self.fork_digest));
+    }
+
+    fn update_enr_syncnets(&mut self, syncnets: u8) {
+        if self.local_enr.syncnets() == Some(syncnets) {
+            return;
+        }
+        if let Err(e) = self.local_enr.set_syncnets(syncnets, &self.local_key) {
+            tracing::error!(?e, "failed to update local ENR syncnets field");
+            return;
+        }
+        self.reencode_local_enr();
+        tracing::info!(syncnets = format_args!("{syncnets:#06b}"), "updated local ENR syncnets");
     }
 
     fn ban_node(&mut self, id: NodeId) {
@@ -1630,6 +1644,23 @@ mod tests {
         // Same ENRForkID is a no-op (no seq churn).
         let seq_after = d.local_enr.seq();
         d.update_enr_fork_id(new_eth2);
+        assert_eq!(d.local_enr.seq(), seq_after);
+    }
+
+    #[test]
+    fn update_enr_syncnets_rewrites_enr_once() {
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(20000u16).build(&sk).unwrap();
+        let mut d = DiscV5::new(DiscoveryConfig::default(), sk, enr, [0; 4]);
+
+        let seq_before = d.local_enr.seq();
+        d.update_enr_syncnets(0b0101);
+        assert_eq!(d.local_enr.syncnets(), Some(0b0101));
+        assert!(d.local_enr.seq() > seq_before);
+        assert!(d.local_enr.verify());
+
+        let seq_after = d.local_enr.seq();
+        d.update_enr_syncnets(0b0101);
         assert_eq!(d.local_enr.seq(), seq_after);
     }
 

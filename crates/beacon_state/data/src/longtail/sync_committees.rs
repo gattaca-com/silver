@@ -1,6 +1,8 @@
+use super::sync_subcommittee::uses_next_sync_committee;
 use crate::{
+    ValidatorsView,
     merkle::B256,
-    types::{SYNC_COMMITTEE_SIZE, SyncCommittee},
+    types::{SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE, Slot, SyncCommittee},
 };
 
 const UNRESOLVED: u32 = u32::MAX;
@@ -86,6 +88,31 @@ impl SyncCommittees {
     #[inline]
     pub fn indices(&self) -> &[u32; SYNC_COMMITTEE_SIZE] {
         &self.indices
+    }
+
+    /// Spec `compute_subnets_for_sync_committee` as a bitmask, for a state at
+    /// `state_slot`.
+    pub fn subnets_of(
+        &self,
+        state_slot: Slot,
+        validator: usize,
+        validators: &ValidatorsView<'_>,
+    ) -> u8 {
+        if validator >= validators.count() {
+            return 0;
+        }
+        let seat =
+            |subnets: u8, position: usize| subnets | 1 << (position / SYNC_SUBCOMMITTEE_SIZE);
+        if uses_next_sync_committee(state_slot) {
+            let pubkey = validators.pubkey(validator);
+            (0..SYNC_COMMITTEE_SIZE)
+                .filter(|&position| &self.next.pubkeys[position] == pubkey)
+                .fold(0, seat)
+        } else {
+            (0..SYNC_COMMITTEE_SIZE)
+                .filter(|&position| self.indices[position] as usize == validator)
+                .fold(0, seat)
+        }
     }
 
     #[inline]

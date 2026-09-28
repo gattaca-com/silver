@@ -329,10 +329,9 @@ impl PeerManager {
         partial_serving: bool,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let Some(meshed_peers) = self.mesh.get(&topic).and_then(|m| m.get(digest)) else {
-            return;
-        };
-        for peer in &meshed_peers.peers {
+        let meshed = self.mesh.get(&topic).and_then(|m| m.get(digest));
+        let mesh_len = meshed.map_or(0, |mesh| mesh.peers.len());
+        for peer in meshed.into_iter().flat_map(|mesh| &mesh.peers) {
             let Some(peer_state) = self.peers.get_mut(peer) else {
                 continue;
             };
@@ -356,6 +355,36 @@ impl PeerManager {
             peer_state.topic_stats.entry(topic).or_default().fanout_sent += 1;
             crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: *peer, tcache })));
+        }
+
+        let d = self.params.d as usize;
+        if sender == LOCAL_GOSSIP_STREAM_ID.peer() && mesh_len < d {
+            self.fan_out_to_subscribers(msg_hash, topic, digest, tcache, d - mesh_len, emit);
+        }
+    }
+
+    /// Tops a short or absent mesh up to `d` for our own messages.
+    fn fan_out_to_subscribers(
+        &mut self,
+        msg_hash: MessageId,
+        topic: GossipTopic,
+        digest: [u8; 4],
+        tcache: TCacheRead,
+        count: usize,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let meshed =
+            self.mesh.get(&topic).and_then(|m| m.get(digest)).map_or(&[][..], |m| &m.peers);
+        let publish_threshold = self.params.publish_threshold;
+        let subscribers = self.peers.iter().filter(|&(conn, peer)| {
+            !meshed.contains(conn) &&
+                peer.subscriptions.contains_key(&(digest, topic)) &&
+                peer.cached_score >= publish_threshold &&
+                !peer.msg_cache_contains(&msg_hash)
+        });
+        for (&peer_id, _) in subscribers.take(count) {
+            crate::counters::GossipTopicCounters::sent(topic);
+            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, tcache })));
         }
     }
 
@@ -1341,5 +1370,67 @@ mod tests {
         }
         assert!(manager.partial_peer(1, topic, [1; 4]).is_none());
         assert!(manager.partial_peer(1, GossipTopic::DataColumnSidecar(5), [0; 4]).is_none());
+    }
+
+    #[test]
+    fn local_message_tops_a_short_mesh_up_with_subscribers() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.d = 2;
+        let topic = GossipTopic::BeaconAttestation(5);
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        for conn in 1..=4usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+        for conn in 1..=3usize {
+            mgr.handle_event(
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic, digest: [0; 4] },
+                now,
+                &mut |c| cap.0.push(c),
+            );
+        }
+
+        fn recipients(cap: &Captured) -> impl Iterator<Item = usize> + '_ {
+            cap.0.iter().filter_map(|event| match event {
+                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
+                    Some(*peer_id)
+                }
+                _ => None,
+            })
+        }
+        let send = |mgr: &mut PeerManager, cap: &mut Captured, originator_stream_id| {
+            cap.0.clear();
+            mgr.handle_event(
+                PeerEvent::SendGossip {
+                    originator_stream_id,
+                    topic,
+                    domain: test_domain(),
+                    ssz_cache: SszCache::Gossip,
+                    msg_hash: MessageId { id: [0xEF; 20] },
+                    recv_ts: Nanos::now(),
+                    protobuf: mk_tcache_read(),
+                    ssz: mk_tcache_read(),
+                },
+                now,
+                &mut |c| cap.0.push(c),
+            );
+        };
+
+        send(&mut mgr, &mut cap, LOCAL_GOSSIP_STREAM_ID);
+        assert_eq!(recipients(&cap).count(), 2, "{:?}", cap.0);
+        assert!(recipients(&cap).all(|peer| (1..=3).contains(&peer)), "{:?}", cap.0);
+
+        let forwarded =
+            silver_common::P2pStreamId::new(1, 0, silver_common::StreamProtocol::GossipSub, false);
+        send(&mut mgr, &mut cap, forwarded);
+        assert_eq!(recipients(&cap).count(), 0, "{:?}", cap.0);
+
+        mgr.test_mesh_extend(topic, [1]);
+        send(&mut mgr, &mut cap, LOCAL_GOSSIP_STREAM_ID);
+        let mut sent: Vec<_> = recipients(&cap).collect();
+        sent.sort();
+        assert_eq!(sent.len(), 2, "{:?}", cap.0);
+        assert_eq!(sent[0], 1, "the mesh peer gets it: {:?}", cap.0);
+        assert!((2..=3).contains(&sent[1]), "{:?}", cap.0);
     }
 }

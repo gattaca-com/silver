@@ -73,7 +73,7 @@ fn connections_and_deferred_topics_subscribe_to_both_domains() {
         .collect();
     assert_eq!(digests, [OLD, NEW]);
     captured.0.clear();
-    manager.activate_topics(&[GossipTopic::BeaconBlock], &mut |event| captured.0.push(event));
+    manager.activate_topics([GossipTopic::BeaconBlock], &mut |event| captured.0.push(event));
     assert_eq!(captured.0.len(), 2);
     assert!(manager.mesh[&GossipTopic::BeaconBlock].get(OLD).is_some());
     assert!(manager.mesh[&GossipTopic::BeaconBlock].get(NEW).is_some());

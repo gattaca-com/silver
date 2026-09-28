@@ -189,6 +189,8 @@ impl PmBsHarness {
             None,
             SyncEngine::new(syncing, false, 0, Arc::new(SpecConfig::mainnet())),
             Arc::new(SpecConfig::mainnet()),
+            0,
+            0,
         )
         .expect("controller");
         ctl.open_tcaches().expect("ctl tcaches");

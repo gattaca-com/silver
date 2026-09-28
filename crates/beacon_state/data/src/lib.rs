@@ -24,7 +24,8 @@ pub use gloas::{
     Withdrawal,
 };
 pub use longtail::{
-    LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView, SyncCommittees,
+    LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView,
+    SYNC_SUBCOMMITTEE_MASK_WORDS, SyncCommittees, SyncSubcommittee, uses_next_sync_committee,
 };
 pub use parsed::ParsedAggregateAndProof;
 pub use pending::{

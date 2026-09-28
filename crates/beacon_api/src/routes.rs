@@ -3,6 +3,7 @@ use crate::{
         blocks::{block, block_header, block_root},
         operations::post_attestations,
         states::{genesis, state_finality_checkpoints, state_fork},
+        sync_committees::post_sync_committee_messages,
         validators::{get_state_validators, post_state_validators, state_validator},
     },
     config::{deposit_contract, fork_schedule, spec},
@@ -24,9 +25,9 @@ use crate::{
         attester_duties::post_attester_duties,
         contribution_submission::post_contribution_and_proofs,
         proposer_duties::{proposer_duties, proposer_duties_v2},
-        registration::{
-            post_beacon_committee_subscriptions, post_prepare_beacon_proposer,
-            post_register_validator, post_sync_committee_subscriptions,
+        registration::{post_prepare_beacon_proposer, post_register_validator},
+        subnet_subscriptions::{
+            post_beacon_committee_subscriptions, post_sync_committee_subscriptions,
         },
         sync_contribution::sync_committee_contribution,
         sync_duties::post_sync_duties,
@@ -39,6 +40,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
     (Method::Get, "/eth/v1/beacon/headers/{block_id}", block_header),
+    (Method::Post, "/eth/v1/beacon/pool/sync_committees", post_sync_committee_messages),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",

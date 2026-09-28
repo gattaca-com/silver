@@ -102,6 +102,10 @@ impl SlotTicker {
         }
     }
 
+    pub fn slot_duration(&self) -> Duration {
+        Duration::from_millis(self.slot_ms)
+    }
+
     pub fn millis_since_genesis(&self) -> u64 {
         if self.frozen {
             return self.anchor_genesis_ms;

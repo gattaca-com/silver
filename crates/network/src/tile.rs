@@ -89,6 +89,9 @@ impl NetworkTile {
             PeerControl::UpdateEnrForkId { epoch, enr_fork_id } => {
                 self.update_enr_fork_id(epoch, enr_fork_id)
             }
+            PeerControl::UpdateEnrSyncnets { syncnets } => {
+                self.inner.discovery.update_enr_syncnets(syncnets)
+            }
             PeerControl::P2pDial { p2p, enr } => {
                 let addr = enr.quic4_socket().or(enr.quic6_socket());
                 if let Some(addr) = addr {

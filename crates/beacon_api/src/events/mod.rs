@@ -213,7 +213,7 @@ mod tests {
     fn no_topic_is_a_400() {
         for query in ["", "other=block"] {
             let (outcome, out) = subscribe(query);
-            assert_eq!(outcome, Outcome::Response, "{query}");
+            assert_eq!(outcome, Outcome::Response(None), "{query}");
             assert_eq!(out, bad_request("no topics"), "{query}");
         }
     }
