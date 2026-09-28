@@ -1,9 +1,9 @@
 use std::{collections::hash_map::Entry, io};
 
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::FxHashMap;
 use silver_common::{MAX_CLUSTER_MESSAGE_BYTES, SLOTS_PER_EPOCH, merkle};
 
-use super::command::{AttestationLockCommand, BlockKey};
+use super::command::{AttestationLockCommand, BlockKey, BlockLockCommand};
 
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
@@ -17,9 +17,9 @@ pub enum LockResult {
     /// The first message selected for its validator: the attestation's
     /// target epoch, or the block's slot.
     Accepted,
-    /// The same signed attestation was selected previously; it does not
-    /// conflict with the cluster's choice. Blocks never repeat. Processing
-    /// still requires temporal admission.
+    /// The same signed message was selected previously; it does not conflict
+    /// with the cluster's choice. Processing still requires temporal
+    /// admission.
     AlreadyAcceptedSame,
     /// A different signed message was selected previously. This candidate
     /// must not enter validation or gossip publication.
@@ -37,7 +37,7 @@ pub(crate) struct SlashingLockStore {
     /// commands.
     minimum_slot: u64,
     locks: [EpochLocks; LOCK_RING_SIZE],
-    blocks: FxHashSet<BlockKey>,
+    blocks: FxHashMap<BlockKey, [u8; 96]>,
 }
 
 #[derive(Debug, Default)]
@@ -82,11 +82,20 @@ impl SlashingLockStore {
         }
     }
 
-    pub(crate) fn apply_block(&mut self, key: BlockKey) -> LockResult {
-        if key.slot < self.minimum_slot {
+    pub(crate) fn apply_block(&mut self, cmd: &BlockLockCommand) -> LockResult {
+        if cmd.key.slot < self.minimum_slot {
             return LockResult::TooOld;
         }
-        if self.blocks.insert(key) { LockResult::Accepted } else { LockResult::Conflicting }
+        match self.blocks.entry(cmd.key) {
+            Entry::Vacant(entry) => {
+                entry.insert(cmd.signature);
+                LockResult::Accepted
+            }
+            Entry::Occupied(entry) if entry.get() == &cmd.signature => {
+                LockResult::AlreadyAcceptedSame
+            }
+            Entry::Occupied(_) => LockResult::Conflicting,
+        }
     }
 
     pub(super) fn minimum_slot(&self) -> u64 {
@@ -190,7 +199,7 @@ impl SlashingLockStore {
         }
 
         self.minimum_slot = minimum_slot;
-        self.blocks.retain(|key| key.slot >= minimum_slot);
+        self.blocks.retain(|key, _| key.slot >= minimum_slot);
     }
 }
 
@@ -324,29 +333,30 @@ mod tests {
         assert_eq!(store.apply(&command(40, 3)), LockResult::Conflicting);
     }
 
-    fn block(slot: u64, proposer_index: u64) -> BlockKey {
-        BlockKey { proposer_index, slot }
+    fn block(slot: u64, proposer_index: u64, signature: u8) -> BlockLockCommand {
+        BlockLockCommand { key: BlockKey { proposer_index, slot }, signature: [signature; 96] }
     }
 
     #[test]
     fn first_block_for_a_proposer_and_slot_is_the_only_one() {
         let mut store = SlashingLockStore::default();
 
-        assert_eq!(store.apply_block(block(12, 3)), LockResult::Accepted);
-        assert_eq!(store.apply_block(block(12, 3)), LockResult::Conflicting);
-        assert_eq!(store.apply_block(block(12, 4)), LockResult::Accepted);
-        assert_eq!(store.apply_block(block(13, 3)), LockResult::Accepted);
+        assert_eq!(store.apply_block(&block(12, 3, 1)), LockResult::Accepted);
+        assert_eq!(store.apply_block(&block(12, 3, 1)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(store.apply_block(&block(12, 3, 2)), LockResult::Conflicting);
+        assert_eq!(store.apply_block(&block(12, 4, 2)), LockResult::Accepted);
+        assert_eq!(store.apply_block(&block(13, 3, 2)), LockResult::Accepted);
     }
 
     #[test]
     fn committed_minimum_slot_drops_and_rejects_old_blocks() {
         let mut store = SlashingLockStore::default();
-        assert_eq!(store.apply_block(block(10, 3)), LockResult::Accepted);
+        assert_eq!(store.apply_block(&block(10, 3, 1)), LockResult::Accepted);
 
         store.advance_minimum_slot(11);
 
         assert!(store.blocks.is_empty());
-        assert_eq!(store.apply_block(block(10, 3)), LockResult::TooOld);
+        assert_eq!(store.apply_block(&block(10, 3, 1)), LockResult::TooOld);
     }
 
     #[test]

@@ -15,7 +15,9 @@ mod wire;
 
 pub use admission::AdmissionError;
 pub(crate) use admission::SlashingAdmission;
-pub use command::{AttestationKey, AttestationLockCommand, BlockKey, CommandDecodeError};
+pub use command::{
+    AttestationKey, AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError,
+};
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
 pub use node::{

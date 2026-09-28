@@ -11,9 +11,10 @@ use silver_gossip::GossipHandler;
 
 use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
-    AdmissionError, AttestationKey, AttestationLockCommand, BlockKey, ClusterError, ClusterEvent,
-    LockResult, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
-    SlashingProtectionCluster, SlashingProtectionConfig, decode_message, encode_message,
+    AdmissionError, AttestationKey, AttestationLockCommand, BlockKey, BlockLockCommand,
+    ClusterError, ClusterEvent, LockResult, ProposalId, ProposeError, SlashingAdmission,
+    SlashingLockStore, SlashingProtectionCluster, SlashingProtectionConfig, decode_message,
+    encode_message,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -190,6 +191,7 @@ impl SlashingProtectionHandler {
             proposer_index: SignedBeaconBlockView::proposer_index(block),
             slot: SignedBeaconBlockView::slot(block),
         };
+        let command = BlockLockCommand { key, signature: *SignedBeaconBlockView::signature(block) };
         if let Err(error) = self.admission.validate(key.slot, self.wall_slot) {
             produce_response(producers, request_id, Err(admission_failure(error)));
             tracing::warn!(
@@ -202,7 +204,7 @@ impl SlashingProtectionHandler {
         }
 
         let Some(cluster) = self.cluster.as_mut() else {
-            let result = self.local_locks.apply_block(key);
+            let result = self.local_locks.apply_block(&command);
             if let Err(failure) = lock_response(result, LocalGossipFailure::ConflictingProposal) {
                 produce_response(producers, request_id, Err(failure));
                 tracing::warn!(?result, request_id, slot = key.slot, "local lock rejected block");
@@ -216,7 +218,7 @@ impl SlashingProtectionHandler {
             );
         };
 
-        match cluster.propose_block(key, self.wall_slot, now) {
+        match cluster.propose_block(command, self.wall_slot, now) {
             Ok(proposal_id) => {
                 let previous =
                     self.pending_blocks.insert(proposal_id, PendingBlock { request_id, key, ssz });
@@ -535,14 +537,14 @@ mod tests {
         let Standalone { handler, harness } = &mut standalone;
 
         submit_block(handler, harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
-        harness.pop_gossip();
-        for (request_id, tag) in [(2, 1), (3, 2)] {
-            let block = block_bytes(11, 4, tag);
-            submit_block(handler, harness, &mut submissions, request_id, &block, now);
-            let refused = Err(LocalGossipFailure::ConflictingProposal);
-            assert_eq!(harness.responses(), [(request_id, refused)]);
-            assert!(harness.gossip.pop_event().is_none());
-        }
+        let first = harness.pop_gossip();
+        submit_block(handler, harness, &mut submissions, 2, &block_bytes(11, 4, 1), now);
+        assert_eq!(harness.pop_gossip().msg_hash, first.msg_hash, "a resubmission rejoins");
+        assert!(harness.responses().is_empty());
+
+        submit_block(handler, harness, &mut submissions, 3, &block_bytes(11, 4, 2), now);
+        assert_eq!(harness.responses(), [(3, Err(LocalGossipFailure::ConflictingProposal))]);
+        assert!(harness.gossip.pop_event().is_none());
 
         submit_block(handler, harness, &mut submissions, 4, &block_bytes(11, 5, 2), now);
         harness.pop_gossip();

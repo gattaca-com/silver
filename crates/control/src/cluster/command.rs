@@ -7,7 +7,7 @@ const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
 const BLOCK_LOCK_TAG: u8 = 2;
 const ENCODED_LOCK_COMMAND_LEN: usize = 1 + 8 + 8 + 8 + SINGLE_ATT_SIZE;
 const ENCODED_ADVANCE_MINIMUM_SLOT_LEN: usize = 1 + 8;
-const ENCODED_BLOCK_LOCK_LEN: usize = 1 + 8 + 8;
+const ENCODED_BLOCK_LOCK_LEN: usize = 1 + 8 + 8 + 96;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct AttestationKey {
@@ -30,12 +30,20 @@ pub struct BlockKey {
     pub slot: u64,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BlockLockCommand {
+    pub key: BlockKey,
+    /// BLS signing is deterministic, so the signature identifies the signed
+    /// block without hashing it.
+    pub signature: [u8; 96],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub(super) enum ReplicatedCommand {
     Lock(AttestationLockCommand),
     AdvanceMinimumSlot(u64),
-    BlockLock(BlockKey),
+    BlockLock(BlockLockCommand),
 }
 
 impl ReplicatedCommand {
@@ -56,11 +64,12 @@ impl ReplicatedCommand {
                 encoded.extend_from_slice(&slot.to_le_bytes());
                 encoded
             }
-            Self::BlockLock(key) => {
+            Self::BlockLock(command) => {
                 let mut encoded = Vec::with_capacity(ENCODED_BLOCK_LOCK_LEN);
                 encoded.push(BLOCK_LOCK_TAG);
-                encoded.extend_from_slice(&key.proposer_index.to_le_bytes());
-                encoded.extend_from_slice(&key.slot.to_le_bytes());
+                encoded.extend_from_slice(&command.key.proposer_index.to_le_bytes());
+                encoded.extend_from_slice(&command.key.slot.to_le_bytes());
+                encoded.extend_from_slice(&command.signature);
                 encoded
             }
         }
@@ -120,7 +129,11 @@ impl ReplicatedCommand {
                 let proposer_index =
                     u64::from_le_bytes(payload[..8].try_into().expect("slice is 8 bytes"));
                 let slot = u64::from_le_bytes(payload[8..16].try_into().expect("slice is 8 bytes"));
-                Ok(Self::BlockLock(BlockKey { proposer_index, slot }))
+                let signature = payload[16..].try_into().expect("slice is one signature");
+                Ok(Self::BlockLock(BlockLockCommand {
+                    key: BlockKey { proposer_index, slot },
+                    signature,
+                }))
             }
             _ => Err(CommandDecodeError::UnknownTag(tag)),
         }
@@ -164,7 +177,8 @@ mod tests {
 
     #[test]
     fn replicated_commands_round_trip() {
-        let block = BlockKey { proposer_index: 5, slot: 42 };
+        let block =
+            BlockLockCommand { key: BlockKey { proposer_index: 5, slot: 42 }, signature: [9; 96] };
         for command in [
             ReplicatedCommand::Lock(command(42, 3)),
             ReplicatedCommand::AdvanceMinimumSlot(37),

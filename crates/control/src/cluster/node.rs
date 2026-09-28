@@ -14,7 +14,9 @@ use raft::{
 use super::persistence::RecoveredStorage;
 use super::{
     admission::{AdmissionError, SlashingAdmission},
-    command::{AttestationLockCommand, BlockKey, CommandDecodeError, ReplicatedCommand},
+    command::{
+        AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError, ReplicatedCommand,
+    },
     lock_store::{LockResult, SlashingLockStore},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
     raft_storage::{RaftStorage, RestoredSnapshot},
@@ -437,11 +439,11 @@ impl SlashingProtectionCluster {
 
     pub fn propose_block(
         &mut self,
-        key: BlockKey,
+        command: BlockLockCommand,
         wall_slot: u64,
         now: Instant,
     ) -> Result<ProposalId, ProposeError> {
-        self.propose(key.slot, ReplicatedCommand::BlockLock(key), wall_slot, now)
+        self.propose(command.key.slot, ReplicatedCommand::BlockLock(command), wall_slot, now)
     }
 
     fn propose(
@@ -756,10 +758,10 @@ impl SlashingProtectionCluster {
                         }
                     }
                 }
-                ReplicatedCommand::BlockLock(key) => {
+                ReplicatedCommand::BlockLock(command) => {
                     let proposal_id = ProposalId::decode(&entry.context)
                         .map_err(ClusterError::InvalidProposalContextLength)?;
-                    let result = self.state.apply_block(key);
+                    let result = self.state.apply_block(&command);
                     if proposal_id.origin_node_id == self.config.node_id &&
                         proposal_id.incarnation == self.incarnation &&
                         let Some(pending) = self.take_pending_proposal(proposal_id)
@@ -769,9 +771,9 @@ impl SlashingProtectionCluster {
                         } else {
                             emit(ClusterEvent::BlockCommitted(BlockDecision {
                                 proposal_id,
-                                key,
+                                key: command.key,
                                 result,
-                                admission: self.admission.validate(key.slot, wall_slot),
+                                admission: self.admission.validate(command.key.slot, wall_slot),
                             }));
                         }
                     }
@@ -812,7 +814,7 @@ mod snapshot_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::{AttestationKey, BlockKey, LockResult};
+    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult};
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -938,15 +940,16 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_block_for_a_proposer_and_slot_is_accepted_through_raft() {
+    fn same_block_is_idempotent_and_different_block_conflicts_through_raft() {
         let now = Instant::now();
         let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
         cluster.campaign().unwrap();
 
         let mut results = Vec::new();
-        for proposer_index in [4, 4, 5] {
+        for (proposer_index, signature) in [(4, 1), (4, 1), (4, 2), (5, 2)] {
             let key = BlockKey { proposer_index, slot: 10 };
-            let proposal_id = cluster.propose_block(key, 10, now).unwrap();
+            let command = BlockLockCommand { key, signature: [signature; 96] };
+            let proposal_id = cluster.propose_block(command, 10, now).unwrap();
             cluster
                 .spin(now, 10, |event| {
                     if let ClusterEvent::BlockCommitted(decision) = event {
@@ -958,7 +961,12 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(results, [LockResult::Accepted, LockResult::Conflicting, LockResult::Accepted]);
+        assert_eq!(results, [
+            LockResult::Accepted,
+            LockResult::AlreadyAcceptedSame,
+            LockResult::Conflicting,
+            LockResult::Accepted,
+        ]);
     }
 
     #[test]
