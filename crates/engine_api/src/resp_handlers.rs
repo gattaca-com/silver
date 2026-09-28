@@ -188,10 +188,6 @@ impl<'a> Responses<'a> {
                 Ok(RpcResult { result: Some(r), .. }) => {
                     let status = status_from_str(&r.payload_status.status);
                     let latest_valid_hash = r.payload_status.latest_valid_hash.unwrap_or([0u8; 32]);
-                    let (has_payload_id, payload_id) = match r.payload_id {
-                        Some(id) => (true, id),
-                        None => (false, [0u8; 8]),
-                    };
                     tracing::info!(
                         status = %r.payload_status.status,
                         latest_valid_hash = %r.payload_status.latest_valid_hash
@@ -199,13 +195,7 @@ impl<'a> Responses<'a> {
                             .unwrap_or_else(|| "null".into()),
                         "FCU → Reth"
                     );
-                    EngineFcuResp {
-                        block_root,
-                        status,
-                        latest_valid_hash,
-                        has_payload_id,
-                        payload_id,
-                    }
+                    EngineFcuResp { block_root, status, latest_valid_hash }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
                     tracing::warn!("forkchoiceUpdated rpc error: {}", e.message);
@@ -257,8 +247,7 @@ impl<'a> Responses<'a> {
         };
         self.adapter.produce(EngineResp::PreparePayload(EnginePreparePayloadResp {
             id: spine_id,
-            has_payload_id: payload_id.is_some(),
-            payload_id: payload_id.unwrap_or_default(),
+            payload_id,
         }));
     }
 
@@ -401,8 +390,6 @@ fn fcu_error(block_root: [u8; 32]) -> EngineFcuResp {
         block_root,
         status: PayloadValidationStatus::Syncing,
         latest_valid_hash: [0u8; 32],
-        has_payload_id: false,
-        payload_id: [0u8; 8],
     }
 }
 

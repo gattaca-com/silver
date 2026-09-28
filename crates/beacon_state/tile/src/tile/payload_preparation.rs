@@ -33,8 +33,8 @@ impl PayloadPreparations {
         let Some(key) = self.requested.remove(&response.id) else {
             return;
         };
-        if response.has_payload_id {
-            self.payload_ids.insert(key, response.payload_id);
+        if let Some(payload_id) = response.payload_id {
+            self.payload_ids.insert(key, payload_id);
         }
     }
 

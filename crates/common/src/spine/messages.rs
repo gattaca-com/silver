@@ -1259,18 +1259,14 @@ pub struct EngineNewPayloadEnvelopeReq {
 
 /// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
 ///
-/// `block_root` echoes the request's head beacon root (zeros for the
-/// prepare-payload path). `latest_valid_hash` is all-zeros when the EL did
-/// not return one. `payload_id` is meaningful only when `has_payload_id` is
-/// true.
+/// `block_root` echoes the request's head beacon root. `latest_valid_hash` is
+/// all-zeros when the EL did not return one.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineFcuResp {
     pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
     pub latest_valid_hash: [u8; 32],
-    pub has_payload_id: bool,
-    pub payload_id: [u8; 8],
 }
 
 /// Response to `engine_newPayloadV4`.  Fully inline.
@@ -1305,13 +1301,11 @@ pub struct EnginePreparePayloadReq {
     pub attrs_withdrawals: [WithdrawalInline; 16],
 }
 
-/// `payload_id` is meaningful only when `has_payload_id` is true.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EnginePreparePayloadResp {
     pub id: u64,
-    pub has_payload_id: bool,
-    pub payload_id: [u8; 8],
+    pub payload_id: Option<[u8; 8]>,
 }
 
 #[derive(Clone, Copy, Debug)]

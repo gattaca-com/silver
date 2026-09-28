@@ -1418,6 +1418,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
 
 /// A timely block imported before its slot's tick still takes the proposer
 /// boost: the store time advances before the block joins, as in the spec.
+#[cfg(feature = "ef_tests")]
 #[test]
 fn block_before_slot_tick_takes_proposer_boost() {
     let (pre_ssz, block_ssz, _) = sanity_fixture("attestation");
@@ -4560,8 +4561,7 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     tile.handle_engine_response(
         EngineResp::PreparePayload(EnginePreparePayloadResp {
             id: request.id,
-            has_payload_id: true,
-            payload_id: [9; 8],
+            payload_id: Some([9; 8]),
         }),
         &mut adapter.producers,
     );

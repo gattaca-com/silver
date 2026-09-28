@@ -50,8 +50,6 @@ pub(crate) fn handle_request_no_el(
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
             latest_valid_hash: r.head_block_hash,
-            has_payload_id: false,
-            payload_id: [0u8; 8],
         }),
         EngineReq::NewPayload(r) => EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: r.block_root,
@@ -65,8 +63,7 @@ pub(crate) fn handle_request_no_el(
         }),
         EngineReq::PreparePayload(r) => EngineResp::PreparePayload(EnginePreparePayloadResp {
             id: r.id,
-            has_payload_id: true,
-            payload_id: r.id.to_le_bytes(),
+            payload_id: Some(r.id.to_le_bytes()),
         }),
         EngineReq::GetPayload(r) => EngineResp::GetPayload(EngineGetPayloadResp {
             id: r.id,
