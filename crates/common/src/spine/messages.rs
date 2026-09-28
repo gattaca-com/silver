@@ -199,6 +199,7 @@ pub enum LocalGossipFailure {
     TooOld,
     Future,
     ConflictingAttestation,
+    ConflictingProposal,
     TimedOut,
     Invalid,
     Unverifiable,

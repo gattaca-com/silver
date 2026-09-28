@@ -142,7 +142,10 @@ impl Network {
                 node.spin(self.now, 100, |event| match event {
                     ClusterEvent::SendRaftMessage(message) => messages.push(message),
                     ClusterEvent::AttestationCommitted(decision) => self.decisions.push(decision),
-                    ClusterEvent::AttestationProposalTimedOut(_) => panic!("proposal timed out"),
+                    ClusterEvent::BlockCommitted(decision) => {
+                        panic!("unexpected block decision {decision:?}")
+                    }
+                    ClusterEvent::ProposalTimedOut(_) => panic!("proposal timed out"),
                 })
                 .unwrap();
             }

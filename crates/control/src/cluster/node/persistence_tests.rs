@@ -91,7 +91,7 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
     let later = now + Duration::from_millis(100);
     let expired = events(&mut cluster, later);
     assert!(matches!(&expired[..], [
-        ClusterEvent::AttestationProposalTimedOut(a), ClusterEvent::AttestationProposalTimedOut(b)
+        ClusterEvent::ProposalTimedOut(a), ClusterEvent::ProposalTimedOut(b)
     ] if *a == first && *b == second));
     assert_eq!(cluster.state.len(), 0);
 
@@ -370,7 +370,10 @@ mod disk {
                 node.spin(now, 10, |event| match event {
                     ClusterEvent::SendRaftMessage(message) => messages.push(message),
                     ClusterEvent::AttestationCommitted(decision) => decisions.push(decision),
-                    ClusterEvent::AttestationProposalTimedOut(_) => panic!("unexpected timeout"),
+                    ClusterEvent::BlockCommitted(decision) => {
+                        panic!("unexpected block decision {decision:?}")
+                    }
+                    ClusterEvent::ProposalTimedOut(_) => panic!("unexpected timeout"),
                 })
                 .unwrap();
             }

@@ -15,11 +15,11 @@ mod wire;
 
 pub use admission::AdmissionError;
 pub(crate) use admission::SlashingAdmission;
-pub use command::{AttestationKey, AttestationLockCommand, CommandDecodeError};
+pub use command::{AttestationKey, AttestationLockCommand, BlockKey, CommandDecodeError};
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
 pub use node::{
-    AttestationDecision, ClusterError, ClusterEvent, ProposalId, ProposeError,
+    AttestationDecision, BlockDecision, ClusterError, ClusterEvent, ProposalId, ProposeError,
     SlashingProtectionCluster, SlashingProtectionConfig,
 };
 pub use persistence::{ClusterStorageConfig, RecoveredStorage};

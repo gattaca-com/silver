@@ -81,6 +81,9 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
         LocalGossipFailure::ConflictingAttestation => {
             "this validator already attested to another block for the slot"
         }
+        LocalGossipFailure::ConflictingProposal => {
+            "this validator already proposed a block for the slot"
+        }
         LocalGossipFailure::TimedOut => "validation did not complete in time",
         LocalGossipFailure::Invalid => "rejected as invalid",
         LocalGossipFailure::Unverifiable => {

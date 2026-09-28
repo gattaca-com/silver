@@ -14,7 +14,7 @@ use raft::{
 use super::persistence::RecoveredStorage;
 use super::{
     admission::{AdmissionError, SlashingAdmission},
-    command::{AttestationLockCommand, CommandDecodeError, ReplicatedCommand},
+    command::{AttestationLockCommand, BlockKey, CommandDecodeError, ReplicatedCommand},
     lock_store::{LockResult, SlashingLockStore},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
     raft_storage::{RaftStorage, RestoredSnapshot},
@@ -151,6 +151,14 @@ pub struct AttestationDecision {
     pub admission: Result<(), AdmissionError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockDecision {
+    pub proposal_id: ProposalId,
+    pub key: BlockKey,
+    pub result: LockResult,
+    pub admission: Result<(), AdmissionError>,
+}
+
 impl AttestationDecision {
     /// Whether this candidate may enter Beacon State validation. Callers must
     /// not treat an accepted Raft selection alone as sufficient after the
@@ -168,9 +176,10 @@ impl AttestationDecision {
 pub enum ClusterEvent {
     SendRaftMessage(Message),
     AttestationCommitted(AttestationDecision),
+    BlockCommitted(BlockDecision),
     /// The proposal may still commit and reserve its candidate, but must no
     /// longer cause validation or publication for the original request.
-    AttestationProposalTimedOut(ProposalId),
+    ProposalTimedOut(ProposalId),
 }
 
 #[derive(Debug)]
@@ -294,7 +303,7 @@ struct PendingProposal {
 }
 
 impl SlashingProtectionCluster {
-    /// Construct the Raft node with local attestation admission disabled.
+    /// Construct the Raft node with local admission disabled.
     /// Recovery must complete before Raft participation. Local requests also
     /// require a synced startup floor.
     pub fn new(config: SlashingProtectionConfig, now: Instant) -> Result<Self, ClusterError> {
@@ -355,7 +364,7 @@ impl SlashingProtectionCluster {
         self.config.node_id
     }
 
-    /// Enable local attestation admission using the first wall slot at which
+    /// Enable local admission using the first wall slot at which
     /// this node is synced. The resulting floor is immutable.
     pub fn set_startup_wall_slot(&mut self, startup_wall_slot: u64) -> bool {
         self.admission.set_startup_wall_slot(startup_wall_slot)
@@ -423,15 +432,34 @@ impl SlashingProtectionCluster {
         wall_slot: u64,
         now: Instant,
     ) -> Result<ProposalId, ProposeError> {
+        self.propose(command.key.slot, ReplicatedCommand::Lock(command), wall_slot, now)
+    }
+
+    pub fn propose_block(
+        &mut self,
+        key: BlockKey,
+        wall_slot: u64,
+        now: Instant,
+    ) -> Result<ProposalId, ProposeError> {
+        self.propose(key.slot, ReplicatedCommand::BlockLock(key), wall_slot, now)
+    }
+
+    fn propose(
+        &mut self,
+        slot: u64,
+        command: ReplicatedCommand,
+        wall_slot: u64,
+        now: Instant,
+    ) -> Result<ProposalId, ProposeError> {
         if self.failed {
             return Err(ProposeError::Failed);
         }
         let node = self.node.as_mut().ok_or(ProposeError::NotReady)?;
-        self.admission.validate(command.key.slot, wall_slot).map_err(ProposeError::Admission)?;
+        self.admission.validate(slot, wall_slot).map_err(ProposeError::Admission)?;
 
-        if command.key.slot < self.state.minimum_slot() {
+        if slot < self.state.minimum_slot() {
             return Err(ProposeError::Admission(AdmissionError::TooOld {
-                slot: command.key.slot,
+                slot,
                 minimum: self.state.minimum_slot(),
             }));
         }
@@ -452,8 +480,7 @@ impl SlashingProtectionCluster {
             "proposal timestamps must be monotonic"
         );
 
-        node.propose(proposal_id.encode(), ReplicatedCommand::Lock(command).encode())
-            .map_err(ProposeError::Raft)?;
+        node.propose(proposal_id.encode(), command.encode()).map_err(ProposeError::Raft)?;
 
         self.pending_proposals.push_back(PendingProposal { id: proposal_id, deadline });
 
@@ -718,13 +745,33 @@ impl SlashingProtectionCluster {
                         let Some(pending) = self.take_pending_proposal(proposal_id)
                     {
                         if now >= pending.deadline {
-                            emit(ClusterEvent::AttestationProposalTimedOut(proposal_id));
+                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
                         } else {
                             emit(ClusterEvent::AttestationCommitted(AttestationDecision {
                                 proposal_id,
                                 command,
                                 result,
                                 admission: self.admission.validate(command.key.slot, wall_slot),
+                            }));
+                        }
+                    }
+                }
+                ReplicatedCommand::BlockLock(key) => {
+                    let proposal_id = ProposalId::decode(&entry.context)
+                        .map_err(ClusterError::InvalidProposalContextLength)?;
+                    let result = self.state.apply_block(key);
+                    if proposal_id.origin_node_id == self.config.node_id &&
+                        proposal_id.incarnation == self.incarnation &&
+                        let Some(pending) = self.take_pending_proposal(proposal_id)
+                    {
+                        if now >= pending.deadline {
+                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
+                        } else {
+                            emit(ClusterEvent::BlockCommitted(BlockDecision {
+                                proposal_id,
+                                key,
+                                result,
+                                admission: self.admission.validate(key.slot, wall_slot),
                             }));
                         }
                     }
@@ -749,7 +796,7 @@ impl SlashingProtectionCluster {
     fn expire_proposals(&mut self, now: Instant, emit: &mut impl FnMut(ClusterEvent)) {
         while self.pending_proposals.front().is_some_and(|proposal| now >= proposal.deadline) {
             let proposal = self.pending_proposals.pop_front().expect("front exists");
-            emit(ClusterEvent::AttestationProposalTimedOut(proposal.id));
+            emit(ClusterEvent::ProposalTimedOut(proposal.id));
         }
     }
 }
@@ -765,7 +812,7 @@ mod snapshot_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::{AttestationKey, LockResult};
+    use crate::cluster::{AttestationKey, BlockKey, LockResult};
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -814,7 +861,10 @@ mod tests {
                     ClusterEvent::AttestationCommitted(decision) => {
                         decisions.push((node_id, decision));
                     }
-                    ClusterEvent::AttestationProposalTimedOut(proposal_id) => {
+                    ClusterEvent::BlockCommitted(decision) => {
+                        panic!("unexpected block decision {decision:?}");
+                    }
+                    ClusterEvent::ProposalTimedOut(proposal_id) => {
                         panic!("unexpected timeout for {proposal_id:?}");
                     }
                 })
@@ -845,9 +895,9 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 ClusterEvent::AttestationCommitted(decision) => Some(decision),
-                ClusterEvent::SendRaftMessage(_) | ClusterEvent::AttestationProposalTimedOut(_) => {
-                    None
-                }
+                ClusterEvent::SendRaftMessage(_) |
+                ClusterEvent::BlockCommitted(_) |
+                ClusterEvent::ProposalTimedOut(_) => None,
             })
             .collect();
         assert_eq!(decisions, vec![AttestationDecision {
@@ -873,10 +923,10 @@ mod tests {
         cluster
             .spin(now + Duration::from_millis(100), 10, |event| match event {
                 ClusterEvent::AttestationCommitted(decision) => committed.push(decision),
-                ClusterEvent::AttestationProposalTimedOut(proposal_id) => {
+                ClusterEvent::ProposalTimedOut(proposal_id) => {
                     timed_out.push(proposal_id);
                 }
-                ClusterEvent::SendRaftMessage(_) => {}
+                ClusterEvent::SendRaftMessage(_) | ClusterEvent::BlockCommitted(_) => {}
             })
             .unwrap();
 
@@ -885,6 +935,30 @@ mod tests {
         assert_eq!(cluster.pending_proposals(), 0);
         assert_eq!(cluster.state().len(), 1);
         assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::Conflicting);
+    }
+
+    #[test]
+    fn only_the_first_block_for_a_proposer_and_slot_is_accepted_through_raft() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+
+        let mut results = Vec::new();
+        for proposer_index in [4, 4, 5] {
+            let key = BlockKey { proposer_index, slot: 10 };
+            let proposal_id = cluster.propose_block(key, 10, now).unwrap();
+            cluster
+                .spin(now, 10, |event| {
+                    if let ClusterEvent::BlockCommitted(decision) = event {
+                        assert_eq!(decision.proposal_id, proposal_id);
+                        assert_eq!(decision.key, key);
+                        results.push(decision.result);
+                    }
+                })
+                .unwrap();
+        }
+
+        assert_eq!(results, [LockResult::Accepted, LockResult::Conflicting, LockResult::Accepted]);
     }
 
     #[test]
