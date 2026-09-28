@@ -514,27 +514,24 @@ impl BeaconStateTile {
 
     /// Overwritten checkpoint history makes the whole root bundle unavailable;
     /// partial metadata cannot describe the head.
-    fn head_roots(&self, head: SelectedHead) -> HeadRoots {
+    fn head_roots(&self, head: SelectedHead) -> Option<HeadRoots> {
         let node = self.fork_choice.node(head.idx);
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(node.state_id);
         let state_slot = view.slot.state().slot;
         let dependent =
             |epoch| view.block_roots.duty_dependent_root(epoch, head.observation.root, state_slot);
-        match (dependent(epoch.saturating_sub(1)), dependent(epoch)) {
-            (Some(previous), Some(current)) => HeadRoots {
-                state_root: node.state_root,
-                previous_duty_dependent_root: previous,
-                current_duty_dependent_root: current,
-            },
-            _ => HeadRoots::default(),
-        }
+        Some(HeadRoots {
+            state_root: node.state_root,
+            previous_duty_dependent_root: dependent(epoch.saturating_sub(1))?,
+            current_duty_dependent_root: dependent(epoch)?,
+        })
     }
 
     fn status_event(&mut self, head: SelectedHead) -> BeaconStateEvent {
         let curr = head.observation;
         let roots = self.head_roots(head);
-        let prev = self.emitted_head.filter(|_| roots.is_complete());
+        let prev = self.emitted_head.filter(|_| roots.is_some());
         let head_change = match prev {
             Some(prev) if prev.root != curr.root || prev.optimistic != curr.optimistic => {
                 HeadChange::Head
@@ -762,12 +759,12 @@ impl BeaconStateTile {
                     }
                     StagedVerdict::Kept => {}
                     StagedVerdict::NotStaged => {
-                        self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+                        self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
                     }
                 }
             }
             EngineResp::Fcu(r) => {
-                self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+                self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
             }
             // Proposal flow — silver doesn't propose yet, nothing requests
             // payloads.
@@ -1030,9 +1027,9 @@ impl BeaconStateTile {
         &mut self,
         block_root: B256,
         status: PayloadValidationStatus,
-        latest_valid_hash: B256,
+        latest_valid_hash: Option<B256>,
     ) {
-        self.on_payload_verdict(&block_root, &latest_valid_hash, status);
+        self.on_payload_verdict(&block_root, latest_valid_hash, status);
     }
 
     /// An envelope seen on gossip and verified against its bid, with the EL

@@ -37,7 +37,7 @@ pub(crate) fn handle_request(
 
 /// Unsafe no-EL testing mode: answer each request with a synthetic VALID
 /// response without contacting an execution client. Built payloads can't be
-/// fabricated, so those return `ok: false`; blob fetches answer
+/// fabricated, so those return no `data`; blob fetches answer
 /// as a healthy EL that simply holds none of the requested blobs.
 #[inline]
 pub(crate) fn handle_request_no_el(
@@ -49,35 +49,32 @@ pub(crate) fn handle_request_no_el(
         EngineReq::Fcu(r) => EngineResp::Fcu(EngineFcuResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: r.head_block_hash,
+            latest_valid_hash: Some(r.head_block_hash),
         }),
         EngineReq::NewPayload(r) => EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0u8; 32],
+            latest_valid_hash: None,
         }),
         EngineReq::NewPayloadEnvelope(r) => EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0u8; 32],
+            latest_valid_hash: None,
         }),
         EngineReq::PreparePayload(r) => EngineResp::PreparePayload(EnginePreparePayloadResp {
             id: r.id,
             payload_id: Some(r.id.to_le_bytes()),
         }),
-        EngineReq::GetPayload(r) => EngineResp::GetPayload(EngineGetPayloadResp {
-            id: r.id,
-            ok: false,
-            data: unsafe { std::mem::zeroed() },
-        }),
+        EngineReq::GetPayload(r) => {
+            EngineResp::GetPayload(EngineGetPayloadResp { id: r.id, data: None })
+        }
         // EL responded with none of the requested blobs: a count-0 frame.
         EngineReq::GetBlobs(r) => match write_tcache(resp_producer, &0u32.to_le_bytes()) {
             Some(data) => EngineResp::GetBlobs(EngineGetBlobsResp {
                 block_root: r.block_root,
                 slot: r.slot,
-                ok: true,
                 blobs_present: 0,
-                data,
+                data: Some(data),
             }),
             None => EngineResp::GetBlobs(EngineGetBlobsResp::failed(r.block_root, r.slot)),
         },
@@ -213,7 +210,7 @@ fn invalid_new_payload_resp(block_root: [u8; 32]) -> EngineNewPayloadResp {
     EngineNewPayloadResp {
         block_root,
         status: PayloadValidationStatus::Syncing,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     }
 }
 
@@ -225,6 +222,6 @@ mod tests {
     fn invalid_new_payload_resp_fields() {
         let resp = invalid_new_payload_resp([0u8; 32]);
         assert_eq!(resp.status, PayloadValidationStatus::Syncing);
-        assert_eq!(resp.latest_valid_hash, [0u8; 32]);
+        assert_eq!(resp.latest_valid_hash, None);
     }
 }

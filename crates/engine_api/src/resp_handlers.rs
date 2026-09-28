@@ -187,7 +187,6 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<ForkchoiceUpdatedResult>>(raw) {
                 Ok(RpcResult { result: Some(r), .. }) => {
                     let status = status_from_str(&r.payload_status.status);
-                    let latest_valid_hash = r.payload_status.latest_valid_hash.unwrap_or([0u8; 32]);
                     tracing::info!(
                         status = %r.payload_status.status,
                         latest_valid_hash = %r.payload_status.latest_valid_hash
@@ -195,7 +194,11 @@ impl<'a> Responses<'a> {
                             .unwrap_or_else(|| "null".into()),
                         "FCU → Reth"
                     );
-                    EngineFcuResp { block_root, status, latest_valid_hash }
+                    EngineFcuResp {
+                        block_root,
+                        status,
+                        latest_valid_hash: r.payload_status.latest_valid_hash,
+                    }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
                     tracing::warn!("forkchoiceUpdated rpc error: {}", e.message);
@@ -268,9 +271,12 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<PayloadStatus>>(raw) {
                 Ok(RpcResult { result: Some(ps), .. }) => {
                     let status = status_from_str(&ps.status);
-                    let latest_valid_hash = ps.latest_valid_hash.unwrap_or([0u8; 32]);
                     tracing::info!("newPayload → {:?}", status);
-                    EngineNewPayloadResp { block_root, status, latest_valid_hash }
+                    EngineNewPayloadResp {
+                        block_root,
+                        status,
+                        latest_valid_hash: ps.latest_valid_hash,
+                    }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
                     tracing::warn!("newPayload rpc error: {}", e.message);
@@ -291,7 +297,7 @@ impl<'a> Responses<'a> {
             Ok(raw) => match self.encode(raw, json_get_payload_to_tcache) {
                 Ok(Some(((), data))) => {
                     tracing::info!(id = spine_id, "getPayload ok");
-                    EngineGetPayloadResp { id: spine_id, ok: true, data }
+                    EngineGetPayloadResp { id: spine_id, data: Some(data) }
                 }
                 Ok(None) => {
                     tracing::warn!("getPayload TCache full");
@@ -326,7 +332,7 @@ impl<'a> Responses<'a> {
                         blobs_present,
                         "getBlobsV3 ok"
                     );
-                    EngineGetBlobsResp { block_root, slot, ok: true, blobs_present, data }
+                    EngineGetBlobsResp { block_root, slot, blobs_present, data: Some(data) }
                 }
                 Ok(None) => {
                     tracing::warn!("getBlobsV3 TCache full");
@@ -381,16 +387,12 @@ pub(crate) fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCac
 
 #[inline]
 fn get_payload_error(id: u64) -> EngineGetPayloadResp {
-    EngineGetPayloadResp { id, ok: false, data: unsafe { std::mem::zeroed() } }
+    EngineGetPayloadResp { id, data: None }
 }
 
 #[inline]
 fn fcu_error(block_root: [u8; 32]) -> EngineFcuResp {
-    EngineFcuResp {
-        block_root,
-        status: PayloadValidationStatus::Syncing,
-        latest_valid_hash: [0u8; 32],
-    }
+    EngineFcuResp { block_root, status: PayloadValidationStatus::Syncing, latest_valid_hash: None }
 }
 
 #[inline]
@@ -398,7 +400,7 @@ fn new_payload_error(block_root: [u8; 32]) -> EngineNewPayloadResp {
     EngineNewPayloadResp {
         block_root,
         status: PayloadValidationStatus::Syncing,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     }
 }
 

@@ -273,14 +273,14 @@ impl ElBlobFetcher {
             return;
         }
         let Some(fetch) = self.pending.remove(&response.block_root) else { return };
-        if !response.ok ||
-            response.blobs_present == 0 ||
+        let Some(data) = response.data else { return };
+        if response.blobs_present == 0 ||
             Instant::now() >= fetch.deadline ||
             self.responses.len() >= MAX_RESPONSES
         {
             return;
         }
-        let read = reader.acquire(response.data);
+        let read = reader.acquire(data);
         self.responses.push(PendingResponse { fetch, read });
     }
 

@@ -264,7 +264,7 @@ fn import_setup(
             assert!(received, "setup payload {payload} not accepted for {}", setup.block);
         }
         if let Some(status) = setup.payload_status.as_deref().and_then(payload_status) {
-            tile.ef_payload_verdict(root, status, [0u8; 32]);
+            tile.ef_payload_verdict(root, status, None);
         }
     }
     if let Some(cp) = &meta.finalized_checkpoint {
