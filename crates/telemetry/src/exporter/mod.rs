@@ -11,6 +11,8 @@ use std::{
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
 use silver_common::{APP_NAME, Nanos, NodeChain, SilverSpine};
+use silver_common::{APP_NAME, Nanos, SilverSpine};
+use silver_config::ChainConfig;
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 
