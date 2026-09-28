@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use ratatui::widgets::TableState;
 use silver_common::{GossipTopic, PeerId};
+use silver_observe::{DiscoveredSources, sort_key};
 
 use crate::{
-    discovery::DiscoveredSources,
     flamegraph::Flamegraph,
     render::events::EventsPane,
     search::Search,
@@ -216,9 +216,7 @@ impl App {
                 }
             }
         }
-        self.counters.sort_by(|a, b| {
-            crate::schema::sort_key(&a.name).cmp(&crate::schema::sort_key(&b.name))
-        });
+        self.counters.sort_by(|a, b| sort_key(&a.name).cmp(&sort_key(&b.name)));
         if let Some(n) = sel_name {
             if let Some(idx) = self.counters.iter().position(|c| c.name == n) {
                 self.counters_selection.0 = idx;

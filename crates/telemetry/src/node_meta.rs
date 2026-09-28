@@ -27,7 +27,7 @@ impl NodeMeta {
         }
     }
 
-    fn hostname() -> String {
+    pub fn hostname() -> String {
         let mut buf = [0u8; 256];
         if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
             return "unknown".to_owned();

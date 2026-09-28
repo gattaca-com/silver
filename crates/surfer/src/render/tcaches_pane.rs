@@ -2,7 +2,7 @@
 //! ring-buffer bar showing the head/min-tail occupancy, followed by
 //! human-readable capacity + current length columns.
 //!
-//! Slot layout per CounterSet (synthesised by `schema::names_for`):
+//! Slot layout per CounterSet (synthesised by `silver_observe::names_for`):
 //!   0: capacity
 //!   1: head_seq
 //!   2..: tail_seq[i] — tails never updated by their consumer remain
@@ -170,7 +170,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
         let color = TAIL_COLORS[consumer_idx % TAIL_COLORS.len()];
         let data: Vec<(f64, f64)> =
             hist.iter().enumerate().map(|(i, &v)| (i as f64, v as f64)).collect();
-        let name = set.consumer_name(consumer_idx);
+        let name = set.map.consumer_name(consumer_idx);
         let label = if name.is_empty() { format!("tail_{consumer_idx}") } else { name.to_string() };
         series.push(ChartSeries { name: label, color, data });
     }

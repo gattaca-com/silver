@@ -5227,6 +5227,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_observe"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "libc",
+ "silver_common",
+ "silver_metrics",
+ "silver_stages",
+]
+
+[[package]]
+name = "silver_observe_wire"
+version = "0.0.1"
+
+[[package]]
 name = "silver_peer"
 version = "0.0.1"
 dependencies = [
@@ -5301,11 +5316,11 @@ dependencies = [
  "crossterm",
  "flux",
  "hdrhistogram",
- "libc",
  "ratatui",
  "silver_beacon_state_data",
  "silver_common",
  "silver_metrics",
+ "silver_observe",
  "silver_stages",
  "tempfile",
 ]
@@ -5321,6 +5336,7 @@ dependencies = [
  "flux-clickhouse",
  "flux-network",
  "flux-profiler",
+ "hdrhistogram",
  "hex",
  "humantime",
  "libc",
@@ -5329,6 +5345,8 @@ dependencies = [
  "silver_common",
  "silver_config",
  "silver_log",
+ "silver_observe",
+ "silver_observe_wire",
  "silver_stages",
  "tempfile",
  "toml",

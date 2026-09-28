@@ -1,0 +1,9 @@
+[package]
+name = "silver_observe_wire"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

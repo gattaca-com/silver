@@ -1,0 +1,16 @@
+[package]
+name = "silver_observe"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+flux.workspace = true
+libc.workspace = true
+silver_common.workspace = true
+silver_metrics.workspace = true
+silver_stages.workspace = true
+
+[lints]
+workspace = true

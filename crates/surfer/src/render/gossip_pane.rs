@@ -20,7 +20,8 @@ pub const COLUMNS: [&str; 12] =
     ["topic", "mesh", "subs", "rx/s", "tx/s", "act", "age", "fd", "md", "p3b", "p4", "fwd"];
 
 /// Slots per topic in the `gossip_topics` counter file; layout shared with
-/// `GossipTopicCounters` (sent, recv, mesh, subs) and `schema::names_for`.
+/// `GossipTopicCounters` (sent, recv, mesh, subs) and
+/// `silver_observe::names_for`.
 const PER_TOPIC: usize = 4;
 
 struct Member<'a> {

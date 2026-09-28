@@ -10,10 +10,10 @@
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
-use flux::tile::{TileConfig, tile_runner};
+use flux::tile::{TileConfig, attach_tile, tile_runner};
 use silver_common::{SilverSpine, tracing::initialise_tracing_log};
 
-use crate::{collector::TraceCollector, config::Args};
+use crate::{collector::TraceCollector, config::Args, exporter::Exporter, node_meta::NodeMeta};
 
 mod block_events;
 mod clickhouse_tables;
@@ -22,17 +22,30 @@ mod config;
 mod counter_deltas;
 mod counters;
 mod log_counts;
+mod exporter;
 mod node_meta;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("telemetry", 10, None, false, None);
-    let collector = TraceCollector::attach_to_node(Args::parse())?;
+    let args = Args::parse();
+    let exporter = match &args.dashboard_addr {
+        Some(addr) => {
+            Some(Exporter::open(addr, args.instance.clone().unwrap_or_else(NodeMeta::hostname))?)
+        }
+        None => None,
+    };
+    let collector = TraceCollector::attach_to_node(args)?;
 
+    // Metrics off: this process shares the node's app name, so its own
+    // tilemetrics queues would show up among the node's.
+    let config =
+        || TileConfig::background(None, Some(Duration::from_millis(10).into())).without_metrics();
     let spine = SilverSpine::new(None);
     spine.start_no_persist(None, None, |scoped_spine| {
-        let config =
-            TileConfig::background(None, Some(Duration::from_millis(10).into())).without_metrics();
-        tile_runner(collector, scoped_spine, config)();
+        if let Some(exporter) = exporter {
+            attach_tile(exporter, scoped_spine, config());
+        }
+        tile_runner(collector, scoped_spine, config())();
     });
     Ok(())
 }

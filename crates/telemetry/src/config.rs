@@ -41,6 +41,13 @@ pub struct Args {
     /// inserted.
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Dashboard `host:port` to stream live metrics to over UDP; unset
+    /// disables the exporter.
+    #[arg(long)]
+    pub dashboard_addr: Option<String>,
+    /// This node's name on the dashboard. Defaults to the hostname.
+    #[arg(long)]
+    pub instance: Option<String>,
 }
 
 impl Args {

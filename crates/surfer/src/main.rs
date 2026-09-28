@@ -22,13 +22,12 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use silver_observe::discover;
 use silver_stages::SlotClock;
 
 mod app;
-mod discovery;
 mod flamegraph;
 mod render;
-mod schema;
 mod search;
 mod sources;
 
@@ -62,7 +61,7 @@ fn main() -> io::Result<()> {
         args.next().map(PathBuf::from).unwrap_or_else(flux::utils::directories::local_share_dir);
     let app_name = args.next().unwrap_or_else(|| "silver".to_string());
 
-    let sources = discovery::discover(&base_dir, &app_name)?;
+    let sources = discover(&base_dir, &app_name)?;
     let mut counter_sets: Vec<CounterSet> = sources
         .counters
         .iter()
@@ -196,7 +195,7 @@ fn run<B: ratatui::backend::Backend>(
             last_bucket = Instant::now();
         }
         if last_discover.elapsed() >= DISCOVER {
-            if let Ok(s) = discovery::discover(base_dir, app_name) {
+            if let Ok(s) = discover(base_dir, app_name) {
                 app.merge_new_sources(s);
             }
             app.flamegraph.reattach_if_restarted(app_name);
