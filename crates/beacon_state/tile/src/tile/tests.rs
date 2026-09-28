@@ -4761,8 +4761,8 @@ fn head_that_moves_after_preparation_is_prepared_again() {
     register_proposer(&mut rig.tile, 0, [7; 20]);
     engine_requests(&mut rig.sink);
 
-    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
-    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    let first = rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    assert_eq!(rig.tile.prepare_payload(72, &mut rig.adapter.producers), first);
     assert_eq!(prepared_parents(&mut rig.sink), [ANCHOR_ROOT]);
 
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
@@ -4916,12 +4916,118 @@ fn request_for_another_block_supersedes_the_build() {
     let other_graffiti = BlockRequest { request_id: 6, graffiti: [1; 32], ..block_request(11) };
     tile.produce_block(other_graffiti, &mut adapter.producers);
     assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::Superseded))]);
+    assert!(engine_requests(&mut sink).is_empty(), "the payload in preparation is shared");
 
     prepared(&mut tile, first.id, [9; 8], &mut adapter.producers);
-    assert!(
-        !engine_requests(&mut sink)
-            .iter()
-            .any(|request| matches!(request, EngineReq::GetPayload(_))),
-        "the superseded preparation fetches nothing"
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload fetch, for the replacing block");
+    };
+    no_payload(&mut tile, fetch.id, &mut adapter.producers);
+    assert_eq!(produced_blocks(&mut sink), [(6, Some(ProduceBlockFailure::PayloadUnavailable))]);
+}
+
+/// Fed the `one_blob` block's payload, commitments and requests, the tile
+/// assembles that block's message, with the bundle's proofs and blobs behind
+/// it. The fixture votes a zeroed `eth1_data` where the tile votes the
+/// state's, so those bytes and the state root differ; importing the produced
+/// block checks the roots it carries.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn produced_block_contents_match_the_fixture_block() {
+    use silver_common::{
+        PayloadFrame,
+        ssz_view::{BYTES_PER_BLOB, BeaconBlockBodyFuluView},
+    };
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    produced_blocks(&mut sink);
+    register_proposer(&mut tile, SignedBeaconBlockView::proposer_index(&block_ssz), [7; 20]);
+
+    let message = &block_ssz[100..];
+    let body = SignedBeaconBlockView::body(&block_ssz);
+    let field = |from: u32, to: usize| &body[from as usize..to];
+    let execution_payload = field(
+        BeaconBlockBodyFuluView::execution_payload_offset(body),
+        BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize,
     );
+    let commitments = field(
+        BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body),
+        BeaconBlockBodyFuluView::execution_requests_offset(body) as usize,
+    );
+    let requests = field(BeaconBlockBodyFuluView::execution_requests_offset(body), body.len());
+    let blob_count = commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    assert_eq!(blob_count, 1, "fixture premise: one blob");
+    let cell_proofs = vec![0x11; blob_count * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN];
+    let blobs = vec![0x22; blob_count * BYTES_PER_BLOB];
+
+    let mut frame = (execution_payload.len() as u32).to_le_bytes().to_vec();
+    frame.extend_from_slice(execution_payload);
+    frame.push(blob_count as u8);
+    frame.extend_from_slice(commitments);
+    frame.extend_from_slice(&cell_proofs);
+    frame.extend_from_slice(&blobs);
+    frame.push(0);
+    frame.extend_from_slice(&(requests.len() as u32).to_le_bytes());
+    frame.extend_from_slice(requests);
+    frame.extend_from_slice(&[3; 32]);
+
+    let request = BlockRequest {
+        request_id: 5,
+        slot,
+        randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
+        graffiti: *BeaconBlockBodyFuluView::graffiti(body),
+    };
+    tile.produce_block(request, &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [1; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload fetch");
+    };
+    let (_, read) = publish_block_bytes(&mut gp, &frame);
+    let response = EngineGetPayloadResp { id: fetch.id, data: Some(read) };
+    tile.handle_engine_response(EngineResp::GetPayload(response), &mut adapter.producers);
+
+    let mut produced = Vec::new();
+    sink.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::ProducedBlock { block, .. } = response {
+            produced.push(block);
+        }
+    });
+    let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
+    assert_eq!(block.execution_payload_value, [3; 32]);
+    let contents = tile.events_producer.read_buffer(block.contents).unwrap();
+    let proofs_at = 12 + message.len();
+    let blobs_at = proofs_at + cell_proofs.len();
+    let offsets: Vec<_> =
+        contents[..12].chunks_exact(4).map(|o| u32::from_le_bytes(o.try_into().unwrap())).collect();
+    assert_eq!(offsets, [12, proofs_at as u32, blobs_at as u32]);
+    let produced_message = &contents[12..proofs_at];
+    let eth1_data = 84 + 96..84 + 96 + 72;
+    let mut expected = message.to_vec();
+    expected[48..80].copy_from_slice(&produced_message[48..80]);
+    expected[eth1_data.clone()].copy_from_slice(&pre_ssz[524468..524468 + 72]);
+    assert_eq!(produced_message, expected, "the fixture block's message");
+    assert_eq!(&contents[proofs_at..blobs_at], cell_proofs);
+    assert_eq!(&contents[blobs_at..], blobs);
+
+    // The checkpoint was loaded without decompressed pubkeys, so this import
+    // bypasses proposer-signature verification.
+    let mut signed = 100u32.to_le_bytes().to_vec();
+    signed.extend_from_slice(&[0; 96]);
+    signed.extend_from_slice(produced_message);
+    let (data, read) = publish_block_bytes(&mut gp, &signed);
+    let pinned = tile.reader.acquire(read);
+    let feedback =
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+    // The state transition checks the roots before a blob block is staged
+    // on its columns.
+    assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
 }

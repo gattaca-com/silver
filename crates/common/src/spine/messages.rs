@@ -12,7 +12,7 @@ use crate::{
     P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
     column_util::columns_of,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
+        BLOCKS_BY_RANGE_REQ_SIZE, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         DC_BY_RANGE_REQ_MAX, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE,
         METADATA_SIZE, NUMBER_OF_COLUMNS, PING_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
         SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, SszView, StatusView,
@@ -1346,56 +1346,42 @@ pub struct EngineGetPayloadResp {
 }
 
 /// The `engine_getPayloadV5` result as the engine tile frames it:
-/// `[u32 len][ExecutionPayload]`, `[u8 n]` then per blob
-/// `{commitment, NUMBER_OF_COLUMNS cell proofs, [u32 len][blob]}`,
-/// `[u8 shouldOverrideBuilder]`, `[u32 len][ExecutionRequests]`, and the
+/// `[u32 len][ExecutionPayload]`, `[u8 n]`, the `n` commitments, every blob's
+/// `NUMBER_OF_COLUMNS` cell proofs, the `n` blobs, `[u8
+/// shouldOverrideBuilder]`, `[u32 len][ExecutionRequests]`, and the
 /// little-endian `blockValue`.
 pub struct PayloadFrame<'a> {
     pub execution_payload: &'a [u8],
-    blobs: &'a [u8],
     pub blob_count: usize,
+    pub commitments: &'a [u8],
+    pub cell_proofs: &'a [u8],
+    pub blobs: &'a [u8],
     pub execution_requests: &'a [u8],
     pub block_value: [u8; 32],
 }
 
-pub struct FramedBlob<'a> {
-    pub commitment: &'a [u8; BYTES_PER_KZG_COMMITMENT],
-    pub cell_proofs: &'a [u8],
-    pub blob: &'a [u8],
-}
-
 impl<'a> PayloadFrame<'a> {
-    const CELL_PROOFS_LEN: usize = NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF;
+    pub const CELL_PROOFS_PER_BLOB_LEN: usize = NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF;
 
     pub fn parse(frame: &'a [u8]) -> Option<Self> {
         let (execution_payload, rest) = Self::length_prefixed(frame)?;
-        let (&blob_count, mut rest) = rest.split_first()?;
-        let blobs_start = rest;
-        for _ in 0..blob_count {
-            let fixed = BYTES_PER_KZG_COMMITMENT + Self::CELL_PROOFS_LEN;
-            (_, rest) = Self::length_prefixed(rest.get(fixed..)?)?;
-        }
-        let blobs = &blobs_start[..blobs_start.len() - rest.len()];
+        let (&blob_count, rest) = rest.split_first()?;
+        let blob_count = blob_count as usize;
+        let (commitments, rest) = rest.split_at_checked(blob_count * BYTES_PER_KZG_COMMITMENT)?;
+        let (cell_proofs, rest) =
+            rest.split_at_checked(blob_count * Self::CELL_PROOFS_PER_BLOB_LEN)?;
+        let (blobs, rest) = rest.split_at_checked(blob_count * BYTES_PER_BLOB)?;
         let (_should_override, rest) = rest.split_first()?;
         let (execution_requests, rest) = Self::length_prefixed(rest)?;
         let block_value = rest.try_into().ok()?;
         Some(Self {
             execution_payload,
+            blob_count,
+            commitments,
+            cell_proofs,
             blobs,
-            blob_count: blob_count as usize,
             execution_requests,
             block_value,
-        })
-    }
-
-    pub fn blobs(&self) -> impl Iterator<Item = FramedBlob<'a>> + use<'a> {
-        let mut rest = self.blobs;
-        (0..self.blob_count).map(move |_| {
-            let (commitment, after) = rest.split_first_chunk::<BYTES_PER_KZG_COMMITMENT>().unwrap();
-            let (cell_proofs, after) = after.split_at(Self::CELL_PROOFS_LEN);
-            let (blob, after) = Self::length_prefixed(after).unwrap();
-            rest = after;
-            FramedBlob { commitment, cell_proofs, blob }
         })
     }
 

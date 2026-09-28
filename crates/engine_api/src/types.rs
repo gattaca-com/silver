@@ -2,7 +2,7 @@ use std::mem;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::ssz_view::{
-    BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, ExecutionPayloadEnvelopeView,
+    BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BeaconBlockBodyFuluView, ExecutionPayloadEnvelopeView,
     ExecutionPayloadView, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
     SignedExecutionPayloadEnvelopeView,
 };
@@ -729,7 +729,8 @@ pub(crate) fn json_get_payload_to_tcache(
     let payload_ssz_len = (out.len() - ssz_start) as u32;
     out[tcache_hdr..tcache_hdr + 4].copy_from_slice(&payload_ssz_len.to_le_bytes());
 
-    // BlobsBundleV2: `proofs` holds every blob's cell proofs, blob by blob.
+    // BlobsBundleV2: `proofs` holds every blob's cell proofs, blob by blob, so
+    // each array copies into the frame as one contiguous run.
     let commitments = bb.get("commitments").and_then(|v| v.as_array());
     let proofs = bb.get("proofs").and_then(|v| v.as_array());
     let blobs = bb.get("blobs").and_then(|v| v.as_array());
@@ -747,16 +748,18 @@ pub(crate) fn json_get_payload_to_tcache(
             .ok_or_else(|| crate::EngineError::Ssz("blobsBundle entry is not a string".into()))
             .and_then(hex_to_fixed::<48>)
     };
-    let mut proofs = array_items(proofs);
-    for (commitment, blob) in array_items(commitments).zip(array_items(blobs)) {
+    for commitment in array_items(commitments) {
         out.extend_from_slice(&kzg_bytes(commitment)?);
-        for proof in proofs.by_ref().take(NUMBER_OF_COLUMNS) {
-            out.extend_from_slice(&kzg_bytes(proof)?);
+    }
+    for proof in array_items(proofs) {
+        out.extend_from_slice(&kzg_bytes(proof)?);
+    }
+    for blob in array_items(blobs) {
+        let blob = blob.into_string().unwrap_or("0x");
+        if blob.strip_prefix("0x").unwrap_or(blob).len() != 2 * BYTES_PER_BLOB {
+            return Err(crate::EngineError::Ssz("blob is not BYTES_PER_BLOB long".into()));
         }
-        let b_s = blob.into_string().unwrap_or("0x");
-        let b_hex = b_s.strip_prefix("0x").unwrap_or(b_s);
-        out.extend_from_slice(&((b_hex.len() / 2) as u32).to_le_bytes());
-        hex_extend(b_s, out)?;
+        hex_extend(blob, out)?;
     }
 
     out.push(should_override as u8);
@@ -872,6 +875,7 @@ pub(crate) fn json_get_blobs_to_tcache(
 
 #[cfg(test)]
 mod tests {
+    use silver_common::PayloadFrame;
     use simd_json::{
         owned::to_value,
         prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess},
@@ -998,9 +1002,9 @@ mod tests {
     fn get_payload_json() -> Vec<u8> {
         let logs_bloom = "55".repeat(256);
         let commitment0 = "c0".repeat(48);
-        let blob0 = "b0".repeat(128);
+        let blob0 = "b0".repeat(BYTES_PER_BLOB);
         let commitment1 = "c1".repeat(48);
-        let blob1 = "b1".repeat(64);
+        let blob1 = "b1".repeat(BYTES_PER_BLOB);
         let withdrawal = "aa".repeat(76);
         let consolidation = "bb".repeat(116);
         let proofs = (0..2u8)
@@ -1544,13 +1548,16 @@ mod tests {
         let mut expected = (SAMPLE_PAYLOAD_SSZ.len() as u32).to_le_bytes().to_vec();
         expected.extend_from_slice(SAMPLE_PAYLOAD_SSZ);
         expected.push(2);
-        for (blob, blob_bytes) in [(0u8, [0xb0; 128].as_slice()), (1, [0xb1; 64].as_slice())] {
+        for blob in 0..2u8 {
             expected.extend_from_slice(&[0xc0 + blob; 48]);
+        }
+        for blob in 0..2u8 {
             for cell in 0..NUMBER_OF_COLUMNS {
                 expected.extend_from_slice(&cell_proof(blob, cell));
             }
-            expected.extend_from_slice(&(blob_bytes.len() as u32).to_le_bytes());
-            expected.extend_from_slice(blob_bytes);
+        }
+        for blob in 0..2u8 {
+            expected.extend_from_slice(&[0xb0 + blob; BYTES_PER_BLOB]);
         }
         expected.push(0);
         expected.extend_from_slice(&(12u32 + 76 + 116).to_le_bytes());
@@ -1563,6 +1570,15 @@ mod tests {
         block_value[..8].copy_from_slice(&2_000_000_000_000_000_000u64.to_le_bytes());
         expected.extend_from_slice(&block_value);
         assert_eq!(out, expected);
+
+        let frame = PayloadFrame::parse(&out).expect("the frame parses");
+        assert_eq!(frame.execution_payload, SAMPLE_PAYLOAD_SSZ);
+        assert_eq!(frame.blob_count, 2);
+        assert_eq!(frame.commitments, [[0xc0; 48], [0xc1; 48]].as_flattened());
+        assert_eq!(frame.cell_proofs.len(), 2 * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN);
+        assert_eq!(frame.blobs, [[0xb0; BYTES_PER_BLOB], [0xb1; BYTES_PER_BLOB]].as_flattened());
+        assert_eq!(frame.execution_requests.len(), 12 + 76 + 116);
+        assert_eq!(frame.block_value, block_value);
     }
 
     #[test]
@@ -1591,6 +1607,13 @@ mod tests {
             let result = payload_frame(&mut json.into_bytes());
             assert!(result.is_err(), "{requests}");
         }
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_rejects_a_short_blob() {
+        let json = String::from_utf8(get_payload_json()).unwrap();
+        let short = json.replacen(&"b1".repeat(BYTES_PER_BLOB), &"b1".repeat(64), 1);
+        assert!(payload_frame(&mut short.into_bytes()).is_err());
     }
 
     #[test]

@@ -32,9 +32,9 @@ impl PayloadPreparations {
         id
     }
 
-    fn covers(&self, slot: Slot, parent_root: B256) -> bool {
+    fn in_flight(&self, slot: Slot, parent_root: B256) -> Option<u64> {
         let key = PayloadKey { slot, parent_root };
-        self.payload_ids.contains_key(&key) || self.requested.values().any(|k| *k == key)
+        self.requested.iter().find_map(|(id, requested)| (*requested == key).then_some(*id))
     }
 
     pub(super) fn on_response(&mut self, response: EnginePreparePayloadResp) {
@@ -84,8 +84,8 @@ impl BeaconStateTile {
             silver_log::warn!(slot, "head state does not follow fork choice; payload not prepared");
             return Err(ProduceBlockFailure::Internal);
         }
-        if self.payload_preparations.covers(slot, head_root) {
-            return;
+        if let Some(id) = self.payload_preparations.in_flight(slot, head_root) {
+            return Ok(id);
         }
 
         let proposer = self.proposer_on_head(slot).ok_or(ProduceBlockFailure::Internal)?;
@@ -131,8 +131,9 @@ impl BeaconStateTile {
 
     pub(super) fn prepare_payload_on_new_head(&mut self, producers: &mut Producers) {
         let slot = self.payload_preparations.prepared_slot;
-        if slot > self.ticker.current_slot() {
-            self.prepare_payload(slot, producers);
+        let prepared = self.payload_preparations.payload_id(slot, self.head_block_root());
+        if slot > self.ticker.current_slot() && prepared.is_none() {
+            let _ = self.prepare_payload(slot, producers);
         }
     }
 }
