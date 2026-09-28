@@ -51,6 +51,7 @@ pub(crate) use validator::{
     initiate_validator_exit, is_active, is_slashable_validator,
 };
 pub(crate) use withdrawals::{
+    ExpectedWithdrawals, PayloadWithdrawals, get_expected_withdrawals,
     get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
     update_next_withdrawal_index, update_next_withdrawal_validator_index,
 };

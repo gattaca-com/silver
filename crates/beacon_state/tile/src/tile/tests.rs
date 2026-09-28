@@ -10,10 +10,10 @@ use silver_beacon_state_data::{
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
-    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
-    TProducer, block_root_fulu,
+    BlockStage, EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
+    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -4525,4 +4525,60 @@ fn fresh_shufflings_are_posted_once() {
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     let published = rig.drain();
     assert_eq!(posted(&rig.tile.events_producer, published), []);
+}
+
+fn register_proposer(tile: &mut BeaconStateTile, validator_index: u64, fee_recipient: [u8; 20]) {
+    let mut encoded = [0; ProposerPreparation::SIZE];
+    ProposerPreparation { validator_index, fee_recipient }.encode(&mut encoded);
+    tile.proposer_preparations.record(&encoded, 0);
+}
+
+fn engine_requests(sink: &mut SpineAdapter<SilverSpine>) -> Vec<EngineReq> {
+    let mut requests = Vec::new();
+    sink.consume(|request: EngineReq, _| requests.push(request));
+    requests
+}
+
+/// Seeded states name validator 0 in every lookahead seat.
+#[test]
+fn registered_proposer_gets_a_payload_prepared_on_the_head() {
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.prepare_payload(11, &mut adapter.producers);
+
+    let [EngineReq::PreparePayload(request)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload preparation");
+    };
+    assert_eq!(request.attrs_fee_recipient, [7; 20]);
+    assert_eq!(request.attrs_parent_beacon_block_root, ANCHOR_ROOT);
+    assert_eq!(request.attrs_timestamp, 11 * 12);
+
+    tile.handle_engine_response(
+        EngineResp::PreparePayload(EnginePreparePayloadResp {
+            id: request.id,
+            has_payload_id: true,
+            payload_id: [9; 8],
+        }),
+        &mut adapter.producers,
+    );
+    assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), Some([9; 8]));
+    tile.payload_preparations.prune_before(12);
+    assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), None);
+}
+
+#[test]
+fn unregistered_proposer_gets_no_payload_prepared() {
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    register_proposer(&mut tile, 1, [7; 20]);
+
+    tile.prepare_payload(11, &mut adapter.producers);
+
+    assert!(engine_requests(&mut sink).is_empty());
 }

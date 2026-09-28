@@ -24,7 +24,6 @@ impl ProposerPreparations {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "payload preparation reads it next"))]
     pub(super) fn fee_recipient(&self, validator_index: u64) -> Option<ExecutionAddress> {
         self.by_index.get(&validator_index).map(|preparation| preparation.fee_recipient)
     }

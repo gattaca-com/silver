@@ -1,4 +1,4 @@
-use core::cmp::min;
+use core::{cmp::min, ops::Deref};
 
 use silver_beacon_state_data::{
     ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, SLOTS_PER_EPOCH, Slot, SpecConfig,
@@ -16,6 +16,31 @@ use crate::{
 pub(crate) const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
 pub(crate) const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
 const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: usize = 8;
+
+#[derive(Clone, Copy)]
+pub(crate) struct PayloadWithdrawals {
+    items: [Withdrawal; MAX_WITHDRAWALS_PER_PAYLOAD],
+    len: usize,
+}
+
+impl PayloadWithdrawals {
+    pub(crate) fn new() -> Self {
+        Self { items: [Withdrawal::default(); MAX_WITHDRAWALS_PER_PAYLOAD], len: 0 }
+    }
+
+    pub(crate) fn push(&mut self, withdrawal: Withdrawal) {
+        self.items[self.len] = withdrawal;
+        self.len += 1;
+    }
+}
+
+impl Deref for PayloadWithdrawals {
+    type Target = [Withdrawal];
+
+    fn deref(&self) -> &[Withdrawal] {
+        &self.items[..self.len]
+    }
+}
 
 /// Validate header sanity then cache the execution payload header.
 /// No BLS sigs; everything happens in pass 2.
@@ -75,7 +100,7 @@ pub fn process_execution_payload(
 pub(crate) fn get_pending_partial_withdrawals(
     view: &StateWriterView,
     current_epoch: u64,
-    out: &mut Vec<Withdrawal>,
+    out: &mut PayloadWithdrawals,
     wi: &mut u64,
 ) -> usize {
     let limit = min(
@@ -114,7 +139,7 @@ pub(crate) fn get_pending_partial_withdrawals(
 pub(crate) fn get_validators_sweep_withdrawals(
     view: &StateWriterView,
     current_epoch: u64,
-    out: &mut Vec<Withdrawal>,
+    out: &mut PayloadWithdrawals,
     wi: &mut u64,
 ) {
     let validators = &view.validators;
@@ -205,6 +230,21 @@ fn payload_record(withdrawals_data: &[u8], i: usize) -> WithdrawalRecord {
     }
 }
 
+pub(crate) struct ExpectedWithdrawals {
+    pub(crate) withdrawals: PayloadWithdrawals,
+    pub(crate) processed_partials: usize,
+}
+
+pub(crate) fn get_expected_withdrawals(view: &StateWriterView) -> ExpectedWithdrawals {
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let mut withdrawals = PayloadWithdrawals::new();
+    let mut wi = view.slot.state().next_withdrawal_index;
+    let processed_partials =
+        get_pending_partial_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
+    get_validators_sweep_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
+    ExpectedWithdrawals { withdrawals, processed_partials }
+}
+
 /// Compute the expected withdrawals, assert the payload carries exactly them,
 /// then apply and advance the cursors.
 pub fn process_withdrawals_fulu(
@@ -228,12 +268,8 @@ pub fn process_withdrawals_fulu(
         });
     }
 
-    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
-    let mut expected: Vec<Withdrawal> = Vec::new();
-    let mut wi = view.slot.state().next_withdrawal_index;
-    let processed_partial =
-        get_pending_partial_withdrawals(view, current_epoch, &mut expected, &mut wi);
-    get_validators_sweep_withdrawals(view, current_epoch, &mut expected, &mut wi);
+    let ExpectedWithdrawals { withdrawals: expected, processed_partials } =
+        get_expected_withdrawals(view);
 
     if expected.len() != payload_count {
         return Err(WithdrawalsError::CountMismatch {
@@ -254,13 +290,13 @@ pub fn process_withdrawals_fulu(
         }
     }
 
-    for w in &expected {
+    for w in expected.iter() {
         let balance = view.balances.get(w.validator_index as usize);
         view.balances.set(w.validator_index as u32, balance.saturating_sub(w.amount));
     }
     update_next_withdrawal_index(view, &expected);
-    if processed_partial > 0 {
-        view.pending.partial_withdrawals.drain(processed_partial);
+    if processed_partials > 0 {
+        view.pending.partial_withdrawals.drain(processed_partials);
     }
     update_next_withdrawal_validator_index(view, &expected);
     Ok(())
