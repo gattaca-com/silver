@@ -1106,8 +1106,7 @@ pub enum BeaconStateEvent {
         wall_slot: u64,
         head_optimistic: bool,
         enr_fork_id: [u8; 16],
-        /// `None` before seeding or when checkpoint history has overwritten a
-        /// dependent root.
+        /// `None` when checkpoint history has overwritten a dependent root.
         head_roots: Option<HeadRoots>,
         head_payload: PayloadResolution,
         head_change: HeadChange,
