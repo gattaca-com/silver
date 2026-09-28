@@ -1070,6 +1070,8 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         self.seen_proposer_slashings.mark(proposer_index);
+        let admission = self.slashing_pool.insert_proposer_slashing(buf, &view);
+        tracing::info!(proposer_index, ?admission, "proposer slashing pooled");
         Feedback::Accept
     }
 
@@ -1105,6 +1107,9 @@ impl BeaconStateTile {
                 self.fork_choice.mark_equivocating(idx as usize);
                 self.seen_attester_slashed.mark(idx as usize);
             }
+            let view = self.state.read_view(canon_id);
+            let admission = self.slashing_pool.insert_attester_slashing(data, slashed, &view);
+            tracing::info!(offenders = slashed.len(), ?admission, "attester slashing pooled");
         }
         feedback
     }

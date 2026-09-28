@@ -65,5 +65,8 @@ impl BeaconStateTile {
 
         let fin_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
         self.clear_finalized_held(fin_slot);
+
+        let finalized = self.state.read_view(self.fork_choice.node(0).state_id);
+        self.slashing_pool.prune(&finalized);
     }
 }

@@ -17,9 +17,10 @@ use silver_common::{
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
-        SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SignedAggregateAndProofView, SignedBeaconBlockView, SingleAttestationView, StatusView,
+        ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
+        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView, SingleAttestationView,
+        StatusView,
     },
     test_util::ShmemDir,
 };
@@ -2228,6 +2229,172 @@ fn as_zero_intersection_with_valid_sigs_ignored() {
     let ia2 = test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
     let buf = wrap_attester_slashing(&ia1, &ia2);
     assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Ignore);
+}
+
+// Reads the private pool because the tile has no block-production consumer.
+fn pooled(tile: &BeaconStateTile) -> (Vec<[u8; PROPOSER_SLASHING_SIZE]>, Option<Vec<u8>>) {
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let selection = tile.slashing_pool.select(&view);
+    let proposer_slashings = selection.proposer_slashings.into_iter().copied().collect();
+    (proposer_slashings, selection.attester_slashing.map(<[u8]>::to_vec))
+}
+
+// Exercises slashing processing and signature verification, not full block
+// validation.
+fn block_accepts(
+    tile: &mut BeaconStateTile,
+    proposer_slashings: &[[u8; PROPOSER_SLASHING_SIZE]],
+    attester_slashing: Option<&[u8]>,
+) -> bool {
+    let head = tile.canonical_state_id();
+    let mut fork = tile.state.apply_block_view(head);
+    let epoch = fork.epoch.view_opt(fork.epoch_idx);
+    let proposers = proposer_slashings.concat();
+    let attesters = attester_slashing.map(|a| [&4u32.to_le_bytes()[..], a].concat());
+    let attesters = attesters.unwrap_or_default();
+
+    let mut sigs = bls::SigBatch::new();
+    let validators = fork.view.validators.reader();
+    let imm = fork.view.imm;
+    let collected =
+        stf::collect_sigs_proposer_slashings(imm, &epoch, &validators, &proposers, &mut sigs)
+            .is_ok() &&
+            stf::collect_sigs_attester_slashings(
+                imm,
+                &epoch,
+                &validators,
+                &attesters,
+                &mut Vec::new(),
+                &mut sigs,
+            )
+            .is_ok();
+    if !collected || !sigs.verify_all() {
+        return false;
+    }
+
+    stf::process_proposer_slashings(&mut fork.view, epoch, &tile.spec, &proposers).is_ok() &&
+        stf::process_attester_slashings(
+            &mut fork.view,
+            epoch,
+            &tile.spec,
+            &attesters,
+            &mut Vec::new(),
+        )
+        .is_ok()
+}
+
+#[test]
+fn ps_accept_pools_the_proof() {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let imm = seed_immutable(&tile);
+    let buf = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
+    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept);
+    assert_eq!(pooled(&tile).0, [buf]);
+}
+
+#[test]
+fn ps_rejected_is_not_pooled() {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let imm = seed_immutable(&tile);
+    let valid = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
+    let mut buf = test_signing::sign_proposer_slashing(1, 0, 0, &imm);
+    buf[208..320].copy_from_slice(&valid[208..320]);
+    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(pooled(&tile).0.is_empty());
+}
+
+#[test]
+fn as_accept_pools_the_proof() {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let imm = seed_immutable(&tile);
+    let buf = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
+    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept);
+    assert_eq!(pooled(&tile).1, Some(buf));
+}
+
+#[test]
+fn as_ignored_is_not_pooled() {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let imm = seed_immutable(&tile);
+    let ia1 = test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
+    let ia2 = test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
+    let buf = wrap_attester_slashing(&ia1, &ia2);
+    assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Ignore);
+    assert_eq!(pooled(&tile).1, None);
+}
+
+#[test]
+fn pooled_selection_applies_as_block_operations() {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let imm = seed_immutable(&tile);
+    let proposer = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
+    let same_offender = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
+    let other_offender = test_signing::sign_attester_slashing_double_vote(1, 1, 0, 0, &imm);
+    assert_eq!(tile.handle_proposer_slashing(&proposer), Feedback::Accept);
+    assert_eq!(tile.handle_attester_slashing(&same_offender), Feedback::Accept);
+    assert_eq!(tile.handle_attester_slashing(&other_offender), Feedback::Accept);
+
+    let (proposers, attester) = pooled(&tile);
+    assert_eq!(proposers, [proposer]);
+    assert_eq!(attester.as_deref(), Some(&other_offender[..]));
+    assert!(block_accepts(&mut tile, &proposers, attester.as_deref()));
+
+    assert!(!block_accepts(&mut tile, &proposers, Some(&same_offender)));
+    let mut forged = other_offender.clone();
+    let first_signature = 2 * 4 + 4 + ATTESTATION_DATA_SIZE;
+    forged[first_signature] ^= 1;
+    assert!(!block_accepts(&mut tile, &proposers, Some(&forged)));
+}
+
+// A proof used only on the head must survive finalization for possible reorgs.
+#[test]
+fn finalization_prunes_proofs_against_the_finalized_state() {
+    let mut forks = ThreeForks::new();
+    let (finalized_registry, head_registry) = {
+        let mut g = forks.tile.state.write();
+        let mut w = g.validators.roll_from(forks.d_id.validators_idx);
+        w.set_slashed(1, true);
+        let finalized = w.commit();
+        let mut w = g.validators.roll_from(finalized);
+        w.set_slashed(0, true);
+        (finalized, w.commit())
+    };
+    for id in forks.tile.fork_choice.live_state_ids_mut() {
+        id.validators_idx = finalized_registry;
+    }
+    forks.tile.last_applied.validators_idx = head_registry;
+
+    let head = forks.tile.state.read_view(forks.tile.last_applied);
+    for vi in [0u64, 1] {
+        let mut proof = [0u8; PROPOSER_SLASHING_SIZE];
+        proof[8..16].copy_from_slice(&vi.to_le_bytes());
+        forks.tile.slashing_pool.insert_proposer_slashing(&proof, &head);
+    }
+
+    forks.tile.maybe_finalize();
+
+    let tile = &mut forks.tile;
+    let base = tile.fork_choice.node(0).state_id;
+    let both_slashable = {
+        let mut g = tile.state.write();
+        let mut w = g.validators.roll_from(base.validators_idx);
+        w.set_slashed(0, false);
+        w.set_slashed(1, false);
+        StateId { validators_idx: w.commit(), ..base }
+    };
+    let view = tile.state.read_view(both_slashable);
+    let selection = tile.slashing_pool.select(&view);
+    let offenders: Vec<_> = selection
+        .proposer_slashings
+        .iter()
+        .map(|p| ProposerSlashingView::h1_proposer_index(p))
+        .collect();
+    assert_eq!(offenders, [0]);
 }
 
 #[test]
