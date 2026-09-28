@@ -2,13 +2,16 @@ use flux::spine::FluxSpine;
 use silver_common::{
     EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadReq,
     EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
-    TCacheRead, TCacheReader, TProducer,
+    EnginePreparePayloadReq, EnginePreparePayloadResp, EngineReq, EngineResp,
+    PayloadValidationStatus, SilverSpine, TCacheRead, TCacheReader, TProducer,
 };
 
 use crate::{
     EngineClient, EngineError,
-    client::{get_blobs, get_payload, send_fcu, send_new_payload, send_new_payload_envelope},
+    client::{
+        get_blobs, get_payload, send_fcu, send_new_payload, send_new_payload_envelope,
+        send_prepare_payload,
+    },
     resp_handlers::write_tcache,
     types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
 };
@@ -60,11 +63,8 @@ pub(crate) fn handle_request_no_el(
             status: PayloadValidationStatus::Valid,
             latest_valid_hash: [0u8; 32],
         }),
-        // Proposal path correlates on payload_id; derive one from the spine id.
-        EngineReq::PreparePayload(r) => EngineResp::Fcu(EngineFcuResp {
-            block_root: [0u8; 32],
-            status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0u8; 32],
+        EngineReq::PreparePayload(r) => EngineResp::PreparePayload(EnginePreparePayloadResp {
+            id: r.id,
             has_payload_id: true,
             payload_id: r.id.to_le_bytes(),
         }),
@@ -96,7 +96,7 @@ fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
         safe_block_hash: r.safe_block_hash,
         finalized_block_hash: r.finalized_block_hash,
     };
-    send_fcu(client, r.block_root, state, None);
+    send_fcu(client, r.block_root, state);
 }
 
 #[inline]
@@ -193,15 +193,14 @@ fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq)
         safe_block_hash: r.safe_block_hash,
         finalized_block_hash: r.finalized_block_hash,
     };
-    let attrs = Some(PayloadAttributesV3 {
+    let attrs = PayloadAttributesV3 {
         timestamp: r.attrs_timestamp,
         prev_randao: r.attrs_prev_randao,
         suggested_fee_recipient: r.attrs_fee_recipient,
         withdrawals,
         parent_beacon_block_root: r.attrs_parent_beacon_block_root,
-    });
-    // Proposal path correlates on payload_id, not the head verdict.
-    send_fcu(client, [0u8; 32], state, attrs);
+    };
+    send_prepare_payload(client, r.id, state, attrs);
 }
 
 #[inline]

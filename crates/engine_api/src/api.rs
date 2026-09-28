@@ -143,8 +143,6 @@ impl EngineApi {
         events: &Events,
         resp_producer: &mut TProducer,
     ) {
-        let mut negotiated_get_payload_method: Option<&'static str> = None;
-
         {
             let Self {
                 client,
@@ -166,22 +164,15 @@ impl EngineApi {
 
             let mut out = Responses::new(adapter, resp_producer, scratch);
             client.dispatch(events, |req_kind, response| match req_kind {
-                ReqKind::Capabilities => {
-                    negotiated_get_payload_method = Some(handle_capabilities_response(response));
-                }
+                ReqKind::Capabilities => handle_capabilities_response(response),
                 ReqKind::ClientVersion => handle_client_version_response(response),
                 ReqKind::Syncing => out.syncing(response, sync_status, healthcheck_pending),
                 ReqKind::Fcu(block_root) => out.fcu(block_root, response),
+                ReqKind::PreparePayload(spine_id) => out.prepare_payload(spine_id, response),
                 ReqKind::NewPayload(block_root) => out.new_payload(block_root, response),
                 ReqKind::GetPayloadFetch(spine_id) => out.get_payload(spine_id, response),
                 ReqKind::GetBlobs { block_root, slot } => out.get_blobs(block_root, slot, response),
             });
-        }
-
-        if let Some(method) = negotiated_get_payload_method {
-            if let Some(client) = self.client.as_mut() {
-                client.get_payload_method = method;
-            }
         }
     }
 }

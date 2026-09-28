@@ -1305,6 +1305,15 @@ pub struct EnginePreparePayloadReq {
     pub attrs_withdrawals: [WithdrawalInline; 16],
 }
 
+/// `payload_id` is meaningful only when `has_payload_id` is true.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EnginePreparePayloadResp {
+    pub id: u64,
+    pub has_payload_id: bool,
+    pub payload_id: [u8; 8],
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadReq {
@@ -1377,6 +1386,7 @@ pub enum EngineReq {
 #[allow(clippy::large_enum_variant)]
 pub enum EngineResp {
     Fcu(EngineFcuResp),
+    PreparePayload(EnginePreparePayloadResp),
     NewPayload(EngineNewPayloadResp),
     GetPayload(EngineGetPayloadResp),
     GetBlobs(EngineGetBlobsResp),

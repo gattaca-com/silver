@@ -766,7 +766,7 @@ impl BeaconStateTile {
             }
             // Proposal flow — silver doesn't propose yet, nothing requests
             // payloads.
-            EngineResp::GetPayload(_) => {}
+            EngineResp::PreparePayload(_) | EngineResp::GetPayload(_) => {}
             // EL-mempool blob fetch. Belongs to the storage tile (it owns
             // column validation/availability), not here; see the TODO at its
             // column-request path.

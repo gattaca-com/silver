@@ -2,8 +2,8 @@ use flux::spine::SpineAdapter;
 use serde::Deserialize;
 use silver_common::{
     ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
-    EngineNewPayloadResp, EngineResp, PayloadValidationStatus, SilverSpine, TCacheProducer,
-    TCacheRead, TProducer, merkle::B256,
+    EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp, PayloadValidationStatus,
+    SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
@@ -28,32 +28,29 @@ struct RpcError<'a> {
 }
 
 #[inline]
-pub(crate) fn handle_capabilities_response(
-    response: Result<&mut [u8], EngineError>,
-) -> &'static str {
-    const FALLBACK: &str = "engine_getPayloadV3";
+pub(crate) fn handle_capabilities_response(response: Result<&mut [u8], EngineError>) {
     let raw = match response {
         Err(e) => {
             tracing::warn!("engine_exchangeCapabilities failed: {e}");
-            return FALLBACK;
+            return;
         }
         Ok(b) => b,
     };
     let val = match simd_json::to_borrowed_value(raw) {
         Err(e) => {
             tracing::warn!("engine_exchangeCapabilities failed: {e}");
-            return FALLBACK;
+            return;
         }
         Ok(v) => v,
     };
     if let Some(err) = val.get("error") {
         tracing::warn!("engine_exchangeCapabilities rpc error: {err}");
-        return FALLBACK;
+        return;
     }
     let result = match val.get("result") {
         None => {
             tracing::warn!("engine_exchangeCapabilities: missing result");
-            return FALLBACK;
+            return;
         }
         Some(v) => v,
     };
@@ -65,9 +62,10 @@ pub(crate) fn handle_capabilities_response(
     if !has("engine_newPayloadV4") {
         tracing::warn!("EL does not support engine_newPayloadV4");
     }
-    let method = if has("engine_getPayloadV4") { "engine_getPayloadV4" } else { FALLBACK };
-    tracing::info!("capabilities negotiated, using {method}");
-    method
+    if !has("engine_getPayloadV5") {
+        tracing::warn!("EL does not support engine_getPayloadV5");
+    }
+    tracing::info!("capabilities negotiated");
 }
 
 #[inline]
@@ -220,6 +218,48 @@ impl<'a> Responses<'a> {
             }
         };
         self.adapter.produce(EngineResp::Fcu(resp));
+    }
+
+    #[inline]
+    pub(crate) fn prepare_payload(
+        &mut self,
+        spine_id: u64,
+        response: Result<&mut [u8], EngineError>,
+    ) {
+        let payload_id = 'parse: {
+            let raw = match response {
+                Err(e) => {
+                    tracing::warn!("forkchoiceUpdated with attributes error: {e}");
+                    break 'parse None;
+                }
+                Ok(b) => b,
+            };
+            match simd_json::serde::from_slice::<RpcResult<ForkchoiceUpdatedResult>>(raw) {
+                Ok(RpcResult { result: Some(r), .. }) => {
+                    if r.payload_id.is_none() {
+                        tracing::warn!(
+                            id = spine_id,
+                            status = %r.payload_status.status,
+                            "forkchoiceUpdated with attributes started no payload"
+                        );
+                    }
+                    r.payload_id
+                }
+                Ok(RpcResult { error: Some(e), .. }) => {
+                    tracing::warn!("forkchoiceUpdated with attributes rpc error: {}", e.message);
+                    None
+                }
+                Ok(_) | Err(_) => {
+                    tracing::warn!("forkchoiceUpdated with attributes: missing result");
+                    None
+                }
+            }
+        };
+        self.adapter.produce(EngineResp::PreparePayload(EnginePreparePayloadResp {
+            id: spine_id,
+            has_payload_id: payload_id.is_some(),
+            payload_id: payload_id.unwrap_or_default(),
+        }));
     }
 
     #[inline]

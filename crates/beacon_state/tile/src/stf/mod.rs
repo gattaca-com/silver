@@ -23,29 +23,14 @@ pub use block::{
 };
 pub use common::{BlockVotes, StfScratch, VoteBatch, VoteTarget};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};
+pub use epoch::*;
 pub(crate) use epoch::{
     BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
     is_valid_builder_deposit_signature, unrealized_checkpoints,
 };
-pub use epoch::{
-    EPOCHS_PER_ETH1_VOTING_PERIOD, HISTORICAL_SUMMARY_PERIOD, MAX_PENDING_DEPOSITS_PER_EPOCH,
-    integer_sqrt, is_valid_deposit_signature, process_effective_balance_updates, process_epoch,
-    process_eth1_data_reset, process_historical_summaries_update, process_inactivity_updates,
-    process_justification_and_finalization, process_participation_flag_updates,
-    process_pending_consolidations, process_pending_deposits, process_proposer_lookahead,
-    process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,
-    process_slashings, process_slashings_reset, process_sync_committee_updates,
-};
 pub use epoch_shuffling::{EpochShuffling, ShufflingRef};
 pub use fork_transition::upgrade_to_gloas;
-pub use gloas::{
-    collect_sigs_execution_payload_bid, collect_sigs_payload_attestations,
-    envelope_withdrawals_match_expected, get_builder_payment_quorum_threshold,
-    process_builder_deposit_request, process_builder_exit_request,
-    process_builder_pending_payments, process_execution_payload_bid,
-    process_parent_execution_payload, process_payload_attestations, process_ptc_window,
-    process_withdrawals_gloas, verify_execution_payload_envelope,
-};
+pub use gloas::*;
 pub(crate) use gloas::{get_ptc, hash_payload_attestation_data};
 pub(crate) use operations::process_execution_requests;
 pub use operations::{
