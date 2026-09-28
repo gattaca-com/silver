@@ -5140,6 +5140,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_slashing"
+version = "0.0.1"
+dependencies = [
+ "silver_beacon_state_data",
+ "silver_ssz",
+]
+
+[[package]]
 name = "silver_ssz"
 version = "0.0.1"
 dependencies = [
