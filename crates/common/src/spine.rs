@@ -15,7 +15,7 @@ mod stream_id;
 mod stream_protocol;
 mod tcache;
 
-#[from_spine("silver")]
+#[from_spine("silver", per_producer_consumer_timers)]
 #[derive(Debug)]
 pub struct SilverSpine {
     pub tile_info: ShmemData<TileInfo>,

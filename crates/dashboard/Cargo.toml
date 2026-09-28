@@ -1,0 +1,21 @@
+[package]
+name = "silver_dashboard"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytesize.workspace = true
+clap.workspace = true
+httparse.workspace = true
+mio.workspace = true
+ring.workspace = true
+silver_observe_wire.workspace = true
+slab.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

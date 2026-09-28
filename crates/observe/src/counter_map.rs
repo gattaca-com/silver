@@ -53,6 +53,10 @@ impl CounterMap {
         self.values.values().len()
     }
 
+    pub fn load(&self, slot: usize) -> u64 {
+        self.values.values()[slot].load(Ordering::Relaxed)
+    }
+
     /// O(slot_count) relaxed loads.
     pub fn read_into(&self, out: &mut [u64]) {
         let values = self.values.values();

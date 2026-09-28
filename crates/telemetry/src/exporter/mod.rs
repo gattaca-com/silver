@@ -1,6 +1,7 @@
-//! Streams the node's shmem metrics to the dashboard as `silver_observe_wire`
-//! datagrams: one bucket per second, descriptors every ten. A node restart
-//! reopens every source under a new `boot_id`.
+//! Streams the node's metrics to the dashboard as `silver_observe_wire`
+//! datagrams: shmem sources as one bucket per second, spine peer stats and
+//! stage events as they arrive, descriptors every ten seconds. A node restart
+//! reopens every shmem source under a new `boot_id`.
 
 use std::{
     net::{SocketAddr, UdpSocket},
@@ -10,17 +11,22 @@ use std::{
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
 use silver_common::{APP_NAME, Nanos, SilverSpine};
+use silver_config::ChainConfig;
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 
-use crate::exporter::sources::ExportSources;
+use crate::exporter::{sources::ExportSources, streams::SpineStreams};
 
 mod sources;
+mod streams;
 
 const BUCKET: Nanos = Nanos::from_secs(1);
+/// Cadence of the `fast:` sources; the loop runs every 10 ms, so a sample
+/// lands up to that late, and each carries its own timestamp.
+const FAST_BUCKET: Nanos = Nanos::from_millis(50);
 /// Also the rediscovery and measurement-log cadence.
 const DESCRIBE: Nanos = Nanos::from_secs(10);
-const KINDS: usize = Kind::Instance as usize + 1;
+const KINDS: usize = Kind::LAST as usize + 1;
 
 /// UDP send accounting between measurement logs.
 struct Sink {
@@ -49,16 +55,20 @@ pub struct Exporter {
     base_dir: PathBuf,
     label: String,
     instance_id: u64,
+    genesis_unix_secs: u64,
+    slot_ms: u64,
     node_pid: Option<u32>,
     encoder: Encoder,
     sources: ExportSources,
+    streams: SpineStreams,
     sink: Sink,
     next_bucket: Nanos,
+    next_fast: Nanos,
     next_describe: Nanos,
 }
 
 impl Exporter {
-    pub fn open(dest: SocketAddr, label: String) -> Result<Self, String> {
+    pub fn open(dest: SocketAddr, label: String, chain: &ChainConfig) -> Result<Self, String> {
         let bind: SocketAddr =
             if dest.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
         let socket = UdpSocket::bind(bind).map_err(|e| format!("bind: {e}"))?;
@@ -72,11 +82,15 @@ impl Exporter {
             base_dir: flux::utils::directories::local_share_dir(),
             label,
             instance_id,
+            genesis_unix_secs: chain.genesis_unix_secs,
+            slot_ms: chain.slot_duration().as_millis() as u64,
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),
+            streams: SpineStreams::default(),
             sink: Sink { socket, bytes: [0; KINDS], datagrams: 0, dropped: 0 },
             next_bucket: now,
+            next_fast: now,
             next_describe: now,
         })
     }
@@ -85,16 +99,26 @@ impl Exporter {
         self.sources.drain();
 
         let now = Nanos::now();
+        let Self { encoder, streams, sink, .. } = self;
+        streams.drain(adapter, encoder, now.0, &mut |d| sink.send(d));
+
         if now >= self.next_bucket {
             self.follow_node(now);
             let Self { encoder, sources, sink, .. } = self;
             sources.encode_bucket(encoder, now.0, &mut |d| sink.send(d));
             self.next_bucket = now + BUCKET;
         }
+        if now >= self.next_fast {
+            let Self { encoder, sources, sink, .. } = self;
+            sources.encode_fast(encoder, now.0, &mut |d| sink.send(d));
+            self.next_fast = now + FAST_BUCKET;
+        }
         if now >= self.next_describe {
             self.describe(now);
             self.next_describe = now + DESCRIBE;
         }
+        let Self { encoder, sink, .. } = self;
+        encoder.flush(&mut |d| sink.send(d));
 
         // Queue drains are invisible to the adapter, and under `flux/park` an
         // idle-looking loop parks with nobody left to signal it.
@@ -111,17 +135,20 @@ impl Exporter {
         }
         info!(was = ?self.node_pid, pid = ?pid, "export sources reset");
         self.node_pid = pid;
+        let Self { encoder, sink, .. } = self;
+        encoder.flush(&mut |d| sink.send(d));
         self.encoder = Encoder::new(self.instance_id, now.0);
         self.sources = ExportSources::default();
         self.next_describe = now;
     }
 
     fn describe(&mut self, now: Nanos) {
-        let Self { base_dir, label, encoder, sources, sink, .. } = self;
+        let Self { base_dir, label, genesis_unix_secs, slot_ms, encoder, sources, sink, .. } = self;
         sources.discover(base_dir, APP_NAME);
 
         let emit = &mut |d: &[u8]| sink.send(d);
         encoder.instance(now.0, label, emit);
+        encoder.chain(now.0, *genesis_unix_secs, *slot_ms, emit);
         sources.encode_descriptors(encoder, now.0, emit);
 
         let series = sources.series_counts();
@@ -134,10 +161,13 @@ impl Exporter {
             counter_bps = rate(Kind::CounterValues),
             tile_bps = rate(Kind::TileUtils),
             timing_bps = rate(Kind::Timings),
+            peer_bps = rate(Kind::PeerP2p) + rate(Kind::PeerScores) + rate(Kind::PeerTopic),
+            stage_bps = rate(Kind::Stages),
             descriptor_bps = rate(Kind::Sources) +
                 rate(Kind::SlotNames) +
                 rate(Kind::BuildInfo) +
-                rate(Kind::Instance),
+                rate(Kind::Instance) +
+                rate(Kind::Chain),
             datagrams = sink.datagrams,
             dropped = sink.dropped,
             "exported"

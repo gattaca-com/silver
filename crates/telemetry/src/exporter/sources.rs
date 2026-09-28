@@ -18,12 +18,26 @@ use silver_observe_wire::{Encoder, Source, SourceClass, TileUtil, TimingChannel,
 /// Upper bound of the recorded range: a 60 s gap is far past any sane stage.
 const HIST_MAX_NS: u64 = 60_000_000_000;
 const TCACHE_FIXED_SLOTS: usize = 2;
+/// Counter slots also sampled at the fast cadence and published as source
+/// `fast:{source}`, for intra-slot resolution the 1 s bucket cannot give.
+const FAST: &[(&str, &[&str])] =
+    &[("beacon_state", &["AttestationRootMemoHit", "AttestationRootMemoMiss"])];
 
 struct CounterSource {
     id: u16,
     class: SourceClass,
     name: String,
     map: CounterMap,
+    values: Vec<u64>,
+}
+
+struct FastSource {
+    id: u16,
+    name: String,
+    /// Index into `ExportSources::counters`.
+    parent: usize,
+    slots: Vec<usize>,
+    slot_names: Vec<String>,
     values: Vec<u64>,
 }
 
@@ -94,6 +108,7 @@ impl TileSource {
 #[derive(Default)]
 pub struct ExportSources {
     counters: Vec<CounterSource>,
+    fast: Vec<FastSource>,
     timings: Vec<TimingSource>,
     tiles: Vec<TileSource>,
     build_info: Option<String>,
@@ -186,8 +201,36 @@ impl ExportSources {
                     map,
                     values,
                 });
+                self.open_fast(self.counters.len() - 1);
             }
             Err(e) => warn!(name = file.name, %e, "counter source skipped"),
+        }
+    }
+
+    fn open_fast(&mut self, parent: usize) {
+        let c = &self.counters[parent];
+        let Some((_, wanted)) = FAST.iter().find(|(name, _)| *name == c.name) else { return };
+        let (names, _) = names_for(&c.name, c.values.len());
+        let slots: Vec<_> =
+            (0..names.len()).filter(|&i| wanted.contains(&names[i].as_str())).collect();
+        if slots.is_empty() {
+            return;
+        }
+        let name = format!("fast:{}", c.name);
+        let slot_names = slots.iter().map(|&i| names[i].clone()).collect();
+        let Some(id) = self.claim(SourceClass::Counters, &name) else { return };
+        let values = vec![0; slots.len()];
+        self.fast.push(FastSource { id, name, parent, slots, slot_names, values });
+    }
+
+    pub fn encode_fast(&mut self, enc: &mut Encoder, ts_ns: u64, emit: &mut impl FnMut(&[u8])) {
+        let Self { fast, counters, .. } = self;
+        for f in fast {
+            let map = &counters[f.parent].map;
+            for (v, &slot) in f.values.iter_mut().zip(&f.slots) {
+                *v = map.load(slot);
+            }
+            enc.counter_values(ts_ns, f.id, &f.values, emit);
         }
     }
 
@@ -236,7 +279,12 @@ impl ExportSources {
         });
         let tiles =
             self.tiles.iter().map(|t| Source { id: t.id, class: SourceClass::Tile, name: &t.name });
-        let sources: Vec<_> = counters.chain(timings).chain(tiles).collect();
+        let fast = self.fast.iter().map(|f| Source {
+            id: f.id,
+            class: SourceClass::Counters,
+            name: &f.name,
+        });
+        let sources: Vec<_> = counters.chain(fast).chain(timings).chain(tiles).collect();
         enc.sources(ts_ns, &sources, emit);
 
         for c in &self.counters {
@@ -252,6 +300,10 @@ impl ExportSources {
                 }
             }
             enc.slot_names(ts_ns, c.id, &names, emit);
+        }
+
+        for f in &self.fast {
+            enc.slot_names(ts_ns, f.id, &f.slot_names, emit);
         }
 
         if let Some(build_info) = &self.build_info {
@@ -284,6 +336,47 @@ mod tests {
             Alpha,
             Beta,
         }
+    }
+
+    // Same layout as `BeaconStateCounters`, whose names `names_for` applies.
+    declare_counters! {
+        FastTestCounters => "beacon_state" {
+            AttestationPoolFull,
+            AttestationUnknownRoot,
+            SeenAggregatesFull,
+            AttestationRootMemoFull,
+            AttestationRootMemoHit,
+            AttestationRootMemoMiss,
+            VoteBatchSize,
+            VoteBatchFallback,
+            SyncContributionPoolFull,
+        }
+    }
+
+    #[test]
+    fn fast_source_republishes_only_its_slots() {
+        let tmp = TempDir::new().unwrap();
+        FastTestCounters::init_with_base(tmp.path(), "fast_test").unwrap();
+        FastTestCounters::AttestationRootMemoHit.set(30);
+        FastTestCounters::AttestationRootMemoMiss.set(12);
+        FastTestCounters::VoteBatchSize.set(99);
+
+        let mut sources = ExportSources::default();
+        sources.discover(tmp.path(), "fast_test");
+        assert_eq!(sources.fast.len(), 1);
+        assert_eq!(sources.fast[0].name, "fast:beacon_state");
+        assert_eq!(sources.fast[0].slot_names, [
+            "AttestationRootMemoHit",
+            "AttestationRootMemoMiss"
+        ]);
+
+        let mut enc = Encoder::new(1, 2);
+        let mut dgrams = Vec::new();
+        sources.encode_fast(&mut enc, 0, &mut |d| dgrams.push(d.to_vec()));
+        assert_eq!(dgrams.len(), 1);
+        let values = &dgrams[0][HEADER_LEN + 8..];
+        assert_eq!(values[..8], 30u64.to_le_bytes());
+        assert_eq!(values[8..], 12u64.to_le_bytes());
     }
 
     #[test]

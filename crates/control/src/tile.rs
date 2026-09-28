@@ -9,7 +9,7 @@ use flux::{
 };
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic,
+    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, IngestionTime,
     LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
     SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
@@ -752,6 +752,8 @@ impl Tile<SilverSpine> for Controller {
             adapter.mark_work();
         }
         while let Some(event) = self.gossip_handler.pop_event() {
+            adapter.set_ingestion_time(IngestionTime::now());
+
             match event {
                 GossipHandlerEvent::PartialMetadata(metadata) => {
                     if let (Some(exchange), Some(ingress)) =
