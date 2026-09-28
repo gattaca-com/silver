@@ -907,6 +907,9 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
 
 fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
     match id.protocol() {
+        StreamProtocol::GossipSub | StreamProtocol::GossipSubV13 if incoming => {
+            OutboundBuffer::Gossip(OutBuffer::new(8))
+        }
         StreamProtocol::GossipSub | StreamProtocol::GossipSubV13 => {
             OutboundBuffer::Gossip(OutBuffer::new(8 * 1024))
         }

@@ -114,7 +114,7 @@ impl Bounds {
                 };
                 if tail == NONE {
                     e.bound = NONE;
-                } else {
+                } else if e.bound == NONE || tail > e.bound {
                     e.pending = tail;
                 }
             }
