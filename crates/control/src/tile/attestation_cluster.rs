@@ -541,7 +541,7 @@ mod tests {
         handler.cluster.as_mut().unwrap().campaign().unwrap();
         handler.drive(
             now,
-            &mut harness.validation,
+            &mut harness.local_gossip,
             &mut harness.gossip,
             &mut harness.adapter.producers,
         );
@@ -552,7 +552,7 @@ mod tests {
         handler.on_local_attestation(
             attestation,
             now,
-            &mut harness.validation,
+            &mut harness.local_gossip,
             &mut harness.gossip,
             &mut harness.adapter.producers,
         );
@@ -561,7 +561,7 @@ mod tests {
         handler.cluster.as_mut().unwrap().fail_persistence();
         handler.drive(
             now,
-            &mut harness.validation,
+            &mut harness.local_gossip,
             &mut harness.gossip,
             &mut harness.adapter.producers,
         );
@@ -572,13 +572,13 @@ mod tests {
         handler.on_local_attestation(
             PendingAttestation { request_id: 2, ..attestation },
             now,
-            &mut harness.validation,
+            &mut harness.local_gossip,
             &mut harness.gossip,
             &mut harness.adapter.producers,
         );
         assert_eq!(harness.responses(), [(2, Err(LocalGossipFailure::Internal))]);
         assert!(harness.gossip.pop_event().is_none());
-        assert!(harness.validation.is_empty());
+        assert!(harness.local_gossip.is_empty());
     }
 }
 
