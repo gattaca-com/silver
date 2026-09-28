@@ -2359,7 +2359,8 @@ mod tests {
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
             BeaconApiRequest::SyncCommitteeContribution { request_id, .. } => *request_id,
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
-            BeaconApiRequest::SyncCommitteeSubscriptions { .. } => unreachable!("never answered"),
+            BeaconApiRequest::SyncCommitteeSubscriptions { .. } |
+            BeaconApiRequest::ProposerPreparations { .. } => unreachable!("never answered"),
         }
     }
 

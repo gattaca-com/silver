@@ -34,7 +34,7 @@ pub use crate::{
         MULTISTREAM_V1, NewGossipMsg, P2pConnectionStats, P2pSend, P2pStreamId, PREFILL_SLOTS,
         PayloadResolution, PayloadValidationStatus, PeerControl, PeerEvent, PeerScores, PeerStats,
         PeerStatus, PeerTopicScores, PendingSubReservation, Prefill, Producer as TProducer,
-        REJECT_RESPONSE, RPC_PROTOCOLS, ReadMode as TReadMode, ReplayBlock,
+        ProposerPreparation, REJECT_RESPONSE, RPC_PROTOCOLS, ReadMode as TReadMode, ReplayBlock,
         Reservation as TReservation, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
         RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
         SelfBuiltGossip, ServedBlock, SilverSpine, SilverSpineProducers, SlotSubnets, SszCache,

@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
+use silver_beacon_state_data::{B256, ExecutionAddress, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
@@ -107,6 +107,31 @@ pub enum BeaconApiRequest {
     SyncCommitteeSubscriptions {
         until_epochs: [u64; SYNC_COMMITTEE_SUBNETS],
     },
+    ProposerPreparations {
+        preparations: TCacheRead,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposerPreparation {
+    pub validator_index: u64,
+    pub fee_recipient: ExecutionAddress,
+}
+
+impl ProposerPreparation {
+    pub const SIZE: usize = size_of::<u64>() + size_of::<ExecutionAddress>();
+
+    pub fn encode(&self, out: &mut [u8]) {
+        out[..8].copy_from_slice(&self.validator_index.to_le_bytes());
+        out[8..Self::SIZE].copy_from_slice(&self.fee_recipient);
+    }
+
+    pub fn decode_all(bytes: &[u8]) -> impl Iterator<Item = Self> {
+        bytes.chunks_exact(Self::SIZE).map(|record| Self {
+            validator_index: u64::from_le_bytes(record[..8].try_into().expect("8 bytes")),
+            fee_recipient: record[8..Self::SIZE].try_into().expect("20 bytes"),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

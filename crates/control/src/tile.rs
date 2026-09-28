@@ -492,7 +492,8 @@ impl Tile<SilverSpine> for Controller {
             }
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |
-            BeaconApiRequest::Block { .. } => {}
+            BeaconApiRequest::Block { .. } |
+            BeaconApiRequest::ProposerPreparations { .. } => {}
         });
 
         self.attestation_cluster.spin(

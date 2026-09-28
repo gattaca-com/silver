@@ -14,8 +14,8 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
     ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
-    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
-    TileId, hex32,
+    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TRead,
+    TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -32,6 +32,7 @@ use crate::{
         gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
         precomputed_epochs::PrecomputedEpochs,
+        proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
         seen_validators::{SeenIndices, SeenValidators},
         shuffling_cache::ShufflingCache,
@@ -51,6 +52,7 @@ mod fork_data_roots;
 mod gossip;
 mod held_blocks;
 mod orphan_pool;
+mod proposer_preparations;
 mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
@@ -153,6 +155,7 @@ pub struct BeaconStateTile {
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
+    proposer_preparations: ProposerPreparations,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
     seen_exits: SeenIndices,
@@ -240,6 +243,7 @@ impl BeaconStateTile {
             vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
+            proposer_preparations: ProposerPreparations::default(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
             seen_exits: SeenIndices::new(val_cap),
@@ -621,6 +625,16 @@ impl BeaconStateTile {
         producers.produce(BeaconApiResponse::SyncCommitteeContribution { request_id, ssz });
     }
 
+    fn record_proposer_preparations(&mut self, preparations: TCacheRead) {
+        let acquired = self.reader.acquire(preparations);
+        let Ok((encoded, _)) = acquired.buffer() else {
+            tracing::error!(seq = acquired.seq(), "proposer preparations overwritten before read");
+            return;
+        };
+        let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
+        self.proposer_preparations.record(encoded, epoch);
+    }
+
     fn post_shufflings(&mut self, producers: &mut Producers) {
         let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
         let producer = &mut self.events_producer;
@@ -721,6 +735,9 @@ impl BeaconStateTile {
         self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
+        if slot.is_multiple_of(SLOTS_PER_EPOCH) {
+            self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
+        }
         advanced
     }
 
@@ -812,6 +829,9 @@ impl BeaconStateTile {
                 beacon_block_root,
                 producers,
             ),
+            BeaconApiRequest::ProposerPreparations { preparations } => {
+                self.record_proposer_preparations(preparations)
+            }
             BeaconApiRequest::LocalGossip { .. } |
             BeaconApiRequest::Block { .. } |
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
