@@ -1,8 +1,15 @@
+use std::mem;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::ssz_view::{
     BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, ExecutionPayloadEnvelopeView,
     ExecutionPayloadView, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
     SignedExecutionPayloadEnvelopeView,
+};
+use simd_json::{
+    Buffers, Tape,
+    prelude::{TypedScalarValue, ValueAsScalar, ValueIntoString},
+    value::tape::{Array as TapeArray, Value as TapeValue},
 };
 
 pub type B256 = [u8; 32];
@@ -499,16 +506,47 @@ fn write_execution_requests_json<const N: usize>(
 }
 
 // ---------------------------------------------------------------------------
-// Zero-alloc JSON → TCache frame converter for engine_getPayloadV5
+// JSON → TCache frame converters for engine_getPayloadV5 and engine_getBlobsV3
 //
-// Parses the raw HTTP response body (full JSON-RPC envelope) using
-// simd_json BorrowedValue so all string values borrow from the input
-// buffer with no intermediate allocations. Hex fields are decoded
-// directly into `out` with hex::decode_to_slice.
-//
-// `out` is cleared by the caller. On success it contains exactly the
-// TCache frame (same layout as encode_get_payload_data).
+// Both walk a simd_json tape of the full JSON-RPC envelope; string values
+// borrow from the input. Hex fields are decoded directly into the frame with
+// hex::decode_to_slice.
 // ---------------------------------------------------------------------------
+
+/// The getPayload frame with no transactions, withdrawals, blobs or requests.
+const MIN_PAYLOAD_FRAME_LEN: usize = 4 + PAYLOAD_FIXED_LEN + 1 + 1 + 4 + 4 * 3;
+
+/// Parser and frame buffers reused across responses, so a response of a size
+/// already seen allocates nothing.
+pub(crate) struct FrameScratch {
+    buffers: Buffers,
+    tape: Tape<'static>,
+    frame: Vec<u8>,
+}
+
+impl FrameScratch {
+    pub(crate) fn new() -> Self {
+        Self {
+            buffers: Buffers::default(),
+            tape: Tape(Vec::new()),
+            frame: Vec::with_capacity(MIN_PAYLOAD_FRAME_LEN),
+        }
+    }
+
+    pub(crate) fn encode<T>(
+        &mut self,
+        raw: &mut [u8],
+        to_frame: impl FnOnce(TapeValue<'_, '_>, &mut Vec<u8>) -> Result<T, crate::EngineError>,
+    ) -> Result<(T, &[u8]), crate::EngineError> {
+        self.frame.clear();
+        let mut tape = mem::replace(&mut self.tape, Tape(Vec::new())).reset();
+        let encoded = simd_json::fill_tape(raw, &mut self.buffers, &mut tape)
+            .map_err(crate::EngineError::Json)
+            .and_then(|()| to_frame(tape.as_value(), &mut self.frame));
+        self.tape = tape.reset();
+        Ok((encoded?, &self.frame))
+    }
+}
 
 fn hex_to_fixed<const N: usize>(s: &str) -> Result<[u8; N], crate::EngineError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -541,6 +579,12 @@ fn hex_extend_clamped<const N: usize>(
     Ok(())
 }
 
+fn array_items<'tape, 'input>(
+    array: Option<TapeArray<'tape, 'input>>,
+) -> impl Iterator<Item = TapeValue<'tape, 'input>> {
+    array.into_iter().flat_map(|array| array.iter())
+}
+
 fn parse_quantity(s: &str) -> Result<u64, crate::EngineError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     u64::from_str_radix(s, 16).map_err(|e| crate::EngineError::Ssz(e.to_string()))
@@ -560,23 +604,15 @@ fn parse_u256_le(s: &str) -> Result<[u8; 32], crate::EngineError> {
     Ok(arr)
 }
 
-fn fstr<'a>(
-    v: &'a simd_json::BorrowedValue<'_>,
-    field: &str,
-) -> Result<&'a str, crate::EngineError> {
-    use simd_json::prelude::{ValueAsScalar, ValueObjectAccess};
+fn fstr<'input>(v: TapeValue<'_, 'input>, field: &str) -> Result<&'input str, crate::EngineError> {
     v.get(field)
-        .and_then(|f| f.as_str())
+        .and_then(|f| f.into_string())
         .ok_or_else(|| crate::EngineError::Ssz(format!("missing field: {field}")))
 }
 
 // Write SSZ transaction list (offset header + tx bytes) from JSON hex-string
 // array.
-fn encode_txs_json(
-    arr: &[simd_json::BorrowedValue<'_>],
-    out: &mut Vec<u8>,
-) -> Result<(), crate::EngineError> {
-    use simd_json::prelude::ValueAsScalar;
+fn encode_txs_json(arr: TapeArray<'_, '_>, out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
     if arr.is_empty() {
         return Ok(());
     }
@@ -585,22 +621,24 @@ fn encode_txs_json(
     out.resize(header_base + n * 4, 0);
     let mut offset = (n * 4) as u32;
     for (i, tx) in arr.iter().enumerate() {
-        let s = tx.as_str().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
+        let s =
+            tx.into_string().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
         out[header_base + i * 4..header_base + i * 4 + 4].copy_from_slice(&offset.to_le_bytes());
         offset += (s.strip_prefix("0x").unwrap_or(s).len() / 2) as u32;
     }
-    for tx in arr {
-        let s = tx.as_str().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
+    for tx in arr.iter() {
+        let s =
+            tx.into_string().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
         hex_extend(s, out)?;
     }
     Ok(())
 }
 
 fn encode_withdrawals_json(
-    arr: &[simd_json::BorrowedValue<'_>],
+    arr: TapeArray<'_, '_>,
     out: &mut Vec<u8>,
 ) -> Result<(), crate::EngineError> {
-    for w in arr {
+    for w in arr.iter() {
         out.extend_from_slice(&parse_quantity(fstr(w, "index")?)?.to_le_bytes());
         out.extend_from_slice(&parse_quantity(fstr(w, "validatorIndex")?)?.to_le_bytes());
         out.extend_from_slice(&hex_to_fixed::<20>(fstr(w, "address")?)?);
@@ -609,21 +647,13 @@ fn encode_withdrawals_json(
     Ok(())
 }
 
-/// Parse a raw `engine_getPayloadV5` JSON-RPC response body and write the
-/// TCache frame directly into `out` (same layout as `encode_get_payload_data`).
-///
-/// `raw` is mutated in-place by simd_json's SIMD parser. `out` must be empty
-/// on entry and is filled with exactly the frame bytes on success.
-///
-/// Eliminates all intermediate allocations vs the serde path:
-/// one `Vec<u8>` output, hex decoded directly from the borrowed JSON strings.
+/// Write the TCache frame of an `engine_getPayloadV5` JSON-RPC response into
+/// `out` (same layout as `encode_get_payload_data`).
 pub(crate) fn json_get_payload_to_tcache(
-    raw: &mut [u8],
+    root: TapeValue<'_, '_>,
     out: &mut Vec<u8>,
 ) -> Result<(), crate::EngineError> {
-    use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
-
-    let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
+    debug_assert!(out.is_empty());
 
     if root.get("error").is_some() {
         return Err(crate::EngineError::Ssz("rpc error in getPayload response".into()));
@@ -638,11 +668,7 @@ pub(crate) fn json_get_payload_to_tcache(
         .ok_or_else(|| crate::EngineError::Ssz("missing blobsBundle".into()))?;
     let should_override =
         result.get("shouldOverrideBuilder").and_then(|v| v.as_bool()).unwrap_or(false);
-    let exec_requests = result
-        .get("executionRequests")
-        .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
-        .unwrap_or(&[]);
+    let exec_requests = result.get("executionRequests").and_then(|v| v.as_array());
 
     // TCache frame header: placeholder for payload SSZ length.
     let tcache_hdr = out.len();
@@ -682,7 +708,6 @@ pub(crate) fn json_get_payload_to_tcache(
     let txs = ep
         .get("transactions")
         .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
         .ok_or_else(|| crate::EngineError::Ssz("missing transactions".into()))?;
     encode_txs_json(txs, out)?;
 
@@ -691,7 +716,6 @@ pub(crate) fn json_get_payload_to_tcache(
     let ws = ep
         .get("withdrawals")
         .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
         .ok_or_else(|| crate::EngineError::Ssz("missing withdrawals".into()))?;
     encode_withdrawals_json(ws, out)?;
 
@@ -700,29 +724,30 @@ pub(crate) fn json_get_payload_to_tcache(
     out[tcache_hdr..tcache_hdr + 4].copy_from_slice(&payload_ssz_len.to_le_bytes());
 
     // BlobsBundleV2: `proofs` holds every blob's cell proofs, blob by blob.
-    let commitments =
-        bb.get("commitments").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
-    let proofs = bb.get("proofs").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
-    let blobs = bb.get("blobs").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
-    let blob_count = u8::try_from(blobs.len())
+    let commitments = bb.get("commitments").and_then(|v| v.as_array());
+    let proofs = bb.get("proofs").and_then(|v| v.as_array());
+    let blobs = bb.get("blobs").and_then(|v| v.as_array());
+    let len = |array: Option<TapeArray<'_, '_>>| array.map_or(0, |array| array.len());
+    let blob_count = u8::try_from(len(blobs))
         .ok()
-        .filter(|_| commitments.len() == blobs.len())
-        .filter(|_| proofs.len() == blobs.len() * NUMBER_OF_COLUMNS)
+        .filter(|_| len(commitments) == len(blobs))
+        .filter(|_| len(proofs) == len(blobs) * NUMBER_OF_COLUMNS)
         .ok_or_else(|| crate::EngineError::Ssz("inconsistent blobsBundle lengths".into()))?;
     out.push(blob_count);
 
-    let kzg_bytes = |value: &simd_json::BorrowedValue<'_>| {
+    let kzg_bytes = |value: TapeValue<'_, '_>| {
         value
-            .as_str()
+            .into_string()
             .ok_or_else(|| crate::EngineError::Ssz("blobsBundle entry is not a string".into()))
             .and_then(hex_to_fixed::<48>)
     };
-    for (i, cell_proofs) in proofs.chunks_exact(NUMBER_OF_COLUMNS).enumerate() {
-        out.extend_from_slice(&kzg_bytes(&commitments[i])?);
-        for proof in cell_proofs {
+    let mut proofs = array_items(proofs);
+    for (commitment, blob) in array_items(commitments).zip(array_items(blobs)) {
+        out.extend_from_slice(&kzg_bytes(commitment)?);
+        for proof in proofs.by_ref().take(NUMBER_OF_COLUMNS) {
             out.extend_from_slice(&kzg_bytes(proof)?);
         }
-        let b_s = blobs[i].as_str().unwrap_or("0x");
+        let b_s = blob.into_string().unwrap_or("0x");
         let b_hex = b_s.strip_prefix("0x").unwrap_or(b_s);
         out.extend_from_slice(&((b_hex.len() / 2) as u32).to_le_bytes());
         hex_extend(b_s, out)?;
@@ -730,34 +755,62 @@ pub(crate) fn json_get_payload_to_tcache(
 
     out.push(should_override as u8);
 
-    let exec_count = exec_requests.len().min(255) as u8;
-    out.push(exec_count);
-    for req in exec_requests.iter().take(exec_count as usize) {
-        let s = req.as_str().unwrap_or("0x");
-        let hex_s = s.strip_prefix("0x").unwrap_or(s);
-        out.extend_from_slice(&((hex_s.len() / 2) as u32).to_le_bytes());
-        hex_extend(s, out)?;
-    }
+    let requests_len_at = out.len();
+    out.extend_from_slice(&[0u8; 4]);
+    encode_execution_requests(exec_requests, out)?;
+    let requests_len = (out.len() - requests_len_at - 4) as u32;
+    out[requests_len_at..requests_len_at + 4].copy_from_slice(&requests_len.to_le_bytes());
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Zero-alloc JSON → TCache frame converter for engine_getBlobsV3
-//
-// Same approach as json_get_payload_to_tcache: BorrowedValue borrows from the
-// input buffer; hex decoded directly into `out` with hex::decode_to_slice.
-// Wire layout: [u32 count] [u8 present] [u8 proof_count] [proof_count*48B] [u32
-// blob_len] [blob bytes]. Returns how many entries are non-null.
-// ---------------------------------------------------------------------------
+fn encode_execution_requests(
+    requests: Option<TapeArray<'_, '_>>,
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    const REQUEST_TYPES: usize = 3;
+    let invalid = |why: &str| crate::EngineError::Ssz(format!("executionRequests: {why}"));
 
+    let mut data = [""; REQUEST_TYPES];
+    let mut previous_type = None;
+    for request in array_items(requests) {
+        let hex = request
+            .into_string()
+            .and_then(|s| s.strip_prefix("0x"))
+            .ok_or_else(|| invalid("not hex"))?;
+        if hex.len() <= 2 {
+            return Err(invalid("empty request"));
+        }
+        let request_type =
+            u8::from_str_radix(&hex[..2], 16).map_err(|_| invalid("bad request type"))?;
+        if request_type as usize >= REQUEST_TYPES {
+            return Err(invalid("unknown request type"));
+        }
+        if previous_type.is_some_and(|previous| request_type <= previous) {
+            return Err(invalid("request types out of order"));
+        }
+        previous_type = Some(request_type);
+        data[request_type as usize] = &hex[2..];
+    }
+
+    let container = out.len();
+    out.resize(container + 4 * REQUEST_TYPES, 0);
+    for (i, hex) in data.iter().enumerate() {
+        let offset = (out.len() - container) as u32;
+        out[container + 4 * i..container + 4 * i + 4].copy_from_slice(&offset.to_le_bytes());
+        hex_extend(hex, out)?;
+    }
+    Ok(())
+}
+
+/// Wire layout: [u32 count] [u8 present] [u8 proof_count] [proof_count*48B]
+/// [u32 blob_len] [blob bytes]. Returns how many entries are non-null.
 pub(crate) fn json_get_blobs_to_tcache(
-    raw: &mut [u8],
+    root: TapeValue<'_, '_>,
     out: &mut Vec<u8>,
 ) -> Result<u8, crate::EngineError> {
-    use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
+    debug_assert!(out.is_empty());
 
-    let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
     let result = root.get("result").ok_or(crate::EngineError::MissingResult)?;
 
     if result.is_null() {
@@ -771,7 +824,7 @@ pub(crate) fn json_get_blobs_to_tcache(
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
 
     let mut blobs_present = 0u8;
-    for item in items {
+    for item in items.iter() {
         if item.is_null() {
             out.push(0);
             continue;
@@ -785,15 +838,16 @@ pub(crate) fn json_get_blobs_to_tcache(
             .ok_or_else(|| crate::EngineError::Ssz("missing proofs".into()))?;
         let proof_count = proofs.len().min(255) as u8;
         out.push(proof_count);
-        for p in &proofs[..proof_count as usize] {
-            let s =
-                p.as_str().ok_or_else(|| crate::EngineError::Ssz("proof not a string".into()))?;
+        for p in proofs.iter().take(proof_count as usize) {
+            let s = p
+                .into_string()
+                .ok_or_else(|| crate::EngineError::Ssz("proof not a string".into()))?;
             hex_extend_clamped::<48>(s, out)?;
         }
 
         let blob_s = item
             .get("blob")
-            .and_then(|v| v.as_str())
+            .and_then(|v| v.into_string())
             .ok_or_else(|| crate::EngineError::Ssz("missing blob".into()))?;
         let blob_s = blob_s.strip_prefix("0x").unwrap_or(blob_s);
         let blob_len = blob_s.len() / 2;
@@ -940,13 +994,15 @@ mod tests {
         let blob0 = "b0".repeat(128);
         let commitment1 = "c1".repeat(48);
         let blob1 = "b1".repeat(64);
+        let withdrawal = "aa".repeat(76);
+        let consolidation = "bb".repeat(116);
         let proofs = (0..2u8)
             .flat_map(|blob| (0..NUMBER_OF_COLUMNS).map(move |cell| cell_proof(blob, cell)))
             .map(|proof| format!("\"0x{}\"", hex::encode(proof)))
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":[{proofs}],"blobs":["0x{blob0}","0x{blob1}"]}},"shouldOverrideBuilder":false,"executionRequests":["0x0102","0x03"]}}}}"#
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":[{proofs}],"blobs":["0x{blob0}","0x{blob1}"]}},"shouldOverrideBuilder":false,"executionRequests":["0x01{withdrawal}","0x02{consolidation}"]}}}}"#
         )
         .into_bytes()
     }
@@ -1463,11 +1519,20 @@ mod tests {
     // json_get_payload_to_tcache
     // ---------------------------------------------------------------------------
 
+    fn payload_frame(json: &mut [u8]) -> Result<Vec<u8>, crate::EngineError> {
+        FrameScratch::new().encode(json, json_get_payload_to_tcache).map(|((), f)| f.to_vec())
+    }
+
+    fn blobs_frame(json: &mut [u8]) -> Result<(u8, Vec<u8>), crate::EngineError> {
+        FrameScratch::new()
+            .encode(json, json_get_blobs_to_tcache)
+            .map(|(present, f)| (present, f.to_vec()))
+    }
+
     #[test]
     fn json_get_payload_to_tcache_matches_fixture() {
         let mut json = get_payload_json();
-        let mut out = Vec::new();
-        json_get_payload_to_tcache(&mut json, &mut out).unwrap();
+        let out = payload_frame(&mut json).unwrap();
 
         let mut expected = (SAMPLE_PAYLOAD_SSZ.len() as u32).to_le_bytes().to_vec();
         expected.extend_from_slice(SAMPLE_PAYLOAD_SSZ);
@@ -1480,8 +1545,42 @@ mod tests {
             expected.extend_from_slice(&(blob_bytes.len() as u32).to_le_bytes());
             expected.extend_from_slice(blob_bytes);
         }
-        expected.extend_from_slice(&[0, 2, 2, 0, 0, 0, 1, 2, 1, 0, 0, 0, 3]);
+        expected.push(0);
+        expected.extend_from_slice(&(12u32 + 76 + 116).to_le_bytes());
+        for offset in [12u32, 12, 12 + 76] {
+            expected.extend_from_slice(&offset.to_le_bytes());
+        }
+        expected.extend_from_slice(&[0xaa; 76]);
+        expected.extend_from_slice(&[0xbb; 116]);
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn frame_scratch_is_reused_across_responses_and_errors() {
+        let expected = payload_frame(&mut get_payload_json()).unwrap();
+        let mut scratch = FrameScratch::new();
+        for _ in 0..2 {
+            let mut missing_result = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
+            assert!(scratch.encode(&mut missing_result, json_get_payload_to_tcache).is_err());
+            let mut json = get_payload_json();
+            let ((), frame) = scratch.encode(&mut json, json_get_payload_to_tcache).unwrap();
+            assert_eq!(frame, expected);
+        }
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_rejects_invalid_execution_requests() {
+        let valid = format!("\"0x01{}\",\"0x02{}\"", "aa".repeat(76), "bb".repeat(116));
+        for requests in [
+            format!("\"0x02{}\",\"0x01{}\"", "bb".repeat(116), "aa".repeat(76)),
+            format!("\"0x01{0}\",\"0x01{0}\"", "aa".repeat(76)),
+            format!("\"0x03{}\"", "cc".repeat(8)),
+            "\"0x01\"".to_owned(),
+        ] {
+            let json = String::from_utf8(get_payload_json()).unwrap().replace(&valid, &requests);
+            let result = payload_frame(&mut json.into_bytes());
+            assert!(result.is_err(), "{requests}");
+        }
     }
 
     #[test]
@@ -1491,7 +1590,7 @@ mod tests {
         let end = start + json[start..].find(']').unwrap();
         let two_proofs = format!("\"0x{}\",\"0x{}\"", "d0".repeat(48), "d1".repeat(48));
         json.replace_range(start..end, &two_proofs);
-        assert!(json_get_payload_to_tcache(&mut json.into_bytes(), &mut Vec::new()).is_err());
+        assert!(payload_frame(&mut json.into_bytes()).is_err());
     }
 
     #[test]
@@ -1508,7 +1607,7 @@ mod tests {
                 short_proof
             },
         ] {
-            assert!(json_get_payload_to_tcache(&mut bad.into_bytes(), &mut Vec::new()).is_err());
+            assert!(payload_frame(&mut bad.into_bytes()).is_err());
         }
     }
 
@@ -1516,13 +1615,13 @@ mod tests {
     fn json_get_payload_to_tcache_rpc_error() {
         let mut json =
             br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"internal"}}"#.to_vec();
-        assert!(json_get_payload_to_tcache(&mut json, &mut Vec::new()).is_err());
+        assert!(payload_frame(&mut json).is_err());
     }
 
     #[test]
     fn json_get_payload_to_tcache_missing_result() {
         let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
-        assert!(json_get_payload_to_tcache(&mut json, &mut Vec::new()).is_err());
+        assert!(payload_frame(&mut json).is_err());
     }
 
     // ---------------------------------------------------------------------------
@@ -1532,8 +1631,8 @@ mod tests {
     #[test]
     fn json_get_blobs_null_result() {
         let mut json = br#"{"jsonrpc":"2.0","id":1,"result":null}"#.to_vec();
-        let mut out = Vec::new();
-        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 0);
+        let (present, out) = blobs_frame(&mut json).unwrap();
+        assert_eq!(present, 0);
         assert_eq!(out, 0u32.to_le_bytes());
     }
 
@@ -1544,8 +1643,8 @@ mod tests {
         let mut json =
             format!(r#"{{"result":[{{"proofs":["0x{proof}"],"blob":"0x{blob_hex}"}},null]}}"#)
                 .into_bytes();
-        let mut out = Vec::new();
-        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 1, "one of two present");
+        let (present, out) = blobs_frame(&mut json).unwrap();
+        assert_eq!(present, 1, "one of two present");
 
         assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 2);
         // item 0: present=1, proof_count=1, 48 proof bytes, blob_len=32, 32 blob bytes
@@ -1563,22 +1662,22 @@ mod tests {
         let mut json =
             br#"{"result":[null,{"proofs":[],"blob":"0x01"},null,{"proofs":[],"blob":"0x02"},null]}"#
                 .to_vec();
-        let mut out = Vec::new();
-        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 2);
+        let (present, out) = blobs_frame(&mut json).unwrap();
+        assert_eq!(present, 2);
         assert_eq!(out, [5, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 2, 0]);
     }
 
     #[test]
     fn json_get_blobs_all_missing() {
         let mut json = br#"{"result":[null,null,null]}"#.to_vec();
-        let mut out = Vec::new();
-        assert_eq!(json_get_blobs_to_tcache(&mut json, &mut out).unwrap(), 0);
+        let (present, out) = blobs_frame(&mut json).unwrap();
+        assert_eq!(present, 0);
         assert_eq!(out, [3, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
     fn json_get_blobs_missing_result() {
         let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
-        assert!(json_get_blobs_to_tcache(&mut json, &mut Vec::new()).is_err());
+        assert!(blobs_frame(&mut json).is_err());
     }
 }

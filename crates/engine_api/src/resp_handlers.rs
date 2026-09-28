@@ -5,12 +5,15 @@ use silver_common::{
     EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp, PayloadValidationStatus,
     SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
 };
-use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
+use simd_json::{
+    prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess},
+    value::tape::Value as TapeValue,
+};
 
 use crate::{
     EngineError,
     types::{
-        ForkchoiceUpdatedResult, PayloadStatus, json_get_blobs_to_tcache,
+        ForkchoiceUpdatedResult, FrameScratch, PayloadStatus, json_get_blobs_to_tcache,
         json_get_payload_to_tcache,
     },
 };
@@ -106,14 +109,14 @@ pub(crate) fn handle_client_version_response(response: Result<&mut [u8], EngineE
 pub(crate) struct Responses<'a> {
     adapter: &'a mut SpineAdapter<SilverSpine>,
     producer: &'a mut TProducer,
-    scratch: &'a mut Vec<u8>,
+    scratch: &'a mut FrameScratch,
 }
 
 impl<'a> Responses<'a> {
     pub(crate) fn new(
         adapter: &'a mut SpineAdapter<SilverSpine>,
         producer: &'a mut TProducer,
-        scratch: &'a mut Vec<u8>,
+        scratch: &'a mut FrameScratch,
     ) -> Self {
         Self { adapter, producer, scratch }
     }
@@ -122,11 +125,10 @@ impl<'a> Responses<'a> {
     fn encode<T>(
         &mut self,
         raw: &mut [u8],
-        to_tcache: impl FnOnce(&mut [u8], &mut Vec<u8>) -> Result<T, EngineError>,
+        to_frame: impl FnOnce(TapeValue<'_, '_>, &mut Vec<u8>) -> Result<T, EngineError>,
     ) -> Result<Option<(T, TCacheRead)>, EngineError> {
-        self.scratch.clear();
-        let encoded = to_tcache(raw, self.scratch)?;
-        Ok(write_tcache(self.producer, self.scratch).map(|data| (encoded, data)))
+        let (encoded, frame) = self.scratch.encode(raw, to_frame)?;
+        Ok(write_tcache(self.producer, frame).map(|data| (encoded, data)))
     }
 
     #[inline]

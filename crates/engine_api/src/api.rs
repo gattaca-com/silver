@@ -15,6 +15,7 @@ use crate::{
     pool::HEALTHCHECK_OVERSHOOT,
     req_handlers::{handle_request, handle_request_no_el},
     resp_handlers::*,
+    types::FrameScratch,
 };
 
 const HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -24,9 +25,7 @@ pub struct EngineApi {
     /// [`EngineConfig::unsafe_no_el`].
     pub client: Option<EngineClient>,
     reader: TCacheReader,
-    // Reusable scratch buffer for the JSON→SSZ response conversions: cleared on
-    // each use, capacity retained across calls.
-    scratch: Vec<u8>,
+    scratch: FrameScratch,
 
     first_run: bool,
     // The previous intake ran the request queue empty; licenses snapshots.
@@ -73,7 +72,7 @@ impl EngineApi {
             healthcheck_pending: false,
             healthcheck_deadline: Instant::now(),
             sync_status: ELSyncStatus::Unknown,
-            scratch: Vec::new(),
+            scratch: FrameScratch::new(),
         }
     }
 
