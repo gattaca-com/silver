@@ -4,16 +4,16 @@ use flux::spine::SpineAdapter;
 use fxhash::FxHashMap;
 use silver_common::{
     ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
-    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer,
-    ssz_view::{SINGLE_ATT_SIZE, SingleAttestationView},
+    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TCacheReader, TProducer,
+    ssz_view::{SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView},
 };
 use silver_gossip::GossipHandler;
 
 use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
-    AdmissionError, AttestationAdmission, AttestationCluster, AttestationClusterConfig,
-    AttestationDecision, AttestationKey, AttestationLockCommand, AttestationLockStore,
-    ClusterError, ClusterEvent, LockResult, ProposalId, ProposeError, decode_message,
+    AdmissionError, AttestationKey, AttestationLockCommand, BlockKey, BlockLockCommand,
+    ClusterError, ClusterEvent, LockResult, ProposalId, ProposeError, SlashingAdmission,
+    SlashingLockStore, SlashingProtectionCluster, SlashingProtectionConfig, decode_message,
     encode_message,
 };
 
@@ -33,37 +33,49 @@ impl PendingAttestation {
     }
 }
 
-/// Slashing protection for local attestations: admission and a lock per
-/// validator and epoch, agreed through Raft when clustered.
-pub(super) struct AttestationClusterHandler {
+/// A signed block waiting on its lock. Its bytes stay in the submissions
+/// tcache until the lock commits.
+#[derive(Debug, Clone, Copy)]
+struct PendingBlock {
+    request_id: u64,
+    key: BlockKey,
+    ssz: TCacheRead,
+}
+
+/// Slashing protection for local attestations and blocks: admission and a
+/// lock per validator and epoch or slot, agreed through Raft when clustered.
+pub(super) struct SlashingProtectionHandler {
     /// Encoded Raft messages are reserved here before `ClusterMsgOut` is
     /// published to the network tile.
     outbound_producer: TProducer,
-    cluster: Option<AttestationCluster>,
-    local_locks: AttestationLockStore,
-    admission: AttestationAdmission,
+    cluster: Option<SlashingProtectionCluster>,
+    local_locks: SlashingLockStore,
+    admission: SlashingAdmission,
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
+    pending_blocks: FxHashMap<ProposalId, PendingBlock>,
     wall_slot: u64,
 }
 
-impl AttestationClusterHandler {
+impl SlashingProtectionHandler {
     pub(super) fn loop_start(&mut self) {
         self.outbound_producer.loop_start();
     }
 
     pub(super) fn new(
         outbound_producer: TProducer,
-        config: Option<AttestationClusterConfig>,
+        config: Option<SlashingProtectionConfig>,
         now: Instant,
     ) -> Result<Self, ClusterError> {
-        let cluster = config.map(|config| AttestationCluster::new(config, now)).transpose()?;
+        let cluster =
+            config.map(|config| SlashingProtectionCluster::new(config, now)).transpose()?;
 
         Ok(Self {
             outbound_producer,
             cluster,
-            local_locks: AttestationLockStore::default(),
-            admission: AttestationAdmission::new(),
+            local_locks: SlashingLockStore::default(),
+            admission: SlashingAdmission::new(),
             pending_attestations: FxHashMap::default(),
+            pending_blocks: FxHashMap::default(),
             wall_slot: 0,
         })
     }
@@ -71,7 +83,7 @@ impl AttestationClusterHandler {
     pub(super) fn on_status(&mut self, head_slot: u64, wall_slot: u64) {
         self.wall_slot = wall_slot;
         if self.cluster.is_none() {
-            self.local_locks.advance_minimum_slot(AttestationAdmission::age_floor(wall_slot));
+            self.local_locks.advance_minimum_slot(SlashingAdmission::age_floor(wall_slot));
         }
         if head_slot != wall_slot || !self.admission.set_startup_wall_slot(wall_slot) {
             return;
@@ -81,7 +93,7 @@ impl AttestationClusterHandler {
             let initialized = cluster.set_startup_wall_slot(wall_slot);
             debug_assert!(initialized, "handler and cluster startup floors latch together");
         }
-        tracing::info!(wall_slot, "local attestation startup floor latched");
+        tracing::info!(wall_slot, "local slashing protection startup floor latched");
     }
 
     /// Consume inbound Raft messages and pump all work currently ready in the
@@ -103,7 +115,7 @@ impl AttestationClusterHandler {
                 }
             }
         });
-        self.drive(now, local_gossip, gossip_handler, &mut adapter.producers);
+        self.drive(now, local_gossip, gossip_handler, inbound_consumer, &mut adapter.producers);
     }
 
     pub(super) fn on_local_attestation(
@@ -127,7 +139,7 @@ impl AttestationClusterHandler {
 
         let Some(cluster) = self.cluster.as_mut() else {
             let result = self.local_locks.apply(&attestation.command);
-            let response = lock_response(result);
+            let response = lock_response(result, LocalGossipFailure::ConflictingAttestation);
             if response.is_err() {
                 produce_response(producers, attestation.request_id, response);
                 tracing::warn!(
@@ -160,6 +172,61 @@ impl AttestationClusterHandler {
                     slot = attestation.command.key.slot,
                     "cluster rejected local attestation"
                 );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn on_local_block(
+        &mut self,
+        request_id: u64,
+        ssz: TCacheRead,
+        block: &[u8],
+        now: Instant,
+        local_gossip: &mut LocalGossipHandler,
+        gossip_handler: &mut GossipHandler,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let key = BlockKey {
+            proposer_index: SignedBeaconBlockView::proposer_index(block),
+            slot: SignedBeaconBlockView::slot(block),
+        };
+        let command = BlockLockCommand { key, signature: *SignedBeaconBlockView::signature(block) };
+        if let Err(error) = self.admission.validate(key.slot, self.wall_slot) {
+            produce_response(producers, request_id, Err(admission_failure(error)));
+            tracing::warn!(
+                ?error,
+                request_id,
+                slot = key.slot,
+                "local block rejected before its lock"
+            );
+            return;
+        }
+
+        let Some(cluster) = self.cluster.as_mut() else {
+            let result = self.local_locks.apply_block(&command);
+            if let Err(failure) = lock_response(result, LocalGossipFailure::ConflictingProposal) {
+                produce_response(producers, request_id, Err(failure));
+                tracing::warn!(?result, request_id, slot = key.slot, "local lock rejected block");
+                return;
+            }
+            return local_gossip.submit(
+                block_message(request_id, block, ssz, key.slot),
+                now,
+                gossip_handler,
+                producers,
+            );
+        };
+
+        match cluster.propose_block(command, self.wall_slot, now) {
+            Ok(proposal_id) => {
+                let previous =
+                    self.pending_blocks.insert(proposal_id, PendingBlock { request_id, key, ssz });
+                debug_assert!(previous.is_none(), "proposal IDs are unique per node");
+            }
+            Err(error) => {
+                produce_response(producers, request_id, Err(proposal_failure(&error)));
+                tracing::warn!(?error, request_id, slot = key.slot, "cluster rejected local block");
             }
         }
     }
@@ -226,6 +293,7 @@ impl AttestationClusterHandler {
         now: Instant,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
+        reader: &mut TCacheReader,
         producers: &mut SilverSpineProducers,
     ) {
         let Some(cluster) = self.cluster.as_mut() else {
@@ -233,6 +301,7 @@ impl AttestationClusterHandler {
         };
 
         let pending_attestations = &mut self.pending_attestations;
+        let pending_blocks = &mut self.pending_blocks;
         let outbound_producer = &mut self.outbound_producer;
         let result = cluster.spin(now, self.wall_slot, |event| match event {
             ClusterEvent::SendRaftMessage(message) => {
@@ -267,7 +336,11 @@ impl AttestationClusterHandler {
                     );
                     return;
                 }
-                let response = decision_response(&decision);
+                let response = decision_response(
+                    decision.admission,
+                    decision.result,
+                    LocalGossipFailure::ConflictingAttestation,
+                );
                 if response.is_ok() {
                     local_gossip.submit(
                         decision.command.local_message(attestation.request_id),
@@ -286,7 +359,79 @@ impl AttestationClusterHandler {
                     );
                 }
             }
-            ClusterEvent::AttestationProposalTimedOut(proposal_id) => {
+            ClusterEvent::BlockCommitted(decision) => {
+                let Some(block) = pending_blocks.remove(&decision.proposal_id) else {
+                    tracing::warn!(
+                        ?decision.proposal_id,
+                        "committed local Raft proposal has no pending block"
+                    );
+                    return;
+                };
+                if decision.key != block.key {
+                    produce_response(
+                        producers,
+                        block.request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                    tracing::error!(
+                        ?decision.proposal_id,
+                        request_id = block.request_id,
+                        "committed Raft command does not match its pending block"
+                    );
+                    return;
+                }
+                let slot = block.key.slot;
+                let response = decision_response(
+                    decision.admission,
+                    decision.result,
+                    LocalGossipFailure::ConflictingProposal,
+                );
+                if let Err(failure) = response {
+                    produce_response(producers, block.request_id, Err(failure));
+                    tracing::warn!(
+                        ?decision.result,
+                        ?decision.admission,
+                        request_id = block.request_id,
+                        slot,
+                        "committed block cannot enter validation"
+                    );
+                    return;
+                }
+                let acquired = reader.acquire(block.ssz);
+                let Ok((bytes, _)) = acquired.buffer() else {
+                    produce_response(
+                        producers,
+                        block.request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                    tracing::error!(
+                        request_id = block.request_id,
+                        slot,
+                        "submitted block overwritten before its lock committed"
+                    );
+                    return;
+                };
+                local_gossip.submit(
+                    block_message(block.request_id, bytes, block.ssz, slot),
+                    now,
+                    gossip_handler,
+                    producers,
+                );
+            }
+            ClusterEvent::ProposalTimedOut(proposal_id) => {
+                if let Some(block) = pending_blocks.remove(&proposal_id) {
+                    produce_response(
+                        producers,
+                        block.request_id,
+                        Err(LocalGossipFailure::TimedOut),
+                    );
+                    tracing::warn!(
+                        ?proposal_id,
+                        request_id = block.request_id,
+                        slot = block.key.slot,
+                        "block cluster proposal timed out"
+                    );
+                }
                 if let Some(attestation) = pending_attestations.remove(&proposal_id) {
                     produce_response(
                         producers,
@@ -303,7 +448,7 @@ impl AttestationClusterHandler {
             }
         });
         if let Err(error) = result {
-            tracing::error!(?error, "attestation cluster spin failed");
+            tracing::error!(?error, "slashing protection spin failed");
             for (_, attestation) in self.pending_attestations.drain() {
                 produce_response(
                     producers,
@@ -311,13 +456,18 @@ impl AttestationClusterHandler {
                     Err(LocalGossipFailure::Internal),
                 );
             }
+            for (_, block) in self.pending_blocks.drain() {
+                produce_response(producers, block.request_id, Err(LocalGossipFailure::Internal));
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{TCache, TCacheId};
+    use silver_common::{
+        TCache, TCacheId, TCacheProducer, TCacheTable, TReadMode, ssz_view::SIGNED_BEACON_BLOCK_MIN,
+    };
 
     use super::*;
     use crate::{
@@ -325,8 +475,115 @@ mod tests {
         tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
     };
 
-    fn handler(now: Instant) -> AttestationClusterHandler {
-        AttestationClusterHandler::new(
+    /// A signed block just long enough to carry its slot and proposer.
+    fn block_bytes(slot: u64, proposer_index: u64, tag: u8) -> Vec<u8> {
+        let mut block = vec![tag; SIGNED_BEACON_BLOCK_MIN];
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[108..116].copy_from_slice(&proposer_index.to_le_bytes());
+        block
+    }
+
+    /// Submissions as the API leaves them, and a reader over them.
+    struct Submissions {
+        producer: TProducer,
+        reader: TCacheReader,
+    }
+
+    impl Submissions {
+        fn new() -> Self {
+            let producer = TCache::producer(TCacheId::BoundaryProcessing, 1 << 16);
+            let mut reader = TCacheReader::new(TCacheTable::from_iter([producer.cache_ref()]));
+            reader
+                .open(TCacheId::BoundaryProcessing, "test_submissions", TReadMode::Sliding)
+                .unwrap();
+            Self { producer, reader }
+        }
+
+        fn publish(&mut self, bytes: &[u8]) -> TCacheRead {
+            let read = self.producer.write_with(bytes.len(), |out| out.copy_from_slice(bytes));
+            self.producer.loop_start();
+            read.unwrap()
+        }
+    }
+
+    fn submit_block(
+        handler: &mut SlashingProtectionHandler,
+        harness: &mut Harness,
+        submissions: &mut Submissions,
+        request_id: u64,
+        block: &[u8],
+        now: Instant,
+    ) {
+        let ssz = submissions.publish(block);
+        let Harness { local_gossip, gossip, adapter, .. } = harness;
+        handler.on_local_block(
+            request_id,
+            ssz,
+            block,
+            now,
+            local_gossip,
+            gossip,
+            &mut adapter.producers,
+        );
+    }
+
+    #[test]
+    fn standalone_block_lock_admits_one_block_per_proposer_and_slot() {
+        let now = Instant::now();
+        let mut standalone = Standalone::new(now);
+        let mut submissions = Submissions::new();
+        standalone.handler.on_status(10, 10);
+        standalone.handler.on_status(11, 11);
+        let Standalone { handler, harness } = &mut standalone;
+
+        submit_block(handler, harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
+        let first = harness.pop_gossip();
+        submit_block(handler, harness, &mut submissions, 2, &block_bytes(11, 4, 1), now);
+        assert_eq!(harness.pop_gossip().msg_hash, first.msg_hash, "a resubmission rejoins");
+        assert!(harness.responses().is_empty());
+
+        submit_block(handler, harness, &mut submissions, 3, &block_bytes(11, 4, 2), now);
+        assert_eq!(harness.responses(), [(3, Err(LocalGossipFailure::ConflictingProposal))]);
+        assert!(harness.gossip.pop_event().is_none());
+
+        submit_block(handler, harness, &mut submissions, 4, &block_bytes(11, 5, 2), now);
+        harness.pop_gossip();
+        assert!(harness.responses().is_empty());
+    }
+
+    #[test]
+    fn clustered_block_enters_validation_once_its_lock_commits() {
+        let now = Instant::now();
+        let mut config = SlashingProtectionConfig::new(
+            1,
+            vec![1],
+            ClusterStorageConfig::Create("unused-test-journal".into()),
+        );
+        config.tick_interval = std::time::Duration::from_millis(1);
+        config.election_ticks = 5;
+        config.heartbeat_ticks = 1;
+        let mut handler = handler(now);
+        handler.cluster = Some(SlashingProtectionCluster::in_memory(config, now).unwrap());
+        let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
+        handler.on_status(10, 10);
+        handler.on_status(11, 11);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+
+        submit_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
+        assert!(harness.gossip.pop_event().is_none(), "nothing leaves before the lock commits");
+        assert_eq!(handler.pending_blocks.len(), 1);
+
+        let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+        handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+
+        assert!(handler.pending_blocks.is_empty());
+        harness.pop_gossip();
+        assert!(harness.responses().is_empty());
+    }
+
+    fn handler(now: Instant) -> SlashingProtectionHandler {
+        SlashingProtectionHandler::new(
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,
             now,
@@ -335,7 +592,7 @@ mod tests {
     }
 
     struct Standalone {
-        handler: AttestationClusterHandler,
+        handler: SlashingProtectionHandler,
         harness: Harness,
     }
 
@@ -525,9 +782,10 @@ mod tests {
         let now = Instant::now();
         let mut handler = handler(now);
         let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
         handler.cluster = Some(
-            AttestationCluster::in_memory(
-                AttestationClusterConfig::new(
+            SlashingProtectionCluster::in_memory(
+                SlashingProtectionConfig::new(
                     1,
                     vec![1],
                     ClusterStorageConfig::Create("unused-test-journal".into()),
@@ -543,6 +801,7 @@ mod tests {
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,
+            &mut submissions.reader,
             &mut harness.adapter.producers,
         );
 
@@ -563,6 +822,7 @@ mod tests {
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,
+            &mut submissions.reader,
             &mut harness.adapter.producers,
         );
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::Internal))]);
@@ -582,20 +842,26 @@ mod tests {
     }
 }
 
-fn decision_response(decision: &AttestationDecision) -> LocalGossipResult {
-    if let Err(error) = decision.admission {
-        return Err(admission_failure(error));
-    }
-
-    lock_response(decision.result)
+fn decision_response(
+    admission: Result<(), AdmissionError>,
+    result: LockResult,
+    conflict: LocalGossipFailure,
+) -> LocalGossipResult {
+    admission.map_err(admission_failure)?;
+    lock_response(result, conflict)
 }
 
-fn lock_response(result: LockResult) -> LocalGossipResult {
+fn lock_response(result: LockResult, conflict: LocalGossipFailure) -> LocalGossipResult {
     match result {
         LockResult::Accepted | LockResult::AlreadyAcceptedSame => Ok(()),
-        LockResult::ConflictingAttestation => Err(LocalGossipFailure::ConflictingAttestation),
+        LockResult::Conflicting => Err(conflict),
         LockResult::TooOld => Err(LocalGossipFailure::TooOld),
     }
+}
+
+fn block_message(request_id: u64, ssz: &[u8], ssz_read: TCacheRead, slot: u64) -> LocalMessage<'_> {
+    let topic = GossipTopic::BeaconBlock;
+    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot }
 }
 
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {

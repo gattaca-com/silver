@@ -6,11 +6,11 @@ use raft::{
     storage::MemStorage,
 };
 
-use super::lock_store::AttestationLockStore;
+use super::lock_store::SlashingLockStore;
 
 pub(super) struct RestoredSnapshot {
     pub index: u64,
-    pub locks: AttestationLockStore,
+    pub locks: SlashingLockStore,
 }
 
 impl RestoredSnapshot {
@@ -18,7 +18,7 @@ impl RestoredSnapshot {
         validate_snapshot(snapshot, voters)?;
         Ok(Self {
             index: snapshot.get_metadata().index,
-            locks: AttestationLockStore::decode_snapshot(&snapshot.data)?,
+            locks: SlashingLockStore::decode_snapshot(&snapshot.data)?,
         })
     }
 }

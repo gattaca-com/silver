@@ -14,13 +14,15 @@ mod storage;
 mod wire;
 
 pub use admission::AdmissionError;
-pub(crate) use admission::AttestationAdmission;
-pub use command::{AttestationKey, AttestationLockCommand, CommandDecodeError};
-pub(crate) use lock_store::AttestationLockStore;
+pub(crate) use admission::SlashingAdmission;
+pub use command::{
+    AttestationKey, AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError,
+};
 pub use lock_store::LockResult;
+pub(crate) use lock_store::SlashingLockStore;
 pub use node::{
-    AttestationCluster, AttestationClusterConfig, AttestationDecision, ClusterError, ClusterEvent,
-    ProposalId, ProposeError,
+    AttestationDecision, BlockDecision, ClusterError, ClusterEvent, ProposalId, ProposeError,
+    SlashingProtectionCluster, SlashingProtectionConfig,
 };
 pub use persistence::{ClusterStorageConfig, RecoveredStorage};
 #[cfg(target_os = "linux")]

@@ -7,7 +7,7 @@ use raft::{
 
 #[cfg(target_os = "linux")]
 use super::storage::{ClusterStorage, ClusterStorageEvent, StorageIdentity};
-use super::{node::AttestationClusterConfig, raft_storage::RestoredSnapshot};
+use super::{node::SlashingProtectionConfig, raft_storage::RestoredSnapshot};
 
 #[derive(Debug, Clone)]
 pub enum ClusterStorageConfig {
@@ -64,7 +64,7 @@ pub(super) struct Persistence {
 }
 
 impl Persistence {
-    pub fn new(config: &AttestationClusterConfig) -> io::Result<Self> {
+    pub fn new(config: &SlashingProtectionConfig) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
             let identity = StorageIdentity::new(config.node_id, config.voters.clone())?;

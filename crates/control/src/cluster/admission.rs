@@ -2,7 +2,8 @@ use std::{error::Error, fmt};
 
 use silver_common::SLOTS_PER_EPOCH;
 
-/// Why a locally-originated attestation was rejected before it entered Raft.
+/// Why a locally-originated attestation or block was rejected before it entered
+/// Raft.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionError {
     StartupFloorUnset,
@@ -15,16 +16,16 @@ impl fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::StartupFloorUnset => {
-                f.write_str("attestation admission is disabled until the node is synced")
+                f.write_str("admission is disabled until the node is synced")
             }
             Self::BeforeStartupFloor { slot, minimum } => {
-                write!(f, "attestation slot {slot} is before startup floor {minimum}")
+                write!(f, "slot {slot} is before startup floor {minimum}")
             }
             Self::TooOld { slot, minimum } => {
-                write!(f, "attestation slot {slot} is before age floor {minimum}")
+                write!(f, "slot {slot} is before age floor {minimum}")
             }
             Self::Future { slot, wall_slot } => {
-                write!(f, "attestation slot {slot} is after wall slot {wall_slot}")
+                write!(f, "slot {slot} is after wall slot {wall_slot}")
             }
         }
     }
@@ -32,17 +33,17 @@ impl fmt::Display for AdmissionError {
 
 impl Error for AdmissionError {}
 
-/// Admission policy for locally-originated attestations.
+/// Admission policy for locally-originated attestations and blocks.
 ///
 /// The startup floor is latched when the node first reports itself synced and
 /// is immutable thereafter. The age floor advances with wall time and permits
 /// at most one epoch of past slots.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AttestationAdmission {
+pub(crate) struct SlashingAdmission {
     startup_floor: Option<u64>,
 }
 
-impl AttestationAdmission {
+impl SlashingAdmission {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -85,7 +86,7 @@ mod tests {
 
     #[test]
     fn admission_has_startup_age_and_future_bounds() {
-        let mut admission = AttestationAdmission::new();
+        let mut admission = SlashingAdmission::new();
 
         assert_eq!(admission.validate(100, 100), Err(AdmissionError::StartupFloorUnset));
         assert!(admission.set_startup_wall_slot(100));

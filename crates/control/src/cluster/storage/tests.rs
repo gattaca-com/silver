@@ -8,7 +8,7 @@ use raft::{Storage as _, storage::MemStorage};
 
 use super::*;
 use crate::cluster::{
-    AttestationKey, AttestationLockCommand, AttestationLockStore, LockResult,
+    AttestationKey, AttestationLockCommand, LockResult, SlashingLockStore,
     command::ReplicatedCommand,
 };
 
@@ -268,7 +268,7 @@ fn committed_epoch_locks_can_be_rebuilt_without_applying_the_uncommitted_suffix(
     persisted(&mut storage, 1);
     drop(storage);
     let restored = recovered(&mut ClusterStorage::open(&path, identity()).unwrap());
-    let mut locks = AttestationLockStore::default();
+    let mut locks = SlashingLockStore::default();
     for entry in
         restored.entries.iter().take_while(|entry| entry.index <= restored.hard_state.commit)
     {
@@ -282,6 +282,6 @@ fn committed_epoch_locks_can_be_rebuilt_without_applying_the_uncommitted_suffix(
     conflict.key.slot = 105;
     conflict.ssz[0] = 1;
     assert_eq!(locks.apply(&command), LockResult::AlreadyAcceptedSame);
-    assert_eq!(locks.apply(&conflict), LockResult::ConflictingAttestation);
+    assert_eq!(locks.apply(&conflict), LockResult::Conflicting);
     assert_eq!(locks.apply(&later), LockResult::Accepted);
 }
