@@ -12,19 +12,19 @@ use crate::cluster::{
     command::ReplicatedCommand,
 };
 
-fn identity() -> StorageIdentity {
+pub(super) fn identity() -> StorageIdentity {
     StorageIdentity::new(1, vec![1, 2, 3]).unwrap()
 }
 
-fn entry(index: u64, term: u64) -> Entry {
+pub(super) fn entry(index: u64, term: u64) -> Entry {
     Entry { index, term, data: vec![index as u8; 32].into(), ..Entry::default() }
 }
 
-fn state(term: u64, commit: u64) -> HardState {
+pub(super) fn state(term: u64, commit: u64) -> HardState {
     HardState { term, vote: 1, commit, ..HardState::default() }
 }
 
-fn event(storage: &mut ClusterStorage) -> io::Result<ClusterStorageEvent> {
+pub(super) fn event(storage: &mut ClusterStorage) -> io::Result<ClusterStorageEvent> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(event) = storage.poll()? {
@@ -35,14 +35,14 @@ fn event(storage: &mut ClusterStorage) -> io::Result<ClusterStorageEvent> {
     }
 }
 
-fn recovered(storage: &mut ClusterStorage) -> RecoveredStorage {
+pub(super) fn recovered(storage: &mut ClusterStorage) -> RecoveredStorage {
     match event(storage).unwrap() {
         ClusterStorageEvent::Recovered(recovered) => recovered,
         event => panic!("unexpected event: {event:?}"),
     }
 }
 
-fn persisted(storage: &mut ClusterStorage, number: u64) {
+pub(super) fn persisted(storage: &mut ClusterStorage, number: u64) {
     assert!(
         matches!(event(storage).unwrap(), ClusterStorageEvent::Persisted { ready_number } if ready_number == number)
     );

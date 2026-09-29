@@ -2,6 +2,7 @@ use std::{
     error::Error,
     io,
     net::IpAddr,
+    path::Path,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -21,20 +22,24 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, GossipTopic, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer,
-    TCacheReader, TCacheTable,
+    APP_NAME, Enr, GossipTopic, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify, SilverSpine, TCache,
+    TCacheId, TCacheProducer, TCacheReader, TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
 };
 use silver_config::Config;
-use silver_control::{Controller, cluster::AttestationClusterConfig, sync_engine::SyncEngine};
+use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
 use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
+
+use crate::cluster::ClusterStartup;
+
+mod cluster;
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -99,10 +104,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCacheId::BoundaryProcessing,
         config.engine_config().incoming_engine_resp_tcache_size,
     );
-    let cluster_inbound_producer =
-        TCache::producer(TCacheId::ClusterInbound, CLUSTER_MESSAGE_TCACHE_SIZE);
+    let cluster_cache_bytes = if config.cluster_config().is_some() {
+        4 * MAX_CLUSTER_MESSAGE_BYTES
+    } else {
+        CLUSTER_MESSAGE_TCACHE_SIZE
+    };
+    let cluster_inbound_producer = TCache::producer(TCacheId::ClusterInbound, cluster_cache_bytes);
     let cluster_outbound_producer =
-        TCache::producer(TCacheId::ClusterOutbound, CLUSTER_MESSAGE_TCACHE_SIZE);
+        TCache::producer(TCacheId::ClusterOutbound, cluster_cache_bytes);
     let control_rpc_producer = TCache::producer(TCacheId::ControlRpc, CONTROL_RPC_TCACHE_SIZE);
     let storage_delivery_producer =
         TCache::producer(TCacheId::StorageDelivery, config.outgoing_rpc_tcache_size());
@@ -146,19 +155,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     local_enr.set_syncnets(long_lived_syncnets, keypair.secret_key())?;
 
     // Cluster configuration
-    let (cluster_config, cluster_nodes) = config
+    let cluster_startup = config
         .cluster_config()
-        .map(|c| {
-            let voters = c.nodes.clone();
-            let node_id = match voters.iter().find(|(_, enr)| enr.node_id() == local_enr.node_id())
-            {
-                Some((id, _)) => *id,
-                None => return Err("no local node configured in cluster config"),
-            };
-            Ok((AttestationClusterConfig::new(node_id, voters.keys().copied().collect()), voters))
+        .map(|cluster| {
+            ClusterStartup::new(cluster, &local_enr, Path::new(config.data_storage_dir()))
         })
-        .transpose()?
-        .unzip();
+        .transpose()?;
+    let cluster_nodes = config.cluster_config().map(|cluster| cluster.nodes.clone());
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
@@ -279,7 +282,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         control_rpc_producer,
         tcaches,
         cluster_outbound_producer,
-        cluster_config,
+        cluster_startup.as_ref().map(|cluster| cluster.config.clone()),
         SyncEngine::new(
             config.syncing_config(),
             booting_from_local_checkpoint,
