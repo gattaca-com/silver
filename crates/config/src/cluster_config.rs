@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use silver_common::Enr;
 
+/// Snapshots fit 149,753 validators attesting every epoch, with one block per
+/// slot. Retained records for inactive validators reduce this capacity.
+/// Oversized snapshots stop cluster participation and local submissions.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClusterConfig {
     /// All cluster nodes, including the local node, keyed by cluster node id.

@@ -1,5 +1,5 @@
 use raft::eraftpb::MessageType;
-use silver_common::ssz_view::SINGLE_ATT_SIZE;
+use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
 use crate::cluster::AttestationKey;
@@ -15,6 +15,7 @@ fn config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
 fn command(slot: u64, root: u8) -> AttestationLockCommand {
     let mut ssz = [0; SINGLE_ATT_SIZE];
     ssz[0] = root;
+    ssz[104..112].copy_from_slice(&(slot / SLOTS_PER_EPOCH).to_le_bytes());
     AttestationLockCommand { key: AttestationKey { attester_index: 7, slot }, subnet: 0, ssz }
 }
 
