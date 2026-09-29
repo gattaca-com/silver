@@ -1,14 +1,17 @@
-//! Per-block stage events, decoded from the node's spine queues. Joining,
-//! display and storage stay with the consumer.
+//! What the node publishes, decoded for its consumers: per-block stage events
+//! from the spine queues, and the `declare_counters!` files. Joining, display
+//! and storage stay with the consumer.
 //!
 //! Timestamps come off the `InternalMessage` envelope: arrivals (`Received`,
 //! `ColumnRecv`) use the ingestion clock, everything else the publish clock.
 
 pub use clock::SlotClock;
+pub use counters::{CounterValues, counter_names};
 pub use event::{Stage, StageEvent};
 pub use reader::StageReader;
 
 mod clock;
+mod counters;
 mod event;
 mod reader;
 

@@ -27,8 +27,6 @@ pub struct CounterFile {
     /// display label and the schema lookup key.
     pub name: String,
     pub path: PathBuf,
-    /// File size in bytes. Divided by 8 gives the slot count.
-    pub size_bytes: u64,
 }
 
 pub struct TimingFile {
@@ -59,8 +57,7 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
             let path = entry.path();
             let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
             if let Some(name) = fname.strip_prefix("counters-") {
-                let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                let file = CounterFile { name: name.to_string(), path, size_bytes };
+                let file = CounterFile { name: name.to_string(), path };
                 if file.name.starts_with("tcache-") {
                     tcaches.push(file);
                 } else {

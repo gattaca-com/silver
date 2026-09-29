@@ -1,20 +1,11 @@
-//! Read-only mmap onto a `counters-{name}` file produced by
-//! `silver_common::declare_counters!`. Slots are `[u64; N]` accessed
-//! via `read_volatile`-equivalent atomic loads; the producer side does
-//! `fetch_add(Relaxed)`.
-//!
 //! Holds (current, previous_sample) snapshots so the UI can render
 //! deltas without recomputing on every frame. Historical bucketing
 //! (12s deltas, 240-deep ring) is a follow-up.
 
-use std::{
-    collections::VecDeque,
-    fs::OpenOptions,
-    io,
-    os::fd::AsRawFd,
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{collections::VecDeque, io, sync::atomic::Ordering};
+
+use silver_metrics::mmap_readonly;
+use silver_stages::CounterValues;
 
 use crate::discovery::CounterFile;
 
@@ -45,9 +36,7 @@ pub struct CounterSet {
     /// names file couldn't be opened.
     consumer_names_base: *const u8,
     consumer_names_bytes: usize,
-    base: *const AtomicU64,
-    slot_count: usize,
-    map_bytes: usize,
+    values: CounterValues,
     /// Last sampled values, one per slot.
     pub current: Vec<u64>,
     /// Highest `tcache_length()` seen since open; meaningless for other sets.
@@ -71,20 +60,15 @@ pub struct CounterSet {
     primed: bool,
 }
 
-// SAFETY: `base` points at an mmap'd shmem file; the underlying memory
-// is shared with producer processes that mutate via atomic ops. We only
-// read, so cross-thread/cross-process sharing of the pointer is sound.
+// SAFETY: `consumer_names_base` points at an mmap'd shmem file that is
+// only read, so cross-thread sharing of the pointer is sound.
 unsafe impl Send for CounterSet {}
 unsafe impl Sync for CounterSet {}
 
 impl CounterSet {
     pub fn open(file: &CounterFile) -> io::Result<Self> {
-        let slot_count = (file.size_bytes / 8) as usize;
-        if slot_count == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "empty counter file"));
-        }
-        let map_bytes = slot_count * 8;
-        let base = mmap_readonly(&file.path, map_bytes)?;
+        let values = CounterValues::open(&file.path)?;
+        let slot_count = values.values().len();
         let (slot_names, schema_registered) = crate::schema::names_for(&file.name, slot_count);
         let hide_zero = crate::schema::hide_zero(&file.name);
 
@@ -100,7 +84,7 @@ impl CounterSet {
                     .parent()
                     .map(|d| d.join(format!("tcache-names-{tc_name}")))
                     .unwrap_or_default();
-                match mmap_readonly_bytes(&names_path, names_bytes) {
+                match mmap_readonly(&names_path, names_bytes) {
                     Ok(p) => (p, names_bytes),
                     Err(_) => (std::ptr::null(), 0),
                 }
@@ -115,9 +99,7 @@ impl CounterSet {
             hide_zero,
             consumer_names_base,
             consumer_names_bytes,
-            base,
-            slot_count,
-            map_bytes,
+            values,
             current: vec![0; slot_count],
             max_length: 0,
             previous: vec![0; slot_count],
@@ -155,10 +137,8 @@ impl CounterSet {
     /// values into `previous`. O(slot_count) atomic loads.
     pub fn sample(&mut self) {
         self.previous.copy_from_slice(&self.current);
-        // SAFETY: `base` is valid for `slot_count` AtomicU64s for the
-        // life of `self`; mmap region was sized accordingly.
-        for i in 0..self.slot_count {
-            self.current[i] = unsafe { (*self.base.add(i)).load(Ordering::Relaxed) };
+        for (current, value) in self.current.iter_mut().zip(self.values.values()) {
+            *current = value.load(Ordering::Relaxed);
         }
         if !self.primed {
             // Prime previous/bucket_start to the first observed values
@@ -169,7 +149,7 @@ impl CounterSet {
             self.bucket_start.copy_from_slice(&self.current);
             self.primed = true;
         }
-        for i in 0..self.slot_count {
+        for i in 0..self.slot_count() {
             // Same sentinel handling as `roll_bucket`; gauge decrements
             // wrap negative deltas through the u64, matching `history`.
             let delta = if self.current[i] == u64::MAX || self.previous[i] == u64::MAX {
@@ -186,7 +166,7 @@ impl CounterSet {
     }
 
     pub fn slot_count(&self) -> usize {
-        self.slot_count
+        self.current.len()
     }
 
     /// Lowest published tail of a tcache set. Sentinel slots are unused and
@@ -220,7 +200,7 @@ impl CounterSet {
 
     pub fn visible_slots(&self) -> usize {
         if !self.hide_zero {
-            return self.slot_count;
+            return self.slot_count();
         }
         self.current.iter().filter(|&&v| v != 0).count()
     }
@@ -237,7 +217,7 @@ impl CounterSet {
     /// sentinel state — common at startup if the mmap file was reused
     /// from a previous run.
     pub fn roll_bucket(&mut self) {
-        for i in 0..self.slot_count {
+        for i in 0..self.slot_count() {
             let delta = if self.current[i] == u64::MAX || self.bucket_start[i] == u64::MAX {
                 0
             } else {
@@ -268,37 +248,17 @@ impl CounterSet {
 
 impl Drop for CounterSet {
     fn drop(&mut self) {
-        // SAFETY: both pointers came from `mmap` with the recorded sizes;
-        // nothing else holds references into them (we hand out only
-        // borrowed slices via accessors that don't outlive `&self`).
-        unsafe {
-            libc::munmap(self.base as *mut libc::c_void, self.map_bytes);
-            if !self.consumer_names_base.is_null() {
+        // SAFETY: the pointer came from `mmap` with the recorded size;
+        // accessors only lend borrows that don't outlive `&self`.
+        if !self.consumer_names_base.is_null() {
+            unsafe {
                 libc::munmap(
                     self.consumer_names_base as *mut libc::c_void,
                     self.consumer_names_bytes,
-                );
-            }
+                )
+            };
         }
     }
-}
-
-fn mmap_readonly_bytes(path: &Path, bytes: usize) -> io::Result<*const u8> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    let ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            bytes,
-            libc::PROT_READ,
-            libc::MAP_SHARED,
-            file.as_raw_fd(),
-            0,
-        )
-    };
-    if ptr == libc::MAP_FAILED {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(ptr.cast::<u8>())
 }
 
 #[cfg(test)]
@@ -343,22 +303,4 @@ mod tests {
         assert_eq!(set.current[0], 16);
         assert_eq!(set.previous[0], 11);
     }
-}
-
-fn mmap_readonly(path: &Path, bytes: usize) -> io::Result<*const AtomicU64> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    let ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            bytes,
-            libc::PROT_READ,
-            libc::MAP_SHARED,
-            file.as_raw_fd(),
-            0,
-        )
-    };
-    if ptr == libc::MAP_FAILED {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(ptr.cast::<AtomicU64>())
 }

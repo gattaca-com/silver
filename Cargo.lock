@@ -5236,8 +5236,15 @@ name = "silver_stages"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "libc",
  "rustc-hash",
+ "silver_beacon_state",
+ "silver_columns",
  "silver_common",
+ "silver_control",
+ "silver_network",
+ "silver_peer",
+ "silver_storage",
 ]
 
 [[package]]
@@ -5266,16 +5273,10 @@ dependencies = [
  "hdrhistogram",
  "libc",
  "ratatui",
- "silver_beacon_state",
  "silver_beacon_state_data",
- "silver_columns",
  "silver_common",
- "silver_control",
  "silver_metrics",
- "silver_network",
- "silver_peer",
  "silver_stages",
- "silver_storage",
  "tempfile",
 ]
 
