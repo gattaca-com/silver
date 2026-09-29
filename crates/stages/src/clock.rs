@@ -27,6 +27,11 @@ impl SlotClock {
         self.genesis + self.slot_duration * slot
     }
 
+    /// Zero before genesis.
+    pub fn slot_at(&self, t: Nanos) -> u64 {
+        t.0.saturating_sub(self.genesis.0) / self.slot_duration.0
+    }
+
     /// `None` once the wall clock no longer belongs to the slot
     /// (replay/backfill).
     pub fn offset_in_slot(&self, t: Nanos, slot: u64) -> Option<Nanos> {

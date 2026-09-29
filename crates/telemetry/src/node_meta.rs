@@ -1,3 +1,7 @@
+use std::fs;
+
+use flux::utils::directories::shmem_dir_queues;
+use silver_common::APP_NAME;
 use silver_config::ChainConfig;
 use silver_stages::SlotClock;
 
@@ -7,6 +11,9 @@ pub struct NodeMeta {
     pub node: String,
     pub network: String,
     pub clock: SlotClock,
+    /// Commit the running node was built from; empty until a node has
+    /// published one.
+    pub version: String,
 }
 
 impl NodeMeta {
@@ -16,6 +23,7 @@ impl NodeMeta {
             node: Self::hostname(),
             network: chain.spec.network_name(),
             clock: SlotClock::new(chain.genesis_unix_secs, slot_ms),
+            version: String::new(),
         }
     }
 
@@ -26,5 +34,15 @@ impl NodeMeta {
         }
         let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
         String::from_utf8_lossy(&buf[..len]).into_owned()
+    }
+
+    /// A restarted node may run a different build.
+    pub fn refresh_version(&mut self) {
+        if let Ok(info) = fs::read_to_string(shmem_dir_queues(APP_NAME).join("build-info")) {
+            let commit = info.split(" · ").next().unwrap_or_default();
+            if commit != self.version {
+                commit.clone_into(&mut self.version);
+            }
+        }
     }
 }
