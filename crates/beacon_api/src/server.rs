@@ -542,6 +542,11 @@ impl BeaconApi {
             "api_beacon_state_handoff",
             TReadMode::Sliding,
         )?;
+        self.reader.open(
+            TCacheId::BoundaryProcessing,
+            "api_boundary_processing",
+            TReadMode::Sliding,
+        )?;
         let forwarders = [TileId::BeaconState, TileId::Columns];
         self.reader.declare(TCacheId::ControlProcessing, &forwarders);
         self.reader.declare(TCacheId::NetworkProcessing, &forwarders);
@@ -1054,11 +1059,11 @@ mod tests {
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
         BlockLookup, ColumnOrigin, EngineNewPayloadResp, ForkName, GossipDomain, HeadRoots,
-        LocalGossipFailure, MessageId, Nanos, P2pStreamId, PayloadResolution, ProduceBlockFailure,
-        ProducedBlock, ServedBlock, SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer,
-        TProducer, body_root,
+        LocalGossipFailure, MessageId, Nanos, P2pStreamId, PayloadFrame, PayloadResolution,
+        ProduceBlockFailure, ProducedBlock, ServedBlock, SszCache, StreamProtocol, TCache,
+        TCacheId, TCacheProducer, TProducer, body_root,
         ssz_view::{
-            ATTESTATION_FIXED, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
+            ATTESTATION_FIXED, BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
             DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN,
             SINGLE_ATT_SIZE, STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
         },
@@ -1099,6 +1104,7 @@ mod tests {
             let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
             let local_enr = Enr::empty(keypair.secret_key()).unwrap();
             let cache = TCache::producer(TCacheId::StorageDelivery, 1 << 16);
+            let submissions = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
             let tcaches = TCacheTable::from_iter(
                 [
                     TCacheId::ControlProcessing,
@@ -1108,7 +1114,7 @@ mod tests {
                 ]
                 .map(|id| TCache::producer(id, 1 << 16).cache_ref())
                 .into_iter()
-                .chain([cache.cache_ref()]),
+                .chain([cache.cache_ref(), submissions.cache_ref()]),
             );
             let mut api = BeaconApi::new(
                 readiness.registry(),
@@ -1124,7 +1130,6 @@ mod tests {
                 tcaches,
             );
             api.open_tcaches().unwrap();
-            let submissions = TCache::producer(TCacheId::BoundaryProcessing, 1 << 16);
             Self { readiness, api, served: cache, requests: Vec::new(), submissions }
         }
 
@@ -1912,10 +1917,11 @@ mod tests {
         let outgoing_rpc = TCache::producer(TCacheId::StorageDelivery, 1 << 16);
         let beacon_state = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 16);
         server.api.reader = TCacheReader::new(TCacheTable::from_iter(
-            sources
-                .iter()
-                .map(|(_, _, producer)| producer.cache_ref())
-                .chain([outgoing_rpc.cache_ref(), beacon_state.cache_ref()]),
+            sources.iter().map(|(_, _, producer)| producer.cache_ref()).chain([
+                outgoing_rpc.cache_ref(),
+                beacon_state.cache_ref(),
+                server.submissions.cache_ref(),
+            ]),
         ));
         server.api.open_tcaches().unwrap();
         let mut client = connect(tcp_addr(&server));
@@ -2678,12 +2684,28 @@ mod tests {
         let client = connect(tcp_addr(&server));
         let request_id = get_produced_block(&mut server, &client);
 
-        let contents = server.serve_bytes(b"block contents");
+        let header = server.serve_bytes(b"up to the payload|bls changes");
+        let after_payload = [
+            [0x33; BYTES_PER_KZG_COMMITMENT].as_slice(),
+            &[0x11; PayloadFrame::CELL_PROOFS_PER_BLOB_LEN],
+            &[0x22; BYTES_PER_BLOB],
+        ]
+        .concat();
+        let mut frame = vec![0; PayloadFrame::HEADER_LEN];
+        PayloadFrame::write_header(&mut frame, b"payload|".len(), 0, 1, false, &[0; 32]);
+        frame.extend_from_slice(b"payload|");
+        frame.extend_from_slice(&after_payload);
+        let payload = server.submissions.write_with(frame.len(), |out| out.copy_from_slice(&frame));
         let mut execution_payload_value = [0; 32];
         execution_payload_value[0] = 7;
         server.answer(BeaconApiResponse::ProducedBlock {
             request_id,
-            block: Ok(ProducedBlock { contents, execution_payload_value }),
+            block: Ok(ProducedBlock {
+                header,
+                payload_at: b"up to the payload|".len() as u32,
+                payload: payload.unwrap(),
+                execution_payload_value,
+            }),
         });
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "produced block");
@@ -2691,7 +2713,9 @@ mod tests {
                     Eth-Consensus-Version: fulu\r\nEth-Execution-Payload-Blinded: false\r\n\
                     Eth-Execution-Payload-Value: 7\r\nEth-Consensus-Block-Value: 0\r\n";
         assert!(response.starts_with(head.as_bytes()), "{}", String::from_utf8_lossy(&response));
-        assert_eq!(body(&response), b"block contents");
+        let spliced =
+            [b"up to the payload|payload|bls changes".as_slice(), &after_payload].concat();
+        assert_eq!(body(&response), spliced, "the payload goes before the bls changes");
     }
 
     #[test]

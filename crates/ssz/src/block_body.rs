@@ -1,4 +1,7 @@
-use crate::ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE};
+use crate::{
+    body_offsets::{BlockBodyError, BodyOffsets},
+    ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
+};
 
 /// Zero participation bits and the G2 point at infinity.
 pub const EMPTY_SYNC_AGGREGATE: [u8; BLOCK_SYNC_AGGREGATE_SIZE] = {
@@ -23,8 +26,8 @@ pub struct BeaconBlockBodyFulu<'a> {
     pub execution_requests: &'a [u8],
 }
 
-impl BeaconBlockBodyFulu<'_> {
-    fn variable_fields(&self) -> [&[u8]; 9] {
+impl<'a> BeaconBlockBodyFulu<'a> {
+    pub fn variable_fields(&self) -> [&'a [u8]; 9] {
         [
             self.proposer_slashings,
             self.attester_slashings,
@@ -46,16 +49,28 @@ impl BeaconBlockBodyFulu<'_> {
     /// `out` is exactly [`Self::ssz_len`] bytes.
     pub fn encode(&self, out: &mut [u8]) {
         debug_assert_eq!(out.len(), self.ssz_len());
-        let fields = self.variable_fields();
+        let (fixed, mut rest) = out.split_at_mut(BEACON_BLOCK_BODY_FIXED);
+        self.encode_fixed(fixed);
+        for field in self.variable_fields() {
+            let (at, tail) = rest.split_at_mut(field.len());
+            at.copy_from_slice(field);
+            rest = tail;
+        }
+    }
+
+    pub fn write_fixed(&self, fixed: &'a mut [u8]) -> Result<BodyOffsets<'a>, BlockBodyError> {
+        self.encode_fixed(fixed);
+        BodyOffsets::from_parts(fixed, self.variable_fields())
+    }
+
+    fn encode_fixed(&self, fixed: &mut [u8]) {
         let mut offsets = [0u32; 9];
         let mut at = BEACON_BLOCK_BODY_FIXED;
-        for (offset, field) in offsets.iter_mut().zip(fields) {
+        for (offset, field) in offsets.iter_mut().zip(self.variable_fields()) {
             *offset = at as u32;
-            out[at..at + field.len()].copy_from_slice(field);
             at += field.len();
         }
 
-        let (fixed, _) = out.split_at_mut(BEACON_BLOCK_BODY_FIXED);
         let mut cursor = 0;
         let mut put = |bytes: &[u8]| {
             fixed[cursor..cursor + bytes.len()].copy_from_slice(bytes);

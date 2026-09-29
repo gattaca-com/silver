@@ -91,14 +91,19 @@ impl<'a> Payload<'a> {
     }
 }
 
+/// A body's fixed part and variable fields, which need not share one buffer:
+/// a proposer assembles its body from the pieces it holds.
+#[derive(Clone, Copy)]
 pub struct BodyOffsets<'a> {
-    body: &'a [u8],
     fork: BodyFork,
+    fixed: &'a [u8],
+    /// `None` for a field whose offsets do not bound a slice of the body.
+    fields: [Option<&'a [u8]>; 9],
+    len: usize,
+    serialized: Option<&'a [u8]>,
 }
 
 impl<'a> BodyOffsets<'a> {
-    /// Checks the payload's fixed prefix too, so every fixed-field accessor is
-    /// in bounds.
     pub fn new(body: &'a [u8], fork: BodyFork) -> Result<Self, BlockBodyError> {
         if body.len() < BEACON_BLOCK_BODY_FIXED {
             return Err(BlockBodyError::BodyTooShort {
@@ -106,10 +111,33 @@ impl<'a> BodyOffsets<'a> {
                 min: BEACON_BLOCK_BODY_FIXED,
             });
         }
-        let offsets = Self { body, fork };
+        let fixed = &body[..BEACON_BLOCK_BODY_FIXED];
+        let offset = |i: usize| {
+            let at = BeaconBlockBodyFuluView::VARIABLE_OFFSETS[i];
+            u32::from_le_bytes(fixed[at..at + 4].try_into().expect("4 bytes")) as usize
+        };
+        let fields = std::array::from_fn(|i| {
+            let (start, end) = (offset(i), if i + 1 < 9 { offset(i + 1) } else { body.len() });
+            (start <= end && end <= body.len()).then(|| &body[start..end])
+        });
+        let offsets = Self { fork, fixed, fields, len: body.len(), serialized: Some(body) };
         if fork == BodyFork::Fulu {
             Payload::new(offsets.payload_bytes())?;
         }
+        Ok(offsets)
+    }
+
+    /// A Fulu body from its fixed part and each variable field in
+    /// serialization order.
+    pub(crate) fn from_parts(
+        fixed: &'a [u8],
+        fields: [&'a [u8]; 9],
+    ) -> Result<Self, BlockBodyError> {
+        assert_eq!(fixed.len(), BEACON_BLOCK_BODY_FIXED, "the fixed part is exactly fixed-size");
+        let len = BEACON_BLOCK_BODY_FIXED + fields.iter().map(|field| field.len()).sum::<usize>();
+        let offsets =
+            Self { fork: BodyFork::Fulu, fixed, fields: fields.map(Some), len, serialized: None };
+        Payload::new(offsets.payload_bytes())?;
         Ok(offsets)
     }
 
@@ -124,72 +152,49 @@ impl<'a> BodyOffsets<'a> {
         self.fork
     }
 
+    /// `randao_reveal`, `eth1_data`, `graffiti`, the offsets and
+    /// `sync_aggregate`: every accessor of the fixed layout reads it.
     #[inline]
-    pub fn body(&self) -> &'a [u8] {
-        self.body
+    pub fn fixed(&self) -> &'a [u8] {
+        self.fixed
     }
 
+    /// The body as one buffer, when it was parsed from one.
     #[inline]
-    fn slice(&self, start: u32, end: u32) -> Option<&'a [u8]> {
-        let (start, end) = (start as usize, end as usize);
-        (start <= end && end <= self.body.len()).then(|| &self.body[start..end])
+    pub fn serialized(&self) -> Option<&'a [u8]> {
+        self.serialized
     }
 
-    // Operation lists — identical byte positions in both forks.
     #[inline]
     pub fn proposer_slashings(&self) -> Option<&'a [u8]> {
-        self.slice(
-            BeaconBlockBodyFuluView::proposer_slashings_offset(self.body),
-            BeaconBlockBodyFuluView::attester_slashings_offset(self.body),
-        )
+        self.fields[0]
     }
     #[inline]
     pub fn attester_slashings(&self) -> Option<&'a [u8]> {
-        self.slice(
-            BeaconBlockBodyFuluView::attester_slashings_offset(self.body),
-            BeaconBlockBodyFuluView::attestations_offset(self.body),
-        )
+        self.fields[1]
     }
     #[inline]
     pub fn attestations(&self) -> Option<&'a [u8]> {
-        self.slice(
-            BeaconBlockBodyFuluView::attestations_offset(self.body),
-            BeaconBlockBodyFuluView::deposits_offset(self.body),
-        )
+        self.fields[2]
     }
     #[inline]
     pub fn deposits(&self) -> Option<&'a [u8]> {
-        self.slice(
-            BeaconBlockBodyFuluView::deposits_offset(self.body),
-            BeaconBlockBodyFuluView::voluntary_exits_offset(self.body),
-        )
+        self.fields[3]
     }
     #[inline]
     pub fn voluntary_exits(&self) -> Option<&'a [u8]> {
-        // Bounded by the first post-`sync_aggregate` offset (byte 380):
-        // Fulu execution_payload, Gloas bls_to_execution_changes.
-        let end = match self.fork {
-            BodyFork::Fulu => BeaconBlockBodyFuluView::execution_payload_offset(self.body),
-            BodyFork::Gloas => BeaconBlockBodyGloasView::bls_to_execution_changes_offset(self.body),
-        };
-        self.slice(BeaconBlockBodyFuluView::voluntary_exits_offset(self.body), end)
+        self.fields[4]
     }
     #[inline]
     pub fn bls_changes(&self) -> Option<&'a [u8]> {
         match self.fork {
-            BodyFork::Fulu => self.slice(
-                BeaconBlockBodyFuluView::bls_to_execution_changes_offset(self.body),
-                BeaconBlockBodyFuluView::blob_kzg_commitments_offset(self.body),
-            ),
-            BodyFork::Gloas => self.slice(
-                BeaconBlockBodyGloasView::bls_to_execution_changes_offset(self.body),
-                BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(self.body),
-            ),
+            BodyFork::Fulu => self.fields[6],
+            BodyFork::Gloas => self.fields[5],
         }
     }
     #[inline]
     pub fn sync_aggregate(&self) -> &'a [u8] {
-        &BeaconBlockBodyFuluView::sync_aggregate(self.body)[..]
+        &BeaconBlockBodyFuluView::sync_aggregate(self.fixed)[..]
     }
 
     #[inline]
@@ -199,59 +204,37 @@ impl<'a> BodyOffsets<'a> {
     }
 
     fn payload_bytes(&self) -> &'a [u8] {
-        self.slice(
-            BeaconBlockBodyFuluView::execution_payload_offset(self.body),
-            BeaconBlockBodyFuluView::bls_to_execution_changes_offset(self.body),
-        )
-        .unwrap_or(&[])
+        self.fields[5].unwrap_or(&[])
     }
 
     #[inline]
     pub fn blob_commitments_fulu(&self) -> &'a [u8] {
-        self.slice(
-            BeaconBlockBodyFuluView::blob_kzg_commitments_offset(self.body),
-            BeaconBlockBodyFuluView::execution_requests_offset(self.body),
-        )
-        .unwrap_or(&[])
+        self.fields[7].unwrap_or(&[])
     }
 
     #[inline]
     pub fn execution_requests(&self) -> &'a [u8] {
-        self.slice(
-            BeaconBlockBodyFuluView::execution_requests_offset(self.body),
-            self.body.len() as u32,
-        )
-        .unwrap_or(&[])
+        self.fields[8].unwrap_or(&[])
     }
 
     #[inline]
     pub fn signed_bid(&self) -> Option<&'a [u8]> {
-        self.slice(
-            BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(self.body),
-            BeaconBlockBodyGloasView::payload_attestations_offset(self.body),
-        )
+        self.fields[6]
     }
     #[inline]
     pub fn payload_attestations(&self) -> Option<&'a [u8]> {
-        self.slice(
-            BeaconBlockBodyGloasView::payload_attestations_offset(self.body),
-            BeaconBlockBodyGloasView::parent_execution_requests_offset(self.body),
-        )
+        self.fields[7]
     }
 
     #[inline]
     pub fn parent_execution_requests(&self) -> &'a [u8] {
-        self.slice(
-            BeaconBlockBodyGloasView::parent_execution_requests_offset(self.body),
-            self.body.len() as u32,
-        )
-        .unwrap_or(&[])
+        self.fields[8].unwrap_or(&[])
     }
 
     /// `(field_name, offset)` of every variable field, in serialization order.
     /// Names track the fork; byte positions stay inside `ssz_view`'s accessors.
     fn variable_offsets(&self) -> [(&'static str, usize); 9] {
-        let b = self.body;
+        let b = self.fixed;
         let f = |name, off: u32| (name, off as usize);
         match self.fork {
             BodyFork::Fulu => [
@@ -295,7 +278,7 @@ impl<'a> BodyOffsets<'a> {
     /// structural and shared-cap checks run for both forks; Gloas additionally
     /// caps payload attestations.
     pub fn validate(&self) -> Result<(), BlockBodyError> {
-        let body_len = self.body.len();
+        let body_len = self.len;
         let table = self.variable_offsets();
         for (i, &(field, off)) in table.iter().enumerate() {
             let next_off = table.get(i + 1).map(|&(_, o)| o);

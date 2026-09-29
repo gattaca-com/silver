@@ -10,10 +10,10 @@ use silver_common::{
     merkle::FixedContainer,
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
-        AttestationView, AttesterSlashingView, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView,
-        ExecutionPayloadBidView, ExecutionPayloadEnvelopeView, ExecutionPayloadView,
-        IndexedAttestationView, PayloadAttestationView, SignedExecutionPayloadBidView,
-        SignedExecutionPayloadEnvelopeView,
+        AttestationView, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView,
+        BeaconBlockBodyGloasView, ExecutionPayloadBidView, ExecutionPayloadEnvelopeView,
+        ExecutionPayloadView, IndexedAttestationView, PayloadAttestationView,
+        SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
     },
 };
 use silver_ssz::block_body::BeaconBlockBodyFulu;
@@ -96,17 +96,28 @@ fn fulu_beacon_block_body() {
 #[test]
 fn fulu_beacon_block_body_encodes_from_its_fields() {
     run_ssz_static("fulu", "BeaconBlockBody", |ssz| {
-        let encoded = reencode_fulu_body(ssz);
+        let encoded = encoded(&reencode_fulu_body(ssz));
         assert_eq!(encoded, ssz);
         ssz_hash::hash_tree_root_body_fulu(&encoded)
     });
 }
 
-fn reencode_fulu_body(ssz: &[u8]) -> Vec<u8> {
+/// Hashed from its fixed part and its fields, apart, every body keeps its root.
+#[test]
+fn fulu_beacon_block_body_hashes_from_its_parts() {
+    run_ssz_static("fulu", "BeaconBlockBody", |ssz| {
+        let body = reencode_fulu_body(ssz);
+        let mut fixed = [0; BEACON_BLOCK_BODY_FIXED];
+        let parts = body.write_fixed(&mut fixed).unwrap();
+        ssz_hash::hash_tree_root_body_fulu_with_roots(&parts).0
+    });
+}
+
+fn reencode_fulu_body(ssz: &[u8]) -> BeaconBlockBodyFulu<'_> {
     let starts = BeaconBlockBodyFuluView::VARIABLE_OFFSETS
         .map(|at| u32::from_le_bytes(ssz[at..at + 4].try_into().unwrap()) as usize);
     let field = |i: usize| &ssz[starts[i]..starts.get(i + 1).copied().unwrap_or(ssz.len())];
-    let body = BeaconBlockBodyFulu {
+    BeaconBlockBodyFulu {
         randao_reveal: BeaconBlockBodyFuluView::randao_reveal(ssz),
         eth1_data: BeaconBlockBodyFuluView::eth1_data(ssz),
         graffiti: BeaconBlockBodyFuluView::graffiti(ssz),
@@ -120,7 +131,10 @@ fn reencode_fulu_body(ssz: &[u8]) -> Vec<u8> {
         bls_to_execution_changes: field(6),
         blob_kzg_commitments: field(7),
         execution_requests: field(8),
-    };
+    }
+}
+
+fn encoded(body: &BeaconBlockBodyFulu<'_>) -> Vec<u8> {
     let mut out = vec![0; body.ssz_len()];
     body.encode(&mut out);
     out

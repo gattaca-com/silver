@@ -119,6 +119,19 @@ fn committed_reservation_cannot_modify_a_reused_slot() {
 }
 
 #[test]
+fn truncated_reservation_is_read_at_its_new_length() {
+    let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
+    let mut reservation = producer.reserve(96, false).unwrap();
+    reservation.write_all(&[0xaa; 40]).unwrap();
+    reservation.truncate(40);
+    reservation.flush().unwrap();
+    assert_eq!(producer.read_buffer(reservation.read()).unwrap(), &[0xaa; 40]);
+
+    let next = producer.reserve(32, false).unwrap();
+    assert!(next.seq() > reservation.seq() + 96, "the whole reservation stays claimed");
+}
+
+#[test]
 fn oversized_reservations_do_not_advance_the_allocator() {
     let mut producer = TCache::producer(TCacheId::ControlSlot, 256);
     for length in [225, 256, usize::MAX] {

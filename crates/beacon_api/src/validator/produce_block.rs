@@ -1,5 +1,7 @@
 use silver_beacon_state_data::{Slot, SpecConfig};
-use silver_common::{BeaconApiRequest, ProduceBlockFailure, ProducedBlock, TCacheReader};
+use silver_common::{
+    BeaconApiRequest, PayloadFrame, ProduceBlockFailure, ProducedBlock, TCacheReader,
+};
 
 use crate::{
     ctx::ApiCtx,
@@ -27,7 +29,7 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     };
     let graffiti = match req.query_value("graffiti") {
         None => [0; 32],
-        Some(text) => match parse_hex(&text) {
+        Some(text) => match parse_graffiti(&text) {
             Some(graffiti) => graffiti,
             None => return resp.error(400, "invalid graffiti"),
         },
@@ -69,22 +71,35 @@ impl ProduceBlockRequest {
             Err(ProduceBlockFailure::SlotNotProposable) => {
                 return resp.error(400, "the slot does not follow the head");
             }
+            Err(ProduceBlockFailure::InvalidRandaoReveal) => {
+                return resp.error(400, "randao_reveal is not the proposer's signature");
+            }
             Err(ProduceBlockFailure::NoFeeRecipient) => {
                 return resp.error(400, "no fee recipient was prepared for the slot's proposer");
             }
             Err(ProduceBlockFailure::PayloadUnavailable) => {
                 return resp.error(503, "the execution client built no payload");
             }
-            Err(ProduceBlockFailure::Superseded) => {
-                return resp.error(503, "a request for another block replaced this one");
-            }
             Err(ProduceBlockFailure::Invalid | ProduceBlockFailure::Internal) => {
                 return resp.error(500, "the block could not be produced");
             }
         };
-        let contents = reader.acquire(block.contents);
-        let Ok((bytes, _)) = contents.buffer() else {
+        let header = reader.acquire(block.header);
+        let payload = reader.acquire(block.payload);
+        let (Ok((head, _)), Ok((payload, _))) = (header.buffer(), payload.buffer()) else {
             silver_log::warn!(slot = self.slot, "produced block unavailable");
+            return resp.error(500, "the block could not be read");
+        };
+        let Some(payload) = PayloadFrame::parse(payload) else {
+            silver_log::error!(slot = self.slot, "produced block's payload frame is misframed");
+            return resp.error(500, "the block could not be read");
+        };
+        let Some((before_payload, bls_changes)) = head.split_at_checked(block.payload_at as usize)
+        else {
+            silver_log::error!(
+                slot = self.slot,
+                "produced block is shorter than its payload offset"
+            );
             return resp.error(500, "the block could not be read");
         };
         let payload_value = wei_decimal(&block.execution_payload_value);
@@ -95,8 +110,18 @@ impl ProduceBlockRequest {
             // TODO: The body packs nothing that pays the proposer yet.
             ("Eth-Consensus-Block-Value", "0"),
         ];
-        resp.send(200, Some(SSZ_MEDIA_TYPE), &headers, bytes);
+        let parts = [before_payload, payload.execution_payload, bls_changes, payload.after_payload];
+        resp.send(200, Some(SSZ_MEDIA_TYPE), &headers, &parts);
     }
+}
+
+/// Prysm sends graffiti from proposer settings unpadded; the block carries
+/// it zero-padded on the right.
+fn parse_graffiti(text: &str) -> Option<[u8; 32]> {
+    let hex = text.strip_prefix("0x")?;
+    let mut graffiti = [0; 32];
+    hex::decode_to_slice(hex, graffiti.get_mut(..hex.len() / 2)?).ok()?;
+    Some(graffiti)
 }
 
 fn wei_decimal(little_endian: &[u8; 32]) -> String {
@@ -171,10 +196,22 @@ mod tests {
     }
 
     #[test]
+    fn short_graffiti_is_zero_padded() {
+        let (outcome, _) = get(&format!("{}&graffiti=0x6869", randao()), Some(SSZ_MEDIA_TYPE));
+        let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
+        let mut expected = [0; 32];
+        expected[..2].copy_from_slice(b"hi");
+        assert_eq!(request.graffiti, expected);
+    }
+
+    #[test]
     fn missing_or_malformed_parameters_are_400() {
-        for query in
-            [String::new(), "randao_reveal=0x11".to_owned(), format!("{}&graffiti=0x22", randao())]
-        {
+        for query in [
+            String::new(),
+            "randao_reveal=0x11".to_owned(),
+            format!("{}&graffiti=0x222", randao()),
+            format!("{}&graffiti=0x{}", randao(), "22".repeat(33)),
+        ] {
             let (outcome, out) = get(&query, Some(SSZ_MEDIA_TYPE));
             assert_eq!(outcome, Outcome::Response(None), "{query}");
             assert_eq!(status_code(&out), "400", "{query}");

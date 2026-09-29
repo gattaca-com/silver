@@ -1,10 +1,17 @@
-use std::mem;
+use std::{
+    io::Write,
+    mem,
+    ops::{Deref, DerefMut},
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use silver_common::ssz_view::{
-    BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BeaconBlockBodyFuluView, ExecutionPayloadEnvelopeView,
-    ExecutionPayloadView, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
-    SignedExecutionPayloadEnvelopeView,
+use silver_common::{
+    PayloadFrame, TCacheProducer, TCacheRead, TProducer,
+    ssz_view::{
+        BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BeaconBlockBodyFuluView,
+        ExecutionPayloadEnvelopeView, ExecutionPayloadView, NUMBER_OF_COLUMNS,
+        SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
+    },
 };
 use simd_json::{
     Buffers, Tape,
@@ -513,38 +520,139 @@ fn write_execution_requests_json<const N: usize>(
 // hex::decode_to_slice.
 // ---------------------------------------------------------------------------
 
-/// The getPayload frame with no transactions, withdrawals, blobs or requests.
-const MIN_PAYLOAD_FRAME_LEN: usize = 4 + PAYLOAD_FIXED_LEN + 1 + 1 + 4 + 4 * 3;
-
-/// Parser and frame buffers reused across responses, so a response of a size
-/// already seen allocates nothing.
-pub(crate) struct FrameScratch {
+/// Parser buffers reused across responses, so a response of a size already
+/// seen allocates nothing.
+pub(crate) struct TapeScratch {
     buffers: Buffers,
     tape: Tape<'static>,
-    frame: Vec<u8>,
 }
 
-impl FrameScratch {
+impl TapeScratch {
     pub(crate) fn new() -> Self {
-        Self {
-            buffers: Buffers::default(),
-            tape: Tape(Vec::new()),
-            frame: Vec::with_capacity(MIN_PAYLOAD_FRAME_LEN),
-        }
+        Self { buffers: Buffers::default(), tape: Tape(Vec::new()) }
     }
 
+    /// Writes the frame straight into its tcache slot; `None` when the tcache
+    /// has no room for it.
     pub(crate) fn encode<T>(
         &mut self,
         raw: &mut [u8],
-        to_frame: impl FnOnce(TapeValue<'_, '_>, &mut Vec<u8>) -> Result<T, crate::EngineError>,
-    ) -> Result<(T, &[u8]), crate::EngineError> {
-        self.frame.clear();
+        producer: &mut TProducer,
+        mut to_frame: impl FnMut(TapeValue<'_, '_>, &mut FrameOut<'_>) -> Result<T, crate::EngineError>,
+    ) -> Result<Option<(T, TCacheRead)>, crate::EngineError> {
+        // Hex, most of any response, decodes to half its length. The few
+        // frames that outgrow that are rewritten under the loose bound: every
+        // frame byte decodes from at least one JSON character.
+        let tight = raw.len() / 2 + FRAME_SLACK;
+        let loose = raw.len();
         let mut tape = mem::replace(&mut self.tape, Tape(Vec::new())).reset();
         let encoded = simd_json::fill_tape(raw, &mut self.buffers, &mut tape)
             .map_err(crate::EngineError::Json)
-            .and_then(|()| to_frame(tape.as_value(), &mut self.frame));
+            .and_then(|()| {
+                let mut write =
+                    |bound| write_frame(producer, bound, |out| to_frame(tape.as_value(), out));
+                match write(tight.min(loose)) {
+                    Err(FrameError::Overflow) if tight < loose => write(loose),
+                    written => written,
+                }
+                .map_err(FrameError::into_engine_error)
+            });
         self.tape = tape.reset();
-        Ok((encoded?, &self.frame))
+        encoded
+    }
+}
+
+/// Covers the frame bytes that do not decode from hex: the frame header, the
+/// payload's fixed part, list offsets and withdrawals.
+const FRAME_SLACK: usize = 16 * 1024;
+
+enum FrameError {
+    Overflow,
+    Engine(crate::EngineError),
+}
+
+impl FrameError {
+    fn into_engine_error(self) -> crate::EngineError {
+        match self {
+            Self::Overflow => crate::EngineError::Ssz("frame outgrew its response".into()),
+            Self::Engine(e) => e,
+        }
+    }
+}
+
+fn write_frame<T>(
+    producer: &mut TProducer,
+    bound: usize,
+    to_frame: impl FnOnce(&mut FrameOut<'_>) -> Result<T, crate::EngineError>,
+) -> Result<Option<(T, TCacheRead)>, FrameError> {
+    let Some(mut reservation) =
+        producer.reserve(bound, false).or_else(|| producer.reserve(bound, false))
+    else {
+        return Ok(None);
+    };
+    let buffer = reservation
+        .buffer()
+        .map_err(|e| FrameError::Engine(crate::EngineError::Ssz(e.to_string())))?;
+    let mut out = FrameOut { buffer, len: 0, overflowed: false };
+    let encoded = to_frame(&mut out);
+    // An overflow surfaces as a decode error into the dropped bytes.
+    if out.overflowed {
+        return Err(FrameError::Overflow);
+    }
+    let encoded = encoded.map_err(FrameError::Engine)?;
+    let len = out.len;
+    reservation.truncate(len);
+    reservation.flush().map_err(|e| FrameError::Engine(crate::EngineError::Ssz(e.to_string())))?;
+    Ok(Some((encoded, reservation.read())))
+}
+
+/// A frame written into its tcache reservation. Writes past the end are
+/// dropped and fail the frame once it is complete.
+pub(crate) struct FrameOut<'a> {
+    buffer: &'a mut [u8],
+    len: usize,
+    overflowed: bool,
+}
+
+impl FrameOut<'_> {
+    fn grow(&mut self, len: usize) -> Option<&mut [u8]> {
+        let end = self.len + len;
+        let Some(tail) = self.buffer.get_mut(self.len..end) else {
+            self.overflowed = true;
+            return None;
+        };
+        self.len = end;
+        Some(tail)
+    }
+
+    fn push(&mut self, byte: u8) {
+        self.extend_from_slice(&[byte]);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        if let Some(tail) = self.grow(bytes.len()) {
+            tail.copy_from_slice(bytes);
+        }
+    }
+
+    fn zeroed(&mut self, len: usize) {
+        if let Some(tail) = self.grow(len) {
+            tail.fill(0);
+        }
+    }
+}
+
+impl Deref for FrameOut<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.buffer[..self.len]
+    }
+}
+
+impl DerefMut for FrameOut<'_> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.buffer[..self.len]
     }
 }
 
@@ -556,17 +664,16 @@ fn hex_to_fixed<const N: usize>(s: &str) -> Result<[u8; N], crate::EngineError> 
 }
 
 // Append decoded bytes of hex string `s` to `out`.
-fn hex_extend(s: &str, out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
+fn hex_extend(s: &str, out: &mut FrameOut<'_>) -> Result<(), crate::EngineError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    let base = out.len();
-    out.resize(base + s.len() / 2, 0);
-    hex::decode_to_slice(s, &mut out[base..]).map_err(|e| crate::EngineError::Ssz(e.to_string()))
+    let tail = out.grow(s.len() / 2).unwrap_or_default();
+    hex::decode_to_slice(s, tail).map_err(|e| crate::EngineError::Ssz(e.to_string()))
 }
 
 // Append exactly N bytes: decode up to N bytes from hex, zero-pad remainder.
 fn hex_extend_clamped<const N: usize>(
     s: &str,
-    out: &mut Vec<u8>,
+    out: &mut FrameOut<'_>,
 ) -> Result<(), crate::EngineError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     let n = (s.len() / 2).min(N);
@@ -612,13 +719,16 @@ fn fstr<'input>(v: TapeValue<'_, 'input>, field: &str) -> Result<&'input str, cr
 
 // Write SSZ transaction list (offset header + tx bytes) from JSON hex-string
 // array.
-fn encode_txs_json(arr: TapeArray<'_, '_>, out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
+fn encode_txs_json(
+    arr: TapeArray<'_, '_>,
+    out: &mut FrameOut<'_>,
+) -> Result<(), crate::EngineError> {
     if arr.is_empty() {
         return Ok(());
     }
     let n = arr.len();
     let header_base = out.len();
-    out.resize(header_base + n * 4, 0);
+    out.zeroed(n * 4);
     let mut offset = (n * 4) as u32;
     for (i, tx) in arr.iter().enumerate() {
         let s =
@@ -636,7 +746,7 @@ fn encode_txs_json(arr: TapeArray<'_, '_>, out: &mut Vec<u8>) -> Result<(), crat
 
 fn encode_withdrawals_json(
     arr: TapeArray<'_, '_>,
-    out: &mut Vec<u8>,
+    out: &mut FrameOut<'_>,
 ) -> Result<(), crate::EngineError> {
     for w in arr.iter() {
         out.extend_from_slice(&parse_quantity(fstr(w, "index")?)?.to_le_bytes());
@@ -647,11 +757,11 @@ fn encode_withdrawals_json(
     Ok(())
 }
 
-/// Write the TCache frame of an `engine_getPayloadV5` JSON-RPC response into
-/// `out` (same layout as `encode_get_payload_data`).
+/// Write the [`PayloadFrame`] of an `engine_getPayloadV5` JSON-RPC response
+/// into `out`.
 pub(crate) fn json_get_payload_to_tcache(
     root: TapeValue<'_, '_>,
-    out: &mut Vec<u8>,
+    out: &mut FrameOut<'_>,
 ) -> Result<(), crate::EngineError> {
     debug_assert!(out.is_empty());
 
@@ -676,14 +786,12 @@ pub(crate) fn json_get_payload_to_tcache(
         result.get("shouldOverrideBuilder").and_then(|v| v.as_bool()).unwrap_or(false);
     let exec_requests = result.get("executionRequests").and_then(|v| v.as_array());
 
-    // TCache frame header: placeholder for payload SSZ length.
-    let tcache_hdr = out.len();
-    out.extend_from_slice(&[0u8; 4]);
+    out.zeroed(PayloadFrame::HEADER_LEN);
 
     // ExecutionPayload SSZ — fixed section (528 bytes).
     let ssz_start = out.len();
     let f = ssz_start;
-    out.resize(f + PAYLOAD_FIXED_LEN, 0);
+    out.zeroed(PAYLOAD_FIXED_LEN);
 
     out[f..f + 32].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "parentHash")?)?);
     out[f + 32..f + 52].copy_from_slice(&hex_to_fixed::<20>(fstr(ep, "feeRecipient")?)?);
@@ -725,9 +833,7 @@ pub(crate) fn json_get_payload_to_tcache(
         .ok_or_else(|| crate::EngineError::Ssz("missing withdrawals".into()))?;
     encode_withdrawals_json(ws, out)?;
 
-    // Patch payload SSZ length into TCache header.
-    let payload_ssz_len = (out.len() - ssz_start) as u32;
-    out[tcache_hdr..tcache_hdr + 4].copy_from_slice(&payload_ssz_len.to_le_bytes());
+    let payload_len = out.len() - ssz_start;
 
     // BlobsBundleV2: `proofs` holds every blob's cell proofs, blob by blob, so
     // each array copies into the frame as one contiguous run.
@@ -740,7 +846,6 @@ pub(crate) fn json_get_payload_to_tcache(
         .filter(|_| len(commitments) == len(blobs))
         .filter(|_| len(proofs) == len(blobs) * NUMBER_OF_COLUMNS)
         .ok_or_else(|| crate::EngineError::Ssz("inconsistent blobsBundle lengths".into()))?;
-    out.push(blob_count);
 
     let kzg_bytes = |value: TapeValue<'_, '_>| {
         value
@@ -751,6 +856,11 @@ pub(crate) fn json_get_payload_to_tcache(
     for commitment in array_items(commitments) {
         out.extend_from_slice(&kzg_bytes(commitment)?);
     }
+
+    let requests_at = out.len();
+    encode_execution_requests(exec_requests, out)?;
+    let requests_len = out.len() - requests_at;
+
     for proof in array_items(proofs) {
         out.extend_from_slice(&kzg_bytes(proof)?);
     }
@@ -762,21 +872,20 @@ pub(crate) fn json_get_payload_to_tcache(
         hex_extend(blob, out)?;
     }
 
-    out.push(should_override as u8);
-
-    let requests_len_at = out.len();
-    out.extend_from_slice(&[0u8; 4]);
-    encode_execution_requests(exec_requests, out)?;
-    let requests_len = (out.len() - requests_len_at - 4) as u32;
-    out[requests_len_at..requests_len_at + 4].copy_from_slice(&requests_len.to_le_bytes());
-
-    out.extend_from_slice(&block_value);
+    PayloadFrame::write_header(
+        &mut out[..PayloadFrame::HEADER_LEN],
+        payload_len,
+        requests_len,
+        blob_count,
+        should_override,
+        &block_value,
+    );
     Ok(())
 }
 
 fn encode_execution_requests(
     requests: Option<TapeArray<'_, '_>>,
-    out: &mut Vec<u8>,
+    out: &mut FrameOut<'_>,
 ) -> Result<(), crate::EngineError> {
     const REQUEST_TYPES: usize = 3;
     let invalid = |why: &str| crate::EngineError::Ssz(format!("executionRequests: {why}"));
@@ -804,7 +913,7 @@ fn encode_execution_requests(
     }
 
     let container = out.len();
-    out.resize(container + 4 * REQUEST_TYPES, 0);
+    out.zeroed(4 * REQUEST_TYPES);
     for (i, hex) in data.iter().enumerate() {
         let offset = (out.len() - container) as u32;
         out[container + 4 * i..container + 4 * i + 4].copy_from_slice(&offset.to_le_bytes());
@@ -817,7 +926,7 @@ fn encode_execution_requests(
 /// [u32 blob_len] [blob bytes]. Returns how many entries are non-null.
 pub(crate) fn json_get_blobs_to_tcache(
     root: TapeValue<'_, '_>,
-    out: &mut Vec<u8>,
+    out: &mut FrameOut<'_>,
 ) -> Result<u8, crate::EngineError> {
     debug_assert!(out.is_empty());
 
@@ -862,10 +971,8 @@ pub(crate) fn json_get_blobs_to_tcache(
         let blob_s = blob_s.strip_prefix("0x").unwrap_or(blob_s);
         let blob_len = blob_s.len() / 2;
         out.extend_from_slice(&(blob_len as u32).to_le_bytes());
-        let base = out.len();
-        out.resize(base + blob_len, 0);
-        hex::decode_to_slice(blob_s, &mut out[base..])
-            .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
+        let tail = out.grow(blob_len).unwrap_or_default();
+        hex::decode_to_slice(blob_s, tail).map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
     }
 
     Ok(blobs_present)
@@ -875,7 +982,7 @@ pub(crate) fn json_get_blobs_to_tcache(
 
 #[cfg(test)]
 mod tests {
-    use silver_common::PayloadFrame;
+    use silver_common::{TCache, TCacheId};
     use simd_json::{
         owned::to_value,
         prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess},
@@ -1530,14 +1637,29 @@ mod tests {
     // json_get_payload_to_tcache
     // ---------------------------------------------------------------------------
 
+    fn frames() -> TProducer {
+        TCache::producer(TCacheId::BoundaryProcessing, 1 << 24)
+    }
+
+    fn encode<T>(
+        scratch: &mut TapeScratch,
+        producer: &mut TProducer,
+        json: &mut [u8],
+        to_frame: impl FnMut(TapeValue<'_, '_>, &mut FrameOut<'_>) -> Result<T, crate::EngineError>,
+    ) -> Result<(T, Vec<u8>), crate::EngineError> {
+        let (encoded, read) =
+            scratch.encode(json, producer, to_frame)?.expect("the tcache has room");
+        Ok((encoded, producer.read_buffer(read).unwrap().to_vec()))
+    }
+
     fn payload_frame(json: &mut [u8]) -> Result<Vec<u8>, crate::EngineError> {
-        FrameScratch::new().encode(json, json_get_payload_to_tcache).map(|((), f)| f.to_vec())
+        let (mut scratch, mut producer) = (TapeScratch::new(), frames());
+        encode(&mut scratch, &mut producer, json, json_get_payload_to_tcache).map(|((), f)| f)
     }
 
     fn blobs_frame(json: &mut [u8]) -> Result<(u8, Vec<u8>), crate::EngineError> {
-        FrameScratch::new()
-            .encode(json, json_get_blobs_to_tcache)
-            .map(|(present, f)| (present, f.to_vec()))
+        let (mut scratch, mut producer) = (TapeScratch::new(), frames());
+        encode(&mut scratch, &mut producer, json, json_get_blobs_to_tcache)
     }
 
     #[test]
@@ -1545,12 +1667,28 @@ mod tests {
         let mut json = get_payload_json();
         let out = payload_frame(&mut json).unwrap();
 
-        let mut expected = (SAMPLE_PAYLOAD_SSZ.len() as u32).to_le_bytes().to_vec();
+        let requests_len = 12 + 76 + 116;
+        let mut block_value = [0; 32];
+        block_value[..8].copy_from_slice(&2_000_000_000_000_000_000u64.to_le_bytes());
+        let mut expected = vec![0; PayloadFrame::HEADER_LEN];
+        PayloadFrame::write_header(
+            &mut expected,
+            SAMPLE_PAYLOAD_SSZ.len(),
+            requests_len,
+            2,
+            false,
+            &block_value,
+        );
         expected.extend_from_slice(SAMPLE_PAYLOAD_SSZ);
-        expected.push(2);
         for blob in 0..2u8 {
             expected.extend_from_slice(&[0xc0 + blob; 48]);
         }
+        for offset in [12u32, 12, 12 + 76] {
+            expected.extend_from_slice(&offset.to_le_bytes());
+        }
+        expected.extend_from_slice(&[0xaa; 76]);
+        expected.extend_from_slice(&[0xbb; 116]);
+        let tail_at = expected.len();
         for blob in 0..2u8 {
             for cell in 0..NUMBER_OF_COLUMNS {
                 expected.extend_from_slice(&cell_proof(blob, cell));
@@ -1559,38 +1697,37 @@ mod tests {
         for blob in 0..2u8 {
             expected.extend_from_slice(&[0xb0 + blob; BYTES_PER_BLOB]);
         }
-        expected.push(0);
-        expected.extend_from_slice(&(12u32 + 76 + 116).to_le_bytes());
-        for offset in [12u32, 12, 12 + 76] {
-            expected.extend_from_slice(&offset.to_le_bytes());
-        }
-        expected.extend_from_slice(&[0xaa; 76]);
-        expected.extend_from_slice(&[0xbb; 116]);
-        let mut block_value = [0; 32];
-        block_value[..8].copy_from_slice(&2_000_000_000_000_000_000u64.to_le_bytes());
-        expected.extend_from_slice(&block_value);
         assert_eq!(out, expected);
 
         let frame = PayloadFrame::parse(&out).expect("the frame parses");
         assert_eq!(frame.execution_payload, SAMPLE_PAYLOAD_SSZ);
         assert_eq!(frame.blob_count, 2);
         assert_eq!(frame.commitments, [[0xc0; 48], [0xc1; 48]].as_flattened());
-        assert_eq!(frame.cell_proofs.len(), 2 * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN);
-        assert_eq!(frame.blobs, [[0xb0; BYTES_PER_BLOB], [0xb1; BYTES_PER_BLOB]].as_flattened());
-        assert_eq!(frame.execution_requests.len(), 12 + 76 + 116);
+        assert_eq!(frame.execution_requests.len(), requests_len);
+        let after_payload = PayloadFrame::HEADER_LEN + SAMPLE_PAYLOAD_SSZ.len();
+        assert_eq!(frame.after_payload, &expected[after_payload..]);
+        assert_eq!(
+            expected.len() - tail_at,
+            2 * (PayloadFrame::CELL_PROOFS_PER_BLOB_LEN + BYTES_PER_BLOB)
+        );
+        assert_eq!(frame.cell_proofs_len(), 2 * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN);
         assert_eq!(frame.block_value, block_value);
     }
 
     #[test]
-    fn frame_scratch_is_reused_across_responses_and_errors() {
+    fn tape_scratch_is_reused_across_responses_and_errors() {
         let expected = payload_frame(&mut get_payload_json()).unwrap();
-        let mut scratch = FrameScratch::new();
+        let (mut scratch, mut producer) = (TapeScratch::new(), frames());
         for _ in 0..2 {
             let mut missing_result = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
-            assert!(scratch.encode(&mut missing_result, json_get_payload_to_tcache).is_err());
+            let failed = encode(&mut scratch, &mut producer, &mut missing_result, |root, out| {
+                json_get_payload_to_tcache(root, out)
+            });
+            assert!(failed.is_err());
             let mut json = get_payload_json();
-            let ((), frame) = scratch.encode(&mut json, json_get_payload_to_tcache).unwrap();
-            assert_eq!(frame, expected);
+            let encoded =
+                encode(&mut scratch, &mut producer, &mut json, json_get_payload_to_tcache);
+            assert_eq!(encoded.unwrap().1, expected);
         }
     }
 
@@ -1698,6 +1835,25 @@ mod tests {
         let (present, out) = blobs_frame(&mut json).unwrap();
         assert_eq!(present, 2);
         assert_eq!(out, [5, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 2, 0]);
+    }
+
+    /// Each `"0x"` proof pads to 48 bytes, so two such items outgrow half
+    /// the response by more than the slack.
+    #[test]
+    fn frame_past_the_tight_bound_is_rewritten_under_the_loose_one() {
+        let item = format!(
+            r#"{{"proofs":[{}],"blob":"0x{}"}}"#,
+            vec![r#""0x""#; 255].join(","),
+            "b0".repeat(BYTES_PER_BLOB)
+        );
+        let mut json = format!(r#"{{"result":[{item},{item}]}}"#).into_bytes();
+        let item_len = 2 + 255 * 48 + 4 + BYTES_PER_BLOB;
+        assert!(4 + 2 * item_len > json.len() / 2 + FRAME_SLACK, "premise: past the tight bound");
+
+        let (present, out) = blobs_frame(&mut json).unwrap();
+
+        assert_eq!(present, 2);
+        assert_eq!(out.len(), 4 + 2 * item_len);
     }
 
     #[test]

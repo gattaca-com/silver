@@ -1,4 +1,7 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    ops::Deref,
+};
 
 use crate::{
     DecomposeError,
@@ -110,12 +113,43 @@ impl BuilderPendingPayment {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Withdrawal {
     pub index: u64,
     pub validator_index: u64,
     pub address: ExecutionAddress,
     pub amount: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PayloadWithdrawals {
+    items: [Withdrawal; MAX_WITHDRAWALS_PER_PAYLOAD],
+    len: usize,
+}
+
+impl PayloadWithdrawals {
+    pub fn new() -> Self {
+        Self { items: [Withdrawal::default(); MAX_WITHDRAWALS_PER_PAYLOAD], len: 0 }
+    }
+
+    pub fn push(&mut self, withdrawal: Withdrawal) {
+        self.items[self.len] = withdrawal;
+        self.len += 1;
+    }
+}
+
+impl Default for PayloadWithdrawals {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for PayloadWithdrawals {
+    type Target = [Withdrawal];
+
+    fn deref(&self) -> &[Withdrawal] {
+        &self.items[..self.len]
+    }
 }
 
 impl Withdrawal {

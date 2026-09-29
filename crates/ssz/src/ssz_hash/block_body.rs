@@ -99,37 +99,45 @@ struct BodyFieldRoots {
 
 fn field_roots(body_offsets: &BodyOffsets<'_>) -> BodyFieldRoots {
     debug_assert_eq!(body_offsets.fork(), BodyFork::Fulu);
-    let body = body_offsets.body();
+    let fixed = body_offsets.fixed();
 
-    let randao = hash_fixed_bytes(&body[0..96]);
-    let eth1 = hash_eth1_data_bytes(&body[96..168]);
-    let graffiti: B256 = body[168..200].try_into().unwrap();
-    let sync_agg = hash_sync_aggregate(&body[220..380]);
+    let randao = hash_fixed_bytes(&fixed[0..96]);
+    let eth1 = hash_eth1_data_bytes(&fixed[96..168]);
+    let graffiti: B256 = fixed[168..200].try_into().unwrap();
+    let sync_agg = hash_sync_aggregate(body_offsets.sync_aggregate());
 
-    let off = |pos: usize| -> usize {
-        u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize
-    };
-
-    let offsets =
-        [off(200), off(204), off(208), off(212), off(216), off(380), off(384), off(388), off(392)];
-
-    let var_field = |idx: usize| -> &[u8] {
-        let start = offsets[idx];
-        let end = if idx + 1 < offsets.len() { offsets[idx + 1] } else { body.len() };
-        if start <= end && end <= body.len() { &body[start..end] } else { &[] }
-    };
-
-    let proposer_slashings = ProposerSlashingView::hash_list(MerkleStack::new(16), var_field(0));
-    let attester_slashings =
-        hash_variable_list(MerkleStack::new(1), var_field(1), hash_attester_slashing);
-    let attestations = hash_variable_list(MerkleStack::new(8), var_field(2), hash_attestation);
-    let deposits = DepositView::hash_list(MerkleStack::new(16), var_field(3));
-    let voluntary_exits = SignedVoluntaryExitView::hash_list(MerkleStack::new(16), var_field(4));
+    fn or_empty(field: Option<&[u8]>) -> &[u8] {
+        field.unwrap_or(&[])
+    }
+    let proposer_slashings = ProposerSlashingView::hash_list(
+        MerkleStack::new(16),
+        or_empty(body_offsets.proposer_slashings()),
+    );
+    let attester_slashings = hash_variable_list(
+        MerkleStack::new(1),
+        or_empty(body_offsets.attester_slashings()),
+        hash_attester_slashing,
+    );
+    let attestations = hash_variable_list(
+        MerkleStack::new(8),
+        or_empty(body_offsets.attestations()),
+        hash_attestation,
+    );
+    let deposits = DepositView::hash_list(MerkleStack::new(16), or_empty(body_offsets.deposits()));
+    let voluntary_exits = SignedVoluntaryExitView::hash_list(
+        MerkleStack::new(16),
+        or_empty(body_offsets.voluntary_exits()),
+    );
     let (execution_payload, payload) = hash_execution_payload_with_roots(body_offsets.payload());
-    let bls_changes = SignedBlsToExecutionChangeView::hash_list(MerkleStack::new(16), var_field(6));
-    let blob_commitments =
-        hash_list(MerkleStack::new(4096), var_field(7).chunks_exact(48).map(hash_fixed_bytes));
-    let execution_requests = hash_execution_requests_fulu(var_field(8));
+    let bls_changes = SignedBlsToExecutionChangeView::hash_list(
+        MerkleStack::new(16),
+        or_empty(body_offsets.bls_changes()),
+    );
+    let blob_commitments = hash_list(
+        MerkleStack::new(4096),
+        body_offsets.blob_commitments_fulu().chunks_exact(48).map(hash_fixed_bytes),
+    );
+    let execution_requests = hash_execution_requests_fulu(body_offsets.execution_requests());
 
     let fields = [
         randao,

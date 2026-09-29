@@ -11,8 +11,8 @@ pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteV
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use fork_writer::ForkWriter;
 pub use gloas::{
-    Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, PtcCommittee,
-    Withdrawal,
+    Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid,
+    PayloadWithdrawals, PtcCommittee, Withdrawal,
 };
 pub use longtail::{
     LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView,

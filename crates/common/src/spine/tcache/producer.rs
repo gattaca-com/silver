@@ -343,6 +343,13 @@ impl Reservation {
     pub fn is_committed(&self) -> bool {
         self.committed
     }
+
+    /// Readers see only the first `len` bytes. The reserved space is still
+    /// reclaimed as one record.
+    pub fn truncate(&mut self, len: usize) {
+        assert!(!self.committed, "a committed reservation cannot shrink");
+        self.cache.truncate(self.seq, len);
+    }
 }
 
 impl Write for Reservation {

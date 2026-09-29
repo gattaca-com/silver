@@ -60,6 +60,19 @@ pub fn hex_to_bytes(hex: &str) -> [u8; 32] {
     out
 }
 
+/// A `randao_reveal` signed by `sk_idx` for `slot`'s epoch.
+pub fn sign_randao_reveal(sk_idx: usize, slot: u64, imm: &Immutable) -> [u8; 96] {
+    let epoch = slot / SLOTS_PER_EPOCH;
+    let mut epoch_root = [0u8; 32];
+    epoch_root[..8].copy_from_slice(&epoch.to_le_bytes());
+    let domain = bls::compute_domain(
+        bls::DOMAIN_RANDAO,
+        test_fork_version(epoch),
+        &imm.genesis_validators_root,
+    );
+    sign(sk_idx, &bls::compute_signing_root(&epoch_root, &domain))
+}
+
 /// Build a `SignedVoluntaryExit` signed by `sk_idx`.
 pub fn sign_voluntary_exit(
     sk_idx: usize,

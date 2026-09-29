@@ -7,10 +7,7 @@ mod ef_common;
 use ef_common::{
     compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
 };
-use silver_beacon_state::{
-    bls::SigBatch,
-    stf::{self, BlockInput, BlockVotes, ShufflingRef, StfScratch},
-};
+use silver_beacon_state::stf::{self, BlockInput, BlockVotes, ShufflingRef, StfScratch};
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BodyFork, BodyOffsets, SLOTS_PER_EPOCH, SpecConfig,
 };
@@ -28,8 +25,8 @@ fn gloas_sanity_blocks() {
     sanity_blocks_fork("gloas", cfg);
 }
 
-/// A proposer fills `state_root` from `post_state_root`; every accepted
-/// block's root must come out of it unchanged.
+/// A proposer fills `state_root` from `post_state_root_unchecked`; every
+/// accepted block's root must come out of it unchanged.
 #[test]
 fn fulu_sanity_blocks_state_roots_match_the_proposal_path() {
     let cfg = SpecConfig::mainnet();
@@ -80,10 +77,15 @@ fn proposal_state_root(
     }
     let (mut current, mut previous) = (Vec::new(), Vec::new());
     let shuffling = ShufflingRef::build(&writer.read(), epoch, &mut current, &mut previous);
-    let input =
-        BlockInput { header: &header, block_root: [0; 32], body, fork, shuffling: &shuffling };
+    let input = BlockInput {
+        header: &header,
+        block_root: [0; 32],
+        body: offsets,
+        fork,
+        shuffling: &shuffling,
+    };
     let mut votes = BlockVotes::default();
-    stf::post_state_root(cfg, &mut writer, &input, &mut scratch, &mut SigBatch::new(), &mut votes)
+    stf::post_state_root_unchecked(cfg, &mut writer, &input, &mut scratch, &mut votes)
         .map_err(|e| e.to_string())
 }
 

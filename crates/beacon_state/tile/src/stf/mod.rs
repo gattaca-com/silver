@@ -18,8 +18,8 @@ pub use attestation::{
 #[cfg(feature = "ef_tests")]
 pub use block::apply_signed_block_debug;
 pub use block::{
-    BlockFork, BlockInput, apply_block, collect_sigs_randao, hash_body, post_state_root,
-    process_block_body, process_block_header, process_slot, process_slots,
+    BlockFork, BlockInput, apply_block, collect_sigs_randao, hash_body, post_state_root_unchecked,
+    process_block_body, process_block_header, process_slot, process_slots, randao_signing_root,
 };
 pub use common::{BlockVotes, StfScratch, VoteBatch, VoteTarget};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};
@@ -51,8 +51,8 @@ pub(crate) use validator::{
     initiate_validator_exit, is_active,
 };
 pub(crate) use withdrawals::{
-    ExpectedWithdrawals, PayloadWithdrawals, get_expected_withdrawals,
-    get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
-    update_next_withdrawal_index, update_next_withdrawal_validator_index,
+    ExpectedWithdrawals, get_expected_withdrawals, get_pending_partial_withdrawals,
+    get_validators_sweep_withdrawals, update_next_withdrawal_index,
+    update_next_withdrawal_validator_index,
 };
 pub use withdrawals::{process_execution_payload, process_withdrawals_fulu};

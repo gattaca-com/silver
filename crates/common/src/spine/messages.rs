@@ -5,7 +5,9 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, ExecutionAddress, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
+use silver_beacon_state_data::{
+    B256, ExecutionAddress, PayloadWithdrawals, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
+};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
@@ -214,11 +216,16 @@ impl BeaconApiResponse {
     }
 }
 
-/// `contents` is the SSZ `BlockContents` in the `beacon_state` tcache.
+/// SSZ `BlockContents` spliced from two reads. `header`, in the
+/// `beacon_state` tcache, holds all but the [`PayloadFrame`] in `payload`
+/// carries. The frame's payload goes in at `payload_at`, its
+/// `after_payload` at the end.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct ProducedBlock {
-    pub contents: TCacheRead,
+    pub header: TCacheRead,
+    pub payload_at: u32,
+    pub payload: TCacheRead,
     /// Little-endian wei.
     pub execution_payload_value: [u8; 32],
 }
@@ -227,9 +234,9 @@ pub struct ProducedBlock {
 #[repr(u8)]
 pub enum ProduceBlockFailure {
     SlotNotProposable,
+    InvalidRandaoReveal,
     NoFeeRecipient,
     PayloadUnavailable,
-    Superseded,
     Invalid,
     Internal,
 }
@@ -1222,18 +1229,6 @@ pub enum PayloadValidationStatus {
     Accepted = 3,
 }
 
-/// A single withdrawal, inlined into `EngineFcuReq` payload attributes.
-/// Field order avoids interior padding (all u64s first, then the 20-byte
-/// address).
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(C)]
-pub struct WithdrawalInline {
-    pub index: u64,
-    pub validator_index: u64,
-    pub amount: u64,
-    pub address: [u8; 20],
-}
-
 /// `engine_forkchoiceUpdatedV3` request.  Fully inline — no TCache needed.
 ///
 /// `block_root` is the beacon root of the `head_block_hash` block. The EL
@@ -1318,8 +1313,7 @@ pub struct EnginePreparePayloadReq {
     pub attrs_prev_randao: [u8; 32],
     pub attrs_fee_recipient: [u8; 20],
     pub attrs_parent_beacon_block_root: [u8; 32],
-    pub attrs_withdrawal_count: u8,
-    pub attrs_withdrawals: [WithdrawalInline; 16],
+    pub attrs_withdrawals: PayloadWithdrawals,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1345,50 +1339,66 @@ pub struct EngineGetPayloadResp {
     pub data: Option<TCacheRead>,
 }
 
-/// The `engine_getPayloadV5` result as the engine tile frames it:
-/// `[u32 len][ExecutionPayload]`, `[u8 n]`, the `n` commitments, every blob's
-/// `NUMBER_OF_COLUMNS` cell proofs, the `n` blobs, `[u8
-/// shouldOverrideBuilder]`, `[u32 len][ExecutionRequests]`, and the
-/// little-endian `blockValue`.
+/// The `engine_getPayloadV5` result as the engine tile frames it: a
+/// [`Self::HEADER_LEN`] header, then the payload, commitments and requests
+/// SSZ, then every blob's `NUMBER_OF_COLUMNS` cell proofs and the blobs. All
+/// but the header is in `BlockContents` order, so a produced block's contents
+/// splice in the payload and `after_payload` as they are.
 pub struct PayloadFrame<'a> {
     pub execution_payload: &'a [u8],
+    /// Commitments, requests, cell proofs and blobs: what follows the body's
+    /// `bls_to_execution_changes` in `BlockContents`.
+    pub after_payload: &'a [u8],
     pub blob_count: usize,
     pub commitments: &'a [u8],
-    pub cell_proofs: &'a [u8],
-    pub blobs: &'a [u8],
     pub execution_requests: &'a [u8],
     pub block_value: [u8; 32],
 }
 
 impl<'a> PayloadFrame<'a> {
     pub const CELL_PROOFS_PER_BLOB_LEN: usize = NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF;
+    /// Payload and requests lengths, blob count, `shouldOverrideBuilder` and
+    /// the little-endian `blockValue`.
+    pub const HEADER_LEN: usize = 4 + 4 + 1 + 1 + 32;
+
+    pub fn write_header(
+        header: &mut [u8],
+        payload_len: usize,
+        requests_len: usize,
+        blob_count: u8,
+        should_override_builder: bool,
+        block_value: &[u8; 32],
+    ) {
+        header[..4].copy_from_slice(&(payload_len as u32).to_le_bytes());
+        header[4..8].copy_from_slice(&(requests_len as u32).to_le_bytes());
+        header[8] = blob_count;
+        header[9] = should_override_builder as u8;
+        header[10..Self::HEADER_LEN].copy_from_slice(block_value);
+    }
 
     pub fn parse(frame: &'a [u8]) -> Option<Self> {
-        let (execution_payload, rest) = Self::length_prefixed(frame)?;
-        let (&blob_count, rest) = rest.split_first()?;
-        let blob_count = blob_count as usize;
-        let (commitments, rest) = rest.split_at_checked(blob_count * BYTES_PER_KZG_COMMITMENT)?;
-        let (cell_proofs, rest) =
-            rest.split_at_checked(blob_count * Self::CELL_PROOFS_PER_BLOB_LEN)?;
-        let (blobs, rest) = rest.split_at_checked(blob_count * BYTES_PER_BLOB)?;
-        let (_should_override, rest) = rest.split_first()?;
-        let (execution_requests, rest) = Self::length_prefixed(rest)?;
-        let block_value = rest.try_into().ok()?;
+        let (header, rest) = frame.split_at_checked(Self::HEADER_LEN)?;
+        let payload_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes")) as usize;
+        let requests_len = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes")) as usize;
+        let blob_count = header[8] as usize;
+        let (execution_payload, after_payload) = rest.split_at_checked(payload_len)?;
+        let (commitments, rest) =
+            after_payload.split_at_checked(blob_count * BYTES_PER_KZG_COMMITMENT)?;
+        let (execution_requests, cell_proofs_and_blobs) = rest.split_at_checked(requests_len)?;
+        let tail_len = blob_count * (Self::CELL_PROOFS_PER_BLOB_LEN + BYTES_PER_BLOB);
+        (cell_proofs_and_blobs.len() == tail_len).then_some(())?;
         Some(Self {
             execution_payload,
+            after_payload,
             blob_count,
             commitments,
-            cell_proofs,
-            blobs,
             execution_requests,
-            block_value,
+            block_value: header[10..].try_into().expect("32 bytes"),
         })
     }
 
-    fn length_prefixed(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
-        let (len, rest) = bytes.split_first_chunk::<4>()?;
-        let len = u32::from_le_bytes(*len) as usize;
-        (rest.len() >= len).then(|| rest.split_at(len))
+    pub fn cell_proofs_len(&self) -> usize {
+        self.blob_count * Self::CELL_PROOFS_PER_BLOB_LEN
     }
 }
 

@@ -240,6 +240,14 @@ impl Eth1Data {
         Self { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
     }
 
+    pub fn to_ssz(&self) -> [u8; 72] {
+        let mut out = [0; 72];
+        out[..32].copy_from_slice(&self.deposit_root);
+        out[32..40].copy_from_slice(&self.deposit_count.to_le_bytes());
+        out[40..].copy_from_slice(&self.block_hash);
+        out
+    }
+
     #[inline]
     pub fn leaf(&self) -> B256 {
         merkleize(&[self.deposit_root, uint64_chunk(self.deposit_count), self.block_hash])

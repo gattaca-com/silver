@@ -535,6 +535,19 @@ impl TCache {
         }
     }
 
+    /// SAFETY: as [`Self::write`].
+    fn truncate(&self, seq: u64, len: usize) {
+        let idx = self.index(seq);
+        let slot: &mut Slot = unsafe {
+            let mut_ptr = self.data_ptr().add(idx);
+            slice::from_raw_parts_mut(mut_ptr, size_of::<Slot>()).into()
+        };
+        assert_eq!(slot.seq.load(Ordering::Relaxed), u64::MAX, "truncate after commit");
+        let len = u32::try_from(len).expect("reservations are u32 long");
+        assert!(len <= slot.data_end - slot.data_start, "truncate past the reservation");
+        slot.data_end = slot.data_start + len;
+    }
+
     fn commit(&self, seq: u64, success: bool) {
         let idx = self.index(seq);
 

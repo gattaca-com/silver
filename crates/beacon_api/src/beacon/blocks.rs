@@ -99,7 +99,9 @@ impl Kind {
             }),
             Self::Ssz => with_bytes(resp, &block, reader, |resp, bytes| {
                 let version = ctx.spec.fork_at_slot(block.slot).name();
-                resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], bytes);
+                resp.send(200, Some(SSZ_MEDIA_TYPE), &[("Eth-Consensus-Version", version)], &[
+                    bytes,
+                ]);
             }),
             Self::Header => with_bytes(resp, &block, reader, |resp, bytes| {
                 let signed =
