@@ -21,7 +21,7 @@ use flux_profiler::{CrossProcessReader, Loss, published_pid};
 use silver_common::{APP_NAME, Nanos, SilverSpine};
 use tracing::{info, warn};
 
-use crate::{block_events::BlockEventsInserter, config::Args};
+use crate::{clickhouse_tables::ClickHouseTables, config::Args};
 
 /// Loop iterations between the pid-file reads that detect the node's exit;
 /// ~1 s at the tile's loop pacing.
@@ -50,7 +50,7 @@ pub struct TraceCollector {
     period: Nanos,
     retain_bytes: u64,
     next_dump: Nanos,
-    db_inserter: Option<BlockEventsInserter>,
+    clickhouse: Option<ClickHouseTables>,
     polls: u32,
     /// The node we followed is gone and its marks are already flushed.
     detached: bool,
@@ -74,11 +74,10 @@ impl TraceCollector {
 
         reader.filter_short_frames(args.filter_short_frames);
 
-        let db_inserter = file_config
+        let clickhouse = file_config
             .telemetry
-            .clickhouse_url
-            .as_deref()
-            .map(|url| BlockEventsInserter::open(url, &file_config.chain_config));
+            .clickhouse_addr()?
+            .map(|addr| ClickHouseTables::open(addr, &file_config.chain_config));
 
         // Floored at a second: `round_to_interval` divides by the period.
         let period = Nanos::from_secs(args.period.as_secs().max(1));
@@ -88,7 +87,7 @@ impl TraceCollector {
             args.dir,
             period,
             args.retain.as_u64(),
-            db_inserter,
+            clickhouse,
         ))
     }
 
@@ -98,7 +97,7 @@ impl TraceCollector {
         dir: PathBuf,
         period: Nanos,
         retain_bytes: u64,
-        db_inserter: Option<BlockEventsInserter>,
+        clickhouse: Option<ClickHouseTables>,
     ) -> Self {
         Self {
             reader,
@@ -107,7 +106,7 @@ impl TraceCollector {
             period,
             retain_bytes,
             next_dump: Nanos::now(),
-            db_inserter,
+            clickhouse,
             polls: 0,
             detached: false,
         }
@@ -240,8 +239,8 @@ impl TraceCollector {
 
 impl Tile<SilverSpine> for TraceCollector {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        if let Some(inserter) = &mut self.db_inserter {
-            inserter.sample(adapter);
+        if let Some(clickhouse) = &mut self.clickhouse {
+            clickhouse.sample(adapter);
         }
 
         while self.reader.poll() {}

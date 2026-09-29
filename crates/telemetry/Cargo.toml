@@ -10,20 +10,21 @@ bytesize.workspace = true
 clap.workspace = true
 flate2.workspace = true
 flux.workspace = true
+flux-clickhouse.workspace = true
+flux-network.workspace = true
 flux-profiler.workspace = true
 hex.workspace = true
 humantime.workspace = true
 libc.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 toml.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
 silver_stages.workspace = true
 tracing.workspace = true
-ureq.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
 flux-profiler = { workspace = true, features = ["test-util"] }
 

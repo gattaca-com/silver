@@ -15,9 +15,10 @@ use silver_common::{SilverSpine, tracing::initialise_tracing_log};
 use crate::{collector::TraceCollector, config::Args};
 
 mod block_events;
-mod clickhouse;
+mod clickhouse_tables;
 mod collector;
 mod config;
+mod node_meta;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("telemetry", 10, None, false, None);

@@ -2,7 +2,12 @@
 //! config file: the slot clock block-event rows are timed against and the
 //! ClickHouse endpoint they go to.
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    net::{SocketAddr, ToSocketAddrs},
+    path::PathBuf,
+    time::Duration,
+};
 
 use bytesize::ByteSize;
 use clap::Parser;
@@ -30,9 +35,10 @@ pub struct Args {
     #[arg(long, default_value = "20GB")]
     pub retain: ByteSize,
     /// The node's own config file: `[chain_config]` gives the slot clock the
-    /// rows are timed against, and a `[telemetry] clickhouse_url = "..."`
-    /// endpoint turns on block-event inserts. Unknown keys are ignored;
-    /// without the file, mainnet timings apply and nothing is inserted.
+    /// rows are timed against, and a `[telemetry] clickhouse_addr = "..."`
+    /// endpoint turns on the ClickHouse inserts. Unknown keys
+    /// are ignored; without the file, mainnet timings apply and nothing is
+    /// inserted.
     #[arg(long)]
     config: Option<PathBuf>,
 }
@@ -57,5 +63,14 @@ pub struct FileConfig {
 
 #[derive(serde::Deserialize, Default)]
 pub struct TelemetrySection {
-    pub clickhouse_url: Option<String>,
+    /// `host:port` of ClickHouse's native protocol, usually port 9000.
+    clickhouse_addr: Option<String>,
+}
+
+impl TelemetrySection {
+    pub fn clickhouse_addr(&self) -> Result<Option<SocketAddr>, String> {
+        let Some(addr) = &self.clickhouse_addr else { return Ok(None) };
+        let resolved = addr.to_socket_addrs().map_err(|e| format!("{addr}: {e}"))?.next();
+        resolved.map(Some).ok_or_else(|| format!("{addr}: resolves to no address"))
+    }
 }
