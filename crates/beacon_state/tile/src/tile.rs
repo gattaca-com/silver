@@ -570,8 +570,12 @@ impl BeaconStateTile {
             "Status would describe a head whose envelope is still pending"
         );
         let event = self.status_event(head);
+        let moved = self.emitted_head.is_some_and(|emitted| emitted.root != head.observation.root);
         self.emitted_head = Some(head.observation);
         producers.produce(event);
+        if moved {
+            self.prepare_payload_on_new_head(producers);
+        }
     }
 
     fn serve_aggregate(

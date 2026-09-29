@@ -711,10 +711,16 @@ pub(crate) fn json_get_payload_to_tcache(
         .ok_or_else(|| crate::EngineError::Ssz("inconsistent blobsBundle lengths".into()))?;
     out.push(blob_count);
 
+    let kzg_bytes = |value: &simd_json::BorrowedValue<'_>| {
+        value
+            .as_str()
+            .ok_or_else(|| crate::EngineError::Ssz("blobsBundle entry is not a string".into()))
+            .and_then(hex_to_fixed::<48>)
+    };
     for (i, cell_proofs) in proofs.chunks_exact(NUMBER_OF_COLUMNS).enumerate() {
-        hex_extend_clamped::<48>(commitments[i].as_str().unwrap_or("0x"), out)?;
+        out.extend_from_slice(&kzg_bytes(&commitments[i])?);
         for proof in cell_proofs {
-            hex_extend_clamped::<48>(proof.as_str().unwrap_or("0x"), out)?;
+            out.extend_from_slice(&kzg_bytes(proof)?);
         }
         let b_s = blobs[i].as_str().unwrap_or("0x");
         let b_hex = b_s.strip_prefix("0x").unwrap_or(b_s);
@@ -1486,6 +1492,24 @@ mod tests {
         let two_proofs = format!("\"0x{}\",\"0x{}\"", "d0".repeat(48), "d1".repeat(48));
         json.replace_range(start..end, &two_proofs);
         assert!(json_get_payload_to_tcache(&mut json.into_bytes(), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_rejects_a_misframed_commitment_or_proof() {
+        let json = String::from_utf8(get_payload_json()).unwrap();
+        let commitment = "c0".repeat(48);
+        let first_proof = json.find("\"proofs\":[\"0x").unwrap() + "\"proofs\":[\"0x".len();
+        for bad in [
+            json.replacen(&commitment, &"c0".repeat(47), 1),
+            json.replacen(&commitment, &"c0".repeat(49), 1),
+            {
+                let mut short_proof = json.clone();
+                short_proof.replace_range(first_proof..first_proof + 2, "");
+                short_proof
+            },
+        ] {
+            assert!(json_get_payload_to_tcache(&mut bad.into_bytes(), &mut Vec::new()).is_err());
+        }
     }
 
     #[test]

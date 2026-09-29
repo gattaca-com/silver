@@ -17,6 +17,7 @@ struct PayloadKey {
 #[derive(Default)]
 pub(super) struct PayloadPreparations {
     next_id: u64,
+    prepared_slot: Slot,
     requested: FxHashMap<u64, PayloadKey>,
     payload_ids: FxHashMap<PayloadKey, [u8; 8]>,
 }
@@ -25,8 +26,14 @@ impl PayloadPreparations {
     fn request(&mut self, slot: Slot, parent_root: B256) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+        self.prepared_slot = slot;
         self.requested.insert(id, PayloadKey { slot, parent_root });
         id
+    }
+
+    fn covers(&self, slot: Slot, parent_root: B256) -> bool {
+        let key = PayloadKey { slot, parent_root };
+        self.payload_ids.contains_key(&key) || self.requested.values().any(|k| *k == key)
     }
 
     pub(super) fn on_response(&mut self, response: EnginePreparePayloadResp) {
@@ -60,6 +67,9 @@ impl BeaconStateTile {
             self.fork_choice.fcu_execution_hashes();
         if head_root != self.head_block_root() {
             tracing::warn!(slot, "head state does not follow fork choice; payload not prepared");
+            return;
+        }
+        if self.payload_preparations.covers(slot, head_root) {
             return;
         }
 
@@ -104,5 +114,12 @@ impl BeaconStateTile {
             attrs_withdrawals,
         }));
         tracing::info!(slot, proposer, "payload preparation requested");
+    }
+
+    pub(super) fn prepare_payload_on_new_head(&mut self, producers: &mut Producers) {
+        let slot = self.payload_preparations.prepared_slot;
+        if slot > self.ticker.current_slot() {
+            self.prepare_payload(slot, producers);
+        }
     }
 }

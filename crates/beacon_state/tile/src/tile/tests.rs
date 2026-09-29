@@ -4574,6 +4574,32 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), None);
 }
 
+fn prepared_parents(sink: &mut SpineAdapter<SilverSpine>) -> Vec<B256> {
+    engine_requests(sink)
+        .into_iter()
+        .filter_map(|request| match request {
+            EngineReq::PreparePayload(request) => Some(request.attrs_parent_beacon_block_root),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A late block that moves the head after the preparation tick gets a
+/// payload of its own; a head already prepared for is not asked for twice.
+#[test]
+fn head_that_moves_after_preparation_is_prepared_again() {
+    let mut rig = HeadRig::new();
+    register_proposer(&mut rig.tile, 0, [7; 20]);
+    engine_requests(&mut rig.sink);
+
+    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    assert_eq!(prepared_parents(&mut rig.sink), [ANCHOR_ROOT]);
+
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    assert_eq!(prepared_parents(&mut rig.sink), [A_ROOT]);
+}
+
 #[test]
 fn unregistered_proposer_gets_no_payload_prepared() {
     let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
