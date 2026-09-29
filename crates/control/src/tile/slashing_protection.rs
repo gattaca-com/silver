@@ -5,6 +5,7 @@ use fxhash::FxHashMap;
 use silver_common::{
     ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
     SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TCacheReader, TProducer,
+    block_contents::SignedBlockContents,
     ssz_view::{SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView},
 };
 use silver_gossip::GossipHandler;
@@ -33,8 +34,8 @@ impl PendingAttestation {
     }
 }
 
-/// A signed block waiting on its lock. Its bytes stay in the submissions
-/// tcache until the lock commits.
+/// A signed block waiting on its lock. Its `SignedBlockContents` stay in the
+/// submissions tcache until the lock commits.
 #[derive(Debug, Clone, Copy)]
 struct PendingBlock {
     request_id: u64,
@@ -216,7 +217,7 @@ impl SlashingProtectionHandler {
                 return;
             }
             return local_gossip.submit(
-                block_message(request_id, block, ssz, key.slot),
+                block_message(request_id, block, key.slot),
                 now,
                 gossip_handler,
                 producers,
@@ -408,7 +409,11 @@ impl SlashingProtectionHandler {
                     return;
                 }
                 let acquired = reader.acquire(block.ssz);
-                let Ok((bytes, _)) = acquired.buffer() else {
+                let Some(bytes) = acquired
+                    .buffer()
+                    .ok()
+                    .and_then(|(contents, _)| SignedBlockContents::signed_block(contents))
+                else {
                     produce_response(
                         producers,
                         block.request_id,
@@ -422,7 +427,7 @@ impl SlashingProtectionHandler {
                     return;
                 };
                 local_gossip.submit(
-                    block_message(block.request_id, bytes, block.ssz, slot),
+                    block_message(block.request_id, bytes, slot),
                     now,
                     gossip_handler,
                     producers,
@@ -524,7 +529,10 @@ mod tests {
         block: &[u8],
         now: Instant,
     ) {
-        let ssz = submissions.publish(block);
+        let blobs_at = (12 + block.len()) as u32;
+        let mut contents = [12, blobs_at, blobs_at].map(u32::to_le_bytes).concat();
+        contents.extend_from_slice(block);
+        let ssz = submissions.publish(&contents);
         let Harness { local_gossip, gossip, adapter, .. } = harness;
         handler.on_local_block(
             request_id,
@@ -869,9 +877,11 @@ fn lock_response(result: LockResult, conflict: LocalGossipFailure) -> LocalGossi
     }
 }
 
-fn block_message(request_id: u64, ssz: &[u8], ssz_read: TCacheRead, slot: u64) -> LocalMessage<'_> {
+/// The submission holds the whole `SignedBlockContents`, so the block is
+/// copied rather than handed on as the submission's read.
+fn block_message(request_id: u64, ssz: &[u8], slot: u64) -> LocalMessage<'_> {
     let topic = GossipTopic::BeaconBlock;
-    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot }
+    LocalMessage { request_id, topic, ssz, ssz_read: None, slot }
 }
 
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {

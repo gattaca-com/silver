@@ -14,6 +14,7 @@ use silver_common::{
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
     SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
     TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    block_contents::SignedBlockContents,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         METADATA_SIZE, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE, SignedAggregateAndProofView,
@@ -224,18 +225,20 @@ impl Controller {
                 )
             }
             GossipTopic::BeaconBlock => {
-                if ssz.len() < SIGNED_BEACON_BLOCK_MIN {
+                let Some(block) = SignedBlockContents::signed_block(ssz)
+                    .filter(|block| block.len() >= SIGNED_BEACON_BLOCK_MIN)
+                else {
                     silver_log::error!(request_id, len = ssz.len(), "submitted block is misframed");
                     return produce_response(
                         producers,
                         request_id,
                         Err(LocalGossipFailure::Internal),
                     );
-                }
+                };
                 self.slashing_protection.on_local_block(
                     request_id,
                     ssz_read,
-                    ssz,
+                    block,
                     now,
                     &mut self.local_gossip,
                     &mut self.gossip_handler,
@@ -295,6 +298,7 @@ impl Controller {
             TReadMode::Sliding,
         )?;
         self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, TileId::Columns]);
+        self.reader.open(TCacheId::ProposedColumns, "ctl_proposed_columns", TReadMode::Sliding)?;
         self.gossip_handler.open_tcaches()
     }
 

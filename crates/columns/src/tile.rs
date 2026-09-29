@@ -12,10 +12,11 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecCon
 #[cfg(feature = "ef_tests")]
 use silver_common::TCacheRead;
 use silver_common::{
-    BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind, EngineResp, ForkName,
-    GossipTopic, IngestionTime, NewGossipMsg, Origin, P2pStreamId, PeerEvent, RequestId,
-    RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed, SyncUpdate,
-    TCacheError, TCacheId, TCacheReader, TCacheTable, TRead, TReadMode, TileId, Wheel, block_root,
+    BeaconApiRequest, BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind,
+    EngineResp, ForkName, GossipTopic, IngestionTime, LOCAL_GOSSIP_STREAM_ID, NewGossipMsg, Origin,
+    P2pStreamId, PeerEvent, RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers,
+    SszCache, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader,
+    TCacheTable, TProducer, TRead, TReadMode, TileId, Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
         RetentionEvent, StoreError,
@@ -35,8 +36,10 @@ use crate::{
 };
 
 pub(crate) mod cell_handler;
+mod proposal;
 
 use cell_handler::CellHandler;
+use proposal::ProposedBlocks;
 
 /// Only `Batched` sidecars can end up forwarded / republished on gossip
 /// (their relay fires at flush if KZG passes): `Ignored` covers spec-IGNORE
@@ -72,6 +75,8 @@ pub struct DataColumnsTile {
 
     cells: Option<CellHandler>,
 
+    proposed: ProposedBlocks,
+
     // Last: acquired reads held by pending columns point into them. Persisted
     // reads are long-lived, so they track their own tails.
     reader: TCacheReader,
@@ -86,6 +91,7 @@ impl DataColumnsTile {
         custody_group_columns: u128,
         spec: Arc<SpecConfig>,
         ticker: SlotTicker,
+        proposed_columns: TProducer,
     ) -> Self {
         let epoch_duration =
             Duration::from_millis(spec.slot_duration_ms()) * SLOTS_PER_EPOCH as u32;
@@ -100,6 +106,7 @@ impl DataColumnsTile {
             el_fetcher: ElBlobFetcher::new(epoch_duration),
             kzg_scratch: KzgScratch::default(),
             cells: None,
+            proposed: ProposedBlocks::new(proposed_columns),
             reader: TCacheReader::new(tcaches),
             persist_reader: TCacheReader::new(tcaches),
         }
@@ -527,6 +534,13 @@ impl DataColumnsTile {
             }
         };
 
+        // Ahead of the block: our own custody is then already held, so none
+        // of it is requested from peers or the EL.
+        if stream_id == LOCAL_GOSSIP_STREAM_ID &&
+            let Ok((block, _)) = t_read.buffer()
+        {
+            self.publish_proposed_block(block_root(block, false), block, producers);
+        }
         let root = self.beacon_block(stream_id, t_read, producers);
 
         if let Some((block_root, is_gloas)) = root &&
@@ -861,6 +875,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
     }
 
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.proposed.producer.loop_start();
         self.reader.free();
         self.persist_reader.free();
 
@@ -887,6 +902,16 @@ impl Tile<SilverSpine> for DataColumnsTile {
                     request,
                     outcome: CellValidationOutcome::Ignored,
                 });
+            }
+        });
+
+        // Before gossip: a proposed block's contents precede its local injection.
+        adapter.consume(|request: BeaconApiRequest, _| {
+            if let BeaconApiRequest::LocalGossip { topic: GossipTopic::BeaconBlock, ssz, .. } =
+                request &&
+                let Ok((bytes, _)) = self.reader.acquire(ssz).buffer()
+            {
+                self.proposed.submit(ssz, bytes);
             }
         });
 
@@ -1077,6 +1102,7 @@ mod tests {
                 custody,
                 Arc::new(spec),
                 SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
+                TCache::producer(TCacheId::ProposedColumns, 1 << 20),
             );
             tile.open_tcaches().unwrap();
 
@@ -1161,6 +1187,12 @@ mod tests {
             );
         }
 
+        fn local_block(&mut self, bytes: &[u8]) {
+            let ssz = tcache_write(&mut self.gossip_p, bytes);
+            let read = self.tile.reader.acquire(ssz);
+            self.tile.handle_beacon_block(read, LOCAL_GOSSIP_STREAM_ID, &mut self.conn.producers);
+        }
+
         fn block(&mut self, bytes: &[u8]) {
             let ssz = tcache_write(&mut self.gossip_p, bytes);
             let read = self.tile.reader.acquire(ssz);
@@ -1179,6 +1211,9 @@ mod tests {
                     out.validated |= 1u128 << column_index
                 }
                 DataColumnsEvent::Persist { .. } => out.receipts.push(event),
+                DataColumnsEvent::Publish { column_index, .. } => {
+                    out.published_only |= 1u128 << column_index
+                }
             });
             self.inj.consume(|need: SyncNeed, _| match need {
                 SyncNeed::Missing { .. } => out.missing.push(need),
@@ -1226,6 +1261,7 @@ mod tests {
         custody_complete: usize,
         validated: u128,
         receipts: Vec<DataColumnsEvent>,
+        published_only: u128,
         publications: Vec<(ColumnOrigin, GossipTopic, SidecarIdentity)>,
         domains: Vec<silver_common::GossipDomain>,
         engine: usize,

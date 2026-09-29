@@ -1074,6 +1074,7 @@ pub enum SszCache {
     Gossip,
     DataColumns,
     Rpc,
+    ProposedColumns,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1465,6 +1466,9 @@ pub enum DataColumnsEvent {
         column_index: u64,
         slot: u64,
     },
+    /// A column of a block this node proposed, outside its custody: published,
+    /// not stored. `ssz` points into the `proposed_columns` tcache.
+    Publish { ssz: TCacheRead, domain: GossipDomain, column_index: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]

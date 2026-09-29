@@ -149,7 +149,7 @@ impl StageReader {
                     ..recv
                 });
             }
-            DataColumnsEvent::Persist { .. } => {}
+            DataColumnsEvent::Persist { .. } | DataColumnsEvent::Publish { .. } => {}
             DataColumnsEvent::Available { block_root, slot } => {
                 self.out.push(StageEvent {
                     stage: Stage::DaAvailable,

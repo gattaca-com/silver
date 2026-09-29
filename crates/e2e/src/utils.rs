@@ -182,6 +182,7 @@ impl PmBsHarness {
                 rpc_p.cache_ref(),
                 cluster_in.cache_ref(),
                 TCache::producer(TCacheId::BoundaryProcessing, 32).cache_ref(),
+                TCache::producer(TCacheId::ProposedColumns, 32).cache_ref(),
             ]),
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,

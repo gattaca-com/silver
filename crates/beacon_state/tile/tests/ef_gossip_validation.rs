@@ -176,6 +176,7 @@ impl ColumnsRig {
             u128::MAX,
             Arc::new(spec),
             ticker,
+            TCache::producer(TCacheId::ProposedColumns, 1 << 12),
         );
         tile.open_tcaches().unwrap();
         let dir = ShmemDir::new().unwrap();

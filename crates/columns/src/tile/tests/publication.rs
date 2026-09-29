@@ -17,6 +17,7 @@ use super::*;
 
 mod el;
 mod partial;
+mod proposal;
 
 struct BlockBlob {
     commitment: [u8; 48],

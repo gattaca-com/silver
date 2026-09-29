@@ -4,6 +4,7 @@ use blst::{BLST_ERROR, min_pk::PublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
+    body_root,
     merkle::{
         B256, MerkleStack, hash_concat, hash_fixed_bytes, hash_list, is_valid_merkle_branch,
         merkleize, sha256, uint64_chunk,
@@ -12,7 +13,7 @@ use silver_common::{
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockHeaderView,
         DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SidecarLayout,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SidecarLayout, SignedBeaconBlockView,
     },
 };
 
@@ -431,6 +432,56 @@ pub fn push_data_column_sidecar_prefix(
     out.extend_from_slice(inclusion_proof);
 }
 
+pub fn cell_bytes(cell: &c_kzg::Cell) -> &[u8; BYTES_PER_CELL] {
+    // SAFETY: Cell is repr(C) over [u8; BYTES_PER_CELL].
+    unsafe { &*std::ptr::from_ref(cell).cast() }
+}
+
+/// The `SignedBeaconBlockHeader` of a Fulu signed block.
+pub fn fulu_signed_block_header(signed_block: &[u8]) -> [u8; 208] {
+    let mut header = [0; 208];
+    header[..8].copy_from_slice(&SignedBeaconBlockView::slot(signed_block).to_le_bytes());
+    header[8..16]
+        .copy_from_slice(&SignedBeaconBlockView::proposer_index(signed_block).to_le_bytes());
+    header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(signed_block));
+    header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(signed_block));
+    header[80..112].copy_from_slice(&body_root(SignedBeaconBlockView::body(signed_block)));
+    header[112..].copy_from_slice(SignedBeaconBlockView::signature(signed_block));
+    header
+}
+
+/// Writes a Fulu `DataColumnSidecar` into `out`, which is exactly
+/// [`data_column_sidecar_len`] bytes for the blob count.
+pub fn write_data_column_sidecar_fulu<'a>(
+    out: &mut [u8],
+    index: u64,
+    header: &[u8; 208],
+    inclusion_proof: &[u8; 128],
+    commitments: &[u8],
+    cells: impl Iterator<Item = &'a [u8; BYTES_PER_CELL]>,
+    proofs: impl Iterator<Item = &'a [u8; BYTES_PER_KZG_PROOF]>,
+) {
+    let num_blobs = commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    debug_assert_eq!(out.len(), data_column_sidecar_len(num_blobs));
+    let cells_at = DATA_COLUMN_SIDECAR_MIN;
+    let commitments_at = cells_at + num_blobs * BYTES_PER_CELL;
+    let proofs_at = commitments_at + commitments.len();
+
+    out[..8].copy_from_slice(&index.to_le_bytes());
+    out[8..12].copy_from_slice(&(cells_at as u32).to_le_bytes());
+    out[12..16].copy_from_slice(&(commitments_at as u32).to_le_bytes());
+    out[16..20].copy_from_slice(&(proofs_at as u32).to_le_bytes());
+    out[20..228].copy_from_slice(header);
+    out[228..cells_at].copy_from_slice(inclusion_proof);
+    for (slot, cell) in out[cells_at..commitments_at].chunks_exact_mut(BYTES_PER_CELL).zip(cells) {
+        slot.copy_from_slice(cell);
+    }
+    out[commitments_at..proofs_at].copy_from_slice(commitments);
+    for (slot, proof) in out[proofs_at..].chunks_exact_mut(BYTES_PER_KZG_PROOF).zip(proofs) {
+        slot.copy_from_slice(proof);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Above every count these tests build, so a case that fails does so on
@@ -684,6 +735,44 @@ mod tests {
 
             assert!(verify_data_column_sidecar_fulu(&out, MAX_BLOBS), "shape, col {j}");
             assert_eq!(DataColumnSidecarFuluView::index(&out), j);
+            assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "kzg, col {j}");
+            assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
+        }
+    }
+
+    /// The proposer's path: cells from the blobs, proofs as the EL returns
+    /// them, header and inclusion proof off the signed block.
+    #[test]
+    fn sidecars_written_for_a_signed_block_pass_all_verifications() {
+        use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
+
+        let settings = c_kzg::ethereum_kzg_settings(0);
+        let blob = c_kzg::Blob::new([0u8; 131072]);
+        let commitment = settings.blob_to_kzg_commitment(&blob).unwrap().to_bytes().into_inner();
+        let commitments = [commitment, commitment].concat();
+        let cells = settings.compute_cells(&blob).unwrap();
+        let (_, proofs) = settings.compute_cells_and_kzg_proofs(&blob).unwrap();
+
+        let block = SynthBlock::fulu(7, &commitments);
+        let header = fulu_signed_block_header(block.bytes());
+        assert_eq!(header[80..112], crate::body_root(block.body()));
+        let inclusion_proof = kzg_commitments_inclusion_proof(block.body());
+
+        for j in [0usize, 1, 63, 127] {
+            let proof = proofs[j].to_bytes().into_inner();
+            let mut out = vec![0; data_column_sidecar_len(2)];
+            write_data_column_sidecar_fulu(
+                &mut out,
+                j as u64,
+                &header,
+                &inclusion_proof,
+                &commitments,
+                [cell_bytes(&cells[j]); 2].into_iter(),
+                [&proof; 2].into_iter(),
+            );
+
+            assert!(verify_data_column_sidecar_fulu(&out, MAX_BLOBS), "shape, col {j}");
+            assert_eq!(DataColumnSidecarFuluView::index(&out), j as u64);
             assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "kzg, col {j}");
             assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
         }

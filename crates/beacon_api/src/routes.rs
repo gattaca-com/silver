@@ -1,5 +1,6 @@
 use crate::{
     beacon::{
+        block_submission::post_block_v2,
         blocks::{block, block_header, block_root},
         operations::post_attestations,
         states::{genesis, state_finality_checkpoints, state_fork},
@@ -81,6 +82,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         post_sync_committee_subscriptions,
     ),
     (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
+    (Method::Post, "/eth/v2/beacon/blocks", post_block_v2),
     (Method::Post, "/eth/v2/beacon/pool/attestations", post_attestations),
     (Method::Post, "/eth/v2/validator/aggregate_and_proofs", post_aggregate_and_proofs),
     (Method::Get, "/eth/v2/validator/aggregate_attestation", aggregate_attestation),

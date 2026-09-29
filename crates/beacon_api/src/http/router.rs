@@ -97,6 +97,10 @@ impl<'a> Request<'a> {
         media_type.eq_ignore_ascii_case(JSON_MEDIA_TYPE)
     }
 
+    pub(crate) fn body_is_ssz(&self) -> bool {
+        self.media_type().is_some_and(|media_type| media_type.eq_ignore_ascii_case(SSZ_MEDIA_TYPE))
+    }
+
     /// The `Content-Type` header's media type, without the parameters that may
     /// follow it. `None` for a header that names none at all.
     fn media_type(&self) -> Option<&str> {

@@ -60,6 +60,8 @@ const CONTROL_RPC_TCACHE_SIZE: usize = 1 << 20;
 /// two-million-validator set, so the two the validator API serves never wait
 /// on the one being written.
 const BEACON_STATE_TCACHE_SIZE: usize = 1 << 25;
+/// Every column of a full block is about 6 MiB.
+const PROPOSED_COLUMNS_TCACHE_SIZE: usize = 1 << 24;
 
 /// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = build_info::format!(
@@ -130,6 +132,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCache::producer(TCacheId::StorageDelivery, config.outgoing_rpc_tcache_size());
     let beacon_state_handoff_producer =
         TCache::producer(TCacheId::BeaconStateHandoff, BEACON_STATE_TCACHE_SIZE);
+    let proposed_columns_producer =
+        TCache::producer(TCacheId::ProposedColumns, PROPOSED_COLUMNS_TCACHE_SIZE);
 
     // Tiles.
     let keypair = Keypair::load_or_create(Path::new(config.data_storage_dir()))?;
@@ -248,6 +252,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         storage_delivery_producer.cache_ref(),
         beacon_state_handoff_producer.cache_ref(),
         control_slot_producer.cache_ref(),
+        proposed_columns_producer.cache_ref(),
     ]);
 
     let p2p_context = Context {
@@ -339,6 +344,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),
+        proposed_columns_producer,
     )
     .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)
     .map_err(|error| format!("cell store construction: {error:?}"))?;

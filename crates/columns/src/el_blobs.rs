@@ -6,7 +6,7 @@ use std::{
 use flux::spine::SpineProducers;
 use silver_common::{
     EngineGetBlobsReq, EngineGetBlobsResp, EngineReq, ForkName, GossipDomain, MAX_BLOBS_PER_BLOCK,
-    SilverSpineProducers, TCacheReader, TRead, Wheel, body_root,
+    SilverSpineProducers, TCacheReader, TRead, Wheel,
     cell_store::{CommitmentContext, ContextData},
     column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
@@ -154,13 +154,7 @@ impl ElBlobFetcher {
         {
             return;
         }
-        let mut header = [0; 208];
-        header[..8].copy_from_slice(&context.slot.to_le_bytes());
-        header[8..16].copy_from_slice(&SignedBeaconBlockView::proposer_index(bytes).to_le_bytes());
-        header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(bytes));
-        header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(bytes));
-        header[80..112].copy_from_slice(&body_root(body));
-        header[112..].copy_from_slice(SignedBeaconBlockView::signature(bytes));
+        let header = util::fulu_signed_block_header(bytes);
         let proof = kzg_commitments_inclusion_proof(body);
         if let Some(fetch) = PendingBlobFetch::new(
             context,
