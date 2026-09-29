@@ -4,10 +4,6 @@
 //! nothing about the slot). Per-block timelines, dedup (repeat-head FCUs) and
 //! deadline checks are ClickHouse queries over the events, not collector
 //! logic.
-//!
-//! The `block_events_xatu` view renames the one comparable stage onto
-//! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
-//! read as one dataset.
 
 use std::{
     mem::take,
@@ -25,20 +21,7 @@ use crate::clickhouse::ChTable;
 
 const TABLE: &str = "block_events";
 
-/// Run in order on every start, so a table an older build created catches up:
-/// `CREATE TABLE IF NOT EXISTS` alone would no-op and leave the new columns
-/// missing, which `input_format_skip_unknown_fields` then drops from each row
-/// without failing the insert. Every statement has to be a no-op the second
-/// time it runs, and a new one goes after the last `ALTER` but ahead of the
-/// views, which read the columns the alters produce.
-const DDL: &[&str] = &[
-    TABLE_DDL,
-    "ALTER TABLE block_events RENAME COLUMN IF EXISTS propagation_slot_start_diff TO time_into_slot_ms",
-    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS slot_start_date_time Nullable(DateTime) AFTER slot",
-    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS meta_network_name LowCardinality(String)",
-    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS column_index Nullable(UInt64)",
-    XATU_VIEW_DDL,
-];
+const DDL: &[&str] = &[TABLE_DDL];
 
 const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
     event_date_time      DateTime64(9)                    COMMENT 'Node-local wall clock at the observation',
@@ -54,23 +37,6 @@ const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
     meta_network_name    LowCardinality(String)           COMMENT 'Ethereum network the node is running'
 ) ENGINE = MergeTree
 ORDER BY (meta_client_name, event_date_time)";
-
-/// The mapping onto Xatu's `beacon_api_eth_v1_events_block` columns, so a query
-/// can union these rows with ethPandaOps' parquet. Only `received` is an
-/// observation of the network; the other stages time silver's own pipeline, and
-/// Xatu's `propagation_slot_start_diff` — arrival at a sentry — has no
-/// counterpart for them.
-const XATU_VIEW_DDL: &str = "CREATE OR REPLACE VIEW block_events_xatu AS
-SELECT
-    event_date_time,
-    slot,
-    slot_start_date_time,
-    time_into_slot_ms AS propagation_slot_start_diff,
-    block_root        AS block,
-    meta_client_name,
-    meta_network_name
-FROM block_events
-WHERE stage = 'received' AND time_into_slot_ms IS NOT NULL";
 
 struct BlockEvents {
     reader: StageReader,
