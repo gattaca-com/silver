@@ -175,13 +175,6 @@ pub(crate) fn is_active(validators: &ValidatorsView, vi: u32, e: Epoch) -> bool 
     validators.activation_epoch(vi as usize) <= e && e < validators.exit_epoch(vi as usize)
 }
 
-#[inline]
-pub(crate) fn is_slashable_validator(validators: &ValidatorsView, vi: u32, e: Epoch) -> bool {
-    !validators.is_slashed(vi as usize) &&
-        validators.activation_epoch(vi as usize) <= e &&
-        e < validators.withdrawable_epoch(vi as usize)
-}
-
 /// The validator columns that decide activity/eligibility, built inline per
 /// element in the epoch read sweeps (built from separate column iterators, not
 /// a bundled row iterator, so the independent loads stay parallel).

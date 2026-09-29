@@ -1,0 +1,13 @@
+[package]
+name = "silver_slashing"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+silver_beacon_state_data.workspace = true
+silver_ssz.workspace = true
+
+[lints]
+workspace = true

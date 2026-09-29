@@ -19,6 +19,7 @@ members = [
   "crates/network",
   "crates/peer",
   "crates/ssz",
+  "crates/slashing",
   "crates/stages",
   "crates/surfer",
   "crates/columns",
@@ -79,6 +80,7 @@ silver_columns = { path = "crates/columns" }
 silver_common = { path = "crates/common" }
 silver_config = { path = "crates/config" }
 silver_metrics = { path = "crates/metrics" }
+silver_slashing = { path = "crates/slashing" }
 silver_ssz = { path = "crates/ssz" }
 silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }

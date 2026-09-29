@@ -20,6 +20,7 @@ use silver_common::{
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
 use silver_config::{PendingBounds, SyncingConfig};
+use silver_slashing::SlashingPool;
 
 use crate::{
     bls,
@@ -165,6 +166,7 @@ pub struct BeaconStateTile {
     seen_bls_changes: SeenIndices,
     seen_proposer_slashings: SeenIndices,
     seen_attester_slashed: SeenIndices,
+    slashing_pool: SlashingPool,
     fork_data_roots: ForkDataRoots,
 
     /// Canonical in-process state: finalized base + per-fork per-tier rings.
@@ -254,6 +256,7 @@ impl BeaconStateTile {
             seen_bls_changes: SeenIndices::new(val_cap),
             seen_proposer_slashings: SeenIndices::new(val_cap),
             seen_attester_slashed: SeenIndices::new(val_cap),
+            slashing_pool: SlashingPool::default(),
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,

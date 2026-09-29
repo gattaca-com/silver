@@ -1049,7 +1049,7 @@ impl BeaconStateTile {
         if proposer_index >= view.validators.count() {
             return Feedback::Reject(None);
         }
-        if !stf::is_slashable_validator(&view.validators, proposer_index as u32, current_epoch) {
+        if !view.validators.is_slashable(proposer_index, current_epoch) {
             return Feedback::Reject(None);
         }
 
@@ -1070,6 +1070,8 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         self.seen_proposer_slashings.mark(proposer_index);
+        let admission = self.slashing_pool.insert_proposer_slashing(buf, &view);
+        tracing::info!(proposer_index, ?admission, "proposer slashing pooled");
         Feedback::Accept
     }
 
@@ -1105,6 +1107,9 @@ impl BeaconStateTile {
                 self.fork_choice.mark_equivocating(idx as usize);
                 self.seen_attester_slashed.mark(idx as usize);
             }
+            let view = self.state.read_view(canon_id);
+            let admission = self.slashing_pool.insert_attester_slashing(data, slashed, &view);
+            tracing::info!(offenders = slashed.len(), ?admission, "attester slashing pooled");
         }
         feedback
     }
