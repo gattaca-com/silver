@@ -70,13 +70,12 @@ impl BlockBlob {
         header[112..].copy_from_slice(SignedBeaconBlockView::signature(block));
 
         let mut out = Vec::with_capacity(util::data_column_sidecar_len(1));
-        util::push_data_column_sidecar_prefix(
-            &mut out,
+        out.extend_from_slice(&util::data_column_sidecar_prefix_fulu(
             index,
             1,
             &header,
             &kzg_commitments_inclusion_proof(body),
-        );
+        ));
         out.extend_from_slice(&self.cells[index as usize].to_bytes());
         out.extend_from_slice(&self.commitment);
         out.extend_from_slice(&self.proofs[index as usize].to_bytes().into_inner());

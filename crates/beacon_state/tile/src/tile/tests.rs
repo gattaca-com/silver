@@ -29,7 +29,7 @@ use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContribu
 
 use super::{
     block::{ParsedBlock, StagedBlock},
-    block_production::Proposal,
+    block_production::{Operations, Proposal},
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
     *,
 };
@@ -125,6 +125,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         verify_weak_subjectivity,
         CheckpointState::Trusted(BeaconState::empty_test(0)),
+        None,
     );
     tile.open_tcaches().unwrap();
     tile
@@ -166,6 +167,7 @@ fn make_tile_with_producers(
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         true,
         CheckpointState::Trusted(state),
+        None,
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)
@@ -4717,7 +4719,7 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     engine_requests(&mut sink);
     register_proposer(&mut tile, 0, [7; 20]);
 
-    assert!(tile.prepare_payload(11, &mut adapter.producers).is_ok());
+    assert!(tile.prepare_payload(11, None, &mut adapter.producers).is_ok());
 
     let [EngineReq::PreparePayload(request)] = engine_requests(&mut sink)[..] else {
         panic!("expected one payload preparation");
@@ -4756,8 +4758,8 @@ fn head_that_moves_after_preparation_is_prepared_again() {
     register_proposer(&mut rig.tile, 0, [7; 20]);
     engine_requests(&mut rig.sink);
 
-    let first = rig.tile.prepare_payload(72, &mut rig.adapter.producers);
-    assert_eq!(rig.tile.prepare_payload(72, &mut rig.adapter.producers), first);
+    let first = rig.tile.prepare_payload(72, None, &mut rig.adapter.producers);
+    assert_eq!(rig.tile.prepare_payload(72, None, &mut rig.adapter.producers), first);
     assert_eq!(prepared_parents(&mut rig.sink), [ANCHOR_ROOT]);
 
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
@@ -4773,7 +4775,7 @@ fn unregistered_proposer_gets_no_payload_prepared() {
     register_proposer(&mut tile, 1, [7; 20]);
 
     assert_eq!(
-        tile.prepare_payload(11, &mut adapter.producers),
+        tile.prepare_payload(11, None, &mut adapter.producers),
         Err(ProduceBlockFailure::NoFeeRecipient)
     );
 
@@ -4885,7 +4887,7 @@ fn block_without_a_prepared_payload_prepares_one_then_fetches_it() {
 fn block_with_a_prepared_payload_fetches_it_directly() {
     let (mut tile, _spine, mut adapter, mut sink) = production_rig();
     register_proposer(&mut tile, 0, [7; 20]);
-    assert!(tile.prepare_payload(11, &mut adapter.producers).is_ok());
+    assert!(tile.prepare_payload(11, None, &mut adapter.producers).is_ok());
     let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
         panic!("expected a payload preparation");
     };
@@ -4897,6 +4899,22 @@ fn block_with_a_prepared_payload_fetches_it_directly() {
         panic!("expected only a payload fetch");
     };
     assert_eq!(fetch.payload_id, [3; 8]);
+}
+
+#[test]
+fn default_fee_recipient_pays_a_requested_block_but_not_the_tick() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    tile.default_fee_recipient = Some([8; 20]);
+
+    let tick = tile.prepare_payload(11, None, &mut adapter.producers);
+    assert_eq!(tick, Err(ProduceBlockFailure::NoFeeRecipient));
+    assert!(engine_requests(&mut sink).is_empty());
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    assert_eq!(prepare.attrs_fee_recipient, [8; 20]);
 }
 
 #[test]
@@ -4988,10 +5006,7 @@ fn imported_produced_block_reuses_its_post_state() {
 /// tile votes the state's, so those bytes and the state root differ.
 #[cfg(feature = "ef_tests")]
 fn import_produced_fixture_block(reuse_produced_state: bool) {
-    use silver_common::{
-        PayloadFrame,
-        ssz_view::{BYTES_PER_BLOB, BeaconBlockBodyFuluView},
-    };
+    use silver_common::PayloadFrame;
 
     let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
     let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
@@ -5004,43 +5019,8 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     register_proposer(&mut tile, SignedBeaconBlockView::proposer_index(&block_ssz), [7; 20]);
 
     let message = &block_ssz[100..];
-    let body = SignedBeaconBlockView::body(&block_ssz);
-    let field = |from: u32, to: usize| &body[from as usize..to];
-    let execution_payload = field(
-        BeaconBlockBodyFuluView::execution_payload_offset(body),
-        BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize,
-    );
-    let commitments = field(
-        BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body),
-        BeaconBlockBodyFuluView::execution_requests_offset(body) as usize,
-    );
-    let requests = field(BeaconBlockBodyFuluView::execution_requests_offset(body), body.len());
-    let blob_count = commitments.len() / BYTES_PER_KZG_COMMITMENT;
-    assert_eq!(blob_count, 1, "fixture premise: one blob");
-    let cell_proofs = vec![0x11; blob_count * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN];
-    let blobs = vec![0x22; blob_count * BYTES_PER_BLOB];
-
-    let mut frame = vec![0; PayloadFrame::HEADER_LEN];
-    PayloadFrame::write_header(
-        &mut frame,
-        execution_payload.len(),
-        requests.len(),
-        blob_count as u8,
-        false,
-        &[3; 32],
-    );
-    frame.extend_from_slice(execution_payload);
-    frame.extend_from_slice(commitments);
-    frame.extend_from_slice(requests);
-    frame.extend_from_slice(&cell_proofs);
-    frame.extend_from_slice(&blobs);
-
-    let proposal = Proposal {
-        slot,
-        parent_root: tile.head_block_root(),
-        randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
-        graffiti: *BeaconBlockBodyFuluView::graffiti(body),
-    };
+    let frame = fixture_payload_frame(&block_ssz);
+    let proposal = fixture_proposal(&tile, &block_ssz);
     tile.produce_block(5, proposal, &mut adapter.producers);
     let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
         panic!("expected a payload preparation");
@@ -5068,7 +5048,7 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     let contents =
         [before_payload, frame.execution_payload, bls_changes, frame.after_payload].concat();
     let proofs_at = 12 + message.len();
-    let blobs_at = proofs_at + cell_proofs.len();
+    let blobs_at = proofs_at + frame.cell_proofs.len();
     let offsets: Vec<_> =
         contents[..12].chunks_exact(4).map(|o| u32::from_le_bytes(o.try_into().unwrap())).collect();
     assert_eq!(offsets, [12, proofs_at as u32, blobs_at as u32]);
@@ -5078,8 +5058,8 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     expected[48..80].copy_from_slice(&produced_message[48..80]);
     expected[eth1_data.clone()].copy_from_slice(&pre_ssz[524468..524468 + 72]);
     assert_eq!(produced_message, expected, "the fixture block's message");
-    assert_eq!(&contents[proofs_at..blobs_at], cell_proofs);
-    assert_eq!(&contents[blobs_at..], blobs);
+    assert_eq!(&contents[proofs_at..blobs_at], frame.cell_proofs);
+    assert_eq!(&contents[blobs_at..], frame.blobs);
 
     // The checkpoint was loaded without decompressed pubkeys, so this import
     // bypasses proposer-signature verification.
@@ -5104,4 +5084,103 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     // Checked before a blob block is staged on its columns.
     assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
     assert_eq!(tile.block_production.state_ids_mut().count(), 0, "import takes the post-state");
+}
+
+/// The `PayloadFrame` the EL would answer with for `block_ssz`'s payload,
+/// with placeholder cell proofs and blobs.
+#[cfg(feature = "ef_tests")]
+fn fixture_payload_frame(block_ssz: &[u8]) -> Vec<u8> {
+    use silver_common::{
+        PayloadFrame,
+        ssz_view::{BYTES_PER_BLOB, BeaconBlockBodyFuluView},
+    };
+
+    let body = SignedBeaconBlockView::body(block_ssz);
+    let field = |from: u32, to: usize| &body[from as usize..to];
+    let execution_payload = field(
+        BeaconBlockBodyFuluView::execution_payload_offset(body),
+        BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize,
+    );
+    let commitments = field(
+        BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body),
+        BeaconBlockBodyFuluView::execution_requests_offset(body) as usize,
+    );
+    let requests = field(BeaconBlockBodyFuluView::execution_requests_offset(body), body.len());
+    let blob_count = commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    assert_eq!(blob_count, 1, "fixture premise: one blob");
+
+    let mut frame = vec![0; PayloadFrame::HEADER_LEN];
+    PayloadFrame::write_header(
+        &mut frame,
+        execution_payload.len(),
+        requests.len(),
+        blob_count as u8,
+        false,
+        &[3; 32],
+    );
+    frame.extend_from_slice(execution_payload);
+    frame.extend_from_slice(commitments);
+    frame.extend_from_slice(requests);
+    frame.resize(frame.len() + blob_count * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN, 0x11);
+    frame.resize(frame.len() + blob_count * BYTES_PER_BLOB, 0x22);
+    frame
+}
+
+#[cfg(feature = "ef_tests")]
+fn fixture_proposal(tile: &BeaconStateTile, block_ssz: &[u8]) -> Proposal {
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+
+    let body = SignedBeaconBlockView::body(block_ssz);
+    Proposal {
+        slot: SignedBeaconBlockView::slot(block_ssz),
+        parent_root: tile.head_block_root(),
+        randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
+        graffiti: *BeaconBlockBodyFuluView::graffiti(body),
+    }
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn operations_the_block_rejects_are_dropped_not_the_block() {
+    use silver_common::ssz_view::{BeaconBlockBodyFuluView, SIGNED_VOLUNTARY_EXIT_SIZE};
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, _spine, _adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+    let (_, payload) = publish_block_bytes(&mut gp, &fixture_payload_frame(&block_ssz));
+    let exit = [0; SIGNED_VOLUNTARY_EXIT_SIZE];
+    let operations = Operations { voluntary_exits: &exit, ..Operations::NONE };
+
+    let proposal = fixture_proposal(&tile, &block_ssz);
+    let block = tile.block_for(proposal, payload, operations).expect("built without the exit");
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body_fixed = &header[12 + 84..];
+    assert_eq!(
+        BeaconBlockBodyFuluView::voluntary_exits_offset(body_fixed),
+        BeaconBlockBodyFuluView::execution_payload_offset(body_fixed),
+        "the exit is left out"
+    );
+}
+
+#[test]
+fn state_owing_eth1_deposits_proposes_nothing() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+    let slot_idx = {
+        let mut guard = tile.state.write();
+        let mut writer = guard.slot_states.roll_from(tile.last_applied.slot_idx);
+        let state = writer.state_mut();
+        state.eth1_data.deposit_count = state.eth1_deposit_index + 1;
+        state.deposit_requests_start_index = u64::MAX;
+        writer.commit()
+    };
+    tile.last_applied.slot_idx = slot_idx;
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::Internal))]);
+    assert!(engine_requests(&mut sink).is_empty(), "the EL builds nothing");
 }

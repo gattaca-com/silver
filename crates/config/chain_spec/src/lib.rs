@@ -362,6 +362,16 @@ impl SpecConfig {
         self.slot_duration_ms.unwrap_or_else(|| self.seconds_per_slot.unwrap_or(12) * 1000)
     }
 
+    /// The most blobs any epoch allows. An entry at `FAR_FUTURE_EPOCH` never
+    /// activates.
+    pub fn max_scheduled_blobs_per_block(&self) -> u64 {
+        self.blob_schedule
+            .iter()
+            .filter(|entry| entry.epoch != unscheduled())
+            .map(|entry| entry.max_blobs_per_block)
+            .fold(self.max_blobs_per_block_electra, u64::max)
+    }
+
     /// Spec `get_blob_parameters`: the highest `blob_schedule` entry at or
     /// below `epoch`, and `default_blob_params` when none covers it.
     pub fn blob_params_at(&self, epoch: u64) -> BlobParameters {

@@ -4,7 +4,9 @@ use silver_beacon_state_data::{
     ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, PayloadWithdrawals, SLOTS_PER_EPOCH, Slot,
     SpecConfig, StateWriterView, Withdrawal,
 };
-use silver_common::ssz_view::{ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView};
+use silver_common::ssz_view::{
+    BYTES_PER_KZG_COMMITMENT, ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView,
+};
 
 use crate::{
     error::{ExecutionPayloadError, Result, WithdrawalRecord, WithdrawalsError},
@@ -23,10 +25,16 @@ pub fn process_execution_payload(
     view: &mut StateWriterView,
     cfg: &SpecConfig,
     payload: Payload<'_>,
+    blob_commitments: &[u8],
     block_slot: Slot,
     roots: PayloadRoots,
 ) -> Result<(), ExecutionPayloadError> {
     debug_assert_eq!(roots, PayloadRoots::of(payload));
+    let max = cfg.blob_params_at(block_slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize;
+    let got = blob_commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    if got > max {
+        return Err(ExecutionPayloadError::TooManyBlobCommitments { got, max });
+    }
     validate::validate_execution_payload(cfg, view, payload, block_slot)?;
     let payload_bytes = payload.bytes();
 

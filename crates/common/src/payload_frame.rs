@@ -15,6 +15,8 @@ pub struct PayloadFrame<'a> {
     pub blob_count: usize,
     pub commitments: &'a [u8],
     pub execution_requests: &'a [u8],
+    pub cell_proofs: &'a [u8],
+    pub blobs: &'a [u8],
     pub block_value: [u8; 32],
 }
 
@@ -47,20 +49,19 @@ impl<'a> PayloadFrame<'a> {
         let (execution_payload, after_payload) = rest.split_at_checked(payload_len)?;
         let (commitments, rest) =
             after_payload.split_at_checked(blob_count * BYTES_PER_KZG_COMMITMENT)?;
-        let (execution_requests, cell_proofs_and_blobs) = rest.split_at_checked(requests_len)?;
-        let tail_len = blob_count * (Self::CELL_PROOFS_PER_BLOB_LEN + BYTES_PER_BLOB);
-        (cell_proofs_and_blobs.len() == tail_len).then_some(())?;
+        let (execution_requests, rest) = rest.split_at_checked(requests_len)?;
+        let (cell_proofs, blobs) =
+            rest.split_at_checked(blob_count * Self::CELL_PROOFS_PER_BLOB_LEN)?;
+        (blobs.len() == blob_count * BYTES_PER_BLOB).then_some(())?;
         Some(Self {
             execution_payload,
             after_payload,
             blob_count,
             commitments,
             execution_requests,
+            cell_proofs,
+            blobs,
             block_value: header[10..].try_into().expect("32 bytes"),
         })
-    }
-
-    pub fn cell_proofs_len(&self) -> usize {
-        self.blob_count * Self::CELL_PROOFS_PER_BLOB_LEN
     }
 }

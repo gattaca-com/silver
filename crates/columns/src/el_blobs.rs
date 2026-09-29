@@ -8,12 +8,9 @@ use silver_common::{
     EngineGetBlobsReq, EngineGetBlobsResp, EngineReq, ForkName, GossipDomain, MAX_BLOBS_PER_BLOCK,
     SilverSpineProducers, TCacheReader, TRead, Wheel,
     cell_store::{CommitmentContext, ContextData},
-    column_util as util,
+    column_util::{self as util, CellScratch},
     ssz_hash::kzg_commitments_inclusion_proof,
-    ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, BeaconBlockBodyFuluView,
-        SignedBeaconBlockView,
-    },
+    ssz_view::{BYTES_PER_KZG_COMMITMENT, BeaconBlockBodyFuluView, SignedBeaconBlockView},
 };
 
 use crate::{
@@ -125,6 +122,7 @@ pub(crate) struct ElBlobFetcher {
     // Deduplication outlives the payload context and includes failed lookups.
     attempted: Wheel<BlockRoot, (), 4>,
     responses: Vec<PendingResponse>,
+    cell_scratch: CellScratch,
 }
 
 impl ElBlobFetcher {
@@ -136,12 +134,9 @@ impl ElBlobFetcher {
             return;
         }
         let body = SignedBeaconBlockView::body(bytes);
-        if body.len() < BEACON_BLOCK_BODY_FIXED {
+        let Some(commitments) = BeaconBlockBodyFuluView::blob_kzg_commitments(body) else {
             return;
-        }
-        let start = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
-        let end = BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
-        let Some(commitments) = body.get(start..end) else { return };
+        };
         let context = CommitmentContext {
             block_root: root,
             slot: SignedBeaconBlockView::slot(bytes),
@@ -214,6 +209,7 @@ impl ElBlobFetcher {
             pending: Wheel::new(FETCH_TIMEOUT / 4),
             attempted: Wheel::new(epoch_duration),
             responses: Vec::with_capacity(MAX_RESPONSES),
+            cell_scratch: CellScratch::default(),
         }
     }
 
@@ -334,17 +330,18 @@ impl ElBlobFetcher {
                 continue;
             };
             for (row, entry) in response.present() {
-                if let Some(computed) = entry.compute_cells() {
-                    cells.stage_el_row(
+                match self.cell_scratch.compute(entry.blob) {
+                    Ok(computed) => cells.stage_el_row(
                         context,
                         pending.fetch.domain,
                         needed,
                         row,
-                        &computed,
+                        computed,
                         entry.proofs,
                         pending.read.seq(),
                         producers,
-                    );
+                    ),
+                    Err(error) => silver_log::error!(?error, "compute_cells failed"),
                 }
             }
         }

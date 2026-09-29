@@ -7,7 +7,7 @@ use silver_common::{
     CacheFrameRef, GossipDomain, Keypair, P2pStreamId, PeerId, StreamProtocol, TCache, TCacheId,
     TCacheProducer, TCacheReader, TCacheTable, TReadMode,
     cell_store::{AssemblyRequest, CommitmentContext, ContextData},
-    column_util::{columns_of, push_data_column_sidecar_prefix},
+    column_util::{columns_of, data_column_sidecar_prefix_fulu},
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF, METADATA_SIZE,
         partial_column::{
@@ -96,7 +96,7 @@ impl Rig {
         store.install(set, &mut columns).unwrap();
         let mut full = Vec::new();
         if format == ForkName::Fulu {
-            push_data_column_sidecar_prefix(&mut full, 0, ROWS, &header, &proof);
+            full.extend_from_slice(&data_column_sidecar_prefix_fulu(0, ROWS, &header, &proof));
         } else {
             full.extend_from_slice(&0u64.to_le_bytes());
             full.extend_from_slice(&56u32.to_le_bytes());

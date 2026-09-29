@@ -1,31 +1,12 @@
 use silver_common::{
     MAX_BLOBS_PER_BLOCK,
-    ssz_view::{BYTES_PER_KZG_PROOF, NUMBER_OF_COLUMNS},
+    ssz_view::{BYTES_PER_BLOB, BYTES_PER_KZG_PROOF, NUMBER_OF_COLUMNS},
 };
 
 #[derive(Clone, Copy)]
 pub(super) struct BlobEntry<'a> {
-    blob: &'a [u8],
+    pub(super) blob: &'a [u8; BYTES_PER_BLOB],
     pub(super) proofs: &'a [u8],
-}
-
-impl BlobEntry<'_> {
-    pub(super) fn compute_cells(self) -> Option<Box<[c_kzg::Cell; c_kzg::CELLS_PER_EXT_BLOB]>> {
-        let blob = match c_kzg::Blob::from_bytes(self.blob) {
-            Ok(blob) => blob,
-            Err(error) => {
-                silver_log::error!(?error, "el blob decode failed");
-                return None;
-            }
-        };
-        match c_kzg::ethereum_kzg_settings(0).compute_cells(&blob) {
-            Ok(cells) => Some(cells),
-            Err(error) => {
-                silver_log::error!(?error, "compute_cells failed");
-                None
-            }
-        }
-    }
 }
 
 pub(super) struct BlobResponse<'a> {
@@ -67,10 +48,10 @@ impl<'a> BlobResponse<'a> {
                 bytes.split_at_checked(NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF)?;
             let (length, remaining) = remaining.split_first_chunk::<4>()?;
             let length = u32::from_le_bytes(*length) as usize;
-            if length != c_kzg::BYTES_PER_BLOB {
+            if length != BYTES_PER_BLOB {
                 return None;
             }
-            let (blob, remaining) = remaining.split_at_checked(length)?;
+            let (blob, remaining) = remaining.split_first_chunk::<BYTES_PER_BLOB>()?;
             bytes = remaining;
             *entry = Some(BlobEntry { blob, proofs });
         }

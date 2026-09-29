@@ -820,6 +820,15 @@ impl BeaconBlockBodyFuluView {
     pub fn execution_requests_offset(buf: &[u8]) -> u32 {
         u32_le(buf, 392)
     }
+    #[inline]
+    pub fn blob_kzg_commitments(buf: &[u8]) -> Option<&[u8]> {
+        if buf.len() < BEACON_BLOCK_BODY_FIXED {
+            return None;
+        }
+        let start = Self::blob_kzg_commitments_offset(buf) as usize;
+        let end = Self::execution_requests_offset(buf) as usize;
+        buf.get(start..end)
+    }
 
     pub const VARIABLE_OFFSETS: [usize; 9] = [200, 204, 208, 212, 216, 380, 384, 388, 392];
 

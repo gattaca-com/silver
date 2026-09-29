@@ -163,7 +163,7 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
 
         let mut full = Vec::new();
         if format == ForkName::Fulu {
-            util::push_data_column_sidecar_prefix(&mut full, 7, 2, &header, &proof);
+            full.extend_from_slice(&util::data_column_sidecar_prefix_fulu(7, 2, &header, &proof));
         } else {
             full.resize(56, 0);
             full[..8].copy_from_slice(&7u64.to_le_bytes());

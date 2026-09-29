@@ -172,6 +172,7 @@ fn finalized_state_loads() {
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
         checkpoint,
+        None,
     );
     tile.open_tcaches().unwrap();
 
@@ -323,6 +324,7 @@ fn tile_apply_block_ef_fixture() {
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
         CheckpointState::trusted(&pre_ssz, &SpecConfig::mainnet(), &[]),
+        None,
     );
     tile.open_tcaches().unwrap();
 

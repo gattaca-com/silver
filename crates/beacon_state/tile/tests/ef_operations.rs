@@ -367,6 +367,7 @@ fn fulu_execution_payload() {
         let off = |pos: usize| u32::from_le_bytes(op[pos..pos + 4].try_into().unwrap()) as usize;
         let exec_off = off(380);
         let bls_off = off(384);
+        let commitments = op.get(off(388)..off(392)).unwrap_or_default();
         if exec_off < bls_off &&
             bls_off <= op.len() &&
             let Ok(payload) = Payload::new(&op[exec_off..bls_off])
@@ -374,7 +375,14 @@ fn fulu_execution_payload() {
             let block_slot = s.slot();
             s.with_view(|view| {
                 let roots = PayloadRoots::of(payload);
-                let _ = stf::process_execution_payload(view, &cfg, payload, block_slot, roots);
+                let _ = stf::process_execution_payload(
+                    view,
+                    &cfg,
+                    payload,
+                    commitments,
+                    block_slot,
+                    roots,
+                );
                 let _ = stf::process_withdrawals_fulu(view, payload);
             });
         }

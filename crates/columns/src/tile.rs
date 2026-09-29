@@ -539,7 +539,7 @@ impl DataColumnsTile {
         if stream_id == LOCAL_GOSSIP_STREAM_ID &&
             let Ok((block, _)) = t_read.buffer()
         {
-            self.publish_proposed_block(block_root(block, false), block, producers);
+            self.hold_proposed_block(block_root(block, false), block, producers);
         }
         let root = self.beacon_block(stream_id, t_read, producers);
 
@@ -818,9 +818,11 @@ impl DataColumnsTile {
                 slot,
                 ..
             } => {
+                self.publish_proposed_columns(&block_root, producers);
                 self.note_staged_block(block_root, slot, producers);
             }
             BeaconStateEvent::BlockRejected { block_root, .. } => {
+                self.proposed.drop_held(&block_root);
                 self.el_fetcher.reject(&block_root);
                 self.validator.note_rejected(&block_root);
                 self.gloas_pending_columns.remove(&block_root);

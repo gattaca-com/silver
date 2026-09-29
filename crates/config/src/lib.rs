@@ -13,8 +13,8 @@ pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
-    Enr, Error, GossipTopic, Identify, Keypair, PeerId, SAMPLES_PER_SLOT, SYNC_COMMITTEE_SUBNETS,
-    StreamProtocol,
+    Enr, Error, GossipTopic, Identify, Keypair, MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT,
+    SYNC_COMMITTEE_SUBNETS, StreamProtocol,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
@@ -109,6 +109,32 @@ const fn default_quic_port() -> Option<u16> {
     Some(31123)
 }
 
+mod optional_address {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub(super) fn serialize<S: Serializer>(
+        address: &Option<[u8; 20]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match address {
+            Some(address) => serializer.serialize_str(&format!("0x{}", hex::encode(address))),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; 20]>, D::Error> {
+        let Some(text) = Option::<String>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let mut address = [0; 20];
+        hex::decode_to_slice(text.strip_prefix("0x").unwrap_or(&text), &mut address)
+            .map_err(|_| D::Error::custom(format!("{text} is not a 20-byte address")))?;
+        Ok(Some(address))
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -183,6 +209,8 @@ pub struct Config {
     trusted_peers: Vec<Enr>,
     #[serde(default)]
     cluster_config: Option<ClusterConfig>,
+    #[serde(default, with = "optional_address")]
+    suggested_fee_recipient: Option<[u8; 20]>,
 }
 
 impl Config {
@@ -218,6 +246,14 @@ impl Config {
             self.chain_config.spec = serde_yml::from_str(&text).map_err(|e| {
                 Error::ConfigError(format!("spec_file {path} is not a spec config: {e}"))
             })?;
+        }
+
+        let max_blobs = self.chain_config.spec.max_scheduled_blobs_per_block();
+        if max_blobs > MAX_BLOBS_PER_BLOCK as u64 {
+            return Err(Error::ConfigError(format!(
+                "chain_config.spec schedules {max_blobs} blobs per block; silver holds at most \
+                 {MAX_BLOBS_PER_BLOCK} (raise MAX_BLOBS_PER_BLOCK)"
+            )));
         }
 
         if let Some(path) = &self.chain_config.checkpoint_file {
@@ -261,6 +297,10 @@ impl Config {
     pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
         self.engine_config.unsafe_no_el = unsafe_no_el;
         self
+    }
+
+    pub fn suggested_fee_recipient(&self) -> Option<[u8; 20]> {
+        self.suggested_fee_recipient
     }
 
     pub fn with_beacon_api_max_connections(mut self, max: usize) -> Self {
@@ -639,5 +679,30 @@ mod tests {
         let err = Config::from_file(&config_file).unwrap_err();
         let text = format!("{err}");
         assert!(text.contains("FULU_FORK_EPOCH"), "error should name the key: {text}");
+    }
+
+    #[test]
+    fn mainnet_blob_schedule_fits_the_block_capacity() {
+        let max_blobs = ChainConfig::default().spec.max_scheduled_blobs_per_block();
+        assert!(max_blobs <= MAX_BLOBS_PER_BLOCK as u64, "{max_blobs} > {MAX_BLOBS_PER_BLOCK}");
+    }
+
+    #[test]
+    fn blob_schedule_past_the_block_capacity_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let too_many = MAX_BLOBS_PER_BLOCK + 1;
+        let spec_file = write_file(
+            dir.path(),
+            "config.yaml",
+            &format!("BLOB_SCHEDULE:\n  - EPOCH: 0\n    MAX_BLOBS_PER_BLOCK: {too_many}\n"),
+        );
+        let config_file = write_file(
+            dir.path(),
+            "silver.toml",
+            &format!("[chain_config]\nspec_file = \"{spec_file}\"\n"),
+        );
+
+        let err = Config::from_file(&config_file).unwrap_err();
+        assert!(format!("{err}").contains(&format!("schedules {too_many} blobs")), "{err}");
     }
 }

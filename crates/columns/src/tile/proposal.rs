@@ -1,15 +1,18 @@
+use std::{array, iter};
+
 use flux::spine::SpineProducers;
 use silver_common::{
-    ColumnOrigin, DataColumnsEvent, IngestionTime, SilverSpineProducers, SszCache, TCacheProducer,
-    TCacheRead, TProducer,
+    ColumnOrigin, DataColumnsEvent, GossipDomain, IngestionTime, SilverSpineProducers, SszCache,
+    TCacheProducer, TCacheRead, TProducer,
     block_contents::SignedBlockContents,
     column_util::{
-        cell_bytes, data_column_sidecar_len, fulu_signed_block_header,
+        CellScratch, cell_bytes, data_column_sidecar_len, fulu_signed_block_header,
         write_data_column_sidecar_fulu,
     },
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
-        BYTES_PER_KZG_PROOF, BeaconBlockBodyFuluView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BYTES_PER_CELL, BYTES_PER_KZG_PROOF, BeaconBlockBodyFuluView, DATA_COLUMN_SIDECAR_MIN,
+        NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
@@ -24,16 +27,28 @@ struct Submitted {
     contents: TCacheRead,
 }
 
+/// A proposed block whose custody is recorded. Its columns go out once beacon
+/// state has imported the block, so an invalid one publishes none.
+struct HeldBlock {
+    block_root: BlockRoot,
+    slot: u64,
+    domain: GossipDomain,
+    blob_count: usize,
+    sidecars: [TCacheRead; NUMBER_OF_COLUMNS],
+}
+
 /// The columns of blocks this node proposes: all of them are published,
 /// custody or not.
 pub(super) struct ProposedBlocks {
     pub(super) producer: TProducer,
+    cells: CellScratch,
     submitted: Vec<Submitted>,
+    held: Vec<HeldBlock>,
 }
 
 impl ProposedBlocks {
     pub(super) fn new(producer: TProducer) -> Self {
-        Self { producer, submitted: Vec::new() }
+        Self { producer, cells: CellScratch::default(), submitted: Vec::new(), held: Vec::new() }
     }
 
     pub(super) fn submit(&mut self, contents: TCacheRead, bytes: &[u8]) {
@@ -51,18 +66,100 @@ impl ProposedBlocks {
         self.submitted.push(Submitted { slot, proposer_index, contents });
     }
 
-    fn take(&mut self, slot: u64, proposer_index: u64) -> Option<TCacheRead> {
+    fn take_submitted(&mut self, slot: u64, proposer_index: u64) -> Option<TCacheRead> {
         let at = self.submitted.iter().position(|submitted| {
             (submitted.slot, submitted.proposer_index) == (slot, proposer_index)
         })?;
         Some(self.submitted.swap_remove(at).contents)
     }
+
+    fn write_sidecars(
+        &mut self,
+        block: &[u8],
+        commitments: &[u8],
+        contents: &SignedBlockContents,
+    ) -> Option<[TCacheRead; NUMBER_OF_COLUMNS]> {
+        let slot = SignedBeaconBlockView::slot(block);
+        let header = fulu_signed_block_header(block);
+        let inclusion_proof = kzg_commitments_inclusion_proof(SignedBeaconBlockView::body(block));
+        let blob_count = contents.blob_count();
+        let len = data_column_sidecar_len(blob_count);
+
+        let reservations: [_; NUMBER_OF_COLUMNS] =
+            array::from_fn(|_| self.producer.reserve(len, true));
+        if reservations.iter().any(Option::is_none) {
+            silver_log::error!(slot, "proposed_columns tcache full; columns not published");
+            return None;
+        }
+        let reservations = reservations.map(|reservation| reservation.expect("reserved"));
+        let mut sidecars = reservations
+            .each_ref()
+            .map(|reservation| &mut reservation.buffer().expect("uncommitted")[..len]);
+
+        for (column, sidecar) in sidecars.iter_mut().enumerate() {
+            let proof_at = column * BYTES_PER_KZG_PROOF;
+            write_data_column_sidecar_fulu(
+                sidecar,
+                column as u64,
+                &header,
+                &inclusion_proof,
+                commitments,
+                iter::empty(),
+                (0..blob_count).map(|blob| {
+                    contents.cell_proofs(blob)[proof_at..proof_at + BYTES_PER_KZG_PROOF]
+                        .try_into()
+                        .expect("48 bytes")
+                }),
+            );
+        }
+
+        for blob in 0..blob_count {
+            let cells = match self.cells.compute(contents.blob(blob)) {
+                Ok(cells) => cells,
+                Err(error) => {
+                    silver_log::error!(?error, slot, blob, "proposed blob has no cells");
+                    return None;
+                }
+            };
+            let cell_at = DATA_COLUMN_SIDECAR_MIN + blob * BYTES_PER_CELL;
+            for (sidecar, cell) in sidecars.iter_mut().zip(cells.iter()) {
+                sidecar[cell_at..cell_at + BYTES_PER_CELL].copy_from_slice(cell_bytes(cell));
+            }
+        }
+
+        Some(reservations.map(|mut reservation| {
+            reservation.increment_offset(len);
+            reservation.read()
+        }))
+    }
+
+    fn hold(&mut self, held: HeldBlock) {
+        self.held.retain(|older| older.slot + 1 >= held.slot);
+        self.held.push(held);
+        self.retain_held();
+    }
+
+    fn take_held(&mut self, block_root: &BlockRoot) -> Option<HeldBlock> {
+        let at = self.held.iter().position(|held| held.block_root == *block_root)?;
+        let held = self.held.swap_remove(at);
+        self.retain_held();
+        Some(held)
+    }
+
+    pub(super) fn drop_held(&mut self, block_root: &BlockRoot) {
+        self.take_held(block_root);
+    }
+
+    fn retain_held(&mut self) {
+        let oldest = self.held.iter().map(|held| held.sidecars[0].seq()).min();
+        self.producer.retain_from(oldest.unwrap_or(self.producer.next_seq()));
+    }
 }
 
 impl DataColumnsTile {
-    /// Builds and hands out every column of a proposed block that just passed
-    /// its lock. Custody columns count toward availability and are stored.
-    pub(super) fn publish_proposed_block(
+    /// Records the custody of a proposed block that just passed its lock, so
+    /// none of it is chased, and holds every column until the block imports.
+    pub(super) fn hold_proposed_block(
         &mut self,
         block_root: BlockRoot,
         block: &[u8],
@@ -70,10 +167,17 @@ impl DataColumnsTile {
     ) {
         let slot = SignedBeaconBlockView::slot(block);
         let Some(submitted) =
-            self.proposed.take(slot, SignedBeaconBlockView::proposer_index(block))
+            self.proposed.take_submitted(slot, SignedBeaconBlockView::proposer_index(block))
         else {
             return;
         };
+        let Some(commitments) =
+            BeaconBlockBodyFuluView::blob_kzg_commitments(SignedBeaconBlockView::body(block))
+                .filter(|commitments| !commitments.is_empty())
+        else {
+            return;
+        };
+        let Some(domain) = self.validator.domain_at(slot) else { return };
         let acquired = self.reader.acquire(submitted);
         let Some(contents) = acquired
             .buffer()
@@ -84,58 +188,29 @@ impl DataColumnsTile {
             silver_log::error!(slot, "proposed block contents unavailable; columns not published");
             return;
         };
-        let Some(domain) = self.validator.domain_at(slot) else { return };
+        let Some(sidecars) = self.proposed.write_sidecars(block, commitments, &contents) else {
+            return;
+        };
 
-        let settings = c_kzg::ethereum_kzg_settings(0);
-        let mut cells = Vec::with_capacity(contents.blob_count());
-        for index in 0..contents.blob_count() {
-            match c_kzg::Blob::from_bytes(contents.blob(index))
-                .and_then(|blob| settings.compute_cells(&blob))
-            {
-                Ok(blob_cells) => cells.push(blob_cells),
-                Err(error) => {
-                    silver_log::error!(?error, slot, index, "proposed blob has no cells");
-                    return;
-                }
-            }
-        }
+        let custody = self.tracker.custody_columns();
+        self.tracker.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
+        let blob_count = contents.blob_count();
+        self.proposed.hold(HeldBlock { block_root, slot, domain, blob_count, sidecars });
+    }
 
-        let body = SignedBeaconBlockView::body(block);
-        let commitments = &body[BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body)
-            as usize..
-            BeaconBlockBodyFuluView::execution_requests_offset(body) as usize];
-        let header = fulu_signed_block_header(block);
-        let inclusion_proof = kzg_commitments_inclusion_proof(body);
-        let len = data_column_sidecar_len(cells.len());
-        let mut custody = 0u128;
-        for column in 0..NUMBER_OF_COLUMNS {
-            let written = self.proposed.producer.write_with(len, |out| {
-                let proof_at = column * BYTES_PER_KZG_PROOF;
-                write_data_column_sidecar_fulu(
-                    out,
-                    column as u64,
-                    &header,
-                    &inclusion_proof,
-                    commitments,
-                    cells.iter().map(|blob_cells| cell_bytes(&blob_cells[column])),
-                    (0..cells.len()).map(|blob| {
-                        contents.cell_proofs(blob)[proof_at..proof_at + BYTES_PER_KZG_PROOF]
-                            .try_into()
-                            .expect("48 bytes")
-                    }),
-                )
-            });
-            let Some(ssz) = written else {
-                silver_log::error!(
-                    slot,
-                    column,
-                    "proposed_columns tcache full; columns not published"
-                );
-                return;
-            };
-            let column_index = column as u64;
+    /// Custody columns are stored as well as published.
+    pub(super) fn publish_proposed_columns(
+        &mut self,
+        block_root: &BlockRoot,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let Some(HeldBlock { block_root, slot, domain, blob_count, sidecars }) =
+            self.proposed.take_held(block_root)
+        else {
+            return;
+        };
+        for (column_index, ssz) in (0..).zip(sidecars) {
             if self.tracker.is_custody(column_index) {
-                custody |= 1 << column;
                 producers.produce(DataColumnsEvent::Persist {
                     ssz,
                     origin: ColumnOrigin::Assembly,
@@ -149,7 +224,6 @@ impl DataColumnsTile {
                 producers.produce(DataColumnsEvent::Publish { ssz, domain, column_index });
             }
         }
-        self.tracker.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
-        silver_log::info!(slot, blobs = cells.len(), "proposed block's columns published");
+        silver_log::info!(slot, blobs = blob_count, "proposed block's columns published");
     }
 }

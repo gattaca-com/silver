@@ -3,12 +3,13 @@ use std::io::Write;
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyOffsets, SLOTS_PER_EPOCH, Slot, StateId,
+    B256, BeaconBlockHeader, BodyOffsets, ExecutionAddress, SLOTS_PER_EPOCH, Slot, StateId,
 };
 use silver_common::{
     BeaconApiResponse, EngineGetPayloadReq, EngineGetPayloadResp, EnginePreparePayloadReq,
-    EnginePreparePayloadResp, EngineReq, MAX_BLOBS_PER_BLOCK, PayloadFrame, ProduceBlockFailure,
-    ProducedBlock, TCacheProducer, TCacheRead, ssz_view::BEACON_BLOCK_BODY_FIXED,
+    EnginePreparePayloadResp, EngineReq, PayloadFrame, ProduceBlockFailure, ProducedBlock,
+    TCacheProducer, TCacheRead,
+    ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
 };
 use silver_ssz::block_body::{BeaconBlockBodyFulu, EMPTY_SYNC_AGGREGATE};
 
@@ -59,6 +60,28 @@ impl Payload {
         producers.produce(EngineReq::GetPayload(EngineGetPayloadReq { id: self.id, payload_id }));
         self.stage = PayloadStage::Fetching { payload_id };
     }
+}
+
+/// A body's operations, each as its SSZ list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Operations<'a> {
+    pub(super) proposer_slashings: &'a [u8],
+    pub(super) attester_slashings: &'a [u8],
+    pub(super) attestations: &'a [u8],
+    pub(super) voluntary_exits: &'a [u8],
+    pub(super) sync_aggregate: &'a [u8; BLOCK_SYNC_AGGREGATE_SIZE],
+    pub(super) bls_to_execution_changes: &'a [u8],
+}
+
+impl Operations<'static> {
+    pub(super) const NONE: Self = Self {
+        proposer_slashings: &[],
+        attester_slashings: &[],
+        attestations: &[],
+        voluntary_exits: &[],
+        sync_aggregate: &EMPTY_SYNC_AGGREGATE,
+        bls_to_execution_changes: &[],
+    };
 }
 
 /// The post-state is committed, so the import of the signed block skips its
@@ -154,6 +177,7 @@ impl BeaconStateTile {
     pub(super) fn prepare_payload(
         &mut self,
         slot: Slot,
+        fallback_fee_recipient: Option<ExecutionAddress>,
         producers: &mut Producers,
     ) -> Result<(), ProduceBlockFailure> {
         if self.spec.is_gloas_at_slot(slot) {
@@ -173,6 +197,7 @@ impl BeaconStateTile {
         let fee_recipient = self
             .proposer_preparations
             .fee_recipient(proposer)
+            .or(fallback_fee_recipient)
             .ok_or(ProduceBlockFailure::NoFeeRecipient)?;
         let genesis_time = self.state.read_view(self.last_applied).imm.genesis_time;
 
@@ -204,7 +229,7 @@ impl BeaconStateTile {
             return;
         };
         if slot > self.ticker.current_slot() {
-            let _ = self.prepare_payload(slot, producers);
+            let _ = self.prepare_payload(slot, self.default_fee_recipient, producers);
         }
     }
 
@@ -239,7 +264,7 @@ impl BeaconStateTile {
                     payload.fetch(payload_id, producers);
                 }
             }
-            None => self.prepare_payload(slot, producers)?,
+            None => self.prepare_payload(slot, self.default_fee_recipient, producers)?,
         }
 
         let (parent, proposer) = self.proposal_parent(proposal)?;
@@ -335,7 +360,7 @@ impl BeaconStateTile {
 
         for (request_id, proposal) in self.block_production.take_pending(slot, parent_root) {
             let block = match response.data {
-                Some(data) => self.block_for(proposal, data),
+                Some(data) => self.block_for(proposal, data, Operations::NONE),
                 None => Err(ProduceBlockFailure::PayloadUnavailable),
             };
             answer(producers, request_id, block);
@@ -361,15 +386,25 @@ impl BeaconStateTile {
         rest.is_empty().then_some((built.body_root, built.block_fork))
     }
 
-    fn block_for(
+    pub(super) fn block_for(
         &mut self,
         proposal: Proposal,
         payload: TCacheRead,
+        operations: Operations<'_>,
     ) -> Result<ProducedBlock, ProduceBlockFailure> {
         if let Some(block) = self.block_production.built_for(&proposal) {
             return Ok(block);
         }
-        let built = self.build_block(proposal, payload)?;
+        let built = match self.build_block(proposal, payload, operations) {
+            Err(ProduceBlockFailure::Invalid) if operations != Operations::NONE => {
+                silver_log::warn!(
+                    slot = proposal.slot,
+                    "packed operations fail the block; built without them"
+                );
+                self.build_block(proposal, payload, Operations::NONE)
+            }
+            built => built,
+        }?;
         let block = built.block;
         self.block_production.built = Some(built);
         Ok(block)
@@ -379,6 +414,7 @@ impl BeaconStateTile {
         &mut self,
         proposal: Proposal,
         payload: TCacheRead,
+        operations: Operations<'_>,
     ) -> Result<BuiltBlock, ProduceBlockFailure> {
         let slot = proposal.slot;
         let acquired = self.reader.acquire(payload);
@@ -390,11 +426,13 @@ impl BeaconStateTile {
             silver_log::error!(slot, "payload frame is misframed");
             return Err(ProduceBlockFailure::Internal);
         };
-        if frame.blob_count > MAX_BLOBS_PER_BLOCK {
+        let max_blobs = self.spec.blob_params_at(slot / SLOTS_PER_EPOCH).max_blobs_per_block;
+        if frame.blob_count as u64 > max_blobs {
             silver_log::warn!(
                 slot,
                 blobs = frame.blob_count,
-                "EL returned an unusable blobs bundle"
+                max_blobs,
+                "EL built over the blob limit"
             );
             return Err(ProduceBlockFailure::Invalid);
         }
@@ -405,14 +443,14 @@ impl BeaconStateTile {
             randao_reveal: &proposal.randao_reveal,
             eth1_data: &eth1_data,
             graffiti: &proposal.graffiti,
-            proposer_slashings: &[],
-            attester_slashings: &[],
-            attestations: &[],
+            proposer_slashings: operations.proposer_slashings,
+            attester_slashings: operations.attester_slashings,
+            attestations: operations.attestations,
             deposits: &[],
-            voluntary_exits: &[],
-            sync_aggregate: &EMPTY_SYNC_AGGREGATE,
+            voluntary_exits: operations.voluntary_exits,
+            sync_aggregate: operations.sync_aggregate,
             execution_payload: frame.execution_payload,
-            bls_to_execution_changes: &[],
+            bls_to_execution_changes: operations.bls_to_execution_changes,
             blob_kzg_commitments: frame.commitments,
             execution_requests: frame.execution_requests,
         };
@@ -435,7 +473,7 @@ impl BeaconStateTile {
         };
         let (block_root, post_state) = self.seal(&mut header, parent, offsets, block_fork)?;
         let (contents, payload_at) =
-            self.write_contents(&header, &body, offsets.fixed(), frame.cell_proofs_len())?;
+            self.write_contents(&header, &body, offsets.fixed(), frame.cell_proofs.len())?;
 
         silver_log::info!(slot, blobs = frame.blob_count, "block assembled");
         Ok(BuiltBlock {

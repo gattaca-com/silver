@@ -1,9 +1,12 @@
 use silver_beacon_state_data::ForkName;
 
 use super::CommitmentContext;
-use crate::ssz_view::{
-    BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
-    DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, partial_column::PARTIAL_HEADER_FIXED,
+use crate::{
+    column_util::data_column_sidecar_prefix_fulu,
+    ssz_view::{
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
+        DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, partial_column::PARTIAL_HEADER_FIXED,
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -18,26 +21,19 @@ impl<'a> ContextData<'a> {
         context: CommitmentContext,
         column: usize,
     ) -> ([u8; DATA_COLUMN_SIDECAR_MIN], usize) {
-        let mut prefix = [0; DATA_COLUMN_SIDECAR_MIN];
-        prefix[..8].copy_from_slice(&(column as u64).to_le_bytes());
-        let length = match self {
-            Self::Fulu { signed_header, inclusion_proof, .. } => {
-                prefix[8..12].copy_from_slice(&(DATA_COLUMN_SIDECAR_MIN as u32).to_le_bytes());
-                prefix[12..16].copy_from_slice(
-                    &((DATA_COLUMN_SIDECAR_MIN + context.blob_count * BYTES_PER_CELL) as u32)
-                        .to_le_bytes(),
-                );
-                prefix[16..20].copy_from_slice(
-                    &((DATA_COLUMN_SIDECAR_MIN +
-                        context.blob_count * (BYTES_PER_CELL + BYTES_PER_KZG_COMMITMENT))
-                        as u32)
-                        .to_le_bytes(),
-                );
-                prefix[20..228].copy_from_slice(signed_header);
-                prefix[228..356].copy_from_slice(inclusion_proof);
-                DATA_COLUMN_SIDECAR_MIN
-            }
+        match self {
+            Self::Fulu { signed_header, inclusion_proof, .. } => (
+                data_column_sidecar_prefix_fulu(
+                    column as u64,
+                    context.blob_count,
+                    signed_header,
+                    inclusion_proof,
+                ),
+                DATA_COLUMN_SIDECAR_MIN,
+            ),
             Self::Gloas { .. } => {
+                let mut prefix = [0; DATA_COLUMN_SIDECAR_MIN];
+                prefix[..8].copy_from_slice(&(column as u64).to_le_bytes());
                 prefix[8..12]
                     .copy_from_slice(&(DATA_COLUMN_SIDECAR_GLOAS_MIN as u32).to_le_bytes());
                 prefix[12..16].copy_from_slice(
@@ -46,10 +42,9 @@ impl<'a> ContextData<'a> {
                 );
                 prefix[16..24].copy_from_slice(&context.slot.to_le_bytes());
                 prefix[24..56].copy_from_slice(&context.block_root);
-                DATA_COLUMN_SIDECAR_GLOAS_MIN
+                (prefix, DATA_COLUMN_SIDECAR_GLOAS_MIN)
             }
-        };
-        (prefix, length)
+        }
     }
 
     #[inline]

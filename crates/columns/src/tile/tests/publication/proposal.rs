@@ -39,14 +39,12 @@ fn proposed_rig(blobs: &[BlockBlob]) -> (Rig, Vec<u8>) {
     (rig, block)
 }
 
-#[test]
-fn proposed_block_publishes_every_column_and_keeps_its_custody() {
-    let blobs = [BlockBlob::counting(), BlockBlob::starting_at(4096)];
-    let (mut rig, block) = proposed_rig(&blobs);
-    let root = block_root_fulu(&block);
+fn imported(rig: &mut Rig, block: &[u8]) {
+    rig.inj.produce(block_received(BlockStage::Applied, block_root_fulu(block), SLOT));
+    rig.turn();
+}
 
-    rig.local_block(&block);
-
+fn assert_every_column_published(rig: &mut Rig, root: BlockRoot) {
     let out = rig.drain();
     assert_eq!(out.published_only, !CUSTODY_COLUMNS);
     assert_eq!(out.receipts.len(), CUSTODY_COLUMNS.count_ones() as usize);
@@ -63,9 +61,50 @@ fn proposed_block_publishes_every_column_and_keeps_its_custody() {
             "inclusion, col {column_index}"
         );
     }
-    assert_eq!(out.available, 1);
+}
+
+#[test]
+fn proposed_block_holds_its_columns_until_import_and_keeps_its_custody() {
+    let blobs = [BlockBlob::counting(), BlockBlob::starting_at(4096)];
+    let (mut rig, block) = proposed_rig(&blobs);
+
+    rig.local_block(&block);
+
+    let out = rig.drain();
+    assert_eq!(out.available, 1, "custody counts before import");
     assert!(out.missing.is_empty(), "nothing of our own block is chased");
     assert_eq!(out.engine, 0, "nor fetched from the EL");
+    assert_eq!((out.published_only, out.receipts.len()), (0, 0), "nothing out before import");
+
+    imported(&mut rig, &block);
+    assert_every_column_published(&mut rig, block_root_fulu(&block));
+}
+
+#[test]
+fn rejected_proposed_block_publishes_no_column() {
+    let (mut rig, block) = proposed_rig(&[BlockBlob::counting()]);
+    rig.local_block(&block);
+    rig.drain();
+
+    let root = block_root_fulu(&block);
+    rig.inj
+        .produce(BeaconStateEvent::BlockRejected { block_root: root, source: BlockSource::Gossip });
+    rig.turn();
+    imported(&mut rig, &block);
+
+    let out = rig.drain();
+    assert_eq!((out.published_only, out.receipts.len()), (0, 0));
+}
+
+#[test]
+fn blobless_proposed_block_has_no_sidecars() {
+    let (mut rig, block) = proposed_rig(&[]);
+
+    rig.local_block(&block);
+    imported(&mut rig, &block);
+
+    let out = rig.drain();
+    assert_eq!((out.published_only, out.receipts.len()), (0, 0));
 }
 
 #[test]
@@ -74,6 +113,7 @@ fn network_block_publishes_nothing_of_the_submitted_contents() {
     let (mut rig, block) = proposed_rig(&blobs);
 
     rig.block(&block);
+    imported(&mut rig, &block);
 
     let out = rig.drain();
     assert_eq!(out.published_only, 0);

@@ -8,7 +8,7 @@ use flux_profiler::timed;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BeaconStateOwner, BeaconStateReader, Checkpoint, CheckpointState,
-    Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
+    Epoch, ExecutionAddress, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
@@ -161,6 +161,7 @@ pub struct BeaconStateTile {
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
     proposer_preparations: ProposerPreparations,
+    default_fee_recipient: Option<ExecutionAddress>,
     block_production: BlockProduction,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
@@ -232,6 +233,7 @@ impl BeaconStateTile {
         events_producer: TProducer,
         verify_weak_subjectivity: bool,
         checkpoint: CheckpointState,
+        default_fee_recipient: Option<ExecutionAddress>,
     ) -> Self {
         let (state, expected_root) = match checkpoint {
             CheckpointState::Trusted(state) => (state, None),
@@ -257,6 +259,7 @@ impl BeaconStateTile {
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
             proposer_preparations: ProposerPreparations::default(),
+            default_fee_recipient,
             block_production: BlockProduction::default(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
@@ -822,8 +825,9 @@ impl BeaconStateTile {
             TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
             TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
             TickEvent::PreparePayload(slot) => {
-                // Most slots have no registered proposer to prepare for.
-                let _ = self.prepare_payload(slot + 1, &mut adapter.producers);
+                // Most slots have no registered proposer to prepare for. The
+                // default fee recipient would have the EL build every slot.
+                let _ = self.prepare_payload(slot + 1, None, &mut adapter.producers);
             }
             TickEvent::None => {}
         }

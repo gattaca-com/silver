@@ -1,6 +1,6 @@
 use crate::ssz_view::{
-    BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
-    BeaconBlockBodyFuluView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+    BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockBodyFuluView,
+    NUMBER_OF_COLUMNS, SignedBeaconBlockView,
 };
 
 /// Offsets of `signed_block`, `kzg_proofs` and `blobs`.
@@ -48,8 +48,10 @@ impl<'a> SignedBlockContents<'a> {
         self.blobs.len() / BYTES_PER_BLOB
     }
 
-    pub fn blob(&self, index: usize) -> &'a [u8] {
-        &self.blobs[index * BYTES_PER_BLOB..(index + 1) * BYTES_PER_BLOB]
+    pub fn blob(&self, index: usize) -> &'a [u8; BYTES_PER_BLOB] {
+        self.blobs[index * BYTES_PER_BLOB..(index + 1) * BYTES_PER_BLOB]
+            .try_into()
+            .expect("BYTES_PER_BLOB bytes")
     }
 
     pub fn cell_proofs(&self, index: usize) -> &'a [u8] {
@@ -68,12 +70,7 @@ impl<'a> SignedBlockContents<'a> {
             return None;
         }
         let body = SignedBeaconBlockView::body(self.signed_block);
-        if body.len() < BEACON_BLOCK_BODY_FIXED {
-            return None;
-        }
-        let start = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
-        let end = BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
-        let commitments = end.checked_sub(start).filter(|_| end <= body.len())?;
+        let commitments = BeaconBlockBodyFuluView::blob_kzg_commitments(body)?.len();
         commitments
             .is_multiple_of(BYTES_PER_KZG_COMMITMENT)
             .then_some(commitments / BYTES_PER_KZG_COMMITMENT)
@@ -83,6 +80,7 @@ impl<'a> SignedBlockContents<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssz_view::BEACON_BLOCK_BODY_FIXED;
 
     /// A signed block whose body commits to `blobs` blobs and holds nothing
     /// else.
