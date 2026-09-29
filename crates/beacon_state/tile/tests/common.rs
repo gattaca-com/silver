@@ -412,7 +412,7 @@ impl Harness {
         self.inj_adapter.produce(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root,
             status,
-            latest_valid_hash: [0u8; 32],
+            latest_valid_hash: None,
         }));
     }
 

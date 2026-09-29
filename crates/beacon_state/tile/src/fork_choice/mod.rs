@@ -114,7 +114,6 @@ impl ForkChoice {
                 justified: justified_checkpoint,
                 finalized: finalized_checkpoint,
                 unrealized_justified: justified_checkpoint,
-                unrealized_finalized: finalized_checkpoint,
             },
             // A pre-Gloas anchor is fully-resolved (full, verified); a Gloas
             // anchor presents EMPTY (its envelope is not in the store at boot).
@@ -178,7 +177,6 @@ impl ForkChoice {
                 justified: b.justified,
                 finalized: b.finalized,
                 unrealized_justified: b.unrealized_justified,
-                unrealized_finalized: b.unrealized_finalized,
             },
             payload: PayloadAxis {
                 bid_block_hash: b.bid_block_hash,

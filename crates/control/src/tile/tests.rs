@@ -2,9 +2,9 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, HeadRoots, IpBytes, Keypair,
-    MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
+    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, IpBytes, Keypair, MessageId,
+    Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache, TCacheId,
+    TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
     test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
@@ -236,7 +236,7 @@ fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_
         wall_slot: 9 * SLOTS_PER_EPOCH,
         head_optimistic: false,
         enr_fork_id: [0; 16],
-        head_roots: HeadRoots::default(),
+        head_roots: None,
         head_payload: PayloadResolution::Full,
         head_change: HeadChange::None,
         epoch_transition: false,

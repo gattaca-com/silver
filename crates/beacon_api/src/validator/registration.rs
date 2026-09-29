@@ -1,10 +1,11 @@
 use serde::Deserialize;
 use silver_beacon_state_data::{BLSPubkey, BLSSignature, ExecutionAddress};
+use silver_common::{BeaconApiRequest, ProposerPreparation as PreparationRecord};
 
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{body_entries, is_hex_bytes, parse_uint64},
+        ids::{body_entries, is_hex_bytes, parse_execution_address, parse_uint64},
         response::Response,
         router::Request,
     },
@@ -38,11 +39,22 @@ pub(crate) fn post_prepare_beacon_proposer(
     let Some(preparations) = received(req.body, resp, ProposerPreparation::well_formed) else {
         return;
     };
-    tracing::debug!(
-        count = preparations.len(),
-        "proposer preparations discarded: silver proposes no blocks"
+    tracing::debug!(count = preparations.len(), "proposer preparations received");
+    if preparations.is_empty() {
+        return resp.ok();
+    }
+
+    resp.submit(
+        preparations.len() * PreparationRecord::SIZE,
+        |out| {
+            for (record, preparation) in
+                out.chunks_exact_mut(PreparationRecord::SIZE).zip(&preparations)
+            {
+                preparation.record().encode(record);
+            }
+        },
+        |preparations| BeaconApiRequest::ProposerPreparations { preparations },
     );
-    resp.ok();
 }
 
 /// The entries a body carries, or `None` having answered the 400 its schema
@@ -100,17 +112,26 @@ impl ProposerPreparation<'_> {
         parse_uint64(self.validator_index).is_some() &&
             is_hex_bytes(self.fee_recipient, size_of::<ExecutionAddress>())
     }
+
+    fn record(&self) -> PreparationRecord {
+        PreparationRecord {
+            validator_index: parse_uint64(self.validator_index).expect("checked well formed"),
+            fee_recipient: parse_execution_address(self.fee_recipient)
+                .expect("checked well formed"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use silver_common::TCacheProducer;
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
         ctx::anchor_ctx,
-        http::ids::MAX_BODY_IDS,
-        testing::{answer, posting},
+        http::{ids::MAX_BODY_IDS, router::Outcome},
+        testing::{dispatch, dispatch_into, posting, submissions},
     };
 
     const REGISTER: &str = "/eth/v1/validator/register_validator";
@@ -138,7 +159,7 @@ mod tests {
     }
 
     fn post(path: &str, content_type: Option<&str>, body: &str) -> Vec<u8> {
-        answer(&anchor_ctx(), &ParsedRequest { content_type, ..posting(path, body) })
+        dispatch(&anchor_ctx(), &ParsedRequest { content_type, ..posting(path, body) }).1
     }
 
     fn json_post(path: &str, body: &str) -> Vec<u8> {
@@ -254,5 +275,28 @@ mod tests {
 
         let at_cap = format!("[{}]", vec![entry; MAX_BODY_IDS].join(","));
         assert_bad_request(&json_post(PREPARE, &at_cap), "invalid entry in request body");
+    }
+
+    #[test]
+    fn preparations_are_forwarded_through_the_cache() {
+        let other = format!(
+            "{{\"validator_index\":\"9\",\"fee_recipient\":\"0x{}\"}}",
+            hex::encode([0x11; 20])
+        );
+        let body = format!("[{},{other}]", preparation());
+        let mut submissions = submissions();
+        let (outcome, response) =
+            dispatch_into(&anchor_ctx(), &posting(PREPARE, &body), &mut submissions);
+        assert_eq!(response, BODYLESS_OK);
+        let Outcome::Response(Some(BeaconApiRequest::ProposerPreparations { preparations })) =
+            outcome
+        else {
+            panic!("{outcome:?}")
+        };
+        let written = submissions.read_buffer(preparations).unwrap();
+        assert!(PreparationRecord::decode_all(written).eq([
+            PreparationRecord { validator_index: 1, fee_recipient: [0xab; 20] },
+            PreparationRecord { validator_index: 9, fee_recipient: [0x11; 20] },
+        ]));
     }
 }

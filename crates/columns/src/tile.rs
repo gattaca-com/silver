@@ -1004,9 +1004,9 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, ForkName};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, HeadRoots,
-        MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
-        TCacheId, TCacheProducer, TCacheRead, TCacheReader, TProducer, block_root_fulu,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, MESSAGE_ID_LEN,
+        MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheId,
+        TCacheProducer, TCacheRead, TCacheReader, TProducer, block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
             BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -1098,9 +1098,8 @@ mod tests {
             self.inj.produce(EngineResp::GetBlobs(EngineGetBlobsResp {
                 block_root,
                 slot,
-                ok: true,
                 blobs_present: 1,
-                data,
+                data: Some(data),
             }));
         }
 
@@ -1481,7 +1480,7 @@ mod tests {
             wall_slot: head_slot,
             head_optimistic: false,
             enr_fork_id: [0u8; 16],
-            head_roots: HeadRoots::default(),
+            head_roots: None,
             head_payload: PayloadResolution::Full,
             head_change: HeadChange::None,
             epoch_transition: false,

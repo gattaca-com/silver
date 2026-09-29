@@ -243,7 +243,7 @@ mod tests {
         EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: root,
             status,
-            latest_valid_hash: [0; 32],
+            latest_valid_hash: None,
         })
     }
 

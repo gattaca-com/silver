@@ -22,8 +22,7 @@ const OUR_CAPABILITIES: &[&str] = &[
     "engine_forkchoiceUpdatedV3",
     "engine_newPayloadV4",
     "engine_newPayloadV5",
-    "engine_getPayloadV3",
-    "engine_getPayloadV4",
+    "engine_getPayloadV5",
     "engine_getBlobsV3",
     "engine_getClientVersionV1",
 ];
@@ -33,8 +32,9 @@ pub enum ReqKind {
     Capabilities,
     ClientVersion,
     Syncing,
-    Fcu(B256),        // head beacon block root, zeros for prepare-payload
-    NewPayload(B256), // block root
+    Fcu(B256),           // head beacon block root
+    PreparePayload(u64), // spine request id
+    NewPayload(B256),    // block root
     GetPayloadFetch(u64),
     GetBlobs { block_root: B256, slot: u64 },
 }
@@ -44,7 +44,6 @@ pub struct EngineClient {
     registry: Registry,
     id: u64,
     pending_requests: FxHashMap<u64, ReqKind>,
-    pub get_payload_method: &'static str,
     scratch: Vec<u8>,
 }
 
@@ -99,7 +98,6 @@ impl EngineClient {
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),
             id: 1,
             pending_requests: FxHashMap::default(),
-            get_payload_method: "engine_getPayloadV3",
             scratch: Vec::with_capacity(SCRATCH_CAPACITY),
         }
     }
@@ -168,16 +166,29 @@ fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
     c.pool.enqueue(rpc_id, &c.scratch, &c.registry);
 }
 
-pub fn send_fcu(
+pub fn send_fcu(c: &mut EngineClient, block_root: B256, state: ForkchoiceState) {
+    send_forkchoice_updated(c, ReqKind::Fcu(block_root), state, None);
+}
+
+pub fn send_prepare_payload(
     c: &mut EngineClient,
-    block_root: B256,
+    spine_id: u64,
+    state: ForkchoiceState,
+    attrs: PayloadAttributesV3,
+) {
+    send_forkchoice_updated(c, ReqKind::PreparePayload(spine_id), state, Some(attrs));
+}
+
+fn send_forkchoice_updated(
+    c: &mut EngineClient,
+    kind: ReqKind,
     state: ForkchoiceState,
     attrs: Option<PayloadAttributesV3>,
 ) {
     let (id, body) =
         make_rpc_body(&mut c.id, "engine_forkchoiceUpdatedV3", simd_json::json!([state, attrs]));
     enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::Fcu(block_root));
+    c.pending_requests.insert(id, kind);
 }
 
 pub fn send_new_payload(
@@ -239,7 +250,7 @@ fn append_decimal_u64(v: u64, out: &mut Vec<u8>) {
 
 pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
     let id_hex = format!("0x{}", hex::encode(payload_id));
-    let (id, body) = make_rpc_body(&mut c.id, c.get_payload_method, simd_json::json!([id_hex]));
+    let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadV5", simd_json::json!([id_hex]));
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetPayloadFetch(req_id));
 }
@@ -335,6 +346,65 @@ mod tests {
         let capabilities = body["params"][0].as_array().unwrap();
         assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_getBlobsV3")));
         assert!(!capabilities.iter().any(|v| v.as_str() == Some("engine_getBlobsV2")));
+    }
+
+    #[test]
+    fn prepare_payload_is_correlated_by_spine_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let jwt = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let mut el = FakeEl::uds(&socket);
+        let mut readiness = Readiness::new(16);
+        let mut client = EngineClient::new_uds(
+            readiness.registry(),
+            TokenRange::whole(),
+            &socket,
+            jwt.to_str().unwrap(),
+            2,
+            Duration::from_secs(10),
+        );
+        let state = ForkchoiceState {
+            head_block_hash: [1; 32],
+            safe_block_hash: [2; 32],
+            finalized_block_hash: [3; 32],
+        };
+        let attrs = PayloadAttributesV3 {
+            timestamp: 12,
+            prev_randao: [4; 32],
+            suggested_fee_recipient: [5; 20],
+            withdrawals: Vec::new(),
+            parent_beacon_block_root: [6; 32],
+        };
+        exchange_capabilities(&mut client);
+        send_prepare_payload(&mut client, 7, state, attrs);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while el.requests.len() < 2 {
+            assert!(Instant::now() < deadline, "timeout waiting for engine requests");
+            readiness.wait(Duration::from_millis(1));
+            client.dispatch(readiness.events(), |_, response| {
+                panic!("unexpected response before the EL replied: {response:?}");
+            });
+            el.pump();
+        }
+
+        let request =
+            el.requests.iter().find(|r| r.method == "engine_forkchoiceUpdatedV3").unwrap();
+        let mut body = request.body.as_bytes().to_vec();
+        let body = simd_json::to_borrowed_value(&mut body).unwrap();
+        assert_eq!(body["params"][1]["timestamp"].as_str(), Some("0xc"));
+        assert!(matches!(
+            client.pending_requests.get(&request.id),
+            Some(ReqKind::PreparePayload(7))
+        ));
+
+        let request =
+            el.requests.iter().find(|r| r.method == "engine_exchangeCapabilities").unwrap();
+        let mut body = request.body.as_bytes().to_vec();
+        let body = simd_json::to_borrowed_value(&mut body).unwrap();
+        let capabilities = body["params"][0].as_array().unwrap();
+        assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_getPayloadV5")));
+        assert!(!capabilities.iter().any(|v| v.as_str() == Some("engine_getPayloadV4")));
     }
 
     #[test]

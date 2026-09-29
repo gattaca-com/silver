@@ -1,20 +1,26 @@
 use std::{
     collections::VecDeque,
     error::Error,
-    fmt,
+    fmt, io,
     time::{Duration, Instant},
 };
 
 use raft::{
-    Config, RawNode, StateRole,
+    Config, RawNode, SnapshotStatus, StateRole,
     eraftpb::{Entry, EntryType, Message},
-    storage::MemStorage,
 };
 
+#[cfg(any(target_os = "linux", test))]
+use super::persistence::RecoveredStorage;
 use super::{
-    admission::{AdmissionError, AttestationAdmission},
-    command::{AttestationLockCommand, CommandDecodeError, ReplicatedCommand},
-    lock_store::{AttestationLockStore, LockResult},
+    admission::{AdmissionError, SlashingAdmission},
+    command::{
+        AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError, ReplicatedCommand,
+    },
+    lock_store::{LockResult, SlashingLockStore},
+    persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
+    raft_storage::{RaftStorage, RestoredSnapshot},
+    snapshot_transfers::SnapshotTransfers,
 };
 
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -22,30 +28,34 @@ const DEFAULT_HEARTBEAT_TICKS: usize = 2;
 const DEFAULT_ELECTION_TICKS: usize = 20;
 const DEFAULT_PROPOSAL_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_ELAPSED_TICKS_PER_SPIN: usize = 32;
-const PROPOSAL_CONTEXT_LEN: usize = 16;
+const PROPOSAL_CONTEXT_LEN: usize = 32;
 
 /// Static Raft membership and timing configuration.
 #[derive(Debug, Clone)]
-pub struct AttestationClusterConfig {
+pub struct SlashingProtectionConfig {
     pub node_id: u64,
     pub voters: Vec<u64>,
+    pub storage: ClusterStorageConfig,
     pub tick_interval: Duration,
     pub heartbeat_ticks: usize,
     pub election_ticks: usize,
     /// Maximum time between accepting a local proposal and observing its
     /// commit on this node.
     pub proposal_timeout: Duration,
+    pub snapshot_interval: u64,
 }
 
-impl AttestationClusterConfig {
-    pub fn new(node_id: u64, voters: Vec<u64>) -> Self {
+impl SlashingProtectionConfig {
+    pub fn new(node_id: u64, voters: Vec<u64>, storage: ClusterStorageConfig) -> Self {
         Self {
             node_id,
             voters,
+            storage,
             tick_interval: DEFAULT_TICK_INTERVAL,
             heartbeat_ticks: DEFAULT_HEARTBEAT_TICKS,
             election_ticks: DEFAULT_ELECTION_TICKS,
             proposal_timeout: DEFAULT_PROPOSAL_TIMEOUT,
+            snapshot_interval: 4096,
         }
     }
 
@@ -58,6 +68,9 @@ impl AttestationClusterConfig {
         }
         if self.proposal_timeout.is_zero() {
             return Err(ClusterError::InvalidConfig("Raft proposal timeout must be non-zero"));
+        }
+        if self.snapshot_interval == 0 {
+            return Err(ClusterError::InvalidConfig("Raft snapshot interval must be non-zero"));
         }
         if self.voters.is_empty() {
             return Err(ClusterError::InvalidConfig("Raft voter set must not be empty"));
@@ -97,6 +110,7 @@ impl AttestationClusterConfig {
 pub struct ProposalId {
     pub origin_node_id: u64,
     pub sequence: u64,
+    pub incarnation: [u8; 16],
 }
 
 impl ProposalId {
@@ -104,17 +118,24 @@ impl ProposalId {
         let mut encoded = Vec::with_capacity(PROPOSAL_CONTEXT_LEN);
         encoded.extend_from_slice(&self.origin_node_id.to_le_bytes());
         encoded.extend_from_slice(&self.sequence.to_le_bytes());
+        encoded.extend_from_slice(&self.incarnation);
         encoded
     }
 
     fn decode(encoded: &[u8]) -> Result<Self, usize> {
-        if encoded.len() != PROPOSAL_CONTEXT_LEN {
+        if encoded.len() != PROPOSAL_CONTEXT_LEN && encoded.len() != 16 {
             return Err(encoded.len());
         }
 
         Ok(Self {
-            origin_node_id: u64::from_le_bytes(encoded[..8].try_into().expect("slice is 8 bytes")),
-            sequence: u64::from_le_bytes(encoded[8..].try_into().expect("slice is 8 bytes")),
+            origin_node_id: u64::from_le_bytes(encoded[..8].try_into().map_err(|_| encoded.len())?),
+            sequence: u64::from_le_bytes(encoded[8..16].try_into().map_err(|_| encoded.len())?),
+            // Old contexts can still apply, but cannot match this process's requests.
+            incarnation: if encoded.len() == 16 {
+                [0; 16]
+            } else {
+                encoded[16..].try_into().map_err(|_| encoded.len())?
+            },
         })
     }
 }
@@ -132,6 +153,14 @@ pub struct AttestationDecision {
     pub admission: Result<(), AdmissionError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockDecision {
+    pub proposal_id: ProposalId,
+    pub key: BlockKey,
+    pub result: LockResult,
+    pub admission: Result<(), AdmissionError>,
+}
+
 impl AttestationDecision {
     /// Whether this candidate may enter Beacon State validation. Callers must
     /// not treat an accepted Raft selection alone as sufficient after the
@@ -143,19 +172,23 @@ impl AttestationDecision {
     }
 }
 
-/// Work produced by one nonblocking [`AttestationCluster::spin`] invocation.
+/// Work produced by one nonblocking [`SlashingProtectionCluster::spin`]
+/// invocation.
 #[derive(Debug)]
 pub enum ClusterEvent {
     SendRaftMessage(Message),
     AttestationCommitted(AttestationDecision),
+    BlockCommitted(BlockDecision),
     /// The proposal may still commit and reserve its candidate, but must no
     /// longer cause validation or publication for the original request.
-    AttestationProposalTimedOut(ProposalId),
+    ProposalTimedOut(ProposalId),
 }
 
 #[derive(Debug)]
 pub enum ProposeError {
     Admission(AdmissionError),
+    NotReady,
+    Failed,
     SequenceExhausted,
     DeadlineOverflow,
     Raft(raft::Error),
@@ -165,6 +198,8 @@ impl fmt::Display for ProposeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(error) => error.fmt(f),
+            Self::NotReady => f.write_str("Raft storage recovery is not complete"),
+            Self::Failed => f.write_str("Raft processing has stopped after a failure"),
             Self::SequenceExhausted => f.write_str("Raft proposal sequence exhausted"),
             Self::DeadlineOverflow => f.write_str("Raft proposal deadline overflowed"),
             Self::Raft(error) => write!(f, "Raft rejected proposal: {error}"),
@@ -177,7 +212,9 @@ impl Error for ProposeError {
         match self {
             Self::Admission(error) => Some(error),
             Self::Raft(error) => Some(error),
-            Self::SequenceExhausted | Self::DeadlineOverflow => None,
+            Self::NotReady | Self::Failed | Self::SequenceExhausted | Self::DeadlineOverflow => {
+                None
+            }
         }
     }
 }
@@ -189,26 +226,32 @@ pub enum ClusterError {
     Command(CommandDecodeError),
     InvalidProposalContextLength(usize),
     UnsupportedEntry(EntryType),
-    SnapshotsUnsupported,
+    Snapshot(io::Error),
+    Storage(io::Error),
+    NotReady,
+    Failed,
 }
 
 impl fmt::Display for ClusterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidConfig(message) => {
-                write!(f, "invalid attestation cluster config: {message}")
+                write!(f, "invalid slashing protection config: {message}")
             }
             Self::Raft(error) => error.fmt(f),
+            Self::Storage(error) => write!(f, "Raft storage failed: {error}"),
+            Self::NotReady => f.write_str("Raft storage recovery is not complete"),
+            Self::Failed => f.write_str("Raft processing has stopped after a failure"),
             Self::Command(error) => error.fmt(f),
             Self::InvalidProposalContextLength(actual) => write!(
                 f,
-                "Raft proposal context has length {actual}, expected {PROPOSAL_CONTEXT_LEN}"
+                "Raft proposal context has length {actual}, expected 16 or {PROPOSAL_CONTEXT_LEN}"
             ),
             Self::UnsupportedEntry(entry_type) => {
                 write!(f, "unsupported committed Raft entry type {entry_type:?}")
             }
-            Self::SnapshotsUnsupported => {
-                f.write_str("attestation Raft snapshots are not supported")
+            Self::Snapshot(error) => {
+                write!(f, "invalid slashing protection Raft snapshot: {error}")
             }
         }
     }
@@ -218,10 +261,13 @@ impl Error for ClusterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Raft(error) => Some(error),
+            Self::Storage(error) => Some(error),
+            Self::Snapshot(error) => Some(error),
             Self::Command(error) => Some(error),
             Self::InvalidConfig(_) |
+            Self::NotReady |
+            Self::Failed |
             Self::UnsupportedEntry(_) |
-            Self::SnapshotsUnsupported |
             Self::InvalidProposalContextLength(_) => None,
         }
     }
@@ -233,23 +279,23 @@ impl From<raft::Error> for ClusterError {
     }
 }
 
-/// Single-threaded driver for the attestation Raft group.
+/// Single-threaded driver for the slashing protection Raft group.
 ///
 /// `spin` is a pump: callers invoke it once per Control tile loop. It executes
 /// only work that is ready at that point and always returns without waiting.
-/// The initial implementation uses `MemStorage`; replacing it with durable
-/// storage is required before enabling the cluster in production.
-pub struct AttestationCluster {
-    node: RawNode<MemStorage>,
-    state: AttestationLockStore,
-    admission: AttestationAdmission,
-    node_id: u64,
+pub struct SlashingProtectionCluster {
+    node: Option<RawNode<RaftStorage>>,
+    config: SlashingProtectionConfig,
+    persistence: Persistence,
+    failed: bool,
+    state: SlashingLockStore,
+    admission: SlashingAdmission,
+    incarnation: [u8; 16],
     next_proposal_sequence: u64,
-    tick_interval: Duration,
     next_tick: Instant,
-    proposal_timeout: Duration,
     pending_proposals: VecDeque<PendingProposal>,
     pending_minimum_slot: Option<u64>,
+    snapshot_transfers: SnapshotTransfers,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -258,52 +304,88 @@ struct PendingProposal {
     deadline: Instant,
 }
 
-impl AttestationCluster {
-    /// Construct the Raft node with local attestation admission disabled.
-    /// Call [`Self::set_startup_wall_slot`] once this node first catches up to
-    /// its wall slot; Raft message processing and elections can run before it.
-    pub fn new(config: AttestationClusterConfig, now: Instant) -> Result<Self, ClusterError> {
+impl SlashingProtectionCluster {
+    /// Construct the Raft node with local admission disabled.
+    /// Recovery must complete before Raft participation. Local requests also
+    /// require a synced startup floor.
+    pub fn new(config: SlashingProtectionConfig, now: Instant) -> Result<Self, ClusterError> {
         config.validate()?;
+        let persistence = Persistence::new(&config).map_err(ClusterError::Storage)?;
+        Ok(Self::with_persistence(config, persistence, now))
+    }
 
-        let storage = MemStorage::new_with_conf_state((config.voters.clone(), Vec::<u64>::new()));
-        let node = RawNode::with_default_logger(&config.raft_config(), storage)?;
+    fn with_persistence(
+        config: SlashingProtectionConfig,
+        persistence: Persistence,
+        now: Instant,
+    ) -> Self {
         let next_tick = now.checked_add(config.tick_interval).unwrap_or(now);
-
-        Ok(Self {
-            node,
-            state: AttestationLockStore::default(),
-            admission: AttestationAdmission::new(),
-            node_id: config.node_id,
+        let mut incarnation: [u8; 16] = rand::random();
+        incarnation[0] |= 1; // Zero is reserved for legacy proposal contexts.
+        Self {
+            node: None,
+            config,
+            persistence,
+            failed: false,
+            state: SlashingLockStore::default(),
+            admission: SlashingAdmission::new(),
+            incarnation,
             next_proposal_sequence: 1,
-            tick_interval: config.tick_interval,
             next_tick,
-            proposal_timeout: config.proposal_timeout,
             pending_proposals: VecDeque::new(),
             pending_minimum_slot: None,
-        })
+            snapshot_transfers: SnapshotTransfers::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_memory(
+        config: SlashingProtectionConfig,
+        now: Instant,
+    ) -> Result<Self, ClusterError> {
+        config.validate()?;
+        let mut cluster = Self::with_persistence(config, Persistence::memory(), now);
+        cluster.recover(RecoveredStorage::default(), now)?;
+        Ok(cluster)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_persistence(&mut self) {
+        self.persistence.fail = true;
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.node.is_some() && !self.failed
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.failed
     }
 
     pub fn node_id(&self) -> u64 {
-        self.node_id
+        self.config.node_id
     }
 
-    /// Enable local attestation admission using the first wall slot at which
+    /// Enable local admission using the first wall slot at which
     /// this node is synced. The resulting floor is immutable.
     pub fn set_startup_wall_slot(&mut self, startup_wall_slot: u64) -> bool {
         self.admission.set_startup_wall_slot(startup_wall_slot)
     }
 
     pub fn leader_id(&self) -> Option<u64> {
-        let leader_id = self.node.raft.leader_id;
+        if self.failed {
+            return None;
+        }
+        let leader_id = self.node.as_ref()?.raft.leader_id;
         (leader_id != 0).then_some(leader_id)
     }
 
     pub fn is_leader(&self) -> bool {
-        self.node.raft.state == StateRole::Leader
+        !self.failed && self.node.as_ref().is_some_and(|node| node.raft.state == StateRole::Leader)
     }
 
     #[cfg(test)]
-    fn state(&self) -> &AttestationLockStore {
+    fn state(&self) -> &SlashingLockStore {
         &self.state
     }
 
@@ -315,17 +397,28 @@ impl AttestationCluster {
     /// Explicitly start an election, primarily for controlled startup and
     /// tests.
     pub fn campaign(&mut self) -> Result<(), ClusterError> {
-        self.node.campaign().map_err(ClusterError::Raft)
+        if self.failed {
+            return Err(ClusterError::Failed);
+        }
+        self.node.as_mut().ok_or(ClusterError::NotReady)?.campaign().map_err(ClusterError::Raft)
     }
 
     /// Deliver one decoded message received from another member of this Raft
     /// group.
     pub fn step(&mut self, message: Message) -> Result<(), ClusterError> {
-        self.node.step(message).map_err(ClusterError::Raft)
+        if self.failed {
+            return Err(ClusterError::Failed);
+        }
+        self.node.as_mut().ok_or(ClusterError::NotReady)?.step(message).map_err(ClusterError::Raft)
     }
 
     pub fn report_unreachable(&mut self, node_id: u64) {
-        self.node.report_unreachable(node_id);
+        if !self.failed &&
+            let Some(node) = self.node.as_mut()
+        {
+            node.report_unreachable(node_id);
+            node.report_snapshot(node_id, SnapshotStatus::Failure);
+        }
     }
 
     /// Submit a locally-originated signed attestation for ordering before
@@ -341,11 +434,34 @@ impl AttestationCluster {
         wall_slot: u64,
         now: Instant,
     ) -> Result<ProposalId, ProposeError> {
-        self.admission.validate(command.key.slot, wall_slot).map_err(ProposeError::Admission)?;
+        self.propose(command.key.slot, ReplicatedCommand::Lock(command), wall_slot, now)
+    }
 
-        if command.key.slot < self.state.minimum_slot() {
+    pub fn propose_block(
+        &mut self,
+        command: BlockLockCommand,
+        wall_slot: u64,
+        now: Instant,
+    ) -> Result<ProposalId, ProposeError> {
+        self.propose(command.key.slot, ReplicatedCommand::BlockLock(command), wall_slot, now)
+    }
+
+    fn propose(
+        &mut self,
+        slot: u64,
+        command: ReplicatedCommand,
+        wall_slot: u64,
+        now: Instant,
+    ) -> Result<ProposalId, ProposeError> {
+        if self.failed {
+            return Err(ProposeError::Failed);
+        }
+        let node = self.node.as_mut().ok_or(ProposeError::NotReady)?;
+        self.admission.validate(slot, wall_slot).map_err(ProposeError::Admission)?;
+
+        if slot < self.state.minimum_slot() {
             return Err(ProposeError::Admission(AdmissionError::TooOld {
-                slot: command.key.slot,
+                slot,
                 minimum: self.state.minimum_slot(),
             }));
         }
@@ -353,18 +469,20 @@ impl AttestationCluster {
         let sequence = self.next_proposal_sequence;
         self.next_proposal_sequence =
             sequence.checked_add(1).ok_or(ProposeError::SequenceExhausted)?;
-        let proposal_id = ProposalId { origin_node_id: self.node_id, sequence };
+        let proposal_id = ProposalId {
+            origin_node_id: self.config.node_id,
+            sequence,
+            incarnation: self.incarnation,
+        };
         let deadline =
-            now.checked_add(self.proposal_timeout).ok_or(ProposeError::DeadlineOverflow)?;
+            now.checked_add(self.config.proposal_timeout).ok_or(ProposeError::DeadlineOverflow)?;
 
         debug_assert!(
             self.pending_proposals.back().is_none_or(|pending| pending.deadline <= deadline),
             "proposal timestamps must be monotonic"
         );
 
-        self.node
-            .propose(proposal_id.encode(), ReplicatedCommand::Lock(command).encode())
-            .map_err(ProposeError::Raft)?;
+        node.propose(proposal_id.encode(), command.encode()).map_err(ProposeError::Raft)?;
 
         self.pending_proposals.push_back(PendingProposal { id: proposal_id, deadline });
 
@@ -381,29 +499,79 @@ impl AttestationCluster {
         wall_slot: u64,
         mut emit: impl FnMut(ClusterEvent),
     ) -> Result<(), ClusterError> {
+        if self.failed {
+            return Ok(());
+        }
         self.expire_proposals(now, &mut emit);
+        let result = self.drive(now, wall_slot, &mut emit);
+        if result.is_err() {
+            self.failed = true;
+            self.pending_proposals.clear();
+            self.pending_minimum_slot = None;
+        }
+        result
+    }
+
+    fn drive(
+        &mut self,
+        now: Instant,
+        wall_slot: u64,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) -> Result<(), ClusterError> {
+        self.poll_persistence(now, wall_slot, emit)?;
+        if self.node.is_none() {
+            return Ok(());
+        }
+        if let Some(node) = self.node.as_mut() {
+            self.snapshot_transfers.expire(node, now);
+        }
         self.tick_elapsed(now);
         self.maybe_propose_minimum_slot(wall_slot)?;
 
-        while self.node.has_ready() {
-            self.process_ready(now, wall_slot, &mut emit)?;
+        while !self.persistence.is_pending() && self.node.as_ref().is_some_and(RawNode::has_ready) {
+            self.process_ready(now, emit)?;
+            self.poll_persistence(now, wall_slot, emit)?;
         }
 
-        Ok(())
+        self.maybe_compact()
+    }
+
+    fn maybe_compact(&mut self) -> Result<(), ClusterError> {
+        if self.persistence.is_pending() {
+            return Ok(());
+        }
+        let Some(node) = &self.node else {
+            return Ok(());
+        };
+        let applied = node.raft.raft_log.applied;
+        if applied == 0 ||
+            (applied.saturating_sub(node.store().snapshot_index()) <
+                self.config.snapshot_interval &&
+                !self.persistence.compaction_due())
+        {
+            return Ok(());
+        }
+        let data = self.state.encode_snapshot().map_err(ClusterError::Snapshot)?;
+        let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
+        let entries = node.store().suffix(applied)?;
+        self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)
     }
 
     fn tick_elapsed(&mut self, now: Instant) {
+        let Some(node) = self.node.as_mut() else {
+            return;
+        };
         let mut ticks = 0;
         while now >= self.next_tick && ticks < MAX_ELAPSED_TICKS_PER_SPIN {
-            self.node.tick();
+            node.tick();
             ticks += 1;
-            self.next_tick = self.next_tick.checked_add(self.tick_interval).unwrap_or(now);
+            self.next_tick = self.next_tick.checked_add(self.config.tick_interval).unwrap_or(now);
         }
 
         if now >= self.next_tick {
             // A long-stalled tile does not need to replay an unbounded number of
             // obsolete heartbeat intervals in one invocation.
-            self.next_tick = now.checked_add(self.tick_interval).unwrap_or(now);
+            self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         }
     }
 
@@ -413,7 +581,7 @@ impl AttestationCluster {
             return Ok(());
         }
 
-        let desired = AttestationAdmission::age_floor(wall_slot);
+        let desired = SlashingAdmission::age_floor(wall_slot);
         if desired <= self.state.minimum_slot() {
             self.pending_minimum_slot = None;
             return Ok(());
@@ -422,7 +590,10 @@ impl AttestationCluster {
             return Ok(());
         }
 
-        self.node.propose(Vec::new(), ReplicatedCommand::AdvanceMinimumSlot(desired).encode())?;
+        self.node
+            .as_mut()
+            .ok_or(ClusterError::NotReady)?
+            .propose(Vec::new(), ReplicatedCommand::AdvanceMinimumSlot(desired).encode())?;
         self.pending_minimum_slot = Some(desired);
         Ok(())
     }
@@ -430,52 +601,130 @@ impl AttestationCluster {
     fn process_ready(
         &mut self,
         now: Instant,
-        wall_slot: u64,
         emit: &mut impl FnMut(ClusterEvent),
     ) -> Result<(), ClusterError> {
-        let mut ready = self.node.ready();
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        let mut ready = node.ready();
 
-        for message in ready.take_messages() {
-            emit(ClusterEvent::SendRaftMessage(message));
-        }
-
+        let snapshot = if ready.snapshot().is_empty() {
+            None
+        } else {
+            let restored = RestoredSnapshot::decode(ready.snapshot(), &self.config.voters)
+                .map_err(ClusterError::Snapshot)?;
+            if restored.locks.minimum_slot() < self.state.minimum_slot() {
+                return Err(ClusterError::Snapshot(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "snapshot retention floor regressed",
+                )));
+            }
+            Some(restored)
+        };
+        self.persistence.submit(&mut ready, snapshot).map_err(ClusterError::Storage)?;
         if !ready.snapshot().is_empty() {
-            // State-machine snapshot encoding will be added with durable
-            // storage. Refuse an incomplete snapshot rather than silently
-            // losing attestation locks.
-            return Err(ClusterError::SnapshotsUnsupported);
+            node.mut_store().install_snapshot(ready.snapshot().clone())?;
         }
-
         {
-            let mut storage = self.node.mut_store().wl();
+            let mut storage = node.mut_store().memory.wl();
             storage.append(ready.entries())?;
             if let Some(hard_state) = ready.hs() {
                 storage.set_hardstate(hard_state.clone());
             }
         }
 
-        for message in ready.take_persisted_messages() {
+        for message in ready.take_messages() {
+            self.snapshot_transfers.sent(&message, now);
             emit(ClusterEvent::SendRaftMessage(message));
         }
+        // Release Ready immediately so step/propose/tick remain legal during disk I/O.
+        // Durability is acknowledged separately through on_persist_ready.
+        node.advance_append_async(ready);
+        Ok(())
+    }
 
-        self.apply_entries(ready.take_committed_entries(), now, wall_slot, emit)?;
-
-        let mut light_ready = self.node.advance(ready);
-        if let Some(commit_index) = light_ready.commit_index() {
-            self.node.mut_store().wl().mut_hard_state().set_commit(commit_index);
+    fn poll_persistence(
+        &mut self,
+        now: Instant,
+        wall_slot: u64,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) -> Result<(), ClusterError> {
+        match self.persistence.poll().map_err(ClusterError::Storage)? {
+            #[cfg(target_os = "linux")]
+            Some(PersistenceEvent::Recovered(recovered)) => self.recover(recovered, now),
+            Some(PersistenceEvent::Persisted(ready)) => {
+                self.complete_ready(ready, now, wall_slot, emit)
+            }
+            Some(PersistenceEvent::Compacted(snapshot)) => {
+                let index = snapshot.get_metadata().index;
+                self.node.as_mut().ok_or(ClusterError::NotReady)?.mut_store().compact(snapshot)?;
+                tracing::debug!(
+                    node_id = self.config.node_id,
+                    index,
+                    "attestation Raft journal compacted"
+                );
+                Ok(())
+            }
+            None => Ok(()),
         }
-        for message in light_ready.take_messages() {
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn recover(&mut self, recovered: RecoveredStorage, now: Instant) -> Result<(), ClusterError> {
+        if self.node.is_some() {
+            return Err(ClusterError::InvalidConfig("Raft already recovered"));
+        }
+        let mut storage = RaftStorage::new(self.config.voters.clone());
+        if !recovered.snapshot.is_empty() {
+            self.state = RestoredSnapshot::decode(&recovered.snapshot, &self.config.voters)
+                .map_err(ClusterError::Snapshot)?
+                .locks;
+            storage.install_snapshot(recovered.snapshot)?;
+        }
+        storage.memory.wl().append(&recovered.entries)?;
+        let commit = recovered.hard_state.commit;
+        storage.memory.wl().set_hardstate(recovered.hard_state);
+        self.apply_entries(
+            recovered.entries.into_iter().take_while(|entry| entry.index <= commit),
+            now,
+            0,
+            &mut |_| {},
+        )?;
+        let mut config = self.config.raft_config();
+        config.applied = commit;
+        self.node = Some(RawNode::with_default_logger(&config, storage)?);
+        self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
+        tracing::info!(node_id = self.config.node_id, commit, "attestation Raft storage recovered");
+        Ok(())
+    }
+
+    fn complete_ready(
+        &mut self,
+        ready: PersistedReady,
+        now: Instant,
+        wall_slot: u64,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) -> Result<(), ClusterError> {
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        node.on_persist_ready(ready.number);
+        let snapshot_index = ready.snapshot.as_ref().map(|snapshot| snapshot.index);
+        if let Some(snapshot) = ready.snapshot {
+            self.state = snapshot.locks;
+            self.pending_minimum_slot = None;
+        }
+        for message in ready.messages {
+            self.snapshot_transfers.sent(&message, now);
             emit(ClusterEvent::SendRaftMessage(message));
         }
-        self.apply_entries(light_ready.take_committed_entries(), now, wall_slot, emit)?;
-        self.node.advance_apply();
-
+        let applied = ready.committed_entries.last().map(|entry| entry.index).or(snapshot_index);
+        self.apply_entries(ready.committed_entries, now, wall_slot, emit)?;
+        if let Some(applied) = applied {
+            self.node.as_mut().ok_or(ClusterError::NotReady)?.advance_apply_to(applied);
+        }
         Ok(())
     }
 
     fn apply_entries(
         &mut self,
-        entries: Vec<Entry>,
+        entries: impl IntoIterator<Item = Entry>,
         now: Instant,
         wall_slot: u64,
         emit: &mut impl FnMut(ClusterEvent),
@@ -493,15 +742,36 @@ impl AttestationCluster {
                     let proposal_id = ProposalId::decode(&entry.context)
                         .map_err(ClusterError::InvalidProposalContextLength)?;
                     let result = self.state.apply(&command);
-                    if proposal_id.origin_node_id == self.node_id &&
+                    if proposal_id.origin_node_id == self.config.node_id &&
+                        proposal_id.incarnation == self.incarnation &&
                         let Some(pending) = self.take_pending_proposal(proposal_id)
                     {
                         if now >= pending.deadline {
-                            emit(ClusterEvent::AttestationProposalTimedOut(proposal_id));
+                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
                         } else {
                             emit(ClusterEvent::AttestationCommitted(AttestationDecision {
                                 proposal_id,
                                 command,
+                                result,
+                                admission: self.admission.validate(command.key.slot, wall_slot),
+                            }));
+                        }
+                    }
+                }
+                ReplicatedCommand::BlockLock(command) => {
+                    let proposal_id = ProposalId::decode(&entry.context)
+                        .map_err(ClusterError::InvalidProposalContextLength)?;
+                    let result = self.state.apply_block(&command);
+                    if proposal_id.origin_node_id == self.config.node_id &&
+                        proposal_id.incarnation == self.incarnation &&
+                        let Some(pending) = self.take_pending_proposal(proposal_id)
+                    {
+                        if now >= pending.deadline {
+                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
+                        } else {
+                            emit(ClusterEvent::BlockCommitted(BlockDecision {
+                                proposal_id,
+                                key: command.key,
                                 result,
                                 admission: self.admission.validate(command.key.slot, wall_slot),
                             }));
@@ -528,15 +798,23 @@ impl AttestationCluster {
     fn expire_proposals(&mut self, now: Instant, emit: &mut impl FnMut(ClusterEvent)) {
         while self.pending_proposals.front().is_some_and(|proposal| now >= proposal.deadline) {
             let proposal = self.pending_proposals.pop_front().expect("front exists");
-            emit(ClusterEvent::AttestationProposalTimedOut(proposal.id));
+            emit(ClusterEvent::ProposalTimedOut(proposal.id));
         }
     }
 }
 
 #[cfg(test)]
+#[path = "node/persistence_tests.rs"]
+mod persistence_tests;
+
+#[cfg(test)]
+#[path = "node/snapshot_tests.rs"]
+mod snapshot_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::{AttestationKey, LockResult};
+    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult};
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -548,8 +826,12 @@ mod tests {
         }
     }
 
-    fn test_config(node_id: u64, voters: Vec<u64>) -> AttestationClusterConfig {
-        let mut config = AttestationClusterConfig::new(node_id, voters);
+    fn test_config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
+        let mut config = SlashingProtectionConfig::new(
+            node_id,
+            voters,
+            ClusterStorageConfig::Create("unused-test-journal".into()),
+        );
         config.tick_interval = Duration::from_millis(1);
         config.heartbeat_ticks = 1;
         config.election_ticks = 5;
@@ -557,17 +839,17 @@ mod tests {
     }
 
     fn initialized_cluster(
-        config: AttestationClusterConfig,
+        config: SlashingProtectionConfig,
         startup_wall_slot: u64,
         now: Instant,
-    ) -> AttestationCluster {
-        let mut cluster = AttestationCluster::new(config, now).unwrap();
+    ) -> SlashingProtectionCluster {
+        let mut cluster = SlashingProtectionCluster::in_memory(config, now).unwrap();
         assert!(cluster.set_startup_wall_slot(startup_wall_slot));
         cluster
     }
 
     fn pump(
-        clusters: &mut [AttestationCluster],
+        clusters: &mut [SlashingProtectionCluster],
         now: Instant,
         wall_slot: u64,
         decisions: &mut Vec<(u64, AttestationDecision)>,
@@ -581,7 +863,10 @@ mod tests {
                     ClusterEvent::AttestationCommitted(decision) => {
                         decisions.push((node_id, decision));
                     }
-                    ClusterEvent::AttestationProposalTimedOut(proposal_id) => {
+                    ClusterEvent::BlockCommitted(decision) => {
+                        panic!("unexpected block decision {decision:?}");
+                    }
+                    ClusterEvent::ProposalTimedOut(proposal_id) => {
                         panic!("unexpected timeout for {proposal_id:?}");
                     }
                 })
@@ -612,9 +897,9 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 ClusterEvent::AttestationCommitted(decision) => Some(decision),
-                ClusterEvent::SendRaftMessage(_) | ClusterEvent::AttestationProposalTimedOut(_) => {
-                    None
-                }
+                ClusterEvent::SendRaftMessage(_) |
+                ClusterEvent::BlockCommitted(_) |
+                ClusterEvent::ProposalTimedOut(_) => None,
             })
             .collect();
         assert_eq!(decisions, vec![AttestationDecision {
@@ -629,7 +914,7 @@ mod tests {
     fn proposal_times_out_at_one_hundred_milliseconds_and_remains_locked() {
         let now = Instant::now();
         let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
-        assert_eq!(cluster.proposal_timeout, Duration::from_millis(100));
+        assert_eq!(cluster.config.proposal_timeout, Duration::from_millis(100));
         cluster.campaign().unwrap();
 
         let proposal_id = cluster.propose_attestation(command(10, 1), 10, now).unwrap();
@@ -640,10 +925,10 @@ mod tests {
         cluster
             .spin(now + Duration::from_millis(100), 10, |event| match event {
                 ClusterEvent::AttestationCommitted(decision) => committed.push(decision),
-                ClusterEvent::AttestationProposalTimedOut(proposal_id) => {
+                ClusterEvent::ProposalTimedOut(proposal_id) => {
                     timed_out.push(proposal_id);
                 }
-                ClusterEvent::SendRaftMessage(_) => {}
+                ClusterEvent::SendRaftMessage(_) | ClusterEvent::BlockCommitted(_) => {}
             })
             .unwrap();
 
@@ -651,7 +936,37 @@ mod tests {
         assert_eq!(timed_out, [proposal_id]);
         assert_eq!(cluster.pending_proposals(), 0);
         assert_eq!(cluster.state().len(), 1);
-        assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::Conflicting);
+    }
+
+    #[test]
+    fn same_block_is_idempotent_and_different_block_conflicts_through_raft() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+
+        let mut results = Vec::new();
+        for (proposer_index, signature) in [(4, 1), (4, 1), (4, 2), (5, 2)] {
+            let key = BlockKey { proposer_index, slot: 10 };
+            let command = BlockLockCommand { key, signature: [signature; 96] };
+            let proposal_id = cluster.propose_block(command, 10, now).unwrap();
+            cluster
+                .spin(now, 10, |event| {
+                    if let ClusterEvent::BlockCommitted(decision) = event {
+                        assert_eq!(decision.proposal_id, proposal_id);
+                        assert_eq!(decision.key, key);
+                        results.push(decision.result);
+                    }
+                })
+                .unwrap();
+        }
+
+        assert_eq!(results, [
+            LockResult::Accepted,
+            LockResult::AlreadyAcceptedSame,
+            LockResult::Conflicting,
+            LockResult::Accepted,
+        ]);
     }
 
     #[test]
@@ -675,14 +990,15 @@ mod tests {
         assert_eq!(results, [
             LockResult::Accepted,
             LockResult::AlreadyAcceptedSame,
-            LockResult::ConflictingAttestation,
+            LockResult::Conflicting,
         ]);
     }
 
     #[test]
     fn proposal_checks_local_admission_before_raft() {
         let now = Instant::now();
-        let mut cluster = AttestationCluster::new(test_config(1, vec![1]), now).unwrap();
+        let mut cluster =
+            SlashingProtectionCluster::in_memory(test_config(1, vec![1]), now).unwrap();
         cluster.campaign().unwrap();
 
         assert!(matches!(

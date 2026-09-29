@@ -4,7 +4,7 @@ use serde::{
     Deserialize, Deserializer,
     de::{self, SeqAccess, Visitor},
 };
-use silver_beacon_state_data::{B256, BLSPubkey};
+use silver_beacon_state_data::{B256, BLSPubkey, ExecutionAddress};
 
 use crate::http::response::Response;
 
@@ -126,6 +126,10 @@ pub(crate) fn parse_root(text: &str) -> Option<B256> {
 }
 
 pub(crate) fn parse_pubkey(text: &str) -> Option<BLSPubkey> {
+    parse_hex(text)
+}
+
+pub(crate) fn parse_execution_address(text: &str) -> Option<ExecutionAddress> {
     parse_hex(text)
 }
 

@@ -448,7 +448,7 @@ mod tests {
 
         let mut client = Client::uds(&socket, &jwt_path, 32, LONG_TIMEOUT);
         let block_root = [7u8; 32];
-        send_fcu(&mut client.engine, block_root, fcu_state(1), None);
+        send_fcu(&mut client.engine, block_root, fcu_state(1));
 
         let mut responded = false;
         let mut completed: Option<([u8; 32], Vec<u8>)> = None;
@@ -488,7 +488,7 @@ mod tests {
         // true again if the zombie connection was actually freed.
         let mut client = Client::uds(&missing_socket, &jwt_path, 1, LONG_TIMEOUT);
         let block_root = [3u8; 32];
-        send_fcu(&mut client.engine, block_root, fcu_state(3), None);
+        send_fcu(&mut client.engine, block_root, fcu_state(3));
         assert!(!client.engine.has_capacity(), "request occupies the only connection");
 
         let mut failed: Option<[u8; 32]> = None;
@@ -514,7 +514,7 @@ mod tests {
 
         let mut client = Client::uds(&socket, &jwt_path, 32, LONG_TIMEOUT);
         let block_root = [9u8; 32];
-        send_fcu(&mut client.engine, block_root, fcu_state(2), None);
+        send_fcu(&mut client.engine, block_root, fcu_state(2));
 
         let mut request_seen = false;
         let mut failure: Option<[u8; 32]> = None;
@@ -543,7 +543,7 @@ mod tests {
         let mut el = FakeEl::uds(&socket);
 
         let mut client = Client::uds(&socket, &jwt_path, 1, Duration::from_millis(200));
-        send_fcu(&mut client.engine, [1u8; 32], fcu_state(1), None);
+        send_fcu(&mut client.engine, [1u8; 32], fcu_state(1));
 
         let mut timed_out: Option<[u8; 32]> = None;
         spin_until("unanswered request times out", || {
@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(el.requests.len(), 1, "the EL received the request it never answered");
         assert!(client.engine.has_capacity(), "timed-out connection must be reusable");
 
-        send_fcu(&mut client.engine, [2u8; 32], fcu_state(2), None);
+        send_fcu(&mut client.engine, [2u8; 32], fcu_state(2));
         let mut answered = false;
         let mut completed: Option<[u8; 32]> = None;
         spin_until("next request served on the freed connection", || {
@@ -587,7 +587,7 @@ mod tests {
         let mut el = FakeEl::uds(&socket);
 
         let mut client = Client::uds(&socket, &jwt_path, 1, Duration::from_secs(2));
-        send_fcu(&mut client.engine, [4u8; 32], fcu_state(4), None);
+        send_fcu(&mut client.engine, [4u8; 32], fcu_state(4));
 
         let answer_at = Instant::now() + Duration::from_millis(400);
         let mut answered = false;

@@ -1,14 +1,5 @@
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
-pub use column::{
-    Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, BlockRoots,
-    BlockRootsGroup, BlockRootsId, ColumnGroup, ColumnReader, ColumnSpec, ColumnWriteView, Current,
-    CurrentParticipationGroup, CurrentParticipationId, Inactivity, InactivityId,
-    InactivityScoresGroup, InactivityView, InactivityWriteView, ParticipationView,
-    ParticipationWriteView, Previous, PreviousParticipationGroup, PreviousParticipationId,
-    RandaoMixes, RandaoMixesGroup, RandaoMixesId, RandaoMixesView, RandaoMixesWriteView, RootsView,
-    RootsWriteView, Slashings, SlashingsGroup, SlashingsId, SlashingsView, SlashingsWriteView,
-    StateRoots, StateRootsGroup, StateRootsId,
-};
+pub use column::*;
 pub use committee::{
     CommitteeSlot, TARGET_COMMITTEE_SIZE, committee_at_position, committee_range,
     committees_per_slot,

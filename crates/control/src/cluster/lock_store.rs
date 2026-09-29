@@ -1,43 +1,47 @@
-use std::collections::hash_map::Entry;
+use std::{collections::hash_map::Entry, io};
 
 use fxhash::FxHashMap;
-use silver_common::{SLOTS_PER_EPOCH, merkle};
+use silver_common::{MAX_CLUSTER_MESSAGE_BYTES, SLOTS_PER_EPOCH, merkle};
 
-use super::command::AttestationLockCommand;
+use super::command::{AttestationLockCommand, BlockKey, BlockLockCommand};
 
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
 const LOCK_RING_SIZE: usize = 2;
+const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x02";
+const SNAPSHOT_BLOCK_LEN: usize = 8 + 8 + 96;
+const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
 
-/// Result of applying a committed attestation selection command.
+/// Result of applying a committed attestation or block lock command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockResult {
-    /// This is the first selected attestation for the validator and target
-    /// epoch.
+    /// The first message selected for its validator: the attestation's
+    /// target epoch, or the block's slot.
     Accepted,
-    /// The same signed attestation was selected previously; it does not
-    /// conflict with the cluster's choice. Processing still requires temporal
+    /// The same signed message was selected previously; it does not conflict
+    /// with the cluster's choice. Processing still requires temporal
     /// admission.
     AlreadyAcceptedSame,
-    /// A different signed attestation was selected previously. This candidate
+    /// A different signed message was selected previously. This candidate
     /// must not enter validation or gossip publication.
-    ConflictingAttestation,
+    Conflicting,
     /// The replicated retention floor or the epoch ring has advanced beyond
-    /// this attestation.
+    /// this message.
     TooOld,
 }
 
 /// Anti-equivocation state shared by standalone and replicated admission.
-#[derive(Default)]
-pub(crate) struct AttestationLockStore {
+#[derive(Debug, Default)]
+pub(crate) struct SlashingLockStore {
     /// Commands below this slot are rejected even if proposed by a node with a
     /// stale wall clock. Replicated stores advance this through committed
     /// commands.
     minimum_slot: u64,
     locks: [EpochLocks; LOCK_RING_SIZE],
+    blocks: FxHashMap<BlockKey, [u8; 96]>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct EpochLocks {
     /// The absolute epoch occupying this modulo bucket. The tag prevents a
     /// late older command from clearing locks for a newer colliding epoch.
@@ -48,7 +52,7 @@ struct EpochLocks {
     attestations: FxHashMap<u64, [u8; 32]>,
 }
 
-impl AttestationLockStore {
+impl SlashingLockStore {
     pub(crate) fn apply(&mut self, cmd: &AttestationLockCommand) -> LockResult {
         if cmd.key.slot < self.minimum_slot {
             return LockResult::TooOld;
@@ -75,12 +79,129 @@ impl AttestationLockStore {
             Entry::Occupied(entry) if entry.get() == &attestation_hash => {
                 LockResult::AlreadyAcceptedSame
             }
-            Entry::Occupied(_) => LockResult::ConflictingAttestation,
+            Entry::Occupied(_) => LockResult::Conflicting,
+        }
+    }
+
+    pub(crate) fn apply_block(&mut self, cmd: &BlockLockCommand) -> LockResult {
+        if cmd.key.slot < self.minimum_slot {
+            return LockResult::TooOld;
+        }
+        match self.blocks.entry(cmd.key) {
+            Entry::Vacant(entry) => {
+                entry.insert(cmd.signature);
+                LockResult::Accepted
+            }
+            Entry::Occupied(entry) if entry.get() == &cmd.signature => {
+                LockResult::AlreadyAcceptedSame
+            }
+            Entry::Occupied(_) => LockResult::Conflicting,
         }
     }
 
     pub(super) fn minimum_slot(&self) -> u64 {
         self.minimum_slot
+    }
+
+    pub(super) fn encode_snapshot(&self) -> io::Result<Vec<u8>> {
+        let retained = |bucket: &EpochLocks| {
+            bucket.epoch.is_some_and(|epoch| epoch >= self.minimum_slot / SLOTS_PER_EPOCH)
+        };
+        let count: usize = self
+            .locks
+            .iter()
+            .filter(|bucket| retained(bucket))
+            .map(|bucket| bucket.attestations.len())
+            .sum();
+        let length = count
+            .checked_mul(40)
+            .and_then(|n| n.checked_add(self.blocks.len().checked_mul(SNAPSHOT_BLOCK_LEN)?))
+            .and_then(|n| n.checked_add(16 + LOCK_RING_SIZE * 13 + 4))
+            .filter(|n| *n <= MAX_SNAPSHOT_BYTES)
+            .ok_or_else(|| invalid_snapshot("lock snapshot exceeds transport limit"))?;
+        let mut bytes = Vec::with_capacity(length);
+        bytes.extend_from_slice(SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&self.minimum_slot.to_le_bytes());
+        for bucket in &self.locks {
+            let Some(epoch) = bucket.epoch else {
+                bytes.push(0);
+                continue;
+            };
+            // Keep the epoch tag even when its locks expired: it prevents ring reuse by
+            // older commands.
+            bytes.push(1);
+            bytes.extend_from_slice(&epoch.to_le_bytes());
+            let count = if retained(bucket) { bucket.attestations.len() } else { 0 };
+            bytes.extend_from_slice(&(count as u32).to_le_bytes());
+            if count != 0 {
+                for (validator, hash) in &bucket.attestations {
+                    bytes.extend_from_slice(&validator.to_le_bytes());
+                    bytes.extend_from_slice(hash);
+                }
+            }
+        }
+        bytes.extend_from_slice(&(self.blocks.len() as u32).to_le_bytes());
+        for (key, signature) in &self.blocks {
+            bytes.extend_from_slice(&key.proposer_index.to_le_bytes());
+            bytes.extend_from_slice(&key.slot.to_le_bytes());
+            bytes.extend_from_slice(signature);
+        }
+        Ok(bytes)
+    }
+
+    pub(super) fn decode_snapshot(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() > MAX_SNAPSHOT_BYTES {
+            return Err(invalid_snapshot("lock snapshot exceeds transport limit"));
+        }
+        let mut cursor = SnapshotCursor(bytes);
+        if &cursor.take::<8>()? != SNAPSHOT_MAGIC {
+            return Err(invalid_snapshot("unsupported attestation lock snapshot"));
+        }
+        let mut store =
+            Self { minimum_slot: u64::from_le_bytes(cursor.take()?), ..Self::default() };
+        for (index, bucket) in store.locks.iter_mut().enumerate() {
+            match cursor.take::<1>()?[0] {
+                0 => continue,
+                1 => {}
+                _ => return Err(invalid_snapshot("invalid snapshot epoch tag")),
+            }
+            let epoch = u64::from_le_bytes(cursor.take()?);
+            if epoch as usize % LOCK_RING_SIZE != index {
+                return Err(invalid_snapshot("snapshot epoch is in the wrong ring bucket"));
+            }
+            bucket.epoch = Some(epoch);
+            let count = u32::from_le_bytes(cursor.take()?) as usize;
+            if count > cursor.0.len() / 40 {
+                return Err(invalid_snapshot("invalid snapshot lock count"));
+            }
+            bucket.attestations.reserve(count);
+            for _ in 0..count {
+                let validator = u64::from_le_bytes(cursor.take()?);
+                if bucket.attestations.insert(validator, cursor.take()?).is_some() {
+                    return Err(invalid_snapshot("duplicate validator in snapshot epoch"));
+                }
+            }
+        }
+        let count = u32::from_le_bytes(cursor.take()?) as usize;
+        if count > cursor.0.len() / SNAPSHOT_BLOCK_LEN {
+            return Err(invalid_snapshot("invalid snapshot block count"));
+        }
+        store.blocks.reserve(count);
+        for _ in 0..count {
+            let proposer_index = u64::from_le_bytes(cursor.take()?);
+            let slot = u64::from_le_bytes(cursor.take()?);
+            if slot < store.minimum_slot {
+                return Err(invalid_snapshot("snapshot block is below the minimum slot"));
+            }
+            let key = BlockKey { proposer_index, slot };
+            if store.blocks.insert(key, cursor.take()?).is_some() {
+                return Err(invalid_snapshot("duplicate block in snapshot"));
+            }
+        }
+        if !cursor.0.is_empty() {
+            return Err(invalid_snapshot("trailing attestation snapshot bytes"));
+        }
+        Ok(store)
     }
 
     #[cfg(test)]
@@ -102,7 +223,25 @@ impl AttestationLockStore {
         }
 
         self.minimum_slot = minimum_slot;
+        self.blocks.retain(|key, _| key.slot >= minimum_slot);
     }
+}
+
+struct SnapshotCursor<'a>(&'a [u8]);
+
+impl SnapshotCursor<'_> {
+    fn take<const N: usize>(&mut self) -> io::Result<[u8; N]> {
+        let (bytes, rest) = self
+            .0
+            .split_at_checked(N)
+            .ok_or_else(|| invalid_snapshot("truncated attestation snapshot"))?;
+        self.0 = rest;
+        bytes.try_into().map_err(|_| invalid_snapshot("invalid attestation snapshot field"))
+    }
+}
+
+fn invalid_snapshot(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 #[cfg(test)]
@@ -125,39 +264,123 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_preserves_epoch_locks_floor_and_ring_reuse_protection() {
+        let mut store = SlashingLockStore::default();
+        store.apply(&command_for(10, 7, 1));
+        store.apply(&command_for(40, 8, 2));
+        store.advance_minimum_slot(20);
+        let mut restored =
+            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        assert_eq!(restored.minimum_slot(), 20);
+        assert_eq!(restored.apply(&command_for(10, 7, 1)), LockResult::TooOld);
+        assert_eq!(restored.apply(&command_for(21, 7, 3)), LockResult::Conflicting);
+        assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::AlreadyAcceptedSame);
+
+        store.apply(&command_for(100, 9, 4));
+        let mut restored =
+            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::TooOld);
+        assert_eq!(restored.apply(&command_for(100, 9, 4)), LockResult::AlreadyAcceptedSame);
+        store.advance_minimum_slot(128);
+        let bytes = store.encode_snapshot().unwrap();
+        assert!(bytes.len() < 64, "expired hashes should not be serialized");
+        let restored = SlashingLockStore::decode_snapshot(&bytes).unwrap();
+        assert_eq!(restored.minimum_slot(), 128);
+    }
+
+    #[test]
+    fn snapshot_preserves_block_locks() {
+        let mut store = SlashingLockStore::default();
+        store.apply_block(&block(10, 3, 1));
+        store.apply_block(&block(30, 4, 2));
+        store.advance_minimum_slot(20);
+
+        let mut restored =
+            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+
+        assert_eq!(restored.apply_block(&block(10, 3, 1)), LockResult::TooOld);
+        assert_eq!(restored.apply_block(&block(30, 4, 2)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(restored.apply_block(&block(30, 4, 5)), LockResult::Conflicting);
+    }
+
+    #[test]
+    fn malformed_lock_snapshots_are_rejected() {
+        let mut store = SlashingLockStore::default();
+        store.apply(&command_for(10, 7, 1));
+        let bytes = store.encode_snapshot().unwrap();
+        for len in 0..bytes.len() {
+            assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
+        }
+        let mut invalid = bytes.clone();
+        invalid.push(0);
+        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
+        let mut invalid = bytes.clone();
+        invalid[16] = 2;
+        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
+        let mut invalid = bytes.clone();
+        invalid[17] = 1;
+        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
+        let mut duplicate = bytes;
+        duplicate[25..29].copy_from_slice(&2u32.to_le_bytes());
+        let record = duplicate[29..69].to_vec();
+        duplicate.splice(69..69, record);
+        assert!(SlashingLockStore::decode_snapshot(&duplicate).is_err());
+    }
+
+    #[test]
+    fn malformed_block_snapshots_are_rejected() {
+        let mut store = SlashingLockStore::default();
+        store.apply_block(&block(10, 3, 1));
+        let bytes = store.encode_snapshot().unwrap();
+        let blocks_at = bytes.len() - 4 - SNAPSHOT_BLOCK_LEN;
+        for len in 0..bytes.len() {
+            assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
+        }
+
+        let mut duplicate = bytes.clone();
+        duplicate[blocks_at..blocks_at + 4].copy_from_slice(&2u32.to_le_bytes());
+        duplicate.extend_from_slice(&bytes[blocks_at + 4..]);
+        assert!(SlashingLockStore::decode_snapshot(&duplicate).is_err());
+
+        let mut below_floor = bytes;
+        below_floor[8..16].copy_from_slice(&11u64.to_le_bytes());
+        assert!(SlashingLockStore::decode_snapshot(&below_floor).is_err());
+    }
+
+    #[test]
     fn selection_results_distinguish_same_and_conflicting_attestations() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
 
         assert_eq!(store.apply(&command(12, 1)), LockResult::Accepted);
         assert_eq!(store.apply(&command(12, 1)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(store.apply(&command(12, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command(12, 2)), LockResult::Conflicting);
         assert_eq!(store.len(), 1);
     }
 
     #[test]
     fn different_signed_bytes_conflict() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         let first = command(12, 1);
         let mut different = first;
         different.ssz[1] = 1;
 
         assert_eq!(store.apply(&first), LockResult::Accepted);
-        assert_eq!(store.apply(&different), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&different), LockResult::Conflicting);
     }
 
     #[test]
     fn different_slots_in_one_target_epoch_conflict() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
 
         assert_eq!(store.apply(&command_for(10, 7, 1)), LockResult::Accepted);
-        assert_eq!(store.apply(&command_for(11, 7, 2)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(11, 7, 2)), LockResult::Conflicting);
         assert_eq!(store.apply(&command_for(11, 8, 2)), LockResult::Accepted);
         assert_eq!(store.apply(&command_for(32, 7, 3)), LockResult::Accepted);
     }
 
     #[test]
     fn committed_minimum_slot_hides_and_rejects_old_commands() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         assert_eq!(store.apply(&command(10, 1)), LockResult::Accepted);
         assert_eq!(store.apply(&command(40, 2)), LockResult::Accepted);
 
@@ -166,12 +389,38 @@ mod tests {
         assert_eq!(store.minimum_slot(), 40);
         assert_eq!(store.len(), 1);
         assert_eq!(store.apply(&command(10, 3)), LockResult::TooOld);
-        assert_eq!(store.apply(&command(40, 3)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command(40, 3)), LockResult::Conflicting);
+    }
+
+    fn block(slot: u64, proposer_index: u64, signature: u8) -> BlockLockCommand {
+        BlockLockCommand { key: BlockKey { proposer_index, slot }, signature: [signature; 96] }
+    }
+
+    #[test]
+    fn first_block_for_a_proposer_and_slot_is_the_only_one() {
+        let mut store = SlashingLockStore::default();
+
+        assert_eq!(store.apply_block(&block(12, 3, 1)), LockResult::Accepted);
+        assert_eq!(store.apply_block(&block(12, 3, 1)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(store.apply_block(&block(12, 3, 2)), LockResult::Conflicting);
+        assert_eq!(store.apply_block(&block(12, 4, 2)), LockResult::Accepted);
+        assert_eq!(store.apply_block(&block(13, 3, 2)), LockResult::Accepted);
+    }
+
+    #[test]
+    fn committed_minimum_slot_drops_and_rejects_old_blocks() {
+        let mut store = SlashingLockStore::default();
+        assert_eq!(store.apply_block(&block(10, 3, 1)), LockResult::Accepted);
+
+        store.advance_minimum_slot(11);
+
+        assert!(store.blocks.is_empty());
+        assert_eq!(store.apply_block(&block(10, 3, 1)), LockResult::TooOld);
     }
 
     #[test]
     fn epoch_ring_reuses_a_bucket_without_losing_newer_locks() {
-        let mut store = AttestationLockStore::default();
+        let mut store = SlashingLockStore::default();
         assert_eq!(store.locks.len(), 2);
 
         assert_eq!(store.apply(&command_for(10, 7, 1)), LockResult::Accepted);
@@ -183,13 +432,13 @@ mod tests {
         assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::Accepted);
         assert_eq!(store.len(), 2);
         assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::AlreadyAcceptedSame);
-        assert_eq!(store.apply(&command_for(70, 9, 5)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(70, 9, 5)), LockResult::Conflicting);
 
         // A late command for the displaced epoch cannot clear epoch 2.
         assert_eq!(store.apply(&command_for(10, 7, 6)), LockResult::TooOld);
         assert_eq!(store.apply(&command_for(70, 9, 4)), LockResult::AlreadyAcceptedSame);
 
         // The adjacent bucket was not scanned or cleared during rollover.
-        assert_eq!(store.apply(&command_for(40, 7, 6)), LockResult::ConflictingAttestation);
+        assert_eq!(store.apply(&command_for(40, 7, 6)), LockResult::Conflicting);
     }
 }

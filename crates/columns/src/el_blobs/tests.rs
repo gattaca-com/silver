@@ -59,9 +59,8 @@ impl Rig {
             EngineGetBlobsResp {
                 block_root: root,
                 slot,
-                ok: true,
                 blobs_present: 1,
-                data: write.read(),
+                data: Some(write.read()),
             },
             &mut self.reader,
         );
@@ -102,7 +101,7 @@ fn empty_el_response_does_not_wait_for_an_assembly_or_restart_the_request() {
     write.write_all(&0u32.to_le_bytes()).unwrap();
     let data = write.read();
     rig.fetcher.handle_response(
-        EngineGetBlobsResp { block_root: [1; 32], slot: 7, ok: true, blobs_present: 0, data },
+        EngineGetBlobsResp { block_root: [1; 32], slot: 7, blobs_present: 0, data: Some(data) },
         &mut rig.reader,
     );
     assert!(rig.fetcher.responses.is_empty());

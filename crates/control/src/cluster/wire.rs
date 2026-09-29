@@ -2,7 +2,7 @@ use buffa::Message as _;
 use raft::eraftpb::{
     ConfState, Entry, EntryType, Message, MessageType, Snapshot, SnapshotMetadata,
 };
-use silver_common::{Error, TCacheProducer, TCacheRead, TProducer};
+use silver_common::{Error, MAX_CLUSTER_MESSAGE_BYTES, TCacheProducer, TCacheRead, TProducer};
 
 use super::generated as wire;
 
@@ -14,6 +14,9 @@ pub(crate) fn encode_message(
 ) -> Result<TCacheRead, Error> {
     let message = to_wire_message(message);
     let len = message.compute_size() as usize;
+    if len > MAX_CLUSTER_MESSAGE_BYTES {
+        return Err(Error::BufferTooSmall);
+    }
     let mut reservation = producer.reserve(len, true).ok_or(Error::BufferTooSmall)?;
     let output = producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut output[..len];
@@ -92,7 +95,7 @@ fn to_wire_message(mut message: Message) -> wire::Message {
     }
 }
 
-fn to_wire_entry(entry: Entry) -> wire::Entry {
+pub(super) fn to_wire_entry(entry: Entry) -> wire::Entry {
     wire::Entry {
         entry_type: (entry.entry_type as i32).into(),
         term: entry.term,
@@ -104,7 +107,7 @@ fn to_wire_entry(entry: Entry) -> wire::Entry {
     }
 }
 
-fn to_wire_snapshot(mut snapshot: Snapshot) -> wire::Snapshot {
+pub(super) fn to_wire_snapshot(mut snapshot: Snapshot) -> wire::Snapshot {
     let metadata = if snapshot.has_metadata() {
         buffa::MessageField::some(to_wire_snapshot_metadata(snapshot.take_metadata()))
     } else {
@@ -165,7 +168,7 @@ fn from_wire_message(message: wire::Message) -> Result<Message, DecodeError> {
     Ok(decoded)
 }
 
-fn from_wire_entry(entry: wire::Entry) -> Result<Entry, DecodeError> {
+pub(super) fn from_wire_entry(entry: wire::Entry) -> Result<Entry, DecodeError> {
     let mut decoded = Entry::default();
     decoded.set_entry_type(entry_type(entry.entry_type.to_i32())?);
     decoded.set_term(entry.term);
@@ -176,7 +179,7 @@ fn from_wire_entry(entry: wire::Entry) -> Result<Entry, DecodeError> {
     Ok(decoded)
 }
 
-fn from_wire_snapshot(snapshot: wire::Snapshot) -> Result<Snapshot, DecodeError> {
+pub(super) fn from_wire_snapshot(snapshot: wire::Snapshot) -> Result<Snapshot, DecodeError> {
     let metadata = snapshot.metadata.into_option().map(from_wire_snapshot_metadata).transpose()?;
     let mut decoded = Snapshot::default();
     decoded.set_data(snapshot.data);

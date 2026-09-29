@@ -5,7 +5,7 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
+use silver_beacon_state_data::{B256, ExecutionAddress, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
@@ -107,6 +107,31 @@ pub enum BeaconApiRequest {
     SyncCommitteeSubscriptions {
         until_epochs: [u64; SYNC_COMMITTEE_SUBNETS],
     },
+    ProposerPreparations {
+        preparations: TCacheRead,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposerPreparation {
+    pub validator_index: u64,
+    pub fee_recipient: ExecutionAddress,
+}
+
+impl ProposerPreparation {
+    pub const SIZE: usize = size_of::<u64>() + size_of::<ExecutionAddress>();
+
+    pub fn encode(&self, out: &mut [u8]) {
+        out[..8].copy_from_slice(&self.validator_index.to_le_bytes());
+        out[8..Self::SIZE].copy_from_slice(&self.fee_recipient);
+    }
+
+    pub fn decode_all(bytes: &[u8]) -> impl Iterator<Item = Self> {
+        bytes.chunks_exact(Self::SIZE).map(|record| Self {
+            validator_index: u64::from_le_bytes(record[..8].try_into().expect("8 bytes")),
+            fee_recipient: record[8..Self::SIZE].try_into().expect("20 bytes"),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -199,6 +224,7 @@ pub enum LocalGossipFailure {
     TooOld,
     Future,
     ConflictingAttestation,
+    ConflictingProposal,
     TimedOut,
     Invalid,
     Unverifiable,
@@ -1027,9 +1053,6 @@ impl ColumnOrigin {
     }
 }
 
-/// A zero `state_root` marks all three roots unavailable. This can occur
-/// before seeding or when checkpoint history has overwritten a dependent
-/// root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct HeadRoots {
@@ -1040,12 +1063,6 @@ pub struct HeadRoots {
     /// Root at the slot before the head block's epoch starts, saturating to
     /// slot zero.
     pub current_duty_dependent_root: B256,
-}
-
-impl HeadRoots {
-    pub fn is_complete(&self) -> bool {
-        self.state_root != B256::default()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1090,7 +1107,8 @@ pub enum BeaconStateEvent {
         wall_slot: u64,
         head_optimistic: bool,
         enr_fork_id: [u8; 16],
-        head_roots: HeadRoots,
+        /// `None` when checkpoint history has overwritten a dependent root.
+        head_roots: Option<HeadRoots>,
         head_payload: PayloadResolution,
         head_change: HeadChange,
         epoch_transition: bool,
@@ -1234,29 +1252,22 @@ pub struct EngineNewPayloadEnvelopeReq {
 
 /// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
 ///
-/// `block_root` echoes the request's head beacon root (zeros for the
-/// prepare-payload path). `latest_valid_hash` is all-zeros when the EL did
-/// not return one. `payload_id` is meaningful only when `has_payload_id` is
-/// true.
+/// `block_root` echoes the request's head beacon root.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineFcuResp {
     pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
-    pub latest_valid_hash: [u8; 32],
-    pub has_payload_id: bool,
-    pub payload_id: [u8; 8],
+    pub latest_valid_hash: Option<[u8; 32]>,
 }
 
 /// Response to `engine_newPayloadV4`.  Fully inline.
-///
-/// `latest_valid_hash` is all-zeros when the EL did not return one.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineNewPayloadResp {
     pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
-    pub latest_valid_hash: [u8; 32],
+    pub latest_valid_hash: Option<[u8; 32]>,
 }
 
 /// The engine tile sends `engine_forkchoiceUpdatedV3` with payload attributes
@@ -1282,20 +1293,24 @@ pub struct EnginePreparePayloadReq {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
+pub struct EnginePreparePayloadResp {
+    pub id: u64,
+    pub payload_id: Option<[u8; 8]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct EngineGetPayloadReq {
     pub id: u64,
     pub payload_id: [u8; 8],
 }
 
-/// Response to `EngineGetPayloadReq`.
-/// When `ok` is true, `data` is a TCache slot with the encoded EL payload:
-/// `{executionPayload, blobsBundle, shouldOverrideBuilder, executionRequests}`.
+/// Response to `EngineGetPayloadReq`
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadResp {
     pub id: u64,
-    pub ok: bool,
-    pub data: TCacheRead,
+    pub data: Option<TCacheRead>,
 }
 
 /// `engine_getBlobsV3` request. `hashes[..hash_count]` are the versioned hashes
@@ -1311,24 +1326,23 @@ pub struct EngineGetBlobsReq {
 }
 
 /// Response to `EngineGetBlobsReq`.
-/// When `ok` is true, `data` is a TCache slot with binary-encoded blobs:
+/// `data` is a TCache slot with binary-encoded blobs:
 /// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len]
 /// [blob bytes])*`, where `present == 0` is a null entry and is that byte
-/// alone. `ok` is true even when the EL returned nothing, so `blobs_present`
-/// is the field that says whether it delivered.
+/// alone. `data` is present even when the EL returned nothing, so
+/// `blobs_present` is the field that says whether it delivered.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsResp {
     pub block_root: [u8; 32],
     pub slot: u64,
-    pub ok: bool,
     pub blobs_present: u8,
-    pub data: TCacheRead,
+    pub data: Option<TCacheRead>,
 }
 
 impl EngineGetBlobsResp {
     pub fn failed(block_root: [u8; 32], slot: u64) -> Self {
-        Self { block_root, slot, ok: false, blobs_present: 0, data: unsafe { std::mem::zeroed() } }
+        Self { block_root, slot, blobs_present: 0, data: None }
     }
 }
 
@@ -1352,6 +1366,7 @@ pub enum EngineReq {
 #[allow(clippy::large_enum_variant)]
 pub enum EngineResp {
     Fcu(EngineFcuResp),
+    PreparePayload(EnginePreparePayloadResp),
     NewPayload(EngineNewPayloadResp),
     GetPayload(EngineGetPayloadResp),
     GetBlobs(EngineGetBlobsResp),

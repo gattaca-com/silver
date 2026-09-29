@@ -10,10 +10,10 @@ use silver_beacon_state_data::{
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
-    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
-    TProducer, block_root_fulu,
+    BlockStage, EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
+    PayloadValidationStatus, PeerEvent, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
+    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -546,7 +546,7 @@ struct StatusHead {
     root: B256,
     slot: Slot,
     optimistic: bool,
-    roots: HeadRoots,
+    roots: Option<HeadRoots>,
     payload: PayloadResolution,
 }
 
@@ -804,7 +804,7 @@ impl HeadRig {
         self.sink.produce(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root,
             status,
-            latest_valid_hash: [0u8; 32],
+            latest_valid_hash: None,
         }));
     }
 
@@ -863,11 +863,11 @@ fn head_a(optimistic: bool) -> StatusHead {
         root: A_ROOT,
         slot: 71,
         optimistic,
-        roots: HeadRoots {
+        roots: Some(HeadRoots {
             state_root: state_root_of(A_ROOT),
             previous_duty_dependent_root: A_PREVIOUS,
             current_duty_dependent_root: A_CURRENT,
-        },
+        }),
         payload: PayloadResolution::Full,
     }
 }
@@ -877,11 +877,11 @@ fn head_b(optimistic: bool) -> StatusHead {
         root: B_ROOT,
         slot: 71,
         optimistic,
-        roots: HeadRoots {
+        roots: Some(HeadRoots {
             state_root: state_root_of(B_ROOT),
             previous_duty_dependent_root: B_PREVIOUS,
             current_duty_dependent_root: B_CURRENT,
-        },
+        }),
         payload: PayloadResolution::Full,
     }
 }
@@ -891,11 +891,11 @@ fn head_anchor() -> StatusHead {
         root: ANCHOR_ROOT,
         slot: 70,
         optimistic: false,
-        roots: HeadRoots {
+        roots: Some(HeadRoots {
             state_root: ANCHOR_STATE_ROOT,
             previous_duty_dependent_root: ANCHOR_PREVIOUS,
             current_duty_dependent_root: ANCHOR_CURRENT,
-        },
+        }),
         payload: PayloadResolution::Full,
     }
 }
@@ -931,11 +931,11 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
                     root,
                     slot: 0,
                     optimistic: false,
-                    roots: HeadRoots {
+                    roots: Some(HeadRoots {
                         state_root,
                         previous_duty_dependent_root: dependent,
                         current_duty_dependent_root: dependent,
-                    },
+                    }),
                     payload: if is_gloas {
                         PayloadResolution::Empty
                     } else {
@@ -1419,6 +1419,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
 
 /// A timely block imported before its slot's tick still takes the proposer
 /// boost: the store time advances before the block joins, as in the spec.
+#[cfg(feature = "ef_tests")]
 #[test]
 fn block_before_slot_tick_takes_proposer_boost() {
     let (pre_ssz, block_ssz, _) = sanity_fixture("attestation");
@@ -1461,7 +1462,7 @@ fn an_imported_block_publishes_its_own_head_metadata() {
         root: block_root,
         slot,
         optimistic: true,
-        roots: expected,
+        roots: Some(expected),
         payload: PayloadResolution::Full,
     });
 }
@@ -1490,7 +1491,7 @@ fn a_replayed_block_publishes_its_own_head_metadata() {
         root: block_root_fulu(&block_ssz),
         slot,
         optimistic: true,
-        roots: expected,
+        roots: Some(expected),
         payload: PayloadResolution::Full,
     });
 }
@@ -1520,7 +1521,11 @@ fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
     };
     assert_eq!(StatusView::head_slot(&ssz), header.slot, "p2p Status names the anchor block");
     assert_eq!(*StatusView::head_root(&ssz), tile.head_block_root());
-    assert_eq!(head_roots.state_root, header.state_root, "the anchor block's declared state");
+    assert_eq!(
+        head_roots.map(|roots| roots.state_root),
+        Some(header.state_root),
+        "the anchor block's declared state"
+    );
 }
 
 #[test]
@@ -1547,14 +1552,14 @@ fn an_anchor_whose_state_outran_the_ring_reports_no_head_metadata() {
 
     let tile = anchor_at(edge);
     assert!(
-        tile.head_roots(tile.selected_head()).is_complete(),
+        tile.head_roots(tile.selected_head()).is_some(),
         "a state at {edge} still holds slot 31, the oldest slot in its ring"
     );
 
     let tile = anchor_at(edge + 1);
     assert_eq!(
         tile.head_roots(tile.selected_head()),
-        HeadRoots::default(),
+        None,
         "one slot later that root is gone, and so is the whole snapshot"
     );
 }
@@ -4215,11 +4220,11 @@ fn status_reads_the_surviving_head_after_finalization_remaps_its_node() {
             root: D_ROOT,
             slot: 2,
             optimistic: true,
-            roots: HeadRoots {
+            roots: Some(HeadRoots {
                 state_root: state_root_of(D_ROOT),
                 previous_duty_dependent_root: D_ROOT,
                 current_duty_dependent_root: D_ROOT,
-            },
+            }),
             payload: PayloadResolution::Full,
         },
         "epoch 0 decides at slot 0, where each bundle carries its own root"
@@ -4268,7 +4273,7 @@ fn el_invalid_drops_staged_block() {
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
         block_root: S_ROOT,
         status: PayloadValidationStatus::Invalid,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     });
     forks.tile.handle_engine_response(verdict, &mut adapter.producers);
 
@@ -4293,7 +4298,7 @@ fn el_valid_is_kept_on_a_staged_block() {
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
         block_root: S_ROOT,
         status: PayloadValidationStatus::Valid,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     });
     forks.tile.handle_engine_response(verdict, &mut adapter.producers);
     assert!(forks.tile.held.is_staged(&S_ROOT), "Valid does not drop the hold");
@@ -4316,7 +4321,7 @@ fn el_invalid_staged_block_is_remembered_as_rejected() {
     let verdict = EngineResp::NewPayload(EngineNewPayloadResp {
         block_root: S_ROOT,
         status: PayloadValidationStatus::Invalid,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     });
     forks.tile.handle_engine_response(verdict, &mut adapter.producers);
 
@@ -4692,4 +4697,85 @@ fn fresh_shufflings_are_posted_once() {
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     let published = rig.drain();
     assert_eq!(posted(&rig.tile.events_producer, published), []);
+}
+
+fn register_proposer(tile: &mut BeaconStateTile, validator_index: u64, fee_recipient: [u8; 20]) {
+    let mut encoded = [0; ProposerPreparation::SIZE];
+    ProposerPreparation { validator_index, fee_recipient }.encode(&mut encoded);
+    tile.proposer_preparations.record(&encoded, 0);
+}
+
+fn engine_requests(sink: &mut SpineAdapter<SilverSpine>) -> Vec<EngineReq> {
+    let mut requests = Vec::new();
+    sink.consume(|request: EngineReq, _| requests.push(request));
+    requests
+}
+
+/// Seeded states name validator 0 in every lookahead seat.
+#[test]
+fn registered_proposer_gets_a_payload_prepared_on_the_head() {
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.prepare_payload(11, &mut adapter.producers);
+
+    let [EngineReq::PreparePayload(request)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload preparation");
+    };
+    assert_eq!(request.attrs_fee_recipient, [7; 20]);
+    assert_eq!(request.attrs_parent_beacon_block_root, ANCHOR_ROOT);
+    assert_eq!(request.attrs_timestamp, 11 * 12);
+
+    tile.handle_engine_response(
+        EngineResp::PreparePayload(EnginePreparePayloadResp {
+            id: request.id,
+            payload_id: Some([9; 8]),
+        }),
+        &mut adapter.producers,
+    );
+    assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), Some([9; 8]));
+    tile.payload_preparations.prune_before(12);
+    assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), None);
+}
+
+fn prepared_parents(sink: &mut SpineAdapter<SilverSpine>) -> Vec<B256> {
+    engine_requests(sink)
+        .into_iter()
+        .filter_map(|request| match request {
+            EngineReq::PreparePayload(request) => Some(request.attrs_parent_beacon_block_root),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A late block that moves the head after the preparation tick gets a
+/// payload of its own; a head already prepared for is not asked for twice.
+#[test]
+fn head_that_moves_after_preparation_is_prepared_again() {
+    let mut rig = HeadRig::new();
+    register_proposer(&mut rig.tile, 0, [7; 20]);
+    engine_requests(&mut rig.sink);
+
+    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    assert_eq!(prepared_parents(&mut rig.sink), [ANCHOR_ROOT]);
+
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    assert_eq!(prepared_parents(&mut rig.sink), [A_ROOT]);
+}
+
+#[test]
+fn unregistered_proposer_gets_no_payload_prepared() {
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    register_proposer(&mut tile, 1, [7; 20]);
+
+    tile.prepare_payload(11, &mut adapter.producers);
+
+    assert!(engine_requests(&mut sink).is_empty());
 }
