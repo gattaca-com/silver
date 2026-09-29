@@ -8,7 +8,8 @@ use super::command::{AttestationLockCommand, BlockKey, BlockLockCommand};
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
 const LOCK_RING_SIZE: usize = 2;
-const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x01";
+const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x02";
+const SNAPSHOT_BLOCK_LEN: usize = 8 + 8 + 96;
 const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
 
 /// Result of applying a committed attestation or block lock command.
@@ -114,9 +115,10 @@ impl SlashingLockStore {
             .sum();
         let length = count
             .checked_mul(40)
-            .and_then(|n| n.checked_add(16 + LOCK_RING_SIZE * 13))
+            .and_then(|n| n.checked_add(self.blocks.len().checked_mul(SNAPSHOT_BLOCK_LEN)?))
+            .and_then(|n| n.checked_add(16 + LOCK_RING_SIZE * 13 + 4))
             .filter(|n| *n <= MAX_SNAPSHOT_BYTES)
-            .ok_or_else(|| invalid_snapshot("attestation lock snapshot exceeds transport limit"))?;
+            .ok_or_else(|| invalid_snapshot("lock snapshot exceeds transport limit"))?;
         let mut bytes = Vec::with_capacity(length);
         bytes.extend_from_slice(SNAPSHOT_MAGIC);
         bytes.extend_from_slice(&self.minimum_slot.to_le_bytes());
@@ -138,12 +140,18 @@ impl SlashingLockStore {
                 }
             }
         }
+        bytes.extend_from_slice(&(self.blocks.len() as u32).to_le_bytes());
+        for (key, signature) in &self.blocks {
+            bytes.extend_from_slice(&key.proposer_index.to_le_bytes());
+            bytes.extend_from_slice(&key.slot.to_le_bytes());
+            bytes.extend_from_slice(signature);
+        }
         Ok(bytes)
     }
 
     pub(super) fn decode_snapshot(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() > MAX_SNAPSHOT_BYTES {
-            return Err(invalid_snapshot("attestation lock snapshot exceeds transport limit"));
+            return Err(invalid_snapshot("lock snapshot exceeds transport limit"));
         }
         let mut cursor = SnapshotCursor(bytes);
         if &cursor.take::<8>()? != SNAPSHOT_MAGIC {
@@ -172,6 +180,22 @@ impl SlashingLockStore {
                 if bucket.attestations.insert(validator, cursor.take()?).is_some() {
                     return Err(invalid_snapshot("duplicate validator in snapshot epoch"));
                 }
+            }
+        }
+        let count = u32::from_le_bytes(cursor.take()?) as usize;
+        if count > cursor.0.len() / SNAPSHOT_BLOCK_LEN {
+            return Err(invalid_snapshot("invalid snapshot block count"));
+        }
+        store.blocks.reserve(count);
+        for _ in 0..count {
+            let proposer_index = u64::from_le_bytes(cursor.take()?);
+            let slot = u64::from_le_bytes(cursor.take()?);
+            if slot < store.minimum_slot {
+                return Err(invalid_snapshot("snapshot block is below the minimum slot"));
+            }
+            let key = BlockKey { proposer_index, slot };
+            if store.blocks.insert(key, cursor.take()?).is_some() {
+                return Err(invalid_snapshot("duplicate block in snapshot"));
             }
         }
         if !cursor.0.is_empty() {
@@ -265,6 +289,21 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_preserves_block_locks() {
+        let mut store = SlashingLockStore::default();
+        store.apply_block(&block(10, 3, 1));
+        store.apply_block(&block(30, 4, 2));
+        store.advance_minimum_slot(20);
+
+        let mut restored =
+            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+
+        assert_eq!(restored.apply_block(&block(10, 3, 1)), LockResult::TooOld);
+        assert_eq!(restored.apply_block(&block(30, 4, 2)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(restored.apply_block(&block(30, 4, 5)), LockResult::Conflicting);
+    }
+
+    #[test]
     fn malformed_lock_snapshots_are_rejected() {
         let mut store = SlashingLockStore::default();
         store.apply(&command_for(10, 7, 1));
@@ -286,6 +325,26 @@ mod tests {
         let record = duplicate[29..69].to_vec();
         duplicate.splice(69..69, record);
         assert!(SlashingLockStore::decode_snapshot(&duplicate).is_err());
+    }
+
+    #[test]
+    fn malformed_block_snapshots_are_rejected() {
+        let mut store = SlashingLockStore::default();
+        store.apply_block(&block(10, 3, 1));
+        let bytes = store.encode_snapshot().unwrap();
+        let blocks_at = bytes.len() - 4 - SNAPSHOT_BLOCK_LEN;
+        for len in 0..bytes.len() {
+            assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
+        }
+
+        let mut duplicate = bytes.clone();
+        duplicate[blocks_at..blocks_at + 4].copy_from_slice(&2u32.to_le_bytes());
+        duplicate.extend_from_slice(&bytes[blocks_at + 4..]);
+        assert!(SlashingLockStore::decode_snapshot(&duplicate).is_err());
+
+        let mut below_floor = bytes;
+        below_floor[8..16].copy_from_slice(&11u64.to_le_bytes());
+        assert!(SlashingLockStore::decode_snapshot(&below_floor).is_err());
     }
 
     #[test]
