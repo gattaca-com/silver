@@ -14,8 +14,8 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
     ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
-    TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead, TReadMode,
-    TileId, hex32,
+    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TRead,
+    TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -31,7 +31,9 @@ use crate::{
         fork_data_roots::ForkDataRoots,
         gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
+        payload_preparation::PayloadPreparations,
         precomputed_epochs::PrecomputedEpochs,
+        proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
         seen_validators::{SeenIndices, SeenValidators},
         shuffling_cache::ShufflingCache,
@@ -51,6 +53,8 @@ mod fork_data_roots;
 mod gossip;
 mod held_blocks;
 mod orphan_pool;
+mod payload_preparation;
+mod proposer_preparations;
 mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
@@ -153,6 +157,8 @@ pub struct BeaconStateTile {
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
+    proposer_preparations: ProposerPreparations,
+    payload_preparations: PayloadPreparations,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
     seen_exits: SeenIndices,
@@ -240,6 +246,8 @@ impl BeaconStateTile {
             vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
+            proposer_preparations: ProposerPreparations::default(),
+            payload_preparations: PayloadPreparations::default(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
             seen_exits: SeenIndices::new(val_cap),
@@ -506,27 +514,24 @@ impl BeaconStateTile {
 
     /// Overwritten checkpoint history makes the whole root bundle unavailable;
     /// partial metadata cannot describe the head.
-    fn head_roots(&self, head: SelectedHead) -> HeadRoots {
+    fn head_roots(&self, head: SelectedHead) -> Option<HeadRoots> {
         let node = self.fork_choice.node(head.idx);
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(node.state_id);
         let state_slot = view.slot.state().slot;
         let dependent =
             |epoch| view.block_roots.duty_dependent_root(epoch, head.observation.root, state_slot);
-        match (dependent(epoch.saturating_sub(1)), dependent(epoch)) {
-            (Some(previous), Some(current)) => HeadRoots {
-                state_root: node.state_root,
-                previous_duty_dependent_root: previous,
-                current_duty_dependent_root: current,
-            },
-            _ => HeadRoots::default(),
-        }
+        Some(HeadRoots {
+            state_root: node.state_root,
+            previous_duty_dependent_root: dependent(epoch.saturating_sub(1))?,
+            current_duty_dependent_root: dependent(epoch)?,
+        })
     }
 
     fn status_event(&mut self, head: SelectedHead) -> BeaconStateEvent {
         let curr = head.observation;
         let roots = self.head_roots(head);
-        let prev = self.emitted_head.filter(|_| roots.is_complete());
+        let prev = self.emitted_head.filter(|_| roots.is_some());
         let head_change = match prev {
             Some(prev) if prev.root != curr.root || prev.optimistic != curr.optimistic => {
                 HeadChange::Head
@@ -565,8 +570,12 @@ impl BeaconStateTile {
             "Status would describe a head whose envelope is still pending"
         );
         let event = self.status_event(head);
+        let moved = self.emitted_head.is_some_and(|emitted| emitted.root != head.observation.root);
         self.emitted_head = Some(head.observation);
         producers.produce(event);
+        if moved {
+            self.prepare_payload_on_new_head(producers);
+        }
     }
 
     fn serve_aggregate(
@@ -619,6 +628,16 @@ impl BeaconStateTile {
             written
         });
         producers.produce(BeaconApiResponse::SyncCommitteeContribution { request_id, ssz });
+    }
+
+    fn record_proposer_preparations(&mut self, preparations: TCacheRead) {
+        let acquired = self.reader.acquire(preparations);
+        let Ok((encoded, _)) = acquired.buffer() else {
+            tracing::error!(seq = acquired.seq(), "proposer preparations overwritten before read");
+            return;
+        };
+        let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
+        self.proposer_preparations.record(encoded, epoch);
     }
 
     fn post_shufflings(&mut self, producers: &mut Producers) {
@@ -721,6 +740,10 @@ impl BeaconStateTile {
         self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
+        self.payload_preparations.prune_before(slot);
+        if slot.is_multiple_of(SLOTS_PER_EPOCH) {
+            self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
+        }
         advanced
     }
 
@@ -740,15 +763,16 @@ impl BeaconStateTile {
                     }
                     StagedVerdict::Kept => {}
                     StagedVerdict::NotStaged => {
-                        self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+                        self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
                     }
                 }
             }
             EngineResp::Fcu(r) => {
-                self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+                self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
             }
             // Proposal flow — silver doesn't propose yet, nothing requests
             // payloads.
+            EngineResp::PreparePayload(r) => self.payload_preparations.on_response(r),
             EngineResp::GetPayload(_) => {}
             // EL-mempool blob fetch. Belongs to the storage tile (it owns
             // column validation/availability), not here; see the TODO at its
@@ -787,9 +811,9 @@ impl BeaconStateTile {
             }
             TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
             TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
-            // TODO(EL): send engine_forkchoiceUpdatedV3 with payload
-            // attributes to start EL block building for this slot.
-            TickEvent::PreparePayload(_) => {}
+            TickEvent::PreparePayload(slot) => {
+                self.prepare_payload(slot + 1, &mut adapter.producers)
+            }
             TickEvent::None => {}
         }
 
@@ -812,6 +836,9 @@ impl BeaconStateTile {
                 beacon_block_root,
                 producers,
             ),
+            BeaconApiRequest::ProposerPreparations { preparations } => {
+                self.record_proposer_preparations(preparations)
+            }
             BeaconApiRequest::LocalGossip { .. } |
             BeaconApiRequest::Block { .. } |
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
@@ -1004,9 +1031,9 @@ impl BeaconStateTile {
         &mut self,
         block_root: B256,
         status: PayloadValidationStatus,
-        latest_valid_hash: B256,
+        latest_valid_hash: Option<B256>,
     ) {
-        self.on_payload_verdict(&block_root, &latest_valid_hash, status);
+        self.on_payload_verdict(&block_root, latest_valid_hash, status);
     }
 
     /// An envelope seen on gossip and verified against its bid, with the EL

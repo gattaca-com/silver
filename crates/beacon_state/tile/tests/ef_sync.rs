@@ -60,7 +60,7 @@ fn run_case(name: &str, dir: &Path) {
 
     // EL verdicts keyed by execution block hash, applied once the matching block
     // is resident — the `payload_status` step may precede or follow its block.
-    let mut programmed: HashMap<B256, (PayloadValidationStatus, B256)> = HashMap::new();
+    let mut programmed: HashMap<B256, (PayloadValidationStatus, Option<B256>)> = HashMap::new();
 
     for (si, step) in steps.iter().enumerate() {
         let m = step.as_mapping().unwrap_or_else(|| panic!("{name} step {si}: not a mapping"));
@@ -72,11 +72,7 @@ fn run_case(name: &str, dir: &Path) {
             else {
                 continue;
             };
-            let lvh = ps
-                .get("latest_valid_hash")
-                .and_then(Value::as_str)
-                .map(parse_root)
-                .unwrap_or([0u8; 32]);
+            let lvh = ps.get("latest_valid_hash").and_then(Value::as_str).map(parse_root);
             let exec = parse_root(bh);
             // Apply now if the block is already resident, else defer to import.
             let resident = node_root_by_exec(&tile, &exec);

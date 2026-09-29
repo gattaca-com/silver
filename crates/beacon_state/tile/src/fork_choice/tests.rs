@@ -996,7 +996,7 @@ fn gloas_empty_survives_full_invalid() {
 
     // EL invalidates A's envelope → FULL branch dead → A resolves EMPTY → C_e,
     // and A itself stays viable (not sunk like a pre-Gloas invalid block).
-    fc.on_payload_invalid(&root(2), &[0u8; 32]);
+    fc.on_payload_invalid(&root(2), None);
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));

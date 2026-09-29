@@ -138,7 +138,7 @@ impl BeaconStateTile {
     pub(super) fn on_payload_verdict(
         &mut self,
         block_root: &B256,
-        latest_valid_hash: &B256,
+        latest_valid_hash: Option<B256>,
         status: PayloadValidationStatus,
     ) {
         match status {

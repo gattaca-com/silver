@@ -25,7 +25,7 @@ impl ForkChoice {
     }
 
     #[timed]
-    pub fn on_payload_invalid(&mut self, block_root: &B256, latest_valid_hash: &B256) {
+    pub fn on_payload_invalid(&mut self, block_root: &B256, latest_valid_hash: Option<B256>) {
         let Some(head_idx) = self.find_node_idx(block_root) else {
             return;
         };
@@ -38,11 +38,8 @@ impl ForkChoice {
             return;
         }
 
-        let lvh_idx = if *latest_valid_hash == [0u8; 32] {
-            None
-        } else {
-            self.nodes.iter().position(|n| n.execution_block_hash == *latest_valid_hash)
-        };
+        let lvh_idx = latest_valid_hash
+            .and_then(|hash| self.nodes.iter().position(|n| n.execution_block_hash == hash));
 
         info!(?block_root, ?latest_valid_hash, "payload invalid, marking branch");
 

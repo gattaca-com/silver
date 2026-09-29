@@ -7,7 +7,7 @@ use super::builders::{
     is_builder_index,
 };
 use crate::stf::{
-    get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
+    PayloadWithdrawals, get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
     update_next_withdrawal_index, update_next_withdrawal_validator_index,
 };
 
@@ -25,7 +25,7 @@ pub fn process_withdrawals(view: &mut StateWriterView) {
     }
 
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
-    let mut withdrawals: Vec<Withdrawal> = Vec::new();
+    let mut withdrawals = PayloadWithdrawals::new();
     let mut wi = view.slot.state().next_withdrawal_index;
 
     let processed_builder = get_builder_withdrawals(view, &mut withdrawals, &mut wi);
@@ -46,14 +46,16 @@ pub fn process_withdrawals(view: &mut StateWriterView) {
         view.pending.partial_withdrawals.drain(processed_partial);
     }
     update_next_withdrawal_builder_index(view, processed_builders_sweep);
-    view.slot.state_mut().payload_expected_withdrawals = withdrawals;
+    let stored = &mut view.slot.state_mut().payload_expected_withdrawals;
+    stored.clear();
+    stored.extend_from_slice(&withdrawals);
 }
 
 /// Drain `builder_pending_withdrawals` into payouts to each builder's recorded
 /// fee recipient, reserving one slot for the validator sweep.
 fn get_builder_withdrawals(
     view: &StateWriterView,
-    out: &mut Vec<Withdrawal>,
+    out: &mut PayloadWithdrawals,
     wi: &mut u64,
 ) -> usize {
     let limit = MAX_WITHDRAWALS_PER_PAYLOAD - 1;
@@ -80,7 +82,7 @@ fn get_builder_withdrawals(
 fn get_builders_sweep_withdrawals(
     view: &StateWriterView,
     current_epoch: u64,
-    out: &mut Vec<Withdrawal>,
+    out: &mut PayloadWithdrawals,
     wi: &mut u64,
 ) -> usize {
     let builders = view.builders.reader();

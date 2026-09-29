@@ -2,8 +2,8 @@ use flux::spine::SpineAdapter;
 use serde::Deserialize;
 use silver_common::{
     ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
-    EngineNewPayloadResp, EngineResp, PayloadValidationStatus, SilverSpine, TCacheProducer,
-    TCacheRead, TProducer, merkle::B256,
+    EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp, PayloadValidationStatus,
+    SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
@@ -28,32 +28,29 @@ struct RpcError<'a> {
 }
 
 #[inline]
-pub(crate) fn handle_capabilities_response(
-    response: Result<&mut [u8], EngineError>,
-) -> &'static str {
-    const FALLBACK: &str = "engine_getPayloadV3";
+pub(crate) fn handle_capabilities_response(response: Result<&mut [u8], EngineError>) {
     let raw = match response {
         Err(e) => {
             tracing::warn!("engine_exchangeCapabilities failed: {e}");
-            return FALLBACK;
+            return;
         }
         Ok(b) => b,
     };
     let val = match simd_json::to_borrowed_value(raw) {
         Err(e) => {
             tracing::warn!("engine_exchangeCapabilities failed: {e}");
-            return FALLBACK;
+            return;
         }
         Ok(v) => v,
     };
     if let Some(err) = val.get("error") {
         tracing::warn!("engine_exchangeCapabilities rpc error: {err}");
-        return FALLBACK;
+        return;
     }
     let result = match val.get("result") {
         None => {
             tracing::warn!("engine_exchangeCapabilities: missing result");
-            return FALLBACK;
+            return;
         }
         Some(v) => v,
     };
@@ -65,9 +62,10 @@ pub(crate) fn handle_capabilities_response(
     if !has("engine_newPayloadV4") {
         tracing::warn!("EL does not support engine_newPayloadV4");
     }
-    let method = if has("engine_getPayloadV4") { "engine_getPayloadV4" } else { FALLBACK };
-    tracing::info!("capabilities negotiated, using {method}");
-    method
+    if !has("engine_getPayloadV5") {
+        tracing::warn!("EL does not support engine_getPayloadV5");
+    }
+    tracing::info!("capabilities negotiated");
 }
 
 #[inline]
@@ -189,11 +187,6 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<ForkchoiceUpdatedResult>>(raw) {
                 Ok(RpcResult { result: Some(r), .. }) => {
                     let status = status_from_str(&r.payload_status.status);
-                    let latest_valid_hash = r.payload_status.latest_valid_hash.unwrap_or([0u8; 32]);
-                    let (has_payload_id, payload_id) = match r.payload_id {
-                        Some(id) => (true, id),
-                        None => (false, [0u8; 8]),
-                    };
                     tracing::info!(
                         status = %r.payload_status.status,
                         latest_valid_hash = %r.payload_status.latest_valid_hash
@@ -204,9 +197,7 @@ impl<'a> Responses<'a> {
                     EngineFcuResp {
                         block_root,
                         status,
-                        latest_valid_hash,
-                        has_payload_id,
-                        payload_id,
+                        latest_valid_hash: r.payload_status.latest_valid_hash,
                     }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
@@ -220,6 +211,47 @@ impl<'a> Responses<'a> {
             }
         };
         self.adapter.produce(EngineResp::Fcu(resp));
+    }
+
+    #[inline]
+    pub(crate) fn prepare_payload(
+        &mut self,
+        spine_id: u64,
+        response: Result<&mut [u8], EngineError>,
+    ) {
+        let payload_id = 'parse: {
+            let raw = match response {
+                Err(e) => {
+                    tracing::warn!("forkchoiceUpdated with attributes error: {e}");
+                    break 'parse None;
+                }
+                Ok(b) => b,
+            };
+            match simd_json::serde::from_slice::<RpcResult<ForkchoiceUpdatedResult>>(raw) {
+                Ok(RpcResult { result: Some(r), .. }) => {
+                    if r.payload_id.is_none() {
+                        tracing::warn!(
+                            id = spine_id,
+                            status = %r.payload_status.status,
+                            "forkchoiceUpdated with attributes started no payload"
+                        );
+                    }
+                    r.payload_id
+                }
+                Ok(RpcResult { error: Some(e), .. }) => {
+                    tracing::warn!("forkchoiceUpdated with attributes rpc error: {}", e.message);
+                    None
+                }
+                Ok(_) | Err(_) => {
+                    tracing::warn!("forkchoiceUpdated with attributes: missing result");
+                    None
+                }
+            }
+        };
+        self.adapter.produce(EngineResp::PreparePayload(EnginePreparePayloadResp {
+            id: spine_id,
+            payload_id,
+        }));
     }
 
     #[inline]
@@ -239,9 +271,12 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<PayloadStatus>>(raw) {
                 Ok(RpcResult { result: Some(ps), .. }) => {
                     let status = status_from_str(&ps.status);
-                    let latest_valid_hash = ps.latest_valid_hash.unwrap_or([0u8; 32]);
                     tracing::info!("newPayload → {:?}", status);
-                    EngineNewPayloadResp { block_root, status, latest_valid_hash }
+                    EngineNewPayloadResp {
+                        block_root,
+                        status,
+                        latest_valid_hash: ps.latest_valid_hash,
+                    }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
                     tracing::warn!("newPayload rpc error: {}", e.message);
@@ -262,7 +297,7 @@ impl<'a> Responses<'a> {
             Ok(raw) => match self.encode(raw, json_get_payload_to_tcache) {
                 Ok(Some(((), data))) => {
                     tracing::info!(id = spine_id, "getPayload ok");
-                    EngineGetPayloadResp { id: spine_id, ok: true, data }
+                    EngineGetPayloadResp { id: spine_id, data: Some(data) }
                 }
                 Ok(None) => {
                     tracing::warn!("getPayload TCache full");
@@ -297,7 +332,7 @@ impl<'a> Responses<'a> {
                         blobs_present,
                         "getBlobsV3 ok"
                     );
-                    EngineGetBlobsResp { block_root, slot, ok: true, blobs_present, data }
+                    EngineGetBlobsResp { block_root, slot, blobs_present, data: Some(data) }
                 }
                 Ok(None) => {
                     tracing::warn!("getBlobsV3 TCache full");
@@ -352,18 +387,12 @@ pub(crate) fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCac
 
 #[inline]
 fn get_payload_error(id: u64) -> EngineGetPayloadResp {
-    EngineGetPayloadResp { id, ok: false, data: unsafe { std::mem::zeroed() } }
+    EngineGetPayloadResp { id, data: None }
 }
 
 #[inline]
 fn fcu_error(block_root: [u8; 32]) -> EngineFcuResp {
-    EngineFcuResp {
-        block_root,
-        status: PayloadValidationStatus::Syncing,
-        latest_valid_hash: [0u8; 32],
-        has_payload_id: false,
-        payload_id: [0u8; 8],
-    }
+    EngineFcuResp { block_root, status: PayloadValidationStatus::Syncing, latest_valid_hash: None }
 }
 
 #[inline]
@@ -371,7 +400,7 @@ fn new_payload_error(block_root: [u8; 32]) -> EngineNewPayloadResp {
     EngineNewPayloadResp {
         block_root,
         status: PayloadValidationStatus::Syncing,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     }
 }
 

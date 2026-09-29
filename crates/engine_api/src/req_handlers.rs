@@ -2,13 +2,16 @@ use flux::spine::FluxSpine;
 use silver_common::{
     EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadReq,
     EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
-    TCacheRead, TCacheReader, TProducer,
+    EnginePreparePayloadReq, EnginePreparePayloadResp, EngineReq, EngineResp,
+    PayloadValidationStatus, SilverSpine, TCacheRead, TCacheReader, TProducer,
 };
 
 use crate::{
     EngineClient, EngineError,
-    client::{get_blobs, get_payload, send_fcu, send_new_payload, send_new_payload_envelope},
+    client::{
+        get_blobs, get_payload, send_fcu, send_new_payload, send_new_payload_envelope,
+        send_prepare_payload,
+    },
     resp_handlers::write_tcache,
     types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
 };
@@ -34,7 +37,7 @@ pub(crate) fn handle_request(
 
 /// Unsafe no-EL testing mode: answer each request with a synthetic VALID
 /// response without contacting an execution client. Built payloads can't be
-/// fabricated, so those return `ok: false`; blob fetches answer
+/// fabricated, so those return no `data`; blob fetches answer
 /// as a healthy EL that simply holds none of the requested blobs.
 #[inline]
 pub(crate) fn handle_request_no_el(
@@ -46,41 +49,32 @@ pub(crate) fn handle_request_no_el(
         EngineReq::Fcu(r) => EngineResp::Fcu(EngineFcuResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: r.head_block_hash,
-            has_payload_id: false,
-            payload_id: [0u8; 8],
+            latest_valid_hash: Some(r.head_block_hash),
         }),
         EngineReq::NewPayload(r) => EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0u8; 32],
+            latest_valid_hash: None,
         }),
         EngineReq::NewPayloadEnvelope(r) => EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0u8; 32],
+            latest_valid_hash: None,
         }),
-        // Proposal path correlates on payload_id; derive one from the spine id.
-        EngineReq::PreparePayload(r) => EngineResp::Fcu(EngineFcuResp {
-            block_root: [0u8; 32],
-            status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0u8; 32],
-            has_payload_id: true,
-            payload_id: r.id.to_le_bytes(),
-        }),
-        EngineReq::GetPayload(r) => EngineResp::GetPayload(EngineGetPayloadResp {
+        EngineReq::PreparePayload(r) => EngineResp::PreparePayload(EnginePreparePayloadResp {
             id: r.id,
-            ok: false,
-            data: unsafe { std::mem::zeroed() },
+            payload_id: Some(r.id.to_le_bytes()),
         }),
+        EngineReq::GetPayload(r) => {
+            EngineResp::GetPayload(EngineGetPayloadResp { id: r.id, data: None })
+        }
         // EL responded with none of the requested blobs: a count-0 frame.
         EngineReq::GetBlobs(r) => match write_tcache(resp_producer, &0u32.to_le_bytes()) {
             Some(data) => EngineResp::GetBlobs(EngineGetBlobsResp {
                 block_root: r.block_root,
                 slot: r.slot,
-                ok: true,
                 blobs_present: 0,
-                data,
+                data: Some(data),
             }),
             None => EngineResp::GetBlobs(EngineGetBlobsResp::failed(r.block_root, r.slot)),
         },
@@ -96,7 +90,7 @@ fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
         safe_block_hash: r.safe_block_hash,
         finalized_block_hash: r.finalized_block_hash,
     };
-    send_fcu(client, r.block_root, state, None);
+    send_fcu(client, r.block_root, state);
 }
 
 #[inline]
@@ -193,15 +187,14 @@ fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq)
         safe_block_hash: r.safe_block_hash,
         finalized_block_hash: r.finalized_block_hash,
     };
-    let attrs = Some(PayloadAttributesV3 {
+    let attrs = PayloadAttributesV3 {
         timestamp: r.attrs_timestamp,
         prev_randao: r.attrs_prev_randao,
         suggested_fee_recipient: r.attrs_fee_recipient,
         withdrawals,
         parent_beacon_block_root: r.attrs_parent_beacon_block_root,
-    });
-    // Proposal path correlates on payload_id, not the head verdict.
-    send_fcu(client, [0u8; 32], state, attrs);
+    };
+    send_prepare_payload(client, r.id, state, attrs);
 }
 
 #[inline]
@@ -217,7 +210,7 @@ fn invalid_new_payload_resp(block_root: [u8; 32]) -> EngineNewPayloadResp {
     EngineNewPayloadResp {
         block_root,
         status: PayloadValidationStatus::Syncing,
-        latest_valid_hash: [0u8; 32],
+        latest_valid_hash: None,
     }
 }
 
@@ -229,6 +222,6 @@ mod tests {
     fn invalid_new_payload_resp_fields() {
         let resp = invalid_new_payload_resp([0u8; 32]);
         assert_eq!(resp.status, PayloadValidationStatus::Syncing);
-        assert_eq!(resp.latest_valid_hash, [0u8; 32]);
+        assert_eq!(resp.latest_valid_hash, None);
     }
 }

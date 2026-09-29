@@ -75,7 +75,6 @@ pub struct NodeCheckpoints {
     pub justified: Checkpoint,
     pub finalized: Checkpoint,
     pub unrealized_justified: Checkpoint,
-    pub unrealized_finalized: Checkpoint,
 }
 
 /// Pre-Gloas the block itself carries the payload:

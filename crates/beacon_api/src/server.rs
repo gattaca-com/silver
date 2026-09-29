@@ -580,11 +580,14 @@ impl BeaconApi {
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
                     return;
                 }
+                let Some(roots) = head_roots else {
+                    return;
+                };
 
                 let head = HeadEvent {
                     slot: StatusView::head_slot(&ssz),
                     block_root,
-                    roots: head_roots,
+                    roots,
                     payload: head_payload,
                     epoch_transition,
                     execution_optimistic: optimistic,
@@ -1806,7 +1809,7 @@ mod tests {
             wall_slot: slot,
             head_optimistic: optimistic,
             enr_fork_id: [0; 16],
-            head_roots: head.roots,
+            head_roots: Some(head.roots),
             head_payload: head.payload,
             head_change: HeadChange::Head,
             epoch_transition: false,
@@ -2086,7 +2089,7 @@ mod tests {
         server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: [0xab; 32],
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0; 32],
+            latest_valid_hash: None,
         }));
         assert!(!server.api.node_status().head.optimistic);
 
@@ -2111,7 +2114,7 @@ mod tests {
         server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: [0xab; 32],
             status: PayloadValidationStatus::Valid,
-            latest_valid_hash: [0; 32],
+            latest_valid_hash: None,
         }));
         server.api.handle_beacon_state_event(status(10, 0xab, true));
         assert!(!server.api.node_status().head.optimistic);
@@ -2135,7 +2138,7 @@ mod tests {
         server.api.handle_engine_resp(EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: [0xab; 32],
             status: PayloadValidationStatus::Invalid,
-            latest_valid_hash: [0; 32],
+            latest_valid_hash: None,
         }));
         server.api.handle_beacon_state_event(status(10, 0xab, true));
         assert_eq!(server.api.node_status().head.slot, 9);
@@ -2359,7 +2362,8 @@ mod tests {
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
             BeaconApiRequest::SyncCommitteeContribution { request_id, .. } => *request_id,
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
-            BeaconApiRequest::SyncCommitteeSubscriptions { .. } => unreachable!("never answered"),
+            BeaconApiRequest::SyncCommitteeSubscriptions { .. } |
+            BeaconApiRequest::ProposerPreparations { .. } => unreachable!("never answered"),
         }
     }
 

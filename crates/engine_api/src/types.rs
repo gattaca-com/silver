@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::ssz_view::{
     BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, ExecutionPayloadEnvelopeView,
-    ExecutionPayloadView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
+    ExecutionPayloadView, NUMBER_OF_COLUMNS, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
     SignedExecutionPayloadEnvelopeView,
 };
 
@@ -499,7 +499,7 @@ fn write_execution_requests_json<const N: usize>(
 }
 
 // ---------------------------------------------------------------------------
-// Zero-alloc JSON → TCache frame converter for engine_getPayloadV4
+// Zero-alloc JSON → TCache frame converter for engine_getPayloadV5
 //
 // Parses the raw HTTP response body (full JSON-RPC envelope) using
 // simd_json BorrowedValue so all string values borrow from the input
@@ -609,7 +609,7 @@ fn encode_withdrawals_json(
     Ok(())
 }
 
-/// Parse a raw `engine_getPayloadV4` JSON-RPC response body and write the
+/// Parse a raw `engine_getPayloadV5` JSON-RPC response body and write the
 /// TCache frame directly into `out` (same layout as `encode_get_payload_data`).
 ///
 /// `raw` is mutated in-place by simd_json's SIMD parser. `out` must be empty
@@ -699,17 +699,29 @@ pub(crate) fn json_get_payload_to_tcache(
     let payload_ssz_len = (out.len() - ssz_start) as u32;
     out[tcache_hdr..tcache_hdr + 4].copy_from_slice(&payload_ssz_len.to_le_bytes());
 
-    // Blobs bundle.
+    // BlobsBundleV2: `proofs` holds every blob's cell proofs, blob by blob.
     let commitments =
         bb.get("commitments").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
     let proofs = bb.get("proofs").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
     let blobs = bb.get("blobs").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
-    let blob_count = commitments.len().min(proofs.len()).min(blobs.len()).min(255) as u8;
+    let blob_count = u8::try_from(blobs.len())
+        .ok()
+        .filter(|_| commitments.len() == blobs.len())
+        .filter(|_| proofs.len() == blobs.len() * NUMBER_OF_COLUMNS)
+        .ok_or_else(|| crate::EngineError::Ssz("inconsistent blobsBundle lengths".into()))?;
     out.push(blob_count);
 
-    for i in 0..blob_count as usize {
-        hex_extend_clamped::<48>(commitments[i].as_str().unwrap_or("0x"), out)?;
-        hex_extend_clamped::<48>(proofs[i].as_str().unwrap_or("0x"), out)?;
+    let kzg_bytes = |value: &simd_json::BorrowedValue<'_>| {
+        value
+            .as_str()
+            .ok_or_else(|| crate::EngineError::Ssz("blobsBundle entry is not a string".into()))
+            .and_then(hex_to_fixed::<48>)
+    };
+    for (i, cell_proofs) in proofs.chunks_exact(NUMBER_OF_COLUMNS).enumerate() {
+        out.extend_from_slice(&kzg_bytes(&commitments[i])?);
+        for proof in cell_proofs {
+            out.extend_from_slice(&kzg_bytes(proof)?);
+        }
         let b_s = blobs[i].as_str().unwrap_or("0x");
         let b_hex = b_s.strip_prefix("0x").unwrap_or(b_s);
         out.extend_from_slice(&((b_hex.len() / 2) as u32).to_le_bytes());
@@ -818,7 +830,6 @@ mod tests {
     const TX_SINGLE: &[u8] = include_bytes!("../testdata/tx_single.bin");
     const TX_MULTI: &[u8] = include_bytes!("../testdata/tx_multi.bin");
     const WITHDRAWALS: &[u8] = include_bytes!("../testdata/withdrawals.bin");
-    const GET_PAYLOAD_TCACHE: &[u8] = include_bytes!("../testdata/get_payload_tcache.bin");
 
     // Wraps a bare ExecutionPayload SSZ in a minimal SignedBeaconBlock SSZ:
     // zeroed fixed fields, the five early body lists empty, empty
@@ -914,18 +925,28 @@ mod tests {
         out
     }
 
-    // Constructs the getPayload JSON whose TCache encoding is
-    // get_payload_tcache.bin.
+    /// Blob `i`'s cell proof `j` is 48 bytes of `0xd0 + i` then `j`.
+    fn cell_proof(blob: u8, cell: usize) -> [u8; 48] {
+        let mut proof = [0xd0 + blob; 48];
+        proof[47] = cell as u8;
+        proof
+    }
+
+    // Constructs the getPayload JSON whose payload encodes to
+    // sample_payload.ssz.
     fn get_payload_json() -> Vec<u8> {
         let logs_bloom = "55".repeat(256);
         let commitment0 = "c0".repeat(48);
-        let proof0 = "d0".repeat(48);
         let blob0 = "b0".repeat(128);
         let commitment1 = "c1".repeat(48);
-        let proof1 = "d1".repeat(48);
         let blob1 = "b1".repeat(64);
+        let proofs = (0..2u8)
+            .flat_map(|blob| (0..NUMBER_OF_COLUMNS).map(move |cell| cell_proof(blob, cell)))
+            .map(|proof| format!("\"0x{}\"", hex::encode(proof)))
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":["0x{proof0}","0x{proof1}"],"blobs":["0x{blob0}","0x{blob1}"]}},"shouldOverrideBuilder":false,"executionRequests":["0x0102","0x03"]}}}}"#
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":[{proofs}],"blobs":["0x{blob0}","0x{blob1}"]}},"shouldOverrideBuilder":false,"executionRequests":["0x0102","0x03"]}}}}"#
         )
         .into_bytes()
     }
@@ -1447,7 +1468,48 @@ mod tests {
         let mut json = get_payload_json();
         let mut out = Vec::new();
         json_get_payload_to_tcache(&mut json, &mut out).unwrap();
-        assert_eq!(out, GET_PAYLOAD_TCACHE);
+
+        let mut expected = (SAMPLE_PAYLOAD_SSZ.len() as u32).to_le_bytes().to_vec();
+        expected.extend_from_slice(SAMPLE_PAYLOAD_SSZ);
+        expected.push(2);
+        for (blob, blob_bytes) in [(0u8, [0xb0; 128].as_slice()), (1, [0xb1; 64].as_slice())] {
+            expected.extend_from_slice(&[0xc0 + blob; 48]);
+            for cell in 0..NUMBER_OF_COLUMNS {
+                expected.extend_from_slice(&cell_proof(blob, cell));
+            }
+            expected.extend_from_slice(&(blob_bytes.len() as u32).to_le_bytes());
+            expected.extend_from_slice(blob_bytes);
+        }
+        expected.extend_from_slice(&[0, 2, 2, 0, 0, 0, 1, 2, 1, 0, 0, 0, 3]);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_rejects_one_proof_per_blob() {
+        let mut json = String::from_utf8(get_payload_json()).unwrap();
+        let start = json.find("\"proofs\":[").unwrap() + "\"proofs\":[".len();
+        let end = start + json[start..].find(']').unwrap();
+        let two_proofs = format!("\"0x{}\",\"0x{}\"", "d0".repeat(48), "d1".repeat(48));
+        json.replace_range(start..end, &two_proofs);
+        assert!(json_get_payload_to_tcache(&mut json.into_bytes(), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_rejects_a_misframed_commitment_or_proof() {
+        let json = String::from_utf8(get_payload_json()).unwrap();
+        let commitment = "c0".repeat(48);
+        let first_proof = json.find("\"proofs\":[\"0x").unwrap() + "\"proofs\":[\"0x".len();
+        for bad in [
+            json.replacen(&commitment, &"c0".repeat(47), 1),
+            json.replacen(&commitment, &"c0".repeat(49), 1),
+            {
+                let mut short_proof = json.clone();
+                short_proof.replace_range(first_proof..first_proof + 2, "");
+                short_proof
+            },
+        ] {
+            assert!(json_get_payload_to_tcache(&mut bad.into_bytes(), &mut Vec::new()).is_err());
+        }
     }
 
     #[test]
