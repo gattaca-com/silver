@@ -4,43 +4,15 @@
 //! nothing about the slot). Per-block timelines, dedup (repeat-head FCUs) and
 //! deadline checks are ClickHouse queries over the events, not collector
 //! logic.
-//!
-//! The `block_events_xatu` view renames the one comparable stage onto
-//! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
-//! read as one dataset.
 
-use std::{
-    mem::take,
-    sync::mpsc::{SyncSender, sync_channel},
-    thread,
-};
+use serde::Serialize;
+use silver_stages::{Stage, StageEvent};
 
-use flux::spine::SpineAdapter;
-use silver_common::SilverSpine;
-use silver_config::ChainConfig;
-use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
-use tracing::{info, warn};
+use crate::node_meta::NodeMeta;
 
-use crate::clickhouse::ChTable;
+pub const TABLE: &str = "block_events";
 
-const TABLE: &str = "block_events";
-
-/// Run in order on every start, so a table an older build created catches up:
-/// `CREATE TABLE IF NOT EXISTS` alone would no-op and leave the new columns
-/// missing, which `input_format_skip_unknown_fields` then drops from each row
-/// without failing the insert. Every statement has to be a no-op the second
-/// time it runs, and a new one goes after the last `ALTER` but ahead of the
-/// views, which read the columns the alters produce.
-const DDL: &[&str] = &[
-    TABLE_DDL,
-    "ALTER TABLE block_events RENAME COLUMN IF EXISTS propagation_slot_start_diff TO time_into_slot_ms",
-    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS slot_start_date_time Nullable(DateTime) AFTER slot",
-    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS meta_network_name LowCardinality(String)",
-    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS column_index Nullable(UInt64)",
-    XATU_VIEW_DDL,
-];
-
-const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
+pub const DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
     event_date_time      DateTime64(9)                    COMMENT 'Node-local wall clock at the observation',
     stage                LowCardinality(String)           COMMENT 'Point in the block path through the node this row observes',
     slot                 Nullable(UInt64)                 COMMENT 'NULL when the root was first seen before the collector attached',
@@ -55,141 +27,50 @@ const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
 ) ENGINE = MergeTree
 ORDER BY (meta_client_name, event_date_time)";
 
-/// The mapping onto Xatu's `beacon_api_eth_v1_events_block` columns, so a query
-/// can union these rows with ethPandaOps' parquet. Only `received` is an
-/// observation of the network; the other stages time silver's own pipeline, and
-/// Xatu's `propagation_slot_start_diff` — arrival at a sentry — has no
-/// counterpart for them.
-const XATU_VIEW_DDL: &str = "CREATE OR REPLACE VIEW block_events_xatu AS
-SELECT
-    event_date_time,
-    slot,
-    slot_start_date_time,
-    time_into_slot_ms AS propagation_slot_start_diff,
-    block_root        AS block,
-    meta_client_name,
-    meta_network_name
-FROM block_events
-WHERE stage = 'received' AND time_into_slot_ms IS NOT NULL";
-
-struct BlockEvents {
-    reader: StageReader,
-    formatter: RowFormatter,
-    pending: Vec<String>,
+#[derive(Serialize)]
+pub struct BlockEventRow<'a> {
+    event_date_time: u64,
+    stage: &'static str,
+    slot: Option<u64>,
+    slot_start_date_time: Option<u32>,
+    time_into_slot_ms: Option<f64>,
+    block_root: String,
+    source: String,
+    verdict: Option<String>,
+    column_index: Option<u64>,
+    meta_client_name: &'a str,
+    meta_network_name: &'a str,
 }
 
-impl BlockEvents {
-    fn new(formatter: RowFormatter) -> Self {
-        Self { reader: StageReader::default(), formatter, pending: Vec::new() }
-    }
-
-    fn consume(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        for event in self.reader.consume(adapter) {
-            self.pending.push(self.formatter.row(&event));
-        }
-    }
-
-    fn take_batch(&mut self) -> Option<String> {
-        (!self.pending.is_empty()).then(|| take(&mut self.pending).join("\n"))
-    }
-}
-
-/// The per-node constants joined onto every row.
-struct RowFormatter {
-    node: String,
-    network: String,
-    clock: SlotClock,
-}
-
-impl RowFormatter {
-    /// Fills `node`, i.e. `meta_client_name`: rows from every machine land in
-    /// one table.
-    fn hostname() -> String {
-        let mut buf = [0u8; 256];
-        if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
-            return "unknown".to_owned();
-        }
-        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        String::from_utf8_lossy(&buf[..len]).into_owned()
-    }
-
-    fn row(&self, event: &StageEvent) -> String {
+impl<'a> BlockEventRow<'a> {
+    pub fn new(event: &StageEvent, meta: &'a NodeMeta) -> Self {
         let (source, verdict, column_index) = match event.stage {
             Stage::Received { source } | Stage::ElSent { source } => {
-                (Some(format!("{source:?}")), None, None)
+                (format!("{source:?}"), None, None)
             }
             Stage::ColumnRecv { index, origin } | Stage::ColumnValidated { index, origin } => {
-                (Some(format!("{origin:?}")), None, Some(index))
+                (format!("{origin:?}"), None, Some(index))
             }
-            Stage::ElVerdict { verdict } => (None, Some(format!("{verdict:?}")), None),
+            Stage::ElVerdict { verdict } => (String::new(), Some(format!("{verdict:?}")), None),
             Stage::StfDone | Stage::Attestable | Stage::DaAvailable | Stage::CustodyDone => {
-                (None, None, None)
+                (String::new(), None, None)
             }
         };
-        serde_json::json!({
-            "event_date_time": event.ts.0,
-            "stage": event.stage.name(),
-            "slot": event.slot,
-            "slot_start_date_time": event.slot.map(|s| self.clock.slot_start(s).as_secs_u64()),
-            "time_into_slot_ms": event
+        Self {
+            event_date_time: event.ts.0,
+            stage: event.stage.name(),
+            slot: event.slot,
+            slot_start_date_time: event.slot.map(|s| meta.clock.slot_start(s).as_secs_u64() as u32),
+            time_into_slot_ms: event
                 .slot
-                .and_then(|s| self.clock.offset_in_slot(event.ts, s))
+                .and_then(|s| meta.clock.offset_in_slot(event.ts, s))
                 .map(|d| d.0 as f64 / 1e6),
-            "block_root": format!("0x{}", hex::encode(event.block_root)),
-            "source": source,
-            "verdict": verdict,
-            "column_index": column_index,
-            "meta_client_name": self.node,
-            "meta_network_name": self.network,
-        })
-        .to_string()
-    }
-}
-
-/// Turns the spine stage events into ClickHouse inserts. The HTTP leg
-/// runs on its own thread: the collector's thread also drains the profiler
-/// rings, and it must not stall behind an unreachable ClickHouse.
-pub struct BlockEventsInserter {
-    events: BlockEvents,
-    batches: SyncSender<String>,
-}
-
-impl BlockEventsInserter {
-    pub fn open(clickhouse_url: &str, chain: &ChainConfig) -> Self {
-        let slot_ms = chain.slot_duration().as_millis() as u64;
-        let events = BlockEvents::new(RowFormatter {
-            node: RowFormatter::hostname(),
-            network: chain.spec.network_name(),
-            clock: SlotClock::new(chain.genesis_unix_secs, slot_ms),
-        });
-        let (batches, rx) = sync_channel::<String>(256);
-        let mut table = ChTable::new(clickhouse_url, TABLE, DDL);
-        // TODO: the only reason the daemon runs a second thread. `ureq` blocks
-        // for up to its read timeout, which the drain loop cannot afford; a
-        // non-blocking send would let this run inline like everything else.
-        thread::spawn(move || {
-            for batch in rx {
-                table.insert(&batch);
-            }
-        });
-        info!(
-            node = events.formatter.node,
-            network = events.formatter.network,
-            url = clickhouse_url,
-            "block-events inserter open"
-        );
-        Self { events, batches }
-    }
-
-    /// Whatever the loop drained this iteration is one batch.
-    pub fn sample(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.events.consume(adapter);
-        let Some(batch) = self.events.take_batch() else {
-            return;
-        };
-        let bytes = batch.len();
-        if self.batches.try_send(batch).is_err() {
-            warn!(bytes, "insert queue full; batch dropped");
+            block_root: format!("0x{}", hex::encode(event.block_root)),
+            source,
+            verdict,
+            column_index,
+            meta_client_name: &meta.node,
+            meta_network_name: &meta.network,
         }
     }
 }
@@ -197,6 +78,7 @@ impl BlockEventsInserter {
 #[cfg(test)]
 mod tests {
     use silver_common::{BlockSource, ColumnOrigin, Nanos, PayloadValidationStatus};
+    use silver_stages::SlotClock;
 
     use super::*;
 
@@ -212,12 +94,12 @@ mod tests {
     }
 
     fn json(event: &StageEvent) -> serde_json::Value {
-        let formatter = RowFormatter {
+        let meta = NodeMeta {
             node: "test-node".into(),
             network: "test-net".into(),
             clock: SlotClock::new(GENESIS_SECS, SLOT_MS),
         };
-        serde_json::from_str(&formatter.row(event)).unwrap()
+        serde_json::to_value(BlockEventRow::new(event, &meta)).unwrap()
     }
 
     #[test]
