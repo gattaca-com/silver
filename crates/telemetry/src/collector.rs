@@ -20,6 +20,7 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::{CrossProcessReader, Loss, published_pid};
 use silver_common::{APP_NAME, Nanos, SilverSpine};
 use silver_log::{info, warn};
+use silver_stages::StageReader;
 
 use crate::{
     clickhouse_tables::ClickHouseTables,
@@ -56,6 +57,9 @@ pub struct TraceCollector {
     retain_bytes: u64,
     next_dump: Nanos,
     clickhouse: Option<ClickHouseTables>,
+    /// The tile's only stage-event reader: two readers on one adapter would
+    /// split the queues between them, so its events are handed to each sink.
+    stages: StageReader,
     polls: u32,
     /// The node we followed is gone and its marks are already flushed.
     detached: bool,
@@ -124,6 +128,7 @@ impl TraceCollector {
             retain_bytes,
             next_dump: Nanos::now(),
             clickhouse,
+            stages: StageReader::default(),
             polls: 0,
             detached: false,
             exporter,
@@ -260,8 +265,19 @@ impl TraceCollector {
 
 impl Tile<SilverSpine> for TraceCollector {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        let Self { stages, clickhouse, exporter, .. } = self;
+        if clickhouse.is_some() || exporter.is_some() {
+            for event in stages.consume(adapter) {
+                if let Some(clickhouse) = clickhouse {
+                    clickhouse.on_stage(&event);
+                }
+                if let Some(exporter) = exporter {
+                    exporter.on_stage(&event);
+                }
+            }
+        }
         if let Some(clickhouse) = &mut self.clickhouse {
-            clickhouse.sample(adapter);
+            clickhouse.sample();
         }
 
         while self.reader.poll() {}

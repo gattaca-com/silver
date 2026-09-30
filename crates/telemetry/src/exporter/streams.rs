@@ -1,5 +1,6 @@
 //! Spine-side sources: peer stats and per-block stage events, streamed as
-//! they arrive rather than bucketed.
+//! they arrive rather than bucketed. Stage events come from the tile's one
+//! `StageReader`, shared with the other sinks.
 
 use flux::spine::SpineAdapter;
 use silver_common::{
@@ -7,30 +8,29 @@ use silver_common::{
     PeerTopicScores, SilverSpine,
 };
 use silver_observe_wire::{Encoder, PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord};
-use silver_stages::{Stage, StageEvent, StageReader};
+use silver_stages::{Stage, StageEvent};
 
-#[derive(Default)]
-pub struct SpineStreams {
-    stages: StageReader,
+/// The exporter is the only reader of `peer_stats`.
+pub fn drain_peer_stats(
+    adapter: &mut SpineAdapter<SilverSpine>,
+    enc: &mut Encoder,
+    ts_ns: u64,
+    emit: &mut impl FnMut(&[u8]),
+) {
+    adapter.consume(|stats: PeerStats, _| match &stats {
+        PeerStats::P2p(s) => enc.peer_p2p(ts_ns, &p2p_record(s), emit),
+        PeerStats::Scores(s) => enc.peer_scores(ts_ns, &scores_record(s), emit),
+        PeerStats::Topic(s) => enc.peer_topic(ts_ns, &topic_record(s), emit),
+    });
 }
 
-impl SpineStreams {
-    pub fn drain(
-        &mut self,
-        adapter: &mut SpineAdapter<SilverSpine>,
-        enc: &mut Encoder,
-        ts_ns: u64,
-        emit: &mut impl FnMut(&[u8]),
-    ) {
-        adapter.consume(|stats: PeerStats, _| match &stats {
-            PeerStats::P2p(s) => enc.peer_p2p(ts_ns, &p2p_record(s), emit),
-            PeerStats::Scores(s) => enc.peer_scores(ts_ns, &scores_record(s), emit),
-            PeerStats::Topic(s) => enc.peer_topic(ts_ns, &topic_record(s), emit),
-        });
-        for event in self.stages.consume(adapter) {
-            enc.stage(ts_ns, &stage_record(&event), emit);
-        }
-    }
+pub fn encode_stage(
+    enc: &mut Encoder,
+    ts_ns: u64,
+    event: &StageEvent,
+    emit: &mut impl FnMut(&[u8]),
+) {
+    enc.stage(ts_ns, &stage_record(event), emit);
 }
 
 fn p2p_record(s: &P2pConnectionStats) -> PeerP2p<'_> {

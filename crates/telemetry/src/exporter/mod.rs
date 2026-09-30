@@ -15,8 +15,12 @@ use silver_common::{APP_NAME, Nanos, SilverSpine};
 use silver_config::ChainConfig;
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
+use silver_stages::StageEvent;
 
-use crate::exporter::{sources::ExportSources, streams::SpineStreams};
+use crate::exporter::{
+    sources::ExportSources,
+    streams::{drain_peer_stats, encode_stage},
+};
 
 mod sources;
 mod streams;
@@ -61,7 +65,6 @@ pub struct Exporter {
     node_pid: Option<u32>,
     encoder: Encoder,
     sources: ExportSources,
-    streams: SpineStreams,
     sink: Sink,
     next_bucket: Nanos,
     next_fast: Nanos,
@@ -88,7 +91,6 @@ impl Exporter {
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),
-            streams: SpineStreams::default(),
             sink: Sink { socket, bytes: [0; KINDS], datagrams: 0, dropped: 0 },
             next_bucket: now,
             next_fast: now,
@@ -96,12 +98,18 @@ impl Exporter {
         })
     }
 
+    /// Streamed into the open datagram; `spin` flushes it.
+    pub fn on_stage(&mut self, event: &StageEvent) {
+        let Self { encoder, sink, .. } = self;
+        encode_stage(encoder, Nanos::now().0, event, &mut |d| sink.send(d));
+    }
+
     pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.sources.drain();
 
         let now = Nanos::now();
-        let Self { encoder, streams, sink, .. } = self;
-        streams.drain(adapter, encoder, now.0, &mut |d| sink.send(d));
+        let Self { encoder, sink, .. } = self;
+        drain_peer_stats(adapter, encoder, now.0, &mut |d| sink.send(d));
 
         if now >= self.next_bucket {
             self.follow_node(now);
@@ -120,10 +128,6 @@ impl Exporter {
         }
         let Self { encoder, sink, .. } = self;
         encoder.flush(&mut |d| sink.send(d));
-
-        // Queue drains are invisible to the adapter, and under `flux/park` an
-        // idle-looking loop parks with nobody left to signal it.
-        adapter.mark_work();
     }
 
     /// Stale mmaps and queue cursors of the departed node are dropped with the
@@ -183,4 +187,43 @@ impl Exporter {
 /// exporter keeps its dashboard identity.
 fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use silver_common::BlockSource;
+    use silver_observe_wire::{HEADER_LEN, MAX_DATAGRAM};
+    use silver_stages::Stage;
+
+    use super::*;
+
+    /// The collector hands each event from its single `StageReader` to the
+    /// exporter; it must reach the wire once the open datagram is flushed.
+    #[test]
+    fn handed_stage_event_is_sent() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut exporter =
+            Exporter::open(rx.local_addr().unwrap(), "test".into(), &ChainConfig::default())
+                .unwrap();
+
+        let root = [7u8; 32];
+        exporter.on_stage(&StageEvent {
+            stage: Stage::Received { source: BlockSource::Gossip },
+            ts: Nanos(1),
+            block_root: root,
+            slot: Some(42),
+        });
+        let Exporter { encoder, sink, .. } = &mut exporter;
+        encoder.flush(&mut |d| sink.send(d));
+
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let n = rx.recv(&mut buf).unwrap();
+        assert_eq!(Header::parse(&buf[..n]).unwrap().kind, Kind::Stages);
+        let entry = &buf[HEADER_LEN + 8..n];
+        assert_eq!(entry[..32], root);
+        assert_eq!(entry[40..48], 42u64.to_le_bytes(), "slot");
+    }
 }

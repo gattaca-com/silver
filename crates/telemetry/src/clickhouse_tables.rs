@@ -1,12 +1,11 @@
 use std::{net::SocketAddr, time::Duration};
 
-use flux::spine::SpineAdapter;
 use flux_clickhouse::{ClickHouse, Error};
 use flux_network::Network;
 use serde::Serialize;
-use silver_common::{Nanos, NodeChain, SilverSpine};
+use silver_common::{Nanos, NodeChain};
 use silver_log::{info, warn};
-use silver_stages::StageReader;
+use silver_stages::StageEvent;
 
 use crate::{
     block_events::{self, BlockEventRow},
@@ -30,7 +29,8 @@ pub struct ClickHouseTables {
     client: ClickHouse,
     meta: NodeMeta,
     slot: u64,
-    stage_reader: StageReader,
+    /// Stage events since the last `sample`, inserted as one batch.
+    stages: Vec<StageEvent>,
     log_counts: LogCounts,
     counters: Counters,
 }
@@ -51,7 +51,7 @@ impl ClickHouseTables {
             client,
             slot: meta.clock.slot_at(Nanos::now()),
             meta,
-            stage_reader: StageReader::default(),
+            stages: Vec::new(),
             log_counts: LogCounts::default(),
             counters: Counters::default(),
         };
@@ -74,21 +74,22 @@ impl ClickHouseTables {
         }
     }
 
-    pub fn sample(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    pub fn on_stage(&mut self, event: &StageEvent) {
+        self.stages.push(*event);
+    }
+
+    pub fn sample(&mut self) {
         self.net.poll_with(|event| {
             self.client.on_event(&event);
         });
-        self.queue_block_events(adapter);
+        self.queue_block_events();
         self.queue_slot_counters();
         self.drive();
     }
 
-    fn queue_block_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let rows: Vec<_> = self
-            .stage_reader
-            .consume(adapter)
-            .map(|event| BlockEventRow::new(&event, &self.meta))
-            .collect();
+    fn queue_block_events(&mut self) {
+        let rows: Vec<_> =
+            self.stages.drain(..).map(|event| BlockEventRow::new(&event, &self.meta)).collect();
         queue(&mut self.client, block_events::TABLE, &rows);
     }
 
