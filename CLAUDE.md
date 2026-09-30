@@ -105,6 +105,10 @@ boundaries — not the same implementation sprinkled across more files.
 
 ### Other conventions (lower friction, still enforced)
 
+- **Log through `silver_log`** — `silver_log::{trace, debug, info, warn, error}`,
+  never `tracing::*!`. `warn!`/`error!` feed the per-callsite counts in
+  `docs/telemetry-counters.md`. Only `silver_log` and `silver_common` depend on
+  `tracing`; `just log-check` (run by `just clippy`) rejects its event macros.
 - **Imports, not inline paths** — `use crate::a::b::Type;` at the top, never
   `crate::a::b::Type` inline in a body or signature.
 - **Omit inferred types** — drop annotations the compiler infers (`Vec<_>` over
