@@ -11,7 +11,7 @@ use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
 use silver_common::{APP_NAME, Nanos, SilverSpine};
 use silver_observe_wire::{Encoder, Header, Kind};
-use tracing::info;
+use silver_log::info;
 
 use crate::exporter::sources::ExportSources;
 
