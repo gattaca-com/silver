@@ -14,8 +14,9 @@ use flux::{
     communication::queue::{Consumer, Queue},
     tile::metrics::TileSample,
 };
+use silver_observe::TileMetricsFile;
 
-use crate::{discovery::TileMetricsFile, sources::counters::BUCKET_HISTORY_LEN};
+use crate::sources::counters::BUCKET_HISTORY_LEN;
 
 /// Busy/total tick sums over one wall-clock bucket, plus per-work-iteration
 /// busy stats (count + max) so avg/max survive the idle-snapshot problem.
@@ -132,7 +133,6 @@ mod tests {
     use silver_common::test_util::ShmemDir;
 
     use super::*;
-    use crate::discovery::TileMetricsFile;
 
     /// Synthetic sample with known busy/total ticks. `util = busy / total`.
     #[allow(clippy::field_reassign_with_default)] // busy_min is private; can't use a literal
@@ -218,7 +218,7 @@ mod tests {
         let mut tm = TileMetrics::new(tmp.path(), "fluxprodapp", "fluxprod");
 
         // Attach the consumer before producing (prime cursor at head).
-        let sources = crate::discovery::discover(tmp.path(), "fluxprodapp").unwrap();
+        let sources = silver_observe::discover(tmp.path(), "fluxprodapp").unwrap();
         let file = sources.tilemetrics.iter().find(|f| f.name == "fluxprod").unwrap();
         let mut set = TileMetricsSet::open(file).unwrap();
         set.drain();

@@ -21,7 +21,9 @@ use flux_profiler::{CrossProcessReader, Loss, published_pid};
 use silver_common::{APP_NAME, Nanos, SilverSpine};
 use silver_log::{info, warn};
 
-use crate::{clickhouse_tables::ClickHouseTables, config::Args};
+use crate::{
+    clickhouse_tables::ClickHouseTables, config::Args, exporter::Exporter, node_meta::NodeMeta,
+};
 
 /// Loop iterations between the pid-file reads that detect the node's exit;
 /// ~1 s at the tile's loop pacing.
@@ -54,6 +56,7 @@ pub struct TraceCollector {
     polls: u32,
     /// The node we followed is gone and its marks are already flushed.
     detached: bool,
+    exporter: Option<Exporter>,
 }
 
 impl TraceCollector {
@@ -79,6 +82,10 @@ impl TraceCollector {
             .clickhouse_addr()?
             .map(|addr| ClickHouseTables::open(addr, &file_config.chain_config));
 
+        let exporter = file_config.exporter.dashboard_addr()?.and_then(|addr| {
+            Exporter::open(addr, args.instance.clone().unwrap_or_else(NodeMeta::hostname)).ok()
+        });
+
         // Floored at a second: `round_to_interval` divides by the period.
         let period = Nanos::from_secs(args.period.as_secs().max(1));
         Ok(Self::new(
@@ -88,6 +95,7 @@ impl TraceCollector {
             period,
             args.retain.as_u64(),
             clickhouse,
+            exporter,
         ))
     }
 
@@ -98,6 +106,7 @@ impl TraceCollector {
         period: Nanos,
         retain_bytes: u64,
         clickhouse: Option<ClickHouseTables>,
+        exporter: Option<Exporter>,
     ) -> Self {
         Self {
             reader,
@@ -109,6 +118,7 @@ impl TraceCollector {
             clickhouse,
             polls: 0,
             detached: false,
+            exporter,
         }
     }
 
@@ -258,6 +268,10 @@ impl Tile<SilverSpine> for TraceCollector {
             self.follow_next_node();
         }
 
+        if let Some(exporter) = &mut self.exporter {
+            exporter.spin(adapter);
+        }
+
         // Draining the rings is invisible to the adapter, and under `flux/park`
         // an idle-looking loop in a single-tile process parks with nobody left
         // to signal it.
@@ -292,7 +306,7 @@ mod tests {
     const STARTED_AT: u64 = HOUR_START + 2_800;
 
     fn collector(reader: CrossProcessReader, dir: PathBuf) -> TraceCollector {
-        TraceCollector::new(reader, Duration::ZERO, dir, Nanos::from_hours(1), u64::MAX, None)
+        TraceCollector::new(reader, Duration::ZERO, dir, Nanos::from_hours(1), u64::MAX, None, None)
     }
 
     /// Prune sorts by mtime, so fixtures need distinct ones — set, not slept

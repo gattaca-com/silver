@@ -21,18 +21,23 @@ mod collector;
 mod config;
 mod counter_deltas;
 mod counters;
+mod exporter;
 mod log_counts;
 mod node_meta;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("telemetry", 10, None, false, None);
-    let collector = TraceCollector::attach_to_node(Args::parse())?;
+    let args = Args::parse();
 
+    let collector = TraceCollector::attach_to_node(args)?;
+
+    // Metrics off: this process shares the node's app name, so its own
+    // tilemetrics queues would show up among the node's.
+    let config =
+        || TileConfig::background(None, Some(Duration::from_millis(10).into())).without_metrics();
     let spine = SilverSpine::new(None);
     spine.start_no_persist(None, None, |scoped_spine| {
-        let config =
-            TileConfig::background(None, Some(Duration::from_millis(10).into())).without_metrics();
-        tile_runner(collector, scoped_spine, config)();
+        tile_runner(collector, scoped_spine, config())();
     });
     Ok(())
 }

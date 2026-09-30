@@ -1,13 +1,11 @@
+//! Sampling and bucketed history over a `silver_observe::CounterMap`.
+//!
 //! Holds (current, previous_sample) snapshots so the UI can render
-//! deltas without recomputing on every frame. Historical bucketing
-//! (12s deltas, 240-deep ring) is a follow-up.
+//! deltas without recomputing on every frame.
 
-use std::{collections::VecDeque, io, sync::atomic::Ordering};
+use std::{collections::VecDeque, io};
 
-use silver_metrics::mmap_readonly;
-use silver_stages::CounterValues;
-
-use crate::discovery::CounterFile;
+use silver_observe::{CounterFile, CounterMap, hide_zero, names_for};
 
 /// Bucket-roll cadence, in seconds. 1 s gives sub-slot resolution on
 /// counter rates; trade-off is shorter retention at fixed depth.
@@ -16,9 +14,6 @@ pub const BUCKET_SECS: u64 = 1;
 pub const BUCKET_HISTORY_LEN: usize = 240;
 /// 10 ticks (100 ms) per 1 s bucket — same 4-minute span as the bucket ring.
 pub const TICK_HISTORY_LEN: usize = BUCKET_HISTORY_LEN * 10;
-/// Per-consumer name buffer size (matches
-/// `silver_common::spine::tcache::metrics::NAME_LEN`).
-const CONSUMER_NAME_LEN: usize = 32;
 
 pub struct CounterSet {
     pub name: String,
@@ -30,13 +25,7 @@ pub struct CounterSet {
     /// Zero-valued slots are hidden (dense pre-allocated layouts where
     /// only touched slots carry signal).
     hide_zero: bool,
-    /// Companion read-only mmap into `tcache-names-{name}` when the
-    /// CounterSet is a tcache. `n_consumers × 32` bytes of zero-padded
-    /// UTF-8. `None` for non-tcache counters and for tcaches whose
-    /// names file couldn't be opened.
-    consumer_names_base: *const u8,
-    consumer_names_bytes: usize,
-    values: CounterValues,
+    pub map: CounterMap,
     /// Last sampled values, one per slot.
     pub current: Vec<u64>,
     /// Highest `tcache_length()` seen since open; meaningless for other sets.
@@ -60,46 +49,19 @@ pub struct CounterSet {
     primed: bool,
 }
 
-// SAFETY: `consumer_names_base` points at an mmap'd shmem file that is
-// only read, so cross-thread sharing of the pointer is sound.
-unsafe impl Send for CounterSet {}
-unsafe impl Sync for CounterSet {}
-
 impl CounterSet {
     pub fn open(file: &CounterFile) -> io::Result<Self> {
-        let values = CounterValues::open(&file.path)?;
-        let slot_count = values.values().len();
-        let (slot_names, schema_registered) = crate::schema::names_for(&file.name, slot_count);
-        let hide_zero = crate::schema::hide_zero(&file.name);
-
-        // For tcache counters, try to open the companion names file
-        // `tcache-names-{tcache_name}`. Failure is non-fatal — surfer
-        // continues to render with positional labels.
-        let (consumer_names_base, consumer_names_bytes) =
-            if let Some(tc_name) = file.name.strip_prefix("tcache-") {
-                let n_consumers = slot_count.saturating_sub(2);
-                let names_bytes = n_consumers * CONSUMER_NAME_LEN;
-                let names_path = file
-                    .path
-                    .parent()
-                    .map(|d| d.join(format!("tcache-names-{tc_name}")))
-                    .unwrap_or_default();
-                match mmap_readonly(&names_path, names_bytes) {
-                    Ok(p) => (p, names_bytes),
-                    Err(_) => (std::ptr::null(), 0),
-                }
-            } else {
-                (std::ptr::null(), 0)
-            };
+        let map = CounterMap::open(file)?;
+        let slot_count = map.slot_count();
+        let (slot_names, schema_registered) = names_for(&file.name, slot_count);
+        let hide_zero = hide_zero(&file.name);
 
         Ok(Self {
             name: file.name.clone(),
             slot_names,
             schema_registered,
             hide_zero,
-            consumer_names_base,
-            consumer_names_bytes,
-            values,
+            map,
             current: vec![0; slot_count],
             max_length: 0,
             previous: vec![0; slot_count],
@@ -113,33 +75,11 @@ impl CounterSet {
         })
     }
 
-    /// Return the consumer name string for tail slot `consumer_idx`
-    /// (= slot index minus 2 for tcaches). Empty string when the
-    /// names file isn't open or the slot is uninitialised.
-    pub fn consumer_name(&self, consumer_idx: usize) -> &str {
-        if self.consumer_names_base.is_null() {
-            return "";
-        }
-        let off = consumer_idx * CONSUMER_NAME_LEN;
-        if off + CONSUMER_NAME_LEN > self.consumer_names_bytes {
-            return "";
-        }
-        // SAFETY: bounds checked above; bytes are written by the
-        // producer side under a zero-padded UTF-8 convention.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(self.consumer_names_base.add(off), CONSUMER_NAME_LEN)
-        };
-        let end = bytes.iter().position(|&b| b == 0).unwrap_or(CONSUMER_NAME_LEN);
-        std::str::from_utf8(&bytes[..end]).unwrap_or("")
-    }
-
     /// Read all slots into `current`, after copying the previous tick's
-    /// values into `previous`. O(slot_count) atomic loads.
+    /// values into `previous`.
     pub fn sample(&mut self) {
         self.previous.copy_from_slice(&self.current);
-        for (current, value) in self.current.iter_mut().zip(self.values.values()) {
-            *current = value.load(Ordering::Relaxed);
-        }
+        self.map.read_into(&mut self.current);
         if !self.primed {
             // Prime previous/bucket_start to the first observed values
             // so deltas start at 0. Slots initialised to non-zero
@@ -149,7 +89,7 @@ impl CounterSet {
             self.bucket_start.copy_from_slice(&self.current);
             self.primed = true;
         }
-        for i in 0..self.slot_count() {
+        for i in 0..self.current.len() {
             // Same sentinel handling as `roll_bucket`; gauge decrements
             // wrap negative deltas through the u64, matching `history`.
             let delta = if self.current[i] == u64::MAX || self.previous[i] == u64::MAX {
@@ -200,7 +140,7 @@ impl CounterSet {
 
     pub fn visible_slots(&self) -> usize {
         if !self.hide_zero {
-            return self.slot_count();
+            return self.current.len();
         }
         self.current.iter().filter(|&&v| v != 0).count()
     }
@@ -217,7 +157,7 @@ impl CounterSet {
     /// sentinel state — common at startup if the mmap file was reused
     /// from a previous run.
     pub fn roll_bucket(&mut self) {
-        for i in 0..self.slot_count() {
+        for i in 0..self.current.len() {
             let delta = if self.current[i] == u64::MAX || self.bucket_start[i] == u64::MAX {
                 0
             } else {
@@ -246,21 +186,6 @@ impl CounterSet {
     }
 }
 
-impl Drop for CounterSet {
-    fn drop(&mut self) {
-        // SAFETY: the pointer came from `mmap` with the recorded size;
-        // accessors only lend borrows that don't outlive `&self`.
-        if !self.consumer_names_base.is_null() {
-            unsafe {
-                libc::munmap(
-                    self.consumer_names_base as *mut libc::c_void,
-                    self.consumer_names_bytes,
-                )
-            };
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use silver_common::declare_counters;
@@ -285,7 +210,7 @@ mod tests {
         SurferTestCounters::Alpha.add(11);
         SurferTestCounters::Beta.set(42);
 
-        let sources = crate::discovery::discover(tmp.path(), "surfer_test").unwrap();
+        let sources = silver_observe::discover(tmp.path(), "surfer_test").unwrap();
         let file = sources.counters.iter().find(|f| f.name == "surfer_smoke").unwrap();
 
         let mut set = super::CounterSet::open(file).unwrap();

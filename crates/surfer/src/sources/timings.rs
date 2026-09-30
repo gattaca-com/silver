@@ -14,8 +14,9 @@ use flux::communication::{
     timer::TimingMessage,
 };
 use hdrhistogram::Histogram;
+use silver_observe::TimingFile;
 
-use crate::{discovery::TimingFile, sources::counters::BUCKET_HISTORY_LEN};
+use crate::sources::counters::BUCKET_HISTORY_LEN;
 
 /// Bucket snapshot of one channel's distribution.
 #[derive(Clone, Copy, Debug, Default)]

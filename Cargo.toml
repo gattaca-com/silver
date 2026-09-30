@@ -18,6 +18,8 @@ members = [
   "crates/engine_api",
   "crates/metrics",
   "crates/network",
+  "crates/observe",
+  "crates/observe_wire",
   "crates/peer",
   "crates/ssz",
   "crates/slashing",
@@ -90,6 +92,8 @@ silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
 silver_httpcore = { path = "crates/httpcore" }
 silver_network = {path = "crates/network" }
+silver_observe = { path = "crates/observe" }
+silver_observe_wire = { path = "crates/observe_wire" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }

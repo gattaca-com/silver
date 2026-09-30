@@ -13,6 +13,7 @@ flux.workspace = true
 flux-clickhouse.workspace = true
 flux-network.workspace = true
 flux-profiler.workspace = true
+hdrhistogram.workspace = true
 hex.workspace = true
 humantime.workspace = true
 libc.workspace = true
@@ -21,6 +22,8 @@ silver_log.workspace = true
 toml.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
+silver_observe.workspace = true
+silver_observe_wire.workspace = true
 silver_stages.workspace = true
 
 [dev-dependencies]
