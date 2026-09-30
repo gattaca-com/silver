@@ -5012,6 +5012,7 @@ dependencies = [
  "silver_log",
  "silver_metrics",
  "silver_ssz",
+ "simd-json",
  "snap 1.1.1",
  "tempfile",
  "thiserror 1.0.69",

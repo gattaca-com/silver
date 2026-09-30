@@ -1,12 +1,6 @@
-use std::{
-    io::Write,
-    mem,
-    ops::{Deref, DerefMut},
-};
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::{
-    PayloadFrame, TCacheProducer, TCacheRead, TProducer,
+    FrameOut, PayloadFrame,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BeaconBlockBodyFuluView,
         ExecutionPayloadEnvelopeView, ExecutionPayloadView, NUMBER_OF_COLUMNS,
@@ -14,7 +8,6 @@ use silver_common::{
     },
 };
 use simd_json::{
-    Buffers, Tape,
     prelude::{TypedScalarValue, ValueAsScalar, ValueIntoString},
     value::tape::{Array as TapeArray, Value as TapeValue},
 };
@@ -520,141 +513,9 @@ fn write_execution_requests_json<const N: usize>(
 // hex::decode_to_slice.
 // ---------------------------------------------------------------------------
 
-/// Parser buffers reused across responses, so a response of a size already
-/// seen allocates nothing.
-pub(crate) struct TapeScratch {
-    buffers: Buffers,
-    tape: Tape<'static>,
-}
-
-impl TapeScratch {
-    pub(crate) fn new() -> Self {
-        Self { buffers: Buffers::default(), tape: Tape(Vec::new()) }
-    }
-
-    /// Writes the frame straight into its tcache slot; `None` when the tcache
-    /// has no room for it.
-    pub(crate) fn encode<T>(
-        &mut self,
-        raw: &mut [u8],
-        producer: &mut TProducer,
-        mut to_frame: impl FnMut(TapeValue<'_, '_>, &mut FrameOut<'_>) -> Result<T, crate::EngineError>,
-    ) -> Result<Option<(T, TCacheRead)>, crate::EngineError> {
-        // Hex, most of any response, decodes to half its length. The few
-        // frames that outgrow that are rewritten under the loose bound: every
-        // frame byte decodes from at least one JSON character.
-        let tight = raw.len() / 2 + FRAME_SLACK;
-        let loose = raw.len();
-        let mut tape = mem::replace(&mut self.tape, Tape(Vec::new())).reset();
-        let encoded = simd_json::fill_tape(raw, &mut self.buffers, &mut tape)
-            .map_err(crate::EngineError::Json)
-            .and_then(|()| {
-                let mut write =
-                    |bound| write_frame(producer, bound, |out| to_frame(tape.as_value(), out));
-                match write(tight.min(loose)) {
-                    Err(FrameError::Overflow) if tight < loose => write(loose),
-                    written => written,
-                }
-                .map_err(FrameError::into_engine_error)
-            });
-        self.tape = tape.reset();
-        encoded
-    }
-}
-
 /// Covers the frame bytes that do not decode from hex: the frame header, the
 /// payload's fixed part, list offsets and withdrawals.
-const FRAME_SLACK: usize = 16 * 1024;
-
-enum FrameError {
-    Overflow,
-    Engine(crate::EngineError),
-}
-
-impl FrameError {
-    fn into_engine_error(self) -> crate::EngineError {
-        match self {
-            Self::Overflow => crate::EngineError::Ssz("frame outgrew its response".into()),
-            Self::Engine(e) => e,
-        }
-    }
-}
-
-fn write_frame<T>(
-    producer: &mut TProducer,
-    bound: usize,
-    to_frame: impl FnOnce(&mut FrameOut<'_>) -> Result<T, crate::EngineError>,
-) -> Result<Option<(T, TCacheRead)>, FrameError> {
-    let Some(mut reservation) =
-        producer.reserve(bound, false).or_else(|| producer.reserve(bound, false))
-    else {
-        return Ok(None);
-    };
-    let buffer = reservation
-        .buffer()
-        .map_err(|e| FrameError::Engine(crate::EngineError::Ssz(e.to_string())))?;
-    let mut out = FrameOut { buffer, len: 0, overflowed: false };
-    let encoded = to_frame(&mut out);
-    // An overflow surfaces as a decode error into the dropped bytes.
-    if out.overflowed {
-        return Err(FrameError::Overflow);
-    }
-    let encoded = encoded.map_err(FrameError::Engine)?;
-    let len = out.len;
-    reservation.truncate(len);
-    reservation.flush().map_err(|e| FrameError::Engine(crate::EngineError::Ssz(e.to_string())))?;
-    Ok(Some((encoded, reservation.read())))
-}
-
-/// A frame written into its tcache reservation. Writes past the end are
-/// dropped and fail the frame once it is complete.
-pub(crate) struct FrameOut<'a> {
-    buffer: &'a mut [u8],
-    len: usize,
-    overflowed: bool,
-}
-
-impl FrameOut<'_> {
-    fn grow(&mut self, len: usize) -> Option<&mut [u8]> {
-        let end = self.len + len;
-        let Some(tail) = self.buffer.get_mut(self.len..end) else {
-            self.overflowed = true;
-            return None;
-        };
-        self.len = end;
-        Some(tail)
-    }
-
-    fn push(&mut self, byte: u8) {
-        self.extend_from_slice(&[byte]);
-    }
-
-    fn extend_from_slice(&mut self, bytes: &[u8]) {
-        if let Some(tail) = self.grow(bytes.len()) {
-            tail.copy_from_slice(bytes);
-        }
-    }
-
-    fn zeroed(&mut self, len: usize) {
-        if let Some(tail) = self.grow(len) {
-            tail.fill(0);
-        }
-    }
-}
-
-impl Deref for FrameOut<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        &self.buffer[..self.len]
-    }
-}
-
-impl DerefMut for FrameOut<'_> {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.buffer[..self.len]
-    }
-}
+pub(crate) const FRAME_SLACK: usize = 16 * 1024;
 
 fn hex_to_fixed<const N: usize>(s: &str) -> Result<[u8; N], crate::EngineError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -982,7 +843,7 @@ pub(crate) fn json_get_blobs_to_tcache(
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{TCache, TCacheId};
+    use silver_common::{TCache, TCacheId, TCacheProducer, TProducer, TapeScratch};
     use simd_json::{
         owned::to_value,
         prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess},
@@ -1653,12 +1514,12 @@ mod tests {
     }
 
     fn payload_frame(json: &mut [u8]) -> Result<Vec<u8>, crate::EngineError> {
-        let (mut scratch, mut producer) = (TapeScratch::new(), frames());
+        let (mut scratch, mut producer) = (TapeScratch::new(FRAME_SLACK), frames());
         encode(&mut scratch, &mut producer, json, json_get_payload_to_tcache).map(|((), f)| f)
     }
 
     fn blobs_frame(json: &mut [u8]) -> Result<(u8, Vec<u8>), crate::EngineError> {
-        let (mut scratch, mut producer) = (TapeScratch::new(), frames());
+        let (mut scratch, mut producer) = (TapeScratch::new(FRAME_SLACK), frames());
         encode(&mut scratch, &mut producer, json, json_get_blobs_to_tcache)
     }
 
@@ -1717,7 +1578,7 @@ mod tests {
     #[test]
     fn tape_scratch_is_reused_across_responses_and_errors() {
         let expected = payload_frame(&mut get_payload_json()).unwrap();
-        let (mut scratch, mut producer) = (TapeScratch::new(), frames());
+        let (mut scratch, mut producer) = (TapeScratch::new(FRAME_SLACK), frames());
         for _ in 0..2 {
             let mut missing_result = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
             let failed = encode(&mut scratch, &mut producer, &mut missing_result, |root, out| {

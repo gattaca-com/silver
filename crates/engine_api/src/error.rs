@@ -1,3 +1,5 @@
+use silver_common::TapeError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("http: {0}")]
@@ -12,4 +14,14 @@ pub enum EngineError {
     Jwt(String),
     #[error("ssz: {0}")]
     Ssz(String),
+}
+
+impl From<TapeError> for EngineError {
+    fn from(error: TapeError) -> Self {
+        match error {
+            TapeError::Json(e) => Self::Json(e),
+            TapeError::Overflow => Self::Ssz("frame outgrew its response".into()),
+            TapeError::Reservation(e) => Self::Ssz(e.to_string()),
+        }
+    }
 }

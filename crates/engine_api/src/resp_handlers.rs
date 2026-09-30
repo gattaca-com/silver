@@ -3,14 +3,14 @@ use serde::Deserialize;
 use silver_common::{
     ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
     EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp, PayloadValidationStatus,
-    SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
+    SilverSpine, TCacheProducer, TCacheRead, TProducer, TapeScratch, merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
 use crate::{
     EngineError,
     types::{
-        ForkchoiceUpdatedResult, PayloadStatus, TapeScratch, json_get_blobs_to_tcache,
+        ForkchoiceUpdatedResult, PayloadStatus, json_get_blobs_to_tcache,
         json_get_payload_to_tcache,
     },
 };

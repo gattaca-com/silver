@@ -23,8 +23,10 @@ pub mod cell_store;
 pub mod column_util;
 mod enr;
 mod error;
+mod payload_frame;
 mod request;
 pub mod rpc_rate_limit;
+mod tape_scratch;
 pub use silver_metrics::{self as metrics, declare_counters, profiler};
 #[path = "generated/protobuf.identify.rs"]
 #[allow(clippy::all, dead_code, non_snake_case)]
@@ -35,8 +37,10 @@ mod id;
 mod identity;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
+pub use payload_frame::PayloadFrame;
 pub use silver_beacon_state_data::{FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH};
 pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
+pub use tape_scratch::{FrameOut, TapeError, TapeScratch};
 #[cfg(feature = "test-util")]
 pub mod test_util;
 pub mod ticker;

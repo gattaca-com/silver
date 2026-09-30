@@ -4,7 +4,7 @@ use flux::spine::SpineAdapter;
 use mio::{Events, Registry};
 use silver_common::{
     ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TCacheError, TCacheId, TCacheReader,
-    TCacheTable, TProducer, TReadMode, TileId,
+    TCacheTable, TProducer, TReadMode, TapeScratch, TileId,
 };
 use silver_config::EngineConfig;
 use silver_httpcore::TokenRange;
@@ -15,7 +15,7 @@ use crate::{
     pool::HEALTHCHECK_OVERSHOOT,
     req_handlers::{handle_request, handle_request_no_el},
     resp_handlers::*,
-    types::TapeScratch,
+    types::FRAME_SLACK,
 };
 
 const HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -72,7 +72,7 @@ impl EngineApi {
             healthcheck_pending: false,
             healthcheck_deadline: Instant::now(),
             sync_status: ELSyncStatus::Unknown,
-            scratch: TapeScratch::new(),
+            scratch: TapeScratch::new(FRAME_SLACK),
         }
     }
 

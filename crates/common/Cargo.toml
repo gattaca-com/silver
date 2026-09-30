@@ -26,6 +26,7 @@ ring.workspace = true
 rustc-hash.workspace = true
 rustls.workspace = true
 secp256k1.workspace = true
+simd-json.workspace = true
 silver_beacon_state_data.workspace = true
 silver_chain_spec.workspace = true
 silver_log.workspace = true
