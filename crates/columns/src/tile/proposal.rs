@@ -1,6 +1,7 @@
 use std::{array, iter};
 
 use flux::spine::SpineProducers;
+use flux_profiler::timed;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, GossipDomain, IngestionTime, SilverSpineProducers, SszCache,
     TCacheProducer, TCacheRead, TProducer,
@@ -73,6 +74,7 @@ impl ProposedBlocks {
         Some(self.submitted.swap_remove(at).contents)
     }
 
+    #[timed]
     fn write_sidecars(
         &mut self,
         block: &[u8],

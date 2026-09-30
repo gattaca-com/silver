@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use flux::spine::SpineAdapter;
+use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
@@ -178,6 +179,7 @@ impl SlashingProtectionHandler {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[timed]
     pub(super) fn on_local_block(
         &mut self,
         request_id: u64,

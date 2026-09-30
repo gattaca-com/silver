@@ -102,6 +102,7 @@ pub fn apply_block(
 /// fills from the result, and without the signature pass: a proposer verifies
 /// every signature it packs before building.
 #[inline]
+#[timed]
 pub fn post_state_root_unchecked(
     cfg: &SpecConfig,
     fork: &mut ForkWriter,

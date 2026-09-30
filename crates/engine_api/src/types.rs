@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::{
     FrameOut, PayloadFrame,
@@ -580,6 +581,7 @@ fn fstr<'input>(v: TapeValue<'_, 'input>, field: &str) -> Result<&'input str, cr
 
 // Write SSZ transaction list (offset header + tx bytes) from JSON hex-string
 // array.
+#[timed]
 fn encode_txs_json(
     arr: TapeArray<'_, '_>,
     out: &mut FrameOut<'_>,
@@ -620,6 +622,7 @@ fn encode_withdrawals_json(
 
 /// Write the [`PayloadFrame`] of an `engine_getPayloadV5` JSON-RPC response
 /// into `out`.
+#[timed]
 pub(crate) fn json_get_payload_to_tcache(
     root: TapeValue<'_, '_>,
     out: &mut FrameOut<'_>,

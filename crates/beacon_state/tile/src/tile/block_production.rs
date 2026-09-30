@@ -174,6 +174,7 @@ impl BeaconStateTile {
 
     /// Starts the EL building a payload for `slot` on the head, when a
     /// registered validator proposes it and none is built or being built.
+    #[timed]
     pub(super) fn prepare_payload(
         &mut self,
         slot: Slot,
@@ -233,6 +234,7 @@ impl BeaconStateTile {
         }
     }
 
+    #[timed]
     pub(super) fn produce_block(
         &mut self,
         request_id: u64,
@@ -277,6 +279,7 @@ impl BeaconStateTile {
     /// Resolved on every use: a finalization while the EL builds re-bases
     /// the parent's `StateId`. The head is preferred as it is already rolled
     /// to the current slot.
+    #[timed]
     fn proposal_parent(
         &mut self,
         proposal: &Proposal,
@@ -315,6 +318,7 @@ impl BeaconStateTile {
         self.sig_batch.verify_all()
     }
 
+    #[timed]
     pub(super) fn on_payload_prepared(
         &mut self,
         response: EnginePreparePayloadResp,
@@ -347,6 +351,7 @@ impl BeaconStateTile {
 
     /// Serves every request waiting on the payload. The payload goes back to
     /// prepared, so a later request fetches the EL's latest build.
+    #[timed]
     pub(super) fn on_payload(&mut self, response: EngineGetPayloadResp, producers: &mut Producers) {
         let Some(payload) = self.block_production.payloads.iter_mut().find(|p| p.id == response.id)
         else {
@@ -369,6 +374,7 @@ impl BeaconStateTile {
 
     /// The built block's `(body_root, fork)` when `body` is its body. Comparing
     /// the bytes is cheaper than hashing the payload again.
+    #[timed]
     pub(super) fn built_body_hash(&mut self, slot: Slot, body: &[u8]) -> Option<(B256, BlockFork)> {
         let built = self.block_production.built.as_ref().filter(|b| b.proposal.slot == slot)?;
         let contents = self.events_producer.read_buffer(built.block.header).ok()?;
@@ -386,6 +392,7 @@ impl BeaconStateTile {
         rest.is_empty().then_some((built.body_root, built.block_fork))
     }
 
+    #[timed]
     pub(super) fn block_for(
         &mut self,
         proposal: Proposal,
@@ -410,6 +417,7 @@ impl BeaconStateTile {
         Ok(block)
     }
 
+    #[timed]
     fn build_block(
         &mut self,
         proposal: Proposal,
@@ -492,6 +500,7 @@ impl BeaconStateTile {
     }
 
     /// Fills `state_root`, and commits the post-state.
+    #[timed]
     fn seal(
         &mut self,
         header: &mut BeaconBlockHeader,
@@ -539,6 +548,7 @@ impl BeaconStateTile {
 
     /// SSZ `BlockContents` without the payload frame's parts. Returns where
     /// the frame's payload goes; its `after_payload` goes at the end.
+    #[timed]
     fn write_contents(
         &mut self,
         header: &BeaconBlockHeader,

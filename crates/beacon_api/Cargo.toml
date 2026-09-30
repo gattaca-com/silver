@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+flux-profiler.workspace = true
 hex.workspace = true
 mio.workspace = true
 rustc-hash.workspace = true
