@@ -80,7 +80,8 @@ fn ws_period_gloas_impl(cfg: &SpecConfig, total_active_balance: u64) -> u64 {
 
     // Base balance churn (spec `get_balance_churn_limit`, Gloas quotient).
     let base = floor_to_increment(
-        cfg.min_per_epoch_churn_limit.max(total_active_balance / cfg.churn_limit_quotient_gloas),
+        cfg.min_per_epoch_churn_limit_electra
+            .max(total_active_balance / cfg.churn_limit_quotient_gloas),
     );
     // EIP-8061: exit churn is uncapped, activation shares the base but keeps its
     // cap, consolidation has its own quotient.
@@ -92,8 +93,9 @@ fn ws_period_gloas_impl(cfg: &SpecConfig, total_active_balance: u64) -> u64 {
     // Weighted churn: exit ×4/3, activation ×2/3, consolidation ×2 — the shared
     // ÷2 is folded into the denominator below, matching the spec expression.
     let delta = 2 * exit / 3 + activation / 3 + consolidation;
-    // `base >= min_per_epoch_churn_limit > 0`, so `delta > 0` (no div-by-zero).
-    // u128 numerator is defensive; u64 doesn't overflow at realistic stake.
+    // `base >= min_per_epoch_churn_limit_electra > 0`, so `delta > 0` (no
+    // div-by-zero). u128 numerator is defensive; u64 doesn't overflow at
+    // realistic stake.
     let churn_epochs =
         (SAFETY_DECAY as u128 * total_active_balance as u128) / (2 * delta as u128 * 100);
     MIN_WITHDRAWABILITY_DELAY + churn_epochs as u64

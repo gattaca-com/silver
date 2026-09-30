@@ -50,8 +50,12 @@ impl Need {
         }
     }
 
-    fn dead_at(&self, finalized_slot: Slot) -> bool {
-        self.wanted_at <= finalized_slot && self.origin == Origin::Live
+    fn irrelevant_at(&self, finalized_slot: Slot, data_availability_floor: Slot) -> bool {
+        let settled_at = match self.kind {
+            DataKind::Columns => finalized_slot.max(data_availability_floor),
+            DataKind::Block | DataKind::Envelope => finalized_slot,
+        };
+        self.wanted_at <= settled_at && self.origin == Origin::Live
     }
 
     fn new(kind: DataKind, origin: Origin, columns: u128, wanted_at: Slot, now: Instant) -> Self {
@@ -159,8 +163,8 @@ impl ByRootRequests {
         }
     }
 
-    pub(super) fn prune_finalized(&mut self, finalized_slot: Slot) {
-        self.needs.retain(|_, need| !need.dead_at(finalized_slot));
+    pub(super) fn prune_settled(&mut self, finalized_slot: Slot, data_availability_floor: Slot) {
+        self.needs.retain(|_, need| !need.irrelevant_at(finalized_slot, data_availability_floor));
         ControlCounters::RootNeedsTracked.set(self.needs.len() as u64);
     }
 
@@ -503,7 +507,7 @@ mod tests {
         want_block(&mut needs, ROOT, 200, now);
         want_block(&mut needs, ROOT, 100, now);
 
-        needs.prune_finalized(150);
+        needs.prune_settled(150, 0);
         assert_eq!(
             drive(&mut needs, &mut next_id, now, true).len(),
             1,
@@ -521,10 +525,26 @@ mod tests {
         want_envelope(&mut needs, [2; 32], 40, now);
         needs.want([3; 32], DataKind::Columns, 0b1, Origin::Live, 12, now);
 
-        needs.prune_finalized(32);
+        needs.prune_settled(32, 0);
 
         assert_eq!(needs.needs.len(), 1, "only the need above the finalized slot survives");
         assert!(needs.needs.contains_key(&NeedKey { root: [2; 32], kind: DataKind::Envelope }));
+        assert_eq!(drive(&mut needs, &mut next_id, now, true).len(), 1);
+    }
+
+    /// A finalized sync target settles columns up to its epoch, before local
+    /// finalization gets there; blocks below it are still owed.
+    #[test]
+    fn data_availability_floor_drops_column_needs_only() {
+        let now = Instant::now();
+        let (mut needs, mut next_id) = (ByRootRequests::new(BY_ROOT_CAP), 0);
+        want_block(&mut needs, ROOT, 40, now);
+        needs.want([3; 32], DataKind::Columns, 0b1, Origin::Live, 40, now);
+
+        needs.prune_settled(32, 64);
+
+        assert_eq!(needs.needs.len(), 1);
+        assert!(needs.needs.contains_key(&NeedKey { root: ROOT, kind: DataKind::Block }));
         assert_eq!(drive(&mut needs, &mut next_id, now, true).len(), 1);
     }
 
@@ -536,7 +556,7 @@ mod tests {
         let (mut needs, mut next_id) = (ByRootRequests::new(BY_ROOT_CAP), 0);
         want_columns(&mut needs, now, Origin::Backfill);
 
-        needs.prune_finalized(u64::MAX);
+        needs.prune_settled(u64::MAX, 0);
         assert_eq!(drive(&mut needs, &mut next_id, now, true).len(), 1, "still wanted");
 
         needs.retire(&ROOT, DataKind::Columns);

@@ -436,7 +436,7 @@ impl SyncEngine {
             self.window.set_tail(head_slot);
         }
         self.awaiting_start = false;
-        self.ctx.root_requests.prune_finalized(self.ctx.local.finalized_slot());
+        self.prune_settled_needs();
         self.mark_dirty();
     }
 
@@ -518,7 +518,15 @@ impl SyncEngine {
         }
         let previous = self.published.replace(target);
         silver_log::info!("Sync target updated from: {previous:?} to {target:?}");
+        self.prune_settled_needs();
         Some(target)
+    }
+
+    fn prune_settled_needs(&mut self) {
+        let finalized_slot = self.ctx.local.finalized_slot();
+        let data_availability_floor =
+            self.published.map_or(finalized_slot, |t| t.data_availability_floor(finalized_slot));
+        self.ctx.root_requests.prune_settled(finalized_slot, data_availability_floor);
     }
 
     fn enter_phase_for(&mut self, chosen: Option<SyncUpdate>) {

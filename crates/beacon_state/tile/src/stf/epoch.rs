@@ -14,7 +14,6 @@ use silver_beacon_state_data::{
 use crate::{
     bls, merkle,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
-    ssz_hash,
     stf::{
         common::StfScratch,
         process_builder_pending_payments, process_ptc_window,
@@ -605,6 +604,7 @@ fn apply_pending_deposit(view: &mut StateWriterView, deposit: &common::PendingDe
         return;
     }
     if !is_valid_deposit_signature(
+        view.imm.genesis_fork_version,
         &deposit.pubkey,
         &deposit.withdrawal_credentials,
         deposit.amount,
@@ -625,28 +625,26 @@ fn apply_pending_deposit(view: &mut StateWriterView, deposit: &common::PendingDe
 
 #[timed]
 pub fn is_valid_deposit_signature(
+    genesis_fork_version: [u8; 4],
     pubkey: &[u8; 48],
     withdrawal_credentials: &common::Withdrawals,
     amount: u64,
     signature: &[u8; 96],
 ) -> bool {
-    verify_deposit_signature(pubkey, withdrawal_credentials, amount, signature, bls::DOMAIN_DEPOSIT)
+    let domain = bls::compute_domain(bls::DOMAIN_DEPOSIT, genesis_fork_version, &[0u8; 32]);
+    verify_deposit_signature(pubkey, withdrawal_credentials, amount, signature, &domain)
 }
 
 /// EIP-8282
 pub(crate) fn is_valid_builder_deposit_signature(
+    genesis_fork_version: [u8; 4],
     pubkey: &[u8; 48],
     withdrawal_credentials: &common::Withdrawals,
     amount: u64,
     signature: &[u8; 96],
 ) -> bool {
-    verify_deposit_signature(
-        pubkey,
-        withdrawal_credentials,
-        amount,
-        signature,
-        bls::DOMAIN_BUILDER_DEPOSIT,
-    )
+    let domain = bls::compute_domain(bls::DOMAIN_BUILDER_DEPOSIT, genesis_fork_version, &[0u8; 32]);
+    verify_deposit_signature(pubkey, withdrawal_credentials, amount, signature, &domain)
 }
 
 fn verify_deposit_signature(
@@ -654,7 +652,7 @@ fn verify_deposit_signature(
     withdrawal_credentials: &common::Withdrawals,
     amount: u64,
     signature: &[u8; 96],
-    domain_type: u32,
+    domain: &[u8; 32],
 ) -> bool {
     let mut pk_chunk = [0u8; 64];
     pk_chunk[..48].copy_from_slice(pubkey);
@@ -663,15 +661,7 @@ fn verify_deposit_signature(
     amount_chunk[..8].copy_from_slice(&amount.to_le_bytes());
     let deposit_msg_root =
         merkle::merkleize(&[pubkey_root, withdrawal_credentials.0, amount_chunk]);
-
-    let domain = {
-        let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
-        let mut d = [0u8; 32];
-        d[0..4].copy_from_slice(&domain_type.to_le_bytes());
-        d[4..32].copy_from_slice(&fork_data_root[..28]);
-        d
-    };
-    let signing_root = merkle::merkleize(&[deposit_msg_root, domain]);
+    let signing_root = merkle::merkleize(&[deposit_msg_root, *domain]);
     bls::verify_deposit_signature(pubkey, signature, &signing_root)
 }
 
@@ -970,7 +960,12 @@ mod tests {
     }
 
     /// Build the deposit signing root for a (pubkey, wc, amount) triple.
-    fn deposit_signing_root(pubkey: &[u8; 48], wc: &Withdrawals, amount: u64) -> B256 {
+    fn deposit_signing_root(
+        genesis_fork_version: [u8; 4],
+        pubkey: &[u8; 48],
+        wc: &Withdrawals,
+        amount: u64,
+    ) -> B256 {
         let mut pk_chunk = [0u8; 64];
         pk_chunk[..48].copy_from_slice(pubkey);
         let pubkey_root = merkle::sha256(&pk_chunk);
@@ -978,10 +973,7 @@ mod tests {
         amt[..8].copy_from_slice(&amount.to_le_bytes());
         let msg_root = merkle::merkleize(&[pubkey_root, wc.0, amt]);
 
-        let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
-        let mut domain = [0u8; 32];
-        domain[0..4].copy_from_slice(&0x03u32.to_le_bytes());
-        domain[4..32].copy_from_slice(&fork_data_root[..28]);
+        let domain = bls::compute_domain(bls::DOMAIN_DEPOSIT, genesis_fork_version, &[0u8; 32]);
         merkle::merkleize(&[msg_root, domain])
     }
 
@@ -1038,7 +1030,7 @@ mod tests {
         let (sk, pk) = test_keypair();
         let wc = Withdrawals([0xAAu8; 32]);
         let amount = 32_000_000_000u64;
-        let signing_root = deposit_signing_root(&pk, &wc, amount);
+        let signing_root = deposit_signing_root([0; 4], &pk, &wc, amount);
         let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
         let sig = sk.sign(&signing_root, dst, &[]).to_bytes();
 
@@ -1058,6 +1050,39 @@ mod tests {
         assert_eq!(*view.validators.pubkey(0), pk);
         assert_eq!(view.balances.get(0), amount);
         assert_eq!(view.pending.deposits.reader().len(), 0);
+    }
+
+    /// Devnets have a non-zero `GENESIS_FORK_VERSION`, and the deposit domain
+    /// is computed from it, not from mainnet's zero version.
+    #[test]
+    fn pending_deposit_signed_under_genesis_fork_version_adds_validator() {
+        let genesis_fork_version = [0x10, 0x73, 0x31, 0x83];
+        let mut st = TestState::new(fresh(10), &[]);
+        st.bs.immutable.genesis_fork_version = genesis_fork_version;
+        let sid = st.state_id;
+        let (mut view, epoch, _) = st.view();
+
+        let (sk, pk) = test_keypair();
+        let wc = Withdrawals([0xAAu8; 32]);
+        let amount = 32_000_000_000u64;
+        let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+        for version in [[0; 4], genesis_fork_version] {
+            let signing_root = deposit_signing_root(version, &pk, &wc, amount);
+            view.pending.deposits.push(PendingDeposit {
+                pubkey: pk,
+                withdrawal_credentials: wc,
+                amount,
+                signature: sk.sign(&signing_root, dst, &[]).to_bytes(),
+                slot: 0,
+            });
+        }
+
+        at_boundary(&mut view, epoch, sid.epoch_idx, |v, e| {
+            process_pending_deposits(&SpecConfig::mainnet(), v, e, &mut Vec::new());
+        });
+
+        assert_eq!(view.validators.count(), 1, "only the genesis-version signature is valid");
+        assert_eq!(view.balances.get(0), amount);
     }
 
     /// EF's `slashings_reset` vector has a zero current bucket, so it cannot

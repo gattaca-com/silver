@@ -238,7 +238,7 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
-        self.drain_pending_envelope(block_root, producers);
+        self.drain_pending_envelope(block_root, slot, producers);
         self.publish_status(producers);
 
         self.replay_orphans(block_root, producers);

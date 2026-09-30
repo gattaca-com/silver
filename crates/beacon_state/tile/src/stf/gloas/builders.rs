@@ -128,7 +128,13 @@ pub fn process_builder_deposit_request(view: &mut StateWriterView, request: &[u8
 
     match view.builders.reader().find_by_pubkey(&pubkey) {
         None => {
-            if is_valid_builder_deposit_signature(&pubkey, &credentials, amount, &signature) {
+            if is_valid_builder_deposit_signature(
+                view.imm.genesis_fork_version,
+                &pubkey,
+                &credentials,
+                amount,
+                &signature,
+            ) {
                 add_builder_to_registry(view, pubkey, &credentials, amount, current_epoch);
             }
         }

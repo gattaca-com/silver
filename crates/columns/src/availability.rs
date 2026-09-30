@@ -96,6 +96,15 @@ impl ColumnTracker {
         }
     }
 
+    pub(crate) fn record_columnless(
+        &mut self,
+        block_root: BlockRoot,
+        slot: u64,
+        producers: &mut SilverSpineProducers,
+    ) {
+        self.record_and_notify(block_root, slot, self.custody.0, IngestionTime::now(), producers);
+    }
+
     pub(crate) fn becomes_available(&self, root: &BlockRoot, columns: u128) -> bool {
         self.custody.becomes_available(self.validated(root), columns)
     }

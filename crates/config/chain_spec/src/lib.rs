@@ -218,11 +218,11 @@ pub struct SpecConfig {
     pub max_seed_lookahead: u64,
     /// Floor on per-epoch consensus stake churn, in Gwei.
     #[serde(default = "default_u64::<128_000_000_000>")]
-    pub min_per_epoch_churn_limit: u64,
+    pub min_per_epoch_churn_limit_electra: u64,
     /// Ceiling on per-epoch activation/exit churn, in Gwei.
     #[serde(default = "default_u64::<256_000_000_000>")]
     pub max_per_epoch_activation_exit_churn_limit: u64,
-    /// Divisor: `churn = max(min_per_epoch_churn_limit, total_stake /
+    /// Divisor: `churn = max(min_per_epoch_churn_limit_electra, total_stake /
     /// churn_limit_quotient)`. `1<<16` mainnet.
     #[serde(default = "default_u64::<65536>")]
     pub churn_limit_quotient: u64,
@@ -580,7 +580,7 @@ impl SpecConfig {
             shard_committee_period: 256,
             min_validator_withdrawability_delay: 256,
             max_seed_lookahead: 4,
-            min_per_epoch_churn_limit: 128_000_000_000,
+            min_per_epoch_churn_limit_electra: 128_000_000_000,
             max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
             churn_limit_quotient: 1 << 16,
             churn_limit_quotient_gloas: 1 << 15,
@@ -637,7 +637,7 @@ impl SpecConfig {
             shard_committee_period: 256,
             min_validator_withdrawability_delay: 256,
             max_seed_lookahead: 4,
-            min_per_epoch_churn_limit: 128_000_000_000,
+            min_per_epoch_churn_limit_electra: 128_000_000_000,
             max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
             churn_limit_quotient: 1 << 16,
             churn_limit_quotient_gloas: 1 << 15,
@@ -736,6 +736,20 @@ mod tests {
         assert_eq!(spec.fulu_fork_epoch, 50688);
         assert_eq!(spec.deposit_chain_id, 560048);
         assert_eq!(spec.bellatrix_fork_epoch, 144896, "untouched fields keep the mainnet default");
+    }
+
+    /// Upstream config files carry both spellings, and the phase0 one is a
+    /// validator count (4), not Gwei.
+    #[test]
+    fn churn_floor_reads_the_electra_key() {
+        let spec: SpecConfig = toml::from_str(
+            r#"
+            MIN_PER_EPOCH_CHURN_LIMIT = 4
+            MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA = 128000000000
+            "#,
+        )
+        .unwrap();
+        assert_eq!(spec.min_per_epoch_churn_limit_electra, 128_000_000_000);
     }
 
     /// Upstream writes the address checksummed (mixed case); `hex::decode`
