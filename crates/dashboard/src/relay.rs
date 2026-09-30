@@ -8,9 +8,9 @@ use mio::{
     Events, Interest, Poll, Token,
     net::{TcpListener, UdpSocket},
 };
+use silver_log::{info, warn};
 use silver_observe_wire::{HEADER_LEN, Header, Kind, MAX_DATAGRAM};
 use slab::Slab;
-use tracing::{info, warn};
 
 use crate::{
     conn::{Conn, Progress},

@@ -7,7 +7,6 @@ use std::{io, net::SocketAddr};
 
 use bytesize::ByteSize;
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 use crate::relay::Relay;
 
@@ -31,9 +30,7 @@ struct Args {
 }
 
 fn main() -> io::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    let _log = silver_common::tracing::initialise_tracing_log("dashboard", 2, None, true, None);
     let args = Args::parse();
     Relay::bind(args.udp, args.http, args.ring.as_u64() as usize)?.run()
 }

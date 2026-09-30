@@ -5068,10 +5068,10 @@ dependencies = [
  "httparse",
  "mio",
  "ring",
+ "silver_common",
+ "silver_log",
  "silver_observe_wire",
  "slab",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

@@ -12,10 +12,10 @@ clap.workspace = true
 httparse.workspace = true
 mio.workspace = true
 ring.workspace = true
+silver_common.workspace = true
+silver_log.workspace = true
 silver_observe_wire.workspace = true
 slab.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

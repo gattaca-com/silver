@@ -14,8 +14,8 @@ use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut,
-    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
-    SLOTS_PER_EPOCH, SilverSpine, TCacheError,
+    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOutbound, SLOTS_PER_EPOCH,
+    SilverSpine, TCacheError,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -180,11 +180,6 @@ impl NetworkTile {
                         adapter.produce(PeerEvent::P2pStreamClosed { stream_id: stream });
                     }
                     NetEvent::RpcInbound(rpc_inbound) => {
-                        let stream_id = match &rpc_inbound {
-                            RpcInbound::Request(req) => req.stream_id,
-                            RpcInbound::Response(rsp) => rsp.stream_id,
-                        };
-                        tracing::debug!(?stream_id, "network: incoming rpc");
                         adapter.produce(rpc_inbound);
                     }
                     NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
