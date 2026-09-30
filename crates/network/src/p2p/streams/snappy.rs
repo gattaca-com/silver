@@ -188,7 +188,7 @@ impl SnappyDecoder {
                     (self.buf[3] as usize) << 16;
 
                 if FRAME_HDR_LEN + payload_len > BUF_CAP {
-                    tracing::error!(
+                    silver_log::error!(
                         payload_len,
                         header = ?&self.buf[..FRAME_HDR_LEN],
                         got_stream_id = self.got_stream_id,
@@ -226,7 +226,7 @@ impl SnappyDecoder {
         match chunk_type {
             CHUNK_STREAM_ID => {
                 if payload != STREAM_ID_BODY {
-                    tracing::error!(
+                    silver_log::error!(
                         ?payload,
                         consumed = self.consumed,
                         frames = self.frames,
@@ -239,7 +239,7 @@ impl SnappyDecoder {
             }
             CHUNK_COMPRESSED => {
                 if !self.got_stream_id {
-                    tracing::error!(
+                    silver_log::error!(
                         chunk_type,
                         consumed = self.consumed,
                         "snappy missing stream id"
@@ -253,7 +253,7 @@ impl SnappyDecoder {
                 let len =
                     snap::raw::decompress_len(compressed).map_err(|_| SnappyError::Decompress)?;
                 if len > MAX_UNCOMPRESSED_BLOCK || len > out.len() {
-                    tracing::error!(
+                    silver_log::error!(
                         len,
                         buffer = out.len(),
                         consumed = self.consumed,
@@ -263,7 +263,7 @@ impl SnappyDecoder {
                     return Err(SnappyError::OutputTooSmall);
                 }
                 self.decoder.decompress(compressed, &mut out[..len]).map_err(|e| {
-                    tracing::error!(
+                    silver_log::error!(
                         ?e,
                         compressed = compressed.len(),
                         consumed = self.consumed,
@@ -275,7 +275,7 @@ impl SnappyDecoder {
             }
             CHUNK_UNCOMPRESSED => {
                 if !self.got_stream_id {
-                    tracing::error!(
+                    silver_log::error!(
                         chunk_type,
                         consumed = self.consumed,
                         "snappy missing stream id"
@@ -287,7 +287,7 @@ impl SnappyDecoder {
                 }
                 let data = &payload[CHECKSUM_LEN..];
                 if data.len() > MAX_UNCOMPRESSED_BLOCK || data.len() > out.len() {
-                    tracing::error!(
+                    silver_log::error!(
                         len = data.len(),
                         buffer = out.len(),
                         consumed = self.consumed,
@@ -347,7 +347,7 @@ impl SnappyDecoder {
                 self.buf[1] as usize | (self.buf[2] as usize) << 8 | (self.buf[3] as usize) << 16;
 
             if FRAME_HDR_LEN + payload_len > BUF_CAP {
-                tracing::error!(
+                silver_log::error!(
                     payload_len,
                     header = ?&self.buf[..FRAME_HDR_LEN],
                     got_stream_id = self.got_stream_id,

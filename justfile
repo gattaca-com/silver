@@ -38,8 +38,13 @@ fmt-check:
   rustup toolchain install {{nightly}} --component rustfmt > /dev/null 2>&1 && \
   cargo +{{nightly}} fmt --check
 
-clippy:
+clippy: log-check
 	cargo clippy --locked --all-features --no-deps -- -D warnings -A clippy::collapsible_if
+
+# Logs go through `silver_log`. This reads our source, not expanded code, so
+# other crates' macros (flux derives, `#[instrument]`) never trip it.
+log-check:
+	! find crates -name '*.rs' -not -path 'crates/log/*' -exec perl -0777 -ne 'print "$ARGV\n" if /\btracing::(trace|debug|info|warn|error)!|\buse (::)?(flux::)?tracing::(\{[^;]*\b)?(trace|debug|info|warn|error)\b/' {} + | grep .
 
 clippy-fix:
 	cargo clippy --fix --locked --all-features --no-deps --allow-dirty -- -D warnings -A clippy::collapsible_if

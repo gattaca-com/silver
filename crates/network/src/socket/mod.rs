@@ -31,7 +31,7 @@ pub struct Socket {
 
 impl Socket {
     pub(crate) fn new(addr: SocketAddr, poll: &Poll, token: Token) -> Result<Self, Error> {
-        tracing::debug!("bind to: {addr:?}");
+        silver_log::debug!("bind to: {addr:?}");
         let bind_addr = match addr {
             SocketAddr::V4(v4) => {
                 let ip = if v4.ip().is_unspecified() {

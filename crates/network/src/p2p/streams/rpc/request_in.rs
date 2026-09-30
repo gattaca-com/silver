@@ -67,7 +67,7 @@ impl RpcReadRequest {
                         // last byte of varint.
                         let (length, offset) = decode_varint(&buf[..read], 0)?;
                         if length == 0 {
-                            tracing::warn!(
+                            silver_log::warn!(
                                 ?p2p_id,
                                 prefix = ?&buf[..read],
                                 "rpc request chunk with zero varint length"

@@ -232,7 +232,7 @@ impl ColumnValidator {
 
         if gossip_subnet.is_some() {
             let elapsed_ms = recv_ts.internal().elapsed().as_millis_u64();
-            tracing::info!(
+            silver_log::info!(
                 slot,
                 parent_root = hex::encode(parent_root),
                 ?gossip_subnet,
@@ -242,7 +242,7 @@ impl ColumnValidator {
         }
 
         if self.is_future(slot, sync_state) {
-            tracing::debug!(
+            silver_log::debug!(
                 ?stream_id,
                 slot,
                 wall_slot = self.ticker.current_slot(),
@@ -258,7 +258,7 @@ impl ColumnValidator {
         let block_root = header.root;
         let column_index = DataColumnSidecarFuluView::index(buffer);
         if column_index >= NUMBER_OF_COLUMNS as u64 {
-            tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
+            silver_log::warn!(?stream_id, column_index, "sidecar column index out of range");
             return ColumnOutcome::Reject { block_root, slot, column: None };
         }
 
@@ -269,7 +269,7 @@ impl ColumnValidator {
         }
 
         if self.spec.is_gloas_at_slot(slot) {
-            tracing::warn!(?stream_id, slot, "Fulu sidecar at or after Gloas activation");
+            silver_log::warn!(?stream_id, slot, "Fulu sidecar at or after Gloas activation");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
@@ -278,7 +278,7 @@ impl ColumnValidator {
         }
 
         if !util::verify_data_column_sidecar_fulu(buffer, self.max_blobs_at(slot)) {
-            tracing::warn!(?stream_id, "badly formed data column sidecar");
+            silver_log::warn!(?stream_id, "badly formed data column sidecar");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
@@ -286,7 +286,7 @@ impl ColumnValidator {
             DataColumnSidecarFuluView::kzg_commitments(buffer),
             DataColumnSidecarFuluView::inclusion_proof(buffer),
         ) {
-            tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
+            silver_log::warn!(?stream_id, "failed to verify sidecar inclusion proof");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 
@@ -311,18 +311,18 @@ impl ColumnValidator {
         });
         // No snapshot yet (pre-bootstrap): nothing can be validated.
         let Some((state, parent, fork_version)) = checks else {
-            tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
+            silver_log::warn!(?stream_id, "sidecar before first beacon state snapshot");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         };
 
         if slot <= state.finalized_slot() {
-            tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
+            silver_log::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
         match parent {
             ParentCheck::Seen => {}
             ParentCheck::Unseen => {
-                tracing::warn!(
+                silver_log::warn!(
                     ?stream_id,
                     slot,
                     parent_root = hex::encode(parent_root),
@@ -331,19 +331,24 @@ impl ColumnValidator {
                 return ColumnOutcome::AwaitParent { parent_root: *parent_root };
             }
             ParentCheck::NotExtending { parent_slot } => {
-                tracing::warn!(?stream_id, slot, parent_slot, "sidecar does not extend its parent");
+                silver_log::warn!(
+                    ?stream_id,
+                    slot,
+                    parent_slot,
+                    "sidecar does not extend its parent"
+                );
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
         }
         let relay_eligible = match state.proposer {
             ProposerCheck::Matches => true,
             ProposerCheck::Mismatch => {
-                tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
+                silver_log::warn!(?stream_id, "sidecar proposer_index mismatch");
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
             // Spec answer is IGNORE.
             ProposerCheck::Unresolvable => {
-                tracing::debug!(?stream_id, slot, "sidecar proposer unresolvable — not relayed");
+                silver_log::debug!(?stream_id, slot, "sidecar proposer unresolvable — not relayed");
                 false
             }
         };
@@ -351,11 +356,11 @@ impl ColumnValidator {
         match header.verify_signature(&state, fork_version, tracker) {
             Ok(()) => {}
             Err(SignatureError::UnknownProposer) => {
-                tracing::warn!(?stream_id, "sidecar proposer_index out of range");
+                silver_log::warn!(?stream_id, "sidecar proposer_index out of range");
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
             Err(SignatureError::InvalidSignature) => {
-                tracing::warn!(?stream_id, "sidecar proposer signature invalid");
+                silver_log::warn!(?stream_id, "sidecar proposer signature invalid");
                 return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
             }
         }
@@ -376,7 +381,7 @@ impl ColumnValidator {
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
         if self.is_future(slot, sync_state) {
-            tracing::debug!(
+            silver_log::debug!(
                 ?stream_id,
                 slot,
                 wall_slot = self.ticker.current_slot(),
@@ -391,7 +396,7 @@ impl ColumnValidator {
         let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let column_index = DataColumnSidecarGloasView::index(buffer);
         if column_index >= NUMBER_OF_COLUMNS as u64 {
-            tracing::warn!(?stream_id, column_index, "sidecar column index out of range");
+            silver_log::warn!(?stream_id, column_index, "sidecar column index out of range");
             return ColumnOutcome::Reject { block_root, slot, column: None };
         }
 
@@ -413,7 +418,7 @@ impl ColumnValidator {
             return ColumnOutcome::Buffer { block_root };
         };
         if block.slot != slot {
-            tracing::warn!(
+            silver_log::warn!(
                 ?stream_id,
                 slot,
                 block_slot = block.slot,
@@ -427,7 +432,7 @@ impl ColumnValidator {
             &block.commitments,
             self.max_blobs_at(slot),
         ) {
-            tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
+            silver_log::warn!(?stream_id, "badly formed gloas data column sidecar");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         }
 

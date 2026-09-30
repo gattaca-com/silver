@@ -5,7 +5,6 @@ use std::{
 };
 
 use bytes::BytesMut;
-use flux::tracing;
 use flux_profiler::timed;
 use mio::net::UdpSocket;
 
@@ -98,7 +97,7 @@ impl RxBatch {
         if ret < 0 {
             let err = io::Error::last_os_error();
             if err.kind() != io::ErrorKind::WouldBlock {
-                tracing::error!(error=?err, "recvmmsg");
+                silver_log::error!(error=?err, "recvmmsg");
             }
             self.count = 0;
             return 0;
@@ -248,7 +247,7 @@ impl TxBatch {
                 if err.kind() == io::ErrorKind::WouldBlock {
                     return false;
                 }
-                tracing::error!(error=?err, "sendmmsg");
+                silver_log::error!(error=?err, "sendmmsg");
                 // Try to avoid any issue with specifc packets
                 self.clear();
                 return true;
@@ -324,7 +323,7 @@ fn sockaddr_to_std(storage: &libc::sockaddr_storage) -> SocketAddr {
             }
         }
         family => {
-            tracing::error!(family, "unexpected sockaddr family");
+            silver_log::error!(family, "unexpected sockaddr family");
             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
         }
     }

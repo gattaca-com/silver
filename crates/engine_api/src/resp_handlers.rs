@@ -31,25 +31,25 @@ struct RpcError<'a> {
 pub(crate) fn handle_capabilities_response(response: Result<&mut [u8], EngineError>) {
     let raw = match response {
         Err(e) => {
-            tracing::warn!("engine_exchangeCapabilities failed: {e}");
+            silver_log::warn!("engine_exchangeCapabilities failed: {e}");
             return;
         }
         Ok(b) => b,
     };
     let val = match simd_json::to_borrowed_value(raw) {
         Err(e) => {
-            tracing::warn!("engine_exchangeCapabilities failed: {e}");
+            silver_log::warn!("engine_exchangeCapabilities failed: {e}");
             return;
         }
         Ok(v) => v,
     };
     if let Some(err) = val.get("error") {
-        tracing::warn!("engine_exchangeCapabilities rpc error: {err}");
+        silver_log::warn!("engine_exchangeCapabilities rpc error: {err}");
         return;
     }
     let result = match val.get("result") {
         None => {
-            tracing::warn!("engine_exchangeCapabilities: missing result");
+            silver_log::warn!("engine_exchangeCapabilities: missing result");
             return;
         }
         Some(v) => v,
@@ -57,35 +57,35 @@ pub(crate) fn handle_capabilities_response(response: Result<&mut [u8], EngineErr
     let arr = result.as_array().map(|a| a.as_slice()).unwrap_or_default();
     let has = |m: &str| arr.iter().any(|v| v.as_str() == Some(m));
     if !has("engine_forkchoiceUpdatedV3") {
-        tracing::warn!("EL does not support engine_forkchoiceUpdatedV3");
+        silver_log::warn!("EL does not support engine_forkchoiceUpdatedV3");
     }
     if !has("engine_newPayloadV4") {
-        tracing::warn!("EL does not support engine_newPayloadV4");
+        silver_log::warn!("EL does not support engine_newPayloadV4");
     }
     if !has("engine_getPayloadV5") {
-        tracing::warn!("EL does not support engine_getPayloadV5");
+        silver_log::warn!("EL does not support engine_getPayloadV5");
     }
-    tracing::info!("capabilities negotiated");
+    silver_log::info!("capabilities negotiated");
 }
 
 #[inline]
 pub(crate) fn handle_client_version_response(response: Result<&mut [u8], EngineError>) {
     let raw = match response {
         Err(e) => {
-            tracing::warn!("engine_getClientVersionV1 failed: {e}");
+            silver_log::warn!("engine_getClientVersionV1 failed: {e}");
             return;
         }
         Ok(b) => b,
     };
     let val = match simd_json::to_borrowed_value(raw) {
         Err(e) => {
-            tracing::warn!("engine_getClientVersionV1 failed: {e}");
+            silver_log::warn!("engine_getClientVersionV1 failed: {e}");
             return;
         }
         Ok(v) => v,
     };
     if let Some(err) = val.get("error") {
-        tracing::warn!("engine_getClientVersionV1 rpc error: {err}");
+        silver_log::warn!("engine_getClientVersionV1 rpc error: {err}");
         return;
     }
     let result = match val.get("result") {
@@ -99,7 +99,7 @@ pub(crate) fn handle_client_version_response(response: Result<&mut [u8], EngineE
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         let version = client.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-        tracing::info!("EL client {name} {version}");
+        silver_log::info!("EL client {name} {version}");
     }
 }
 
@@ -140,33 +140,33 @@ impl<'a> Responses<'a> {
         let new_status = 'status: {
             let raw = match response {
                 Err(e) => {
-                    tracing::warn!("eth_syncing failed: {e}");
+                    silver_log::warn!("eth_syncing failed: {e}");
                     break 'status ELSyncStatus::Offline;
                 }
                 Ok(b) => b,
             };
             let val = match simd_json::to_borrowed_value(raw) {
                 Err(e) => {
-                    tracing::warn!("eth_syncing failed: {e}");
+                    silver_log::warn!("eth_syncing failed: {e}");
                     break 'status ELSyncStatus::Offline;
                 }
                 Ok(v) => v,
             };
             if let Some(err) = val.get("error") {
-                tracing::warn!("eth_syncing rpc error: {err}");
+                silver_log::warn!("eth_syncing rpc error: {err}");
                 break 'status ELSyncStatus::Offline;
             }
             match val.get("result") {
                 None => {
-                    tracing::warn!("eth_syncing: missing result");
+                    silver_log::warn!("eth_syncing: missing result");
                     ELSyncStatus::Offline
                 }
                 Some(v) if v.as_bool() == Some(false) => {
-                    tracing::info!("EL synced");
+                    silver_log::info!("EL synced");
                     ELSyncStatus::Synced
                 }
                 Some(_) => {
-                    tracing::info!("EL syncing");
+                    silver_log::info!("EL syncing");
                     ELSyncStatus::Syncing
                 }
             }
@@ -179,7 +179,7 @@ impl<'a> Responses<'a> {
         let resp = 'parse: {
             let raw = match response {
                 Err(e) => {
-                    tracing::warn!("forkchoiceUpdated error: {e}");
+                    silver_log::warn!("forkchoiceUpdated error: {e}");
                     break 'parse fcu_error(block_root);
                 }
                 Ok(b) => b,
@@ -187,7 +187,7 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<ForkchoiceUpdatedResult>>(raw) {
                 Ok(RpcResult { result: Some(r), .. }) => {
                     let status = status_from_str(&r.payload_status.status);
-                    tracing::info!(
+                    silver_log::info!(
                         status = %r.payload_status.status,
                         latest_valid_hash = %r.payload_status.latest_valid_hash
                             .map(|h| hex::encode(&h[..4]))
@@ -201,11 +201,11 @@ impl<'a> Responses<'a> {
                     }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
-                    tracing::warn!("forkchoiceUpdated rpc error: {}", e.message);
+                    silver_log::warn!("forkchoiceUpdated rpc error: {}", e.message);
                     break 'parse fcu_error(block_root);
                 }
                 Ok(_) | Err(_) => {
-                    tracing::warn!("forkchoiceUpdated: missing result");
+                    silver_log::warn!("forkchoiceUpdated: missing result");
                     break 'parse fcu_error(block_root);
                 }
             }
@@ -222,7 +222,7 @@ impl<'a> Responses<'a> {
         let payload_id = 'parse: {
             let raw = match response {
                 Err(e) => {
-                    tracing::warn!("forkchoiceUpdated with attributes error: {e}");
+                    silver_log::warn!("forkchoiceUpdated with attributes error: {e}");
                     break 'parse None;
                 }
                 Ok(b) => b,
@@ -230,7 +230,7 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<ForkchoiceUpdatedResult>>(raw) {
                 Ok(RpcResult { result: Some(r), .. }) => {
                     if r.payload_id.is_none() {
-                        tracing::warn!(
+                        silver_log::warn!(
                             id = spine_id,
                             status = %r.payload_status.status,
                             "forkchoiceUpdated with attributes started no payload"
@@ -239,11 +239,11 @@ impl<'a> Responses<'a> {
                     r.payload_id
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
-                    tracing::warn!("forkchoiceUpdated with attributes rpc error: {}", e.message);
+                    silver_log::warn!("forkchoiceUpdated with attributes rpc error: {}", e.message);
                     None
                 }
                 Ok(_) | Err(_) => {
-                    tracing::warn!("forkchoiceUpdated with attributes: missing result");
+                    silver_log::warn!("forkchoiceUpdated with attributes: missing result");
                     None
                 }
             }
@@ -263,7 +263,7 @@ impl<'a> Responses<'a> {
         let resp = 'parse: {
             let raw = match response {
                 Err(e) => {
-                    tracing::warn!("newPayload error: {e}");
+                    silver_log::warn!("newPayload error: {e}");
                     break 'parse new_payload_error(block_root);
                 }
                 Ok(b) => b,
@@ -271,7 +271,7 @@ impl<'a> Responses<'a> {
             match simd_json::serde::from_slice::<RpcResult<PayloadStatus>>(raw) {
                 Ok(RpcResult { result: Some(ps), .. }) => {
                     let status = status_from_str(&ps.status);
-                    tracing::info!("newPayload → {:?}", status);
+                    silver_log::info!("newPayload → {:?}", status);
                     EngineNewPayloadResp {
                         block_root,
                         status,
@@ -279,11 +279,11 @@ impl<'a> Responses<'a> {
                     }
                 }
                 Ok(RpcResult { error: Some(e), .. }) => {
-                    tracing::warn!("newPayload rpc error: {}", e.message);
+                    silver_log::warn!("newPayload rpc error: {}", e.message);
                     break 'parse new_payload_error(block_root);
                 }
                 Ok(_) | Err(_) => {
-                    tracing::warn!("newPayload: missing result");
+                    silver_log::warn!("newPayload: missing result");
                     break 'parse new_payload_error(block_root);
                 }
             }
@@ -296,20 +296,20 @@ impl<'a> Responses<'a> {
         let resp = match response {
             Ok(raw) => match self.encode(raw, json_get_payload_to_tcache) {
                 Ok(Some(((), data))) => {
-                    tracing::info!(id = spine_id, "getPayload ok");
+                    silver_log::info!(id = spine_id, "getPayload ok");
                     EngineGetPayloadResp { id: spine_id, data: Some(data) }
                 }
                 Ok(None) => {
-                    tracing::warn!("getPayload TCache full");
+                    silver_log::warn!("getPayload TCache full");
                     get_payload_error(spine_id)
                 }
                 Err(e) => {
-                    tracing::warn!("getPayload parse error: {e}");
+                    silver_log::warn!("getPayload parse error: {e}");
                     get_payload_error(spine_id)
                 }
             },
             Err(e) => {
-                tracing::warn!("getPayload error: {e}");
+                silver_log::warn!("getPayload error: {e}");
                 get_payload_error(spine_id)
             }
         };
@@ -326,7 +326,7 @@ impl<'a> Responses<'a> {
         let resp = match response {
             Ok(raw) => match self.encode(raw, json_get_blobs_to_tcache) {
                 Ok(Some((blobs_present, data))) => {
-                    tracing::info!(
+                    silver_log::info!(
                         block = hex::encode(block_root),
                         slot,
                         blobs_present,
@@ -335,16 +335,16 @@ impl<'a> Responses<'a> {
                     EngineGetBlobsResp { block_root, slot, blobs_present, data: Some(data) }
                 }
                 Ok(None) => {
-                    tracing::warn!("getBlobsV3 TCache full");
+                    silver_log::warn!("getBlobsV3 TCache full");
                     EngineGetBlobsResp::failed(block_root, slot)
                 }
                 Err(e) => {
-                    tracing::warn!("getBlobsV3 parse error: {e}");
+                    silver_log::warn!("getBlobsV3 parse error: {e}");
                     EngineGetBlobsResp::failed(block_root, slot)
                 }
             },
             Err(e) => {
-                tracing::warn!("getBlobsV3 error: {e}");
+                silver_log::warn!("getBlobsV3 error: {e}");
                 EngineGetBlobsResp::failed(block_root, slot)
             }
         };
@@ -361,7 +361,7 @@ fn publish_health_if_changed(
     if new_status != *sync_status {
         *sync_status = new_status;
         adapter.produce(EngineHealthEvent { sync_status: new_status });
-        tracing::info!("EL health → {:?}", new_status);
+        silver_log::info!("EL health → {:?}", new_status);
     }
 }
 

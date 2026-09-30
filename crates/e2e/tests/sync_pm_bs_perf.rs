@@ -19,7 +19,7 @@ static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 #[test]
 #[ignore = "perf harness — run explicitly with `cargo test ... -- --ignored --nocapture`"]
 fn sync_pm_bs_perf() {
-    // Silence the per-block `tracing::info!` in BS — those skew p99 by
+    // Silence the per-block `silver_log::info!` in BS — those skew p99 by
     // formatting on every block-apply.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(

@@ -607,7 +607,7 @@ impl BeaconApi {
                 let posted = self.reader.acquire(indices);
                 match posted.buffer() {
                     Ok((bytes, _)) => self.ctx.shufflings.record(epoch, bytes),
-                    Err(e) => tracing::warn!(?e, epoch, "posted shuffling unavailable"),
+                    Err(e) => silver_log::warn!(?e, epoch, "posted shuffling unavailable"),
                 }
             }
             _ => {}
@@ -663,9 +663,11 @@ impl BeaconApi {
                 Ok(buf) => self.publish(Channel::SingleAttestation, "single_attestation", |json| {
                     json.single_attestation_event(buf)
                 }),
-                Err(_) => tracing::warn!(len = buf.len(), "relayed attestation is misframed"),
+                Err(_) => silver_log::warn!(len = buf.len(), "relayed attestation is misframed"),
             },
-            Err(e) => tracing::warn!(?e, "relayed attestation unavailable to single_attestation"),
+            Err(e) => {
+                silver_log::warn!(?e, "relayed attestation unavailable to single_attestation")
+            }
         }
     }
 
@@ -684,7 +686,7 @@ impl BeaconApi {
                 let root = block_root(buf, self.ctx.spec.is_gloas_at_slot(slot));
                 self.publish_block_gossip(slot, &root);
             }
-            Err(e) => tracing::warn!(?e, "relayed block unavailable to block_gossip"),
+            Err(e) => silver_log::warn!(?e, "relayed block unavailable to block_gossip"),
         }
     }
 
@@ -699,7 +701,7 @@ impl BeaconApi {
                     kzg_commitments_from_sidecar(bytes),
                 ),
                 Err(e) => {
-                    tracing::warn!(?e, "validated sidecar unavailable to data_column_sidecar")
+                    silver_log::warn!(?e, "validated sidecar unavailable to data_column_sidecar")
                 }
             }
         }
@@ -778,14 +780,14 @@ impl BeaconApi {
             match outcome {
                 Ok(()) => true,
                 Err(Closed::AtCap { pending }) => {
-                    tracing::warn!(
+                    silver_log::warn!(
                         "beacon api subscriber would exceed send cap with {pending} bytes already pending, closing"
                     );
                     let _ = registry.deregister(stream);
                     false
                 }
                 Err(Closed::Lost(e)) => {
-                    tracing::warn!("beacon api subscriber lost: {e}");
+                    silver_log::warn!("beacon api subscriber lost: {e}");
                     let _ = registry.deregister(stream);
                     false
                 }
@@ -802,7 +804,7 @@ impl BeaconApi {
     pub fn handle_response(&mut self, response: BeaconApiResponse, submissions: &mut TProducer) {
         let request_id = response.request_id();
         let Some(token) = self.token_awaiting(request_id) else {
-            tracing::debug!(request_id, "answer for a connection already closed");
+            silver_log::debug!(request_id, "answer for a connection already closed");
             return;
         };
         let Self { connections, reader, ctx, .. } = self;
@@ -855,7 +857,7 @@ impl BeaconApi {
     fn resume_writing(&mut self, token: Token) {
         let conn = self.connections.get_mut(&token).expect("connection exists");
         if let Err(e) = self.registry.reregister(&mut conn.stream, token, Interest::WRITABLE) {
-            tracing::warn!("beacon api connection lost: {e}");
+            silver_log::warn!("beacon api connection lost: {e}");
             let _ = self.registry.deregister(&mut conn.stream);
             self.connections.remove(&token);
         }
@@ -900,7 +902,7 @@ impl BeaconApi {
                 Ok(stream) => stream,
                 Err(e) if would_block(&e) => break,
                 Err(e) => {
-                    tracing::warn!("accept failed: {e}");
+                    silver_log::warn!("accept failed: {e}");
                     break;
                 }
             };
@@ -910,7 +912,7 @@ impl BeaconApi {
             // leaving the stream in the backlog would go silent until the next
             // SYN retriggers the listener.
             if self.connections.len() >= self.max_connections {
-                tracing::warn!(
+                silver_log::warn!(
                     "beacon api connection cap {} reached, dropping new connection",
                     self.max_connections
                 );
@@ -959,7 +961,7 @@ impl BeaconApi {
                 self.connections.remove(&token);
             }
             Err(e) => {
-                tracing::warn!("connection error: {e}");
+                silver_log::warn!("connection error: {e}");
                 let _ = self.registry.deregister(&mut conn.stream);
                 self.connections.remove(&token);
             }
@@ -995,16 +997,16 @@ impl BeaconApi {
                 return true;
             }
             match &conn.state {
-                State::Subscription(subscription) => tracing::warn!(
+                State::Subscription(subscription) => silver_log::warn!(
                     "beacon api subscriber made no write progress for over {:?} with {} bytes pending, closing",
                     streams.send_deadline,
                     subscription.body.pending_write().len()
                 ),
-                State::Requests(Requests { linger_since: Some(since), .. }) => tracing::warn!(
+                State::Requests(Requests { linger_since: Some(since), .. }) => silver_log::warn!(
                     "beacon api connection still sending {:?} after its answer, closing",
                     now.duration_since(*since)
                 ),
-                State::Requests(requests) => tracing::warn!(
+                State::Requests(requests) => silver_log::warn!(
                     "beacon api connection idle for {:?}, closing",
                     now.duration_since(requests.last_activity)
                 ),

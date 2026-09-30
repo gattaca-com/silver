@@ -20,6 +20,7 @@ silver_beacon_state_data.workspace = true
 silver_columns.workspace = true
 silver_common = { workspace = true, features = ["test-util"] }
 silver_config.workspace = true
+silver_log.workspace = true
 silver_metrics.workspace = true
 silver_control.workspace = true
 silver_discovery.workspace = true
@@ -27,7 +28,6 @@ silver_gossip.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
 snap.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 
 # Optional — `lh-client` brings up a rust-libp2p test peer for end-to-end

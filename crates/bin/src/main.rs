@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Err(e) = silver_log::counts::enable(APP_NAME) {
         silver_log::error!(%e, "log counts disabled");
     }
-    tracing::debug!("start");
+    silver_log::debug!("start");
 
     // `#[timed]` is inert until a process opts in.
     enable_profiler(APP_NAME);
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let config = load_config()?;
 
-    tracing::info!("loaded config with fork digest: {}", hex::encode(config.fork_digest()));
+    silver_log::info!("loaded config with fork digest: {}", hex::encode(config.fork_digest()));
 
     // TCaches
     let network_ingress_producer =
@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let keypair = config.keypair()?;
     let mut local_enr = config.enr()?;
 
-    tracing::info!(enr = local_enr.to_base64(), "local ENR on startup");
+    silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
     let chain_config = config.chain_config();
     let spec = Arc::new(chain_config.spec.clone());
@@ -258,7 +258,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
     let booting_from_local_checkpoint = !checkpoint.is_empty();
 
-    tracing::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
+    silver_log::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
     let gossip_handler = GossipHandler::new(
         tcaches,
@@ -441,7 +441,7 @@ fn load_config() -> Result<Config, silver_common::Error> {
         config = config.with_beacon_api_bind(comma_separated(binds));
     }
 
-    tracing::info!("loaded config: {config:#?}");
+    silver_log::info!("loaded config: {config:#?}");
 
     Ok(config)
 }
@@ -452,7 +452,7 @@ fn sleep_until_genesis(genesis_unix_secs: u64) {
         return;
     };
 
-    tracing::info!("waiting {}s for genesis at {genesis_unix_secs}", remaining.as_secs());
+    silver_log::info!("waiting {}s for genesis at {genesis_unix_secs}", remaining.as_secs());
     std::thread::sleep(remaining);
 }
 
@@ -467,7 +467,7 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
     let chain_config = config.chain_config();
     match &chain_config.checkpoint_file {
         Some(file) => {
-            tracing::info!("using the config checkpoint at {}", file);
+            silver_log::info!("using the config checkpoint at {}", file);
             let checkpoint = std::fs::read(file)?;
             let pubkeys = match &chain_config.checkpoint_pubkeys_file {
                 Some(file) if !checkpoint.is_empty() => std::fs::read(file)?,
@@ -477,7 +477,7 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
         }
         None => match latest_local_checkpoint(config.data_storage_dir()) {
             Some((slot, ssz_path, pubkeys_path)) => {
-                tracing::info!(
+                silver_log::info!(
                     slot,
                     "checkpoint not set in the config, booting from the latest persisted one."
                 );

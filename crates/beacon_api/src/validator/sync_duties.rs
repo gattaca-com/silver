@@ -94,7 +94,7 @@ impl Seats {
         }
 
         if len != SYNC_COMMITTEE_SIZE {
-            tracing::warn!(
+            silver_log::warn!(
                 unresolved = SYNC_COMMITTEE_SIZE - len,
                 "sync committee seats with no registry index"
             );

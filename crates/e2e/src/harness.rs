@@ -119,7 +119,7 @@ impl TwoStackHarness {
             // Saturating subtract guards against garbage/unstamped
             // timestamps: a `recv_ts` that somehow ends up in the future
             // yields 0 ns rather than panicking.
-            tracing::debug!("new gossip!");
+            silver_log::debug!("new gossip!");
             let acquired = self.echo.ssz_consumer.acquire(new_msg.ssz);
 
             let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);

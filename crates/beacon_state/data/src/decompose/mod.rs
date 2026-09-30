@@ -22,7 +22,7 @@ impl BeaconState {
             {
                 return Ok(state);
             }
-            tracing::warn!("checkpoint pubkey sidecar unusable; decompressing from SSZ");
+            silver_log::warn!("checkpoint pubkey sidecar unusable; decompressing from SSZ");
         }
         Self::decompose(ssz, cfg, None)
     }

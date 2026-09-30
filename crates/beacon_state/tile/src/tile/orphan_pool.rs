@@ -13,7 +13,7 @@ use super::{
 impl BeaconStateTile {
     #[timed]
     pub(super) fn clear_finalized_held(&mut self, finalized_slot: u64) {
-        tracing::debug!(
+        silver_log::debug!(
             orphan_parents = self.held.orphans.parents(),
             finalized_slot,
             "clear held blocks at finalization"
@@ -23,7 +23,7 @@ impl BeaconStateTile {
         self.pending_envelopes.retain(|root, handle| {
             let held = handle.buffer().is_ok();
             if !held {
-                tracing::error!(
+                silver_log::error!(
                     block = hex32(root),
                     "parked envelope lapped in the tcache before its block arrived"
                 );
@@ -51,7 +51,7 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) -> bool {
         if !self.within_pending_window(block_slot) {
-            tracing::debug!(
+            silver_log::debug!(
                 block_slot,
                 wall_slot = self.ticker.current_slot(),
                 "orphan outside the pending window; dropped"
@@ -61,7 +61,7 @@ impl BeaconStateTile {
 
         let head_slot = self.head_state_slot();
         if block_slot.saturating_sub(head_slot) > self.pending_bounds.max_chain_len as u64 {
-            tracing::warn!(
+            silver_log::warn!(
                 block_slot,
                 head_slot,
                 limit = self.pending_bounds.max_chain_len,
@@ -146,7 +146,7 @@ impl BeaconStateTile {
             }
         };
         if !replayed {
-            tracing::warn!(
+            silver_log::warn!(
                 block = hex32(&block_root),
                 slot,
                 "parked block lapped in the tcache before its dependency arrived; re-requesting"

@@ -76,7 +76,7 @@ impl ProposerDuties {
         for (offset, proposer) in proposers.iter_mut().enumerate() {
             let lookahead_idx = lookahead_start + offset;
             let Some(found) = view.epoch.proposer_at(lookahead_idx) else {
-                tracing::error!(
+                silver_log::error!(
                     epoch,
                     state_epoch,
                     lookahead_idx,

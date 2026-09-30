@@ -72,7 +72,7 @@ pub(super) fn handle_grafts<'a>(
             let Ok((topic, digest)) = gossip_topic(topic, domains) else {
                 continue;
             };
-            tracing::debug!(?stream_id, ?topic, "GRAFT received");
+            silver_log::debug!(?stream_id, ?topic, "GRAFT received");
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicGraft {
                 p2p_peer: stream_id.peer(),
                 topic,
@@ -93,7 +93,7 @@ pub(super) fn handle_prunes<'a>(
             let Ok((topic, digest)) = gossip_topic(topic, domains) else {
                 continue;
             };
-            tracing::debug!(?stream_id, ?topic, "PRUNE received");
+            silver_log::debug!(?stream_id, ?topic, "PRUNE received");
 
             // TODO: prune.peers may contain list of signed peer records of alternate peers
             // but e.g. Lighthouse does not send peer records. So maybe just ignore?
@@ -128,10 +128,10 @@ pub(super) fn handle_iwants<'a>(
             } else {
                 match mcache.history(&hash) {
                     Some(ts) => {
-                        tracing::info!(?stream_id, ?hash, elapsed=?ts.elapsed(),  "IWANT for message > 8.4s old");
+                        silver_log::info!(?stream_id, ?hash, elapsed=?ts.elapsed(),  "IWANT for message > 8.4s old");
                     }
                     None => {
-                        tracing::warn!(?stream_id, ?hash, "WANT message not in cache");
+                        silver_log::warn!(?stream_id, ?hash, "WANT message not in cache");
                     }
                 }
             }
@@ -491,7 +491,7 @@ fn encode_control_topics(
 
 fn gossip_topic(topic: &str, domains: &ActiveDomains) -> Result<(GossipTopic, [u8; 4]), Error> {
     domains.parse(topic).map(|(topic, domain)| (topic, domain.digest())).inspect_err(|_| {
-        tracing::warn!(topic, "invalid gossipsub topic");
+        silver_log::warn!(topic, "invalid gossipsub topic");
     })
 }
 
@@ -503,7 +503,7 @@ fn message_id(
     match (bytes).try_into() {
         Ok(hash) => Some(MessageId { id: hash }),
         Err(_) => {
-            tracing::warn!(?bytes, ?stream_id, "invalid message hash");
+            silver_log::warn!(?bytes, ?stream_id, "invalid message hash");
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidControl {
                 p2p_peer: stream_id.peer(),
             }));

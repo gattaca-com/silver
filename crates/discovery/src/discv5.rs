@@ -11,7 +11,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
 use silver_config::DiscoveryConfig;
-use tracing::{debug, info, trace, warn};
+use silver_log::{debug, info, trace, warn};
 
 use crate::{
     crypto::{
@@ -854,7 +854,7 @@ impl DiscV5 {
     }
 
     fn do_lookup(&mut self) {
-        tracing::debug!("performing node lookup");
+        silver_log::debug!("performing node lookup");
 
         // Probe all un-sessioned peers first (bootstrap / new additions).
         let without_session: ArrayVec<(NodeId, SocketAddr), 32> = self
@@ -1049,7 +1049,7 @@ impl Discovery for DiscV5 {
             now,
         );
         match result {
-            InsertResult::Failed(reason) => tracing::error!(?reason, "add enr failed"),
+            InsertResult::Failed(reason) => silver_log::error!(?reason, "add enr failed"),
             InsertResult::Inserted => self.log_table_state(now),
             _ => {}
         }
@@ -1070,11 +1070,14 @@ impl Discovery for DiscV5 {
         }
 
         if let Err(e) = self.local_enr.set_eth2(eth2, &self.local_key) {
-            tracing::error!(?e, "failed to update local ENR eth2 field");
+            silver_log::error!(?e, "failed to update local ENR eth2 field");
             return;
         }
         self.reencode_local_enr();
-        tracing::info!("advanced local ENR fork digest to {}", fork_digest_hex(&self.fork_digest));
+        silver_log::info!(
+            "advanced local ENR fork digest to {}",
+            fork_digest_hex(&self.fork_digest)
+        );
     }
 
     fn update_enr_syncnets(&mut self, syncnets: u8) {
@@ -1082,11 +1085,11 @@ impl Discovery for DiscV5 {
             return;
         }
         if let Err(e) = self.local_enr.set_syncnets(syncnets, &self.local_key) {
-            tracing::error!(?e, "failed to update local ENR syncnets field");
+            silver_log::error!(?e, "failed to update local ENR syncnets field");
             return;
         }
         self.reencode_local_enr();
-        tracing::info!(syncnets = format_args!("{syncnets:#06b}"), "updated local ENR syncnets");
+        silver_log::info!(syncnets = format_args!("{syncnets:#06b}"), "updated local ENR syncnets");
     }
 
     fn ban_node(&mut self, id: NodeId) {

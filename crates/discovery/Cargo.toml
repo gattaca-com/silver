@@ -21,8 +21,8 @@ silver_common.workspace = true
 silver_config.workspace = true
 rustc-hash.workspace = true
 secp256k1.workspace = true
+silver_log.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 uint.workspace = true
 
 [dev-dependencies]

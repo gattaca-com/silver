@@ -73,7 +73,7 @@ impl SyncCommitteeContributionRequest {
                 });
             }
             Err(e) => {
-                tracing::warn!(?e, slot = self.slot, "served contribution unavailable");
+                silver_log::warn!(?e, slot = self.slot, "served contribution unavailable");
                 resp.error(500, "the contribution could not be read");
             }
         }

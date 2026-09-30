@@ -38,6 +38,9 @@ jobs:
         with:
           just-version: 1.5.0
 
+      - name: Check logging goes through silver_log
+        run: just log-check
+
       - name: Check compilation
         run: cargo check --locked
 

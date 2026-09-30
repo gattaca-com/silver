@@ -160,7 +160,7 @@ fn make_rpc_body(
 fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
     c.scratch.clear();
     if let Err(e) = simd_json::to_writer(&mut c.scratch, body) {
-        tracing::warn!("failed to serialize RPC body: {e}");
+        silver_log::warn!("failed to serialize RPC body: {e}");
         return;
     }
     c.pool.enqueue(rpc_id, &c.scratch, &c.registry);

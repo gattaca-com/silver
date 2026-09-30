@@ -148,7 +148,7 @@ impl Syncing {
             emit(SyncAction::DiscoverPeers);
             let (needs_outstanding, oldest) = ctx.root_requests.outstanding();
             let arrivals = window.seen_blocks(slot);
-            tracing::error!(
+            silver_log::error!(
                 owed_from = slot,
                 applied_head = ctx.local.head_imported_slot,
                 coverage = ?window.coverage(slot),
@@ -172,7 +172,7 @@ impl Syncing {
         self.stall.abandoned = Some(slot);
         let arrivals = window.seen_blocks(slot);
         ctx.peers.mark_unavailable(self.chain_root());
-        tracing::error!(
+        silver_log::error!(
             owed_from = slot,
             coverage = ?window.coverage(slot),
             block_root = (arrivals.count > 0).then(|| hex32(&arrivals.root)),
@@ -200,7 +200,7 @@ impl Syncing {
             if let SyncAction::Request { request, .. } = &action &&
                 let Scope::Range { start, count } = request.scope
             {
-                tracing::info!(kind = ?request.kind, start, count, ?target, "sync: range request");
+                silver_log::info!(kind = ?request.kind, start, count, ?target, "sync: range request");
             }
             emit(action)
         });

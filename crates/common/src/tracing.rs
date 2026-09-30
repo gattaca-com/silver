@@ -6,7 +6,8 @@ use std::{
 
 use backtrace::Backtrace;
 use flux::utils::thread_boot;
-use tracing::{error, level_filters::LevelFilter};
+use silver_log::error;
+use tracing::level_filters::LevelFilter;
 use tracing_appender::{non_blocking::WorkerGuard, rolling::Rotation};
 use tracing_subscriber::{
     EnvFilter,
@@ -130,7 +131,7 @@ pub fn initialise_tracing_log_on_core(
             .with_thread_names(true)
             .init();
         if let Some(message) = rotation_header {
-            tracing::info!("{message}");
+            silver_log::info!("{message}");
         }
         None
     } else {

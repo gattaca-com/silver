@@ -50,7 +50,7 @@ impl Store {
             let Some(pending) = self.write_queue.pop_front()
         {
             writes += 1;
-            tracing::debug!(?pending, "process pending write");
+            silver_log::debug!(?pending, "process pending write");
             match pending {
                 PendingWrite::Column { slot, column, custody_set_complete, ssz } => {
                     let path = column_path(&self.store_dir, slot, column);
@@ -306,7 +306,7 @@ impl Store {
                 Ok(true)
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                tracing::warn!(
+                silver_log::warn!(
                     slot,
                     ?payload,
                     "unfinalized file missing at promotion; left missing"

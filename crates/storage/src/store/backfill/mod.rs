@@ -29,7 +29,7 @@ impl PayloadFacts {
         }
 
         if !SignedBeaconBlockView::check_gloas_size(block) {
-            tracing::error!(
+            silver_log::error!(
                 slot = SignedBeaconBlockView::slot(block),
                 "gloas block bid out of bounds; taken as missing nothing"
             );
@@ -66,7 +66,7 @@ pub(super) struct BlockFacts {
 impl BlockFacts {
     pub(in crate::store) fn of(buffer: &[u8], spec: &SpecConfig) -> Option<Self> {
         if !SignedBeaconBlockView::check_size(buffer) {
-            tracing::warn!(len = buffer.len(), "backfill block has invalid size");
+            silver_log::warn!(len = buffer.len(), "backfill block has invalid size");
             return None;
         }
         let slot = SignedBeaconBlockView::slot(buffer);

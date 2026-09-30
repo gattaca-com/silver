@@ -266,7 +266,7 @@ impl Config {
 
         let spec = &config.chain_config.spec;
         if let Some(network) = spec.misnamed_network() {
-            tracing::warn!(
+            silver_log::warn!(
                 config_name = %spec.network_name(),
                 genesis_fork_version = %hex::encode(spec.genesis_fork_version),
                 network,

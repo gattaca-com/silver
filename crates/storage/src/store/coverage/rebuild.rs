@@ -29,7 +29,7 @@ impl Coverage {
         self.examined_below =
             self.chain.spans().last().map_or(0, |top| (top.to / SLOTS_PER_DIR + 1) * SLOTS_PER_DIR);
         self.touch();
-        tracing::info!(
+        silver_log::info!(
             spans = self.chain.spans().len(),
             examined_below = self.examined_below,
             "rebuilt coverage from the block files"
@@ -62,12 +62,12 @@ impl Coverage {
         if let Err(e) = list_present(store_dir, Payload::Column, group, |offset, column| {
             present_columns[offset] |= 1u128 << column
         }) {
-            tracing::error!(?e, group, "column listing failed; its columns are missing");
+            silver_log::error!(?e, group, "column listing failed; its columns are missing");
         }
         if let Err(e) = list_present(store_dir, Payload::Envelope, group, |offset, _| {
             present_envelopes |= 1u128 << offset
         }) {
-            tracing::error!(?e, group, "envelope listing failed; its envelopes are missing");
+            silver_log::error!(?e, group, "envelope listing failed; its envelopes are missing");
         }
 
         let mut child_read: Option<(u64, B256)> = None;
@@ -103,7 +103,7 @@ impl Coverage {
                     .flatten(),
             };
             if !read_block(store_dir, slot, block) {
-                tracing::error!(slot, "held block unreadable; taken as missing nothing");
+                silver_log::error!(slot, "held block unreadable; taken as missing nothing");
                 child_read = None;
                 continue;
             }
@@ -174,7 +174,7 @@ fn close_bottom(
         return;
     }
     if !read_block(store_dir, slot, block) {
-        tracing::error!(slot, "held block unreadable; nothing links below it");
+        silver_log::error!(slot, "held block unreadable; nothing links below it");
         return;
     }
     span.wanted_parent = *SignedBeaconBlockView::parent_root(block);

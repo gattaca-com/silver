@@ -97,7 +97,7 @@ impl BeaconStateTile {
         mut send_gossip: impl FnMut(&mut Producers),
     ) -> Feedback {
         if let Err(e) = Self::check_block_size(data) {
-            tracing::warn!(?source, "{e}");
+            silver_log::warn!(?source, "{e}");
             return e.feedback();
         }
 
@@ -132,7 +132,7 @@ impl BeaconStateTile {
 
         let waits_for_columns = self.waits_for_columns(&parsed);
         if waits_for_columns && self.held.staged_len() >= self.pending_bounds.max_dc {
-            tracing::warn!(
+            silver_log::warn!(
                 block = hex32(&parsed.block_root),
                 "too many blocks awaiting data availability; dropped"
             );
@@ -163,7 +163,7 @@ impl BeaconStateTile {
             }
             _ => {}
         }
-        tracing::info!(
+        silver_log::info!(
             ?source,
             head_slot = self.head_state_slot(),
             slot,
@@ -243,7 +243,7 @@ impl BeaconStateTile {
         };
 
         if !SignedBeaconBlockView::check_size(data) {
-            tracing::error!(len = data.len(), "replayed on-disk block malformed");
+            silver_log::error!(len = data.len(), "replayed on-disk block malformed");
             return;
         }
 
@@ -251,12 +251,12 @@ impl BeaconStateTile {
         let feedback = self.try_apply_block(data);
 
         match feedback {
-            Feedback::Reject(block_root) => tracing::error!(
+            Feedback::Reject(block_root) => silver_log::error!(
                 block_slot,
                 block_root = ?block_root.map(|r| hex32(&r)),
                 "replayed block rejected",
             ),
-            _ => tracing::info!(
+            _ => silver_log::info!(
                 head_slot = self.head_state_slot(),
                 block_slot,
                 "replayed block: {:?}",
@@ -279,18 +279,18 @@ impl BeaconStateTile {
             EnvelopeCheck::Ready { block_root, state_id } => {
                 let rv = self.state.read_view(state_id);
                 if !stf::envelope_withdrawals_match_expected(&rv, data) {
-                    tracing::warn!("replayed on-disk envelope has unexpected withdrawals");
+                    silver_log::warn!("replayed on-disk envelope has unexpected withdrawals");
                     return;
                 }
                 self.fork_choice.mark_payload_verified(&block_root);
                 self.recompute_head();
             }
-            EnvelopeCheck::AwaitBlock(block_root) => tracing::error!(
+            EnvelopeCheck::AwaitBlock(block_root) => silver_log::error!(
                 block = hex32(&block_root),
                 "replayed envelope precedes its block; replay is misordered"
             ),
             EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
-                tracing::warn!("replayed on-disk envelope rejected")
+                silver_log::warn!("replayed on-disk envelope rejected")
             }
         }
     }
@@ -304,13 +304,13 @@ impl BeaconStateTile {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
             Err(err) => {
-                tracing::warn!(head_slot = self.head_state_slot(), "{err}");
+                silver_log::warn!(head_slot = self.head_state_slot(), "{err}");
                 return Err(err);
             }
         };
 
         if !pre_verified && !self.verify_block_signature(data, &parsed) {
-            tracing::warn!(
+            silver_log::warn!(
                 head_slot = self.head_state_slot(),
                 block_root = ?hex32(&parsed.block_root),
                 "block BLS proposer signature invalid"
@@ -357,7 +357,7 @@ impl BeaconStateTile {
         match self.apply_stf_and_commit(parsed, data) {
             Ok(applied) => Ok(applied),
             Err(e) => {
-                tracing::error!(
+                silver_log::error!(
                     error = %e,
                     block_slot = %parsed.header.slot,
                     head_slot = self.head_state_slot(),
@@ -376,14 +376,14 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) {
         let Some(staged) = self.held.mark_available(block_root, slot) else {
-            tracing::debug!(block = hex32(&block_root), slot, "DataColumnsAvailable received");
+            silver_log::debug!(block = hex32(&block_root), slot, "DataColumnsAvailable received");
             return;
         };
         let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;
 
         // Only lag eviction of the pin can lose the bytes; counted as a fault.
         let Ok((data, _)) = ssz.buffer() else {
-            tracing::error!(
+            silver_log::error!(
                 block = hex32(&block_root),
                 slot,
                 "staged block evicted from the tcache before its data columns arrived; re-requesting"
@@ -696,7 +696,7 @@ impl BeaconStateTile {
             }
             Some(_) => true,
             None => {
-                tracing::debug!(
+                silver_log::debug!(
                     block_slot,
                     parent_slot,
                     "proposer lookahead does not reach this block — not relayed"

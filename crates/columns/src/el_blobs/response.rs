@@ -14,14 +14,14 @@ impl BlobEntry<'_> {
         let blob = match c_kzg::Blob::from_bytes(self.blob) {
             Ok(blob) => blob,
             Err(error) => {
-                tracing::error!(?error, "el blob decode failed");
+                silver_log::error!(?error, "el blob decode failed");
                 return None;
             }
         };
         match c_kzg::ethereum_kzg_settings(0).compute_cells(&blob) {
             Ok(cells) => Some(cells),
             Err(error) => {
-                tracing::error!(?error, "compute_cells failed");
+                silver_log::error!(?error, "compute_cells failed");
                 None
             }
         }

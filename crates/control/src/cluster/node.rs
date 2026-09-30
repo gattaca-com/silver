@@ -656,7 +656,7 @@ impl SlashingProtectionCluster {
             Some(PersistenceEvent::Compacted(snapshot)) => {
                 let index = snapshot.get_metadata().index;
                 self.node.as_mut().ok_or(ClusterError::NotReady)?.mut_store().compact(snapshot)?;
-                tracing::debug!(
+                silver_log::debug!(
                     node_id = self.config.node_id,
                     index,
                     "attestation Raft journal compacted"
@@ -692,7 +692,11 @@ impl SlashingProtectionCluster {
         config.applied = commit;
         self.node = Some(RawNode::with_default_logger(&config, storage)?);
         self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
-        tracing::info!(node_id = self.config.node_id, commit, "attestation Raft storage recovered");
+        silver_log::info!(
+            node_id = self.config.node_id,
+            commit,
+            "attestation Raft storage recovered"
+        );
         Ok(())
     }
 

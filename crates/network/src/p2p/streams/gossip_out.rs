@@ -93,7 +93,7 @@ impl GossipWriteState {
                     let len = len as u64;
                     let limit =
                         silver_common::encode_varint(len, &mut buffer).inspect_err(|e| {
-                            tracing::error!(?e, len, "network gossiip write failed");
+                            silver_log::error!(?e, len, "network gossiip write failed");
                         })?;
                     Ok(Spin::Next(Self::WritingLength { buffer, limit, written: 0, message }))
                 }
@@ -116,7 +116,7 @@ impl GossipWriteState {
             }
             Self::Writing { mut offset, length, message } => {
                 let Some(r_offset) = message.with_offset(offset) else {
-                    tracing::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
+                    silver_log::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
                     NetworkCounters::GossipMsgSkipped.inc();
                     return Ok(Spin::Next(Self::Idle));
                 };

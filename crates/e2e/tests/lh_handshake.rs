@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use lh_common::{build_silver_listener, drive_until, libp2p_to_silver_peer_id};
 use silver_e2e::LhClient;
+use tracing_subscriber::filter::LevelFilter;
 
 #[test]
 fn libp2p_dials_silver() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(7);
     let mut client = LhClient::new_dialer();
@@ -26,7 +27,7 @@ fn libp2p_dials_silver() {
 /// Reverse direction: libp2p listens on a known port, silver dials it.
 #[test]
 fn silver_dials_libp2p() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(8);
     let mut client = LhClient::new_listener();

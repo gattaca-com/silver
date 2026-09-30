@@ -314,7 +314,7 @@ impl PartialExchange {
             if let Some(peer) = self.peer_exchanges.get_mut(&key.peer) {
                 peer.columns = peer.columns.saturating_sub(1);
             } else {
-                tracing::error!(?key, "partial exchange has no peer budget during removal");
+                silver_log::error!(?key, "partial exchange has no peer budget during removal");
             }
             self.headers.forget_sent(key.peer, key.group);
             false
@@ -359,7 +359,7 @@ impl PartialExchange {
         for _ in 0..self.ready.len().min(WORK_PER_SPIN) {
             let Some(key) = self.ready.pop_front() else { break };
             let Some(exchange) = self.exchanges.get_mut(&key) else {
-                tracing::error!(?key, "scheduled partial exchange is missing");
+                silver_log::error!(?key, "scheduled partial exchange is missing");
                 continue;
             };
             exchange.scheduled = false;
@@ -414,7 +414,7 @@ impl PartialExchange {
                 header,
             };
             let Some(budget) = self.peer_exchanges.get_mut(&key.peer) else {
-                tracing::error!(?key, "partial exchange has no peer budget; skipping send");
+                silver_log::error!(?key, "partial exchange has no peer budget; skipping send");
                 continue;
             };
             let (frame, bytes) =
@@ -528,7 +528,10 @@ impl PartialExchange {
                 header: false,
             };
             let Some(budget) = self.peer_exchanges.get_mut(&key.peer) else {
-                tracing::error!(?key, "partial exchange has no peer budget; skipping withdrawal");
+                silver_log::error!(
+                    ?key,
+                    "partial exchange has no peer budget; skipping withdrawal"
+                );
                 continue;
             };
             if let Ok(Some((frame, bytes))) =

@@ -119,18 +119,18 @@ fn with_bytes(
     respond: impl FnOnce(&mut Response<'_>, &[u8]),
 ) {
     let Some(ssz) = block.ssz else {
-        tracing::error!(block.slot, "storage answered a block request without the bytes");
+        silver_log::error!(block.slot, "storage answered a block request without the bytes");
         return resp.error(500, "block bytes missing");
     };
     let ssz = reader.acquire(ssz);
     match ssz.buffer() {
         Ok((bytes, _)) if SignedBeaconBlockView::check_size(bytes) => respond(resp, bytes),
         Ok(_) => {
-            tracing::error!(block.slot, "stored block fits no SignedBeaconBlock layout");
+            silver_log::error!(block.slot, "stored block fits no SignedBeaconBlock layout");
             resp.error(500, "stored block is malformed");
         }
         Err(e) => {
-            tracing::warn!(?e, block.slot, "served block overwritten before it was read");
+            silver_log::warn!(?e, block.slot, "served block overwritten before it was read");
             resp.error(503, "block no longer available");
         }
     }

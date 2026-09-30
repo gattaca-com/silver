@@ -41,7 +41,7 @@ impl<'a> ParsedRequest<'a> {
             Ok(httparse::Status::Complete(n)) => n,
             Ok(httparse::Status::Partial) => return ParseOutcome::Incomplete,
             Err(e) => {
-                tracing::warn!("unparseable request: {e}");
+                silver_log::warn!("unparseable request: {e}");
                 return ParseOutcome::Malformed;
             }
         };
@@ -63,7 +63,10 @@ impl<'a> ParsedRequest<'a> {
             Some(value) => match trimmed_utf8(value).and_then(|v| v.parse().ok()) {
                 Some(length) => length,
                 None => {
-                    tracing::warn!("unusable Content-Length: {:?}", String::from_utf8_lossy(value));
+                    silver_log::warn!(
+                        "unusable Content-Length: {:?}",
+                        String::from_utf8_lossy(value)
+                    );
                     return ParseOutcome::Malformed;
                 }
             },
@@ -212,7 +215,7 @@ impl ServerConnection {
                 ParseOutcome::TooLarge => return self.reject("413 Payload Too Large"),
             };
         if req.version != 1 {
-            tracing::warn!("rejecting HTTP/1.0 request");
+            silver_log::warn!("rejecting HTTP/1.0 request");
             self.continuation = Continuation::Close;
             frame_response(&mut self.write_buf, "505 HTTP Version Not Supported", None, b"");
         } else {

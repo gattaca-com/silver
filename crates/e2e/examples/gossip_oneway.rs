@@ -50,6 +50,7 @@ use silver_e2e::{
     inject::{build_publish_frame, snappy_compress},
     keypair_from_seed,
 };
+use tracing_subscriber::filter::LevelFilter;
 
 const DEFAULT_DURATION_S: u64 = 3;
 const DEFAULT_RATE_HZ: u64 = 500;
@@ -68,7 +69,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 
 fn main() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::WARN).try_init().ok();
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
 

@@ -105,7 +105,7 @@ impl PeerManager {
         match peer_state.outbound_rpc_limits.peek_outbound(protocol, tokens, now) {
             RpcRateLimit::Allowed => true,
             denied => {
-                tracing::debug!(
+                silver_log::debug!(
                     peer,
                     ?protocol,
                     tokens,
@@ -136,7 +136,7 @@ impl PeerManager {
                 true
             }
             denied => {
-                tracing::debug!(peer, ?protocol, tokens, ?denied, "outbound rpc rate limited");
+                silver_log::debug!(peer, ?protocol, tokens, ?denied, "outbound rpc rate limited");
                 false
             }
         }
@@ -145,7 +145,7 @@ impl PeerManager {
     fn holds_slots_from(&self, peer: usize, asking_for: u64) -> bool {
         match self.database.earliest_available_slot(peer) {
             Some(earliest) if asking_for < earliest => {
-                tracing::trace!(peer, asking_for, earliest, "peer pruned the slots asked");
+                silver_log::trace!(peer, asking_for, earliest, "peer pruned the slots asked");
                 false
             }
             _ => true,
@@ -217,14 +217,14 @@ impl PeerManager {
                 }
 
                 let overlap = self.database.data_column_custody_groups_intersection(p, remaining);
-                tracing::trace!(peer = p, overlap, remaining, "peer data columns overlap");
+                silver_log::trace!(peer = p, overlap, remaining, "peer data columns overlap");
                 if overlap == 0 {
                     return None;
                 }
 
                 let tokens = SyncRequest { columns: overlap, ..*request }.tokens();
                 if !self.outbound_has_capacity(p, protocol, tokens, now, max_in_flight) {
-                    tracing::trace!(
+                    silver_log::trace!(
                         peer = p,
                         tokens,
                         max_in_flight,
@@ -257,11 +257,11 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        tracing::trace!(?rpc, "received rpc inbound");
+        silver_log::trace!(?rpc, "received rpc inbound");
 
         match rpc {
             RpcInbound::Request(RpcRequestInbound { stream_id, request }) => {
-                tracing::debug!(?stream_id, "inbound rpc request");
+                silver_log::debug!(?stream_id, "inbound rpc request");
                 match request {
                     RpcRequest::StatusV1(status_v1) => {
                         self.handle_event(
@@ -334,7 +334,7 @@ impl PeerManager {
 
                         let our_seq = MetadataView::seq_number(self.metadata()).to_le_bytes();
 
-                        tracing::debug!(?stream_id, "P2pSend ping response");
+                        silver_log::debug!(?stream_id, "P2pSend ping response");
                         emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
                             RpcResponseOutbound { stream_id, response: RpcResponse::Ping(our_seq) },
                         ))));
@@ -441,7 +441,7 @@ impl PeerManager {
                     ),
                     RpcResponse::Error { error, msg, len } => {
                         let err = String::from_utf8_lossy(&msg[..len]);
-                        tracing::error!(
+                        silver_log::error!(
                             error,
                             err = err.deref(),
                             application_id,
@@ -462,7 +462,7 @@ impl PeerManager {
                         }
                     }
                     RpcResponse::Complete => {
-                        tracing::debug!("complete for {stream_id:?}");
+                        silver_log::debug!("complete for {stream_id:?}");
                     }
                     _ => {}
                 }
@@ -471,7 +471,7 @@ impl PeerManager {
                         peer.outbound_in_flight[protocol.ordinal() as usize] =
                             peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
 
-                        tracing::debug!(
+                        silver_log::debug!(
                             ?stream_id,
                             "peer in-flight count is now: {}",
                             peer.outbound_in_flight[protocol.ordinal() as usize]
@@ -650,7 +650,7 @@ impl PeerManager {
         }
 
         if remaining != 0 {
-            tracing::debug!(request_id, remaining, "no peer custodies the rest of the request");
+            silver_log::debug!(request_id, remaining, "no peer custodies the rest of the request");
             emit(PeerControl::DiscoverNodes);
         }
         placed
@@ -671,7 +671,7 @@ impl PeerManager {
                 continue;
             }
             if !target.is_served_by(ssz) {
-                tracing::debug!(
+                silver_log::debug!(
                     peer,
                     ?target,
                     peer_finalized_epoch = StatusView::finalized_epoch(ssz),
@@ -690,7 +690,7 @@ impl PeerManager {
                 now,
                 MAX_RPC_PROTOCOL_IN_FLIGHT,
             ) {
-                tracing::debug!(peer, "sync peer lacks BlocksByRange outbound capacity");
+                silver_log::debug!(peer, "sync peer lacks BlocksByRange outbound capacity");
                 continue;
             }
             let s = peer_state.cached_score;

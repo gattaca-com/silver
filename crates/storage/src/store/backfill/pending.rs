@@ -161,7 +161,7 @@ impl PendingBlock {
                 ) && DataColumnSidecarGloasView::slot(sidecar) == slot
             }
             _ => {
-                tracing::error!(
+                silver_log::error!(
                     slot,
                     served = ?layout,
                     "backfill sidecar layout disagrees with the block's fork"
@@ -234,7 +234,7 @@ impl Pending {
             true => match Bid::of(block) {
                 Some(bid) => Some(bid),
                 None => {
-                    tracing::error!(slot, "gloas block bid unreadable; nothing seeded");
+                    silver_log::error!(slot, "gloas block bid unreadable; nothing seeded");
                     return;
                 }
             },
@@ -263,7 +263,7 @@ impl Pending {
         spec: &SpecConfig,
     ) -> (Option<VerifiedColumns>, Vec<RejectedSidecar>) {
         let Ok((buffer, _)) = sidecar.buffer() else {
-            tracing::error!("failed to read backfill data column sidecar cache buffer");
+            silver_log::error!("failed to read backfill data column sidecar cache buffer");
             return (None, Vec::new());
         };
         if !self.park(buffer, &head, slot, peer, now, spec) {
@@ -292,7 +292,7 @@ impl Pending {
             return false;
         }
         if !block.accepts(slot, head.layout, buffer, spec) {
-            tracing::warn!(
+            silver_log::warn!(
                 slot,
                 column_index = head.index,
                 peer,
@@ -338,7 +338,7 @@ impl Pending {
             }
             let bad = block.parked.swap_remove(i);
             block.received &= !(1u128 << bad.column_index);
-            tracing::warn!(
+            silver_log::warn!(
                 slot,
                 column_index = bad.column_index,
                 peer = bad.peer,
@@ -353,7 +353,7 @@ impl Pending {
         let Some(block) = self.blocks.get_mut(&slot) else { return false };
         let Some(bid) = block.bid.as_ref().filter(|_| block.envelope) else { return false };
         if !bid.matches_envelope(signed) {
-            tracing::warn!(slot, "backfill envelope does not match its block's bid");
+            silver_log::warn!(slot, "backfill envelope does not match its block's bid");
             return false;
         }
         block.envelope = false;
@@ -373,7 +373,7 @@ impl Pending {
             if !expired {
                 continue;
             }
-            tracing::warn!(
+            silver_log::warn!(
                 slot,
                 parked = block.parked.len(),
                 "backfill block incomplete past timeout; dropping parked columns"

@@ -307,7 +307,7 @@ impl ElBlobFetcher {
             // Newer responses can force this non-strict consumer past a queued
             // read. Re-acquire before borrowing bytes, even if its slot still matches.
             let Some(read) = pending.read.with_offset(0) else {
-                tracing::error!(
+                silver_log::error!(
                     block = hex::encode(context.block_root),
                     "get_blobs response buffer acquire failed"
                 );
@@ -333,7 +333,7 @@ impl ElBlobFetcher {
             }
             let pending = self.responses.swap_remove(index);
             let Some(response) = BlobResponse::parse(read.as_ref(), context.blob_count) else {
-                tracing::warn!(
+                silver_log::warn!(
                     block = hex::encode(context.block_root),
                     "malformed el blobs response"
                 );

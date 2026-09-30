@@ -408,7 +408,7 @@ impl SyncEngine {
         let finalized_root = *StatusView::finalized_root(status);
         let (head_slot, finalized_epoch) =
             (StatusView::head_slot(status), StatusView::finalized_epoch(status));
-        tracing::debug!(peer, head_slot, finalized_epoch, "sync: peer status");
+        silver_log::debug!(peer, head_slot, finalized_epoch, "sync: peer status");
         if self.ctx.peers.is_rejected(&finalized_root) {
             return;
         }
@@ -429,7 +429,7 @@ impl SyncEngine {
         finalized_root: [u8; 32],
         wall_slot: u64,
     ) {
-        tracing::debug!(head_slot, finalized_epoch, wall_slot, "sync: local status updated");
+        silver_log::debug!(head_slot, finalized_epoch, wall_slot, "sync: local status updated");
         self.ctx.local.update(head_slot, finalized_epoch, finalized_root, wall_slot);
         self.window.set_floor(self.ctx.local.finalized_slot());
         if self.awaiting_start || matches!(self.phase, Phase::Following) {
@@ -491,7 +491,7 @@ impl SyncEngine {
     }
 
     fn on_reorg(&mut self, lca_slot: u64) {
-        tracing::info!(lca_slot, "sync: reorg, dropping coverage above the ancestor");
+        silver_log::info!(lca_slot, "sync: reorg, dropping coverage above the ancestor");
         self.ctx.local.head_imported_slot = self.ctx.local.head_imported_slot.min(lca_slot);
         self.window.set_tail(self.window.tail().min(lca_slot));
         self.window.drop_above(lca_slot);
@@ -517,7 +517,7 @@ impl SyncEngine {
             return None;
         }
         let previous = self.published.replace(target);
-        tracing::info!("Sync target updated from: {previous:?} to {target:?}");
+        silver_log::info!("Sync target updated from: {previous:?} to {target:?}");
         Some(target)
     }
 
@@ -581,7 +581,7 @@ fn checked_status(status_ssz: &PeerStatus, our_fork_digest: Option<[u8; 4]>) -> 
     if let Some(fd) = our_fork_digest &&
         *StatusView::fork_digest(buf) != fd
     {
-        tracing::info!("peer status fork digest mismatch");
+        silver_log::info!("peer status fork digest mismatch");
         return None;
     }
     Some(buf)

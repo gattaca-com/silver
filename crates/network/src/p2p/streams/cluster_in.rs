@@ -63,7 +63,7 @@ impl ClusterRead {
                     if let Self::ReadingBody { last_read, remaining, .. } = &read_state &&
                         now.saturating_duration_since(*last_read) > BODY_STALL_TIMEOUT
                     {
-                        tracing::warn!(?id, remaining, "cluster body read stalled");
+                        silver_log::warn!(?id, remaining, "cluster body read stalled");
                         return Err(StreamError::ReadStall);
                     }
                     return Ok(read_state);
@@ -121,7 +121,7 @@ impl ClusterRead {
                     }));
                 }
                 if fail_count == 0 {
-                    tracing::warn!(length, "failed to allocate incoming cluster");
+                    silver_log::warn!(length, "failed to allocate incoming cluster");
                 }
                 Ok(Spin::Ok(Self::AllocBody { raft_id, length, fail_count: fail_count + 1 }))
             }
@@ -129,7 +129,7 @@ impl ClusterRead {
                 let n = io
                     .read_from_stream(p2p_id.stream_id(), reservation.remaining_buffer()?)
                     .inspect_err(|e| {
-                        tracing::error!(?e, ?p2p_id, remaining, "reservation write failed");
+                        silver_log::error!(?e, ?p2p_id, remaining, "reservation write failed");
                     })?;
                 reservation.increment_offset(n);
                 remaining -= n;

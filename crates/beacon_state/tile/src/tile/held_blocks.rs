@@ -68,7 +68,7 @@ impl OrphanPool {
         let at_parent_cap = existing.is_some_and(|v| v.len() >= MAX_ORPHANS_PER_PARENT);
         let new_parent = existing.is_none();
         if at_parent_cap || (new_parent && self.by_parent.len() >= self.max_parents) {
-            tracing::warn!(
+            silver_log::warn!(
                 parent = hex32(&parent_root),
                 block = hex32(&orphan.block_root),
                 at_parent_cap,
@@ -105,7 +105,7 @@ impl OrphanPool {
         self.by_parent.retain(|parent, orphans| {
             let Some(first) = orphans.iter().find(|o| o.expired(wall_slot)) else { return true };
             let slot = first.slot;
-            tracing::warn!(
+            silver_log::warn!(
                 parent = hex32(parent),
                 dropped = orphans.iter().filter(|o| o.expired(wall_slot)).count(),
                 wall_slot,
@@ -231,7 +231,7 @@ impl HeldBlocks {
             if parent_known(&block.parsed.header.parent_root) {
                 return true;
             }
-            tracing::warn!(
+            silver_log::warn!(
                 block = hex32(root),
                 "staged block dropped at finalization: its parent left fork choice"
             );

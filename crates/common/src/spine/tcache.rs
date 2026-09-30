@@ -17,7 +17,7 @@ pub use consumer::{
 };
 pub use counters::TCacheCounters;
 pub use emitters::TileId;
-use flux::{Timer, timing::Nanos, tracing};
+use flux::{Timer, timing::Nanos};
 pub use id::TCacheId;
 pub use producer::{Producer, Reservation, TCacheProducer};
 pub use reader::{ReadMode, TCacheReader, TCacheTable};
@@ -242,7 +242,7 @@ impl TCache {
     ) -> Result<RandomAccessConsumer, Error> {
         let index = self.claim_slot(seq, name)?;
 
-        tracing::info!(
+        silver_log::info!(
             tcache_name = self.name(),
             name,
             index,
@@ -619,12 +619,12 @@ impl TCache {
         let label = format!("tcache-write-{}", name);
         let timer = Some(flux::Timer::new("silver", &label));
         let metrics = TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
-            .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
+            .map_err(|e| silver_log::warn!(?name, ?e, "TCacheMetrics::new failed"))
             .ok();
         // Map the fault counters here, not on their first hit: that keeps the
         // lazy mmap out of allocation-free paths and tests.
         if let Err(e) = TCacheCounters::init() {
-            tracing::warn!(?e, "TCacheCounters::init failed");
+            silver_log::warn!(?e, "TCacheCounters::init failed");
         }
         let ptr = unsafe {
             let p = alloc::alloc_zeroed(layout);

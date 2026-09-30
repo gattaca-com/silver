@@ -168,7 +168,7 @@ impl NegotiateState {
                 }
                 let total = buf[0] as usize + 1; // +1 for length byte itself.
                 if total > buf.len() {
-                    tracing::error!(total, "multiselect len > buffer len");
+                    silver_log::error!(total, "multiselect len > buffer len");
                     return Ok(Spin::Next(Self::InWritingReject {
                         written: header_written(count),
                         count,
@@ -181,7 +181,7 @@ impl NegotiateState {
                     match StreamProtocol::from_multiselect(&buf[..total]) {
                         Some(protocol) => {
                             if count > 0 {
-                                tracing::warn!(?id, ?protocol, "renegotiated protocol");
+                                silver_log::warn!(?id, ?protocol, "renegotiated protocol");
                             }
                             return Ok(Spin::Next(Self::InWriting {
                                 protocol,
@@ -189,7 +189,7 @@ impl NegotiateState {
                             }));
                         }
                         None => {
-                            tracing::warn!(?id, protocol=?str::from_utf8(&buf[..total]),"unrecognized negotiate protocol");
+                            silver_log::warn!(?id, protocol=?str::from_utf8(&buf[..total]),"unrecognized negotiate protocol");
                             return Ok(Spin::Next(Self::InWritingReject {
                                 written: header_written(count),
                                 count,

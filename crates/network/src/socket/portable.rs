@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use bytes::BytesMut;
-use flux::tracing;
 use mio::net::UdpSocket;
 
 pub(crate) const RX_BATCH_MAX: usize = 32;
@@ -62,7 +61,7 @@ impl RxBatch {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) => {
-                    tracing::error!(error=?e, "recv_from");
+                    silver_log::error!(error=?e, "recv_from");
                     break;
                 }
             }

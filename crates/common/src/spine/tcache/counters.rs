@@ -1,5 +1,5 @@
 //! Process-wide consumer-tail fault counters, `counters-tcache`. The consumer
-//! name is in the accompanying `tracing::warn!`; per-consumer tails are in
+//! name is in the accompanying `silver_log::warn!`; per-consumer tails are in
 //! `counters-tcache-{name}`.
 
 crate::declare_counters! {

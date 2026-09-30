@@ -47,7 +47,7 @@ impl LocalGossipHandler {
             }
             Ok(None) => {
                 produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
-                tracing::warn!(
+                silver_log::warn!(
                     request_id,
                     slot,
                     ?topic,
@@ -56,7 +56,7 @@ impl LocalGossipHandler {
             }
             Err(error) => {
                 produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
-                tracing::warn!(
+                silver_log::warn!(
                     ?error,
                     request_id,
                     slot,
@@ -100,7 +100,7 @@ impl LocalGossipHandler {
             });
             let expired = before - requests.len();
             if expired > 0 {
-                tracing::warn!(?msg_id, expired, "local message validation timed out");
+                silver_log::warn!(?msg_id, expired, "local message validation timed out");
             }
             if let Some(earliest) = requests.iter().map(|request| request.deadline).min() {
                 next_deadline =

@@ -50,7 +50,9 @@ impl EngineApi {
         tcaches: TCacheTable,
     ) -> Self {
         let client = if config.unsafe_no_el {
-            tracing::warn!("engine api in UNSAFE no-EL testing mode: answering all requests VALID");
+            silver_log::warn!(
+                "engine api in UNSAFE no-EL testing mode: answering all requests VALID"
+            );
             None
         } else {
             Some(EngineClient::new(

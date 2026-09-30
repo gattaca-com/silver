@@ -46,7 +46,7 @@ impl SnapshotTransfers {
                 return true;
             }
             node.report_snapshot(transfer.peer, SnapshotStatus::Failure);
-            tracing::warn!(peer = transfer.peer, "Raft snapshot transfer timed out");
+            silver_log::warn!(peer = transfer.peer, "Raft snapshot transfer timed out");
             false
         });
     }

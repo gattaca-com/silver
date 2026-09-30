@@ -38,6 +38,7 @@ use flux::timing::Nanos;
 use rand::RngCore;
 use silver_common::GossipTopic;
 use silver_e2e::{LhGossipClient, Stats};
+use tracing_subscriber::filter::LevelFilter;
 
 const DEFAULT_DURATION_S: u64 = 3;
 const DEFAULT_RATE_HZ: u64 = 500;
@@ -47,7 +48,7 @@ const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn main() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::WARN).try_init().ok();
     let args = parse_args();
 
     let (addr_tx, addr_rx) = mpsc::channel::<SocketAddr>();

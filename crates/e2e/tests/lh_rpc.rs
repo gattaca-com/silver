@@ -19,6 +19,7 @@ use silver_common::{
     test_util::ShmemDir,
 };
 use silver_e2e::{LhClient, lh_client};
+use tracing_subscriber::filter::LevelFilter;
 
 const PING_PROTOCOL: &str = lh_client::PING_PROTOCOL;
 const STATUS_V2_PROTOCOL: &str = lh_client::STATUS_V2_PROTOCOL;
@@ -30,7 +31,7 @@ const METADATA_V3_PROTOCOL: &str = lh_client::METADATA_V3_PROTOCOL;
 
 #[test]
 fn silver_responds_to_ping() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(20);
     silver.controller.set_metadata(DUMMY_METADATA);
@@ -59,7 +60,7 @@ fn silver_responds_to_ping() {
 
 #[test]
 fn silver_responds_to_status_v2() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(21);
     let mut canned = DUMMY_STATUS;
@@ -89,7 +90,7 @@ fn silver_responds_to_status_v2() {
 
 #[test]
 fn silver_responds_to_metadata() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(22);
     let mut canned = DUMMY_METADATA;
@@ -143,7 +144,7 @@ fn drive_silver_dialer(seed: u8) -> (silver_e2e::PublisherStack, LhClient, usize
 
 #[test]
 fn silver_sends_ping_to_libp2p() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, mut client, peer, _td) = drive_silver_dialer(30);
     inject_silver_rpc_request(
@@ -169,7 +170,7 @@ fn silver_sends_ping_to_libp2p() {
 
 #[test]
 fn silver_sends_status_to_libp2p() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, mut client, peer, _td) = drive_silver_dialer(31);
     let mut sent_status = DUMMY_STATUS;
@@ -197,7 +198,7 @@ fn silver_sends_status_to_libp2p() {
 
 #[test]
 fn silver_sends_metadata_to_libp2p() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, mut client, peer, _td) = drive_silver_dialer(32);
     inject_silver_rpc_request(&mut silver, peer, /* application_id */ 3, RpcRequest::MetaData);

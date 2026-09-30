@@ -431,7 +431,7 @@ impl Store {
     ) -> Result<Self, Error> {
         // Try to create dirs if they do not exist.
         if !std::fs::exists(&store_dir)? {
-            tracing::info!(store_dir, "create data store");
+            silver_log::info!(store_dir, "create data store");
             std::fs::create_dir_all(&store_dir)?;
         }
 
@@ -505,7 +505,7 @@ impl Store {
             None => match self.finalized.slot_of(&block_root) {
                 Some(slot) => slot,
                 None => {
-                    tracing::debug!(
+                    silver_log::debug!(
                         block_root = hex::encode(block_root),
                         "envelope for unknown block; dropping"
                     );
@@ -606,7 +606,7 @@ impl Store {
     ) {
         self.head.slot = head_slot;
         self.head.root = head_root;
-        tracing::debug!(head_slot, head_root = hex::encode(head_root), "storage head update");
+        silver_log::debug!(head_slot, head_root = hex::encode(head_root), "storage head update");
 
         if finalized_slot <= self.head.finalized_slot {
             return;
@@ -718,7 +718,7 @@ impl Store {
 
         // TODO should not return 'Complete' should return rate limit error
         if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
-            tracing::warn!(?stream_id, "queries at capacity");
+            silver_log::warn!(?stream_id, "queries at capacity");
             self.query_queue
                 .push_back(PendingQuery::new(RequestSource::Peer(stream_id), VecDeque::new()));
             return;
@@ -747,7 +747,7 @@ impl Store {
                             .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
                             .collect();
 
-                    tracing::info!(?stream_id, start, count, "storage query");
+                    silver_log::info!(?stream_id, start, count, "storage query");
 
                     // `(slot, column)` order per fulu p2p-interface: outer slot,
                     // inner column.
@@ -770,7 +770,7 @@ impl Store {
                     DataColumnsByRootRequestView::check_size,
                     |buf| {
                         let ids = DataColumnsByRootRequestView::count(buf);
-                        tracing::info!(?stream_id, ids, len = buf.len(), "storage query");
+                        silver_log::info!(?stream_id, ids, len = buf.len(), "storage query");
 
                         for i in 0..ids {
                             let id = DataColumnsByRootRequestView::identifier(buf, i);
@@ -805,7 +805,7 @@ impl Store {
                     BeaconBlocksByRangeRequestView::count(&req_bytes).min(MAX_REQUEST_BLOCKS);
                 let end = start.saturating_add(count);
 
-                tracing::info!(?stream_id, start, count, "storage query");
+                silver_log::info!(?stream_id, start, count, "storage query");
 
                 self.resolve_canonical_range(start, end, |slot, canonical| {
                     units.push_back(match canonical {
@@ -824,13 +824,13 @@ impl Store {
                     |buf| {
                         let count = BeaconBlocksByRootRequestView::count(buf);
 
-                        tracing::info!(?stream_id, count, len = buf.len(), "storage query");
+                        silver_log::info!(?stream_id, count, len = buf.len(), "storage query");
 
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
                             match self.block_file(root) {
                                 Some(unit) => units.push_back(unit),
-                                None => tracing::warn!(
+                                None => silver_log::warn!(
                                     block_root = hex::encode(root),
                                     "BlockByRoot - root not found"
                                 ),
@@ -1003,7 +1003,7 @@ fn with_root_request(
     } else {
         // Fall through with no units: the caller still enqueues the query,
         // so the peer gets an immediate bare `Complete`, not a hung stream.
-        tracing::warn!("root request buffer not resolved!");
+        silver_log::warn!("root request buffer not resolved!");
     }
 }
 

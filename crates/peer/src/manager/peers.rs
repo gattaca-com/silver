@@ -82,7 +82,7 @@ impl PeerManager {
             let keep_new = existing_dialler == local_dialler ||
                 (self.local_peer_id.as_bytes() < peer_id.as_bytes()) == local_dialler;
             if keep_new {
-                tracing::info!(
+                silver_log::info!(
                     ?peer_id,
                     old = existing_conn,
                     new = conn,
@@ -91,7 +91,7 @@ impl PeerManager {
                 self.on_disconnected(existing_conn, now, "duplicate connection", emit);
                 emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: existing_conn });
             } else {
-                tracing::info!(
+                silver_log::info!(
                     ?peer_id,
                     existing = existing_conn,
                     refused = conn,
@@ -125,7 +125,7 @@ impl PeerManager {
         };
 
         if let Some(record) = self.database.by_peer_id(&peer_id) {
-            tracing::info!(conn, ?addr, "trusted peer connected");
+            silver_log::info!(conn, ?addr, "trusted peer connected");
             state.is_trusted = record.is_trusted;
         }
 
@@ -193,7 +193,7 @@ impl PeerManager {
         let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
         let user_agent =
             self.database.by_p2p_id(conn).and_then(|r| r.identify.as_ref()).map(|i| i.user_agent());
-        tracing::info!(
+        silver_log::info!(
             p2p_peer = conn,
             peer_id = ?state.peer_id,
             addr = ?state.addr,
@@ -244,7 +244,7 @@ impl PeerManager {
     pub(super) fn add_behaviour_penalty(&mut self, conn: usize, delta: f64, offence: &'static str) {
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.behaviour_penalty += delta;
-            tracing::info!(
+            silver_log::info!(
                 p2p_peer = conn,
                 offence,
                 delta,
@@ -587,7 +587,7 @@ impl PeerManager {
         let we_want = self.our_topics.contains(&topic);
         let mesh_size =
             self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
-        tracing::debug!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
+        silver_log::debug!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
 
         // Opportunistic graft: if this is a topic we care about and our mesh
         // is below d_low, pull the peer in.
@@ -617,7 +617,7 @@ impl PeerManager {
             }
             None => return,
         };
-        tracing::debug!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
+        silver_log::debug!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
         // If peer was in this domain's mesh, remove them.
         if self.leave_mesh_digest(conn, topic, digest) {
             emit(PeerControl::P2pGossipPrune {
@@ -663,7 +663,7 @@ impl PeerManager {
         if accept {
             crate::PeerCounters::MeshGraftAcceptedByUs.inc();
             self.do_graft(conn, peer_id, topic, digest, now, false, emit);
-            tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
+            silver_log::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
         } else {
             crate::PeerCounters::MeshGraftRefusedByUs.inc();
             // Violation is judged against the advertised deadline, not
@@ -683,7 +683,7 @@ impl PeerManager {
                 "graft refused",
                 emit,
             );
-            tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
+            silver_log::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
     }
 
@@ -740,7 +740,7 @@ impl PeerManager {
             crate::PeerCounters::MeshPrunedByRemote.inc();
         }
         let user_agent = self.peers.get(&conn).map(|p| p.user_agent).unwrap_or_default();
-        tracing::debug!(
+        silver_log::debug!(
             p2p_peer = conn,
             ?topic,
             mesh_size,
@@ -790,7 +790,12 @@ impl PeerManager {
 
     fn set_backoff(&mut self, conn: usize, topic: GossipTopic, now: Instant, backoff: Duration) {
         let Some(deadline) = now.checked_add(backoff) else {
-            tracing::warn!(p2p_peer = conn, ?topic, ?backoff, "ignoring oversized prune backoff");
+            silver_log::warn!(
+                p2p_peer = conn,
+                ?topic,
+                ?backoff,
+                "ignoring oversized prune backoff"
+            );
             return;
         };
         let Some(peer) = self.peers.get_mut(&conn) else { return };
@@ -830,7 +835,7 @@ impl PeerManager {
             t.mesh_active = false;
             t.opportunistic = opportunistic;
         }
-        tracing::debug!(?topic, conn, "GRAFT peer");
+        silver_log::debug!(?topic, conn, "GRAFT peer");
         emit(PeerControl::P2pGossipGraft { p2p: peer_id, p2p_connection: conn, topic, digest });
     }
 
@@ -864,7 +869,7 @@ impl PeerManager {
             crate::PeerCounters::MeshPrunedByUs.inc();
         }
         let user_agent = self.peers.get(&conn).map(|p| p.user_agent).unwrap_or_default();
-        tracing::debug!(
+        silver_log::debug!(
             p2p_peer = conn,
             ?topic,
             reason,
@@ -942,7 +947,7 @@ impl PeerManager {
                 mesh.peers.retain(|conn| {
                     let live = peers.contains_key(conn);
                     if !live {
-                        tracing::warn!(conn, ?topic, "dropping mesh entry with no peer state");
+                        silver_log::warn!(conn, ?topic, "dropping mesh entry with no peer state");
                     }
                     live
                 });

@@ -96,7 +96,7 @@ impl StorageTile {
         } else {
             VecDeque::new()
         };
-        tracing::info!("have {} replay steps", replay_steps.len());
+        silver_log::info!("have {} replay steps", replay_steps.len());
 
         Self {
             delivery_producer,
@@ -151,7 +151,7 @@ impl StorageTile {
 
         let Some(strategy) = self.syncing_strategy else { return };
         if matches!(strategy, SyncingStrategy::SyncFromPeers) {
-            tracing::info!(
+            silver_log::info!(
                 staged = self.replay_steps.len(),
                 "skipping on-disk replay; peers finalized ahead — syncing from peers"
             );
@@ -174,7 +174,7 @@ impl StorageTile {
             }) {
                 Ok(pair) => pair,
                 Err(e) => {
-                    tracing::warn!(?e, ?path, "replay data file open failed; skipping");
+                    silver_log::warn!(?e, ?path, "replay data file open failed; skipping");
                     self.replay_steps.pop_front();
                     continue;
                 }
@@ -186,13 +186,13 @@ impl StorageTile {
             let buf = match reservation.buffer() {
                 Ok(buf) => buf,
                 Err(e) => {
-                    tracing::error!(?e, ?path, "replay reservation buffer failed; skipping");
+                    silver_log::error!(?e, ?path, "replay reservation buffer failed; skipping");
                     self.replay_steps.pop_front();
                     continue;
                 }
             };
             if let Err(e) = file.read_exact(&mut buf[..len]) {
-                tracing::error!(?e, ?path, "replay read failed; skipping");
+                silver_log::error!(?e, ?path, "replay read failed; skipping");
                 self.replay_steps.pop_front();
                 continue;
             }
@@ -203,7 +203,7 @@ impl StorageTile {
                 let slot = SignedBeaconBlockView::slot(ssz);
                 let is_gloas = self.spec.is_gloas_at_slot(slot);
                 if is_gloas && !SignedBeaconBlockView::check_gloas_size(ssz) {
-                    tracing::error!(?path, slot, "replay block bid out of bounds");
+                    silver_log::error!(?path, slot, "replay block bid out of bounds");
                     false
                 } else {
                     SignedBeaconBlockView::has_data_columns(ssz, is_gloas)
@@ -214,7 +214,7 @@ impl StorageTile {
             if let ReplayStep::Block { columns_on_disk: false, .. } = step &&
                 has_data_columns
             {
-                tracing::warn!(?path, "replay skip: custody columns missing on disk");
+                silver_log::warn!(?path, "replay skip: custody columns missing on disk");
                 self.replay_steps.pop_front();
                 continue;
             }
@@ -278,7 +278,7 @@ impl StorageTile {
                         self.store.add_block(block_root, t_read, slot, parent_root);
                     }
                     Err(e) => {
-                        tracing::error!(
+                        silver_log::error!(
                             ?e,
                             seq = t_read.seq(),
                             ?source,
@@ -299,9 +299,9 @@ impl StorageTile {
                     Ok((buf, _)) if SignedExecutionPayloadEnvelopeView::check_size(buf) => {
                         self.store.add_envelope(block_root, t_read);
                     }
-                    Ok(_) => tracing::error!(slot, "envelope available: bad ssz size"),
+                    Ok(_) => silver_log::error!(slot, "envelope available: bad ssz size"),
                     Err(e) => {
-                        tracing::error!(
+                        silver_log::error!(
                             ?e,
                             seq = t_read.seq(),
                             ?source,
@@ -362,7 +362,7 @@ impl Tile<SilverSpine> for StorageTile {
                     silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz }
                         if id.is(DataKind::Columns, Origin::Backfill) =>
                     {
-                        tracing::debug!("backfill data column sidecar over rpc");
+                        silver_log::debug!("backfill data column sidecar over rpc");
                         let t_read = self.reader.acquire(ssz);
                         self.store.backfill_data_column(
                             t_read,
@@ -382,7 +382,7 @@ impl Tile<SilverSpine> for StorageTile {
                         if id.origin == Origin::Backfill =>
                     {
                         let err_msg = String::from_utf8_lossy(&msg[..len]);
-                        tracing::error!(error, %err_msg, "backfill rpc error response");
+                        silver_log::error!(error, %err_msg, "backfill rpc error response");
                     }
                     _ => {}
                 }
@@ -415,7 +415,7 @@ impl Tile<SilverSpine> for StorageTile {
                         false,
                     ),
                     Err(e) => {
-                        tracing::error!(
+                        silver_log::error!(
                             ?e,
                             seq = sidecar_ssz.seq(),
                             ?origin,
@@ -478,7 +478,7 @@ impl Tile<SilverSpine> for StorageTile {
                 IoEvent::ApiResponse(response) => adapter.produce(response),
             })
         {
-            tracing::error!(
+            silver_log::error!(
                 ?e,
                 store_dir = self.store.store_dir(),
                 "storage store file i/o failed"

@@ -75,7 +75,7 @@ impl RpcReadResponse {
                     if let Some(start) = read_state.start_time() &&
                         now - start > READ_RESPONSE_TIMEOUT
                     {
-                        tracing::warn!(?p2p_id, "rpc read response timeout");
+                        silver_log::warn!(?p2p_id, "rpc read response timeout");
                         return Err(StreamError::ReadResponseTimeout);
                     }
                     return Ok(read_state)
@@ -152,7 +152,7 @@ impl RpcReadResponse {
             } => {
                 // Raw prefix capture: status byte, context bytes, varint and
                 // any body leftover, exactly as read off the wire.
-                tracing::debug!(
+                silver_log::debug!(
                     ?p2p_id,
                     chunk,
                     length,
@@ -229,7 +229,7 @@ impl RpcReadResponse {
                     // rather than capping the read at a zero-length slice and
                     // spinning forever on zero-progress reads.
                     if decoder.direct_remaining() > out.len() {
-                        tracing::error!(
+                        silver_log::error!(
                             ?p2p_id,
                             chunk,
                             direct_remaining = decoder.direct_remaining(),
@@ -269,7 +269,7 @@ impl RpcReadResponse {
                         let decoded = decoder
                             .decompress_written(written, reservation.remaining_buffer()?)
                             .inspect_err(|e| {
-                                tracing::error!(
+                                silver_log::error!(
                                     ?e,
                                     ?p2p_id,
                                     chunk,
@@ -286,7 +286,7 @@ impl RpcReadResponse {
                     match reservation.into_rpc() {
                         Rpc::Request(_) => return Err(StreamError::InvalidRpc),
                         Rpc::Response(rpc_response) => {
-                            tracing::trace!(?p2p_id, chunk, "response complete");
+                            silver_log::trace!(?p2p_id, chunk, "response complete");
                             return Ok(Spin::Ok(Self::Complete {
                                 app_id,
                                 chunk,
@@ -298,7 +298,7 @@ impl RpcReadResponse {
                 Ok(Spin::Next(Self::ReadingBody { app_id, chunk, reservation, remaining, start }))
             }
             RpcReadResponse::Complete { app_id, chunk, msg } => {
-                tracing::debug!(?p2p_id, chunk, "read response");
+                silver_log::debug!(?p2p_id, chunk, "read response");
                 Ok(Spin::Ok(Self::Complete { app_id, chunk, msg }))
             }
         }

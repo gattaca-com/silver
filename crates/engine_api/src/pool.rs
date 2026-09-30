@@ -176,7 +176,7 @@ impl PooledConnection {
                             a
                         }
                         Err(e) => {
-                            tracing::warn!("resolve failed for {endpoint}: {e}");
+                            silver_log::warn!("resolve failed for {endpoint}: {e}");
                             return;
                         }
                     }
@@ -191,7 +191,7 @@ impl PooledConnection {
                     self.conn = Conn::Connecting(stream);
                 }
             }
-            Err(e) => tracing::warn!("connect error: {e}"),
+            Err(e) => silver_log::warn!("connect error: {e}"),
         }
     }
 
@@ -245,7 +245,7 @@ impl PooledConnection {
     where
         F: FnMut(u64, Result<&mut [u8], EngineError>),
     {
-        tracing::warn!("{msg}");
+        silver_log::warn!("{msg}");
         let err = msg.to_string();
         if let Some(rpc_id) = self.in_flight.take() {
             on_complete(rpc_id, Err(EngineError::Http(err.clone())));

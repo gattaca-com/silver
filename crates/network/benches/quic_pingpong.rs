@@ -17,18 +17,18 @@ use silver_common::{
 };
 use silver_discovery::Discovery;
 use silver_network::{Context, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult};
-use tracing::Level;
+use tracing_subscriber::filter::LevelFilter;
 
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    let _guard = tracing_subscriber::fmt().with_max_level(Level::DEBUG).init();
+    let _guard = tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
     let group_name = format!("quic_ping_pong_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);
 
     let (data, total) = random_data();
-    tracing::info!("total: {total}");
+    silver_log::info!("total: {total}");
 
     let mut rng = rand::rngs::OsRng::default();
 

@@ -11,8 +11,8 @@ flux.workspace = true
 fxhash.workspace = true
 hex.workspace = true
 silver_common.workspace = true
+silver_log.workspace = true
 snap.workspace = true
-tracing.workspace = true
 
 [build-dependencies]
 buffa-build = "0.2.0"

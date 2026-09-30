@@ -1,6 +1,6 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::B256;
-use tracing::info;
+use silver_log::info;
 
 use super::{ExecutionStatus, ForkChoice, NULL, node::PTC_SIZE};
 

@@ -209,7 +209,7 @@ impl Store {
         // `None` only pre-snapshot — a checkpoint trigger can't usefully fire
         // before bootstrap publishes.
         let Some(cursor) = reader.begin_checkpoint() else {
-            tracing::warn!("checkpoint requested before the first beacon state snapshot");
+            silver_log::warn!("checkpoint requested before the first beacon state snapshot");
             return;
         };
         let slot = cursor.slot();
@@ -219,7 +219,7 @@ impl Store {
         let (file, tmp_path) = match self.open_checkpoint_tmp(slot) {
             Ok(x) => x,
             Err(e) => {
-                tracing::error!(?e, slot, dir = ?self.finalized_checkpoints_dir().join(slot.to_string()), "failed to open checkpoint temp file");
+                silver_log::error!(?e, slot, dir = ?self.finalized_checkpoints_dir().join(slot.to_string()), "failed to open checkpoint temp file");
                 return;
             }
         };
@@ -227,7 +227,7 @@ impl Store {
         let pubkeys_file = match io::open_file_write(&pubkeys_tmp, false) {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!(?e, slot, "failed to open pubkeys temp file");
+                silver_log::error!(?e, slot, "failed to open pubkeys temp file");
                 remove_checkpoint_dir(&tmp_path);
                 return;
             }
@@ -256,7 +256,7 @@ impl Store {
                         CheckpointChunk::Ssz => cw.writer.write_all(&cw.chunk)?,
                         CheckpointChunk::Pubkeys => cw.pubkeys_writer.write_all(&cw.chunk)?,
                         CheckpointChunk::Restarted => {
-                            tracing::debug!(
+                            silver_log::debug!(
                                 slot = cw.cursor.slot(),
                                 "checkpoint superseded; restarting onto the newer state"
                             );
@@ -278,7 +278,7 @@ impl Store {
             }
             Err(e) => {
                 let cw = self.checkpoint.take().expect("checkpoint present");
-                tracing::error!(?e, section = ?cw.cursor.section_index(), "checkpoint write failed");
+                silver_log::error!(?e, section = ?cw.cursor.section_index(), "checkpoint write failed");
                 cw.discard();
             }
         }
@@ -294,7 +294,7 @@ impl Store {
         let ssz_file = match writer.into_inner() {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!(err = ?e.into_error(), slot, "failed to flush checkpoint writer");
+                silver_log::error!(err = ?e.into_error(), slot, "failed to flush checkpoint writer");
                 remove_checkpoint_dir(&tmp_path);
                 return;
             }
@@ -302,7 +302,7 @@ impl Store {
         let pubkeys_file = match pubkeys_writer.into_inner() {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!(err = ?e.into_error(), slot, "failed to flush pubkeys writer");
+                silver_log::error!(err = ?e.into_error(), slot, "failed to flush pubkeys writer");
                 remove_checkpoint_dir(&tmp_path);
                 return;
             }
@@ -311,7 +311,7 @@ impl Store {
             self.commit_checkpoint(slot, ssz_file, &tmp_path, Some((pubkeys_file, &pubkeys_tmp)));
         match result {
             Ok(()) => {
-                tracing::info!(slot, "persisted finalized checkpoint");
+                silver_log::info!(slot, "persisted finalized checkpoint");
                 // A restart moved the content to a newer slot: the begin-time
                 // temp dir is now empty — drop it.
                 if tmp_path.parent() !=
@@ -321,7 +321,7 @@ impl Store {
                 }
             }
             Err(e) => {
-                tracing::error!(?e, slot, "failed to commit checkpoint");
+                silver_log::error!(?e, slot, "failed to commit checkpoint");
                 remove_checkpoint_dir(&tmp_path);
             }
         }

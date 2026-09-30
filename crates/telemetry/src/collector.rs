@@ -19,7 +19,7 @@ use flate2::{Compression, write::GzEncoder};
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::{CrossProcessReader, Loss, published_pid};
 use silver_common::{APP_NAME, Nanos, SilverSpine};
-use tracing::{info, warn};
+use silver_log::{info, warn};
 
 use crate::{clickhouse_tables::ClickHouseTables, config::Args};
 
