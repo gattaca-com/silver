@@ -4,13 +4,14 @@ use flux::spine::SpineAdapter;
 use flux_clickhouse::{ClickHouse, Error};
 use flux_network::Network;
 use serde::Serialize;
-use silver_common::SilverSpine;
+use silver_common::{Nanos, SilverSpine};
 use silver_config::ChainConfig;
 use silver_stages::StageReader;
 use tracing::{info, warn};
 
 use crate::{
     block_events::{self, BlockEventRow},
+    counters::{self, Counters},
     node_meta::NodeMeta,
 };
 
@@ -28,7 +29,9 @@ pub struct ClickHouseTables {
     net: Network,
     client: ClickHouse,
     meta: NodeMeta,
+    slot: u64,
     stage_reader: StageReader,
+    counters: Counters,
 }
 
 impl ClickHouseTables {
@@ -42,7 +45,14 @@ impl ClickHouseTables {
         let meta = NodeMeta::new(chain);
         info!(node = meta.node, network = meta.network, %addr, "clickhouse inserts open");
 
-        let mut tables = Self { net, client, meta, stage_reader: StageReader::default() };
+        let mut tables = Self {
+            net,
+            client,
+            slot: meta.clock.slot_at(Nanos::now()),
+            meta,
+            stage_reader: StageReader::default(),
+            counters: Counters::default(),
+        };
         tables.create();
         tables
     }
@@ -51,7 +61,7 @@ impl ClickHouseTables {
     /// again when an insert finds its table missing, so a table whose DDL was
     /// lost or that was dropped under the daemon comes back.
     fn create(&mut self) {
-        for stmt in [block_events::DDL] {
+        for stmt in [block_events::DDL, counters::DDL] {
             if self.client.query(stmt).is_none() {
                 warn!(stmt, "clickhouse queue full; DDL dropped");
             }
@@ -62,14 +72,34 @@ impl ClickHouseTables {
         self.net.poll_with(|event| {
             self.client.on_event(&event);
         });
+        self.queue_block_events(adapter);
+        self.queue_slot_counters();
+        self.drive();
+    }
 
+    fn queue_block_events(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let rows: Vec<_> = self
             .stage_reader
             .consume(adapter)
             .map(|event| BlockEventRow::new(&event, &self.meta))
             .collect();
         queue(&mut self.client, block_events::TABLE, &rows);
+    }
 
+    /// Counts are read once per slot and filed under the slot that just ended.
+    fn queue_slot_counters(&mut self) {
+        let slot = self.meta.clock.slot_at(Nanos::now());
+        if slot == self.slot {
+            return;
+        }
+        let ended = self.slot;
+        self.slot = slot;
+        self.meta.refresh_version();
+        let rows = self.counters.rows(ended, &self.meta);
+        queue(&mut self.client, counters::TABLE, &rows);
+    }
+
+    fn drive(&mut self) {
         let mut table_missing = false;
         self.client.drive(&mut self.net, |_, outcome| {
             if let Err(e) = outcome {

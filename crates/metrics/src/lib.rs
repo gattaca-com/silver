@@ -80,6 +80,26 @@ pub fn mmap_counters_file(
     Ok(ptr.cast::<AtomicU64>())
 }
 
+/// Maps `bytes` of a file written by another process, e.g. one created by
+/// `mmap_counters_file`.
+pub fn mmap_readonly(path: &Path, bytes: usize) -> io::Result<*const u8> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            bytes,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ptr.cast::<u8>())
+}
+
 /// As `mmap_counters_file` but publishes the result into a
 /// `AtomicPtr` target — used by the static-pointer pattern emitted by
 /// `declare_counters!`. No-op if `target` is already non-null.

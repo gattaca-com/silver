@@ -98,6 +98,7 @@ mod tests {
             node: "test-node".into(),
             network: "test-net".into(),
             clock: SlotClock::new(GENESIS_SECS, SLOT_MS),
+            version: String::new(),
         };
         serde_json::to_value(BlockEventRow::new(event, &meta)).unwrap()
     }

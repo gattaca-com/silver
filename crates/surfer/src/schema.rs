@@ -1,23 +1,4 @@
-//! Compile-time NAMES lookup. Each `declare_counters!` enum exposes
-//! `pub const NAMES: &'static [&'static str]`. Adding a new counter
-//! enum to silver = one line here. Files without a registered schema
-//! fall back to positional `slot_{i}` labels.
-
-/// Map from file suffix (the `{name}` in `counters-{name}`) to the
-/// variant name array. Add lines here as silver crates declare counter
-/// enums via `silver_common::declare_counters!`.
-pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
-    match file_name {
-        "beacon_state" => Some(silver_beacon_state::BeaconStateCounters::NAMES),
-        "control" => Some(silver_control::ControlCounters::NAMES),
-        "storage" => Some(silver_storage::StorageCounters::NAMES),
-        "columns" => Some(silver_columns::DataColumnCounters::NAMES),
-        "network" => Some(silver_network::NetworkCounters::NAMES),
-        "peer" => Some(silver_peer::PeerCounters::NAMES),
-        "tcache" => Some(silver_common::TCacheCounters::NAMES),
-        _ => None,
-    }
-}
+use silver_stages::counter_names;
 
 /// Counters-pane ordering: bulky per-topic groups sink below the compact
 /// process-wide ones.
@@ -36,7 +17,7 @@ pub fn hide_zero(file_name: &str) -> bool {
 /// — `registered = false` means surfer is displaying positional
 /// labels because no schema was wired up for this file.
 pub fn names_for(file_name: &str, slot_count: usize) -> (Vec<String>, bool) {
-    if let Some(arr) = lookup(file_name) {
+    if let Some(arr) = counter_names(file_name) {
         return (arr.iter().map(|s| s.to_string()).collect(), true);
     }
     // Gossip topic counters: arithmetic layout shared with
