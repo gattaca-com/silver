@@ -15,6 +15,8 @@ pub mod __private {
 
 pub use tracing::{debug, info, trace};
 
+pub mod counts;
+
 pub struct LogSite {
     pub file: &'static str,
     pub line: u32,
@@ -29,7 +31,7 @@ pub static LOG_SITES: [LogSite];
 static COUNTERS: AtomicPtr<AtomicU64> = AtomicPtr::new(ptr::null_mut());
 
 /// Counter `i` counts `LOG_SITES[i]`. Events before this are not counted.
-pub fn attach(counters: &'static [AtomicU64]) {
+pub(crate) fn attach(counters: &'static [AtomicU64]) {
     assert_eq!(counters.len(), LOG_SITES.len());
     COUNTERS.store(counters.as_ptr().cast_mut(), Ordering::Release);
 }

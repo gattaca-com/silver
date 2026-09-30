@@ -4862,6 +4862,7 @@ dependencies = [
  "silver_discovery",
  "silver_gossip",
  "silver_httpcore",
+ "silver_log",
  "silver_network",
  "silver_peer",
  "silver_storage",
@@ -5173,7 +5174,9 @@ dependencies = [
 name = "silver_log"
 version = "0.0.1"
 dependencies = [
+ "flux",
  "linkme",
+ "silver_metrics",
  "tracing",
 ]
 

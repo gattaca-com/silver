@@ -81,6 +81,9 @@ fn publish_build_info() -> io::Result<()> {
 fn main() -> Result<(), Box<dyn Error>> {
     let build_info_log = format!("silver build info: {BUILD_INFO}");
     let _tracing = initialise_tracing_log("silver", 10, None, false, Some(&build_info_log));
+    if let Err(e) = silver_log::counts::enable(APP_NAME) {
+        silver_log::error!(%e, "log counts disabled");
+    }
     tracing::debug!("start");
 
     // `#[timed]` is inert until a process opts in.
