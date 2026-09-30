@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use crate::{
     block_events::{self, BlockEventRow},
     counters::{self, Counters},
+    log_counts::{self, LogCounts},
     node_meta::NodeMeta,
 };
 
@@ -31,6 +32,7 @@ pub struct ClickHouseTables {
     meta: NodeMeta,
     slot: u64,
     stage_reader: StageReader,
+    log_counts: LogCounts,
     counters: Counters,
 }
 
@@ -51,17 +53,22 @@ impl ClickHouseTables {
             slot: meta.clock.slot_at(Nanos::now()),
             meta,
             stage_reader: StageReader::default(),
+            log_counts: LogCounts::default(),
             counters: Counters::default(),
         };
         tables.create();
         tables
     }
 
+    pub fn node_restarted(&mut self) {
+        self.log_counts.node_restarted();
+    }
+
     /// Every statement must be a no-op the second time it runs: all of them run
     /// again when an insert finds its table missing, so a table whose DDL was
     /// lost or that was dropped under the daemon comes back.
     fn create(&mut self) {
-        for stmt in [block_events::DDL, counters::DDL] {
+        for stmt in [block_events::DDL, log_counts::DDL, counters::DDL] {
             if self.client.query(stmt).is_none() {
                 warn!(stmt, "clickhouse queue full; DDL dropped");
             }
@@ -95,6 +102,8 @@ impl ClickHouseTables {
         let ended = self.slot;
         self.slot = slot;
         self.meta.refresh_version();
+        let rows = self.log_counts.rows(ended, &self.meta);
+        queue(&mut self.client, log_counts::TABLE, &rows);
         let rows = self.counters.rows(ended, &self.meta);
         queue(&mut self.client, counters::TABLE, &rows);
     }

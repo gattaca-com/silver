@@ -1,14 +1,12 @@
 //! One row per exported `declare_counters!` counter per slot its value moved
 //! in. Values persist across node restarts, so no run tracking is needed.
 
-use std::sync::atomic::Ordering;
-
 use flux::utils::directories::shmem_dir_queues;
 use serde::Serialize;
 use silver_common::APP_NAME;
-use silver_stages::{CounterValues, counter_names};
+use silver_stages::counter_names;
 
-use crate::node_meta::NodeMeta;
+use crate::{counter_deltas::CounterDeltas, node_meta::NodeMeta};
 
 pub const TABLE: &str = "counters";
 
@@ -46,46 +44,35 @@ pub struct CounterRow<'a> {
 struct Component {
     name: &'static str,
     counter_names: &'static [&'static str],
-    values: Option<CounterValues>,
-    previous: Vec<u64>,
+    deltas: Option<CounterDeltas>,
 }
 
 impl Component {
     fn new(name: &'static str) -> Self {
         let counter_names = counter_names(name).expect("exported component has names");
-        Self { name, counter_names, values: None, previous: Vec::new() }
+        Self { name, counter_names, deltas: None }
     }
 
     fn rows<'a>(&mut self, slot: u64, meta: &'a NodeMeta, rows: &mut Vec<CounterRow<'a>>) {
-        if self.values.is_none() {
+        let Some(deltas) = &mut self.deltas else {
             let path = shmem_dir_queues(APP_NAME).join(format!("counters-{}", self.name));
-            self.values = CounterValues::open(&path).ok();
-            self.previous = self.snapshot();
+            self.deltas = CounterDeltas::open(&path, false);
             return;
-        }
-        for (index, value) in self.snapshot().into_iter().enumerate() {
-            let previous = self.previous[index];
-            if value == previous {
-                continue;
-            }
-            self.previous[index] = value;
-            let Some(&name) = self.counter_names.get(index) else { continue };
+        };
+        for changed in deltas.changed() {
+            let Some(&name) = self.counter_names.get(changed.index) else { continue };
             rows.push(CounterRow {
                 slot,
                 slot_start_date_time: meta.clock.slot_start(slot).as_secs_u64() as u32,
                 component: self.name,
                 name,
-                value,
-                delta: value.wrapping_sub(previous) as i64,
+                value: changed.value,
+                delta: changed.value.wrapping_sub(changed.previous) as i64,
                 version: &meta.version,
                 meta_client_name: &meta.node,
                 meta_network_name: &meta.network,
             });
         }
-    }
-
-    fn snapshot(&self) -> Vec<u64> {
-        self.values.iter().flat_map(|v| v.values()).map(|v| v.load(Ordering::Relaxed)).collect()
     }
 }
 

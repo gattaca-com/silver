@@ -1,8 +1,8 @@
 //! Telemetry daemon: one background tile on the node's spine that drains its
 //! `#[timed]` rings and rotates the retained marks into compressed fxt segment
 //! files, so any spike on a long run leaves a trace on disk. With a ClickHouse
-//! endpoint configured, the same loop also streams per-stage block events and
-//! the node's counters.
+//! endpoint configured, the same loop also streams per-stage block events,
+//! per-slot WARN/ERROR counts and the node's counters.
 //!
 //! It outlives the node it attached to: on a restart the tile rebinds to the
 //! new rings rather than exiting.
@@ -19,7 +19,9 @@ mod block_events;
 mod clickhouse_tables;
 mod collector;
 mod config;
+mod counter_deltas;
 mod counters;
+mod log_counts;
 mod node_meta;
 
 fn main() -> Result<(), Box<dyn Error>> {

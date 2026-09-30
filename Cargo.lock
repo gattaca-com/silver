@@ -5329,6 +5329,7 @@ dependencies = [
  "serde_json",
  "silver_common",
  "silver_config",
+ "silver_log",
  "silver_stages",
  "tempfile",
  "toml",
