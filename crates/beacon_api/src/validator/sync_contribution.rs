@@ -3,7 +3,11 @@ use silver_common::{BeaconApiRequest, SYNC_COMMITTEE_SUBNETS, TCacheRead, TCache
 
 use crate::{
     ctx::ApiCtx,
-    http::{ids::parse_root, response::Response, router::Request},
+    http::{
+        ids::parse_root,
+        response::Response,
+        router::{Outcome, Request},
+    },
     validator::attestation_data::uint64_query,
 };
 
@@ -31,11 +35,11 @@ pub(crate) fn sync_committee_contribution(
         return;
     }
 
-    resp.request_contribution(SyncCommitteeContributionRequest {
+    resp.defer(Outcome::AwaitingContribution(SyncCommitteeContributionRequest {
         slot,
         subcommittee_index,
         beacon_block_root,
-    });
+    }));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

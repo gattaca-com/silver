@@ -6,14 +6,9 @@ use silver_common::{
 use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
 
 use crate::{
-    beacon::blocks::BlockRequest,
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
-    validator::{
-        aggregate_attestation::AggregateRequest,
-        sync_contribution::SyncCommitteeContributionRequest,
-    },
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -55,8 +50,7 @@ impl<'a> Response<'a> {
 
     fn submission(&mut self) -> &mut Submission {
         if !matches!(self.outcome, Outcome::AwaitingVerdicts(_)) {
-            debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-            self.outcome = Outcome::AwaitingVerdicts(Submission::default());
+            self.defer(Outcome::AwaitingVerdicts(Submission::default()));
         }
         let Outcome::AwaitingVerdicts(submission) = &mut self.outcome else { unreachable!() };
         submission
@@ -75,19 +69,9 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::Stream(channels);
     }
 
-    pub(crate) fn request_block(&mut self, request: BlockRequest) {
+    pub(crate) fn defer(&mut self, outcome: Outcome) {
         debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingBlock(request);
-    }
-
-    pub(crate) fn request_aggregate(&mut self, request: AggregateRequest) {
-        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingAggregate(request);
-    }
-
-    pub(crate) fn request_contribution(&mut self, request: SyncCommitteeContributionRequest) {
-        debug_assert!(self.out.is_empty(), "a deferred answer follows no other response");
-        self.outcome = Outcome::AwaitingContribution(request);
+        self.outcome = outcome;
     }
 
     pub(crate) fn submit(
@@ -122,7 +106,7 @@ impl<'a> Response<'a> {
     }
 
     pub(crate) fn json(&mut self, body: &[u8]) {
-        self.send(200, Some(JSON_CONTENT_TYPE), &[], body);
+        self.send(200, Some(JSON_CONTENT_TYPE), &[], &[body]);
     }
 
     /// Renders the body in place behind its head. `Content-Length` precedes
@@ -164,25 +148,26 @@ impl<'a> Response<'a> {
     }
 
     pub(crate) fn empty(&mut self, content_type: &str) {
-        self.send(200, Some(content_type), &[], b"");
+        self.send(200, Some(content_type), &[], &[]);
     }
 
     /// The success of a schema that declares no content under its 200.
     pub(crate) fn ok(&mut self) {
-        self.send(200, None, &[], b"");
+        self.send(200, None, &[], &[]);
     }
 
+    /// The body is `parts`, sent in order.
     pub(crate) fn send(
         &mut self,
         code: u16,
         content_type: Option<&str>,
         headers: &[(&str, &str)],
-        body: &[u8],
+        parts: &[&[u8]],
     ) {
         if status_line(code).is_none() {
             silver_log::warn!("no reason phrase for status {code}");
         }
-        self.frame(code, content_type, headers, body);
+        self.frame(code, content_type, headers, parts);
     }
 
     /// Bodyless response under a status silver did not choose: `syncing_status`
@@ -190,7 +175,7 @@ impl<'a> Response<'a> {
     /// legal input polled every slot rather than the gap in [`status_line`]
     /// that [`Response::send`] warns about.
     pub(crate) fn status_only(&mut self, code: u16) {
-        self.frame(code, None, &[], b"");
+        self.frame(code, None, &[], &[]);
     }
 
     fn frame(
@@ -198,7 +183,7 @@ impl<'a> Response<'a> {
         code: u16,
         content_type: Option<&str>,
         headers: &[(&str, &str)],
-        body: &[u8],
+        parts: &[&[u8]],
     ) {
         debug_assert!((100..=599).contains(&code), "not an HTTP status code: {code}");
         let bare = [
@@ -209,7 +194,7 @@ impl<'a> Response<'a> {
         ];
         let status = status_line(code)
             .unwrap_or_else(|| str::from_utf8(&bare).expect("three digits and a space"));
-        frame_response_with_headers(self.out, status, content_type, headers, body);
+        frame_response_with_headers(self.out, status, content_type, headers, parts);
     }
 
     /// Messages can include client input, so they need JSON escaping.
@@ -219,7 +204,7 @@ impl<'a> Response<'a> {
         let mut body = format!("{{\"code\":{code},\"message\":").into_bytes();
         Json::new(&mut body).string(message);
         body.push(b'}');
-        self.send(code, Some(JSON_CONTENT_TYPE), &[], &body);
+        self.send(code, Some(JSON_CONTENT_TYPE), &[], &[&body]);
     }
 }
 
@@ -299,7 +284,7 @@ mod tests {
                 200,
                 Some("application/octet-stream"),
                 &[("Eth-Consensus-Version", "fulu"), ("Eth-Execution-Payload-Blinded", "false")],
-                b"\x01\x02\x03",
+                &[b"\x01\x02\x03"],
             )
         });
         assert_eq!(

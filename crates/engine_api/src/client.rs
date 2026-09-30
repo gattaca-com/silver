@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{convert::Infallible, path::PathBuf, time::Duration};
 
 use mio::{Events, Registry};
 use rustc_hash::FxHashMap;
@@ -218,6 +218,15 @@ fn send_new_payload_request_impl(
     method: &str,
     write_params: impl FnOnce(&mut Vec<u8>) -> Result<(), EngineError>,
 ) -> Result<(), EngineError> {
+    enqueue_with(c, method, ReqKind::NewPayload(block_root), write_params)
+}
+
+fn enqueue_with<E>(
+    c: &mut EngineClient,
+    method: &str,
+    kind: ReqKind,
+    write_params: impl FnOnce(&mut Vec<u8>) -> Result<(), E>,
+) -> Result<(), E> {
     let rpc_id = next_id(&mut c.id);
     c.scratch.clear();
     c.scratch.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"");
@@ -228,7 +237,7 @@ fn send_new_payload_request_impl(
     append_decimal_u64(rpc_id, &mut c.scratch);
     c.scratch.push(b'}');
     c.pool.enqueue(rpc_id, &c.scratch, &c.registry);
-    c.pending_requests.insert(rpc_id, ReqKind::NewPayload(block_root));
+    c.pending_requests.insert(rpc_id, kind);
     Ok(())
 }
 
@@ -249,10 +258,13 @@ fn append_decimal_u64(v: u64, out: &mut Vec<u8>) {
 }
 
 pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
-    let id_hex = format!("0x{}", hex::encode(payload_id));
-    let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadV5", simd_json::json!([id_hex]));
-    enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::GetPayloadFetch(req_id));
+    let mut params = *b"[\"0x0000000000000000\"]";
+    hex::encode_to_slice(payload_id, &mut params[4..20]).expect("8 bytes are 16 hex digits");
+    let kind = ReqKind::GetPayloadFetch(req_id);
+    let Ok(()) = enqueue_with::<Infallible>(c, "engine_getPayloadV5", kind, |out| {
+        out.extend_from_slice(&params);
+        Ok(())
+    });
 }
 
 pub fn get_blobs(c: &mut EngineClient, params: simd_json::OwnedValue, block_root: B256, slot: u64) {
@@ -346,6 +358,32 @@ mod tests {
         let capabilities = body["params"][0].as_array().unwrap();
         assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_getBlobsV3")));
         assert!(!capabilities.iter().any(|v| v.as_str() == Some("engine_getBlobsV2")));
+    }
+
+    #[test]
+    fn get_payload_body_names_the_payload_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let jwt = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let _el = FakeEl::uds(&socket);
+        let readiness = Readiness::new(16);
+        let mut client = EngineClient::new_uds(
+            readiness.registry(),
+            TokenRange::whole(),
+            &socket,
+            jwt.to_str().unwrap(),
+            2,
+            Duration::from_secs(10),
+        );
+
+        get_payload(&mut client, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef], 7);
+
+        let id = client.id - 1;
+        let expected = format!(
+            r#"{{"jsonrpc":"2.0","method":"engine_getPayloadV5","params":["0x0123456789abcdef"],"id":{id}}}"#
+        );
+        assert_eq!(client.scratch, expected.as_bytes());
+        assert!(matches!(client.pending_requests.get(&id), Some(ReqKind::GetPayloadFetch(7))));
     }
 
     #[test]

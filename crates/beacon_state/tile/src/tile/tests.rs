@@ -10,9 +10,10 @@ use silver_beacon_state_data::{
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
-    BlockStage, EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
-    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
+    BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
+    EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
+    LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
+    PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
     TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -28,6 +29,7 @@ use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContribu
 
 use super::{
     block::{ParsedBlock, StagedBlock},
+    block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
     *,
 };
@@ -4720,7 +4722,7 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     engine_requests(&mut sink);
     register_proposer(&mut tile, 0, [7; 20]);
 
-    tile.prepare_payload(11, &mut adapter.producers);
+    assert!(tile.prepare_payload(11, &mut adapter.producers).is_ok());
 
     let [EngineReq::PreparePayload(request)] = engine_requests(&mut sink)[..] else {
         panic!("expected one payload preparation");
@@ -4736,9 +4738,9 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
         }),
         &mut adapter.producers,
     );
-    assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), Some([9; 8]));
-    tile.payload_preparations.prune_before(12);
-    assert_eq!(tile.payload_preparations.payload_id(11, ANCHOR_ROOT), None);
+    assert_eq!(tile.block_production.payload_id(11, ANCHOR_ROOT), Some([9; 8]));
+    tile.block_production.prune_before(12, &mut adapter.producers);
+    assert_eq!(tile.block_production.payload_id(11, ANCHOR_ROOT), None);
 }
 
 fn prepared_parents(sink: &mut SpineAdapter<SilverSpine>) -> Vec<B256> {
@@ -4759,8 +4761,8 @@ fn head_that_moves_after_preparation_is_prepared_again() {
     register_proposer(&mut rig.tile, 0, [7; 20]);
     engine_requests(&mut rig.sink);
 
-    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
-    rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    let first = rig.tile.prepare_payload(72, &mut rig.adapter.producers);
+    assert_eq!(rig.tile.prepare_payload(72, &mut rig.adapter.producers), first);
     assert_eq!(prepared_parents(&mut rig.sink), [ANCHOR_ROOT]);
 
     rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
@@ -4775,7 +4777,336 @@ fn unregistered_proposer_gets_no_payload_prepared() {
     engine_requests(&mut sink);
     register_proposer(&mut tile, 1, [7; 20]);
 
-    tile.prepare_payload(11, &mut adapter.producers);
+    assert_eq!(
+        tile.prepare_payload(11, &mut adapter.producers),
+        Err(ProduceBlockFailure::NoFeeRecipient)
+    );
 
     assert!(engine_requests(&mut sink).is_empty());
+}
+
+/// Validator 0, the seeded proposer, signs with test key 0.
+fn proposal(tile: &BeaconStateTile, slot: Slot) -> Proposal {
+    let randao_reveal = test_signing::sign_randao_reveal(0, slot, &Immutable::default());
+    Proposal { slot, parent_root: tile.head_block_root(), randao_reveal, graffiti: [0; 32] }
+}
+
+/// Each answer's request id and failure, `None` for a produced block.
+fn produced_blocks(
+    sink: &mut SpineAdapter<SilverSpine>,
+) -> Vec<(u64, Option<ProduceBlockFailure>)> {
+    let mut answers = Vec::new();
+    sink.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::ProducedBlock { request_id, block } = response {
+            answers.push((request_id, block.err()));
+        }
+    });
+    answers
+}
+
+fn prepared(tile: &mut BeaconStateTile, id: u64, payload_id: [u8; 8], producers: &mut Producers) {
+    let response = EnginePreparePayloadResp { id, payload_id: Some(payload_id) };
+    tile.handle_engine_response(EngineResp::PreparePayload(response), producers);
+}
+
+fn no_payload(tile: &mut BeaconStateTile, id: u64, producers: &mut Producers) {
+    let response = EngineGetPayloadResp { id, data: None };
+    tile.handle_engine_response(EngineResp::GetPayload(response), producers);
+}
+
+fn production_rig()
+-> (BeaconStateTile, TestSpine, SpineAdapter<SilverSpine>, SpineAdapter<SilverSpine>) {
+    let (mut tile, _gp, _rp, mut spine, adapter) = tile_with_producers(200);
+    seed_tile_with_keys(&mut tile, 4, 10);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    produced_blocks(&mut sink);
+    (tile, spine, adapter, sink)
+}
+
+#[test]
+fn block_for_an_unregistered_proposer_is_refused() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::NoFeeRecipient))]);
+    assert!(engine_requests(&mut sink).is_empty());
+}
+
+#[test]
+fn block_for_a_slot_the_head_already_holds_is_refused() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    let slot = tile.last_applied_block_slot();
+    tile.produce_block(5, proposal(&tile, slot), &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::SlotNotProposable))]);
+}
+
+/// The reveal is checked after the payload is asked for, so the EL builds
+/// meanwhile; a bad one refuses the block without waiting on the EL.
+#[test]
+fn block_with_a_foreign_randao_reveal_is_refused() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+    let randao_reveal = test_signing::sign_randao_reveal(1, 11, &Immutable::default());
+
+    tile.produce_block(
+        5,
+        Proposal { randao_reveal, ..proposal(&tile, 11) },
+        &mut adapter.producers,
+    );
+
+    let refused = Some(ProduceBlockFailure::InvalidRandaoReveal);
+    assert_eq!(produced_blocks(&mut sink), [(5, refused)]);
+    assert!(matches!(engine_requests(&mut sink)[..], [EngineReq::PreparePayload(_)]));
+}
+
+/// No preparation tick ran, so the payload is prepared on demand, then
+/// fetched under the id the EL returned.
+#[test]
+fn block_without_a_prepared_payload_prepares_one_then_fetches_it() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [9; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload fetch");
+    };
+    assert_eq!(fetch.payload_id, [9; 8]);
+    assert!(produced_blocks(&mut sink).is_empty());
+
+    no_payload(&mut tile, fetch.id, &mut adapter.producers);
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::PayloadUnavailable))]);
+}
+
+#[test]
+fn block_with_a_prepared_payload_fetches_it_directly() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+    assert!(tile.prepare_payload(11, &mut adapter.producers).is_ok());
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [3; 8], &mut adapter.producers);
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected only a payload fetch");
+    };
+    assert_eq!(fetch.payload_id, [3; 8]);
+}
+
+#[test]
+fn far_future_request_does_not_block_the_next_slot() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(4, proposal(&tile, 1000), &mut adapter.producers);
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(4, Some(ProduceBlockFailure::SlotNotProposable))]);
+    assert!(matches!(engine_requests(&mut sink)[..], [EngineReq::PreparePayload(_)]));
+}
+
+#[test]
+fn request_the_el_never_answers_expires_with_its_slot() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+
+    tile.block_production.prune_before(12, &mut adapter.producers);
+
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::PayloadUnavailable))]);
+}
+
+/// A retry for the block being built waits on the same build, and one
+/// answer settles both.
+#[test]
+fn repeated_request_joins_the_build_in_flight() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+    tile.produce_block(6, proposal(&tile, 11), &mut adapter.producers);
+
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [9; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload fetch");
+    };
+    no_payload(&mut tile, fetch.id, &mut adapter.producers);
+    let failure = Some(ProduceBlockFailure::PayloadUnavailable);
+    assert_eq!(produced_blocks(&mut sink), [(5, failure), (6, failure)]);
+}
+
+/// Both blocks build on the one payload fetch.
+#[test]
+fn request_for_another_block_shares_the_payload() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    register_proposer(&mut tile, 0, [7; 20]);
+
+    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
+    let [EngineReq::PreparePayload(first)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    let other_graffiti = Proposal { graffiti: [1; 32], ..proposal(&tile, 11) };
+    tile.produce_block(6, other_graffiti, &mut adapter.producers);
+    assert!(produced_blocks(&mut sink).is_empty());
+    assert!(engine_requests(&mut sink).is_empty(), "the payload in preparation is shared");
+
+    prepared(&mut tile, first.id, [9; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected one payload fetch");
+    };
+    no_payload(&mut tile, fetch.id, &mut adapter.producers);
+    let failure = Some(ProduceBlockFailure::PayloadUnavailable);
+    assert_eq!(produced_blocks(&mut sink), [(5, failure), (6, failure)]);
+}
+
+/// Importing the produced block through the full state transition checks the
+/// roots it carries.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn produced_block_contents_match_the_fixture_block() {
+    import_produced_fixture_block(false);
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn imported_produced_block_reuses_its_post_state() {
+    import_produced_fixture_block(true);
+}
+
+/// Fed the `one_blob` block's payload, commitments and requests, the tile
+/// assembles that block's message, and the bundle's proofs and blobs follow
+/// it from the payload frame. The fixture votes a zeroed `eth1_data` where the
+/// tile votes the state's, so those bytes and the state root differ.
+#[cfg(feature = "ef_tests")]
+fn import_produced_fixture_block(reuse_produced_state: bool) {
+    use silver_common::{
+        PayloadFrame,
+        ssz_view::{BYTES_PER_BLOB, BeaconBlockBodyFuluView},
+    };
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    produced_blocks(&mut sink);
+    register_proposer(&mut tile, SignedBeaconBlockView::proposer_index(&block_ssz), [7; 20]);
+
+    let message = &block_ssz[100..];
+    let body = SignedBeaconBlockView::body(&block_ssz);
+    let field = |from: u32, to: usize| &body[from as usize..to];
+    let execution_payload = field(
+        BeaconBlockBodyFuluView::execution_payload_offset(body),
+        BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize,
+    );
+    let commitments = field(
+        BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body),
+        BeaconBlockBodyFuluView::execution_requests_offset(body) as usize,
+    );
+    let requests = field(BeaconBlockBodyFuluView::execution_requests_offset(body), body.len());
+    let blob_count = commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    assert_eq!(blob_count, 1, "fixture premise: one blob");
+    let cell_proofs = vec![0x11; blob_count * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN];
+    let blobs = vec![0x22; blob_count * BYTES_PER_BLOB];
+
+    let mut frame = vec![0; PayloadFrame::HEADER_LEN];
+    PayloadFrame::write_header(
+        &mut frame,
+        execution_payload.len(),
+        requests.len(),
+        blob_count as u8,
+        false,
+        &[3; 32],
+    );
+    frame.extend_from_slice(execution_payload);
+    frame.extend_from_slice(commitments);
+    frame.extend_from_slice(requests);
+    frame.extend_from_slice(&cell_proofs);
+    frame.extend_from_slice(&blobs);
+
+    let proposal = Proposal {
+        slot,
+        parent_root: tile.head_block_root(),
+        randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
+        graffiti: *BeaconBlockBodyFuluView::graffiti(body),
+    };
+    tile.produce_block(5, proposal, &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(&mut tile, prepare.id, [1; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload fetch");
+    };
+    let (_, read) = publish_block_bytes(&mut gp, &frame);
+    let response = EngineGetPayloadResp { id: fetch.id, data: Some(read) };
+    tile.handle_engine_response(EngineResp::GetPayload(response), &mut adapter.producers);
+
+    let mut produced = Vec::new();
+    sink.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::ProducedBlock { block, .. } = response {
+            produced.push(block);
+        }
+    });
+    let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
+    assert_eq!(block.execution_payload_value, [3; 32]);
+    assert_eq!(block.payload, read, "the engine's bytes stay in the payload frame");
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let (before_payload, bls_changes) = header.split_at(block.payload_at as usize);
+    let frame = PayloadFrame::parse(&frame).unwrap();
+    let contents =
+        [before_payload, frame.execution_payload, bls_changes, frame.after_payload].concat();
+    let proofs_at = 12 + message.len();
+    let blobs_at = proofs_at + cell_proofs.len();
+    let offsets: Vec<_> =
+        contents[..12].chunks_exact(4).map(|o| u32::from_le_bytes(o.try_into().unwrap())).collect();
+    assert_eq!(offsets, [12, proofs_at as u32, blobs_at as u32]);
+    let produced_message = &contents[12..proofs_at];
+    let eth1_data = 84 + 96..84 + 96 + 72;
+    let mut expected = message.to_vec();
+    expected[48..80].copy_from_slice(&produced_message[48..80]);
+    expected[eth1_data.clone()].copy_from_slice(&pre_ssz[524468..524468 + 72]);
+    assert_eq!(produced_message, expected, "the fixture block's message");
+    assert_eq!(&contents[proofs_at..blobs_at], cell_proofs);
+    assert_eq!(&contents[blobs_at..], blobs);
+
+    // The checkpoint was loaded without decompressed pubkeys, so this import
+    // bypasses proposer-signature verification.
+    let mut signed = 100u32.to_le_bytes().to_vec();
+    signed.extend_from_slice(&[0; 96]);
+    signed.extend_from_slice(produced_message);
+    let (data, read) = publish_block_bytes(&mut gp, &signed);
+    if !reuse_produced_state {
+        tile.block_production.drop_outdated(|_| false);
+    }
+    let body = SignedBeaconBlockView::body(&signed);
+    let matched = tile.built_body_hash(slot, body).is_some();
+    assert_eq!(matched, reuse_produced_state, "the built body is matched, not hashed");
+    let mut altered = body.to_vec();
+    *altered.last_mut().unwrap() ^= 1;
+    assert!(tile.built_body_hash(slot, &altered).is_none(), "another body is hashed");
+    let produced_states = tile.block_production.state_ids_mut().count();
+    assert_eq!(produced_states, usize::from(reuse_produced_state));
+    let pinned = tile.reader.acquire(read);
+    let feedback =
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+    // Checked before a blob block is staged on its columns.
+    assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
+    assert_eq!(tile.block_production.state_ids_mut().count(), 0, "import takes the post-state");
 }

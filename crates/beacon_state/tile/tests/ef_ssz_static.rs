@@ -10,11 +10,13 @@ use silver_common::{
     merkle::FixedContainer,
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
-        AttestationView, AttesterSlashingView, BeaconBlockBodyGloasView, ExecutionPayloadBidView,
-        ExecutionPayloadEnvelopeView, ExecutionPayloadView, IndexedAttestationView,
-        PayloadAttestationView, SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
+        AttestationView, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView,
+        BeaconBlockBodyGloasView, ExecutionPayloadBidView, ExecutionPayloadEnvelopeView,
+        ExecutionPayloadView, IndexedAttestationView, PayloadAttestationView,
+        SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
     },
 };
+use silver_ssz::block_body::BeaconBlockBodyFulu;
 
 fn run_ssz_static(fork: &str, type_name: &str, hash_fn: impl Fn(&[u8]) -> [u8; 32]) {
     let base = spec_tests_dir().join("tests/mainnet").join(fork).join("ssz_static").join(type_name);
@@ -88,6 +90,54 @@ fn hex(b: &[u8; 32]) -> String {
 #[test]
 fn fulu_beacon_block_body() {
     run_ssz_static("fulu", "BeaconBlockBody", move |ssz| ssz_hash::hash_tree_root_body_fulu(ssz));
+}
+
+/// Rebuilt from its fields, every body is byte-identical and keeps its root.
+#[test]
+fn fulu_beacon_block_body_encodes_from_its_fields() {
+    run_ssz_static("fulu", "BeaconBlockBody", |ssz| {
+        let encoded = encoded(&reencode_fulu_body(ssz));
+        assert_eq!(encoded, ssz);
+        ssz_hash::hash_tree_root_body_fulu(&encoded)
+    });
+}
+
+/// Hashed from its fixed part and its fields, apart, every body keeps its root.
+#[test]
+fn fulu_beacon_block_body_hashes_from_its_parts() {
+    run_ssz_static("fulu", "BeaconBlockBody", |ssz| {
+        let body = reencode_fulu_body(ssz);
+        let mut fixed = [0; BEACON_BLOCK_BODY_FIXED];
+        let parts = body.write_fixed(&mut fixed).unwrap();
+        ssz_hash::hash_tree_root_body_fulu_with_roots(&parts).0
+    });
+}
+
+fn reencode_fulu_body(ssz: &[u8]) -> BeaconBlockBodyFulu<'_> {
+    let starts = BeaconBlockBodyFuluView::VARIABLE_OFFSETS
+        .map(|at| u32::from_le_bytes(ssz[at..at + 4].try_into().unwrap()) as usize);
+    let field = |i: usize| &ssz[starts[i]..starts.get(i + 1).copied().unwrap_or(ssz.len())];
+    BeaconBlockBodyFulu {
+        randao_reveal: BeaconBlockBodyFuluView::randao_reveal(ssz),
+        eth1_data: BeaconBlockBodyFuluView::eth1_data(ssz),
+        graffiti: BeaconBlockBodyFuluView::graffiti(ssz),
+        proposer_slashings: field(0),
+        attester_slashings: field(1),
+        attestations: field(2),
+        deposits: field(3),
+        voluntary_exits: field(4),
+        sync_aggregate: BeaconBlockBodyFuluView::sync_aggregate(ssz),
+        execution_payload: field(5),
+        bls_to_execution_changes: field(6),
+        blob_kzg_commitments: field(7),
+        execution_requests: field(8),
+    }
+}
+
+fn encoded(body: &BeaconBlockBodyFulu<'_>) -> Vec<u8> {
+    let mut out = vec![0; body.ssz_len()];
+    body.encode(&mut out);
+    out
 }
 
 #[test]

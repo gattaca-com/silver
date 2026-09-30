@@ -42,7 +42,7 @@ impl BlockFork {
         matches!(self, Self::Gloas)
     }
 
-    fn body_fork(self) -> BodyFork {
+    pub(crate) fn body_fork(self) -> BodyFork {
         match self {
             Self::Fulu { .. } => BodyFork::Fulu,
             Self::Gloas => BodyFork::Gloas,
@@ -53,7 +53,7 @@ impl BlockFork {
 pub struct BlockInput<'a> {
     pub header: &'a BeaconBlockHeader,
     pub block_root: B256,
-    pub body: &'a [u8],
+    pub body: BodyOffsets<'a>,
     pub fork: BlockFork,
     pub shuffling: &'a ShufflingRef<'a>,
 }
@@ -66,16 +66,13 @@ impl<'a> BlockInput<'a> {
     pub fn invalid(&self, kind: BlockError) -> Error {
         Error::invalid_block(self.header.state_root, kind)
     }
-
-    fn offsets(&self) -> Result<BodyOffsets<'a>> {
-        BodyOffsets::validated(self.body, self.fork.body_fork()).map_err(|e| self.invalid(e.into()))
-    }
 }
 
 pub fn hash_body(offsets: &BodyOffsets<'_>) -> (B256, BlockFork) {
     match offsets.fork() {
         BodyFork::Gloas => {
-            (BeaconBlockBodyGloasView::hash_tree_root(offsets.body()), BlockFork::Gloas)
+            let body = offsets.serialized().expect("a Gloas body is parsed whole");
+            (BeaconBlockBodyGloasView::hash_tree_root(body), BlockFork::Gloas)
         }
         BodyFork::Fulu => {
             let (root, payload_roots) = ssz_hash::hash_tree_root_body_fulu_with_roots(offsets);
@@ -93,6 +90,37 @@ pub fn apply_block(
     sig_batch: &mut SigBatch,
     out: &mut BlockVotes,
 ) -> Result<()> {
+    let actual = transition(cfg, fork, input, scratch, Some(sig_batch), out)?;
+    let expected = input.header.state_root;
+    if actual != expected {
+        return Err(input.invalid(BlockError::PostStateRootMismatch { expected, got: actual }));
+    }
+    Ok(())
+}
+
+/// [`apply_block`] without checking `header.state_root`, which a proposer
+/// fills from the result, and without the signature pass: a proposer verifies
+/// every signature it packs before building.
+#[inline]
+pub fn post_state_root_unchecked(
+    cfg: &SpecConfig,
+    fork: &mut ForkWriter,
+    input: &BlockInput<'_>,
+    scratch: &mut StfScratch,
+    out: &mut BlockVotes,
+) -> Result<B256> {
+    transition(cfg, fork, input, scratch, None, out)
+}
+
+#[inline]
+fn transition(
+    cfg: &SpecConfig,
+    fork: &mut ForkWriter,
+    input: &BlockInput<'_>,
+    scratch: &mut StfScratch,
+    sig_batch: Option<&mut SigBatch>,
+    out: &mut BlockVotes,
+) -> Result<B256> {
     let block_slot = input.header.slot;
     check_slot_after_header(&fork.view.slot.reader(), block_slot).map_err(|e| input.invalid(e))?;
     let head_slot = fork.view.slot.state().slot;
@@ -109,12 +137,7 @@ pub fn apply_block(
         .map_err(|e| input.invalid(e))?;
     process_block_body(cfg, fork, input, scratch, sig_batch, out)?;
 
-    let actual = ssz_hash::hash_tree_root_state(&fork.read());
-    let expected = input.header.state_root;
-    if actual != expected {
-        return Err(input.invalid(BlockError::PostStateRootMismatch { expected, got: actual }));
-    }
-    Ok(())
+    Ok(ssz_hash::hash_tree_root_state(&fork.read()))
 }
 
 /// Full-block apply for the EF spec suites: verifies the proposer signature
@@ -206,9 +229,14 @@ pub fn apply_signed_block_debug(
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
-    let input =
-        BlockInput { header: &header, block_root, body, fork: block_fork, shuffling: &sref };
-    process_block_body(cfg, fork, &input, &mut scratch, &mut sig_batch, &mut votes)?;
+    let input = BlockInput {
+        header: &header,
+        block_root,
+        body: offsets,
+        fork: block_fork,
+        shuffling: &sref,
+    };
+    process_block_body(cfg, fork, &input, &mut scratch, Some(&mut sig_batch), &mut votes)?;
 
     let actual = ssz_hash::hash_tree_root_state(&fork.read());
     if actual != state_root {
@@ -430,7 +458,8 @@ pub fn process_block_header(
 ///
 /// Verify — `sig_batch.verify_all()` runs one
 /// `Signature::verify_multiple_aggregate_signatures` over the whole block
-/// (except for deposits).
+/// (except for deposits). A `None` batch skips pass 1 and the verify, for a
+/// body whose signatures were checked before it was built.
 ///
 /// Pass 2 — `process_*` functions run in spec order. Each does its own
 /// data + state-dependent validation and mutation, returning `Err` on any
@@ -441,7 +470,7 @@ pub fn process_block_body(
     fork: &mut ForkWriter,
     input: &BlockInput<'_>,
     scratch: &mut StfScratch,
-    sig_batch: &mut SigBatch,
+    sig_batch: Option<&mut SigBatch>,
     out: &mut BlockVotes,
 ) -> Result<()> {
     debug_assert_eq!(
@@ -449,7 +478,7 @@ pub fn process_block_body(
         fork.epoch_view().is_gloas(fork.view.imm.gloas_fork_version),
         "body parsed for one fork, state on another",
     );
-    let offsets = input.offsets()?;
+    let offsets = &input.body;
 
     let proposer_index = input.proposer_index();
     let count = fork.view.validators.count();
@@ -458,14 +487,16 @@ pub fn process_block_body(
         return Err(input.invalid(BlockError::ProposerOutOfRange { idx, count }));
     }
 
-    sig_batch.clear();
-    // Pass 1 is read-only: hand it the read-only sibling over the same fork.
-    collect_sigs_block_body(&fork.read(), &mut scratch.active, sig_batch, &offsets, input)?;
-    if !sig_batch.verify_all() {
-        return Err(Error::SigBatchFailed);
+    if let Some(sig_batch) = sig_batch {
+        sig_batch.clear();
+        // Pass 1 is read-only: hand it the read-only sibling over the same fork.
+        collect_sigs_block_body(&fork.read(), &mut scratch.active, sig_batch, offsets, input)?;
+        if !sig_batch.verify_all() {
+            return Err(Error::SigBatchFailed);
+        }
     }
 
-    apply_block_body(cfg, fork, &offsets, input, scratch, out)
+    apply_block_body(cfg, fork, offsets, input, scratch, out)
 }
 
 fn apply_block_body(
@@ -482,10 +513,10 @@ fn apply_block_body(
     let is_gloas = input.fork.is_gloas();
     let block_slot = input.header.slot;
     let proposer_index = input.proposer_index();
-    let body = offsets.body();
 
     let parent_slot = match input.fork {
         BlockFork::Gloas => {
+            let body = offsets.serialized().expect("a Gloas body is parsed whole");
             process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
             process_withdrawals_gloas(&mut *view);
             match offsets.signed_bid() {
@@ -501,8 +532,8 @@ fn apply_block_body(
         }
     };
 
-    process_randao(view, body, block_slot / SLOTS_PER_EPOCH);
-    process_eth1_data(&mut view.slot, &mut view.eth1, body);
+    process_randao(view, offsets.fixed(), block_slot / SLOTS_PER_EPOCH);
+    process_eth1_data(&mut view.slot, &mut view.eth1, offsets.fixed());
 
     if let Some(section) = offsets.proposer_slashings() {
         process_proposer_slashings(&mut *view, epoch, cfg, section)?;
@@ -555,12 +586,11 @@ fn collect_sigs_block_body(
     let block_slot = input.header.slot;
     let proposer_index = input.proposer_index();
     let shuffling = input.shuffling;
-    let body = offsets.body();
     let imm = rv.imm;
     let validators = rv.validators;
 
     let proposer_pubkey = validators.pubkey_decompressed(proposer_index as usize);
-    collect_sigs_randao(imm, &rv.epoch, body, block_slot, proposer_pubkey, sig_batch);
+    collect_sigs_randao(imm, &rv.epoch, offsets.fixed(), block_slot, proposer_pubkey, sig_batch);
 
     if let Some(section) = offsets.proposer_slashings() {
         collect_sigs_proposer_slashings(imm, &rv.epoch, &validators, section, sig_batch)?;
@@ -641,14 +671,17 @@ pub fn collect_sigs_randao(
         return;
     }
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
+    sig_batch.push_one(proposer_pubkey, reveal, randao_signing_root(imm, epoch, block_slot));
+}
+
+pub fn randao_signing_root(imm: &Immutable, epoch: &EpochView, block_slot: Slot) -> B256 {
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
     let fork_version = epoch.fork_version_at(block_epoch);
     let mut epoch_chunk = [0u8; 32];
     epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
     let domain =
         bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &imm.genesis_validators_root);
-    let signing_root = bls::compute_signing_root(&epoch_chunk, &domain);
-    sig_batch.push_one(proposer_pubkey, reveal, signing_root);
+    bls::compute_signing_root(&epoch_chunk, &domain)
 }
 
 /// Pass 2 — XOR the reveal's hash into the current epoch's mix. BLS already

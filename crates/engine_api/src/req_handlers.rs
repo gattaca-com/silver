@@ -172,8 +172,8 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
 #[inline]
 fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq) {
     silver_log::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "preparePayload ← spine");
-    let n = r.attrs_withdrawal_count as usize;
-    let withdrawals = r.attrs_withdrawals[..n]
+    let withdrawals = r
+        .attrs_withdrawals
         .iter()
         .map(|w| Withdrawal {
             index: w.index,

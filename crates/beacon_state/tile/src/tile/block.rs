@@ -1,8 +1,8 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot,
-    StateId, StateReadView,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, ForkWriter, SLOTS_PER_EPOCH,
+    Slot, StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
@@ -14,7 +14,7 @@ use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers, gossip::EnvelopeCheck,
 };
 use crate::{
-    bls,
+    Error, bls,
     error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
     ssz_hash,
@@ -31,7 +31,7 @@ pub(super) struct ParsedBlock {
     pub(super) relay_eligible: bool,
 }
 
-struct AppliedBlock {
+pub(super) struct AppliedBlock {
     id: StateId,
     justified: Checkpoint,
     finalized: Checkpoint,
@@ -39,6 +39,43 @@ struct AppliedBlock {
     execution_block_hash: B256,
     bid_block_hash: B256,
     votes: stf::BlockVotes,
+}
+
+impl AppliedBlock {
+    /// Snapshots what the import reads off the live fork, then commits it.
+    pub(super) fn commit(
+        fork: ForkWriter<'_>,
+        header: &BeaconBlockHeader,
+        block_fork: BlockFork,
+        votes: stf::BlockVotes,
+    ) -> Self {
+        let es = fork.epoch_view().state();
+        let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
+        // Spec `compute_pulled_up_tip`: the j/f this post-state would realize at
+        // its epoch boundary, read-only on the live view.
+        let unrealized = stf::unrealized_checkpoints(&fork.view, es, header.slot / SLOTS_PER_EPOCH);
+        let slot_state = fork.view.slot.state();
+        let execution_block_hash = if block_fork.is_gloas() {
+            slot_state.latest_block_hash
+        } else {
+            slot_state.latest_execution_payload_header.block_hash
+        };
+        let bid_block_hash = slot_state.latest_execution_payload_bid.block_hash;
+
+        Self {
+            id: fork.commit(),
+            justified: checkpoints.0,
+            finalized: checkpoints.1,
+            unrealized,
+            execution_block_hash,
+            bid_block_hash,
+            votes,
+        }
+    }
+
+    pub(super) fn state_id_mut(&mut self) -> &mut StateId {
+        &mut self.id
+    }
 }
 
 /// A block whose post-state is committed but which waits for its data columns
@@ -411,6 +448,9 @@ impl BeaconStateTile {
         parsed: &ParsedBlock,
         data: &[u8],
     ) -> crate::Result<AppliedBlock> {
+        if let Some(applied) = self.block_production.take_produced_state(&parsed.block_root) {
+            return Ok(applied);
+        }
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
 
         // The parent's epoch-start state when the block crossed a boundary;
@@ -428,12 +468,15 @@ impl BeaconStateTile {
             self.shuffling_cache.build_ref(&view, block_epoch)
         };
 
+        let body =
+            BodyOffsets::validated(SignedBeaconBlockView::body(data), parsed.fork.body_fork())
+                .map_err(|e| Error::invalid_block(parsed.header.state_root, e.into()))?;
         let mut fork = self.state.apply_block_view(parent);
         let mut votes = self.stf_scratch.votes.take();
         let input = BlockInput {
             header: &parsed.header,
             block_root: parsed.block_root,
-            body: SignedBeaconBlockView::body(data),
+            body,
             fork: parsed.fork,
             shuffling: &sref,
         };
@@ -450,30 +493,7 @@ impl BeaconStateTile {
             return Err(e);
         }
 
-        // Snapshot checkpoints while the fork is live; `commit` ends the
-        // `&mut self.state` borrow before the fork-choice / publish work.
-        let es = fork.epoch_view().state();
-        let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
-        // Spec `compute_pulled_up_tip`: the j/f this post-state would realize at
-        // its epoch boundary, read-only on the live view.
-        let unrealized =
-            stf::unrealized_checkpoints(&fork.view, es, parsed.header.slot / SLOTS_PER_EPOCH);
-        let execution_block_hash = if parsed.fork.is_gloas() {
-            fork.view.slot.state().latest_block_hash
-        } else {
-            fork.view.slot.state().latest_execution_payload_header.block_hash
-        };
-        let bid_block_hash = fork.view.slot.state().latest_execution_payload_bid.block_hash;
-
-        Ok(AppliedBlock {
-            id: fork.commit(),
-            justified: checkpoints.0,
-            finalized: checkpoints.1,
-            unrealized,
-            execution_block_hash,
-            bid_block_hash,
-            votes,
-        })
+        Ok(AppliedBlock::commit(fork, &parsed.header, parsed.fork, votes))
     }
 
     /// Fork-choice import and head publish; the tick-to-attestable window
@@ -586,7 +606,7 @@ impl BeaconStateTile {
         })
     }
 
-    fn precheck_block(&self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
+    fn precheck_block(&mut self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
         Self::check_block_size(data)?;
 
         let block_slot = SignedBeaconBlockView::slot(data);
@@ -611,7 +631,10 @@ impl BeaconStateTile {
         let body_fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
         let offsets = BodyOffsets::validated(body, body_fork)
             .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
-        let (body_root, fork) = stf::hash_body(&offsets);
+        let (body_root, fork) = match self.built_body_hash(block_slot, body) {
+            Some(hashed) => hashed,
+            None => stf::hash_body(&offsets),
+        };
 
         let block_header = BeaconBlockHeader {
             slot: block_slot,

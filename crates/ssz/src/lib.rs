@@ -1,3 +1,4 @@
+pub mod block_body;
 pub mod body_offsets;
 pub mod merkle;
 pub mod progressive;

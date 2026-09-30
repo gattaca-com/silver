@@ -65,7 +65,7 @@ fn boundary_tile_with_spec(
         [TCacheId::ControlSlot, TCacheId::StorageDelivery, TCacheId::BeaconStateHandoff]
             .map(|id| TCache::producer(id, 1 << 16).cache_ref())
             .into_iter()
-            .chain([gossip_p.cache_ref(), rpc_p.cache_ref()]),
+            .chain([gossip_p.cache_ref(), rpc_p.cache_ref(), resp_p.cache_ref()]),
     );
     let tile = ApplicationBoundaryTile::new(
         std::slice::from_ref(bind),

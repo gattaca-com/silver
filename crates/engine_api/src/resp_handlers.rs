@@ -3,7 +3,7 @@ use serde::Deserialize;
 use silver_common::{
     ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
     EngineNewPayloadResp, EnginePreparePayloadResp, EngineResp, PayloadValidationStatus,
-    SilverSpine, TCacheProducer, TCacheRead, TProducer, merkle::B256,
+    SilverSpine, TCacheProducer, TCacheRead, TProducer, TapeScratch, merkle::B256,
 };
 use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
@@ -106,27 +106,16 @@ pub(crate) fn handle_client_version_response(response: Result<&mut [u8], EngineE
 pub(crate) struct Responses<'a> {
     adapter: &'a mut SpineAdapter<SilverSpine>,
     producer: &'a mut TProducer,
-    scratch: &'a mut Vec<u8>,
+    scratch: &'a mut TapeScratch,
 }
 
 impl<'a> Responses<'a> {
     pub(crate) fn new(
         adapter: &'a mut SpineAdapter<SilverSpine>,
         producer: &'a mut TProducer,
-        scratch: &'a mut Vec<u8>,
+        scratch: &'a mut TapeScratch,
     ) -> Self {
         Self { adapter, producer, scratch }
-    }
-
-    /// `Ok(None)` means the tcache had no room; `Err` is a parse failure.
-    fn encode<T>(
-        &mut self,
-        raw: &mut [u8],
-        to_tcache: impl FnOnce(&mut [u8], &mut Vec<u8>) -> Result<T, EngineError>,
-    ) -> Result<Option<(T, TCacheRead)>, EngineError> {
-        self.scratch.clear();
-        let encoded = to_tcache(raw, self.scratch)?;
-        Ok(write_tcache(self.producer, self.scratch).map(|data| (encoded, data)))
     }
 
     #[inline]
@@ -294,7 +283,7 @@ impl<'a> Responses<'a> {
     #[inline]
     pub(crate) fn get_payload(&mut self, spine_id: u64, response: Result<&mut [u8], EngineError>) {
         let resp = match response {
-            Ok(raw) => match self.encode(raw, json_get_payload_to_tcache) {
+            Ok(raw) => match self.scratch.encode(raw, self.producer, json_get_payload_to_tcache) {
                 Ok(Some(((), data))) => {
                     silver_log::info!(id = spine_id, "getPayload ok");
                     EngineGetPayloadResp { id: spine_id, data: Some(data) }
@@ -324,7 +313,7 @@ impl<'a> Responses<'a> {
         response: Result<&mut [u8], EngineError>,
     ) {
         let resp = match response {
-            Ok(raw) => match self.encode(raw, json_get_blobs_to_tcache) {
+            Ok(raw) => match self.scratch.encode(raw, self.producer, json_get_blobs_to_tcache) {
                 Ok(Some((blobs_present, data))) => {
                     silver_log::info!(
                         block = hex::encode(block_root),

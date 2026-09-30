@@ -7,7 +7,11 @@ mod ef_common;
 use ef_common::{
     compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
 };
-use silver_beacon_state_data::SpecConfig;
+use silver_beacon_state::stf::{self, BlockInput, BlockVotes, ShufflingRef, StfScratch};
+use silver_beacon_state_data::{
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, SLOTS_PER_EPOCH, SpecConfig,
+};
+use silver_common::ssz_view::SignedBeaconBlockView;
 
 #[test]
 fn fulu_sanity_blocks() {
@@ -19,6 +23,70 @@ fn gloas_sanity_blocks() {
     let mut cfg = SpecConfig::mainnet();
     cfg.gloas_fork_epoch = 0;
     sanity_blocks_fork("gloas", cfg);
+}
+
+/// A proposer fills `state_root` from `post_state_root_unchecked`; every
+/// accepted block's root must come out of it unchanged.
+#[test]
+fn fulu_sanity_blocks_state_roots_match_the_proposal_path() {
+    let cfg = SpecConfig::mainnet();
+    let base = spec_tests_dir().join("tests/mainnet/fulu/sanity/blocks");
+    let mut checked = 0;
+    for (name, dir) in &iter_test_cases(&base) {
+        if !dir.join("post.ssz_snappy").exists() {
+            continue;
+        }
+        let mut pre = load_state(&dir.join("pre.ssz_snappy"));
+        for i in 0.. {
+            let path = dir.join(format!("blocks_{i}.ssz_snappy"));
+            if !path.exists() {
+                break;
+            }
+            let block = snappy_decode(&path);
+            let expected = *SignedBeaconBlockView::state_root(&block);
+            assert_eq!(proposal_state_root(&cfg, &mut pre, &block), Ok(expected), "{name}: {i}");
+            pre.apply_block(&cfg, &block).unwrap();
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no sanity blocks ran");
+}
+
+fn proposal_state_root(
+    cfg: &SpecConfig,
+    pre: &mut ef_common::LoadedState,
+    block: &[u8],
+) -> Result<B256, String> {
+    let slot = SignedBeaconBlockView::slot(block);
+    let body = SignedBeaconBlockView::body(block);
+    let offsets = BodyOffsets::validated(body, BodyFork::Fulu).map_err(|e| e.to_string())?;
+    let (body_root, fork) = stf::hash_body(&offsets);
+    let header = BeaconBlockHeader {
+        slot,
+        proposer_index: SignedBeaconBlockView::proposer_index(block),
+        parent_root: *SignedBeaconBlockView::parent_root(block),
+        state_root: [0; 32],
+        body_root,
+    };
+
+    let mut scratch = StfScratch::new(0);
+    let mut writer = pre.bs.fork_writer(pre.state_id);
+    let epoch = slot / SLOTS_PER_EPOCH;
+    if writer.view.slot.state().slot < epoch * SLOTS_PER_EPOCH {
+        stf::process_slots(cfg, &mut writer, epoch * SLOTS_PER_EPOCH, &mut scratch);
+    }
+    let (mut current, mut previous) = (Vec::new(), Vec::new());
+    let shuffling = ShufflingRef::build(&writer.read(), epoch, &mut current, &mut previous);
+    let input = BlockInput {
+        header: &header,
+        block_root: [0; 32],
+        body: offsets,
+        fork,
+        shuffling: &shuffling,
+    };
+    let mut votes = BlockVotes::default();
+    stf::post_state_root_unchecked(cfg, &mut writer, &input, &mut scratch, &mut votes)
+        .map_err(|e| e.to_string())
 }
 
 fn sanity_blocks_fork(fork: &str, cfg: SpecConfig) {

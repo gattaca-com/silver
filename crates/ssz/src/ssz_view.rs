@@ -130,6 +130,7 @@ pub const MAX_REQUEST_PAYLOADS: usize = 128;
 pub const BYTES_PER_CELL: usize = 2048; // 64 field elems * 32B
 pub const BYTES_PER_KZG_COMMITMENT: usize = 48;
 pub const BYTES_PER_KZG_PROOF: usize = 48;
+pub const BYTES_PER_BLOB: usize = 4096 * 32;
 
 // Block-body list limits (beacon-chain.md).
 pub const MAX_PROPOSER_SLASHINGS: usize = 16;

@@ -5,7 +5,9 @@ use std::{
 };
 
 use flux::timing::Nanos;
-use silver_beacon_state_data::{B256, ExecutionAddress, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS};
+use silver_beacon_state_data::{
+    B256, ExecutionAddress, PayloadWithdrawals, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
+};
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
@@ -110,6 +112,12 @@ pub enum BeaconApiRequest {
     ProposerPreparations {
         preparations: TCacheRead,
     },
+    ProduceBlock {
+        request_id: u64,
+        slot: u64,
+        randao_reveal: [u8; 96],
+        graffiti: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +198,10 @@ pub enum BeaconApiResponse {
         request_id: u64,
         block: Option<ServedBlock>,
     },
+    ProducedBlock {
+        request_id: u64,
+        block: Result<ProducedBlock, ProduceBlockFailure>,
+    },
 }
 
 impl BeaconApiResponse {
@@ -198,9 +210,35 @@ impl BeaconApiResponse {
             Self::LocalGossipResponse { request_id, .. } |
             Self::AggregateAttestation { request_id, .. } |
             Self::SyncCommitteeContribution { request_id, .. } |
-            Self::Block { request_id, .. } => *request_id,
+            Self::Block { request_id, .. } |
+            Self::ProducedBlock { request_id, .. } => *request_id,
         }
     }
+}
+
+/// SSZ `BlockContents` spliced from two reads. `header`, in the
+/// `beacon_state` tcache, holds all but the [`crate::PayloadFrame`] in
+/// `payload` carries. The frame's payload goes in at `payload_at`, its
+/// `after_payload` at the end.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ProducedBlock {
+    pub header: TCacheRead,
+    pub payload_at: u32,
+    pub payload: TCacheRead,
+    /// Little-endian wei.
+    pub execution_payload_value: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ProduceBlockFailure {
+    SlotNotProposable,
+    InvalidRandaoReveal,
+    NoFeeRecipient,
+    PayloadUnavailable,
+    Invalid,
+    Internal,
 }
 
 /// `ssz` points into the `outgoing_rpc` tcache.
@@ -1191,18 +1229,6 @@ pub enum PayloadValidationStatus {
     Accepted = 3,
 }
 
-/// A single withdrawal, inlined into `EngineFcuReq` payload attributes.
-/// Field order avoids interior padding (all u64s first, then the 20-byte
-/// address).
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(C)]
-pub struct WithdrawalInline {
-    pub index: u64,
-    pub validator_index: u64,
-    pub amount: u64,
-    pub address: [u8; 20],
-}
-
 /// `engine_forkchoiceUpdatedV3` request.  Fully inline — no TCache needed.
 ///
 /// `block_root` is the beacon root of the `head_block_hash` block. The EL
@@ -1287,8 +1313,7 @@ pub struct EnginePreparePayloadReq {
     pub attrs_prev_randao: [u8; 32],
     pub attrs_fee_recipient: [u8; 20],
     pub attrs_parent_beacon_block_root: [u8; 32],
-    pub attrs_withdrawal_count: u8,
-    pub attrs_withdrawals: [WithdrawalInline; 16],
+    pub attrs_withdrawals: PayloadWithdrawals,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1305,7 +1330,9 @@ pub struct EngineGetPayloadReq {
     pub payload_id: [u8; 8],
 }
 
-/// Response to `EngineGetPayloadReq`
+/// Response to `EngineGetPayloadReq`.
+/// When `ok` is true, `data` is a TCache slot holding a
+/// [`crate::PayloadFrame`].
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadResp {

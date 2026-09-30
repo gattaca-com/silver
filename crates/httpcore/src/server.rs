@@ -179,7 +179,7 @@ impl ServerConnection {
             status,
             None,
             &[("Connection", "close")],
-            b"",
+            &[],
         );
         self.read_pos = 0;
         self.read_end = 0;
@@ -293,18 +293,19 @@ impl Default for ServerConnection {
 }
 
 pub fn frame_response(out: &mut Vec<u8>, status: &str, content_type: Option<&str>, body: &[u8]) {
-    frame_response_with_headers(out, status, content_type, &[], body);
+    frame_response_with_headers(out, status, content_type, &[], &[body]);
 }
 
 /// `headers` are emitted in the given order, after `Content-Type` and before
-/// `Content-Length`.
+/// `Content-Length`. The body is `parts`, sent in order.
 pub fn frame_response_with_headers(
     out: &mut Vec<u8>,
     status: &str,
     content_type: Option<&str>,
     headers: &[(&str, &str)],
-    body: &[u8],
+    parts: &[&[u8]],
 ) {
+    let body_len = parts.iter().map(|part| part.len()).sum::<usize>();
     write!(out, "HTTP/1.1 {status}\r\n").unwrap();
     if let Some(ct) = content_type {
         write!(out, "Content-Type: {ct}\r\n").unwrap();
@@ -312,8 +313,11 @@ pub fn frame_response_with_headers(
     for (name, value) in headers {
         write!(out, "{name}: {value}\r\n").unwrap();
     }
-    write!(out, "Content-Length: {}\r\n\r\n", body.len()).unwrap();
-    out.extend_from_slice(body);
+    write!(out, "Content-Length: {body_len}\r\n\r\n").unwrap();
+    out.reserve(body_len);
+    for part in parts {
+        out.extend_from_slice(part);
+    }
 }
 
 #[cfg(test)]
@@ -732,7 +736,7 @@ mod tests {
             "200 OK",
             Some("application/octet-stream"),
             &[("Eth-Consensus-Version", "fulu")],
-            b"\x01\x02",
+            &[b"\x01\x02"],
         );
         assert_eq!(
             out,
@@ -748,7 +752,7 @@ mod tests {
             "200 OK",
             None,
             &[("B-Header", "2"), ("A-Header", "1"), ("C-Header", "3")],
-            b"",
+            &[],
         );
         assert_eq!(
             out,
@@ -759,7 +763,9 @@ mod tests {
     #[test]
     fn no_extra_headers_frames_exactly_as_frame_response() {
         let mut with_headers = Vec::new();
-        frame_response_with_headers(&mut with_headers, "503 Service Unavailable", None, &[], b"x");
+        frame_response_with_headers(&mut with_headers, "503 Service Unavailable", None, &[], &[
+            b"x",
+        ]);
         let mut plain = Vec::new();
         frame_response(&mut plain, "503 Service Unavailable", None, b"x");
         assert_eq!(with_headers, plain);

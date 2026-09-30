@@ -29,10 +29,10 @@ use crate::{
     tile::{
         attestation_pool::AttestationPool,
         attestation_root_memo::AttestationRootMemo,
+        block_production::{BlockProduction, Proposal},
         fork_data_roots::ForkDataRoots,
         gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
-        payload_preparation::PayloadPreparations,
         precomputed_epochs::PrecomputedEpochs,
         proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
@@ -48,13 +48,13 @@ mod precomputed_epochs;
 // `pub` for the crate's `attestation_root_memo` criterion bench.
 pub mod attestation_root_memo;
 mod block;
+mod block_production;
 mod finalize;
 mod fork_choice;
 mod fork_data_roots;
 mod gossip;
 mod held_blocks;
 mod orphan_pool;
-mod payload_preparation;
 mod proposer_preparations;
 mod seen_aggregates;
 mod seen_validators;
@@ -159,7 +159,7 @@ pub struct BeaconStateTile {
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
     proposer_preparations: ProposerPreparations,
-    payload_preparations: PayloadPreparations,
+    block_production: BlockProduction,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
     seen_exits: SeenIndices,
@@ -249,7 +249,7 @@ impl BeaconStateTile {
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
             proposer_preparations: ProposerPreparations::default(),
-            payload_preparations: PayloadPreparations::default(),
+            block_production: BlockProduction::default(),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
             seen_exits: SeenIndices::new(val_cap),
@@ -746,7 +746,6 @@ impl BeaconStateTile {
         self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
-        self.payload_preparations.prune_before(slot);
         if slot.is_multiple_of(SLOTS_PER_EPOCH) {
             self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
         }
@@ -776,10 +775,8 @@ impl BeaconStateTile {
             EngineResp::Fcu(r) => {
                 self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
             }
-            // Proposal flow — silver doesn't propose yet, nothing requests
-            // payloads.
-            EngineResp::PreparePayload(r) => self.payload_preparations.on_response(r),
-            EngineResp::GetPayload(_) => {}
+            EngineResp::PreparePayload(r) => self.on_payload_prepared(r, producers),
+            EngineResp::GetPayload(r) => self.on_payload(r, producers),
             // EL-mempool blob fetch. Belongs to the storage tile (it owns
             // column validation/availability), not here; see the TODO at its
             // column-request path.
@@ -809,6 +806,7 @@ impl BeaconStateTile {
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
                 self.expire_orphans(slot, &mut adapter.producers);
+                self.block_production.prune_before(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();
                 let advanced = self.slot_tick(slot);
                 if advanced || self.fork_choice.find_head() != prev_head {
@@ -818,7 +816,8 @@ impl BeaconStateTile {
             TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
             TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
             TickEvent::PreparePayload(slot) => {
-                self.prepare_payload(slot + 1, &mut adapter.producers)
+                // Most slots have no registered proposer to prepare for.
+                let _ = self.prepare_payload(slot + 1, &mut adapter.producers);
             }
             TickEvent::None => {}
         }
@@ -845,10 +844,12 @@ impl BeaconStateTile {
             BeaconApiRequest::ProposerPreparations { preparations } => {
                 self.record_proposer_preparations(preparations)
             }
-            BeaconApiRequest::LocalGossip { .. } |
-            BeaconApiRequest::Block { .. } |
-            BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
-            BeaconApiRequest::SyncCommitteeSubscriptions { .. } => {}
+            BeaconApiRequest::ProduceBlock { request_id, slot, randao_reveal, graffiti } => {
+                let parent_root = self.head_block_root();
+                let proposal = Proposal { slot, parent_root, randao_reveal, graffiti };
+                self.produce_block(request_id, proposal, producers)
+            }
+            _ => {}
         });
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));

@@ -1,13 +1,13 @@
 use core::cmp::min;
 
-use silver_beacon_state_data::{SLOTS_PER_EPOCH, StateWriterView, Withdrawal};
+use silver_beacon_state_data::{PayloadWithdrawals, SLOTS_PER_EPOCH, StateWriterView, Withdrawal};
 
 use super::builders::{
     convert_builder_index_to_validator_index, convert_validator_index_to_builder_index,
     is_builder_index,
 };
 use crate::stf::{
-    PayloadWithdrawals, get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
+    get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
     update_next_withdrawal_index, update_next_withdrawal_validator_index,
 };
 

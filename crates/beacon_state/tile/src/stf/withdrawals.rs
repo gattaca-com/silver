@@ -1,8 +1,8 @@
-use core::{cmp::min, ops::Deref};
+use core::cmp::min;
 
 use silver_beacon_state_data::{
-    ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, SLOTS_PER_EPOCH, Slot, SpecConfig,
-    StateWriterView, Withdrawal,
+    ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, PayloadWithdrawals, SLOTS_PER_EPOCH, Slot,
+    SpecConfig, StateWriterView, Withdrawal,
 };
 use silver_common::ssz_view::{ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView};
 
@@ -16,31 +16,6 @@ use crate::{
 pub(crate) const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
 pub(crate) const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
 const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: usize = 8;
-
-#[derive(Clone, Copy)]
-pub(crate) struct PayloadWithdrawals {
-    items: [Withdrawal; MAX_WITHDRAWALS_PER_PAYLOAD],
-    len: usize,
-}
-
-impl PayloadWithdrawals {
-    pub(crate) fn new() -> Self {
-        Self { items: [Withdrawal::default(); MAX_WITHDRAWALS_PER_PAYLOAD], len: 0 }
-    }
-
-    pub(crate) fn push(&mut self, withdrawal: Withdrawal) {
-        self.items[self.len] = withdrawal;
-        self.len += 1;
-    }
-}
-
-impl Deref for PayloadWithdrawals {
-    type Target = [Withdrawal];
-
-    fn deref(&self) -> &[Withdrawal] {
-        &self.items[..self.len]
-    }
-}
 
 /// Validate header sanity then cache the execution payload header.
 /// No BLS sigs; everything happens in pass 2.

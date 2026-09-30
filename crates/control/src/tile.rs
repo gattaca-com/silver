@@ -516,7 +516,8 @@ impl Tile<SilverSpine> for Controller {
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |
             BeaconApiRequest::Block { .. } |
-            BeaconApiRequest::ProposerPreparations { .. } => {}
+            BeaconApiRequest::ProposerPreparations { .. } |
+            BeaconApiRequest::ProduceBlock { .. } => {}
         });
 
         self.slashing_protection.spin(
