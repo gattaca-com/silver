@@ -15,9 +15,16 @@ pub enum Kind {
     TileUtils = 5,
     Timings = 6,
     Instance = 7,
+    Chain = 8,
+    PeerP2p = 9,
+    PeerScores = 10,
+    PeerTopic = 11,
+    Stages = 12,
 }
 
 impl Kind {
+    pub const LAST: Kind = Kind::Stages;
+
     fn from_u16(v: u16) -> Option<Self> {
         Some(match v {
             1 => Kind::Sources,
@@ -27,6 +34,11 @@ impl Kind {
             5 => Kind::TileUtils,
             6 => Kind::Timings,
             7 => Kind::Instance,
+            8 => Kind::Chain,
+            9 => Kind::PeerP2p,
+            10 => Kind::PeerScores,
+            11 => Kind::PeerTopic,
+            12 => Kind::Stages,
             _ => return None,
         })
     }
@@ -34,7 +46,10 @@ impl Kind {
     /// Needed to interpret the other kinds. Re-sent periodically, so a relay
     /// can hold the latest of each for clients that join late.
     pub fn is_descriptor(self) -> bool {
-        matches!(self, Kind::Sources | Kind::SlotNames | Kind::BuildInfo | Kind::Instance)
+        matches!(
+            self,
+            Kind::Sources | Kind::SlotNames | Kind::BuildInfo | Kind::Instance | Kind::Chain
+        )
     }
 }
 

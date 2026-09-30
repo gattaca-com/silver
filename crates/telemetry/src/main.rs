@@ -28,7 +28,6 @@ mod node_meta;
 fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("telemetry", 10, None, false, None);
     let args = Args::parse();
-
     let collector = TraceCollector::attach_to_node(args)?;
 
     // Metrics off: this process shares the node's app name, so its own

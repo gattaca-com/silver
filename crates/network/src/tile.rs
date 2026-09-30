@@ -13,9 +13,9 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut, P2pSend,
-    PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound, SLOTS_PER_EPOCH, SilverSpine,
-    TCacheError,
+    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut,
+    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOutbound, SLOTS_PER_EPOCH,
+    SilverSpine, TCacheError,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -150,60 +150,62 @@ impl NetworkTile {
             });
         }
 
-        let mut on_event = |event| match event {
-            Event::P2pNet(net_event) => match net_event {
-                NetEvent::PeerConnected { peer, addr, local_dialler } => {
-                    let port = addr.port();
-                    adapter.produce(PeerEvent::P2pNewConnection {
-                        p2p_peer_id: peer.connection,
-                        peer_id_full: peer.peer_id,
-                        ip: addr.ip().into(),
-                        port,
-                        local_dial: local_dialler,
-                    });
-                }
-                NetEvent::PeerIdentify { peer, identify } => {
-                    adapter.produce(PeerEvent::P2pPeerIdentity { p2p_peer: peer, identify });
-                }
-                NetEvent::PeerDisconnected { peer } => {
-                    adapter.produce(PeerEvent::P2pDisconnect {
-                        p2p_peer: peer.connection,
-                        peer_id: peer.peer_id,
-                    });
-                }
-                NetEvent::StreamReady { stream: _ } => {
-                    // TODO notifiy new stream?
-                }
-                NetEvent::StreamClosed { stream } => {
-                    adapter.produce(PeerEvent::P2pStreamClosed { stream_id: stream });
-                }
-                NetEvent::RpcInbound(rpc_inbound) => {
-                    let stream_id = match &rpc_inbound {
-                        RpcInbound::Request(req) => req.stream_id,
-                        RpcInbound::Response(rsp) => rsp.stream_id,
-                    };
-                    silver_log::debug!(?stream_id, "network: incoming rpc");
-                    adapter.produce(rpc_inbound);
-                }
-                NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
-                    adapter.produce(PeerEvent::RpcMisbehaviour { p2p_peer, severity });
-                }
-                NetEvent::Gossip { stream, msg } => {
-                    adapter.produce(GossipMsgIn { p2p_id: stream, tcache: msg });
-                }
-                NetEvent::Cluster { stream: _, raft_id, msg } => {
-                    adapter.produce(ClusterIn::Msg(ClusterMsgIn { from: raft_id, data: msg }));
-                }
-            },
-            Event::Discovery(disc_event) => match disc_event {
-                DiscoveryEvent::NodeFound(enr) => {
-                    adapter.produce(PeerEvent::DiscNodeFound { enr, reload: false });
-                }
-                DiscoveryEvent::ExternalAddrChanged(socket_addr, seq) => {
-                    adapter.produce(PeerEvent::DiscExternalAddress { address: socket_addr, seq });
-                }
-                _ => {} // no-ops
-            },
+        let mut on_event = |event| {
+            adapter.set_ingestion_time(IngestionTime::now());
+            match event {
+                Event::P2pNet(net_event) => match net_event {
+                    NetEvent::PeerConnected { peer, addr, local_dialler } => {
+                        let port = addr.port();
+                        adapter.produce(PeerEvent::P2pNewConnection {
+                            p2p_peer_id: peer.connection,
+                            peer_id_full: peer.peer_id,
+                            ip: addr.ip().into(),
+                            port,
+                            local_dial: local_dialler,
+                        });
+                    }
+                    NetEvent::PeerIdentify { peer, identify } => {
+                        adapter.produce(PeerEvent::P2pPeerIdentity { p2p_peer: peer, identify });
+                    }
+                    NetEvent::PeerDisconnected { peer } => {
+                        adapter.produce(PeerEvent::P2pDisconnect {
+                            p2p_peer: peer.connection,
+                            peer_id: peer.peer_id,
+                        });
+                    }
+                    NetEvent::StreamReady { stream: _ } => {
+                        // TODO notifiy new stream?
+                    }
+                    NetEvent::StreamClosed { stream } => {
+                        adapter.produce(PeerEvent::P2pStreamClosed { stream_id: stream });
+                    }
+                    NetEvent::RpcInbound(rpc_inbound) => {
+                        adapter.produce(rpc_inbound);
+                    }
+                    NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
+                        adapter.produce(PeerEvent::RpcMisbehaviour { p2p_peer, severity });
+                    }
+                    NetEvent::Gossip { stream, msg } => {
+                        //let ts = adapter.producers.timestamp().
+                        // with_ingestion_t(IngestionTime::now()); let msg =
+                        // InternalMessage::new(ts, GossipMsgIn { p2p_id: stream, tcache: msg });
+                        adapter.produce(GossipMsgIn { p2p_id: stream, tcache: msg });
+                    }
+                    NetEvent::Cluster { stream: _, raft_id, msg } => {
+                        adapter.produce(ClusterIn::Msg(ClusterMsgIn { from: raft_id, data: msg }));
+                    }
+                },
+                Event::Discovery(disc_event) => match disc_event {
+                    DiscoveryEvent::NodeFound(enr) => {
+                        adapter.produce(PeerEvent::DiscNodeFound { enr, reload: false });
+                    }
+                    DiscoveryEvent::ExternalAddrChanged(socket_addr, seq) => {
+                        adapter
+                            .produce(PeerEvent::DiscExternalAddress { address: socket_addr, seq });
+                    }
+                    _ => {} // no-ops
+                },
+            }
         };
 
         self.inner.spin(&mut on_event);

@@ -9,6 +9,7 @@ members = [
   "crates/config",
   "crates/config/chain_spec",
   "crates/control",
+  "crates/dashboard",
   "crates/storage",
   "crates/discovery",
   "crates/e2e",
@@ -97,12 +98,12 @@ silver_observe_wire = { path = "crates/observe_wire" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "8bdd675a15ff4ac895d5665e790ff26dfe55b2c2"}
-flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "8bdd675a15ff4ac895d5665e790ff26dfe55b2c2"}
-flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "8bdd675a15ff4ac895d5665e790ff26dfe55b2c2"}
-flux-network = { git = "https://github.com/gattaca-com/flux", rev = "8bdd675a15ff4ac895d5665e790ff26dfe55b2c2"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "8bdd675a15ff4ac895d5665e790ff26dfe55b2c2", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "8bdd675a15ff4ac895d5665e790ff26dfe55b2c2"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
+flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
+flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
+flux-network = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
 
 # External
 backtrace = "0.3"

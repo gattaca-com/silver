@@ -83,7 +83,12 @@ impl TraceCollector {
             .map(|addr| ClickHouseTables::open(addr, &file_config.chain_config));
 
         let exporter = file_config.exporter.dashboard_addr()?.and_then(|addr| {
-            Exporter::open(addr, args.instance.clone().unwrap_or_else(NodeMeta::hostname)).ok()
+            Exporter::open(
+                addr,
+                args.instance.clone().unwrap_or_else(NodeMeta::hostname),
+                &file_config.chain_config,
+            )
+            .ok()
         });
 
         // Floored at a second: `round_to_interval` divides by the period.
