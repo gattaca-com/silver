@@ -515,8 +515,9 @@ impl BeaconStateTile {
         let epoch = slot / SLOTS_PER_EPOCH;
         let shuffling = {
             let view = self.state.read_view(parent);
-            self.shuffling_cache.ensure_window(&view, epoch);
-            self.shuffling_cache.build_ref(&view, epoch)
+            self.shuffling_cache
+                .for_block(&view, epoch)
+                .expect("epoch-start state covers block shufflings")
         };
         let mut fork = self.state.apply_block_view(parent);
         let mut votes = self.stf_scratch.votes.take();

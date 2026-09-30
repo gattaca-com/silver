@@ -7,8 +7,9 @@ use crate::{
     types::{B256, Epoch, SLOTS_PER_EPOCH, Slot},
 };
 
-/// Identifies an API shuffling by its epoch and attester-duty decision root.
-/// Blocks after that decision can share the same shuffling across branches.
+/// Identifies an attester shuffling by its epoch and attester-duty decision
+/// root. Blocks after that decision can share the same shuffling across
+/// branches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShufflingId {
     pub epoch: Epoch,

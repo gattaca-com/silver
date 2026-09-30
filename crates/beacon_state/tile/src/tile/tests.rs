@@ -318,7 +318,7 @@ fn arm_tile_state(
     );
 
     let view = tile.state.read_view(anchor);
-    tile.shuffling_cache.ensure_window(&view, start_slot / SLOTS_PER_EPOCH);
+    tile.shuffling_cache.for_block(&view, start_slot / SLOTS_PER_EPOCH).unwrap();
 }
 
 fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
@@ -2577,6 +2577,50 @@ fn attestation_weighs_its_block() {
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
+#[test]
+fn gossip_verification_resolves_shufflings_after_multiple_empty_epochs() {
+    let epoch = 3;
+    let first_slot = epoch * SLOTS_PER_EPOCH;
+    for aggregate in [false, true] {
+        let mut tile = make_tile_at_wall_slot(first_slot + SLOTS_PER_EPOCH - 1);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let canonical = tile.canonical_state_id();
+        let advanced = tile.epoch_start_state(canonical, first_slot);
+        let view = tile.state.read_view(advanced);
+        let mut indices = Vec::new();
+        let shuffling = stf::EpochShuffling::from_state(&view, epoch, &mut indices);
+        let (slot, ci, position, size) = (first_slot..first_slot + SLOTS_PER_EPOCH)
+            .find_map(|slot| {
+                (0..shuffling.committees_per_slot).find_map(|ci| {
+                    let committee = shuffling.committee(slot, ci);
+                    committee
+                        .iter()
+                        .position(|&vi| vi == 0)
+                        .map(|position| (slot, ci, position, committee.len()))
+                })
+            })
+            .unwrap();
+        let subnet =
+            (shuffling.committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64;
+        let imm = seed_immutable(&tile);
+        let root = tile.head_block_root();
+        assert_eq!(tile.slot_state_at(tile.canonical_state_id()).slot, 0);
+        let result = if aggregate {
+            let bytes = test_signing::sign_aggregate_and_proof(
+                0, 0, slot, epoch, root, root, ci, position, size, &imm,
+            );
+            tile.handle_aggregate_and_proof(&bytes)
+        } else {
+            let bytes = test_signing::sign_single_attestation(
+                0, 0, ci as u64, slot, root, epoch, root, &imm,
+            );
+            tile.handle_attestation(&bytes, subnet)
+        };
+        assert_eq!(result, Feedback::Accept, "aggregate={aggregate}");
+        assert_eq!(tile.canonical_state_id(), canonical, "verification does not replace the head");
+    }
+}
+
 /// Distinct payloads expose relays that substitute the protobuf handle for SSZ.
 /// The protobuf bytes are a placeholder; beacon-state forwards them without
 /// decoding.
@@ -4693,6 +4737,14 @@ fn shufflings_follow_head_selection_across_reorgs() {
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     assert!(posted(rig.drain()).is_empty(), "unchanged selection is already posted");
 
+    for branch in 10..20 {
+        let fork = rig.post_state(rig.anchor, [branch; 32], 70, [branch; 32], [branch; 32]);
+        let view = rig.tile.state.read_view(fork);
+        rig.tile.shuffling_cache.for_block(&view, 3).unwrap();
+    }
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty(), "eviction does not change the published selection");
+
     let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
     let fork = {
         let mut fork = rig.tile.state.apply_block_view(fork);
@@ -4701,7 +4753,7 @@ fn shufflings_follow_head_selection_across_reorgs() {
         fork.commit()
     };
     let view = rig.tile.state.read_view(fork);
-    rig.tile.shuffling_cache.ensure_window(&view, view.slot.current_epoch() + 1);
+    rig.tile.shuffling_cache.for_block(&view, view.slot.current_epoch() + 1).unwrap();
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     assert!(posted(rig.drain()).is_empty(), "computing a losing branch cannot replace API duties");
 

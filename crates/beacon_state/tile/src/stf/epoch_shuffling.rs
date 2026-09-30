@@ -11,10 +11,8 @@ use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed};
 pub struct EpochShuffling<'a> {
     shuffled: &'a [u32],
     pub committees_per_slot: usize,
-    /// Registry size the shuffle was taken against. Every index in `shuffled`
-    /// is below it, so one comparison against a later count proves the whole
-    /// shuffling is still addressable.
-    pub built_against: usize,
+    /// One past the largest shuffled validator index, or zero for an empty set.
+    pub required_validator_count: usize,
     /// One aggregate pubkey per beacon committee, indexed
     /// `slot_in_epoch * committees_per_slot + committee_index`; `None` until
     /// the aggregates have been precomputed for this epoch.
@@ -34,17 +32,17 @@ impl<'a> EpochShuffling<'a> {
         buf: &'a mut Vec<u32>,
     ) -> Self {
         let seed = Seed::from_randao(randao, epoch, DOMAIN_BEACON_ATTESTER);
-        let built_against = validators.count();
         validators.active_indices_into(epoch, buf);
+        let required_validator_count = buf.last().map_or(0, |&i| i as usize + 1);
         seed.shuffle(buf);
-        Self::new(buf, built_against)
+        Self::new(buf, required_validator_count)
     }
 
-    pub fn new(shuffled: &'a [u32], built_against: usize) -> Self {
+    pub fn new(shuffled: &'a [u32], required_validator_count: usize) -> Self {
         Self {
             shuffled,
             committees_per_slot: committees_per_slot(shuffled.len()),
-            built_against,
+            required_validator_count,
             committee_aggs: None,
         }
     }
@@ -54,11 +52,16 @@ impl<'a> EpochShuffling<'a> {
         shuffled: &'a [u32],
         committees_per_slot: usize,
     ) -> Self {
-        Self { shuffled, committees_per_slot, built_against: shuffled.len(), committee_aggs: None }
+        Self {
+            shuffled,
+            committees_per_slot,
+            required_validator_count: shuffled.iter().max().map_or(0, |&i| i as usize + 1),
+            committee_aggs: None,
+        }
     }
 
     pub fn indices_in_range(&self, validators_count: usize) -> bool {
-        self.built_against <= validators_count
+        self.required_validator_count <= validators_count
     }
 
     pub fn with_committee_aggs(self, committee_aggs: Option<&'a [PublicKey]>) -> Self {

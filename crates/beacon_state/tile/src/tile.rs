@@ -448,10 +448,8 @@ impl BeaconStateTile {
         // message, so no block or attestation pays a shuffle inline.
         let anchor_epoch = slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(anchor);
-        self.shuffling_cache.ensure_window(&view, anchor_epoch + 1);
-        self.shuffling_cache.ensure_window(&view, anchor_epoch);
-        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch + 1);
-        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch);
+        self.shuffling_cache.precompute(&view, anchor_epoch + 1);
+        self.shuffling_cache.precompute(&view, anchor_epoch);
         self.fork_choice.justified.precompute(trusted, view.validators);
     }
 
