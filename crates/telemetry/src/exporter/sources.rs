@@ -11,9 +11,9 @@ use flux::{
     tile::metrics::TileSample,
 };
 use hdrhistogram::Histogram;
+use silver_log::warn;
 use silver_observe::{CounterFile, CounterMap, discover, names_for};
 use silver_observe_wire::{Encoder, Source, SourceClass, TileUtil, TimingChannel, TimingStats};
-use silver_log::warn;
 
 /// Upper bound of the recorded range: a 60 s gap is far past any sane stage.
 const HIST_MAX_NS: u64 = 60_000_000_000;

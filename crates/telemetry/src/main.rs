@@ -21,8 +21,8 @@ mod collector;
 mod config;
 mod counter_deltas;
 mod counters;
-mod log_counts;
 mod exporter;
+mod log_counts;
 mod node_meta;
 
 fn main() -> Result<(), Box<dyn Error>> {
