@@ -393,8 +393,19 @@ impl SyncEngine {
                 self.on_block_rejected(block_root, source)
             }
             BeaconStateEvent::ReplayComplete => self.on_replay_complete(),
-            BeaconStateEvent::BlockReceived { slot, block_root, parent_slot, stage, .. } => {
-                self.on_block_received(slot, block_root, parent_slot, stage)
+            BeaconStateEvent::BlockReceived {
+                slot,
+                block_root,
+                parent_slot,
+                parent_empty,
+                stage,
+                ..
+            } => {
+                self.on_block_received(slot, block_root, parent_slot, stage);
+                if parent_empty && let Some(parent_slot) = parent_slot {
+                    self.window.envelope_covered(parent_slot);
+                    self.phase.note_report(DataKind::Envelope, parent_slot);
+                }
             }
             BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
                 self.on_envelope_covered(slot, block_root)

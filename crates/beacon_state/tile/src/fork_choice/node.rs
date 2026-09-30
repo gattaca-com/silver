@@ -73,7 +73,6 @@ impl Branch {
 #[derive(Clone, Copy)]
 pub struct NodeCheckpoints {
     pub justified: Checkpoint,
-    pub finalized: Checkpoint,
     pub unrealized_justified: Checkpoint,
 }
 

@@ -2,7 +2,9 @@ use flux::spine::SpineProducers;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, P2pStreamId, PeerEvent, RpcSeverity, SyncNeed,
-    TCacheRead, hex32, metrics::timed, ssz_view::SignedBeaconBlockView,
+    TCacheRead, hex32,
+    metrics::timed,
+    ssz_view::{ExecutionPayloadBidView, SignedBeaconBlockView},
 };
 
 use super::{
@@ -204,15 +206,23 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) {
         let parent_root = *SignedBeaconBlockView::parent_root(data);
+        let slot = SignedBeaconBlockView::slot(data);
+        let parent =
+            self.fork_choice.find_node_idx(&parent_root).map(|idx| self.fork_choice.node(idx));
+        let parent_empty = parent.is_some_and(|parent| {
+            self.spec.is_gloas_at_slot(slot) &&
+                SignedBeaconBlockView::check_gloas_size(data) &&
+                *ExecutionPayloadBidView::parent_block_hash(SignedBeaconBlockView::gloas_bid(
+                    data,
+                )) != parent.payload.bid_block_hash
+        });
         producers.produce(BeaconStateEvent::BlockReceived {
-            slot: SignedBeaconBlockView::slot(data),
+            slot,
             block_root,
             stage,
             source,
-            parent_slot: self
-                .fork_choice
-                .find_node_idx(&parent_root)
-                .map(|idx| self.fork_choice.node(idx).slot),
+            parent_slot: parent.map(|parent| parent.slot),
+            parent_empty,
         });
     }
 

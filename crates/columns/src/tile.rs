@@ -1283,6 +1283,7 @@ mod tests {
             stage,
             source: BlockSource::Rpc,
             parent_slot: None,
+            parent_empty: false,
         }
     }
 

@@ -62,7 +62,6 @@ fn block(
         parent_root,
         execution_block_hash: [0u8; 32],
         justified: jus,
-        finalized: fin,
         unrealized_justified: jus,
         unrealized_finalized: fin,
         state_id: test_state_id(),
