@@ -24,7 +24,7 @@ reason about and faster to run.
   balances, participation, …), each a finalized base + a ring of per-fork deltas.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
   touching state storage. Other refs: `docs/perf-regression-test.md`,
-  `docs/p2p-ladder-diagrams.md`.
+  `docs/p2p-ladder-diagrams.md`, `docs/telemetry-counters.md` (investigating node errors).
 
 ## Build / test / lint
 

@@ -129,6 +129,9 @@ impl TraceCollector {
         }
         next.filter_short_frames(self.filter_short_frames);
         info!(was = self.reader.pid(), pid = next.pid(), "following the next node");
+        if let Some(clickhouse) = &mut self.clickhouse {
+            clickhouse.node_restarted();
+        }
         self.reader = next;
         self.detached = false;
     }

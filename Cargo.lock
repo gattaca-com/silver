@@ -3221,6 +3221,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "linkme"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3045e122bd98aef8ec3ad58ce84f0791f64e70163d1a02710af4aa11a4d54cc5"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77060ebe535362c3da75682cd17b0431017b6e7c5661e714fc69a7ad017d1301"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4842,6 +4862,7 @@ dependencies = [
  "silver_discovery",
  "silver_gossip",
  "silver_httpcore",
+ "silver_log",
  "silver_network",
  "silver_peer",
  "silver_storage",
@@ -5150,6 +5171,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_log"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "linkme",
+ "silver_metrics",
+ "tracing",
+]
+
+[[package]]
 name = "silver_metrics"
 version = "0.0.1"
 dependencies = [
@@ -5298,6 +5329,7 @@ dependencies = [
  "serde_json",
  "silver_common",
  "silver_config",
+ "silver_log",
  "silver_stages",
  "tempfile",
  "toml",

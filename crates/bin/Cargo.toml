@@ -15,6 +15,7 @@ silver_config.workspace = true
 silver_control.workspace = true
 silver_discovery.workspace = true
 silver_gossip.workspace = true
+silver_log.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
 silver_storage.workspace = true
