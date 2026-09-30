@@ -9,28 +9,24 @@ use silver_beacon_state_data::{
     ValidatorsView, ValidatorsWriteView, Withdrawals,
 };
 use silver_common::ssz_view::{
-    CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_CONTRACT_TREE_DEPTH,
-    DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
+    CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_REQUEST_SIZE, DepositRequestView,
     SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBlsToExecutionChangeView,
     SignedVoluntaryExitView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
 };
 
 use crate::{
     bls::{self, SigBatch},
-    error::{BlsToExecutionChangeError, Error, Result, VoluntaryExitError},
-    merkle, ssz_hash,
+    error::{BlsToExecutionChangeError, Result, VoluntaryExitError},
+    ssz_hash,
     stf::{
         MIN_ACTIVATION_BALANCE, compute_consolidation_epoch_and_update_churn,
         compute_exit_epoch_and_update_churn, get_consolidation_churn_limit,
         get_pending_balance_to_withdraw, initiate_validator_exit, is_active,
-        is_valid_deposit_signature,
     },
     validate,
 };
 
 const FULL_EXIT_REQUEST_AMOUNT: u64 = 0;
-
-const UNSET_DEPOSIT_REQUESTS_START_INDEX: u64 = u64::MAX;
 
 const COMPOUNDING_WITHDRAWAL_PREFIX: u8 = 0x02;
 
@@ -154,11 +150,6 @@ pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
         let credentials = Withdrawals(*DepositRequestView::withdrawal_credentials(d));
         let amount = DepositRequestView::amount(d);
         let signature = *DepositRequestView::signature(d);
-        let index = DepositRequestView::index(d);
-
-        if slot.state().deposit_requests_start_index == UNSET_DEPOSIT_REQUESTS_START_INDEX {
-            slot.state_mut().deposit_requests_start_index = index;
-        }
 
         pending.deposits.push(PendingDeposit {
             pubkey,
@@ -358,46 +349,6 @@ fn process_consolidation_request(
     });
 }
 
-/// Spec: process_deposit. Verify each Deposit's 33-level Merkle branch
-/// against `state.eth1_data.deposit_root` at leaf index
-/// `state.eth1_deposit_index` before queueing. A bad proof fails the block.
-#[timed]
-pub fn process_deposits(view: &mut StateWriterView, data: &[u8]) -> Result<()> {
-    let count = data.len() / DEPOSIT_SIZE;
-
-    for i in 0..count {
-        let d: &[u8; DEPOSIT_SIZE] =
-            data[i * DEPOSIT_SIZE..(i + 1) * DEPOSIT_SIZE].try_into().unwrap();
-        let dd = DepositView::data(d);
-        let proof = DepositView::proof(d);
-        let leaf = ssz_hash::hash_tree_root_deposit_data(dd);
-        let deposit_index = view.slot.state().eth1_deposit_index;
-        let deposit_root = view.slot.state().eth1_data.deposit_root;
-        if !merkle::is_valid_merkle_branch(
-            &leaf,
-            proof,
-            (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1,
-            deposit_index,
-            &deposit_root,
-        ) {
-            return Err(Error::InvalidDepositProof { index: deposit_index });
-        }
-
-        let pubkey = DepositDataView::pubkey(dd);
-        let credentials = Withdrawals(*DepositDataView::withdrawal_credentials(dd));
-        let amount = DepositDataView::amount(dd);
-        let signature = *DepositDataView::signature(dd);
-
-        if let Err(e) = apply_deposit(view, pubkey, &credentials, amount, &signature) {
-            if e.is_fatal() {
-                return Err(e);
-            }
-        }
-        view.slot.state_mut().eth1_deposit_index += 1;
-    }
-    Ok(())
-}
-
 /// Pass 1 — push bls_to_execution_change sigs. Signer is the validator's
 /// BLS withdrawal key (the `from_bls_pubkey` in the message itself) — not
 /// the signing key cached on `ValidatorsState` (`pubkey_decompressed`), so we
@@ -505,155 +456,5 @@ fn switch_to_compounding_validator(
             signature: G2_POINT_AT_INFINITY,
             slot: 0, // GENESIS_SLOT
         });
-    }
-}
-
-/// Apply a single deposit: for new validators, BLS-verify then
-/// `append_validator`. Always queue a `PendingDeposit` for the amount. Spec
-/// defaults for new validator columns (FAR_FUTURE_EPOCH for epoch fields, 0 for
-/// counters, false for slashed) come from the view layer's `appended_default` —
-/// no explicit edits required. Returns `SkipDepositBadSig` when BLS fails for
-/// a new validator (per spec: drop deposit, continue block).
-fn apply_deposit(
-    view: &mut StateWriterView,
-    pubkey: &[u8; 48],
-    credentials: &Withdrawals,
-    amount: u64,
-    signature: &[u8; 96],
-) -> Result<()> {
-    let existing = view.validators.find_by_pubkey(pubkey);
-    if existing.is_none() {
-        if !is_valid_deposit_signature(pubkey, credentials, amount, signature) {
-            return Err(Error::SkipDepositBadSig { index: view.slot.state().eth1_deposit_index });
-        }
-        let pubkey_decompressed = PublicKey::from_bytes(pubkey).unwrap_or_default();
-        view.append_validator(*pubkey, pubkey_decompressed, *credentials);
-    }
-
-    view.pending.deposits.push(PendingDeposit {
-        pubkey: *pubkey,
-        withdrawal_credentials: *credentials,
-        amount,
-        signature: *signature,
-        slot: 0, // GENESIS_SLOT — Eth1 bridge deposit.
-    });
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use silver_beacon_state_data::{B256, EpochStateFinalized, Eth1Data, StateWriterView};
-    use silver_common::ssz_view::{DEPOSIT_CONTRACT_TREE_DEPTH, DEPOSIT_SIZE};
-
-    use super::*;
-    use crate::{
-        error::{Error, Result},
-        merkle, ssz_hash,
-        test_state::TestState,
-    };
-
-    fn fresh_state() -> TestState {
-        // Empty registry; slot tier anchored at the empty base's slot (0).
-        TestState::new(EpochStateFinalized::default(), &[])
-    }
-
-    /// Build a single-deposit body element (1240 B) with a zero-subtree proof
-    /// for leaf index 0 (siblings = zh[0..33]). Returns (deposit_bytes,
-    /// expected_root) where `expected_root` is what
-    /// `state.eth1_data.deposit_root` must be for the proof to verify.
-    fn build_deposit_at_index0(dd_bytes: &[u8; 184]) -> (Vec<u8>, B256) {
-        let depth = (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1;
-        let mut bytes = vec![0u8; DEPOSIT_SIZE];
-        for i in 0..depth as usize {
-            bytes[i * 32..(i + 1) * 32].copy_from_slice(&merkle::ZERO_HASHES[i]);
-        }
-        bytes[1056..1240].copy_from_slice(dd_bytes);
-
-        // Expected root: start from the deposit-data leaf, climb the all-zero
-        // siblings on the right.
-        let leaf = ssz_hash::hash_tree_root_deposit_data(dd_bytes);
-        let mut value = leaf;
-        for i in 0..depth as usize {
-            let sib = merkle::ZERO_HASHES[i];
-            // index=0 → always left, sibling on the right.
-            let mut buf = [0u8; 64];
-            buf[..32].copy_from_slice(&value);
-            buf[32..].copy_from_slice(&sib);
-            value = merkle::sha256(&buf);
-        }
-        (bytes, value)
-    }
-
-    fn deposit_into(view: &mut StateWriterView, deposit: &[u8]) -> Result<()> {
-        process_deposits(view, deposit)
-    }
-
-    fn make_dd() -> [u8; 184] {
-        let mut dd = [0u8; 184];
-        dd[0] = 0xAB;
-        dd[48] = 0x01;
-        dd[80..88].copy_from_slice(&32_000_000_000u64.to_le_bytes());
-        dd[88] = 0xCD;
-        dd
-    }
-
-    #[test]
-    fn process_deposits_accepts_valid_proof() {
-        let dd = make_dd();
-        let (deposit, root) = build_deposit_at_index0(&dd);
-
-        let mut st = fresh_state();
-        let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
-        // eth1_deposit_index defaults to 0.
-
-        deposit_into(&mut view, &deposit).expect("valid proof must accept");
-        assert_eq!(view.slot.state().eth1_deposit_index, 1);
-    }
-
-    #[test]
-    fn process_deposits_rejects_bad_proof() {
-        let dd = make_dd();
-        let (mut deposit, root) = build_deposit_at_index0(&dd);
-
-        deposit[0] ^= 0x01;
-
-        let mut st = fresh_state();
-        let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
-
-        let err = deposit_into(&mut view, &deposit).unwrap_err();
-        assert!(err.is_fatal());
-        assert!(matches!(err, Error::InvalidDepositProof { index: 0 }));
-        assert_eq!(view.slot.state().eth1_deposit_index, 0, "index must not advance on rejection");
-    }
-
-    #[test]
-    fn process_deposits_rejects_wrong_root() {
-        let dd = make_dd();
-        let (deposit, mut root) = build_deposit_at_index0(&dd);
-        root[0] ^= 0xFF;
-
-        let mut st = fresh_state();
-        let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
-
-        let err = deposit_into(&mut view, &deposit).unwrap_err();
-        assert!(matches!(err, Error::InvalidDepositProof { .. }));
-    }
-
-    #[test]
-    fn process_deposits_rejects_wrong_index() {
-        let dd = make_dd();
-        let (deposit, root) = build_deposit_at_index0(&dd);
-
-        let mut st = fresh_state();
-        let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
-        // Proof was built for index 0; claim index 1 instead → must fail.
-        view.slot.state_mut().eth1_deposit_index += 1;
-
-        let err = deposit_into(&mut view, &deposit).unwrap_err();
-        assert!(matches!(err, Error::InvalidDepositProof { index: 1 }));
     }
 }

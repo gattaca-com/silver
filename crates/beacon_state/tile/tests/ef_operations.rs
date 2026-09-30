@@ -253,13 +253,6 @@ fn gloas_attestation() {
 }
 
 #[test]
-fn fulu_deposit() {
-    operations_handler("deposit", "deposit", true, move |s, op| {
-        s.with_view(|view| stf::process_deposits(view, op).is_ok())
-    });
-}
-
-#[test]
 fn fulu_voluntary_exit() {
     operations_handler("voluntary_exit", "voluntary_exit", true, move |s, op| {
         let mut batch = SigBatch::new();

@@ -23,8 +23,8 @@ use crate::{
         collect_sigs_bls_to_execution_changes, collect_sigs_execution_payload_bid,
         collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
         gloas::collect_sigs_payload_attestations, process_attestations, process_attester_slashings,
-        process_bls_to_execution_changes, process_deposits, process_epoch,
-        process_execution_payload, process_execution_payload_bid, process_execution_requests,
+        process_bls_to_execution_changes, process_epoch, process_execution_payload,
+        process_execution_payload_bid, process_execution_requests,
         process_parent_execution_payload, process_payload_attestations, process_proposer_slashings,
         process_sync_aggregate, process_voluntary_exits, process_withdrawals_fulu,
         process_withdrawals_gloas, upgrade_to_gloas,
@@ -522,10 +522,6 @@ fn apply_block_body(
             &mut out.votes,
             scratch,
         )?;
-    }
-
-    if !is_gloas && let Some(section) = offsets.deposits() {
-        process_deposits(&mut *view, section)?;
     }
 
     if let Some(section) = offsets.voluntary_exits() {

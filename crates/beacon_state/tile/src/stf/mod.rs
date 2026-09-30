@@ -36,7 +36,7 @@ pub(crate) use operations::process_execution_requests;
 pub use operations::{
     collect_sigs_bls_to_execution_changes, collect_sigs_voluntary_exits,
     process_bls_to_execution_changes, process_consolidation_requests, process_deposit_requests,
-    process_deposits, process_voluntary_exits, process_withdrawal_requests,
+    process_voluntary_exits, process_withdrawal_requests,
 };
 pub(crate) use slashings::signing_root_for_block_header;
 pub use slashings::{
