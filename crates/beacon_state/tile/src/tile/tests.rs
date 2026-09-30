@@ -7,7 +7,7 @@ use silver_beacon_state_data::{
     BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
     Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
+    SYNC_COMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 use silver_common::{
     BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
@@ -4667,39 +4667,94 @@ fn assert_non_block_relay(
     assert_eq!(relays, [(topic, msg_seq)], "the relay names the message's own decompressed bytes");
 }
 
-/// Each computed shuffling is posted once: the first post carries the epochs
-/// the precompute filled, and a second post carries nothing.
+/// Publication follows the selected head, even when a reorg restores a
+/// previously posted branch. Computing a losing branch must not publish it.
 #[test]
-fn fresh_shufflings_are_posted_once() {
+fn shufflings_follow_head_selection_across_reorgs() {
     let mut rig = HeadRig::new();
-    let posted = |producer: &TProducer, published: Published| -> Vec<(Epoch, usize)> {
-        published
+    let posted = |published: Published| {
+        let mut ids = published
             .0
-            .iter()
+            .into_iter()
             .filter_map(|event| match event {
-                BeaconStateEvent::AttestersShuffling { epoch, indices } => {
-                    Some((*epoch, producer.read_buffer(*indices).unwrap().len()))
-                }
+                BeaconStateEvent::AttestersShuffling { id, .. } => Some(id),
                 _ => None,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| id.epoch);
+        ids
     };
+    let selected_ids = |tile: &BeaconStateTile| {
+        let view = tile.state.read_view(tile.last_applied);
+        let epoch = view.slot.current_epoch();
+        [epoch, epoch + 1].map(|epoch| ShufflingId::from_state(&view, epoch).unwrap())
+    };
+    let original = selected_ids(&rig.tile);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty(), "unchanged selection is already posted");
 
-    rig.tile.precompute_next_epoch_shuffling(4);
+    let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
+    let fork = {
+        let mut fork = rig.tile.state.apply_block_view(fork);
+        fork.view.randao_mixes.mix_in_reveal(0, &[0xBB; 32]);
+        fork.view.randao_mixes.mix_in_reveal(1, &[0xCC; 32]);
+        fork.commit()
+    };
+    let view = rig.tile.state.read_view(fork);
+    rig.tile.shuffling_cache.ensure_window(&view, view.slot.current_epoch() + 1);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty(), "computing a losing branch cannot replace API duties");
+
+    rig.tile.last_applied = fork;
+    let fork_ids = selected_ids(&rig.tile);
+    assert_ne!(original, fork_ids, "fixture has different decision roots");
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert_eq!(posted(rig.drain()), fork_ids);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty());
+
+    rig.tile.last_applied = rig.anchor;
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert_eq!(posted(rig.drain()), original, "restored branch must be reposted");
+}
+
+/// A matching RANDAO mix alone does not identify the active validator set.
+#[test]
+fn published_shuffling_uses_the_selected_branches_active_set() {
+    let mut rig = HeadRig::new();
+    let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
+    let fork = {
+        let mut fork = rig.tile.state.apply_block_view(fork);
+        fork.view.validators.set_exit_epoch(7, 2);
+        fork.commit()
+    };
+    let original = rig.tile.state.read_view(rig.anchor);
+    let selected = rig.tile.state.read_view(fork);
+    for epoch in [2, 3] {
+        assert_eq!(original.randao_mixes.seed_mix(epoch), selected.randao_mixes.seed_mix(epoch));
+    }
+    rig.tile.last_applied = fork;
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     let published = rig.drain();
-    let mut posted_now = posted(&rig.tile.events_producer, published);
-    posted_now.sort_unstable();
-    let expected: Vec<_> = [4, 5]
-        .into_iter()
-        .map(|epoch| (epoch, rig.tile.shuffling_cache.shuffled_by_epoch(epoch).unwrap().len() * 4))
-        .collect();
-    assert_eq!(posted_now, expected);
-
-    rig.tile.precompute_next_epoch_shuffling(4);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
-    let published = rig.drain();
-    assert_eq!(posted(&rig.tile.events_producer, published), []);
+    let mut epochs = Vec::new();
+    for event in published.0 {
+        if let BeaconStateEvent::AttestersShuffling { id, indices } = event {
+            epochs.push(id.epoch);
+            let bytes = rig.tile.events_producer.read_buffer(indices).unwrap();
+            let mut validators = bytes
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            validators.sort_unstable();
+            assert_eq!(
+                validators,
+                (0..7).collect::<Vec<_>>(),
+                "exited validator must not have duties"
+            );
+        }
+    }
+    epochs.sort_unstable();
+    assert_eq!(epochs, [2, 3]);
 }
 
 fn register_proposer(tile: &mut BeaconStateTile, validator_index: u64, fee_recipient: [u8; 20]) {

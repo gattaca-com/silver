@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, StateReadView};
+use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
 use silver_common::{BeaconStateEvent, TProducer};
 
 use crate::{
@@ -15,6 +15,10 @@ const MAX_SHUFFLING_CACHE: usize = 6;
 pub struct ShufflingCache {
     entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
     aggregator: bls::PubkeyAggregator,
+    // Keep publication provenance out of the entries scanned by verification.
+    computed_ids: [Option<ShufflingId>; MAX_SHUFFLING_CACHE],
+    posted: [Option<ShufflingId>; 2],
+    publication_indices: Vec<u32>,
 }
 
 struct ShufflingEntry {
@@ -24,7 +28,6 @@ struct ShufflingEntry {
     built_against: usize,
     committee_aggs: Vec<PublicKey>,
     is_valid: bool,
-    posted: bool,
 }
 
 impl ShufflingEntry {
@@ -54,7 +57,6 @@ impl ShufflingEntry {
         self.mix = mix;
         self.built_against = view.validators.count();
         self.is_valid = true;
-        self.posted = false;
     }
 
     /// No-op once filled, or while the entry holds no shuffling.
@@ -95,6 +97,9 @@ impl ShufflingCache {
     pub fn with_capacity(capacity: usize) -> Box<Self> {
         Box::new(Self {
             aggregator: bls::PubkeyAggregator::default(),
+            computed_ids: [None; MAX_SHUFFLING_CACHE],
+            posted: [None; 2],
+            publication_indices: Vec::new(),
             entries: std::array::from_fn(|_| ShufflingEntry {
                 epoch: 0,
                 mix: [0u8; 32],
@@ -102,28 +107,44 @@ impl ShufflingCache {
                 built_against: 0,
                 committee_aggs: Vec::new(),
                 is_valid: false,
-                posted: false,
             }),
         })
     }
 
-    /// Posts each shuffling computed since the last call and remembers it as
-    /// posted. Epochs below `from_epoch` are dropped unposted: they serve
-    /// attestation validation only.
+    /// Publish the head's current and next shufflings. Remember the last
+    /// identity sent for each epoch so restoring a branch republishes its
+    /// shuffling.
     pub fn post_fresh(
         &mut self,
-        from_epoch: Epoch,
+        view: &StateReadView,
         producer: &mut TProducer,
         mut emit: impl FnMut(BeaconStateEvent),
     ) -> bool {
+        let epoch = view.slot.current_epoch();
         let mut any_posted = false;
-        for entry in self.entries.iter_mut().filter(|e| e.is_valid && !e.posted) {
-            if entry.epoch < from_epoch {
-                entry.posted = true;
+        for epoch in [epoch, epoch + 1] {
+            let id = ShufflingId::from_state(view, epoch)
+                .expect("head shuffling decision is in state history");
+            let slot = (epoch % 2) as usize;
+            if self.posted[slot] == Some(id) {
                 continue;
             }
-            entry.posted = entry.shuffling().post(entry.epoch, producer, &mut emit);
-            any_posted |= entry.posted;
+            self.ensure(view, epoch);
+            let mix = Self::mix(view, epoch);
+            let index = self
+                .entries
+                .iter()
+                .position(|e| e.is_valid_for(epoch, mix))
+                .expect("ensure cached head shuffling");
+            let shuffling = if self.computed_ids[index] == Some(id) {
+                self.entries[index].shuffling()
+            } else {
+                stf::EpochShuffling::from_state(view, epoch, &mut self.publication_indices)
+            };
+            if shuffling.post(id, producer, &mut emit) {
+                self.posted[slot] = Some(id);
+                any_posted = true;
+            }
         }
         any_posted
     }
@@ -158,6 +179,7 @@ impl ShufflingCache {
     fn compute_and_cache(&mut self, view: &StateReadView, epoch: Epoch, mix: B256) {
         let slot = self.find_slot(epoch);
         self.entries[slot].make_valid_for(view, epoch, mix);
+        self.computed_ids[slot] = ShufflingId::from_state(view, epoch);
     }
 
     /// Real work at most once per cached `(epoch, mix)` — ~150ns per active

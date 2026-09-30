@@ -663,9 +663,9 @@ impl BeaconStateTile {
     }
 
     fn post_shufflings(&mut self, producers: &mut Producers) {
-        let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
+        let view = self.state.read_view(self.last_applied);
         let producer = &mut self.events_producer;
-        self.shuffling_cache.post_fresh(head_epoch, producer, |event| producers.produce(event));
+        self.shuffling_cache.post_fresh(&view, producer, |event| producers.produce(event));
     }
 
     /// Covers changes since the last Status, including execution verdicts.

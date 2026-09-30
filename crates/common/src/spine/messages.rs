@@ -7,6 +7,7 @@ use std::{
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
     B256, ExecutionAddress, PayloadWithdrawals, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
+    ShufflingId,
 };
 
 use crate::{
@@ -1159,7 +1160,7 @@ pub enum BeaconStateEvent {
         block_root: [u8; 32],
     },
     AttestersShuffling {
-        epoch: u64,
+        id: ShufflingId,
         indices: TCacheRead,
     },
     BlockReceived {

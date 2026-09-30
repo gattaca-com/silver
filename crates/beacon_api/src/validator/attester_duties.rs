@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{
-    BLSPubkey, Epoch, SLOTS_PER_EPOCH, Slot, StateReadView, committee_at_position,
+    BLSPubkey, Epoch, SLOTS_PER_EPOCH, ShufflingId, Slot, StateReadView, committee_at_position,
     committees_per_slot,
 };
 
@@ -19,37 +19,38 @@ pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
     let Some(indices) = requested_indices(req, resp) else {
         return;
     };
-    let state_epoch = ctx.read_state(|view| view.slot.current_epoch());
-    if epoch < state_epoch || epoch > state_epoch + 1 {
-        resp.error(400, "attester duties cover the head state's epoch and the one after it");
-        return;
-    }
-    let Some(shuffling) = ctx.shufflings.get(epoch) else {
-        resp.error(503, "the head state's shuffling for this epoch has not been posted");
-        return;
-    };
-
-    let head_root = ctx.node_status.head_root;
-    let execution_optimistic = ctx.node_status.execution_optimistic();
-    resp.json_body(|json| {
+    let result = resp.try_json_body(|json| {
         ctx.read_state(|view| {
             json.restart();
-            let state_slot = view.slot.state().slot;
-            let dependent = view.block_roots.duty_dependent_root(
-                epoch.saturating_sub(1),
-                head_root,
-                state_slot,
-            );
-            debug_assert!(dependent.is_some(), "a posted shuffling decides inside the ring");
+            let state_epoch = view.slot.current_epoch();
+            if epoch < state_epoch || epoch > state_epoch + 1 {
+                return Err((
+                    400,
+                    "attester duties cover the head state's epoch and the one after it",
+                ));
+            }
+            if view.slot.state().latest_block_root != ctx.node_status.head_root {
+                return Err((503, "the head is changing"));
+            }
+            let Some(id) = ShufflingId::from_state(&view, epoch) else {
+                return Err((503, "the shuffling's dependent root is unavailable"));
+            };
+            let Some(shuffling) = ctx.shufflings.get(id) else {
+                return Err((503, "the head state's shuffling for this epoch has not been posted"));
+            };
             json.attester_duties(
-                dependent.unwrap_or(head_root),
-                execution_optimistic,
+                id.dependent_root,
+                ctx.node_status.execution_optimistic(),
                 indices.iter().filter_map(|&validator_index| {
                     AttesterDuty::read(&view, shuffling, epoch, validator_index)
                 }),
             );
-        });
+            Ok(())
+        })
     });
+    if let Err((code, message)) = result {
+        resp.error(code, message);
+    }
 }
 
 #[derive(Default)]
@@ -61,7 +62,7 @@ const NOT_ACTIVE: u32 = u32::MAX;
 
 #[derive(Default)]
 struct Shuffling {
-    epoch: Option<Epoch>,
+    id: Option<ShufflingId>,
     shuffled_len: usize,
     /// Position in the shuffled active set per validator index; empty until
     /// posted.
@@ -69,36 +70,40 @@ struct Shuffling {
 }
 
 impl PostedShufflings {
-    pub(crate) fn record(&mut self, epoch: Epoch, bytes: &[u8]) {
+    pub(crate) fn record(&mut self, id: ShufflingId, bytes: &[u8]) {
         if bytes.len() < size_of::<u32>() {
-            silver_log::error!(epoch, "shuffling posted with no active validators");
+            silver_log::error!(epoch = id.epoch, "shuffling posted with no active validators");
             return;
         }
-        self.entry_for(epoch).fill(epoch, bytes);
+        self.entry_for(id.epoch).fill(id, bytes);
     }
 
     fn entry_for(&mut self, epoch: Epoch) -> &mut Shuffling {
-        let held = self.entries.iter().position(|entry| entry.epoch == Some(epoch));
+        let held =
+            self.entries.iter().position(|entry| entry.id.is_some_and(|id| id.epoch == epoch));
         let oldest = || {
             let (index, _) = self
                 .entries
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, entry)| entry.epoch)
+                .min_by_key(|(_, entry)| entry.id.map(|id| id.epoch))
                 .expect("three entries");
             index
         };
         &mut self.entries[held.unwrap_or_else(oldest)]
     }
 
-    pub(crate) fn committees_per_slot(&self, epoch: Epoch) -> Option<u64> {
-        self.get(epoch).map(|shuffling| committees_per_slot(shuffling.shuffled_len) as u64)
+    pub(crate) fn committees_per_slot(
+        &self,
+        view: &StateReadView<'_>,
+        epoch: Epoch,
+    ) -> Option<u64> {
+        self.get(ShufflingId::from_state(view, epoch)?)
+            .map(|shuffling| committees_per_slot(shuffling.shuffled_len) as u64)
     }
 
-    fn get(&self, epoch: Epoch) -> Option<&Shuffling> {
-        self.entries
-            .iter()
-            .find(|entry| entry.epoch == Some(epoch) && !entry.position_of.is_empty())
+    fn get(&self, id: ShufflingId) -> Option<&Shuffling> {
+        self.entries.iter().find(|entry| entry.id == Some(id) && !entry.position_of.is_empty())
     }
 }
 
@@ -110,8 +115,8 @@ fn posted_indices(bytes: &[u8]) -> impl Iterator<Item = u32> {
 
 impl Shuffling {
     /// Replaces whatever this entry held, reusing the table's allocation.
-    fn fill(&mut self, epoch: Epoch, bytes: &[u8]) {
-        self.epoch = Some(epoch);
+    fn fill(&mut self, id: ShufflingId, bytes: &[u8]) {
+        self.id = Some(id);
         self.shuffled_len = bytes.len() / size_of::<u32>();
         self.fill_positions(bytes);
     }
@@ -175,7 +180,7 @@ impl AttesterDuty {
 mod tests {
     use silver_beacon_state_data::{
         BeaconBlockHeader, BeaconState, BeaconStateOwner, EpochStateFinalized, SlotState,
-        SlotStateFinalized, SlotStateGroup, SpecConfig, ValSeed, committee_range,
+        SlotStateFinalized, SlotStateGroup, SpecConfig, StateId, ValSeed, committee_range,
     };
     use silver_common::SyncUpdate;
 
@@ -199,6 +204,10 @@ mod tests {
         (0..ACTIVE as u32).rev().map(|i| (i + epoch as u32) % ACTIVE as u32).collect()
     }
 
+    fn test_id(epoch: u64) -> ShufflingId {
+        ShufflingId { epoch, dependent_root: [0; 32] }
+    }
+
     fn posted_bytes(epoch: u64) -> Vec<u8> {
         posted_order(epoch).iter().flat_map(|i| i.to_le_bytes()).collect()
     }
@@ -206,6 +215,10 @@ mod tests {
     /// `ACTIVE` validators plus one the request may name that no committee
     /// holds, with the shufflings of the state's epoch and the next posted.
     fn ctx() -> ApiCtx {
+        ctx_with_owner().0
+    }
+
+    fn ctx_with_owner() -> (ApiCtx, BeaconStateOwner, StateId) {
         let seeds: Vec<_> =
             (0..=ACTIVE).map(|i| ValSeed { pubkey: pubkey(i), ..ValSeed::default() }).collect();
         let mut state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, STATE_SLOT);
@@ -222,9 +235,10 @@ mod tests {
         let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status.target = Some(SyncUpdate::Following);
         for epoch in [STATE_EPOCH, STATE_EPOCH + 1] {
-            ctx.shufflings.record(epoch, &posted_bytes(epoch));
+            let id = ctx.read_state(|view| ShufflingId::from_state(&view, epoch).unwrap());
+            ctx.shufflings.record(id, &posted_bytes(epoch));
         }
-        ctx
+        (ctx, owner, anchor)
     }
 
     fn post(ctx: &ApiCtx, epoch: &str, body: &str) -> Vec<u8> {
@@ -308,6 +322,47 @@ mod tests {
         assert_eq!(status_code(&post(&ctx, &STATE_EPOCH.to_string(), "[\"0\"]")), "503");
     }
 
+    #[test]
+    fn duties_wait_for_the_selected_branch_shuffling() {
+        let (mut ctx, mut owner, anchor) = ctx_with_owner();
+        let epoch = STATE_EPOCH.to_string();
+        assert_eq!(status_code(&post(&ctx, &epoch, "[\"0\"]")), "200");
+
+        let mut fork = owner.apply_block_view(anchor);
+        let decision_slot = (STATE_EPOCH - 1) * SLOTS_PER_EPOCH - 1;
+        fork.view.block_roots.set((decision_slot % 8192) as u32, [0xBB; 32]);
+        fork.view.randao_mixes.mix_in_reveal(STATE_EPOCH - 2, &[0xBB; 32]);
+        fork.view.slot.state_mut().latest_block_root = [0xB0; 32];
+        let branch = fork.commit();
+        owner.publish_state_id(branch);
+        ctx.node_status.head_root = [0xB0; 32];
+
+        assert_eq!(status_code(&post(&ctx, &epoch, "[\"0\"]")), "503");
+        let branch_id = ctx.read_state(|view| ShufflingId::from_state(&view, STATE_EPOCH).unwrap());
+        ctx.shufflings.record(branch_id, &posted_bytes(STATE_EPOCH + 1));
+        let response = post(&ctx, &epoch, "[\"0\"]");
+        assert_eq!(status_code(&response), "200");
+        assert_eq!(
+            json(&response)["dependent_root"],
+            format!("0x{}", hex::encode(branch_id.dependent_root))
+        );
+
+        owner.publish_state_id(anchor);
+        ctx.node_status.head_root = [0; 32];
+        assert_eq!(status_code(&post(&ctx, &epoch, "[\"0\"]")), "503");
+        let original_id =
+            ctx.read_state(|view| ShufflingId::from_state(&view, STATE_EPOCH).unwrap());
+        ctx.shufflings.record(original_id, &posted_bytes(STATE_EPOCH));
+        assert_eq!(status_code(&post(&ctx, &epoch, "[\"0\"]")), "200");
+
+        ctx.node_status.head_root = [0xB0; 32];
+        assert_eq!(
+            status_code(&post(&ctx, &epoch, "[\"0\"]")),
+            "503",
+            "metadata from another head must not accompany duties"
+        );
+    }
+
     /// `attester.yaml` asks for `minItems: 1`, so an empty array is no more a
     /// request than a malformed one.
     #[test]
@@ -324,8 +379,8 @@ mod tests {
     #[test]
     fn empty_shufflings_are_not_recorded() {
         let mut posted = PostedShufflings::default();
-        posted.record(10, &[]);
-        assert!(posted.get(10).is_none());
+        posted.record(test_id(10), &[]);
+        assert!(posted.get(test_id(10)).is_none());
     }
 
     /// A repost for an epoch replaces it; a newer epoch evicts the oldest
@@ -333,20 +388,20 @@ mod tests {
     #[test]
     fn posted_shufflings_hold_the_three_newest_epochs() {
         let mut posted = PostedShufflings::default();
-        posted.record(10, &posted_bytes(10));
-        posted.record(11, &posted_bytes(11));
-        posted.record(12, &posted_bytes(12));
-        posted.record(10, &posted_bytes(13));
+        posted.record(test_id(10), &posted_bytes(10));
+        posted.record(test_id(11), &posted_bytes(11));
+        posted.record(test_id(12), &posted_bytes(12));
+        posted.record(test_id(10), &posted_bytes(13));
         for (position, &validator_index) in posted_order(13).iter().enumerate() {
             assert_eq!(
-                posted.get(10).unwrap().position(validator_index as u64),
+                posted.get(test_id(10)).unwrap().position(validator_index as u64),
                 Some(position as u32)
             );
         }
 
-        posted.record(13, &posted_bytes(13));
-        assert!(posted.get(10).is_none());
-        assert!([11, 12, 13].iter().all(|&epoch| posted.get(epoch).is_some()));
+        posted.record(test_id(13), &posted_bytes(13));
+        assert!(posted.get(test_id(10)).is_none());
+        assert!([11, 12, 13].iter().all(|&epoch| posted.get(test_id(epoch)).is_some()));
     }
 
     /// Epoch zero is a real epoch, so recording it must not leave an unfilled
@@ -354,9 +409,9 @@ mod tests {
     #[test]
     fn epoch_zero_fills_one_slot_and_leaves_the_others_free() {
         let mut posted = PostedShufflings::default();
-        posted.record(0, &posted_bytes(0));
-        posted.record(1, &posted_bytes(1));
-        posted.record(2, &posted_bytes(2));
-        assert!([0, 1, 2].iter().all(|&epoch| posted.get(epoch).is_some()));
+        posted.record(test_id(0), &posted_bytes(0));
+        posted.record(test_id(1), &posted_bytes(1));
+        posted.record(test_id(2), &posted_bytes(2));
+        assert!([0, 1, 2].iter().all(|&epoch| posted.get(test_id(epoch)).is_some()));
     }
 }

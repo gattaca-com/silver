@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    Epoch, RandaoMixesView, Slot, StateReadView, ValidatorsView, committee_range,
+    Epoch, RandaoMixesView, ShufflingId, Slot, StateReadView, ValidatorsView, committee_range,
     committees_per_slot,
 };
 use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
@@ -71,7 +71,7 @@ impl<'a> EpochShuffling<'a> {
 
     pub fn post(
         &self,
-        epoch: Epoch,
+        id: ShufflingId,
         producer: &mut TProducer,
         emit: impl FnOnce(BeaconStateEvent),
     ) -> bool {
@@ -81,10 +81,14 @@ impl<'a> EpochShuffling<'a> {
                 bytes.copy_from_slice(&index.to_le_bytes());
             }
         }) else {
-            silver_log::warn!(epoch, len, "beacon_state tcache full; shuffling not posted");
+            silver_log::warn!(
+                epoch = id.epoch,
+                len,
+                "beacon_state tcache full; shuffling not posted"
+            );
             return false;
         };
-        emit(BeaconStateEvent::AttestersShuffling { epoch, indices });
+        emit(BeaconStateEvent::AttestersShuffling { id, indices });
         true
     }
 
