@@ -154,11 +154,6 @@ pub enum Error {
     InvalidParentExecutionPayload(#[from] ParentExecutionPayloadError),
     #[error("invalid payload attestation: {0}")]
     InvalidPayloadAttestation(#[from] PayloadAttestationError),
-    #[error("invalid deposit Merkle branch at leaf index {index}")]
-    InvalidDepositProof { index: u64 },
-
-    #[error("deposit signature invalid (skipped, leaf index {index})")]
-    SkipDepositBadSig { index: u64 },
     #[error("execution request skipped: {reason}")]
     SkipExecutionRequest { reason: &'static str },
 }
@@ -166,7 +161,7 @@ pub enum Error {
 impl Error {
     #[inline]
     pub fn is_fatal(&self) -> bool {
-        !matches!(self, Self::SkipDepositBadSig { .. } | Self::SkipExecutionRequest { .. })
+        !matches!(self, Self::SkipExecutionRequest { .. })
     }
 
     /// state_root is the block's claimed post-state_root — unique per block,

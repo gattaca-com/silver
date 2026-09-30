@@ -3,9 +3,9 @@ use crate::{
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE,
         EXECUTION_PAYLOAD_FIXED, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTER_SLASHINGS_ELECTRA,
-        MAX_BLS_TO_EXECUTION_CHANGES, MAX_DEPOSITS, MAX_PAYLOAD_ATTESTATIONS,
-        MAX_PROPOSER_SLASHINGS, MAX_VOLUNTARY_EXITS, PAYLOAD_ATTESTATION_SIZE,
-        PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+        MAX_BLS_TO_EXECUTION_CHANGES, MAX_PAYLOAD_ATTESTATIONS, MAX_PROPOSER_SLASHINGS,
+        MAX_VOLUNTARY_EXITS, PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
     },
 };
 
@@ -293,7 +293,7 @@ impl<'a> BodyOffsets<'a> {
 
     /// Offset-table (in-bounds + monotone) and operation-count validation. The
     /// structural and shared-cap checks run for both forks; Gloas additionally
-    /// forbids eth1 deposits and caps payload attestations.
+    /// caps payload attestations.
     pub fn validate(&self) -> Result<(), BlockBodyError> {
         let body_len = self.body.len();
         let table = self.variable_offsets();
@@ -349,28 +349,22 @@ impl<'a> BodyOffsets<'a> {
             MAX_BLS_TO_EXECUTION_CHANGES,
         )?;
 
-        match self.fork {
-            BodyFork::Fulu => check(
-                OperationKind::Deposits,
-                fixed_count(self.deposits(), DEPOSIT_SIZE),
-                MAX_DEPOSITS,
-            )?,
-            BodyFork::Gloas => {
-                // EIP-7732 deprecates eth1 deposits; the field must be empty.
-                if self.deposits().is_some_and(|d| !d.is_empty()) {
-                    return Err(BlockBodyError::OperationCountOutOfBounds {
-                        op: OperationKind::Deposits,
-                        count: 1,
-                        max: 0,
-                    });
-                }
-                check(
-                    OperationKind::PayloadAttestations,
-                    fixed_count(self.payload_attestations(), PAYLOAD_ATTESTATION_SIZE),
-                    MAX_PAYLOAD_ATTESTATIONS,
-                )?;
-                ExecutionRequestsView::check_counts(self.parent_execution_requests())?;
-            }
+        // Fulu removed the eth1 bridge deposit; the field must be empty.
+        if self.deposits().is_some_and(|d| !d.is_empty()) {
+            return Err(BlockBodyError::OperationCountOutOfBounds {
+                op: OperationKind::Deposits,
+                count: fixed_count(self.deposits(), DEPOSIT_SIZE).max(1),
+                max: 0,
+            });
+        }
+
+        if self.fork == BodyFork::Gloas {
+            check(
+                OperationKind::PayloadAttestations,
+                fixed_count(self.payload_attestations(), PAYLOAD_ATTESTATION_SIZE),
+                MAX_PAYLOAD_ATTESTATIONS,
+            )?;
+            ExecutionRequestsView::check_counts(self.parent_execution_requests())?;
         }
 
         Ok(())

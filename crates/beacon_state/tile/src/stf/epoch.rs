@@ -563,11 +563,6 @@ pub fn process_pending_deposits(
     for di in 0..pending_len {
         let deposit = *view.pending.deposits.reader().get(di);
 
-        if deposit.slot > 0 &&
-            view.slot.state().eth1_deposit_index < view.slot.state().deposit_requests_start_index
-        {
-            break;
-        }
         if deposit.slot > finalized_slot {
             break;
         }
