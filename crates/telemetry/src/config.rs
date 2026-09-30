@@ -66,6 +66,8 @@ pub struct FileConfig {
     pub telemetry: TelemetrySection,
     #[serde(default)]
     pub chain_config: ChainConfig,
+    #[serde(default)]
+    pub exporter: ExporterSection,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -77,6 +79,20 @@ pub struct TelemetrySection {
 impl TelemetrySection {
     pub fn clickhouse_addr(&self) -> Result<Option<SocketAddr>, String> {
         let Some(addr) = &self.clickhouse_addr else { return Ok(None) };
+        let resolved = addr.to_socket_addrs().map_err(|e| format!("{addr}: {e}"))?.next();
+        resolved.map(Some).ok_or_else(|| format!("{addr}: resolves to no address"))
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ExporterSection {
+    /// `host:port` of Dashboard server.
+    dashboard_addr: Option<String>,
+}
+
+impl ExporterSection {
+    pub fn dashboard_addr(&self) -> Result<Option<SocketAddr>, String> {
+        let Some(addr) = &self.dashboard_addr else { return Ok(None) };
         let resolved = addr.to_socket_addrs().map_err(|e| format!("{addr}: {e}"))?.next();
         resolved.map(Some).ok_or_else(|| format!("{addr}: resolves to no address"))
     }

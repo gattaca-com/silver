@@ -3,12 +3,11 @@
 //! reopens every source under a new `boot_id`.
 
 use std::{
-    io,
-    net::{SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{SocketAddr, UdpSocket},
     path::PathBuf,
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
+use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
 use silver_common::{APP_NAME, Nanos, SilverSpine};
 use silver_observe_wire::{Encoder, Header, Kind};
@@ -59,8 +58,7 @@ pub struct Exporter {
 }
 
 impl Exporter {
-    pub fn open(addr: &str, label: String) -> Result<Self, String> {
-        let dest = resolve(addr).map_err(|e| format!("{addr}: {e}"))?;
+    pub fn open(dest: SocketAddr, label: String) -> Result<Self, String> {
         let bind: SocketAddr =
             if dest.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
         let socket = UdpSocket::bind(bind).map_err(|e| format!("bind: {e}"))?;
@@ -81,6 +79,26 @@ impl Exporter {
             next_bucket: now,
             next_describe: now,
         })
+    }
+
+    pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.sources.drain();
+
+        let now = Nanos::now();
+        if now >= self.next_bucket {
+            self.follow_node(now);
+            let Self { encoder, sources, sink, .. } = self;
+            sources.encode_bucket(encoder, now.0, &mut |d| sink.send(d));
+            self.next_bucket = now + BUCKET;
+        }
+        if now >= self.next_describe {
+            self.describe(now);
+            self.next_describe = now + DESCRIBE;
+        }
+
+        // Queue drains are invisible to the adapter, and under `flux/park` an
+        // idle-looking loop parks with nobody left to signal it.
+        adapter.mark_work();
     }
 
     /// Stale mmaps and queue cursors of the departed node are dropped with the
@@ -128,34 +146,6 @@ impl Exporter {
         sink.datagrams = 0;
         sink.dropped = 0;
     }
-}
-
-impl Tile<SilverSpine> for Exporter {
-    fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.sources.drain();
-
-        let now = Nanos::now();
-        if now >= self.next_bucket {
-            self.follow_node(now);
-            let Self { encoder, sources, sink, .. } = self;
-            sources.encode_bucket(encoder, now.0, &mut |d| sink.send(d));
-            self.next_bucket = now + BUCKET;
-        }
-        if now >= self.next_describe {
-            self.describe(now);
-            self.next_describe = now + DESCRIBE;
-        }
-
-        // Queue drains are invisible to the adapter, and under `flux/park` an
-        // idle-looking loop parks with nobody left to signal it.
-        adapter.mark_work();
-    }
-}
-
-fn resolve(addr: &str) -> io::Result<SocketAddr> {
-    addr.to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))
 }
 
 /// Stable across runs and builds, unlike `DefaultHasher`, so a restarted
