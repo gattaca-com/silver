@@ -268,7 +268,7 @@ impl Peer {
             return false;
         }
         if let Some(retained) = self.outbound_lease_wheel.expire(now) {
-            tracing::warn!(id = ?self.id, retained, "outbound gossip delivery timeout");
+            silver_log::warn!(id = ?self.id, retained, "outbound gossip delivery timeout");
             self.disconnect_on_stall(now, rpc_codec_pool);
             return true;
         }
@@ -279,7 +279,7 @@ impl Peer {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
-        tracing::debug!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
+        silver_log::debug!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
         self.dirty = true;
 
         let stream = match &msg {
@@ -299,7 +299,7 @@ impl Peer {
                         stream
                     }
                     None => {
-                        tracing::debug!(stream_id = ?rsp.stream_id, "rpc response: stream gone");
+                        silver_log::debug!(stream_id = ?rsp.stream_id, "rpc response: stream gone");
                         return SendResult::StreamGone;
                     }
                 }
@@ -346,7 +346,7 @@ impl Peer {
     /// gossipsub on it silently. A redial gives both sides a fresh budget.
     fn disconnect_on_stall(&mut self, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
         crate::NetworkCounters::GossipStallDisconnect.inc();
-        tracing::warn!(id = ?self.id, "gossip stall: closing connection");
+        silver_log::warn!(id = ?self.id, "gossip stall: closing connection");
         self.shutdown(now, rpc_codec_pool);
     }
 
@@ -391,7 +391,7 @@ impl Peer {
                 )
             })
             .collect();
-        tracing::info!(
+        silver_log::info!(
             id = ?self.id,
             count = census.len(),
             streams = census.join(" | "),
@@ -428,17 +428,17 @@ impl Peer {
         // All streams are Bi — multistream-select requires bidirectional I/O
         // even for request-response protocols.
         if protocol.is_gossip() && self.outbound_gossip.is_some() {
-            tracing::warn!(id=?self.id, "open stream: already have outbound gossip stream");
+            silver_log::warn!(id=?self.id, "open stream: already have outbound gossip stream");
             return None;
         } else if protocol == StreamProtocol::Cluster && self.cluster_stream.is_some() {
-            tracing::warn!(id=?self.id, "open stream: already have cluster stream");
+            silver_log::warn!(id=?self.id, "open stream: already have cluster stream");
             return None;
         }
 
         let id = self.connection.streams().open(Dir::Bi)?;
         let p2p_id = P2pStreamId::new(self.id.connection, id.into(), protocol, false);
 
-        tracing::debug!(?p2p_id, "open outbound stream");
+        silver_log::debug!(?p2p_id, "open outbound stream");
 
         // allocate out buffer.
         let out_buffer = out_buffer(&p2p_id, false);
@@ -504,7 +504,7 @@ impl Peer {
                     let peer_id = match id_from_connection(&self.connection) {
                         Some(id) if !banned_peers.contains(&id) => id,
                         Some(id) => {
-                            tracing::info!(
+                            silver_log::info!(
                                 handle = ?self.handle,
                                 peer_id = ?id,
                                 addr = ?self.connection.remote_address(),
@@ -534,7 +534,7 @@ impl Peer {
                     } else {
                         crate::NetworkCounters::InboundHandshakeOk.inc();
                     }
-                    tracing::info!(
+                    silver_log::info!(
                         handle = ?self.handle,
                         peer_id = ?peer_id,
                         addr = ?self.connection.remote_address(),
@@ -555,7 +555,7 @@ impl Peer {
                 quinn_proto::Event::ConnectionLost { reason } => {
                     let zombie = !self.handshake_completed;
                     bump_disconnect_counter(&reason, zombie);
-                    tracing::info!(
+                    silver_log::info!(
                         handle = ?self.handle,
                         peer_id = ?self.id.peer_id,
                         addr = ?self.connection.remote_address(),
@@ -666,7 +666,7 @@ impl Peer {
         }
 
         if let SpinResult::Protocol(protocol) = result {
-            tracing::debug!(?id, ?protocol, "incoming stream negotiated");
+            silver_log::debug!(?id, ?protocol, "incoming stream negotiated");
             if protocol.is_gossip() {
                 self.inbound_gossip.replace(id);
             }
@@ -686,7 +686,7 @@ impl Peer {
     {
         match event {
             quinn_proto::StreamEvent::Opened { dir } => {
-                tracing::debug!("stream open event");
+                silver_log::debug!("stream open event");
                 while let Some(id) = self.connection.streams().accept(dir) {
                     let p2p_id = P2pStreamId::new(
                         self.id.connection,
@@ -706,7 +706,7 @@ impl Peer {
                         last_activity: Instant::now(),
                     });
                     on_event(NetEvent::StreamReady { stream: p2p_id });
-                    tracing::debug!(?p2p_id, "stream open");
+                    silver_log::debug!(?p2p_id, "stream open");
                 }
             }
             quinn_proto::StreamEvent::Readable { id } |
@@ -719,7 +719,7 @@ impl Peer {
             quinn_proto::StreamEvent::Finished { id } => {
                 // This event is emitted after we call 'finish()' on the send side of
                 // the stream. Indicates that data was sent and acked.
-                tracing::debug!(?id, "send half finished");
+                silver_log::debug!(?id, "send half finished");
                 // Goodbye acked: safe to hang up without dropping it.
                 if self.pending_shutdown.is_some_and(|(gid, _)| gid == id) {
                     self.shutdown(now, rpc_codec_pool);
@@ -863,7 +863,7 @@ where
         }
 
         if let SpinResult::Protocol(protocol) = result {
-            tracing::debug!(?id, ?protocol, "incoming stream negotiated");
+            silver_log::debug!(?id, ?protocol, "incoming stream negotiated");
             if protocol.is_gossip() {
                 inbound_gossip.replace(*id);
             }
@@ -895,12 +895,12 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
     let Some(certs): Option<Box<Vec<rustls::pki_types::CertificateDer>>> =
         identity.map(|i| i.downcast()).and_then(|r| r.ok())
     else {
-        tracing::error!("identity cannot be downcast to certificates");
+        silver_log::error!("identity cannot be downcast to certificates");
         return None;
     };
     peer_id_from_certificate(certs[0].as_ref())
         .inspect_err(|e| {
-            tracing::error!(?e, "failed to extract peer id from certificate");
+            silver_log::error!(?e, "failed to extract peer id from certificate");
         })
         .ok()
 }
@@ -1039,7 +1039,7 @@ impl Stream {
                 SpinResult::End
             }
             Ok(state) => {
-                tracing::trace!(id=?self.p2p_id, ?state, "stream state");
+                silver_log::trace!(id=?self.p2p_id, ?state, "stream state");
                 let mut result = SpinResult::Ok;
                 // After the negotiate state machine has transitioned past
                 // Done (`set_protocol` fires inside `state.spin`), the
@@ -1058,7 +1058,7 @@ impl Stream {
                 result
             }
             Err(e) => {
-                tracing::error!(
+                silver_log::error!(
                     id = ?self.p2p_id,
                     protocol = ?self.p2p_id.protocol(),
                     state = state_name,
@@ -1095,7 +1095,7 @@ impl Stream {
     where
         E: FnMut(crate::NetEvent),
     {
-        tracing::warn!(
+        silver_log::warn!(
             id = ?self.p2p_id,
             protocol = ?self.p2p_id.protocol(),
             state = self.state.get_mut().name(),
@@ -1150,7 +1150,7 @@ impl Stream {
         if self.p2p_id.is_incoming() && self.is_complete() && self.out_buffer.is_empty() {
             return SpinResult::End;
         }
-        tracing::warn!(
+        silver_log::warn!(
             error_code = error_code.into_inner(),
             protocol = ?self.p2p_id.protocol(),
             state = ?self.state.get_mut(),

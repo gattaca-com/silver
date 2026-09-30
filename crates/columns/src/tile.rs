@@ -155,7 +155,7 @@ impl DataColumnsTile {
         let buffer = match block.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
-                tracing::error!(?e, ?stream_id, "failed to read beacon block cache buffer");
+                silver_log::error!(?e, ?stream_id, "failed to read beacon block cache buffer");
                 return None;
             }
         };
@@ -169,12 +169,12 @@ impl DataColumnsTile {
 
         let is_gloas = self.spec.is_gloas_at_slot(slot);
         if is_gloas && !SignedBeaconBlockView::check_gloas_size(buffer) {
-            tracing::warn!(slot, ?stream_id, "beacon block bid out of bounds");
+            silver_log::warn!(slot, ?stream_id, "beacon block bid out of bounds");
             return None;
         }
         let has_columns = SignedBeaconBlockView::has_data_columns(buffer, is_gloas);
 
-        tracing::info!(slot, has_columns, "beacon block recv");
+        silver_log::info!(slot, has_columns, "beacon block recv");
 
         let block_root = block_root(buffer, is_gloas);
         self.validator.cache_parent_state_root(block_root, buffer);
@@ -204,7 +204,7 @@ impl DataColumnsTile {
             return Some((block_root, is_gloas));
         }
 
-        tracing::trace!(
+        silver_log::trace!(
             block = hex::encode(block_root),
             ?stream_id,
             "data columns by root request: {to_request:b}"
@@ -256,7 +256,7 @@ impl DataColumnsTile {
                 )
             }
             Err(e) => {
-                tracing::error!(
+                silver_log::error!(
                     ?e,
                     stream_id = ?column.stream_id,
                     "failed to read data column sidecar buffer"
@@ -302,7 +302,7 @@ impl DataColumnsTile {
                 }
                 let pending = self.gloas_pending_columns.entry(block_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
-                    tracing::debug!(stream_id = ?column.stream_id, "gloas column before block — buffering");
+                    silver_log::debug!(stream_id = ?column.stream_id, "gloas column before block — buffering");
                     pending.push(column);
                 }
                 ColumnDisposition::Ignored
@@ -315,7 +315,7 @@ impl DataColumnsTile {
                 }
                 let pending = self.parent_pending_columns.entry(parent_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
-                    tracing::info!(stream_id = ?column.stream_id, "column parent pending — buffering");
+                    silver_log::info!(stream_id = ?column.stream_id, "column parent pending — buffering");
                     pending.push(column);
                 }
                 ColumnDisposition::Ignored
@@ -440,7 +440,7 @@ impl DataColumnsTile {
     ) {
         let pending = self.parent_pending_columns.remove(&parent_root);
         if pending.is_some() {
-            tracing::info!(
+            silver_log::info!(
                 root = hex::encode(parent_root),
                 "draining data columns for parent root"
             );
@@ -519,11 +519,11 @@ impl DataColumnsTile {
                 *SignedBeaconBlockView::parent_root(buf)
             }
             Ok((buf, _)) => {
-                tracing::warn!(?stream_id, len = buf.len(), "malformed beacon block");
+                silver_log::warn!(?stream_id, len = buf.len(), "malformed beacon block");
                 return;
             }
             Err(e) => {
-                tracing::error!(?e, ?stream_id, "failed to read beacon block cache buffer");
+                silver_log::error!(?e, ?stream_id, "failed to read beacon block cache buffer");
                 return;
             }
         };
@@ -545,7 +545,7 @@ impl DataColumnsTile {
         gossip: NewGossipMsg,
         producers: &mut SilverSpineProducers,
     ) {
-        tracing::debug!(custody_group, "data column sidecar over gossip");
+        silver_log::debug!(custody_group, "data column sidecar over gossip");
         let frame = Some(GossipSidecarFrame {
             domain: gossip.domain,
             msg_hash: gossip.msg_hash,
@@ -656,7 +656,7 @@ impl DataColumnsTile {
         for i in (0..count).rev() {
             let p = self.kzg_batch.pending.swap_remove(i);
             if batch::kzg_entry(&p, &self.validator).is_none() {
-                tracing::error!(stream_id = ?p.stream_id, "batched sidecar inputs unavailable at flush");
+                silver_log::error!(stream_id = ?p.stream_id, "batched sidecar inputs unavailable at flush");
                 continue;
             }
             if all_ok || self.reverify_single(&p) {
@@ -699,7 +699,7 @@ impl DataColumnsTile {
     }
 
     fn resolve_rejected(&mut self, p: &PendingKzg, producers: &mut SilverSpineProducers) {
-        tracing::warn!(stream_id = ?p.stream_id, "failed to verify sidecar kzg proof");
+        silver_log::warn!(stream_id = ?p.stream_id, "failed to verify sidecar kzg proof");
         DataColumnCounters::KzgBatchRejects.inc();
         producers.produce(PeerEvent::RpcMisbehaviour {
             p2p_peer: p.stream_id.peer(),
@@ -836,7 +836,7 @@ impl DataColumnsTile {
                         self.note_staged_block(block_root, slot, producers);
                     }
                     Err(e) => {
-                        tracing::error!(
+                        silver_log::error!(
                             ?e,
                             seq = t_read.seq(),
                             "persist consumer buffer acquire failed"
@@ -908,7 +908,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if id.is(DataKind::Columns, Origin::Live) => {
                     // TODO validate that originating peer has data column index in custody groups
-                    tracing::debug!("data column sidecar over rpc");
+                    silver_log::debug!("data column sidecar over rpc");
                     let sidecar = self.reader.acquire(ssz);
                     self.handle_data_column_sidecar(
                         PendingColumn {
@@ -925,10 +925,10 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 }
                 silver_common::RpcResponse::Error { error, msg, len } if id.is(DataKind::Columns, Origin::Live) => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
-                    tracing::error!(error, err_msg, "rpc error response");
+                    silver_log::error!(error, err_msg, "rpc error response");
                 }
                 other => {
-                    tracing::trace!(?other, app_id=rsp.application_id, id=?rsp.stream_id, "ignoring rpc response");
+                    silver_log::trace!(?other, app_id=rsp.application_id, id=?rsp.stream_id, "ignoring rpc response");
                 }
                 }
             }

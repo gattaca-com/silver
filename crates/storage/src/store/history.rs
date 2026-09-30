@@ -37,7 +37,10 @@ impl Linker {
                 .map(|(root, _)| *root)
                 .expect("a full buffer is not empty");
             self.buffered.remove(&lowest);
-            tracing::warn!(held = self.buffered.len(), "backfill blocks not linking; dropping one");
+            silver_log::warn!(
+                held = self.buffered.len(),
+                "backfill blocks not linking; dropping one"
+            );
         }
         self.buffered.insert(facts.block_root, (facts, ssz));
     }
@@ -185,7 +188,7 @@ impl History {
             }
             let slot = prefill.start + offset;
             if !coverage::read_block(store_dir, slot, &mut block) {
-                tracing::error!(slot, "held block unreadable; its columns stay missing");
+                silver_log::error!(slot, "held block unreadable; its columns stay missing");
                 continue;
             }
             self.seed_pending(slot, &block, finalized);
@@ -214,7 +217,7 @@ impl History {
         let facts = match ssz.buffer() {
             Ok((buffer, _)) => BlockFacts::of(buffer, &self.spec),
             Err(e) => {
-                tracing::error!(?e, "failed to read backfill beacon block cache buffer");
+                silver_log::error!(?e, "failed to read backfill beacon block cache buffer");
                 None
             }
         };
@@ -222,7 +225,7 @@ impl History {
         if let Some(window) = self.published &&
             !(window.start..window.start + PREFILL_SLOTS).contains(&facts.slot)
         {
-            tracing::debug!(
+            silver_log::debug!(
                 slot = facts.slot,
                 window = window.start,
                 "backfill block outside the window"
@@ -273,11 +276,11 @@ impl History {
         emit: &mut impl FnMut(IoEvent),
     ) {
         let Ok((buffer, _)) = signed.buffer() else {
-            tracing::error!("failed to read backfill envelope cache buffer");
+            silver_log::error!("failed to read backfill envelope cache buffer");
             return;
         };
         let Some(block_root) = backfill::envelope_block_root(buffer) else {
-            tracing::warn!("badly formed backfill envelope");
+            silver_log::warn!("badly formed backfill envelope");
             return;
         };
         let Some(slot) = finalized.slot_of(&block_root) else { return };
@@ -301,12 +304,12 @@ impl History {
         let head = match sidecar.buffer() {
             Ok((buffer, _)) => backfill::sidecar_head(buffer),
             Err(e) => {
-                tracing::error!(?e, "failed to read backfill data column sidecar cache buffer");
+                silver_log::error!(?e, "failed to read backfill data column sidecar cache buffer");
                 return None;
             }
         };
         let Some(head) = head else {
-            tracing::warn!("badly formed backfill data column sidecar");
+            silver_log::warn!("badly formed backfill data column sidecar");
             return None;
         };
         let slot = finalized.slot_of(&head.block_root)?;
@@ -318,7 +321,7 @@ impl History {
         let (verified, rejected) =
             self.pending.add_sidecar(sidecar, head, slot, peer, now, &self.spec);
         for bad in rejected {
-            tracing::warn!(
+            silver_log::warn!(
                 peer = bad.peer,
                 column_index = bad.column_index,
                 "backfill sidecar rejected"

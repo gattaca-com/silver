@@ -30,7 +30,7 @@ pub(super) fn handle_incoming(
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
     validate_compressed_payload_size(snappy_data.len()).inspect_err(|_| {
-        tracing::warn!(?stream_id, topic_string, "invalid gossip frame");
+        silver_log::warn!(?stream_id, topic_string, "invalid gossip frame");
         emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidFrame {
             p2p_peer: stream_id.peer(),
         }));
@@ -52,7 +52,7 @@ pub(super) fn handle_incoming(
     };
 
     let (topic, domain) = domains.parse(topic_string)?;
-    tracing::trace!(?stream_id, ?topic, "Gossip message received");
+    silver_log::trace!(?stream_id, ?topic, "Gossip message received");
 
     // Decompress: block snappy.
     let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
@@ -79,7 +79,12 @@ pub(super) fn handle_incoming(
                 .reserve(len, false)
                 .ok_or(Error::BufferTooSmall)
                 .inspect_err(|e| {
-                    tracing::error!(?e, len, topic_string, "failed to reserve incoming gossip SSZ");
+                    silver_log::error!(
+                        ?e,
+                        len,
+                        topic_string,
+                        "failed to reserve incoming gossip SSZ"
+                    );
                 })?;
             (incoming_gossip_publish, SszCache::Gossip, reservation)
         }
@@ -87,7 +92,7 @@ pub(super) fn handle_incoming(
 
     let msg_id = decompress_to_reservation(publish, snappy_data, &mut reservation, topic_string)
         .inspect_err(|e| {
-            tracing::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg")
+            silver_log::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg")
         })?;
 
     if !dedup_cache.insert(fast_id, msg_id) {
@@ -105,7 +110,7 @@ pub(super) fn handle_incoming(
     let ssz_read = reservation.read();
     let mcache_read = copy_compressed_to_protobuf_output(mcache_publish, snappy_data, topic_string)
         .inspect_err(|e| {
-            tracing::error!(?e, "failed to write incoming gossip protobuf");
+            silver_log::error!(?e, "failed to write incoming gossip protobuf");
             match e {
                 Error::BufferTooSmall => {
                     dedup_cache.remove(fast_id, &msg_id);

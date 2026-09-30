@@ -45,7 +45,7 @@ impl PeerManager {
         let clamped_earliest = self.earliest_available_slot.min(head_slot);
         ssz[84..].copy_from_slice(&clamped_earliest.to_le_bytes());
 
-        tracing::debug!("set status");
+        silver_log::debug!("set status");
         self.status = Some(ssz);
         digest_changed
     }
@@ -165,7 +165,7 @@ impl PeerManager {
             finalized_epoch == StatusView::finalized_epoch(local_ssz) &&
             finalized_root != *StatusView::finalized_root(local_ssz)
         {
-            tracing::warn!("FATAL: finalized root and epoch mismatch");
+            silver_log::warn!("FATAL: finalized root and epoch mismatch");
             self.on_rpc_misbehaviour(
                 p2p_peer,
                 RpcSeverity::Fatal,

@@ -238,7 +238,7 @@ impl PeerManager {
 
         let mut database = PeerDatabase::default();
         trusted_peers.drain(..).for_each(|enr| {
-            tracing::info!(quic=?enr.quic4_socket(), "adding trusted peer");
+            silver_log::info!(quic=?enr.quic4_socket(), "adding trusted peer");
             database.add_trusted_peer(enr);
         });
 
@@ -349,7 +349,7 @@ impl PeerManager {
                 if rpc_request {
                     self.release_outbound_in_flight(p2p_peer, protocol);
                 }
-                tracing::debug!(p2p_peer, ?protocol, rpc_request, "outbound message dropped");
+                silver_log::debug!(p2p_peer, ?protocol, rpc_request, "outbound message dropped");
                 self.disconnect_after_failed_goodbye(p2p_peer, protocol, emit);
             }
             PeerEvent::P2pStreamClosed { stream_id } => {
@@ -367,7 +367,7 @@ impl PeerManager {
                 // it blames the wrong side.
                 let protocol = stream_id.protocol();
                 if protocol.is_request_response() && protocol != StreamProtocol::Unset {
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?protocol,
                         incoming = stream_id.is_incoming(),
                         "stream close misbehaviour"
@@ -503,7 +503,7 @@ impl PeerManager {
             } => {
                 let user_agent =
                     self.peers.get(&p2p_peer).map(|p| p.user_agent).unwrap_or_default();
-                tracing::info!(
+                silver_log::info!(
                     p2p_peer,
                     ?protocol,
                     units_total,
@@ -519,18 +519,18 @@ impl PeerManager {
                 self.on_rpc_misbehaviour(p2p_peer, severity, "rpc chunk/framing violation");
             }
             PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
-                tracing::trace!(p2p_peer, "Got peer status");
+                silver_log::trace!(p2p_peer, "Got peer status");
                 self.on_p2p_peer_status(p2p_peer, status_ssz);
             }
             PeerEvent::P2pPeerMetadata { p2p_peer, metadata_ssz } => {
-                tracing::trace!(p2p_peer, "Got peer metadata");
+                silver_log::trace!(p2p_peer, "Got peer metadata");
                 self.database.p2p_metadata(p2p_peer, metadata_ssz)
             }
             PeerEvent::P2pPeerGoodbye { p2p_peer, status } => {
                 self.on_p2p_peer_goodbye(p2p_peer, now, status, emit);
             }
             PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
-                tracing::trace!(p2p_peer, ?identify, "Got peer identify");
+                silver_log::trace!(p2p_peer, ?identify, "Got peer identify");
                 if let Some(peer) = self.peers.get_mut(&p2p_peer) {
                     peer.user_agent = AgentString::new(identify.user_agent());
                 }

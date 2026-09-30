@@ -184,7 +184,7 @@ impl<G: RingGroup> Ring<G> {
         for seq in self.tail_seq..self.next_seq {
             copy(&old.entries[seq & old.mask], &mut next.entries[seq & next.mask]);
         }
-        tracing::warn!(capacity = next.entries.len(), "ring grew (non-finality)");
+        silver_log::warn!(capacity = next.entries.len(), "ring grew (non-finality)");
         // The `Release` store pairs with readers' `Acquire` loads of `buf`:
         // whichever generation a racing reader resolves, it sees complete
         // contents — the old one is retired untouched, the new one was fully
@@ -198,7 +198,7 @@ impl<G: RingGroup> Ring<G> {
         let new_head_pos = self.slot(new_head);
 
         if self.is_full() {
-            tracing::warn!(new_head, self.tail_seq, "buffer is wrapping!!");
+            silver_log::warn!(new_head, self.tail_seq, "buffer is wrapping!!");
             assert!(new_head_pos != self.slot(self.tail_seq), "would trample head");
         }
 

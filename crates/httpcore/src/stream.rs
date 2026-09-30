@@ -52,12 +52,12 @@ impl Listener {
         match self {
             Self::Tcp(listener) => {
                 let (stream, peer) = listener.accept()?;
-                tracing::info!("accepted connection from {peer}");
+                silver_log::info!("accepted connection from {peer}");
                 Ok(Stream::Tcp(stream))
             }
             Self::Unix(listener) => {
                 let (stream, _) = listener.accept()?;
-                tracing::info!("accepted connection on unix socket");
+                silver_log::info!("accepted connection on unix socket");
                 Ok(Stream::Uds(stream))
             }
         }

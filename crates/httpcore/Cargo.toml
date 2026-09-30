@@ -8,7 +8,7 @@ version.workspace = true
 [dependencies]
 httparse.workspace = true
 mio.workspace = true
-tracing.workspace = true
+silver_log.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -84,7 +84,7 @@ pub(crate) fn handle_request_no_el(
 
 #[inline]
 fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
-    tracing::info!(head = %hex::encode(&r.head_block_hash[..4]), "FCU ← spine");
+    silver_log::info!(head = %hex::encode(&r.head_block_hash[..4]), "FCU ← spine");
     let state = ForkchoiceState {
         head_block_hash: r.head_block_hash,
         safe_block_hash: r.safe_block_hash,
@@ -145,7 +145,7 @@ fn handle_new_payload_common(
     let bytes = match acquired.buffer() {
         Ok((b, _)) => b,
         Err(e) => {
-            tracing::warn!("failed to read {kind} data: {e}");
+            silver_log::warn!("failed to read {kind} data: {e}");
             producers
                 .engine_resps
                 .produce(&EngineResp::NewPayload(invalid_new_payload_resp(block_root)).into());
@@ -154,7 +154,7 @@ fn handle_new_payload_common(
     };
 
     if let Err(e) = send(client, bytes) {
-        tracing::warn!("failed to encode {kind}: {e}");
+        silver_log::warn!("failed to encode {kind}: {e}");
         producers
             .engine_resps
             .produce(&EngineResp::NewPayload(invalid_new_payload_resp(block_root)).into());
@@ -171,7 +171,7 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
 
 #[inline]
 fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq) {
-    tracing::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "preparePayload ← spine");
+    silver_log::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "preparePayload ← spine");
     let n = r.attrs_withdrawal_count as usize;
     let withdrawals = r.attrs_withdrawals[..n]
         .iter()
@@ -199,7 +199,7 @@ fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq)
 
 #[inline]
 fn handle_get_payload(client: &mut EngineClient, r: EngineGetPayloadReq) {
-    tracing::info!(payload_id = %hex::encode(r.payload_id), id = r.id, "fetchPayload ← spine");
+    silver_log::info!(payload_id = %hex::encode(r.payload_id), id = r.id, "fetchPayload ← spine");
     get_payload(client, r.payload_id, r.id);
 }
 

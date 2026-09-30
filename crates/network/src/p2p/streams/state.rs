@@ -72,7 +72,7 @@ fn admit_inbound_rpc(
     match limits.admit_inbound(protocol, tokens, now) {
         RpcRateLimit::Allowed => InboundRpcAdmission::Admit,
         RpcRateLimit::TooLarge | RpcRateLimit::TooSoon => {
-            tracing::debug!(?stream_id, ?protocol, tokens, "inbound rpc request rate limited");
+            silver_log::debug!(?stream_id, ?protocol, tokens, "inbound rpc request rate limited");
             if protocol == StreamProtocol::Goodbye {
                 InboundRpcAdmission::Drop
             } else {
@@ -285,7 +285,7 @@ impl StreamState {
                                 if id.is_incoming() {
                                     // TODO identify should always be present post-startup.
                                     let mut identify = context.identify.clone().unwrap();
-                                    tracing::trace!(
+                                    silver_log::trace!(
                                         "send identify protocols: {:?}",
                                         identify.protocols
                                     );

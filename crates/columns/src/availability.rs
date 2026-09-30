@@ -83,12 +83,12 @@ impl ColumnTracker {
         let (available, custody_complete) = self.record(block_root, columns);
         if available {
             DataColumnCounters::DataColumnsAvailableEmitted.inc();
-            tracing::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
+            silver_log::info!(block = hex::encode(block_root), slot, "DataColumnsAvailable");
             producers
                 .produce_with_ingestion(DataColumnsEvent::Available { block_root, slot }, recv_ts);
         }
         if custody_complete {
-            tracing::info!(block = hex::encode(block_root), slot, "custody set complete");
+            silver_log::info!(block = hex::encode(block_root), slot, "custody set complete");
             producers.produce_with_ingestion(
                 SyncNeed::Arrived { root: block_root, slot, kind: DataKind::Columns },
                 recv_ts,

@@ -225,7 +225,7 @@ impl CellHandler {
                     );
                 }
                 Ok(None) => {}
-                Err(error) => tracing::debug!(?error, column, row, "el cell staging failed"),
+                Err(error) => silver_log::debug!(?error, column, row, "el cell staging failed"),
             }
         }
     }
@@ -324,7 +324,7 @@ impl CellHandler {
         producers: &SilverSpineProducers,
     ) -> bool {
         if let Err(error) = self.store.admit_context(context, domain, data) {
-            tracing::debug!(?error, slot = context.slot, "cell context not admitted");
+            silver_log::debug!(?error, slot = context.slot, "cell context not admitted");
             return false;
         }
         if let Some(request) = self.store.request_assemblies(&context.block_root) {
@@ -367,7 +367,7 @@ impl CellHandler {
             &mut self.reader,
         ) {
             Ok(_) => self.store.mark_changed(&p.block_root, p.column_index as usize),
-            Err(e) => tracing::debug!(?e, column = p.column_index, "full sidecar not retained"),
+            Err(e) => silver_log::debug!(?e, column = p.column_index, "full sidecar not retained"),
         }
     }
 
@@ -395,7 +395,7 @@ impl CellHandler {
                         Ok(false) => {}
                         Err(e) => {
                             self.store.allocation_failed(request);
-                            tracing::debug!(?e, "cell allocation not installed");
+                            silver_log::debug!(?e, "cell allocation not installed");
                         }
                     }
                 }

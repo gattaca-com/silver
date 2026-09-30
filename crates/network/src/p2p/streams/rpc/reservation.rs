@@ -78,7 +78,7 @@ pub fn alloc_incoming_rpc(
 ) -> Result<RpcReservation, Error> {
     let bounds = payload_bounds(id);
     if !bounds.contains(&len) || (is_root_list_request(id) && !len.is_multiple_of(32)) {
-        tracing::warn!(
+        silver_log::warn!(
             ?id,
             len,
             min = bounds.start(),

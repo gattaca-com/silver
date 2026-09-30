@@ -203,7 +203,7 @@ impl Router {
         if path_known {
             Response::new(out, submissions).error(405, "method not allowed");
         } else {
-            tracing::warn!("unknown path: {}", req.path);
+            silver_log::warn!("unknown path: {}", req.path);
             frame_response(out, "404 Not Found", None, b"");
         }
         Outcome::Response(None)

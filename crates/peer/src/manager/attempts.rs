@@ -41,7 +41,7 @@ impl PeerManager {
                 last = false;
             }
         }
-        tracing::debug!(
+        silver_log::debug!(
             request_id = attempt.request_id,
             peer_id = attempt.peer_id,
             protocol = ?attempt.request.protocol(),
@@ -130,7 +130,7 @@ impl PeerManager {
         if let Some(peer) = self.peers.get_mut(&conn) {
             let ord = protocol.ordinal() as usize;
             peer.outbound_in_flight[ord] = peer.outbound_in_flight[ord].saturating_sub(1);
-            tracing::debug!(
+            silver_log::debug!(
                 conn,
                 ?protocol,
                 in_flight = peer.outbound_in_flight[ord],

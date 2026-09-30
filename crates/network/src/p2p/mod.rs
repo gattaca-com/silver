@@ -217,7 +217,7 @@ impl P2p {
     pub fn ban_peer(&mut self, peer_id: PeerId, now: Instant) {
         self.banned.insert(peer_id);
         if let Some(peer) = self.peers.values_mut().find(|p| p.id().peer_id == peer_id) {
-            tracing::info!(?peer_id, "closing connection: peer banned");
+            silver_log::info!(?peer_id, "closing connection: peer banned");
             peer.shutdown(now, &mut self.rpc_codec_pool);
         }
     }
@@ -252,7 +252,7 @@ impl P2p {
                 // Skip the capcacity check for connections from IPs of trusted peers.
                 let is_trusted_ip = self.trusted_ips.contains(&incoming.remote_address().ip());
                 if is_trusted_ip {
-                    tracing::info!(peer_addr=?incoming.remote_address(), "inbound connection from trusted peer");
+                    silver_log::info!(peer_addr=?incoming.remote_address(), "inbound connection from trusted peer");
                 }
 
                 if !is_trusted_ip && self.peers.len() >= self.max_connections {
@@ -269,7 +269,7 @@ impl P2p {
                         self.peers.insert(handle, peer);
                     }
                     Err(e) => {
-                        tracing::error!(cause=?e.cause, "accept");
+                        silver_log::error!(cause=?e.cause, "accept");
                         if let Some(rsp) = e.response {
                             let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
                         }
@@ -344,7 +344,7 @@ impl P2p {
             }
 
             if peer.is_drained() {
-                tracing::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "peer is drained");
+                silver_log::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "peer is drained");
                 dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }
@@ -409,7 +409,7 @@ impl P2p {
     pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound, context: &mut Context) -> SendResult {
         let result = match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
             Some(peer) => {
-                tracing::debug!(protocol=?msg.protocol(), peer=msg.peer_id(), "enqueue outbound rpc request");
+                silver_log::debug!(protocol=?msg.protocol(), peer=msg.peer_id(), "enqueue outbound rpc request");
                 let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.reader));
                 peer.send_rpc(acquired_msg)
             }

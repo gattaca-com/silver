@@ -141,13 +141,17 @@ impl Controller {
     ) {
         let acquired = self.reader.acquire(ssz_read);
         let Ok((ssz, _)) = acquired.buffer() else {
-            tracing::error!(request_id, ?topic, "submitted message overwritten before it was read");
+            silver_log::error!(
+                request_id,
+                ?topic,
+                "submitted message overwritten before it was read"
+            );
             return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
         };
         match topic {
             GossipTopic::BeaconAttestation(subnet) => {
                 let Ok(ssz) = ssz.try_into() else {
-                    tracing::error!(
+                    silver_log::error!(
                         request_id,
                         len = ssz.len(),
                         "submitted attestation is misframed"
@@ -168,7 +172,7 @@ impl Controller {
             }
             GossipTopic::SyncCommittee(_) => {
                 let Ok(message) = ssz.try_into() else {
-                    tracing::error!(
+                    silver_log::error!(
                         request_id,
                         len = ssz.len(),
                         "submitted sync committee message is misframed"
@@ -198,7 +202,7 @@ impl Controller {
             }
             GossipTopic::SyncCommitteeContributionAndProof => {
                 let Ok(proof) = ssz.try_into() else {
-                    tracing::error!(
+                    silver_log::error!(
                         request_id,
                         len = ssz.len(),
                         "submitted contribution is misframed"
@@ -219,7 +223,7 @@ impl Controller {
             }
             GossipTopic::BeaconBlock => {
                 if ssz.len() < SIGNED_BEACON_BLOCK_MIN {
-                    tracing::error!(request_id, len = ssz.len(), "submitted block is misframed");
+                    silver_log::error!(request_id, len = ssz.len(), "submitted block is misframed");
                     return produce_response(
                         producers,
                         request_id,
@@ -237,7 +241,7 @@ impl Controller {
                 )
             }
             topic => {
-                tracing::error!(request_id, ?topic, "no local submission path for the topic");
+                silver_log::error!(request_id, ?topic, "no local submission path for the topic");
                 produce_response(producers, request_id, Err(LocalGossipFailure::Internal))
             }
         }
@@ -246,7 +250,7 @@ impl Controller {
     fn on_attestation_subscriptions(&mut self, subscriptions: TCacheRead, wall_slot: u64) {
         let acquired = self.reader.acquire(subscriptions);
         let Ok((bytes, _)) = acquired.buffer() else {
-            tracing::error!("submitted subscriptions overwritten before they were read");
+            silver_log::error!("submitted subscriptions overwritten before they were read");
             return;
         };
         for slot_subnets in SlotSubnets::decode_all(bytes) {
@@ -266,7 +270,7 @@ impl Controller {
         let Some(changes) = self.subnet_duties.advance(wall_slot) else {
             return;
         };
-        tracing::debug!(wall_slot, ?changes, "duty subnets changed");
+        silver_log::debug!(wall_slot, ?changes, "duty subnets changed");
         self.peer_manager.update_duty_subnets(
             changes.attesting,
             changes.joined(),
@@ -319,7 +323,7 @@ impl Controller {
             return;
         };
         if self.gossip_handler.current_domain() != Some(update.current) {
-            tracing::info!(domain = ?update.current, "fork digest changed; gossip subscriptions updated");
+            silver_log::info!(domain = ?update.current, "fork digest changed; gossip subscriptions updated");
         }
         self.gossip_handler.set_domains(update.current, update.other);
         self.peer_manager.set_active_domains(
@@ -369,7 +373,7 @@ impl Controller {
             if let Some(ingress) = &mut self.cell_ingress {
                 ingress.set_min_slot(StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH);
             }
-            tracing::debug!(wall_slot, latest_block_slot, "new status set");
+            silver_log::debug!(wall_slot, latest_block_slot, "new status set");
             // PM still tracks our Status (peer-Status validation) + applied head
             // (custody-peer eligibility); the wall slot is the engine's only.
             if let Some(schedule) = &self.gossip_schedule {
@@ -382,7 +386,7 @@ impl Controller {
                     self.spec.fork_at_slot(wall_slot),
                 );
                 if self.gossip_handler.current_domain() != Some(domain) {
-                    tracing::info!(?domain, "fork digest changed; gossip subscriptions updated");
+                    silver_log::info!(?domain, "fork digest changed; gossip subscriptions updated");
                 }
                 self.gossip_handler.set_domains(domain, None);
                 self.peer_manager.set_active_domains(domain.digest(), None, &mut |event| {
@@ -610,7 +614,7 @@ impl Tile<SilverSpine> for Controller {
         if self.long_lived_pending && following {
             self.long_lived_pending = false;
             let long_lived = self.subnet_duties.long_lived();
-            tracing::info!(
+            silver_log::info!(
                 attnets = format_args!("{:#x}", long_lived.attnets),
                 syncnets = format_args!("{:#b}", long_lived.syncnets),
                 "activating long-lived subnet subscriptions"
@@ -832,12 +836,12 @@ fn handle_peer_control(
                     );
                 }
                 Err(e) => {
-                    tracing::error!(?e, "failed to allocate blocks by root request");
+                    silver_log::error!(?e, "failed to allocate blocks by root request");
                 }
             }
         }
         PeerControl::P2pDataColumnsRequest { app_id, peer, block_root, columns } => {
-            tracing::debug!(peer, columns, "emit data columns P2pSend");
+            silver_log::debug!(peer, columns, "emit data columns P2pSend");
             match RpcRequest::data_columns_by_root(rpc_producer, &block_root, columns) {
                 Ok(tcache) => {
                     producers.p2p_send.produce(
@@ -850,7 +854,7 @@ fn handle_peer_control(
                     );
                 }
                 Err(e) => {
-                    tracing::error!(?e, "failed to allocate data columns request");
+                    silver_log::error!(?e, "failed to allocate data columns request");
                 }
             };
         }
@@ -867,7 +871,7 @@ fn handle_peer_control(
                     );
                 }
                 Err(e) => {
-                    tracing::error!(?e, "failed to allocate envelopes by root request");
+                    silver_log::error!(?e, "failed to allocate envelopes by root request");
                 }
             }
         }

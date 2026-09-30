@@ -24,7 +24,7 @@ pub(crate) fn post_register_validator(req: &Request<'_>, _ctx: &ApiCtx, resp: &m
     let Some(registrations) = received(req.body, resp, Registration::well_formed) else {
         return;
     };
-    tracing::debug!(
+    silver_log::debug!(
         count = registrations.len(),
         "validator registrations discarded: silver reaches no builder network"
     );
@@ -39,7 +39,7 @@ pub(crate) fn post_prepare_beacon_proposer(
     let Some(preparations) = received(req.body, resp, ProposerPreparation::well_formed) else {
         return;
     };
-    tracing::debug!(count = preparations.len(), "proposer preparations received");
+    silver_log::debug!(count = preparations.len(), "proposer preparations received");
     if preparations.is_empty() {
         return resp.ok();
     }

@@ -249,7 +249,7 @@ impl BeaconStateTile {
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
-            tracing::debug!(
+            silver_log::debug!(
                 slot = p.target.attestation_slot,
                 committee = SingleAttestationView::committee_index(&p.buf),
                 "attestation pool full"
@@ -457,7 +457,7 @@ impl BeaconStateTile {
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::SyncContributionPoolFull.inc();
-            tracing::debug!(
+            silver_log::debug!(
                 slot = p.slot,
                 subcommittee = p.subnet,
                 block = hex32(&p.block_root),
@@ -751,7 +751,7 @@ impl BeaconStateTile {
         let state_id = node.state_id;
         let rv = self.state.read_view(state_id);
         if let Err(e) = stf::verify_execution_payload_envelope(&rv, &self.spec, ssz) {
-            tracing::info!(error = %e, "execution_payload_envelope rejected");
+            silver_log::info!(error = %e, "execution_payload_envelope rejected");
             return EnvelopeCheck::Reject;
         }
         EnvelopeCheck::Ready { block_root, state_id }
@@ -793,7 +793,7 @@ impl BeaconStateTile {
         let rv = self.state.read_view(state_id);
         let slot = rv.slot.slot_number();
         if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
-            tracing::error!(
+            silver_log::error!(
                 block = hex32(&block_root),
                 "envelope withdrawals are not the expected ones"
             );
@@ -835,7 +835,7 @@ impl BeaconStateTile {
         let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
             self.pending_envelopes.contains_key(&block_root);
         if !has_room {
-            tracing::warn!(
+            silver_log::warn!(
                 block = hex32(&block_root),
                 cap = self.pending_bounds.max_dc,
                 "pending-envelope buffer full; envelope dropped"
@@ -1006,7 +1006,7 @@ impl BeaconStateTile {
             exit_epoch,
             current_epoch,
         ) {
-            tracing::debug!(error = %e, "voluntary_exit gossip rejected");
+            silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
             return Feedback::Reject(None);
         }
         if stf::get_pending_balance_to_withdraw(&view.pending, vi_u as u32) != 0 {
@@ -1035,7 +1035,7 @@ impl BeaconStateTile {
         }
         let buf: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
         if let Err(e) = validate::validate_proposer_slashing(buf) {
-            tracing::debug!(error = %e, "proposer_slashing gossip rejected");
+            silver_log::debug!(error = %e, "proposer_slashing gossip rejected");
             return Feedback::Reject(None);
         }
 
@@ -1071,7 +1071,7 @@ impl BeaconStateTile {
         }
         self.seen_proposer_slashings.mark(proposer_index);
         let admission = self.slashing_pool.insert_proposer_slashing(buf, &view);
-        tracing::info!(proposer_index, ?admission, "proposer slashing pooled");
+        silver_log::info!(proposer_index, ?admission, "proposer slashing pooled");
         Feedback::Accept
     }
 
@@ -1109,7 +1109,7 @@ impl BeaconStateTile {
             }
             let view = self.state.read_view(canon_id);
             let admission = self.slashing_pool.insert_attester_slashing(data, slashed, &view);
-            tracing::info!(offenders = slashed.len(), ?admission, "attester slashing pooled");
+            silver_log::info!(offenders = slashed.len(), ?admission, "attester slashing pooled");
         }
         feedback
     }
@@ -1137,7 +1137,7 @@ impl BeaconStateTile {
         if let Err(e) =
             validate::validate_bls_to_execution_change(&view.validators, vi_u as u32, from_pubkey)
         {
-            tracing::debug!(error = %e, "bls_to_execution_change gossip rejected");
+            silver_log::debug!(error = %e, "bls_to_execution_change gossip rejected");
             return Feedback::Reject(None);
         }
 

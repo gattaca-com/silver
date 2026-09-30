@@ -54,7 +54,7 @@ impl AggregateRequest {
                 resp.versioned_json(version, |json| json.attestation(bytes));
             }
             Err(e) => {
-                tracing::warn!(?e, slot = self.committee.slot, "served aggregate unavailable");
+                silver_log::warn!(?e, slot = self.committee.slot, "served aggregate unavailable");
                 resp.error(500, "the aggregate could not be read");
             }
         }

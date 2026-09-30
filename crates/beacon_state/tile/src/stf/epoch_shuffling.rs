@@ -81,7 +81,7 @@ impl<'a> EpochShuffling<'a> {
                 bytes.copy_from_slice(&index.to_le_bytes());
             }
         }) else {
-            tracing::warn!(epoch, len, "beacon_state tcache full; shuffling not posted");
+            silver_log::warn!(epoch, len, "beacon_state tcache full; shuffling not posted");
             return false;
         };
         emit(BeaconStateEvent::AttestersShuffling { epoch, indices });

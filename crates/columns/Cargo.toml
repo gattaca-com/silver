@@ -14,9 +14,9 @@ fxhash.workspace = true
 hex.workspace = true
 silver_beacon_state_data.workspace = true
 silver_common.workspace = true
+silver_log.workspace = true
 slab.workspace = true
 rand.workspace = true
-tracing.workspace = true
 
 [features]
 # EF `gossip_validation` harness entry points.

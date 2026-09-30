@@ -66,7 +66,7 @@ impl BeaconStateTile {
         let (head_root, head_block_hash, safe_block_hash, finalized_block_hash) =
             self.fork_choice.fcu_execution_hashes();
         if head_root != self.head_block_root() {
-            tracing::warn!(slot, "head state does not follow fork choice; payload not prepared");
+            silver_log::warn!(slot, "head state does not follow fork choice; payload not prepared");
             return;
         }
         if self.payload_preparations.covers(slot, head_root) {
@@ -76,7 +76,7 @@ impl BeaconStateTile {
         let head = self.state.read_view(self.last_applied);
         let head_epoch_start = head.slot.state().slot / SLOTS_PER_EPOCH * SLOTS_PER_EPOCH;
         let Some(proposer) = head.epoch.proposer_at((slot - head_epoch_start) as usize) else {
-            tracing::error!(slot, "proposer lookahead does not reach the next slot");
+            silver_log::error!(slot, "proposer lookahead does not reach the next slot");
             return;
         };
         let Some(fee_recipient) = self.proposer_preparations.fee_recipient(proposer) else {
@@ -113,7 +113,7 @@ impl BeaconStateTile {
             attrs_withdrawal_count: withdrawals.len() as u8,
             attrs_withdrawals,
         }));
-        tracing::info!(slot, proposer, "payload preparation requested");
+        silver_log::info!(slot, proposer, "payload preparation requested");
     }
 
     pub(super) fn prepare_payload_on_new_head(&mut self, producers: &mut Producers) {

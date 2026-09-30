@@ -71,7 +71,7 @@ struct Shuffling {
 impl PostedShufflings {
     pub(crate) fn record(&mut self, epoch: Epoch, bytes: &[u8]) {
         if bytes.len() < size_of::<u32>() {
-            tracing::error!(epoch, "shuffling posted with no active validators");
+            silver_log::error!(epoch, "shuffling posted with no active validators");
             return;
         }
         self.entry_for(epoch).fill(epoch, bytes);

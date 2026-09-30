@@ -28,7 +28,6 @@ hex.workspace = true
 mimalloc.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true
-tracing.workspace = true
 
 [build-dependencies]
 build-info-build.workspace = true

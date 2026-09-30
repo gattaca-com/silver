@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 silver_chain_spec.workspace = true
+silver_log.workspace = true
 silver_ssz.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
@@ -15,7 +16,6 @@ parking_lot.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 hex.workspace = true
 
 [dev-dependencies]

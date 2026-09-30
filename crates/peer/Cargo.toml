@@ -13,8 +13,8 @@ hex.workspace = true
 rand.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
+silver_log.workspace = true
 slab.workspace = true
-tracing.workspace = true
 
 [lints]
 workspace = true

@@ -24,7 +24,7 @@ pub(super) fn load(store_dir: &str, custody: u128) -> Result<Option<Coverage>, E
     file.read_to_end(&mut bytes)?;
     let decoded = decode(&bytes, custody);
     if decoded.is_none() {
-        tracing::info!("coverage file not usable; rebuilding from the block files");
+        silver_log::info!("coverage file not usable; rebuilding from the block files");
     }
     Ok(decoded)
 }
@@ -66,7 +66,7 @@ fn decode(bytes: &[u8], custody: u128) -> Option<Coverage> {
     let mut cursor = Cursor { bytes, at: 0 };
     let persisted = cursor.u128()?;
     if persisted != custody {
-        tracing::info!(
+        silver_log::info!(
             persisted = format_args!("{persisted:#x}"),
             current = format_args!("{custody:#x}"),
             "custody changed since coverage was written"
@@ -93,7 +93,7 @@ fn decode(bytes: &[u8], custody: u128) -> Option<Coverage> {
         spans.iter().all(|span| span.from <= span.to) &&
         spans.windows(2).all(|pair| pair[0].to < pair[1].from);
     if !well_formed {
-        tracing::warn!("coverage file malformed");
+        silver_log::warn!("coverage file malformed");
         return None;
     }
     Some(Coverage {

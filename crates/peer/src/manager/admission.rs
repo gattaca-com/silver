@@ -48,7 +48,7 @@ impl PeerManager {
                 Some(eth2) => {
                     if !self.is_our_fork_digest(&eth2[..4]) {
                         crate::PeerCounters::DiscDroppedForkDigest.inc();
-                        tracing::warn!(
+                        silver_log::warn!(
                             theirs = hex::encode(&eth2[..4]),
                             ours = hex::encode(my_digest),
                             ?enr,
@@ -64,7 +64,7 @@ impl PeerManager {
                 }
                 None => {
                     crate::PeerCounters::DiscDroppedForkDigest.inc();
-                    tracing::trace!("Not a beacon node, no eth2");
+                    silver_log::trace!("Not a beacon node, no eth2");
                     self.ban_disc_peer(
                         PeerId::from_secp256k1_pubkey(&enr.public_key().serialize()),
                         now,
@@ -81,7 +81,7 @@ impl PeerManager {
             self.banned_ips.contains_key(&ip)
         {
             crate::PeerCounters::DiscDroppedBanned.inc();
-            tracing::warn!(?ip, "peer with banned ip");
+            silver_log::warn!(?ip, "peer with banned ip");
             return;
         }
 
@@ -90,36 +90,36 @@ impl PeerManager {
         let peer_id = PeerId::from_secp256k1_pubkey(&compressed);
         if self.banned_peers.contains_key(&peer_id) {
             crate::PeerCounters::DiscDroppedBanned.inc();
-            tracing::warn!(?peer_id, "banned peer id");
+            silver_log::warn!(?peer_id, "banned peer id");
             return;
         }
         if self.remote_banned_peers.contains_key(&peer_id) {
             crate::PeerCounters::DiscDroppedRemoteBan.inc();
-            tracing::debug!(?peer_id, "remote-banned peer id; dial backoff");
+            silver_log::debug!(?peer_id, "remote-banned peer id; dial backoff");
             return;
         }
         if self.database.dial_backoff_active(&peer_id, now) {
-            tracing::debug!(?peer_id, "dial-failure backoff active");
+            silver_log::debug!(?peer_id, "dial-failure backoff active");
             return;
         }
         if self.peers_by_id.contains_key(&peer_id) {
             // Normal high-frequency case: discovery re-surfaces connected peers
             // every poll cycle. trace, not warn — else it floods the log.
-            tracing::trace!(?peer_id, "known peer id");
+            silver_log::trace!(?peer_id, "known peer id");
             return;
         }
         if self.dialing.contains_key(&peer_id) {
-            tracing::trace!(?peer_id, "already dialing peer id");
+            silver_log::trace!(?peer_id, "already dialing peer id");
             return;
         }
 
         if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
-            tracing::debug!(udp4=?enr.udp4(), udp6=enr.udp6(), tcp4=?enr.tcp4(), tcp6=enr.tcp6(), "Peer does not support quic");
+            silver_log::debug!(udp4=?enr.udp4(), udp6=enr.udp6(), tcp4=?enr.tcp4(), tcp6=enr.tcp6(), "Peer does not support quic");
             self.ban_disc_peer(peer_id, now, emit);
             return;
         }
 
-        tracing::debug!(id=?enr.node_id(), ?enr, "new node");
+        silver_log::debug!(id=?enr.node_id(), ?enr, "new node");
 
         self.database.add_enr(enr);
     }
@@ -161,7 +161,7 @@ impl PeerManager {
             // to gets the ordinary priority cap; everyone else stops at
             // `target_peers`.
             let cap = if record.is_trusted {
-                tracing::info!(quic=?enr.quic4_socket(), "dialling trusted peer");
+                silver_log::info!(quic=?enr.quic4_socket(), "dialling trusted peer");
                 usize::MAX
             } else if enr_matches_subnets(
                 enr,
@@ -183,7 +183,7 @@ impl PeerManager {
             if connected >= cap {
                 continue;
             }
-            tracing::debug!(?peer_id, "redialing known peer");
+            silver_log::debug!(?peer_id, "redialing known peer");
             self.dialing.insert(peer_id, now);
             emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
             connected += 1;
@@ -320,7 +320,7 @@ impl PeerManager {
         {
             let user_agent = peer_record.identify.as_ref().map(|i| i.user_agent());
             let backoff = Self::goodbye_dial_backoff(code);
-            tracing::info!(
+            silver_log::info!(
                 p2p_peer,
                 code = Self::goodbye_reason(code),
                 ?user_agent,
@@ -356,7 +356,7 @@ impl PeerManager {
         crate::PeerCounters::RpcMisbehaviour.inc();
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.application_score += delta;
-            tracing::info!(
+            silver_log::info!(
                 peer_id = conn,
                 offence,
                 ?severity,
@@ -391,7 +391,7 @@ impl PeerManager {
                 continue;
             }
             let b = peer.last_breakdown;
-            tracing::warn!(
+            silver_log::warn!(
                 peer_id = ?peer.peer_id,
                 addr = ?peer.addr,
                 total = b.total,
@@ -420,7 +420,7 @@ impl PeerManager {
                 !peer.evict_spared
             {
                 peer.evict_spared = true;
-                tracing::warn!(
+                silver_log::warn!(
                     p2p_peer = conn,
                     peer_id = ?peer.peer_id,
                     score = peer.cached_score,
@@ -445,7 +445,7 @@ impl PeerManager {
                 entry.0
             };
             if count >= self.params.ip_ban_threshold {
-                tracing::info!(?ip, evictions = count, "banning ip");
+                silver_log::info!(?ip, evictions = count, "banning ip");
                 emit(PeerControl::BanIp { ip });
                 crate::PeerCounters::IpsBanned.inc();
                 self.banned_ips.insert(ip, now);

@@ -274,7 +274,7 @@ impl BeaconStateTile {
             reader: TCacheReader::new(tcaches),
         };
         tile.seed_anchor(anchor, anchor_header, val_cap);
-        tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
+        silver_log::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
         tile
     }
 
@@ -595,7 +595,7 @@ impl BeaconStateTile {
                 .events_producer
                 .write_with(entry.ssz_len(), |buffer| entry.write_ssz(committee_index, buffer));
             if written.is_none() {
-                tracing::error!(
+                silver_log::error!(
                     slot,
                     committee_index,
                     "beacon_state tcache full; aggregate not served"
@@ -622,7 +622,7 @@ impl BeaconStateTile {
                     contribution.write_ssz(buffer.try_into().expect("reserved to size"))
                 });
             if written.is_none() {
-                tracing::error!(
+                silver_log::error!(
                     slot,
                     subcommittee_index,
                     "beacon_state tcache full; contribution not served"
@@ -636,7 +636,10 @@ impl BeaconStateTile {
     fn record_proposer_preparations(&mut self, preparations: TCacheRead) {
         let acquired = self.reader.acquire(preparations);
         let Ok((encoded, _)) = acquired.buffer() else {
-            tracing::error!(seq = acquired.seq(), "proposer preparations overwritten before read");
+            silver_log::error!(
+                seq = acquired.seq(),
+                "proposer preparations overwritten before read"
+            );
             return;
         };
         let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
@@ -755,7 +758,7 @@ impl BeaconStateTile {
             EngineResp::NewPayload(r) => {
                 match self.held.on_payload_verdict(&r.block_root, r.status) {
                     StagedVerdict::Rejected(source) => {
-                        tracing::warn!(
+                        silver_log::warn!(
                             block = hex32(&r.block_root),
                             "EL rejected a staged block; dropped"
                         );
@@ -788,7 +791,7 @@ impl BeaconStateTile {
         self.consume_shared(adapter);
 
         adapter.consume(|m: NewGossipMsg, producers| {
-            tracing::trace!(
+            silver_log::trace!(
                 topic = ?m.topic,
                 p2p_peer = m.stream_id.peer(),
                 staged_len = self.held.staged_len(),
@@ -893,13 +896,13 @@ impl BeaconStateTile {
 
     fn on_sync_update(&mut self, target: SyncUpdate) {
         if target.is_syncing() != self.sync_target.is_syncing() {
-            tracing::info!(from = ?self.sync_target, to = ?target, "BeaconState mode transition");
+            silver_log::info!(from = ?self.sync_target, to = ?target, "BeaconState mode transition");
         }
         self.sync_target = target;
         if !self.da_required() {
             let dropped = self.held.drop_all_staged();
             if dropped > 0 {
-                tracing::warn!(dropped, "staged blocks dropped: chasing a finalized target");
+                silver_log::warn!(dropped, "staged blocks dropped: chasing a finalized target");
             }
         }
     }
@@ -916,7 +919,7 @@ impl BeaconStateTile {
             RpcResponse::BeaconBlock { fork_digest: _, ssz }
                 if id.is(DataKind::Block, Origin::Live) =>
             {
-                tracing::debug!(?stream_id, "received beacon block over rpc");
+                silver_log::debug!(?stream_id, "received beacon block over rpc");
                 self.handle_rpc_block(stream_id, ssz, false, producers);
             }
             RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz }
@@ -932,7 +935,7 @@ impl BeaconStateTile {
                             producers,
                         );
                     }
-                    Err(e) => tracing::error!(
+                    Err(e) => silver_log::error!(
                         ?e,
                         seq = acquired.seq(),
                         "rpc envelope buffer acquire failed"
@@ -1122,7 +1125,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.events_producer.loop_start();
         if !self.initial_status_emitted {
-            tracing::info!("producing initial status");
+            silver_log::info!("producing initial status");
             self.publish_status(&mut adapter.producers);
             self.initial_status_emitted = true;
         }

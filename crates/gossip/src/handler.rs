@@ -149,13 +149,13 @@ impl GossipHandler {
         };
         let wire = topic.to_wire(digest);
         if ssz.len() > topic.max_uncompressed_size() {
-            tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
+            silver_log::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
             return None;
         }
         let n = match self.compress(ssz) {
             Ok(n) => n,
             Err(e) => {
-                tracing::error!(?e, ?topic, "publish snappy compress failed");
+                silver_log::error!(?e, ?topic, "publish snappy compress failed");
                 return None;
             }
         };
@@ -169,12 +169,12 @@ impl GossipHandler {
             &self.snap_scratch[..n],
             &wire,
         )
-        .inspect_err(|e| tracing::error!(?e, ?topic, "publish protobuf write failed"))
+        .inspect_err(|e| silver_log::error!(?e, ?topic, "publish protobuf write failed"))
         .ok()?;
         self.mcache.insert(msg_id, topic, domain, read, &mut self.reader);
         let idontwant =
             copy_idontwants_to_protobuf_output(&mut self.mcache_publish, std::iter::once(&msg_id))
-                .inspect_err(|e| tracing::error!(?e, ?topic, "publish idontwant write failed"))
+                .inspect_err(|e| silver_log::error!(?e, ?topic, "publish idontwant write failed"))
                 .ok()?;
         Some(SelfBuiltGossip { msg_id, domain, protobuf: read, idontwant })
     }
@@ -317,7 +317,7 @@ impl GossipHandler {
                 if let Ok(tcache) =
                     control::copy_subscriptions(&mut self.mcache_publish, &[&wire], mode)
                 {
-                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip subscribe");
+                    silver_log::debug!(p2p_connection, ?topic, "Emit new gossip subscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -331,7 +331,7 @@ impl GossipHandler {
                         &wire,
                     ])
                 {
-                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip unsubscribe");
+                    silver_log::debug!(p2p_connection, ?topic, "Emit new gossip unsubscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -343,7 +343,7 @@ impl GossipHandler {
                 if let Ok(tcache) =
                     control::copy_grafts_to_protobuf_output(&mut self.mcache_publish, &[&wire])
                 {
-                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip graft");
+                    silver_log::debug!(p2p_connection, ?topic, "Emit new gossip graft");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -363,7 +363,7 @@ impl GossipHandler {
                     &[&wire],
                     backoff_seconds,
                 ) {
-                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip prune");
+                    silver_log::debug!(p2p_connection, ?topic, "Emit new gossip prune");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -415,14 +415,14 @@ impl GossipHandler {
 
             // Incoming gossip messages are prefixed with P2pStreamId
             let stream_id: &P2pStreamId = buffer.into();
-            tracing::trace!(?stream_id, len = buffer.len(), "gossip protobuf recv");
+            silver_log::trace!(?stream_id, len = buffer.len(), "gossip protobuf recv");
 
             buffer = &buffer[size_of::<P2pStreamId>()..];
 
             let gossip_proto = match RPCView::decode_view(buffer) {
                 Ok(p) => Some(p),
                 Err(e) => {
-                    tracing::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode failed");
+                    silver_log::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode failed");
                     None
                 }
             };
@@ -503,7 +503,7 @@ impl GossipHandler {
                             &mut self.mcache_publish,
                             emit,
                         ) {
-                            tracing::error!(
+                            silver_log::error!(
                                 ?e,
                                 ?stream_id,
                                 topic = gossip_msg.topic,

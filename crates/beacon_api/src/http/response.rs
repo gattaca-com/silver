@@ -180,7 +180,7 @@ impl<'a> Response<'a> {
         body: &[u8],
     ) {
         if status_line(code).is_none() {
-            tracing::warn!("no reason phrase for status {code}");
+            silver_log::warn!("no reason phrase for status {code}");
         }
         self.frame(code, content_type, headers, body);
     }

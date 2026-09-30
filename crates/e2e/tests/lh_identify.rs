@@ -15,10 +15,11 @@ use lh_common::{
 };
 use silver_common::AGENT_VERSION;
 use silver_e2e::{LhClient, lh_client};
+use tracing_subscriber::filter::LevelFilter;
 
 #[test]
 fn silver_dials_libp2p_identify_round_trip() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(40);
     let mut client = LhClient::new_listener();
@@ -54,7 +55,7 @@ fn silver_dials_libp2p_identify_round_trip() {
 
 #[test]
 fn libp2p_dials_silver_identify_round_trip() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let (mut silver, _td) = build_silver_listener(41);
     let mut client = LhClient::new_dialer();

@@ -94,7 +94,7 @@ impl BeaconStateTile {
         }
 
         if let Some(lca_slot) = self.fork_choice.lca_slot(self.last_seen_head_root, head) {
-            tracing::info!(
+            silver_log::info!(
                 from = hex32(&self.last_seen_head_root),
                 to = hex32(&head),
                 lca_slot,

@@ -60,7 +60,7 @@ pub(super) fn handle_data_column_event<F>(
                 });
             }
         }
-        Err(e) => tracing::warn!(?e, ?topic, "publish column ssz read failed"),
+        Err(e) => silver_log::warn!(?e, ?topic, "publish column ssz read failed"),
     }
 }
 
@@ -125,7 +125,11 @@ impl CellIngress {
                 let set = match self.allocator.allocate(request) {
                     Ok(set) => Some(set),
                     Err(e) => {
-                        tracing::debug!(?e, slot = request.context.slot, "cell allocation failed");
+                        silver_log::debug!(
+                            ?e,
+                            slot = request.context.slot,
+                            "cell allocation failed"
+                        );
                         None
                     }
                 };

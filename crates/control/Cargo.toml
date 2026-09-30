@@ -14,9 +14,9 @@ rand.workspace = true
 silver_chain_spec.workspace = true
 silver_common.workspace = true
 silver_gossip.workspace = true
+silver_log.workspace = true
 silver_peer.workspace = true
 fxhash.workspace = true
-tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 crc32c.workspace = true

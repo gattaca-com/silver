@@ -7,7 +7,6 @@ use std::{
 use flux::{
     spine::{SpineAdapter, SpineProducers},
     tile::Tile,
-    tracing,
 };
 use flux_profiler::timed;
 use mio::{Events, Poll, Token};
@@ -96,12 +95,12 @@ impl NetworkTile {
                 let addr = enr.quic4_socket().or(enr.quic6_socket());
                 if let Some(addr) = addr {
                     crate::NetworkCounters::DialAttempts.inc();
-                    tracing::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
+                    silver_log::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
                     if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
-                        tracing::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
+                        silver_log::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
                     }
                 } else {
-                    tracing::warn!(?enr, "cannot dial peer with no quic endpoint");
+                    silver_log::warn!(?enr, "cannot dial peer with no quic endpoint");
                 }
             }
             PeerControl::P2pDisconnect { p2p: _, p2p_connection } => {
@@ -136,7 +135,7 @@ impl NetworkTile {
             match self.inner.enqueue_cluster_out(cluster_event) {
                 SendResult::Ok => {}
                 other => {
-                    tracing::warn!(?other, "cluster node unreachable");
+                    silver_log::warn!(?other, "cluster node unreachable");
                     producers
                         .cluster_inbound
                         .produce(&ClusterIn::NodeUnreachable(cluster_event.to).into());
@@ -183,7 +182,7 @@ impl NetworkTile {
                         RpcInbound::Request(req) => req.stream_id,
                         RpcInbound::Response(rsp) => rsp.stream_id,
                     };
-                    tracing::debug!(?stream_id, "network: incoming rpc");
+                    silver_log::debug!(?stream_id, "network: incoming rpc");
                     adapter.produce(rpc_inbound);
                 }
                 NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
@@ -222,7 +221,7 @@ impl NetworkTile {
                 let result = match msg {
                     P2pSend::Gossip(gossip_msg_out) => {
                         gossips += 1;
-                        tracing::debug!(peer=gossip_msg_out.peer_id, "send gossip");
+                        silver_log::debug!(peer=gossip_msg_out.peer_id, "send gossip");
                         self.inner.enqueue_gossip(gossip_msg_out)
                     },
                     P2pSend::SegmentedGossip { peer_id, frame, partial_cells } => {
@@ -243,7 +242,7 @@ impl NetworkTile {
                     SendResult::Ok => None,
                     SendResult::Dropped(Some(msg)) => Some(msg),
                     SendResult::Dropped(None) => {
-                        tracing::error!(
+                        silver_log::error!(
                             peer = msg.peer_id(),
                             protocol = ?msg.protocol(),
                             "endpoint dropped a message without identifying it"
@@ -259,7 +258,7 @@ impl NetworkTile {
                         Some(msg)
                     }
                     SendResult::ConnectionClosing => {
-                        tracing::debug!(
+                        silver_log::debug!(
                             peer = msg.peer_id(),
                             protocol = ?msg.protocol(),
                             "send refused: connection closing"
@@ -268,7 +267,7 @@ impl NetworkTile {
                     }
                     SendResult::UnknownPeer => {
                         // Can happen if peer has disconnected.
-                        tracing::debug!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");
+                        silver_log::debug!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");
                         Some(msg)
                     }
                 };
@@ -427,7 +426,7 @@ where
         let mut did_work = false;
 
         if let Err(e) = self.poll() {
-            tracing::error!(error=?e, "poll");
+            silver_log::error!(error=?e, "poll");
             return false;
         }
 
@@ -482,7 +481,7 @@ where
                     match self.p2p_endpoint.update_identify_record(identify, addr.ip()) {
                         Ok(new_identify) => *identify = new_identify,
                         Err(e) => {
-                            tracing::error!(?addr, ?e, "failed to update identify record ip");
+                            silver_log::error!(?addr, ?e, "failed to update identify record ip");
                         }
                     }
                 }

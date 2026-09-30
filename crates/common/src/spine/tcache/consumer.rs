@@ -96,7 +96,7 @@ impl Consumer {
             let head = cache_head.seq.load(Ordering::Relaxed);
             if head.saturating_sub(self.seq) > self.lag_threshold {
                 TCacheCounters::IdleReset.inc();
-                tracing::warn!(head, seq = self.seq, "force setting idle consumer tail");
+                silver_log::warn!(head, seq = self.seq, "force setting idle consumer tail");
                 self.seq = if self.last_head > self.seq { self.last_head } else { head };
             }
             self.last_head = head;
@@ -163,7 +163,7 @@ impl RandomAccessConsumer {
     #[inline]
     fn note(&mut self, read: TCacheRead) {
         if !self.bounds.note(self.cache, read.emitter, read.floor) {
-            tracing::warn!(
+            silver_log::warn!(
                 tcache = self.cache.name(),
                 consumer = self.name,
                 emitter = read.emitter,
@@ -188,7 +188,7 @@ impl RandomAccessConsumer {
     /// The pin is not counted: no bound protected `seq`, so the producer may
     /// reclaim it while held. The read surfaces as `StaleSeq` at `buffer()`.
     fn warn_acquire_below_tail(&self, read: TCacheRead) {
-        tracing::warn!(
+        silver_log::warn!(
             tcache = self.cache.name(),
             consumer = self.name,
             seq = read.seq,
@@ -249,7 +249,7 @@ impl RandomAccessConsumer {
                 let head = cache_head.seq.load(Ordering::Relaxed);
                 if head.saturating_sub(tail) > self.lag_threshold {
                     TCacheCounters::IdleReset.inc();
-                    tracing::warn!(
+                    silver_log::warn!(
                         head,
                         tail,
                         name = self.name,
@@ -282,7 +282,7 @@ impl RandomAccessConsumer {
     fn warn_below_tail(&self, seq: u64) {
         if seq < self.active.tail_seq {
             let e = TCacheError::StaleSeq { name: self.name, seq, tail: self.active.tail_seq };
-            tracing::warn!("reading below current tail: {:?}", e);
+            silver_log::warn!("reading below current tail: {:?}", e);
         }
     }
 }
@@ -548,7 +548,7 @@ impl Buckets {
 
     fn release(&mut self, seq: u64, name: &str) {
         if seq < self.tail_seq {
-            tracing::warn!(name, "tried to release: {seq} which is < {}", self.tail_seq);
+            silver_log::warn!(name, "tried to release: {seq} which is < {}", self.tail_seq);
             return;
         }
 
@@ -568,7 +568,7 @@ impl Buckets {
             let tail_bucket = self.bucket_index(self.tail_seq);
             if self.head_seq.saturating_sub(self.tail_seq) > self.lag_threshold {
                 TCacheCounters::LagEviction.inc();
-                tracing::warn!(
+                silver_log::warn!(
                     lagging = self.buckets[tail_bucket],
                     "unfreed lagging consumers dropped!"
                 );

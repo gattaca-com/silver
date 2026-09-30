@@ -17,18 +17,18 @@ use silver_common::{
 };
 use silver_discovery::Discovery;
 use silver_network::{Context, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult};
-use tracing::Level;
+use tracing_subscriber::filter::LevelFilter;
 
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    let _guard = tracing_subscriber::fmt().with_max_level(Level::WARN).init();
+    let _guard = tracing_subscriber::fmt().with_max_level(LevelFilter::WARN).init();
 
     let group_name = format!("quic_basic_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);
 
     let (data, total) = random_data();
-    tracing::info!("total: {total}");
+    silver_log::info!("total: {total}");
 
     let mut rng = rand::rngs::OsRng::default();
 
@@ -105,7 +105,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 }
 
                                 if recv == (total * i) {
-                                    tracing::info!("server completed");
+                                    silver_log::info!("server completed");
                                     break;
                                 }
                             }

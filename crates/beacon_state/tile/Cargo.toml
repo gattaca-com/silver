@@ -12,6 +12,7 @@ ef_tests = ["silver_common/test-util"]
 silver_common.workspace = true
 silver_beacon_state_data.workspace = true
 silver_config.workspace = true
+silver_log.workspace = true
 silver_ssz.workspace = true
 silver_slashing.workspace = true
 flux.workspace = true
@@ -20,7 +21,6 @@ ring.workspace = true
 blst.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 # Exposes SlotTicker::set_current_slot for fork-choice tick tests.

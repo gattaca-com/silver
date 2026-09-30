@@ -59,7 +59,7 @@ impl GossipReadState {
                     if let Self::ReadingBody { last_read, remaining, .. } = &gossip_read_state &&
                         now.saturating_duration_since(*last_read) > GOSSIP_BODY_STALL_TIMEOUT
                     {
-                        tracing::warn!(?p2p_id, remaining, "gossip body read stalled");
+                        silver_log::warn!(?p2p_id, remaining, "gossip body read stalled");
                         return Err(StreamError::ReadStall);
                     }
                     return Ok(gossip_read_state);
@@ -131,7 +131,7 @@ impl GossipReadState {
                     }
                     if remaining == 0 {
                         assert!(reservation.is_committed());
-                        tracing::trace!(?p2p_id, length, "tiny gossip frame");
+                        silver_log::trace!(?p2p_id, length, "tiny gossip frame");
                         emit(NetEvent::Gossip { stream: *p2p_id, msg: reservation.read() });
                         let excess = buf_end - buf_start - take;
                         let mut next = [0u8; 10];
@@ -145,7 +145,7 @@ impl GossipReadState {
                     }));
                 }
                 if fail_count == 0 {
-                    tracing::warn!(reservation_len, "failed to allocate incoming gossip");
+                    silver_log::warn!(reservation_len, "failed to allocate incoming gossip");
                 }
                 Ok(Spin::Ok(Self::AllocBody {
                     length,
@@ -159,7 +159,7 @@ impl GossipReadState {
                 let n = io
                     .read_from_stream(p2p_id.stream_id(), reservation.remaining_buffer()?)
                     .inspect_err(|e| {
-                        tracing::error!(?e, ?p2p_id, remaining, "reservation write failed");
+                        silver_log::error!(?e, ?p2p_id, remaining, "reservation write failed");
                     })?;
                 reservation.increment_offset(n);
                 remaining -= n;

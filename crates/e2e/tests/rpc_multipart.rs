@@ -20,6 +20,7 @@ use silver_common::{
     TCacheProducer, ssz_view::BLOCKS_BY_RANGE_REQ_SIZE, test_util::ShmemDir,
 };
 use silver_e2e::{PublisherStack, keypair_from_seed, on_free_loopback_ports};
+use tracing_subscriber::filter::LevelFilter;
 
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const CHUNK_COUNT: usize = 3;
@@ -116,7 +117,7 @@ fn synth_block_bytes(chunk_index: u8, len: usize) -> Vec<u8> {
 
 #[test]
 fn silver_receives_multipart_blocks_by_range_response() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let td = ShmemDir::new().expect("tempdir");
     let mut requester = build_stack(&td, "_req", 21);

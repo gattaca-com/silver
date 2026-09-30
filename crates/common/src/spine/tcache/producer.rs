@@ -305,7 +305,7 @@ impl Reservation {
         };
         self.offset += len;
         if self.auto_commit && self.offset == buffer_len {
-            tracing::trace!(seq = self.seq, len = buffer_len, "recv committed");
+            silver_log::trace!(seq = self.seq, len = buffer_len, "recv committed");
             self.cache.commit(self.seq, true);
             self.committed = true;
         }
@@ -350,7 +350,7 @@ impl Write for Reservation {
         let buffer = self.buffer()?;
         let buffer_len = buffer.len();
         if buf.len() + self.offset > buffer_len {
-            tracing::error!(
+            silver_log::error!(
                 reservation_len = buffer.len(),
                 offset = self.offset,
                 data_len = buf.len(),
@@ -381,7 +381,7 @@ impl Write for Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.committed {
-            tracing::debug!(
+            silver_log::debug!(
                 seq = self.seq,
                 offset = self.offset,
                 tcache = self.cache.name(),

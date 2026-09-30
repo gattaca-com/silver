@@ -77,7 +77,7 @@ impl JustifiedBalances {
     pub fn install(&mut self, cp: Checkpoint, validators: ValidatorsView<'_>) {
         let current_applied = self.current.unapplied.is_empty();
         let from_candidate = self.candidate.checkpoint.take() == Some(cp) && current_applied;
-        tracing::debug!(
+        silver_log::debug!(
             epoch = cp.epoch,
             from_candidate,
             current_applied,

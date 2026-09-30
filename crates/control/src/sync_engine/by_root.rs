@@ -99,7 +99,7 @@ impl ByRootRequests {
         let key = NeedKey { root, kind: need.kind };
         if self.needs.len() >= self.cap && !self.needs.contains_key(&key) {
             ControlCounters::RootNeedsRefused.inc();
-            tracing::warn!(
+            silver_log::warn!(
                 root = hex32(&root),
                 kind = ?need.kind,
                 wanted_at = need.wanted_at,
@@ -141,7 +141,7 @@ impl ByRootRequests {
 
     pub(super) fn retire(&mut self, root: &[u8; 32], kind: DataKind) {
         if let Some(need) = self.needs.remove(&NeedKey { root: *root, kind }) {
-            tracing::debug!(
+            silver_log::debug!(
                 root = hex32(root),
                 kind = ?need.kind,
                 wanted_at = need.wanted_at,
@@ -232,7 +232,7 @@ fn count_chase(kind: DataKind) {
 /// repeat it every backoff for as long as no peer can serve the root.
 fn report_unplaced(placed: bool, need: &Need, root: &[u8; 32]) {
     if !placed && need.attempts == 1 {
-        tracing::debug!(
+        silver_log::debug!(
             root = hex32(root),
             kind = ?need.kind,
             wanted_at = need.wanted_at,
@@ -246,7 +246,7 @@ fn offer(need: &mut Need, root: [u8; 32], next_id: &mut u64, now: Instant) -> Sy
     need.due = now + need.backoff();
     need.attempts += 1;
     if need.attempts == 1 {
-        tracing::debug!(
+        silver_log::debug!(
             root = hex32(&root),
             kind = ?need.kind,
             origin = ?need.origin,
@@ -256,7 +256,7 @@ fn offer(need: &mut Need, root: [u8; 32], next_id: &mut u64, now: Instant) -> Sy
     }
     if need.attempts == ATTEMPTS_BEFORE_REPORT {
         ControlCounters::RootNeedsStalled.inc();
-        tracing::warn!(
+        silver_log::warn!(
             root = hex32(&root),
             kind = ?need.kind,
             attempts = need.attempts,

@@ -22,7 +22,6 @@ toml.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
 silver_stages.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

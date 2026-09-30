@@ -108,13 +108,13 @@ impl SeenAggregates {
         }
         if self.entries.len() >= MAX_ENTRIES {
             BeaconStateCounters::SeenAggregatesFull.inc();
-            tracing::debug!(slot, committee = committee_index, "seen-aggregates full");
+            silver_log::debug!(slot, committee = committee_index, "seen-aggregates full");
             return;
         }
         if self.entries.keys().any(|k| k.slot == slot && k.committee_index == committee_index) {
             // Late-block / split-view signal: one committee attesting two
             // different AttestationData in the same slot.
-            tracing::debug!(slot, committee = committee_index, "second data_root for committee");
+            silver_log::debug!(slot, committee = committee_index, "second data_root for committee");
         }
         self.entries.insert(key, CommitteeCoverage::new(bits));
     }

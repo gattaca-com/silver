@@ -93,7 +93,7 @@ impl SlashingProtectionHandler {
             let initialized = cluster.set_startup_wall_slot(wall_slot);
             debug_assert!(initialized, "handler and cluster startup floors latch together");
         }
-        tracing::info!(wall_slot, "local slashing protection startup floor latched");
+        silver_log::info!(wall_slot, "local slashing protection startup floor latched");
     }
 
     /// Consume inbound Raft messages and pump all work currently ready in the
@@ -128,7 +128,7 @@ impl SlashingProtectionHandler {
     ) {
         if let Err(error) = self.admission.validate(attestation.command.key.slot, self.wall_slot) {
             produce_response(producers, attestation.request_id, Err(admission_failure(error)));
-            tracing::warn!(
+            silver_log::warn!(
                 ?error,
                 request_id = attestation.request_id,
                 slot = attestation.command.key.slot,
@@ -142,7 +142,7 @@ impl SlashingProtectionHandler {
             let response = lock_response(result, LocalGossipFailure::ConflictingAttestation);
             if response.is_err() {
                 produce_response(producers, attestation.request_id, response);
-                tracing::warn!(
+                silver_log::warn!(
                     ?result,
                     request_id = attestation.request_id,
                     slot = attestation.command.key.slot,
@@ -166,7 +166,7 @@ impl SlashingProtectionHandler {
             }
             Err(error) => {
                 produce_response(producers, attestation.request_id, Err(proposal_failure(&error)));
-                tracing::warn!(
+                silver_log::warn!(
                     ?error,
                     request_id = attestation.request_id,
                     slot = attestation.command.key.slot,
@@ -194,7 +194,7 @@ impl SlashingProtectionHandler {
         let command = BlockLockCommand { key, signature: *SignedBeaconBlockView::signature(block) };
         if let Err(error) = self.admission.validate(key.slot, self.wall_slot) {
             produce_response(producers, request_id, Err(admission_failure(error)));
-            tracing::warn!(
+            silver_log::warn!(
                 ?error,
                 request_id,
                 slot = key.slot,
@@ -207,7 +207,12 @@ impl SlashingProtectionHandler {
             let result = self.local_locks.apply_block(&command);
             if let Err(failure) = lock_response(result, LocalGossipFailure::ConflictingProposal) {
                 produce_response(producers, request_id, Err(failure));
-                tracing::warn!(?result, request_id, slot = key.slot, "local lock rejected block");
+                silver_log::warn!(
+                    ?result,
+                    request_id,
+                    slot = key.slot,
+                    "local lock rejected block"
+                );
                 return;
             }
             return local_gossip.submit(
@@ -226,14 +231,19 @@ impl SlashingProtectionHandler {
             }
             Err(error) => {
                 produce_response(producers, request_id, Err(proposal_failure(&error)));
-                tracing::warn!(?error, request_id, slot = key.slot, "cluster rejected local block");
+                silver_log::warn!(
+                    ?error,
+                    request_id,
+                    slot = key.slot,
+                    "cluster rejected local block"
+                );
             }
         }
     }
 
     fn handle_message(&mut self, inbound: ClusterMsgIn, inbound_consumer: &mut TCacheReader) {
         let Some(acquired) = inbound_consumer.acquire_strict(inbound.data) else {
-            tracing::warn!(
+            silver_log::warn!(
                 from = inbound.from,
                 seq = inbound.data.seq(),
                 "cluster inbound TCache read is no longer available"
@@ -241,7 +251,7 @@ impl SlashingProtectionHandler {
             return;
         };
         let Ok((bytes, _)) = acquired.buffer() else {
-            tracing::warn!(
+            silver_log::warn!(
                 from = inbound.from,
                 seq = inbound.data.seq(),
                 "failed to read cluster inbound TCache message"
@@ -250,7 +260,7 @@ impl SlashingProtectionHandler {
         };
 
         let Some(cluster) = self.cluster.as_mut() else {
-            tracing::debug!(
+            silver_log::debug!(
                 from = inbound.from,
                 "ignoring cluster message while clustering is disabled"
             );
@@ -262,12 +272,12 @@ impl SlashingProtectionHandler {
         let message = match decode_message(bytes) {
             Ok(message) => message,
             Err(error) => {
-                tracing::warn!(?error, from = inbound.from, "invalid inbound Raft message");
+                silver_log::warn!(?error, from = inbound.from, "invalid inbound Raft message");
                 return;
             }
         };
         if message.from != inbound.from {
-            tracing::warn!(
+            silver_log::warn!(
                 authenticated_from = inbound.from,
                 encoded_from = message.from,
                 "inbound Raft message source does not match authenticated cluster peer"
@@ -275,7 +285,7 @@ impl SlashingProtectionHandler {
             return;
         }
         if message.to != cluster.node_id() {
-            tracing::warn!(
+            silver_log::warn!(
                 from = inbound.from,
                 encoded_to = message.to,
                 local_node = cluster.node_id(),
@@ -284,7 +294,7 @@ impl SlashingProtectionHandler {
             return;
         }
         if let Err(error) = cluster.step(message) {
-            tracing::warn!(?error, from = inbound.from, "failed to step inbound Raft message");
+            silver_log::warn!(?error, from = inbound.from, "failed to step inbound Raft message");
         }
     }
 
@@ -311,13 +321,13 @@ impl SlashingProtectionHandler {
                         producers.cluster_outbound.produce(&ClusterMsgOut { to, data }.into());
                     }
                     Err(error) => {
-                        tracing::warn!(?error, to, "failed to buffer outbound Raft message")
+                        silver_log::warn!(?error, to, "failed to buffer outbound Raft message")
                     }
                 }
             }
             ClusterEvent::AttestationCommitted(decision) => {
                 let Some(attestation) = pending_attestations.remove(&decision.proposal_id) else {
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?decision.proposal_id,
                         "committed local Raft proposal has no pending attestation"
                     );
@@ -329,7 +339,7 @@ impl SlashingProtectionHandler {
                         attestation.request_id,
                         Err(LocalGossipFailure::Internal),
                     );
-                    tracing::error!(
+                    silver_log::error!(
                         ?decision.proposal_id,
                         request_id = attestation.request_id,
                         "committed Raft command does not match its pending attestation"
@@ -350,7 +360,7 @@ impl SlashingProtectionHandler {
                     );
                 } else {
                     produce_response(producers, attestation.request_id, response);
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?decision.result,
                         ?decision.admission,
                         request_id = attestation.request_id,
@@ -361,7 +371,7 @@ impl SlashingProtectionHandler {
             }
             ClusterEvent::BlockCommitted(decision) => {
                 let Some(block) = pending_blocks.remove(&decision.proposal_id) else {
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?decision.proposal_id,
                         "committed local Raft proposal has no pending block"
                     );
@@ -373,7 +383,7 @@ impl SlashingProtectionHandler {
                         block.request_id,
                         Err(LocalGossipFailure::Internal),
                     );
-                    tracing::error!(
+                    silver_log::error!(
                         ?decision.proposal_id,
                         request_id = block.request_id,
                         "committed Raft command does not match its pending block"
@@ -388,7 +398,7 @@ impl SlashingProtectionHandler {
                 );
                 if let Err(failure) = response {
                     produce_response(producers, block.request_id, Err(failure));
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?decision.result,
                         ?decision.admission,
                         request_id = block.request_id,
@@ -404,7 +414,7 @@ impl SlashingProtectionHandler {
                         block.request_id,
                         Err(LocalGossipFailure::Internal),
                     );
-                    tracing::error!(
+                    silver_log::error!(
                         request_id = block.request_id,
                         slot,
                         "submitted block overwritten before its lock committed"
@@ -425,7 +435,7 @@ impl SlashingProtectionHandler {
                         block.request_id,
                         Err(LocalGossipFailure::TimedOut),
                     );
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?proposal_id,
                         request_id = block.request_id,
                         slot = block.key.slot,
@@ -438,7 +448,7 @@ impl SlashingProtectionHandler {
                         attestation.request_id,
                         Err(LocalGossipFailure::TimedOut),
                     );
-                    tracing::warn!(
+                    silver_log::warn!(
                         ?proposal_id,
                         request_id = attestation.request_id,
                         slot = attestation.command.key.slot,
@@ -448,7 +458,7 @@ impl SlashingProtectionHandler {
             }
         });
         if let Err(error) = result {
-            tracing::error!(?error, "slashing protection spin failed");
+            silver_log::error!(?error, "slashing protection spin failed");
             for (_, attestation) in self.pending_attestations.drain() {
                 produce_response(
                     producers,

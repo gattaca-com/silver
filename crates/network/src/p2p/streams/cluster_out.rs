@@ -75,7 +75,7 @@ impl ClusterWrite {
             }
             Self::Writing { mut offset, length, message } => {
                 let Some(r_offset) = message.with_offset(offset) else {
-                    tracing::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
+                    silver_log::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
                     return Ok(Spin::Next(Self::Idle));
                 };
 

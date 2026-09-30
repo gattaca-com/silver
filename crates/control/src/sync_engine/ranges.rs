@@ -230,7 +230,7 @@ impl Ranges {
             let request_id = RequestId::next(kind, self.origin, next_id);
             let range = Range { request_id, start, count };
 
-            tracing::debug!(?kind, start, count, origin = ?self.origin, "range request");
+            silver_log::debug!(?kind, start, count, origin = ?self.origin, "range request");
             let placed = emit(range.action(kind, self.origin, self.columns));
             if placed {
                 ControlCounters::RangesIssued.inc();

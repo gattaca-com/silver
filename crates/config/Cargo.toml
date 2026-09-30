@@ -10,10 +10,10 @@ silver_common.workspace = true
 silver_chain_spec.workspace = true
 secp256k1.workspace = true
 serde.workspace = true
+silver_log.workspace = true
 toml.workspace = true
 serde_yml.workspace = true
 hex.workspace = true
-tracing.workspace = true
 
 [lints]
 workspace = true

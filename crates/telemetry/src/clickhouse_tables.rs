@@ -6,8 +6,8 @@ use flux_network::Network;
 use serde::Serialize;
 use silver_common::{Nanos, SilverSpine};
 use silver_config::ChainConfig;
+use silver_log::{info, warn};
 use silver_stages::StageReader;
-use tracing::{info, warn};
 
 use crate::{
     block_events::{self, BlockEventRow},

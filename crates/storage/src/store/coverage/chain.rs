@@ -81,7 +81,7 @@ impl Chain {
                 at
             }
             None if self.contains(slot) => {
-                tracing::error!(slot, "block noted inside history already held");
+                silver_log::error!(slot, "block noted inside history already held");
                 return false;
             }
             None => {
