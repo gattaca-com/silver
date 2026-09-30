@@ -19,7 +19,8 @@ pub const DDL: &str = "CREATE TABLE IF NOT EXISTS counters (
     delta                Int64                  COMMENT 'Change during the slot; negative for a falling gauge',
     version              LowCardinality(String) COMMENT 'Commit the node was built from',
     meta_client_name     LowCardinality(String) COMMENT 'Hostname of the node that produced the row',
-    meta_network_name    LowCardinality(String) COMMENT 'Ethereum network the node is running'
+    meta_network_name    LowCardinality(String) COMMENT 'Ethereum network the node is running',
+    INDEX slot_time slot_start_date_time TYPE minmax GRANULARITY 1
 ) ENGINE = MergeTree
 ORDER BY (meta_client_name, component, name, slot)";
 
