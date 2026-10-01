@@ -14,7 +14,6 @@ use flux::{
 };
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
-use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
@@ -22,8 +21,8 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, Enr, GossipTopic, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify, SilverSpine, TCache,
-    TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    APP_NAME, Enr, GossipTopic, Keypair, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify, SilverSpine,
+    TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
@@ -123,8 +122,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCache::producer(TCacheId::BeaconStateHandoff, BEACON_STATE_TCACHE_SIZE);
 
     // Tiles.
-    let keypair = config.keypair()?;
-    let mut local_enr = config.enr()?;
+    let keypair = Keypair::load_or_create(Path::new(config.data_storage_dir()))?;
+    let mut local_enr = config.enr(&keypair)?;
 
     silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
@@ -201,7 +200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.max_connections(),
         trusted_ips,
     );
-    let identify = config.identify()?;
+    let identify = config.identify(&keypair)?;
 
     let now = Instant::now();
 
@@ -397,17 +396,15 @@ fn load_config() -> Result<Config, silver_common::Error> {
     let config_path = args.iter().position(|a| a == "--config").and_then(|i| args.get(i + 1));
     let mut config = match config_path {
         // Devnet / custom: every network-specific value (fork_digest,
-        // genesis, bootstrap ENRs, external IP, ports, secret key) comes
-        // from the file — no source edits needed.
+        // genesis, bootstrap ENRs, external IP, ports) comes from the file —
+        // no source edits needed.
         Some(path) => Config::from_file(path)?,
-        // Default: mainnet, random identity, hardcoded bootnodes below.
+        // Default: mainnet, hardcoded bootnodes below.
         None => {
-            let mut secret = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut secret);
             let fork_digest = [0x8c, 0x9f, 0x62, 0xfe];
             let next_fork_version = [6, 0, 0, 0];
             let next_fork_epoch = u64::MAX;
-            let mut config = Config::new(secret, fork_digest, next_fork_version, next_fork_epoch)
+            let mut config = Config::new(fork_digest, next_fork_version, next_fork_epoch)
                 .with_discovery_port(31133)
                 .with_quic_port(31123);
 

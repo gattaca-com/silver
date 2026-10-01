@@ -8,7 +8,6 @@ version.workspace = true
 [dependencies]
 silver_common.workspace = true
 silver_chain_spec.workspace = true
-secp256k1.workspace = true
 serde.workspace = true
 silver_log.workspace = true
 toml.workspace = true

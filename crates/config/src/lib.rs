@@ -10,12 +10,11 @@ pub use cluster_config::ClusterConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
-use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_chain_spec::ForkName;
 pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
-    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
+    Enr, Error, GossipTopic, Identify, Keypair, PeerId, SAMPLES_PER_SLOT, SLOTS_PER_EPOCH,
     SUBNETS_PER_NODE, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
@@ -127,8 +126,6 @@ fn anchor_genesis(path: &str) -> Result<(u64, [u8; 32]), Error> {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
-    #[serde(with = "hex::serde")]
-    secret_key: [u8; 32],
     /// Both of these are overwritten from `spec` and the anchor state's
     /// `genesis_validators_root` whenever `checkpoint_file` names one, so a
     /// literal here applies only to a run with no anchor.
@@ -215,14 +212,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(
-        secret_key: [u8; 32],
-        fork_digest: [u8; 4],
-        next_fork_version: [u8; 4],
-        next_fork_epoch: u64,
-    ) -> Self {
+    pub fn new(fork_digest: [u8; 4], next_fork_version: [u8; 4], next_fork_epoch: u64) -> Self {
         Self {
-            secret_key,
             fork_digest,
             next_fork_version,
             next_fork_epoch,
@@ -258,7 +249,7 @@ impl Config {
 
     /// Load a full `Config` from a TOML file. Devnet runs supply every
     /// network-specific value (fork_digest, genesis, bootstrap ENRs,
-    /// external IP, ports, secret key) here, so no source edits are needed.
+    /// external IP, ports) here, so no source edits are needed.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let text = std::fs::read_to_string(path)?;
         let mut config: Self = toml::from_str(&text)?;
@@ -381,10 +372,6 @@ impl Config {
         self
     }
 
-    pub fn keypair(&self) -> Result<Keypair, Error> {
-        Keypair::from_secret(&self.secret_key)
-    }
-
     pub fn fork_digest(&self) -> [u8; 4] {
         self.fork_digest
     }
@@ -393,15 +380,7 @@ impl Config {
         self.next_fork_version
     }
 
-    pub fn p2p_peer_id(&self) -> Result<PeerId, Error> {
-        Ok(PeerId::from_secp256k1_pubkey(self.keypair()?.public_key_compressed()))
-    }
-
-    pub fn discv5_node_id(&self) -> Result<NodeId, Error> {
-        Ok(PublicKey::from_slice(self.keypair()?.public_key_compressed())?.into())
-    }
-
-    pub fn enr(&self) -> Result<Enr, Error> {
+    pub fn enr(&self, keypair: &Keypair) -> Result<Enr, Error> {
         let mut builder = Enr::builder();
         // Remotes only replace a cached record on a strictly higher seq, and
         // the node key (= node_id) is stable across restarts — a constant
@@ -438,7 +417,7 @@ impl Config {
             // address first, so advertising tcp gets us QUIC-dialed.
             builder.tcp4(qp).tcp6(qp);
         }
-        Ok(builder.build(self.keypair()?.secret_key())?)
+        Ok(builder.build(keypair.secret_key())?)
     }
 
     pub fn supported_protocols(&self) -> Result<Vec<StreamProtocol>, Error> {
@@ -455,10 +434,10 @@ impl Config {
     }
 
     #[allow(clippy::field_reassign_with_default)]
-    pub fn identify(&self) -> Result<Identify, Error> {
+    pub fn identify(&self, keypair: &Keypair) -> Result<Identify, Error> {
         let mut identify = Identify::default();
-        identify.peer_id = Some(self.p2p_peer_id()?);
-        identify.public_key = *self.keypair()?.public_key_compressed();
+        identify.peer_id = Some(PeerId::from_secp256k1_pubkey(keypair.public_key_compressed()));
+        identify.public_key = *keypair.public_key_compressed();
         for protocol in self.supported_protocols()? {
             identify.protocols |= 1 << protocol.ordinal();
         }
@@ -585,12 +564,11 @@ mod tests {
 
     #[test]
     fn minimal_toml_populates_defaults() {
-        // Only fork_digest / next_fork_version / secret_key are required;
+        // Only fork_digest / next_fork_version are required;
         // next_fork_epoch defaults to FAR_FUTURE and the lists fall back to
         // the same values `Config::new` sets (else a file config silently
         // advertises zero protocols/topics).
         let toml_str = r#"
-            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
             fork_digest = "8c9f62fe"
             next_fork_version = "06000000"
         "#;
@@ -609,7 +587,6 @@ mod tests {
     #[test]
     fn partial_columns_modes_are_validated() {
         let base = r#"
-            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
             fork_digest = "8c9f62fe"
             next_fork_version = "06000000"
         "#;
@@ -630,7 +607,6 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
             fork_digest = "8c9f62fe"
             next_fork_version = "06000000"
 
@@ -650,7 +626,6 @@ mod tests {
     #[test]
     fn beacon_api_bind_toml_array_keeps_every_entry() {
         let toml_str = r#"
-            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
             fork_digest = "8c9f62fe"
             next_fork_version = "06000000"
             beacon_api_bind = ["0.0.0.0:5051", "127.0.0.1:5052", "/run/silver/beacon.sock"]
@@ -665,7 +640,7 @@ mod tests {
 
     #[test]
     fn builder_sets_beacon_api_bind() {
-        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        let cfg = Config::new([0u8; 4], [0u8; 4], 0);
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         let cfg = cfg.with_beacon_api_bind(vec!["/run/beacon.sock".into()]);
         assert_eq!(cfg.beacon_api_bind(), ["/run/beacon.sock"]);
@@ -673,7 +648,7 @@ mod tests {
 
     #[test]
     fn builder_sets_beacon_api_max_connections() {
-        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        let cfg = Config::new([0u8; 4], [0u8; 4], 0);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         let cfg = cfg.with_beacon_api_max_connections(2);
         assert_eq!(cfg.beacon_api_max_connections(), 2);
@@ -681,7 +656,7 @@ mod tests {
 
     #[test]
     fn builder_sets_beacon_api_idle_timeout() {
-        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        let cfg = Config::new([0u8; 4], [0u8; 4], 0);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         let cfg = cfg.with_beacon_api_idle_timeout_secs(5);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(5));
@@ -691,12 +666,12 @@ mod tests {
     /// makes the node invisible to discovery, not degraded.
     #[test]
     fn production_enr_fits_discv5_record_cap() {
-        let cfg = Config::new([1u8; 32], [1, 2, 3, 4], [5, 6, 7, 8], 123_456)
+        let key = Keypair::from_secret(&[1u8; 32]).unwrap();
+        let cfg = Config::new([1, 2, 3, 4], [5, 6, 7, 8], 123_456)
             .with_external_ip_v4(Ipv4Addr::new(203, 0, 113, 7))
             .with_discovery_port(9000)
             .with_quic_port(9001);
-        let mut enr = cfg.enr().unwrap();
-        let key = cfg.keypair().unwrap();
+        let mut enr = cfg.enr(&key).unwrap();
         enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
         enr.set_syncnets(SyncCommitteeSubnets::All.long_lived(), key.secret_key()).unwrap();
         // Unpadded base64: 4 chars per 3 bytes.
@@ -706,7 +681,7 @@ mod tests {
 
     #[test]
     fn builders_set_external_ip_and_genesis() {
-        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0)
+        let cfg = Config::new([0u8; 4], [0u8; 4], 0)
             .with_external_ip_v4(Ipv4Addr::new(172, 16, 0, 1))
             .with_genesis_unix_secs(1234);
         assert_eq!(cfg.external_ip_v4, Some(Ipv4Addr::new(172, 16, 0, 1)));
@@ -755,11 +730,9 @@ mod tests {
             dir.path(),
             "silver.toml",
             &format!(
-                "secret_key = \"{}\"\n\
-                 [chain_config]\n\
+                "[chain_config]\n\
                  spec_file = \"{spec_file}\"\n\
-                 checkpoint_file = \"{anchor}\"\n",
-                "11".repeat(32)
+                 checkpoint_file = \"{anchor}\"\n"
             ),
         );
 
@@ -793,13 +766,11 @@ mod tests {
             dir.path(),
             "silver.toml",
             &format!(
-                "secret_key = \"{}\"\n\
-                 fork_digest = \"8c9f62fe\"\n\
+                "fork_digest = \"8c9f62fe\"\n\
                  [chain_config]\n\
                  genesis_unix_secs = 42\n\
                  spec_file = \"{spec_file}\"\n\
-                 checkpoint_file = \"{anchor}\"\n",
-                "11".repeat(32)
+                 checkpoint_file = \"{anchor}\"\n"
             ),
         );
 
@@ -833,11 +804,9 @@ mod tests {
             dir.path(),
             "silver.toml",
             &format!(
-                "secret_key = \"{}\"\n\
-                 [chain_config]\n\
+                "[chain_config]\n\
                  spec_file = \"{spec_file}\"\n\
-                 checkpoint_file = \"{anchor}\"\n",
-                "11".repeat(32)
+                 checkpoint_file = \"{anchor}\"\n"
             ),
         );
 
@@ -851,11 +820,7 @@ mod tests {
     #[test]
     fn without_an_anchor_the_files_literals_stand() {
         let dir = TempDir::new().unwrap();
-        let config_file = write_file(
-            dir.path(),
-            "silver.toml",
-            &format!("secret_key = \"{}\"\nfork_digest = \"8c9f62fe\"\n", "11".repeat(32)),
-        );
+        let config_file = write_file(dir.path(), "silver.toml", "fork_digest = \"8c9f62fe\"\n");
         let cfg = Config::from_file(&config_file).unwrap();
         assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
     }

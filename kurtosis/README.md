@@ -61,8 +61,8 @@ into `silver-devnet.toml`:
 | `external_ip_v4` | the `kt-<enclave>` bridge gateway, so peers can dial silver back. |
 | `engine_config.*` | the local reth's endpoint and `el/jwt.hex`. |
 
-`secret_key` and the ports come from env-overridable vars in the script. A fixed
-`secret_key` keeps silver's peer id stable across restarts.
+The ports come from env-overridable vars in the script. silver keeps its peer id
+in `node.key` under `data_storage_dir`; delete that file to get a new one.
 
 `fork_digest`, `next_fork_version` and `genesis_unix_secs` are **not** written.
 silver derives them from `chain_config.spec` and the anchor state, so the config
