@@ -597,6 +597,7 @@ impl BeaconStateTile {
                 payload_at,
                 payload: acquired.to_read(),
                 execution_payload_value: frame.block_value,
+                consensus_block_value: wei_from_gwei(post_state.proposer_reward()),
             },
             payload: Some(acquired),
             body_root,
@@ -711,6 +712,12 @@ impl BeaconStateTile {
         };
         Ok((contents, payload_at as u32))
     }
+}
+
+fn wei_from_gwei(gwei: u64) -> [u8; 32] {
+    let mut wei = [0; 32];
+    wei[..16].copy_from_slice(&(u128::from(gwei) * 1_000_000_000).to_le_bytes());
+    wei
 }
 
 fn answer(

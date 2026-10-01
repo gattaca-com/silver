@@ -5241,6 +5241,23 @@ fn pooled_slashings_land_in_the_produced_block() {
     let validators = tile.state.read_view(post_state).validators;
     assert!(validators.is_slashed(equivocator as usize));
     assert!(validators.is_slashed(double_voter as usize));
+
+    let pre_state = tile.state.read_view(tile.canonical_state_id());
+    let whistleblower_rewards: u64 = [equivocator, double_voter]
+        .map(|vi| pre_state.validators.effective_balance(vi as usize) / 4096)
+        .iter()
+        .sum();
+    assert_eq!(consensus_value_gwei(&block), whistleblower_rewards);
+}
+
+/// The produced block's `consensus_block_value`, which is a whole number of
+/// gwei.
+#[cfg(feature = "ef_tests")]
+fn consensus_value_gwei(block: &ProducedBlock) -> u64 {
+    let wei = u128::from_le_bytes(block.consensus_block_value[..16].try_into().unwrap());
+    assert_eq!(block.consensus_block_value[16..], [0; 16]);
+    assert_eq!(wei % 1_000_000_000, 0);
+    (wei / 1_000_000_000) as u64
 }
 
 #[cfg(feature = "ef_tests")]
@@ -5285,6 +5302,7 @@ fn pooled_sync_messages_land_in_the_produced_block() {
     let post_state = *tile.block_production.state_ids_mut().next().unwrap();
     let balance_after = tile.state.read_view(post_state).balances.get(participant);
     assert!(balance_after > balance_before, "{balance_after} <= {balance_before}");
+    assert!(consensus_value_gwei(&block) > 0, "the aggregate pays the proposer");
 }
 
 /// Fixture validator `vi` signs with the spec's test key `vi + 1`.
@@ -5400,6 +5418,7 @@ fn pooled_attestations_land_in_the_produced_block() {
     for &vi in attesters {
         assert_ne!(post_state.current_participation.get(vi as usize), 0, "validator {vi}");
     }
+    assert!(consensus_value_gwei(&block) > 0, "the attestation pays the proposer");
 }
 
 #[cfg(feature = "ef_tests")]

@@ -2699,6 +2699,8 @@ mod tests {
         let payload = server.submissions.write_with(frame.len(), |out| out.copy_from_slice(&frame));
         let mut execution_payload_value = [0; 32];
         execution_payload_value[0] = 7;
+        let mut consensus_block_value = [0; 32];
+        consensus_block_value[0] = 9;
         server.answer(BeaconApiResponse::ProducedBlock {
             request_id,
             block: Ok(ProducedBlock {
@@ -2706,13 +2708,14 @@ mod tests {
                 payload_at: b"up to the payload|".len() as u32,
                 payload: payload.unwrap(),
                 execution_payload_value,
+                consensus_block_value,
             }),
         });
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "produced block");
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
                     Eth-Consensus-Version: fulu\r\nEth-Execution-Payload-Blinded: false\r\n\
-                    Eth-Execution-Payload-Value: 7\r\nEth-Consensus-Block-Value: 0\r\n";
+                    Eth-Execution-Payload-Value: 7\r\nEth-Consensus-Block-Value: 9\r\n";
         assert!(response.starts_with(head.as_bytes()), "{}", String::from_utf8_lossy(&response));
         let spliced =
             [b"up to the payload|payload|bls changes".as_slice(), &after_payload].concat();

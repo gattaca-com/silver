@@ -72,12 +72,12 @@ pub fn process_sync_aggregate(
     longtail: LongtailView,
     sync_agg: &[u8],
     proposer_index: u32,
-) -> Result<(), SyncAggregateError> {
+) -> Result<u64, SyncAggregateError> {
     let slot = &view.slot;
     let validators = &view.validators;
     let balances = &mut view.balances;
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
-        return Ok(());
+        return Ok(0);
     }
     let count = validators.count();
     if (proposer_index as usize) >= count {
@@ -125,5 +125,5 @@ pub fn process_sync_aggregate(
     }
     balances.add_at(proposer_index, proposer_reward_sum as i64);
     balances.rehash_unsorted();
-    Ok(())
+    Ok(proposer_reward_sum)
 }

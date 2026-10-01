@@ -74,6 +74,11 @@ impl AppliedBlock {
     pub(super) fn state_id_mut(&mut self) -> &mut StateId {
         &mut self.id
     }
+
+    /// Gwei.
+    pub(super) fn proposer_reward(&self) -> u64 {
+        self.votes.proposer_reward
+    }
 }
 
 /// A block whose post-state is committed but which waits for its data columns
