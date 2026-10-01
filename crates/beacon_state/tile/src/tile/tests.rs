@@ -124,7 +124,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         ),
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         verify_weak_subjectivity,
-        BeaconState::empty_test(0),
+        CheckpointState::Trusted(BeaconState::empty_test(0)),
     );
     tile.open_tcaches().unwrap();
     tile
@@ -165,7 +165,7 @@ fn make_tile_with_producers(
         ),
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         true,
-        state,
+        CheckpointState::Trusted(state),
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)

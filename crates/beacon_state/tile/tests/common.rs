@@ -12,7 +12,7 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu, hash_tree_root_state},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{B256, BeaconBlockHeader, BeaconState, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconBlockHeader, BeaconState, CheckpointState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineFcuReq, EngineNewPayloadResp,
     EngineReq, EngineResp, GossipTopic, MessageId, NewGossipMsg, Origin, P2pStreamId,
@@ -233,8 +233,6 @@ impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8], gloas: bool) -> Self {
         let spec = if gloas { gloas_from_genesis() } else { fulu_from_genesis() };
         let mut h = Self::build(wall_slot, |ticker, tcaches| {
-            let state = BeaconState::from_checkpoint(checkpoint_ssz, &spec, &[])
-                .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
             BeaconStateTile::new(
                 ticker,
                 Arc::new(spec.clone()),
@@ -242,7 +240,7 @@ impl Harness {
                 tcaches,
                 TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
                 true,
-                state,
+                CheckpointState::trusted(checkpoint_ssz, &spec, &[]),
             )
         });
         h.gloas = gloas;

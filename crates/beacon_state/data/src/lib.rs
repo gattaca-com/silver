@@ -1,4 +1,5 @@
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
+pub use checkpoint_state::CheckpointState;
 pub use column::*;
 pub use committee::{
     CommitteeSlot, TARGET_COMMITTEE_SIZE, committee_at_position, committee_range,
@@ -38,6 +39,7 @@ pub use validators::{
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
 mod builders;
+mod checkpoint_state;
 mod column;
 mod committee;
 mod decompose;

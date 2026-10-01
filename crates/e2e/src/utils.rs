@@ -7,7 +7,7 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateReader, CheckpointState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
@@ -136,8 +136,6 @@ impl PmBsHarness {
             [&gossip_p, &rpc_p, &engine_resp_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
         );
 
-        let state = BeaconState::from_checkpoint(checkpoint, &SpecConfig::mainnet(), &[])
-            .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
         let mut bs = BeaconStateTile::new(
             ticker,
             Arc::new(SpecConfig::mainnet()),
@@ -147,7 +145,7 @@ impl PmBsHarness {
             // Replays a committed fixture whose anchor is intentionally old; the
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,
-            state,
+            CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), &[]),
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);

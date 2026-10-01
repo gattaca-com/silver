@@ -17,7 +17,7 @@ use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_application_boundary::ApplicationBoundaryTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
-use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
@@ -35,10 +35,11 @@ use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
 use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
-use silver_storage::{latest_local_checkpoint, tile::StorageTile};
+use silver_storage::tile::StorageTile;
 
-use crate::cluster::ClusterStartup;
+use crate::{checkpoint::BootCheckpoint, cluster::ClusterStartup};
 
+mod checkpoint;
 mod cluster;
 
 #[cfg(not(feature = "alloc-profile"))]
@@ -255,8 +256,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
-    let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
-    let booting_from_local_checkpoint = !checkpoint.is_empty();
+    let boot_checkpoint = BootCheckpoint::load(&config)
+        .inspect_err(|e| silver_log::error!(%e, "no boot checkpoint"))?;
+    let booting_from_local_checkpoint = !boot_checkpoint.is_empty();
 
     silver_log::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
@@ -306,12 +308,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .map_err(|error| format!("cell store construction: {error:?}"))?;
 
-    // A finalized checkpoint state is mandatory (no genesis or runtime sync):
-    // an empty/absent blob falls through to `decompose`, which errors here and
-    // crashes the boot rather than running an inert node.
-    let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
-        .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
-    control_tile.set_gossip_clock(ticker.clone(), &state.immutable.genesis_validators_root);
+    let checkpoint = boot_checkpoint.decompose(&chain_config.spec);
+    control_tile
+        .set_gossip_clock(ticker.clone(), &checkpoint.state().immutable.genesis_validators_root);
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         spec.clone(),
@@ -319,7 +318,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         tcaches,
         beacon_state_handoff_producer,
         !config.disable_weak_subjectivity_check(),
-        state,
+        checkpoint,
     );
     let state_reader = beacon_state_tile.reader();
 
@@ -461,39 +460,4 @@ fn sleep_until_genesis(genesis_unix_secs: u64) {
 /// never be part of one value.
 fn comma_separated(value: &str) -> Vec<String> {
     value.split(',').map(str::to_owned).collect()
-}
-
-fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
-    let chain_config = config.chain_config();
-    match &chain_config.checkpoint_file {
-        Some(file) => {
-            silver_log::info!("using the config checkpoint at {}", file);
-            let checkpoint = std::fs::read(file)?;
-            let pubkeys = match &chain_config.checkpoint_pubkeys_file {
-                Some(file) if !checkpoint.is_empty() => std::fs::read(file)?,
-                _ => vec![],
-            };
-            Ok((checkpoint, pubkeys))
-        }
-        None => match latest_local_checkpoint(config.data_storage_dir()) {
-            Some((slot, ssz_path, pubkeys_path)) => {
-                silver_log::info!(
-                    slot,
-                    "checkpoint not set in the config, booting from the latest persisted one."
-                );
-                let pubkeys = pubkeys_path.map(std::fs::read).transpose()?.unwrap_or_default();
-                Ok((std::fs::read(ssz_path)?, pubkeys))
-            }
-            None => {
-                panic!(
-                    "no checkpoint to bootstrap from: `chain_config.checkpoint_file` is unset \
-                     and no persisted checkpoint was found under the data directory ({}). \
-                     Set `checkpoint_file` to a finalized BeaconState SSZ (e.g. fetched from a \
-                     trusted node's /eth/v2/debug/beacon/states/finalized), or run against a \
-                     data directory that already holds a persisted checkpoint.",
-                    config.data_storage_dir()
-                );
-            }
-        },
-    }
 }
