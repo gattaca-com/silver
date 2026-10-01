@@ -13,7 +13,8 @@ use silver_beacon_state::{
     tile::{BeaconStateTile, Feedback},
 };
 use silver_beacon_state_data::{
-    BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
+    BeaconState, BeaconStateOwner, CheckpointChunk, CheckpointState, SpecConfig,
+    decode_checkpoint_pubkeys,
 };
 use silver_common::{TCache, TCacheId, TCacheProducer, TCacheTable, ticker::SlotTicker};
 use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::BlockFixtures};
@@ -145,9 +146,8 @@ fn finalized_state_loads() {
     };
 
     let mut blocks = dir.read_sorted_next_blocks();
-    let state = BeaconState::from_checkpoint(&ssz, &SpecConfig::mainnet(), &[])
-        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
-    let checkpoint_slot = state.slot_states.finalized_view().slot_number();
+    let checkpoint = CheckpointState::trusted(&ssz, &SpecConfig::mainnet(), &[]);
+    let checkpoint_slot = checkpoint.state().slot_states.finalized_view().slot_number();
     let last_slot = blocks.last().map_or(checkpoint_slot, |(slot, _)| *slot);
 
     // Keep the checkpoint recent and every fixture block in the past,
@@ -171,7 +171,7 @@ fn finalized_state_loads() {
         tcaches,
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
-        state,
+        checkpoint,
     );
     tile.open_tcaches().unwrap();
 
@@ -315,8 +315,6 @@ fn tile_apply_block_ef_fixture() {
         [&gossip_p, &rpc_p, &engine_resp_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
     );
 
-    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
-        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let mut tile = BeaconStateTile::new(
         ticker,
         Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
@@ -324,7 +322,7 @@ fn tile_apply_block_ef_fixture() {
         tcaches,
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
         true,
-        state,
+        CheckpointState::trusted(&pre_ssz, &SpecConfig::mainnet(), &[]),
     );
     tile.open_tcaches().unwrap();
 

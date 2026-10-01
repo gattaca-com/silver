@@ -7,8 +7,8 @@ use flux::{
 use flux_profiler::timed;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, Checkpoint, Epoch,
-    SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
+    B256, BeaconBlockHeader, BeaconStateOwner, BeaconStateReader, Checkpoint, CheckpointState,
+    Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
@@ -227,11 +227,15 @@ impl BeaconStateTile {
         tcaches: TCacheTable,
         events_producer: TProducer,
         verify_weak_subjectivity: bool,
-        state: BeaconState,
+        checkpoint: CheckpointState,
     ) -> Self {
+        let (state, expected_root) = match checkpoint {
+            CheckpointState::Trusted(state) => (state, None),
+            CheckpointState::Downloaded { state, block_root } => (state, Some(block_root)),
+        };
         let mut owner = BeaconStateOwner::new(state);
         let val_cap = owner.state().validators.finalized().capacity();
-        let (anchor, anchor_header) = Self::roll_anchor(&mut owner);
+        let (anchor, anchor_header) = Self::roll_anchor(&mut owner, expected_root);
         let mut tile = Self {
             sync_target: SyncUpdate::default(),
             ticker,
@@ -357,15 +361,27 @@ impl BeaconStateTile {
     /// `latest_block_header.state_root` stays `[0;32]` — the first
     /// post-bootstrap `process_slot` hashes that canonical state and a
     /// patched value would shift the result.
-    fn roll_anchor(owner: &mut BeaconStateOwner) -> (StateId, BeaconBlockHeader) {
+    fn roll_anchor(
+        owner: &mut BeaconStateOwner,
+        expected_root: Option<B256>,
+    ) -> (StateId, BeaconBlockHeader) {
         let mut writer = owner.fresh_fork_writer();
         let rv = writer.read();
         let mut header = rv.slot.state().latest_block_header;
         if header.state_root == [0u8; 32] {
             header.state_root = ssz_hash::hash_tree_root_state(&rv);
         }
-        writer.view.slot.state_mut().latest_block_root =
-            ssz_hash::hash_tree_root_block_header(&header);
+        let real_root = ssz_hash::hash_tree_root_block_header(&header);
+        if let Some(expected) = expected_root {
+            assert_eq!(
+                real_root,
+                expected,
+                "checkpoint state anchors to 0x{}, expected 0x{}",
+                hex32(&real_root),
+                hex32(&expected)
+            );
+        }
+        writer.view.slot.state_mut().latest_block_root = real_root;
         (writer.commit(), header)
     }
 

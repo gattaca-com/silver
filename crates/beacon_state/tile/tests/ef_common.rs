@@ -429,6 +429,7 @@ pub fn ef_tile_with_spec(
     spec: SpecConfig,
 ) -> BeaconStateTile {
     use silver_beacon_state::{BeaconStateTile, SlotTicker};
+    use silver_beacon_state_data::CheckpointState;
     use silver_common::{TCache, TCacheProducer, TCacheTable};
     use silver_config::SyncingConfig;
 
@@ -451,7 +452,7 @@ pub fn ef_tile_with_spec(
         TCacheTable::from_iter([&gp, &rp, &ep, &yp, &cp].map(|p| p.cache_ref())),
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         false,
-        state,
+        CheckpointState::Trusted(state),
     );
     tile.open_tcaches().unwrap();
     tile
