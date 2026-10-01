@@ -597,11 +597,11 @@ impl BeaconStateTile {
         data_root: B256,
         producers: &mut Producers,
     ) {
-        let entry = self.attestation_pool.aggregate(slot, committee_index, data_root);
-        let ssz = entry.and_then(|entry| {
+        let aggregate = self.attestation_pool.aggregate(slot, committee_index, data_root);
+        let ssz = aggregate.and_then(|aggregate| {
             let written = self
                 .events_producer
-                .write_with(entry.ssz_len(), |buffer| entry.write_ssz(committee_index, buffer));
+                .write_with(aggregate.ssz_len(), |buffer| aggregate.write_ssz(buffer));
             if written.is_none() {
                 silver_log::error!(
                     slot,

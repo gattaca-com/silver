@@ -1,4 +1,4 @@
-use std::cmp::Reverse;
+use std::{cmp::Reverse, collections::hash_map::Entry};
 
 use blst::min_pk::{AggregateSignature, Signature};
 use rustc_hash::FxHashMap;
@@ -19,17 +19,24 @@ use crate::{bls::VerifiedSingleAttestation, merkle};
 /// competing data_root variants, which honest traffic keeps at ~1 per
 /// committee and which cost an attacker a real committee member's one
 /// attestation per epoch.
-const MAX_ENTRIES: usize = 4 * 2 * SLOTS_PER_EPOCH as usize * MAX_COMMITTEES_PER_SLOT;
+const MAX_COMMITTEE_VOTES: usize = 4 * 2 * SLOTS_PER_EPOCH as usize * MAX_COMMITTEES_PER_SLOT;
+/// Honest committees of a slot agree on one vote.
+const EXPECTED_VOTES: usize = MAX_COMMITTEE_VOTES / MAX_COMMITTEES_PER_SLOT;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct AggregateKey {
+struct VoteKey {
     slot: Slot,
-    committee_index: u64,
     data_root: B256,
 }
 
-pub(super) struct AggregateEntry {
+struct Vote {
     data: [u8; ATTESTATION_DATA_SIZE],
+    /// Ascending by index.
+    committees: Vec<CommitteeVote>,
+}
+
+struct CommitteeVote {
+    index: u64,
     committee_len: usize,
     /// Logical participant bits only; the SSZ terminator is appended at
     /// serialization so it can never read as an attester.
@@ -49,32 +56,17 @@ pub(super) enum InsertOutcome {
 }
 
 pub(super) struct AttestationPool {
-    entries: FxHashMap<AggregateKey, AggregateEntry>,
+    votes: FxHashMap<VoteKey, Vote>,
+    committee_votes: usize,
     floor: Slot,
-    candidates: Vec<Candidate>,
-}
-
-#[derive(Clone, Copy)]
-struct Candidate {
-    key: AggregateKey,
-    participants: u32,
-}
-
-/// The candidates `start..end` share one slot and data.
-#[derive(Clone, Copy, Default)]
-struct PackedData {
-    slot: Slot,
-    participants: u32,
-    start: usize,
-    end: usize,
 }
 
 impl AttestationPool {
     pub(super) fn new() -> Self {
         Self {
-            entries: FxHashMap::with_capacity_and_hasher(MAX_ENTRIES, Default::default()),
+            votes: FxHashMap::with_capacity_and_hasher(EXPECTED_VOTES, Default::default()),
+            committee_votes: 0,
             floor: 0,
-            candidates: Vec::with_capacity(MAX_ENTRIES),
         }
     }
 
@@ -86,35 +78,20 @@ impl AttestationPool {
         committee_len: usize,
         verified: &VerifiedSingleAttestation,
     ) -> InsertOutcome {
-        if committee_position >= committee_len {
+        if committee_position >= committee_len || committee_len > MAX_VALIDATORS_PER_COMMITTEE {
             return InsertOutcome::Inconsistent;
         }
-        let slot = SingleAttestationView::slot(att);
-        if slot < self.floor {
-            return InsertOutcome::Stale;
-        }
-        let committee_index = SingleAttestationView::committee_index(att);
-        debug_assert!(committee_index < MAX_COMMITTEES_PER_SLOT as u64);
-
-        let key = AggregateKey { slot, committee_index, data_root: verified.data_root };
-        if let Some(entry) = self.entries.get_mut(&key) {
-            if entry.committee_len != committee_len {
-                return InsertOutcome::Inconsistent;
-            }
-            return entry.add(committee_position, &verified.signature);
-        }
-        if self.entries.len() >= MAX_ENTRIES {
-            return InsertOutcome::Full;
-        }
-        let mut participant_bits = vec![0u8; committee_len.div_ceil(8)];
-        participant_bits[committee_position / 8] |= 1 << (committee_position % 8);
-        self.entries.insert(key, AggregateEntry {
-            data: *SingleAttestationView::data(att).as_bytes(),
+        let mut participants = [0u8; MAX_VALIDATORS_PER_COMMITTEE / 8];
+        let participants = &mut participants[..committee_len.div_ceil(8)];
+        participants[committee_position / 8] |= 1 << (committee_position % 8);
+        self.insert(
+            SingleAttestationView::data(att),
+            SingleAttestationView::committee_index(att),
+            verified.data_root,
             committee_len,
-            participant_bits,
-            signature: AggregateSignature::from_signature(&verified.signature),
-        });
-        InsertOutcome::Inserted
+            participants,
+            &verified.signature,
+        )
     }
 
     /// Unions disjoint aggregates; of overlapping ones, keeps the one with
@@ -129,43 +106,62 @@ impl AttestationPool {
         aggregation_bits: &[u8],
         signature: &Signature,
     ) -> InsertOutcome {
-        debug_assert!(signature.subgroup_check());
         if committee_len > MAX_VALIDATORS_PER_COMMITTEE ||
             aggregation_bits.len() != committee_len / 8 + 1 ||
             merkle::bitlist_len(aggregation_bits) != committee_len
         {
             return InsertOutcome::Inconsistent;
         }
+        let mut participants = [0u8; MAX_VALIDATORS_PER_COMMITTEE / 8];
+        let participants = &mut participants[..committee_len.div_ceil(8)];
+        participants.copy_from_slice(&aggregation_bits[..participants.len()]);
+        if !committee_len.is_multiple_of(8) {
+            participants[committee_len / 8] &= !(1 << (committee_len % 8));
+        }
+        self.insert(data, committee_index, data_root, committee_len, participants, signature)
+    }
+
+    fn insert(
+        &mut self,
+        data: AttestationDataView,
+        committee_index: u64,
+        data_root: B256,
+        committee_len: usize,
+        participants: &[u8],
+        signature: &Signature,
+    ) -> InsertOutcome {
+        debug_assert!(signature.subgroup_check());
+        debug_assert!(committee_index < MAX_COMMITTEES_PER_SLOT as u64);
         let slot = data.slot();
         if slot < self.floor {
             return InsertOutcome::Stale;
         }
-        debug_assert!(committee_index < MAX_COMMITTEES_PER_SLOT as u64);
 
-        let mut incoming = [0u8; MAX_VALIDATORS_PER_COMMITTEE / 8];
-        let incoming = &mut incoming[..committee_len.div_ceil(8)];
-        incoming.copy_from_slice(&aggregation_bits[..incoming.len()]);
-        if !committee_len.is_multiple_of(8) {
-            incoming[committee_len / 8] &= !(1 << (committee_len % 8));
-        }
-
-        let key = AggregateKey { slot, committee_index, data_root };
-        if let Some(entry) = self.entries.get_mut(&key) {
-            if entry.committee_len != committee_len {
-                return InsertOutcome::Inconsistent;
+        let full = self.committee_votes >= MAX_COMMITTEE_VOTES;
+        let vote = match self.votes.entry(VoteKey { slot, data_root }) {
+            Entry::Occupied(vote) => vote.into_mut(),
+            Entry::Vacant(_) if full => return InsertOutcome::Full,
+            Entry::Vacant(vote) => {
+                vote.insert(Vote { data: *data.as_bytes(), committees: Vec::new() })
             }
-            return entry.merge(incoming, signature);
+        };
+        match vote.committees.binary_search_by_key(&committee_index, |c| c.index) {
+            Ok(at) if vote.committees[at].committee_len != committee_len => {
+                InsertOutcome::Inconsistent
+            }
+            Ok(at) => vote.committees[at].merge(participants, signature),
+            Err(_) if full => InsertOutcome::Full,
+            Err(at) => {
+                vote.committees.insert(at, CommitteeVote {
+                    index: committee_index,
+                    committee_len,
+                    participant_bits: participants.to_vec(),
+                    signature: AggregateSignature::from_signature(signature),
+                });
+                self.committee_votes += 1;
+                InsertOutcome::Inserted
+            }
         }
-        if self.entries.len() >= MAX_ENTRIES {
-            return InsertOutcome::Full;
-        }
-        self.entries.insert(key, AggregateEntry {
-            data: *data.as_bytes(),
-            committee_len,
-            participant_bits: incoming.to_vec(),
-            signature: AggregateSignature::from_signature(signature),
-        });
-        InsertOutcome::Inserted
     }
 
     // TODO: Score candidates by the reward they add to the parent state.
@@ -175,58 +171,23 @@ impl AttestationPool {
     // so newest first wastes most of the 8 picks. Scoring needs the parent
     // state, so a scoring closure joins `admits`.
     #[timed]
-    pub(super) fn pack(&mut self, admits: impl Fn(AttestationDataView) -> bool, out: &mut Vec<u8>) {
+    pub(super) fn pack(&self, admits: impl Fn(AttestationDataView) -> bool, out: &mut Vec<u8>) {
         out.clear();
-        self.candidates.clear();
-        self.candidates.extend(
-            self.entries
-                .iter()
-                .filter(|(_, entry)| admits(AttestationDataView::new(&entry.data)))
-                .map(|(&key, entry)| Candidate { key, participants: entry.participants() }),
-        );
-        self.candidates.sort_unstable_by_key(|c| {
-            (Reverse(c.key.slot), c.key.data_root, c.key.committee_index)
-        });
-
-        let mut packed = [PackedData::default(); MAX_ATTESTATIONS_ELECTRA];
-        let mut packed_len = 0;
-        let mut start = 0;
-        let same_data = |a: &Candidate, b: &Candidate| {
-            a.key.slot == b.key.slot && a.key.data_root == b.key.data_root
-        };
-        for group in self.candidates.chunk_by(same_data) {
-            let data = PackedData {
-                slot: group[0].key.slot,
-                participants: group.iter().map(|c| c.participants).sum(),
-                start,
-                end: start + group.len(),
-            };
-            start = data.end;
-            match packed[..packed_len].last_mut() {
-                Some(last) if last.slot == data.slot => {
-                    if data.participants > last.participants {
-                        *last = data;
-                    }
-                }
-                _ if packed_len == MAX_ATTESTATIONS_ELECTRA => break,
-                _ => {
-                    packed[packed_len] = data;
-                    packed_len += 1;
-                }
+        let mut newest = NewestVotes::default();
+        for (key, vote) in &self.votes {
+            if admits(AttestationDataView::new(&vote.data)) {
+                newest.offer(*key, vote);
             }
         }
 
         let offset_len = size_of::<u32>();
-        out.resize(packed_len * offset_len, 0);
-        for (i, data) in packed[..packed_len].iter().enumerate() {
+        out.resize(newest.len() * offset_len, 0);
+        for (i, vote) in newest.newest_first().enumerate() {
             let at = out.len();
             out[i * offset_len..(i + 1) * offset_len].copy_from_slice(&(at as u32).to_le_bytes());
-            let committees = self.candidates[data.start..data.end]
-                .iter()
-                .map(|c| (c.key.committee_index, &self.entries[&c.key]));
-            let len = AggregateEntry::attestation_len(committees.clone());
-            out.resize(at + len, 0);
-            AggregateEntry::write_attestation(committees, &mut out[at..]);
+            let aggregate = vote.aggregate();
+            out.resize(at + aggregate.ssz_len(), 0);
+            aggregate.write_ssz(&mut out[at..]);
         }
     }
 
@@ -236,8 +197,10 @@ impl AttestationPool {
         slot: Slot,
         committee_index: u64,
         data_root: B256,
-    ) -> Option<&AggregateEntry> {
-        self.entries.get(&AggregateKey { slot, committee_index, data_root })
+    ) -> Option<PooledAggregate<'_>> {
+        let vote = self.votes.get(&VoteKey { slot, data_root })?;
+        let at = vote.committees.binary_search_by_key(&committee_index, |c| c.index).ok()?;
+        Some(PooledAggregate { data: &vote.data, committees: &vote.committees[at..=at] })
     }
 
     #[cfg(test)]
@@ -247,63 +210,117 @@ impl AttestationPool {
         committee_index: u64,
         data_root: B256,
     ) -> Option<Vec<u8>> {
-        let entry = self.aggregate(slot, committee_index, data_root)?;
-        let mut out = vec![0u8; entry.ssz_len()];
-        entry.write_ssz(committee_index, &mut out);
+        let aggregate = self.aggregate(slot, committee_index, data_root)?;
+        let mut out = vec![0u8; aggregate.ssz_len()];
+        aggregate.write_ssz(&mut out);
         Some(out)
     }
 
     #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.floor = floor;
-        self.entries.retain(|key, _| key.slot >= floor);
+        self.votes.retain(|key, vote| {
+            let kept = key.slot >= floor;
+            if !kept {
+                self.committee_votes -= vote.committees.len();
+            }
+            kept
+        });
     }
 }
 
-impl AggregateEntry {
+/// The best vote of each of the newest slots offered. Ties go to the
+/// lower data root, so the pick does not depend on map order.
+#[derive(Default)]
+struct NewestVotes<'a>([Option<PackedVote<'a>>; MAX_ATTESTATIONS_ELECTRA]);
+
+#[derive(Clone, Copy)]
+struct PackedVote<'a> {
+    slot: Slot,
+    rank: (u32, Reverse<B256>),
+    vote: &'a Vote,
+}
+
+impl<'a> NewestVotes<'a> {
+    fn offer(&mut self, key: VoteKey, vote: &'a Vote) {
+        let offered = PackedVote {
+            slot: key.slot,
+            rank: (vote.participants(), Reverse(key.data_root)),
+            vote,
+        };
+        if let Some(same_slot) = self.0.iter_mut().flatten().find(|p| p.slot == key.slot) {
+            if offered.rank > same_slot.rank {
+                *same_slot = offered;
+            }
+            return;
+        }
+        let oldest = self.0.iter_mut().min_by_key(|p| p.map(|p| p.slot)).expect("non-empty");
+        if oldest.is_none_or(|oldest| oldest.slot < key.slot) {
+            *oldest = Some(offered);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.0.iter().flatten().count()
+    }
+
+    fn newest_first(mut self) -> impl Iterator<Item = &'a Vote> {
+        self.0.sort_unstable_by_key(|p| Reverse(p.map(|p| p.slot)));
+        self.0.into_iter().flatten().map(|p| p.vote)
+    }
+}
+
+impl Vote {
+    fn participants(&self) -> u32 {
+        self.committees.iter().map(CommitteeVote::participants).sum()
+    }
+
+    fn aggregate(&self) -> PooledAggregate<'_> {
+        PooledAggregate { data: &self.data, committees: &self.committees }
+    }
+}
+
+/// One on-chain `Attestation` over a vote's committees.
+#[derive(Clone, Copy)]
+pub(super) struct PooledAggregate<'a> {
+    data: &'a [u8; ATTESTATION_DATA_SIZE],
+    committees: &'a [CommitteeVote],
+}
+
+impl PooledAggregate<'_> {
     pub(super) fn ssz_len(&self) -> usize {
-        ATTESTATION_FIXED + self.committee_len / 8 + 1
+        let members: usize = self.committees.iter().map(|c| c.committee_len).sum();
+        ATTESTATION_FIXED + members / 8 + 1
     }
 
     /// `out` is exactly [`Self::ssz_len`] bytes and need not be zeroed.
     #[timed]
-    pub(super) fn write_ssz(&self, committee_index: u64, out: &mut [u8]) {
+    pub(super) fn write_ssz(&self, out: &mut [u8]) {
         debug_assert_eq!(out.len(), self.ssz_len());
-        Self::write_attestation([(committee_index, self)].into_iter(), out);
-    }
-
-    fn attestation_len<'a>(committees: impl Iterator<Item = (u64, &'a Self)>) -> usize {
-        let members: usize = committees.map(|(_, entry)| entry.committee_len).sum();
-        ATTESTATION_FIXED + members / 8 + 1
-    }
-
-    fn write_attestation<'a>(
-        mut committees: impl Iterator<Item = (u64, &'a Self)>,
-        out: &mut [u8],
-    ) {
         let (fixed, bits) = out.split_at_mut(ATTESTATION_FIXED);
         bits.fill(0);
-        let (first_index, first) = committees.next().expect("at least one committee");
+        let (first, rest) = self.committees.split_first().expect("at least one committee");
         let mut signature = first.signature;
-        let mut committee_bits = 1u64 << first_index;
-        first.write_bits_at(bits, 0);
-        let mut members = first.committee_len;
-        for (committee_index, entry) in committees {
-            debug_assert!(entry.data == first.data);
-            debug_assert!(committee_bits >> committee_index == 0, "ascending committees");
-            signature.add_aggregate(&entry.signature);
-            committee_bits |= 1 << committee_index;
-            entry.write_bits_at(bits, members);
-            members += entry.committee_len;
+        for committee in rest {
+            signature.add_aggregate(&committee.signature);
+        }
+        let mut committee_bits = 0u64;
+        let mut members = 0;
+        for committee in self.committees {
+            committee_bits |= 1 << committee.index;
+            committee.write_bits_at(bits, members);
+            members += committee.committee_len;
         }
         bits[members / 8] |= 1 << (members % 8);
 
         fixed[0..4].copy_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
-        fixed[4..132].copy_from_slice(&first.data);
+        fixed[4..132].copy_from_slice(self.data);
         fixed[132..228].copy_from_slice(&signature.to_signature().to_bytes());
         fixed[228..].copy_from_slice(&committee_bits.to_le_bytes());
     }
+}
 
+impl CommitteeVote {
     /// ORs the participant bits into `bits` from bit `at`.
     fn write_bits_at(&self, bits: &mut [u8], at: usize) {
         let (byte, shift) = (at / 8, at % 8);
@@ -318,20 +335,6 @@ impl AggregateEntry {
 
     fn participants(&self) -> u32 {
         self.participant_bits.iter().map(|byte| byte.count_ones()).sum()
-    }
-
-    #[timed]
-    fn add(&mut self, position: usize, signature: &Signature) -> InsertOutcome {
-        let (byte, bit) = (position / 8, 1u8 << (position % 8));
-        if self.participant_bits[byte] & bit != 0 {
-            return InsertOutcome::Duplicate;
-        }
-        // No group check: `VerifiedSingleAttestation` guarantees a
-        // subgroup-checked signature. BLS addition is not idempotent, so the
-        // bit test above must gate it.
-        self.signature.add_signature(signature, false).expect("infallible without groupcheck");
-        self.participant_bits[byte] |= bit;
-        InsertOutcome::Inserted
     }
 
     fn merge(&mut self, incoming: &[u8], signature: &Signature) -> InsertOutcome {
@@ -705,6 +708,29 @@ mod tests {
             SingleAttestationView::data(&other_vote(1).0).as_bytes()
         );
         assert_eq!(AttestationView::aggregation_bits(&attestations[0]), &[0b0001_0110]);
+    }
+
+    #[test]
+    fn full_pool_admits_committees_again_once_pruned() {
+        let mut pool = AttestationPool::new();
+        let (mut att, verified) = verified_single(0);
+        let mut insert = |pool: &mut AttestationPool, slot: Slot, committee_index: u64| {
+            att[16..24].copy_from_slice(&slot.to_le_bytes());
+            att[0..8].copy_from_slice(&committee_index.to_le_bytes());
+            pool.insert_verified(&att, 0, 4, &verified)
+        };
+        let committees = MAX_COMMITTEES_PER_SLOT as u64;
+        let slots = MAX_COMMITTEE_VOTES as u64 / committees;
+        for slot in SLOT..SLOT + slots {
+            for committee_index in 0..committees {
+                assert_eq!(insert(&mut pool, slot, committee_index), InsertOutcome::Inserted);
+            }
+        }
+        assert_eq!(insert(&mut pool, SLOT + slots, 0), InsertOutcome::Full);
+
+        pool.prune_before(SLOT + 1);
+
+        assert_eq!(insert(&mut pool, SLOT + slots, 0), InsertOutcome::Inserted);
     }
 
     #[test]
