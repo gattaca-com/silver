@@ -448,6 +448,7 @@ impl BeaconStateTile {
         // message, so no block or attestation pays a shuffle inline.
         let anchor_epoch = slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(anchor);
+        self.shuffling_cache.protect_head(&view);
         self.shuffling_cache.precompute(&view, anchor_epoch + 1);
         self.shuffling_cache.precompute(&view, anchor_epoch);
         self.fork_choice.justified.precompute(trusted, view.validators);
@@ -685,6 +686,7 @@ impl BeaconStateTile {
 
         let new_id = self.state_at(self.last_applied, target_slot);
         self.last_applied = new_id;
+        self.shuffling_cache.protect_head(&self.state.read_view(new_id));
         self.state.publish_state_id(new_id);
         // Empty-slot epoch transitions can advance justified/finalized in the
         // head post-state; reflect that in fork choice before finalizing.

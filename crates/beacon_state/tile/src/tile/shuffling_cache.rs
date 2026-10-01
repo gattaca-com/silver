@@ -1,17 +1,24 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
+use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
 use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
 use crate::{bls, stf};
 
 // Steady state holds {E-1, E, E+1} plus reorg/precompute transients.
-const MAX_SHUFFLING_CACHE: usize = 6;
+const MAX_SHUFFLING_CACHE: usize = 8;
 
 pub struct ShufflingCache {
     entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
     aggregator: bls::PubkeyAggregator,
     posted: [Option<ShufflingId>; 2],
+    head: Option<HeadShufflings>,
+}
+
+struct HeadShufflings {
+    root: B256,
+    epoch: Epoch,
+    ids: [Option<ShufflingId>; 3],
 }
 
 struct ShufflingEntry {
@@ -102,6 +109,7 @@ impl ShufflingCache {
         Box::new(Self {
             aggregator: bls::PubkeyAggregator::default(),
             posted: [None; 2],
+            head: None,
             entries: std::array::from_fn(|_| ShufflingEntry {
                 id: None,
                 shuffled_indices: Vec::with_capacity(capacity),
@@ -109,6 +117,17 @@ impl ShufflingCache {
                 committee_aggs: Vec::new(),
             }),
         })
+    }
+
+    pub fn protect_head(&mut self, view: &StateReadView) {
+        let root = view.slot.state().latest_block_root;
+        let epoch = view.slot.current_epoch();
+        if self.head.as_ref().is_some_and(|head| head.root == root && head.epoch == epoch) {
+            return;
+        }
+        let ids = [epoch.saturating_sub(1), epoch, epoch + 1]
+            .map(|epoch| ShufflingId::from_state(view, epoch));
+        self.head = Some(HeadShufflings { root, epoch, ids });
     }
 
     /// Resolve and cache one epoch against the selected state. An unavailable
@@ -165,11 +184,16 @@ impl ShufflingCache {
             .iter()
             .enumerate()
             .filter(|(_, entry)| entry.id.is_none_or(|held| !protected.contains(&held)))
+            .filter(|(_, entry)| {
+                entry.id.is_none_or(|held| {
+                    self.head.as_ref().is_none_or(|head| !head.ids.contains(&Some(held)))
+                })
+            })
             .min_by_key(|(_, entry)| {
                 entry.id.map(|held| (held.epoch.abs_diff(id.epoch) <= 1, held.epoch))
             })
             .map(|(index, _)| index)
-            .expect("at most two identities protected in a six-entry cache");
+            .expect("at most five identities protected in an eight-entry cache");
         self.entries[index].fill(view, id);
         index
     }
@@ -225,6 +249,7 @@ mod tests {
         ));
         let base = owner.roll_fresh();
         let mut fork = owner.apply_block_view(base);
+        fork.view.slot.state_mut().latest_block_root = [branch; 32];
         for slot in [0, 31, 63] {
             fork.view.block_roots.set(slot, [branch; 32]);
         }
@@ -241,6 +266,66 @@ mod tests {
             .collect::<Vec<_>>();
         members.sort_unstable();
         members
+    }
+
+    #[test]
+    fn head_shufflings_survive_competing_branch_requests() {
+        let (owner, id) = state(1, 8, 8);
+        let head = owner.read_view(id);
+        let mut cache = ShufflingCache::with_capacity(8);
+        cache.protect_head(&head);
+        cache.precompute(&head, 2);
+        cache.precompute(&head, 3);
+
+        for branch in 2..20 {
+            let (other, id) = state(branch, 7, 8);
+            let view = other.read_view(id);
+            cache.precompute(&view, 2);
+            let pair = cache.for_block(&view, 3).unwrap();
+            assert_eq!(members(&pair.curr, 3), (0..7).collect::<Vec<_>>());
+            assert_eq!(members(&pair.prev, 2), (0..7).collect::<Vec<_>>());
+            for epoch in 1..=3 {
+                let shuffling = cache.get(&head, epoch).unwrap();
+                assert!(shuffling.committee_aggs.is_some(), "head entry must not be rebuilt");
+                assert_eq!(members(&shuffling, epoch), (0..8).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn protection_moves_to_the_new_head_and_releases_old_entries() {
+        let mut cache = ShufflingCache::with_capacity(8);
+        for branch in 1..20 {
+            let (owner, id) = state(branch, 8, 8);
+            let view = owner.read_view(id);
+            cache.protect_head(&view);
+            cache.precompute(&view, 2);
+            cache.precompute(&view, 3);
+            let (other, id) = state(branch + 20, 7, 8);
+            let other = other.read_view(id);
+            cache.precompute(&other, 2);
+            cache.precompute(&other, 3);
+            for epoch in 1..=3 {
+                assert!(cache.get(&view, epoch).unwrap().committee_aggs.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn protection_advances_with_empty_slots_on_the_same_head() {
+        let (mut owner, id) = state(1, 8, 8);
+        let mut cache = ShufflingCache::with_capacity(8);
+        cache.protect_head(&owner.read_view(id));
+        let mut fork = owner.apply_block_view(id);
+        fork.view.slot.state_mut().slot = 96;
+        fork.view.block_roots.set(95, [1; 32]);
+        let advanced = fork.commit();
+        let view = owner.read_view(advanced);
+        cache.protect_head(&view);
+        assert_eq!(
+            cache.head.as_ref().unwrap().ids,
+            [2, 3, 4].map(|epoch| ShufflingId::from_state(&view, epoch)),
+        );
     }
 
     #[test]
@@ -288,7 +373,7 @@ mod tests {
     #[test]
     fn two_epoch_requests_survive_competing_branches_in_a_full_cache() {
         let mut cache = ShufflingCache::with_capacity(8);
-        for branch in 1..=8 {
+        for branch in 1..=MAX_SHUFFLING_CACHE as u8 + 2 {
             let (owner, id) = state(branch, branch as usize, 8);
             let view = owner.read_view(id);
             cache.get(&view, 2).unwrap();

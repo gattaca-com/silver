@@ -72,6 +72,7 @@ impl BeaconStateTile {
         self.refresh_justified_balances();
         self.fork_choice.recompute_head();
         self.follow_head();
+        self.shuffling_cache.protect_head(&self.state.read_view(self.last_applied));
     }
 
     /// A block that lost fork choice, or a reorg by weight alone, leaves

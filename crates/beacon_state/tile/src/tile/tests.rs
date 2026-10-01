@@ -4770,6 +4770,36 @@ fn shufflings_follow_head_selection_across_reorgs() {
     assert_eq!(posted(rig.drain()), original, "restored branch must be reposted");
 }
 
+#[test]
+fn selected_head_shufflings_survive_side_branch_cache_pressure() {
+    let mut rig = HeadRig::new();
+    for branch in 2..5 {
+        let root = [branch; 32];
+        rig.import(root, 71, root, root);
+        assert_eq!(rig.tile.head_block_root(), root);
+        let head = rig.tile.last_applied;
+        {
+            let view = rig.tile.state.read_view(head);
+            rig.tile.shuffling_cache.precompute(&view, 2);
+            rig.tile.shuffling_cache.precompute(&view, 3);
+        }
+        for other in 10..20 {
+            let root = [other; 32];
+            let fork = rig.post_state(rig.anchor, root, 71, root, root);
+            let view = rig.tile.state.read_view(fork);
+            rig.tile.shuffling_cache.precompute(&view, 2);
+            rig.tile.shuffling_cache.for_block(&view, 3).unwrap();
+        }
+        let view = rig.tile.state.read_view(head);
+        for epoch in 1..=3 {
+            assert!(
+                rig.tile.shuffling_cache.get(&view, epoch).unwrap().committee_aggs.is_some(),
+                "selected head's shuffling must remain cached after competing branch requests",
+            );
+        }
+    }
+}
+
 /// A matching RANDAO mix alone does not identify the active validator set.
 #[test]
 fn published_shuffling_uses_the_selected_branches_active_set() {
