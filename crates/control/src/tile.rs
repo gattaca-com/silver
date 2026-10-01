@@ -10,7 +10,7 @@ use flux::{
 use silver_chain_spec::SpecConfig;
 use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, IngestionTime,
-    LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
+    LocalGossipFailure, Nanos, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
     SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
     TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
@@ -238,6 +238,21 @@ impl Controller {
         }
     }
 
+    fn publish_originated(&mut self, topic: GossipTopic, ssz_read: TCacheRead) {
+        let acquired = self.reader.acquire(ssz_read);
+        let Ok((ssz, _)) = acquired.buffer() else {
+            silver_log::warn!(?topic, "originated message overwritten before it was read");
+            return;
+        };
+        match self.gossip_handler.inject_local(topic, ssz, None, Nanos::now()) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                silver_log::warn!(?topic, "gossip is not ready to publish originated message")
+            }
+            Err(error) => silver_log::warn!(?error, ?topic, "failed to inject originated message"),
+        }
+    }
+
     fn on_attestation_subscriptions(&mut self, subscriptions: TCacheRead, wall_slot: u64) {
         let acquired = self.reader.acquire(subscriptions);
         let Ok((bytes, _)) = acquired.buffer() else {
@@ -281,6 +296,11 @@ impl Controller {
         self.reader.open(
             TCacheId::BoundaryProcessing,
             "ctl_boundary_processing",
+            TReadMode::Sliding,
+        )?;
+        self.reader.open(
+            TCacheId::BeaconStateHandoff,
+            "ctl_beacon_state_handoff",
             TReadMode::Sliding,
         )?;
         self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, TileId::Columns]);
@@ -526,6 +546,9 @@ impl Tile<SilverSpine> for Controller {
                 // rejected chain); the engine owns target invalidation.
                 BeaconStateEvent::BlockRejected { block_root, source } => {
                     self.peer_manager.record_block_rejected(block_root, source)
+                }
+                BeaconStateEvent::PublishGossip { topic, ssz } => {
+                    self.publish_originated(topic, ssz)
                 }
                 _ => {}
             }

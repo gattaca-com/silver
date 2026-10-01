@@ -2,10 +2,10 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, IpBytes, Keypair, MessageId,
-    Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache, TCacheId,
-    TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
-    test_util::ShmemDir,
+    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, IpBytes, Keypair,
+    LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId,
+    SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
+    TCacheTable, TProducer, TReadMode, ssz_view::PROPOSER_SLASHING_SIZE, test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -23,8 +23,10 @@ struct GossipPublications {
     observer: SpineAdapter<SilverSpine>,
     incoming: TProducer,
     rpc: TProducer,
+    handoff: TProducer,
     payload: TCacheRead,
     outbound: TCacheReader,
+    validation: TCacheReader,
     _spine: Box<SilverSpine>,
     _dir: ShmemDir,
 }
@@ -46,11 +48,20 @@ impl GossipPublications {
                 .unwrap();
         let boundary = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
         let proposed = TCache::producer(TCacheId::ProposedColumns, 1 << 12);
+        let handoff = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 12);
         // Plays the network: the handler's mcache pins forward to it.
         outbound.declare(TCacheId::ControlGossip, &[TileId::Control]);
         let tcaches = TCacheTable::from_iter(
-            [&incoming, &cluster_in, &rpc, &protobuf, &boundary, &proposed].map(|p| p.cache_ref()),
+            [&incoming, &cluster_in, &rpc, &protobuf, &boundary, &proposed, &handoff]
+                .map(|p| p.cache_ref()),
         );
+        let processing = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
+        let validation = TCacheReader::single(
+            processing.cache_ref(),
+            "publication_validation",
+            TReadMode::Sliding,
+        )
+        .unwrap();
         let mut controller = Controller::new(
             PeerManager::new(
                 PeerId::default(),
@@ -62,13 +73,7 @@ impl GossipPublications {
                 [0; METADATA_SIZE],
                 0,
             ),
-            GossipHandler::new(
-                tcaches,
-                TCache::producer(TCacheId::ControlProcessing, 1 << 16),
-                protobuf,
-                Some(test_domain()),
-            )
-            .unwrap(),
+            GossipHandler::new(tcaches, processing, protobuf, Some(test_domain())).unwrap(),
             TCache::producer(TCacheId::ControlRpc, 1 << 16),
             tcaches,
             TCache::producer(TCacheId::ClusterOutbound, 1 << 16),
@@ -91,8 +96,10 @@ impl GossipPublications {
             observer,
             incoming,
             rpc,
+            handoff,
             payload,
             outbound,
+            validation,
             _spine: spine,
             _dir: dir,
         };
@@ -182,6 +189,26 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     reservation.write_all(bytes).unwrap();
     reservation.flush().unwrap();
     reservation.read()
+}
+
+#[test]
+fn originated_message_enters_validation_as_local_gossip() {
+    let topic = GossipTopic::ProposerSlashing;
+    let mut capture = GossipPublications::new(topic, b"unrelated frame");
+    capture.observer.consume(|_: NewGossipMsg, _| {});
+    let proof = [0x5a; PROPOSER_SLASHING_SIZE];
+    let ssz = write_bytes(&mut capture.handoff, &proof);
+
+    capture.observer.produce(BeaconStateEvent::PublishGossip { topic, ssz });
+    capture.crank();
+
+    let mut delivered = Vec::new();
+    capture.observer.consume(|message: NewGossipMsg, _| delivered.push(message));
+    let [message] = delivered[..] else { panic!("one message enters validation") };
+    assert_eq!(message.stream_id, LOCAL_GOSSIP_STREAM_ID);
+    assert_eq!(message.topic, topic);
+    assert_eq!(capture.validation.acquire(message.ssz).buffer().unwrap().0, proof);
+    assert!(capture.sent().is_empty(), "nothing is published before validation");
 }
 
 #[test]

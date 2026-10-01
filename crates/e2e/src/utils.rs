@@ -136,12 +136,14 @@ impl PmBsHarness {
             [&gossip_p, &rpc_p, &engine_resp_p, &delivery_p, &columns_p].map(|p| p.cache_ref()),
         );
 
+        let handoff = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25);
+        let handoff_ref = handoff.cache_ref();
         let mut bs = BeaconStateTile::new(
             ticker,
             Arc::new(SpecConfig::mainnet()),
             &SyncingConfig::default(),
             bs_tcaches,
-            TCache::producer(TCacheId::BeaconStateHandoff, 1 << 25),
+            handoff,
             // Replays a committed fixture whose anchor is intentionally old; the
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,
@@ -184,6 +186,7 @@ impl PmBsHarness {
                 cluster_in.cache_ref(),
                 TCache::producer(TCacheId::BoundaryProcessing, 32).cache_ref(),
                 TCache::producer(TCacheId::ProposedColumns, 32).cache_ref(),
+                handoff_ref,
             ]),
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,

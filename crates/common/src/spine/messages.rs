@@ -1184,6 +1184,11 @@ pub enum BeaconStateEvent {
         slot: u64,
         block_root: [u8; 32],
     },
+    /// Enters local gossip validation before network publication.
+    PublishGossip {
+        topic: GossipTopic,
+        ssz: TCacheRead,
+    },
 }
 
 /// Why a received block is not in fork choice yet, or that it is.
@@ -1434,6 +1439,7 @@ impl BeaconStateEvent {
             Self::EnvelopeAvailable { .. } => {
                 SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
             }
+            Self::PublishGossip { topic, .. } => topic.view(),
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
             Self::LocalGossipVerdict { .. } |
