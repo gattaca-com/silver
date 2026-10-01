@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, mem};
 
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
@@ -11,6 +11,7 @@ use silver_common::{
     TCacheProducer, TCacheRead, TRead,
     ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
 };
+use silver_slashing::Selection;
 use silver_ssz::block_body::{BeaconBlockBodyFulu, EMPTY_SYNC_AGGREGATE};
 
 use super::{BeaconStateTile, Producers, block::AppliedBlock};
@@ -83,6 +84,25 @@ impl Operations<'static> {
     };
 }
 
+#[derive(Default)]
+pub(super) struct PackedOperations {
+    slashings: Selection,
+}
+
+impl PackedOperations {
+    fn clear(&mut self) {
+        self.slashings.clear();
+    }
+
+    fn operations(&self) -> Operations<'_> {
+        Operations {
+            proposer_slashings: self.slashings.proposer_slashings(),
+            attester_slashings: self.slashings.attester_slashings(),
+            ..Operations::NONE
+        }
+    }
+}
+
 /// The post-state is committed, so the import of the signed block skips its
 /// state transition.
 struct BuiltBlock {
@@ -101,6 +121,7 @@ pub(super) struct BlockProduction {
     pending: Vec<(u64, Proposal)>,
     built: Option<BuiltBlock>,
     next_payload_id: u64,
+    packed: PackedOperations,
 }
 
 impl BlockProduction {
@@ -366,13 +387,27 @@ impl BeaconStateTile {
         payload.stage = PayloadStage::Prepared { payload_id };
         let (slot, parent_root) = (payload.slot, payload.parent_root);
 
+        let mut packed = mem::take(&mut self.block_production.packed);
         for (request_id, proposal) in self.block_production.take_pending(slot, parent_root) {
             let block = match response.data {
-                Some(data) => self.block_for(proposal, data, Operations::NONE),
+                Some(data) => {
+                    self.pack_operations(&proposal, &mut packed);
+                    self.block_for(proposal, data, packed.operations())
+                }
                 None => Err(ProduceBlockFailure::PayloadUnavailable),
             };
             answer(producers, request_id, block);
         }
+        self.block_production.packed = packed;
+    }
+
+    #[timed]
+    fn pack_operations(&mut self, proposal: &Proposal, packed: &mut PackedOperations) {
+        let Ok((parent, _)) = self.proposal_parent(proposal) else {
+            return packed.clear();
+        };
+        let pre_state = self.state.read_view(parent);
+        self.slashing_pool.select(&pre_state, &mut packed.slashings);
     }
 
     /// The built block's `(body_root, fork)` when `body` is its body. Comparing

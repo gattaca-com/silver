@@ -109,7 +109,7 @@ impl ProduceBlockRequest {
             ("Eth-Consensus-Version", spec.fork_at_slot(self.slot).name()),
             ("Eth-Execution-Payload-Blinded", "false"),
             ("Eth-Execution-Payload-Value", payload_value.as_str()),
-            // TODO: The body packs nothing that pays the proposer yet.
+            // TODO: Count the proposer rewards of the packed operations.
             ("Eth-Consensus-Block-Value", "0"),
         ];
         let parts = [before_payload, payload.execution_payload, bls_changes, payload.after_payload];

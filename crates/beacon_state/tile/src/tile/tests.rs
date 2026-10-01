@@ -13,8 +13,8 @@ use silver_common::{
     BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    PeerEvent, ProduceBlockFailure, ProducedBlock, ProposerPreparation, StreamProtocol, SyncNeed,
+    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -25,6 +25,7 @@ use silver_common::{
     },
     test_util::ShmemDir,
 };
+use silver_slashing::Selection;
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
 #[cfg(feature = "ef_tests")]
@@ -2242,9 +2243,11 @@ fn as_zero_intersection_with_valid_sigs_ignored() {
 // Reads the private pool because the tile has no block-production consumer.
 fn pooled(tile: &BeaconStateTile) -> (Vec<[u8; PROPOSER_SLASHING_SIZE]>, Option<Vec<u8>>) {
     let view = tile.state.read_view(tile.canonical_state_id());
-    let selection = tile.slashing_pool.select(&view);
-    let proposer_slashings = selection.proposer_slashings.into_iter().copied().collect();
-    (proposer_slashings, selection.attester_slashing.map(<[u8]>::to_vec))
+    let mut selection = Selection::default();
+    tile.slashing_pool.select(&view, &mut selection);
+    let proposer_slashings = selection.proposer_slashings().as_chunks().0.to_vec();
+    let attester_slashing = selection.attester_slashings().get(size_of::<u32>()..);
+    (proposer_slashings, attester_slashing.map(<[u8]>::to_vec))
 }
 
 // Exercises slashing processing and signature verification, not full block
@@ -2396,11 +2399,14 @@ fn finalization_prunes_proofs_against_the_finalized_state() {
         StateId { validators_idx: w.commit(), ..base }
     };
     let view = tile.state.read_view(both_slashable);
-    let selection = tile.slashing_pool.select(&view);
+    let mut selection = Selection::default();
+    tile.slashing_pool.select(&view, &mut selection);
     let offenders: Vec<_> = selection
-        .proposer_slashings
+        .proposer_slashings()
+        .as_chunks()
+        .0
         .iter()
-        .map(|p| ProposerSlashingView::h1_proposer_index(p))
+        .map(ProposerSlashingView::h1_proposer_index)
         .collect();
     assert_eq!(offenders, [0]);
 }
@@ -5015,33 +5021,11 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     let slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
         tile_with_producers_on(slot, state, SpecConfig::mainnet());
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
-    engine_requests(&mut sink);
-    produced_blocks(&mut sink);
-    register_proposer(&mut tile, SignedBeaconBlockView::proposer_index(&block_ssz), [7; 20]);
 
     let message = &block_ssz[100..];
     let frame = fixture_payload_frame(&block_ssz);
-    let proposal = fixture_proposal(&tile, &block_ssz);
-    tile.produce_block(5, proposal, &mut adapter.producers);
-    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
-        panic!("expected a payload preparation");
-    };
-    prepared(&mut tile, prepare.id, [1; 8], &mut adapter.producers);
-    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
-        panic!("expected a payload fetch");
-    };
-    let (_, read) = publish_block_bytes(&mut gp, &frame);
-    let response = EngineGetPayloadResp { id: fetch.id, data: Some(read) };
-    tile.handle_engine_response(EngineResp::GetPayload(response), &mut adapter.producers);
-
-    let mut produced = Vec::new();
-    sink.consume(|response: BeaconApiResponse, _| {
-        if let BeaconApiResponse::ProducedBlock { block, .. } = response {
-            produced.push(block);
-        }
-    });
-    let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
+    let (block, read) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
     assert_eq!(block.execution_payload_value, [3; 32]);
     assert_eq!(block.payload, read, "the engine's bytes stay in the payload frame");
     let header = tile.events_producer.read_buffer(block.header).unwrap();
@@ -5086,6 +5070,44 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     // Checked before a blob block is staged on its columns.
     assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
     assert_eq!(tile.block_production.state_ids_mut().count(), 0, "import takes the post-state");
+}
+
+/// Serves a block request on the `one_blob` fixture's payload through the
+/// engine round trip.
+#[cfg(feature = "ef_tests")]
+fn produce_fixture_block(
+    tile: &mut BeaconStateTile,
+    gp: &mut TProducer,
+    spine: &mut TestSpine,
+    adapter: &mut SpineAdapter<SilverSpine>,
+    block_ssz: &[u8],
+) -> (ProducedBlock, TCacheRead) {
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    produced_blocks(&mut sink);
+    register_proposer(tile, SignedBeaconBlockView::proposer_index(block_ssz), [7; 20]);
+
+    let proposal = fixture_proposal(tile, block_ssz);
+    tile.produce_block(5, proposal, &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(tile, prepare.id, [1; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload fetch");
+    };
+    let (_, read) = publish_block_bytes(gp, &fixture_payload_frame(block_ssz));
+    let response = EngineGetPayloadResp { id: fetch.id, data: Some(read) };
+    tile.handle_engine_response(EngineResp::GetPayload(response), &mut adapter.producers);
+
+    let mut produced = Vec::new();
+    sink.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::ProducedBlock { block, .. } = response {
+            produced.push(block);
+        }
+    });
+    let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
+    (block, read)
 }
 
 /// The `PayloadFrame` the EL would answer with for `block_ssz`'s payload,
@@ -5139,6 +5161,63 @@ fn fixture_proposal(tile: &BeaconStateTile, block_ssz: &[u8]) -> Proposal {
         randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
         graffiti: *BeaconBlockBodyFuluView::graffiti(body),
     }
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_slashings_land_in_the_produced_block() {
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let head = tile.state.read_view(tile.canonical_state_id());
+    let count = head.validators.count() as u64;
+    let proposer = SignedBeaconBlockView::proposer_index(&block_ssz);
+    let [equivocator, double_voter] = [1, 2].map(|i| (proposer + i) % count);
+    let proposer_slashing = |offender: u64| {
+        let mut proof = [0u8; PROPOSER_SLASHING_SIZE];
+        for header in [0, 208] {
+            proof[header..header + 8].copy_from_slice(&slot.to_le_bytes());
+            proof[header + 8..header + 16].copy_from_slice(&offender.to_le_bytes());
+        }
+        proof[208 + 80] = 1;
+        proof
+    };
+    let equivocation = proposer_slashing(equivocator);
+    let epoch = slot / SLOTS_PER_EPOCH;
+    let double_vote = wrap_attester_slashing(
+        &build_ia_with_indices(epoch, 0xAA, &[double_voter]),
+        &build_ia_with_indices(epoch, 0xBB, &[double_voter]),
+    );
+    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head);
+    tile.slashing_pool.insert_proposer_slashing(&proposer_slashing(count + 5), &head);
+    tile.slashing_pool.insert_attester_slashing(&double_vote, &[double_voter as u32], &head);
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body = &header[12 + 84..];
+    let field = |from: u32, to: u32| &body[from as usize..to as usize];
+    let proposer_slashings = field(
+        BeaconBlockBodyFuluView::proposer_slashings_offset(body),
+        BeaconBlockBodyFuluView::attester_slashings_offset(body),
+    );
+    let attester_slashings = field(
+        BeaconBlockBodyFuluView::attester_slashings_offset(body),
+        BeaconBlockBodyFuluView::attestations_offset(body),
+    );
+    assert_eq!(proposer_slashings, equivocation, "the unknown offender is filtered out");
+    assert_eq!(attester_slashings, [&4u32.to_le_bytes()[..], &double_vote].concat());
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let validators = tile.state.read_view(post_state).validators;
+    assert!(validators.is_slashed(equivocator as usize));
+    assert!(validators.is_slashed(double_voter as usize));
 }
 
 #[cfg(feature = "ef_tests")]
