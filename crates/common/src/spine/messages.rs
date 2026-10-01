@@ -1426,6 +1426,10 @@ pub enum BeaconStateEvent {
     },
     PoolChange(PoolChange),
     PayloadAttributes(PreparedPayloadAttributes),
+    PublishGossip {
+        topic: GossipTopic,
+        ssz: TCacheRead,
+    },
 }
 
 /// The attributes an EL was just asked to build on.
@@ -1771,6 +1775,7 @@ impl BeaconStateEvent {
             Self::EnvelopeAvailable { .. } => {
                 SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
             }
+            Self::PublishGossip { topic, .. } => topic.view(),
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
             Self::CustodyChange { .. } |

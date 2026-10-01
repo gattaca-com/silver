@@ -7,7 +7,9 @@ use silver_common::{
     MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, RpcOffence,
     RpcSeverity, SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead,
     TCacheReader, TCacheTable, TProducer, TReadMode,
-    ssz_view::{PAYLOAD_ATTESTATION_MESSAGE_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE},
+    ssz_view::{
+        PAYLOAD_ATTESTATION_MESSAGE_SIZE, PROPOSER_SLASHING_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE,
+    },
     test_util::{ShmemDir, empty_signed_envelope},
 };
 use silver_peer::SyncingConfig;
@@ -63,6 +65,10 @@ impl GossipPublications {
 
     /// Wired to the spine but not yet run: no consumer has read anything.
     fn attach(topic: GossipTopic, bytes: &[u8]) -> Self {
+        Self::attach_on(topic, bytes, Some(test_domain()))
+    }
+
+    fn attach_on(topic: GossipTopic, bytes: &[u8], domain: Option<GossipDomain>) -> Self {
         let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 16);
         let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
@@ -95,7 +101,7 @@ impl GossipPublications {
                 tcaches,
                 TCache::producer(TCacheId::ControlProcessing, 1 << 16),
                 protobuf,
-                Some(test_domain()),
+                domain,
                 Duration::from_secs(12),
             )
             .unwrap(),
@@ -613,6 +619,46 @@ fn assert_no_syncing_publication(origin: ColumnOrigin) {
     capture.persist_column(origin, &bytes);
     capture.crank();
     assert!(capture.sent().is_empty(), "peers ahead of us already hold the column");
+}
+
+#[test]
+fn originated_message_is_copied_into_gossip_and_waits_for_validation() {
+    let topic = GossipTopic::ProposerSlashing;
+    let mut capture = GossipPublications::new(topic, b"unrelated frame");
+    capture.observer.consume(|_: NewGossipMsg, _| {});
+    let ssz = write_bytes(&mut capture.rpc, &[0x5a; PROPOSER_SLASHING_SIZE]);
+
+    capture.observer.produce(BeaconStateEvent::PublishGossip { topic, ssz });
+    capture.crank();
+
+    let mut messages = Vec::new();
+    capture.observer.consume(|message: NewGossipMsg, _| messages.push(message));
+    let [message] = messages[..] else { panic!("one message enters validation") };
+    assert_eq!(message.stream_id, LOCAL_GOSSIP_STREAM_ID);
+    assert_eq!(message.topic, topic);
+    assert_eq!(message.ssz.id(), TCacheId::ControlProcessing);
+    assert!(capture.sent().is_empty(), "nothing is published before validation");
+}
+
+#[test]
+fn originated_message_is_retried_until_gossip_is_ready() {
+    let topic = GossipTopic::ProposerSlashing;
+    let mut capture = GossipPublications::attach_on(topic, &[], None);
+    capture.crank();
+    capture.observer.consume(|_: NewGossipMsg, _| {});
+    let ssz = write_bytes(&mut capture.rpc, &[0x5a; PROPOSER_SLASHING_SIZE]);
+
+    capture.observer.produce(BeaconStateEvent::PublishGossip { topic, ssz });
+    let mut injected = 0;
+    for ready in [false, true, true] {
+        if ready {
+            capture.controller.gossip_handler.set_domains(test_domain(), None);
+        }
+        capture.crank();
+        capture.observer.consume(|_: NewGossipMsg, _| injected += 1);
+    }
+
+    assert_eq!(injected, 1, "injected once gossip is ready, then forgotten");
 }
 
 #[test]
