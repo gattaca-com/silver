@@ -12,11 +12,11 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecCon
 #[cfg(feature = "ef_tests")]
 use silver_common::TCacheRead;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind,
-    EngineResp, ForkName, GossipTopic, IngestionTime, LOCAL_GOSSIP_STREAM_ID, NewGossipMsg, Origin,
-    P2pStreamId, PeerEvent, RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers,
-    SszCache, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader,
-    TCacheTable, TProducer, TRead, TReadMode, TileId, Wheel, block_root,
+    BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind, EngineResp, ForkName,
+    GossipTopic, IngestionTime, LockedProposal, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
+    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed,
+    SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead,
+    TReadMode, TileId, Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
         RetentionEvent, StoreError,
@@ -144,6 +144,7 @@ impl DataColumnsTile {
         )?;
         self.reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState]);
         self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState]);
+        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::Control]);
         self.persist_reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState, dc]);
         self.persist_reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, dc]);
         if let Some(cells) = &mut self.cells {
@@ -522,7 +523,6 @@ impl DataColumnsTile {
     ) {
         let parent_root = match t_read.buffer() {
             Ok((buf, _)) if SignedBeaconBlockView::check_size(buf) => {
-                self.proposed.prune_submitted(SignedBeaconBlockView::slot(buf));
                 *SignedBeaconBlockView::parent_root(buf)
             }
             Ok((buf, _)) => {
@@ -535,11 +535,6 @@ impl DataColumnsTile {
             }
         };
 
-        if stream_id == LOCAL_GOSSIP_STREAM_ID &&
-            let Ok((block, _)) = t_read.buffer()
-        {
-            self.hold_proposal_columns(block_root(block, false), block, producers);
-        }
         let root = self.beacon_block(stream_id, t_read, producers);
 
         if let Some((block_root, is_gloas)) = root &&
@@ -906,13 +901,10 @@ impl Tile<SilverSpine> for DataColumnsTile {
             }
         });
 
-        // Before gossip: a proposed block's contents precede its local injection.
-        adapter.consume(|request: BeaconApiRequest, _| {
-            if let BeaconApiRequest::LocalGossip { topic: GossipTopic::BeaconBlock, ssz, .. } =
-                request
-            {
-                self.proposed.submit(self.reader.acquire(ssz));
-            }
+        // Before gossip: the lock emits a proposal ahead of its block's injection.
+        adapter.consume(|proposal: LockedProposal, producers| {
+            let contents = self.reader.acquire(proposal.contents);
+            self.hold_proposal_columns(contents, producers);
         });
 
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
@@ -1033,9 +1025,9 @@ mod tests {
 
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner, ForkName};
     use silver_common::{
-        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, MESSAGE_ID_LEN,
-        MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheId,
-        TCacheProducer, TCacheRead, TCacheReader, TProducer, block_root_fulu,
+        BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, LOCAL_GOSSIP_STREAM_ID,
+        MESSAGE_ID_LEN, MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache,
+        TCacheId, TCacheProducer, TCacheRead, TCacheReader, TProducer, block_root_fulu,
         column_util::SidecarIdentity,
         ssz_view::{
             BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,

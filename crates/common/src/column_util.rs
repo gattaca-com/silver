@@ -4,12 +4,11 @@ use blst::{BLST_ERROR, min_pk::PublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
-    body_root,
     merkle::{
         B256, MerkleStack, hash_concat, hash_fixed_bytes, hash_list, is_valid_merkle_branch,
         merkleize, sha256, uint64_chunk,
     },
-    ssz_hash::hash_tree_root_fork_data,
+    ssz_hash::{body_root_and_commitments_proof, hash_tree_root_fork_data},
     ssz_view::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         BeaconBlockHeaderView, DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView,
@@ -483,17 +482,20 @@ impl CellScratch {
     }
 }
 
-/// The `SignedBeaconBlockHeader` of a Fulu signed block.
-pub fn fulu_signed_block_header(signed_block: &[u8]) -> [u8; 208] {
+/// The `SignedBeaconBlockHeader` and `kzg_commitments_inclusion_proof` of a
+/// Fulu signed block, from one hash of its body.
+pub fn fulu_header_and_inclusion_proof(signed_block: &[u8]) -> ([u8; 208], [u8; 128]) {
+    let (body_root, inclusion_proof) =
+        body_root_and_commitments_proof(SignedBeaconBlockView::body(signed_block));
     let mut header = [0; 208];
     header[..8].copy_from_slice(&SignedBeaconBlockView::slot(signed_block).to_le_bytes());
     header[8..16]
         .copy_from_slice(&SignedBeaconBlockView::proposer_index(signed_block).to_le_bytes());
     header[16..48].copy_from_slice(SignedBeaconBlockView::parent_root(signed_block));
     header[48..80].copy_from_slice(SignedBeaconBlockView::state_root(signed_block));
-    header[80..112].copy_from_slice(&body_root(SignedBeaconBlockView::body(signed_block)));
+    header[80..112].copy_from_slice(&body_root);
     header[112..].copy_from_slice(SignedBeaconBlockView::signature(signed_block));
-    header
+    (header, inclusion_proof)
 }
 
 /// Writes a Fulu `DataColumnSidecar` into `out`, which is exactly
@@ -805,9 +807,9 @@ mod tests {
         let (_, proofs) = settings.compute_cells_and_kzg_proofs(&blob).unwrap();
 
         let block = SynthBlock::fulu(7, &commitments);
-        let header = fulu_signed_block_header(block.bytes());
+        let (header, inclusion_proof) = fulu_header_and_inclusion_proof(block.bytes());
         assert_eq!(header[80..112], crate::body_root(block.body()));
-        let inclusion_proof = kzg_commitments_inclusion_proof(block.body());
+        assert_eq!(inclusion_proof, kzg_commitments_inclusion_proof(block.body()));
 
         for j in [0usize, 1, 63, 127] {
             let proof = proofs[j].to_bytes().into_inner();

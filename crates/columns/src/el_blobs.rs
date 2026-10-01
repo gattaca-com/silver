@@ -9,7 +9,6 @@ use silver_common::{
     SilverSpineProducers, TCacheReader, TRead, Wheel,
     cell_store::{CommitmentContext, ContextData},
     column_util::{self as util, CellScratch},
-    ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{BYTES_PER_KZG_COMMITMENT, BeaconBlockBodyFuluView, SignedBeaconBlockView},
 };
 
@@ -149,8 +148,7 @@ impl ElBlobFetcher {
         {
             return;
         }
-        let header = util::fulu_signed_block_header(bytes);
-        let proof = kzg_commitments_inclusion_proof(body);
+        let (header, proof) = util::fulu_header_and_inclusion_proof(bytes);
         if let Some(fetch) = PendingBlobFetch::new(
             context,
             domain,

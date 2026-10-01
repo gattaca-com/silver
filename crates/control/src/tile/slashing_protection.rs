@@ -1,13 +1,16 @@
 use std::time::Instant;
 
-use flux::spine::SpineAdapter;
+use flux::spine::{SpineAdapter, SpineProducers};
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
-    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TCacheReader, TProducer,
+    LockedProposal, SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer,
+    TRead,
     block_contents::SignedBlockContents,
-    ssz_view::{SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView},
+    ssz_view::{
+        SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
+    },
 };
 use silver_gossip::GossipHandler;
 
@@ -35,13 +38,13 @@ impl PendingAttestation {
     }
 }
 
-/// A signed block waiting on its lock. Its `SignedBlockContents` stay in the
-/// submissions tcache until the lock commits.
-#[derive(Debug, Clone, Copy)]
+/// A signed block waiting on its lock. Its `SignedBlockContents` stay pinned
+/// in the submissions tcache until the lock commits or times out.
+#[derive(Debug)]
 struct PendingBlock {
     request_id: u64,
     key: BlockKey,
-    ssz: TCacheRead,
+    contents: TRead,
 }
 
 /// Slashing protection for local attestations and blocks: admission and a
@@ -117,7 +120,7 @@ impl SlashingProtectionHandler {
                 }
             }
         });
-        self.drive(now, local_gossip, gossip_handler, inbound_consumer, &mut adapter.producers);
+        self.drive(now, local_gossip, gossip_handler, &mut adapter.producers);
     }
 
     pub(super) fn on_local_attestation(
@@ -183,13 +186,21 @@ impl SlashingProtectionHandler {
     pub(super) fn on_local_block(
         &mut self,
         request_id: u64,
-        ssz: TCacheRead,
-        block: &[u8],
+        contents: TRead,
         now: Instant,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
+        let Some(block) = contents
+            .buffer()
+            .ok()
+            .and_then(|(bytes, _)| SignedBlockContents::signed_block(bytes))
+            .filter(|block| block.len() >= SIGNED_BEACON_BLOCK_MIN)
+        else {
+            silver_log::error!(request_id, "submitted block is misframed");
+            return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
+        };
         let key = BlockKey {
             proposer_index: SignedBeaconBlockView::proposer_index(block),
             slot: SignedBeaconBlockView::slot(block),
@@ -218,6 +229,7 @@ impl SlashingProtectionHandler {
                 );
                 return;
             }
+            producers.produce(LockedProposal { contents: contents.to_read() });
             return local_gossip.submit(
                 block_message(request_id, block, key.slot),
                 now,
@@ -228,8 +240,11 @@ impl SlashingProtectionHandler {
 
         match cluster.propose_block(command, self.wall_slot, now) {
             Ok(proposal_id) => {
-                let previous =
-                    self.pending_blocks.insert(proposal_id, PendingBlock { request_id, key, ssz });
+                let previous = self.pending_blocks.insert(proposal_id, PendingBlock {
+                    request_id,
+                    key,
+                    contents,
+                });
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
             Err(error) => {
@@ -306,7 +321,6 @@ impl SlashingProtectionHandler {
         now: Instant,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
-        reader: &mut TCacheReader,
         producers: &mut SilverSpineProducers,
     ) {
         let Some(cluster) = self.cluster.as_mut() else {
@@ -410,8 +424,8 @@ impl SlashingProtectionHandler {
                     );
                     return;
                 }
-                let acquired = reader.acquire(block.ssz);
-                let Some(bytes) = acquired
+                let Some(bytes) = block
+                    .contents
                     .buffer()
                     .ok()
                     .and_then(|(contents, _)| SignedBlockContents::signed_block(contents))
@@ -428,6 +442,7 @@ impl SlashingProtectionHandler {
                     );
                     return;
                 };
+                producers.produce(LockedProposal { contents: block.contents.to_read() });
                 local_gossip.submit(
                     block_message(block.request_id, bytes, slot),
                     now,
@@ -482,9 +497,7 @@ impl SlashingProtectionHandler {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{
-        TCache, TCacheId, TCacheProducer, TCacheTable, TReadMode, ssz_view::SIGNED_BEACON_BLOCK_MIN,
-    };
+    use silver_common::{TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TReadMode};
 
     use super::*;
     use crate::{
@@ -534,17 +547,23 @@ mod tests {
         let blobs_at = (12 + block.len()) as u32;
         let mut contents = [12, blobs_at, blobs_at].map(u32::to_le_bytes).concat();
         contents.extend_from_slice(block);
-        let ssz = submissions.publish(&contents);
+        let published = submissions.publish(&contents);
+        let contents = submissions.reader.acquire(published);
         let Harness { local_gossip, gossip, adapter, .. } = harness;
         handler.on_local_block(
             request_id,
-            ssz,
-            block,
+            contents,
             now,
             local_gossip,
             gossip,
             &mut adapter.producers,
         );
+    }
+
+    fn locked_proposals(harness: &mut Harness) -> usize {
+        let mut locked = 0;
+        harness.adapter.consume(|_: LockedProposal, _| locked += 1);
+        locked
     }
 
     #[test]
@@ -555,19 +574,24 @@ mod tests {
         standalone.handler.on_status(10, 10);
         standalone.handler.on_status(11, 11);
         let Standalone { handler, harness } = &mut standalone;
+        assert_eq!(locked_proposals(harness), 0, "subscribes before anything is locked");
 
         submit_block(handler, harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
         let first = harness.pop_gossip();
+        assert_eq!(locked_proposals(harness), 1, "the accepted contents follow");
         submit_block(handler, harness, &mut submissions, 2, &block_bytes(11, 4, 1), now);
         assert_eq!(harness.pop_gossip().msg_hash, first.msg_hash, "a resubmission rejoins");
+        assert_eq!(locked_proposals(harness), 1, "and is accepted again");
         assert!(harness.responses().is_empty());
 
         submit_block(handler, harness, &mut submissions, 3, &block_bytes(11, 4, 2), now);
         assert_eq!(harness.responses(), [(3, Err(LocalGossipFailure::ConflictingProposal))]);
         assert!(harness.gossip.pop_event().is_none());
+        assert_eq!(locked_proposals(harness), 0, "a refused block's contents go nowhere");
 
         submit_block(handler, harness, &mut submissions, 4, &block_bytes(11, 5, 2), now);
         harness.pop_gossip();
+        assert_eq!(locked_proposals(harness), 1);
         assert!(harness.responses().is_empty());
     }
 
@@ -592,6 +616,7 @@ mod tests {
 
         submit_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
         assert!(harness.gossip.pop_event().is_none(), "nothing leaves before the lock commits");
+        assert_eq!(locked_proposals(&mut harness), 0);
         assert_eq!(handler.pending_blocks.len(), 1);
 
         let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
@@ -599,6 +624,7 @@ mod tests {
 
         assert!(handler.pending_blocks.is_empty());
         harness.pop_gossip();
+        assert_eq!(locked_proposals(&mut harness), 1, "the committed block's contents follow");
         assert!(harness.responses().is_empty());
     }
 
@@ -802,7 +828,6 @@ mod tests {
         let now = Instant::now();
         let mut handler = handler(now);
         let mut harness = Harness::new();
-        let mut submissions = Submissions::new();
         handler.cluster = Some(
             SlashingProtectionCluster::in_memory(
                 SlashingProtectionConfig::new(
@@ -821,7 +846,6 @@ mod tests {
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,
-            &mut submissions.reader,
             &mut harness.adapter.producers,
         );
 
@@ -842,7 +866,6 @@ mod tests {
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,
-            &mut submissions.reader,
             &mut harness.adapter.producers,
         );
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::Internal))]);

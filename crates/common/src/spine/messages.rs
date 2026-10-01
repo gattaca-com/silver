@@ -1210,6 +1210,12 @@ pub enum ReplayBlock {
     Done,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct LockedProposal {
+    pub contents: TCacheRead,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SyncingStrategy {

@@ -295,15 +295,19 @@ impl ColumnValidator {
         // notional read lock too long otherwise).
         let validated_parent_slot = self.validated_block_roots.get(parent_root).copied();
         let checks = self.beacon_state.read(|v| {
-            let ancestor_slot = if parent_root == sync_state.head_root() {
-                Some(v.slot.state().latest_block_header.slot)
-            } else {
-                v.block_roots.slot_of(parent_root, v.slot.slot_number())
+            // A scan of up to `SLOTS_PER_HISTORICAL_ROOT` roots on a miss.
+            let snapshot_parent_slot = || {
+                let head = v.slot.state();
+                if *parent_root == head.latest_block_root {
+                    Some(head.latest_block_header.slot)
+                } else {
+                    v.block_roots.slot_of(parent_root, v.slot.slot_number())
+                }
             };
             let parent = match validated_parent_slot {
                 Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
                 None if parent_root == sync_state.head_root() => ParentCheck::Seen,
-                None => match ancestor_slot {
+                None => match snapshot_parent_slot() {
                     Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
                     None => ParentCheck::Unseen,
                 },
@@ -312,10 +316,11 @@ impl ColumnValidator {
             // Epoch E's proposers follow the chain to the end of E - 2, so the
             // snapshot's lookahead vouches for a sidecar only on its own
             // branch, at most one epoch past the parent.
-            let vouched = ancestor_slot.is_some_and(|parent_slot| {
-                slot / SLOTS_PER_EPOCH <= parent_slot / SLOTS_PER_EPOCH + 1
-            });
-            if !vouched && state.proposer == ProposerCheck::Mismatch {
+            if state.proposer == ProposerCheck::Mismatch &&
+                !snapshot_parent_slot().is_some_and(|parent_slot| {
+                    slot / SLOTS_PER_EPOCH <= parent_slot / SLOTS_PER_EPOCH + 1
+                })
+            {
                 state.proposer = ProposerCheck::Unresolvable;
             }
             (state, parent)

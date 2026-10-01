@@ -7,26 +7,21 @@ use silver_common::{
     TCacheProducer, TCacheRead, TProducer, TRead,
     block_contents::SignedBlockContents,
     column_util::{
-        CellScratch, cell_bytes, data_column_sidecar_len, fulu_signed_block_header,
-        write_data_column_sidecar_fulu,
+        CellScratch, KzgBatchEntry, KzgScratch, cell_bytes, data_column_sidecar_len,
+        fulu_header_and_inclusion_proof, kzg_verify_batch_multi, write_data_column_sidecar_fulu,
     },
-    ssz_hash::kzg_commitments_inclusion_proof,
+    ssz_hash::hash_beacon_block_header_bytes,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_PROOF, BeaconBlockBodyFuluView, DATA_COLUMN_SIDECAR_MIN,
-        NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
 use super::DataColumnsTile;
 use crate::BlockRoot;
 
-/// Block a validator client submitted, pinned until it passes the
-/// slashing-protection lock and comes back as a local gossip block.
-struct Submitted {
-    slot: u64,
-    proposer_index: u64,
-    block: TRead,
-}
+/// One own proposal a slot, for the two retained slots.
+const MAX_HELD: usize = 2;
 
 struct HeldBlock {
     block_root: BlockRoot,
@@ -36,57 +31,60 @@ struct HeldBlock {
     sidecars: [TCacheRead; NUMBER_OF_COLUMNS],
 }
 
+struct HeldBlocks([Option<HeldBlock>; MAX_HELD]);
+
+impl HeldBlocks {
+    const EMPTY: Self = Self([const { None }; MAX_HELD]);
+
+    /// Drops blocks older than the previous slot. When full, the oldest goes.
+    fn insert(&mut self, held: HeldBlock) {
+        for entry in &mut self.0 {
+            entry.take_if(|older| older.slot + 1 < held.slot);
+        }
+        let at = self.0.iter().position(Option::is_none).unwrap_or_else(|| self.oldest());
+        self.0[at] = Some(held);
+    }
+
+    fn take(&mut self, block_root: &BlockRoot) -> Option<HeldBlock> {
+        let entry = self
+            .0
+            .iter_mut()
+            .find(|entry| entry.as_ref().is_some_and(|held| held.block_root == *block_root))?;
+        entry.take()
+    }
+
+    fn oldest_seq(&self) -> Option<u64> {
+        self.0.iter().flatten().map(|held| held.sidecars[0].seq()).min()
+    }
+
+    fn oldest(&self) -> usize {
+        (0..MAX_HELD)
+            .min_by_key(|&at| self.0[at].as_ref().map(|held| held.slot))
+            .expect("MAX_HELD is not zero")
+    }
+}
+
 pub(super) struct ProposedBlocks {
     pub(super) producer: TProducer,
     cells: CellScratch,
-    submitted: Vec<Submitted>,
-    held: Vec<HeldBlock>,
+    held: HeldBlocks,
 }
 
 impl ProposedBlocks {
     pub(super) fn new(producer: TProducer) -> Self {
-        Self { producer, cells: CellScratch::default(), submitted: Vec::new(), held: Vec::new() }
-    }
-
-    pub(super) fn submit(&mut self, contents: TRead) {
-        let Some(block) = contents
-            .buffer()
-            .ok()
-            .and_then(|(bytes, _)| SignedBlockContents::signed_block(bytes))
-            .filter(|block| SignedBeaconBlockView::check_size(block))
-        else {
-            return;
-        };
-        let slot = SignedBeaconBlockView::slot(block);
-        let proposer_index = SignedBeaconBlockView::proposer_index(block);
-        self.prune_submitted(slot);
-        self.submitted.retain(|submitted| {
-            (submitted.slot, submitted.proposer_index) != (slot, proposer_index)
-        });
-        self.submitted.push(Submitted { slot, proposer_index, block: contents });
-    }
-
-    pub(super) fn prune_submitted(&mut self, slot: u64) {
-        self.submitted.retain(|submitted| submitted.slot + 1 >= slot);
-    }
-
-    fn take_submitted(&mut self, slot: u64, proposer_index: u64) -> Option<TRead> {
-        let at = self.submitted.iter().position(|submitted| {
-            (submitted.slot, submitted.proposer_index) == (slot, proposer_index)
-        })?;
-        Some(self.submitted.swap_remove(at).block)
+        Self { producer, cells: CellScratch::default(), held: HeldBlocks::EMPTY }
     }
 
     #[timed]
     fn write_sidecars(
         &mut self,
-        block: &[u8],
+        slot: u64,
+        header: &[u8; 208],
+        inclusion_proof: &[u8; 128],
         commitments: &[u8],
         contents: &SignedBlockContents,
+        kzg_scratch: &mut KzgScratch,
     ) -> Option<[TCacheRead; NUMBER_OF_COLUMNS]> {
-        let slot = SignedBeaconBlockView::slot(block);
-        let header = fulu_signed_block_header(block);
-        let inclusion_proof = kzg_commitments_inclusion_proof(SignedBeaconBlockView::body(block));
         let blob_count = contents.blob_count();
         let len = data_column_sidecar_len(blob_count);
 
@@ -106,8 +104,8 @@ impl ProposedBlocks {
             write_data_column_sidecar_fulu(
                 sidecar,
                 column as u64,
-                &header,
-                &inclusion_proof,
+                header,
+                inclusion_proof,
                 commitments,
                 iter::empty(),
                 (0..blob_count).map(|blob| {
@@ -132,6 +130,18 @@ impl ProposedBlocks {
             }
         }
 
+        // The submitter may not be the validator client this node built for.
+        let entries = sidecars.iter().zip(0..).map(|(sidecar, index)| KzgBatchEntry {
+            column: DataColumnSidecarFuluView::column(sidecar),
+            commitments: DataColumnSidecarFuluView::kzg_commitments(sidecar),
+            proofs: DataColumnSidecarFuluView::kzg_proofs(sidecar),
+            index,
+        });
+        if !kzg_verify_batch_multi(entries, kzg_scratch) {
+            silver_log::error!(slot, "submitted blobs or proofs fail KZG; columns not published");
+            return None;
+        }
+
         Some(reservations.map(|mut reservation| {
             reservation.increment_offset(len);
             reservation.read()
@@ -139,14 +149,12 @@ impl ProposedBlocks {
     }
 
     fn hold(&mut self, held: HeldBlock) {
-        self.held.retain(|older| older.slot + 1 >= held.slot);
-        self.held.push(held);
+        self.held.insert(held);
         self.retain_held();
     }
 
     fn take_held(&mut self, block_root: &BlockRoot) -> Option<HeldBlock> {
-        let at = self.held.iter().position(|held| held.block_root == *block_root)?;
-        let held = self.held.swap_remove(at);
+        let held = self.held.take(block_root)?;
         self.retain_held();
         Some(held)
     }
@@ -156,7 +164,7 @@ impl ProposedBlocks {
     }
 
     fn retain_held(&mut self) {
-        let oldest = self.held.iter().map(|held| held.sidecars[0].seq()).min();
+        let oldest = self.held.oldest_seq();
         self.producer.retain_from(oldest.unwrap_or(self.producer.next_seq()));
     }
 }
@@ -164,18 +172,26 @@ impl ProposedBlocks {
 impl DataColumnsTile {
     /// Records the custody of a proposed block that just passed its lock, so
     /// none of it is chased, and holds every column until the block imports.
+    #[timed]
     pub(super) fn hold_proposal_columns(
         &mut self,
-        block_root: BlockRoot,
-        block: &[u8],
+        contents: TRead,
         producers: &mut SilverSpineProducers,
     ) {
-        let slot = SignedBeaconBlockView::slot(block);
-        let Some(submitted) =
-            self.proposed.take_submitted(slot, SignedBeaconBlockView::proposer_index(block))
+        let Some(contents) =
+            contents.buffer().ok().and_then(|(bytes, _)| SignedBlockContents::parse(bytes))
         else {
+            silver_log::error!("proposed block contents unavailable; columns not published");
             return;
         };
+        let block = contents.signed_block;
+        let slot = SignedBeaconBlockView::slot(block);
+        let (header, inclusion_proof) = fulu_header_and_inclusion_proof(block);
+        let block_root = hash_beacon_block_header_bytes(&header);
+        // An identical resubmission passes the lock again.
+        if self.tracker.custody_complete(&block_root) {
+            return;
+        }
         let Some(commitments) =
             BeaconBlockBodyFuluView::blob_kzg_commitments(SignedBeaconBlockView::body(block))
                 .filter(|commitments| !commitments.is_empty())
@@ -183,16 +199,14 @@ impl DataColumnsTile {
             return;
         };
         let Some(domain) = self.validator.domain_at(slot) else { return };
-        let Some(contents) = submitted
-            .buffer()
-            .ok()
-            .and_then(|(bytes, _)| SignedBlockContents::parse(bytes))
-            .filter(|contents| contents.signed_block == block)
-        else {
-            silver_log::error!(slot, "proposed block contents unavailable; columns not published");
-            return;
-        };
-        let Some(sidecars) = self.proposed.write_sidecars(block, commitments, &contents) else {
+        let Some(sidecars) = self.proposed.write_sidecars(
+            slot,
+            &header,
+            &inclusion_proof,
+            commitments,
+            &contents,
+            &mut self.kzg_scratch,
+        ) else {
             return;
         };
 

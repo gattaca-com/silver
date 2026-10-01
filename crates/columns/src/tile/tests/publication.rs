@@ -313,13 +313,20 @@ fn fulu_proposer_mismatch_is_rejected_only_on_our_branch() {
     const PROPOSER_AT: usize = 4 + 96 + 8;
     let blob = BlockBlob::counting();
     for (on_our_branch, penalties) in [(true, 1), (false, 0)] {
-        let mut rig = Rig::with_spec(CUSTODY_COLUMNS, SpecConfig {
+        // Distinct from the empty test state's zero `block_roots`.
+        let parent = [0xab; 32];
+        let mut owner = BeaconStateOwner::empty_test(0);
+        let mut writer = owner.fresh_fork_writer();
+        if on_our_branch {
+            writer.view.slot.state_mut().latest_block_root = parent;
+        }
+        let anchor = writer.commit();
+        owner.publish_state_id(anchor);
+        let mut rig = Rig::with_state(CUSTODY_COLUMNS, owner.reader(), SpecConfig {
             fulu_fork_epoch: 0,
             ..SpecConfig::mainnet()
         });
         let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
-        // Distinct from the empty test state's zero `block_roots`.
-        let parent = [0xab; 32];
         let mut block = SynthBlock::fulu(SLOT, &blob.commitment).parent_root(parent).into_bytes();
         block[PROPOSER_AT..PROPOSER_AT + 8].copy_from_slice(&1u64.to_le_bytes());
         let root = block_root_fulu(&block);
