@@ -1,7 +1,7 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
-use silver_common::{BeaconStateEvent, TProducer};
+use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
 use crate::{bls, stf};
 
@@ -22,6 +22,29 @@ struct ShufflingEntry {
 }
 
 impl ShufflingEntry {
+    fn post(&self, producer: &mut TProducer, emit: impl FnOnce(BeaconStateEvent)) -> bool {
+        let Some(id) = self.id else {
+            return false;
+        };
+        let len = size_of_val(self.shuffled_indices.as_slice());
+        let Some(indices) = producer.write_with(len, |buffer| {
+            for (bytes, index) in
+                buffer.chunks_exact_mut(size_of::<u32>()).zip(&self.shuffled_indices)
+            {
+                bytes.copy_from_slice(&index.to_le_bytes());
+            }
+        }) else {
+            silver_log::warn!(
+                epoch = id.epoch,
+                len,
+                "beacon_state tcache full; shuffling not posted"
+            );
+            return false;
+        };
+        emit(BeaconStateEvent::AttestersShuffling { id, indices });
+        true
+    }
+
     fn shuffling(&self) -> stf::EpochShuffling<'_> {
         let aggs = (!self.committee_aggs.is_empty()).then_some(self.committee_aggs.as_slice());
         stf::EpochShuffling::new(&self.shuffled_indices, self.required_validator_count)
@@ -169,20 +192,12 @@ impl ShufflingCache {
                 continue;
             }
             let index = self.ensure(view, id, &[]);
-            if self.entries[index].shuffling().post(id, producer, &mut emit) {
+            if self.entries[index].post(producer, &mut emit) {
                 self.posted[slot] = Some(id);
                 any_posted = true;
             }
         }
         any_posted
-    }
-
-    #[cfg(test)]
-    pub(crate) fn shuffled_by_epoch(&self, epoch: Epoch) -> Option<&[u32]> {
-        self.entries
-            .iter()
-            .find(|e| e.id.is_some_and(|id| id.epoch == epoch))
-            .map(|e| e.shuffled_indices.as_slice())
     }
 }
 

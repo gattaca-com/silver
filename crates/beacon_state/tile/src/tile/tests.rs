@@ -2504,10 +2504,11 @@ fn block_known_parent_bad_sig_rejected() {
 // ── attestation / aggregate (committee resolution via shuffling cache) ──
 
 /// Locate `(slot, committee_index, pos_in_committee, committee_size)` for
-/// `validator` in epoch 0. The seed arms exactly one cache entry per epoch.
+/// `validator` in epoch 0.
 fn find_committee_for(tile: &BeaconStateTile, validator: u32) -> (Slot, usize, usize, usize) {
-    let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
-    let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, 0, &mut indices);
     for s in 0..SLOTS_PER_EPOCH {
         for ci in 0..shuffling.committees_per_slot {
             let c = shuffling.committee(s, ci);
@@ -2526,11 +2527,10 @@ fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize)
 /// Spec `compute_subnet_for_attestation`, recomputed independently of the
 /// production helper.
 fn expected_subnet(tile: &BeaconStateTile, slot: Slot, ci: usize) -> u64 {
-    let shuffled = tile
-        .shuffling_cache
-        .shuffled_by_epoch(slot / SLOTS_PER_EPOCH)
-        .expect("shuffling for epoch");
-    let cps = stf::EpochShuffling::new(shuffled, tile.head_validator_count()).committees_per_slot;
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, slot / SLOTS_PER_EPOCH, &mut indices);
+    let cps = shuffling.committees_per_slot;
     (cps as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64
 }
 
@@ -3826,8 +3826,9 @@ fn agg_failed_validation_does_not_mark_aggregator() {
 /// First committee (skipping the wall slot) holding two members whose
 /// registry keys differ (vi % 3), so the aggregate is genuinely multi-key.
 fn find_committee_with_two_signers(tile: &BeaconStateTile) -> (Slot, usize, u32, u32) {
-    let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
-    let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, 0, &mut indices);
     for s in 0..SLOTS_PER_EPOCH - 1 {
         for ci in 0..shuffling.committees_per_slot {
             let c = shuffling.committee(s, ci);
@@ -3842,11 +3843,10 @@ fn find_committee_with_two_signers(tile: &BeaconStateTile) -> (Slot, usize, u32,
 }
 
 fn committee_of(tile: &BeaconStateTile, slot: Slot, ci: usize) -> Vec<u32> {
-    let shuffled = tile
-        .shuffling_cache
-        .shuffled_by_epoch(slot / SLOTS_PER_EPOCH)
-        .expect("shuffling for epoch");
-    stf::EpochShuffling::new(shuffled, tile.head_validator_count()).committee(slot, ci).to_vec()
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, slot / SLOTS_PER_EPOCH, &mut indices);
+    shuffling.committee(slot, ci).to_vec()
 }
 
 /// Wrap an inner aggregate with `vi` as aggregator (registry keys cycle

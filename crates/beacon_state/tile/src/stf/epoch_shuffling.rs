@@ -1,9 +1,8 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    Epoch, RandaoMixesView, ShufflingId, Slot, StateReadView, ValidatorsView, committee_range,
+    Epoch, RandaoMixesView, Slot, StateReadView, ValidatorsView, committee_range,
     committees_per_slot,
 };
-use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
 use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed};
 
@@ -25,7 +24,7 @@ impl<'a> EpochShuffling<'a> {
         Self::from_views(&rv.validators, &rv.randao_mixes, epoch, buf)
     }
 
-    pub fn from_views(
+    pub(super) fn from_views(
         validators: &ValidatorsView,
         randao: &RandaoMixesView,
         epoch: Epoch,
@@ -38,7 +37,7 @@ impl<'a> EpochShuffling<'a> {
         Self::new(buf, required_validator_count)
     }
 
-    pub fn new(shuffled: &'a [u32], required_validator_count: usize) -> Self {
+    pub(crate) fn new(shuffled: &'a [u32], required_validator_count: usize) -> Self {
         Self {
             shuffled,
             committees_per_slot: committees_per_slot(shuffled.len()),
@@ -64,35 +63,12 @@ impl<'a> EpochShuffling<'a> {
         self.required_validator_count <= validators_count
     }
 
-    pub fn with_committee_aggs(self, committee_aggs: Option<&'a [PublicKey]>) -> Self {
+    pub(crate) fn with_committee_aggs(self, committee_aggs: Option<&'a [PublicKey]>) -> Self {
         Self { committee_aggs, ..self }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.shuffled.is_empty() || self.committees_per_slot == 0
-    }
-
-    pub fn post(
-        &self,
-        id: ShufflingId,
-        producer: &mut TProducer,
-        emit: impl FnOnce(BeaconStateEvent),
-    ) -> bool {
-        let len = size_of_val(self.shuffled);
-        let Some(indices) = producer.write_with(len, |buffer| {
-            for (bytes, index) in buffer.chunks_exact_mut(size_of::<u32>()).zip(self.shuffled) {
-                bytes.copy_from_slice(&index.to_le_bytes());
-            }
-        }) else {
-            silver_log::warn!(
-                epoch = id.epoch,
-                len,
-                "beacon_state tcache full; shuffling not posted"
-            );
-            return false;
-        };
-        emit(BeaconStateEvent::AttestersShuffling { id, indices });
-        true
     }
 
     /// Proportional split, so sizes differ by at most one and the committees
