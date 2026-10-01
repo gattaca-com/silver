@@ -1,11 +1,10 @@
 use std::{
     io,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path, PathBuf},
 };
 
 use silver_beacon_state_data::{B256, CheckpointState, SLOTS_PER_EPOCH, SpecConfig};
-use silver_config::{ChainConfig, Config};
+use silver_config::{ChainConfig, Config, Genesis};
 use silver_storage::latest_local_checkpoint;
 
 use self::checkpoint_providers::CheckpointProviders;
@@ -32,7 +31,9 @@ impl BootCheckpoint {
         }
 
         let local = latest_local_checkpoint(config.data_storage_dir());
-        match Self::download_if_behind(chain_config, local.as_ref().map(|(slot, ..)| *slot))? {
+        let local_head =
+            local.as_ref().map(|(slot, ssz, _)| (slot / SLOTS_PER_EPOCH, ssz.as_path()));
+        match Self::download_if_behind(chain_config, local_head)? {
             Some(downloaded) => Ok(downloaded),
             None => Self::persisted(local, config.data_storage_dir()),
         }
@@ -40,6 +41,10 @@ impl BootCheckpoint {
 
     pub fn is_empty(&self) -> bool {
         self.ssz.is_empty()
+    }
+
+    pub fn ssz(&self) -> &[u8] {
+        &self.ssz
     }
 
     /// Consumes the SSZ, so a download is freed before the node runs.
@@ -65,13 +70,15 @@ impl BootCheckpoint {
     /// one exists, or it is close to their finalized epoch.
     fn download_if_behind(
         chain_config: &ChainConfig,
-        local_slot: Option<u64>,
+        local: Option<(u64, &Path)>,
     ) -> io::Result<Option<Self>> {
-        let local_epoch = local_slot.map(|slot| slot / SLOTS_PER_EPOCH);
-        if local_epoch.is_some_and(|epoch| {
-            wall_epoch(chain_config).saturating_sub(epoch) <= MAX_LOCAL_LAG_EPOCHS
-        }) {
-            return Ok(None);
+        let local_epoch = local.map(|(epoch, _)| epoch);
+        if let Some((epoch, ssz)) = local {
+            let genesis = Genesis::from_state_file(ssz).map_err(io::Error::other)?;
+            let lag = chain_config.wall_epoch(&genesis).saturating_sub(epoch);
+            if lag <= MAX_LOCAL_LAG_EPOCHS {
+                return Ok(None);
+            }
         }
 
         let mut providers = CheckpointProviders::new(&chain_config.checkpoint_sync_urls);
@@ -116,13 +123,4 @@ impl BootCheckpoint {
         let pubkeys = pubkeys_path.map(std::fs::read).transpose()?.unwrap_or_default();
         Ok(Self { ssz: std::fs::read(ssz_path)?, pubkeys, expected_root: None })
     }
-}
-
-/// Saturates at 0 before genesis, so a persisted checkpoint then counts as
-/// recent.
-fn wall_epoch(chain_config: &ChainConfig) -> u64 {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let since_genesis =
-        now.as_millis().saturating_sub(chain_config.genesis_unix_secs as u128 * 1000);
-    (since_genesis / chain_config.slot_duration().as_millis()) as u64 / SLOTS_PER_EPOCH
 }

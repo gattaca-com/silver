@@ -64,11 +64,7 @@ impl GossipSchedule {
             if transitions.last().is_some_and(|previous| previous.domain == domain) {
                 continue;
             }
-            let (next_version, next_epoch) = spec.next_fork(epoch);
-            let mut enr_fork_id = [0; 16];
-            enr_fork_id[..4].copy_from_slice(&domain.digest());
-            enr_fork_id[4..8].copy_from_slice(&next_version);
-            enr_fork_id[8..].copy_from_slice(&next_epoch.to_le_bytes());
+            let enr_fork_id = spec.enr_fork_id(epoch, domain.digest());
             transitions.push(Transition { epoch, domain, enr_fork_id });
         }
         let epoch = ticker.current_slot() / SLOTS_PER_EPOCH;

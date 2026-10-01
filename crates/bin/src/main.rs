@@ -26,7 +26,7 @@ use silver_common::{
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
 };
-use silver_config::Config;
+use silver_config::{Config, Genesis};
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
@@ -65,10 +65,10 @@ const BUILD_INFO: &str = build_info::format!(
     $.timestamp
 );
 
-fn publish_build_info() -> io::Result<()> {
+fn publish_for_telemetry(file: &str, contents: &str) -> io::Result<()> {
     let dir = flux::utils::directories::shmem_dir_queues(APP_NAME);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("build-info"), BUILD_INFO)
+    std::fs::write(dir.join(file), contents)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -81,11 +81,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // `#[timed]` is inert until a process opts in.
     enable_profiler(APP_NAME);
-    publish_build_info()?;
+    publish_for_telemetry("build-info", BUILD_INFO)?;
 
     let config = load_config()?;
 
-    silver_log::info!("loaded config with fork digest: {}", hex::encode(config.fork_digest()));
+    let boot_checkpoint = BootCheckpoint::load(&config)
+        .inspect_err(|e| silver_log::error!(%e, "no boot checkpoint"))?;
+    let booting_from_local_checkpoint = !boot_checkpoint.is_empty();
+    silver_log::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
+
+    let genesis = Genesis::from_state(boot_checkpoint.ssz())?;
+    publish_for_telemetry("genesis", &genesis.unix_secs.to_string())?;
+
+    let chain_config = config.chain_config();
+    let wall_epoch = chain_config.wall_epoch(&genesis);
+    let fork_digest = chain_config.checked_fork_digest(wall_epoch, &genesis)?;
+    silver_log::info!("loaded config with fork digest: {}", hex::encode(fork_digest));
 
     // TCaches
     let network_ingress_producer =
@@ -116,15 +127,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Tiles.
     let keypair = Keypair::load_or_create(Path::new(config.data_storage_dir()))?;
-    let mut local_enr = config.enr(&keypair)?;
+    let enr_fork_id = chain_config.spec.enr_fork_id(wall_epoch, fork_digest);
+    let mut local_enr = config.enr(&keypair, enr_fork_id)?;
 
     silver_log::info!(enr = local_enr.to_base64(), "local ENR on startup");
 
-    let chain_config = config.chain_config();
     let spec = Arc::new(chain_config.spec.clone());
-    sleep_until_genesis(chain_config.genesis_unix_secs);
+    sleep_until_genesis(genesis.unix_secs);
     let ticker = SlotTicker::new(
-        chain_config.genesis_unix_secs,
+        genesis.unix_secs,
         chain_config.slot_duration(),
         chain_config.playload_lookahead(),
     );
@@ -161,12 +172,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
-    let mut discv5 = DiscV5::new(
-        config.discovery_config(),
-        *keypair.secret_key(),
-        local_enr,
-        config.fork_digest(),
-    );
+    let mut discv5 =
+        DiscV5::new(config.discovery_config(), *keypair.secret_key(), local_enr, fork_digest);
 
     // Cluster peers are added as trusted peers
     let cluster_peers = cluster_nodes
@@ -248,20 +255,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
-    let boot_checkpoint = BootCheckpoint::load(&config)
-        .inspect_err(|e| silver_log::error!(%e, "no boot checkpoint"))?;
-    let booting_from_local_checkpoint = !boot_checkpoint.is_empty();
-
-    silver_log::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
-
     let gossip_handler = GossipHandler::new(
         tcaches,
         control_processing_producer,
         control_gossip_producer,
-        Some(silver_common::GossipDomain::new(
-            config.fork_digest(),
-            spec.fork_at_slot(boot_wall_slot),
-        )),
+        Some(silver_common::GossipDomain::new(fork_digest, spec.fork_at_slot(boot_wall_slot))),
     )?;
 
     let mut control_tile = Controller::new(
@@ -271,7 +269,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             gossip_topics,
             config.peer_score_params(),
             config.syncing_config(),
-            config.fork_digest(),
+            fork_digest,
             local_enr.into(),
             das_custody_groups,
         ),
@@ -331,7 +329,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         das_custody_groups,
         spec.clone(),
         SlotTicker::new(
-            chain_config.genesis_unix_secs,
+            genesis.unix_secs,
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),

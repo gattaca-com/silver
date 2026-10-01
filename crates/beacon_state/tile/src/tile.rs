@@ -461,13 +461,7 @@ impl BeaconStateTile {
     fn enr_fork_id(&mut self) -> [u8; 16] {
         let digest = self.fork_digest();
         let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
-        let (next_version, next_epoch) = self.spec.next_fork(epoch);
-
-        let mut eth2 = [0u8; 16];
-        eth2[..4].copy_from_slice(&digest);
-        eth2[4..8].copy_from_slice(&next_version);
-        eth2[8..].copy_from_slice(&next_epoch.to_le_bytes());
-        eth2
+        self.spec.enr_fork_id(epoch, digest)
     }
 
     pub fn assert_within_weak_subjectivity(&mut self) {

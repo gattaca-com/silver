@@ -37,14 +37,14 @@ pub struct ClickHouseTables {
 }
 
 impl ClickHouseTables {
-    pub fn open(addr: SocketAddr, chain: &ChainConfig) -> Self {
+    pub fn open(addr: SocketAddr, chain: &ChainConfig, genesis_unix_secs: u64) -> Self {
         let mut net = Network::default();
         let mut client = ClickHouse::new(addr, 1)
             .with_compression()
             .with_max_queued_bytes(MAX_QUEUED_BYTES)
             .with_request_timeout(REQUEST_TIMEOUT);
         client.connect(&mut net);
-        let meta = NodeMeta::new(chain);
+        let meta = NodeMeta::new(chain, genesis_unix_secs);
         info!(node = meta.node, network = meta.network, %addr, "clickhouse inserts open");
 
         let mut tables = Self {
