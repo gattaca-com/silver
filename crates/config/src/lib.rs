@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::Read,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -110,6 +111,14 @@ fn default_gossip_topics() -> Vec<String> {
     ]
 }
 
+const fn default_discovery_port() -> Option<u16> {
+    Some(31133)
+}
+
+const fn default_quic_port() -> Option<u16> {
+    Some(31123)
+}
+
 /// `BeaconState`'s first two fields are fixed-size, so its `genesis_time`
 /// and `genesis_validators_root` sit at the head of any anchor state's SSZ.
 fn anchor_genesis(path: &str) -> Result<(u64, [u8; 32]), Error> {
@@ -139,9 +148,9 @@ pub struct Config {
     external_ip_v4: Option<Ipv4Addr>,
     #[serde(default)]
     external_ip_v6: Option<Ipv6Addr>,
-    #[serde(default)]
+    #[serde(default = "default_discovery_port")]
     discovery_port: Option<u16>,
-    #[serde(default)]
+    #[serde(default = "default_quic_port")]
     quic_port: Option<u16>,
     // Floored at `SAMPLES_PER_SLOT` (8) in `enr()`: silver custodies the full
     // sample set, so cgc < 8 is unsupported (see `enr`).
@@ -245,12 +254,17 @@ impl Config {
         }
     }
 
-    /// Load a full `Config` from a TOML file. Devnet runs supply every
-    /// network-specific value (fork_digest, genesis, bootstrap ENRs,
-    /// external IP, ports) here, so no source edits are needed.
-    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
-        let text = std::fs::read_to_string(path)?;
-        let mut config: Self = toml::from_str(&text)?;
+    /// Every key is optional; an empty file is the mainnet node.
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Self::from_toml(&std::fs::read_to_string(path)?)
+    }
+
+    pub fn mainnet() -> Result<Self, Error> {
+        Self::from_toml("")
+    }
+
+    fn from_toml(text: &str) -> Result<Self, Error> {
+        let mut config: Self = toml::from_str(text)?;
         config.resolve_from_network_files()?;
 
         let spec = &config.chain_config.spec;
