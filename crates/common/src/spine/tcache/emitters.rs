@@ -19,6 +19,7 @@ impl TileId {
         match (self, cache) {
             (Self::BeaconState, TCacheId::ControlProcessing) => "bs_control_processing",
             (Self::BeaconState, TCacheId::NetworkProcessing) => "bs_network_processing",
+            (Self::BeaconState, TCacheId::BoundaryProcessing) => "bs_boundary_processing",
             (Self::Columns, TCacheId::ControlProcessing) => "dc_control_processing",
             (Self::Columns, TCacheId::NetworkProcessing) => "dc_network_processing",
             (Self::Columns, TCacheId::ControlGossip) => "dc_control_gossip",

@@ -23,9 +23,10 @@ fn contents(block: &[u8], blobs: &[BlockBlob]) -> Vec<u8> {
     out
 }
 
-fn proposed_rig(blobs: &[BlockBlob]) -> (Rig, Vec<u8>) {
+fn proposed_rig(blobs: &[BlockBlob]) -> (Box<Rig>, Vec<u8>) {
     let commitments: Vec<_> = blobs.iter().flat_map(|blob| blob.commitment).collect();
-    let (mut rig, block) = Rig::with_fulu_block(CUSTODY_COLUMNS, SLOT, &commitments);
+    let (rig, block) = Rig::with_fulu_block(CUSTODY_COLUMNS, SLOT, &commitments);
+    let mut rig = Box::new(rig);
     rig.follow([0; 32]);
     rig.turn();
     let ssz = tcache_write(&mut rig.engine_p, &contents(&block, blobs));

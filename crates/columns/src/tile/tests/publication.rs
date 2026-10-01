@@ -110,11 +110,26 @@ impl BlockBlob {
 
 impl Rig {
     fn with_fulu_block(custody: u128, slot: u64, commitments: &[u8]) -> (Self, Vec<u8>) {
+        Self::with_fulu_block_under_head_fork(
+            custody,
+            slot,
+            commitments,
+            fulu_from_genesis().fork_version_at(0),
+        )
+    }
+
+    /// The block is signed at its own slot's fork, whatever the head's is.
+    fn with_fulu_block_under_head_fork(
+        custody: u128,
+        slot: u64,
+        commitments: &[u8],
+        head_fork_version: [u8; 4],
+    ) -> (Self, Vec<u8>) {
         let key = SecretKey::key_gen(&[42; 32], &[]).unwrap();
         let spec = fulu_from_genesis();
         let state = BeaconState::for_test(
             EpochStateFinalized::from_state(EpochState {
-                fork: Fork { current_version: spec.fork_version_at(0), ..Default::default() },
+                fork: Fork { current_version: head_fork_version, ..Default::default() },
                 ..Default::default()
             }),
             &[ValSeed { pubkey: key.sk_to_pk().to_bytes(), ..Default::default() }],
@@ -254,7 +269,7 @@ fn fulu_unresolved_proposer_cannot_authorize_serving() {
         rig.tile.tracker.set_signature(
             root,
             *DataColumnSidecarFuluView::block_signature(&bytes),
-            [0; 4],
+            rig.tile.spec.fork_version_at(SignedBeaconBlockView::slot(&block) / SLOTS_PER_EPOCH),
         );
         let domain = rig.tile.validator.domain_at(slot).unwrap();
         let read = tcache_write(allocator.producer_mut(), &bytes);
@@ -262,6 +277,73 @@ fn fulu_unresolved_proposer_cannot_authorize_serving() {
         rig.turn();
         assert_eq!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_some(), eligible);
         assert_eq!(!rig.drain().publications.is_empty(), eligible);
+    }
+}
+
+/// A backfilled sidecar is older than the head's fork, and its signature
+/// commits to the fork at its own slot.
+#[test]
+fn fulu_sidecar_signature_uses_its_slot_fork_not_the_head_fork() {
+    const SLOT: u64 = 7;
+    let blob = BlockBlob::counting();
+    let (mut rig, block) =
+        Rig::with_fulu_block_under_head_fork(CUSTODY_COLUMNS, SLOT, &blob.commitment, [0xee; 4]);
+    let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
+    let root = block_root_fulu(&block);
+    let bytes = blob.fulu_sidecar(3, &block);
+    rig.follow(*SignedBeaconBlockView::parent_root(&block));
+    let domain = rig.tile.validator.domain_at(SLOT).unwrap();
+
+    let read = tcache_write(allocator.producer_mut(), &bytes);
+    rig.cached_gossip(read, 3, domain);
+    rig.turn();
+
+    assert_eq!(rig.drain().misbehaviours, 0, "the signature verifies");
+    let signature = DataColumnSidecarFuluView::block_signature(&bytes);
+    let slot_fork = rig.tile.spec.fork_version_at(SLOT / SLOTS_PER_EPOCH);
+    assert!(rig.tile.tracker.signature_verified(&root, signature, slot_fork));
+}
+
+/// The snapshot's lookahead judges a sidecar's proposer only on its own
+/// branch. Under fork churn on kurtosis, sidecars of another branch were
+/// rejected and honest peers scored Fatal.
+#[test]
+fn fulu_proposer_mismatch_is_rejected_only_on_our_branch() {
+    const SLOT: u64 = 7;
+    const PROPOSER_AT: usize = 4 + 96 + 8;
+    let blob = BlockBlob::counting();
+    for (on_our_branch, penalties) in [(true, 1), (false, 0)] {
+        let mut rig = Rig::with_spec(CUSTODY_COLUMNS, SpecConfig {
+            fulu_fork_epoch: 0,
+            ..SpecConfig::mainnet()
+        });
+        let mut allocator = rig.attach_cell_store(SLOT, CUSTODY_COLUMNS);
+        // Distinct from the empty test state's zero `block_roots`.
+        let parent = [0xab; 32];
+        let mut block = SynthBlock::fulu(SLOT, &blob.commitment).parent_root(parent).into_bytes();
+        block[PROPOSER_AT..PROPOSER_AT + 8].copy_from_slice(&1u64.to_le_bytes());
+        let root = block_root_fulu(&block);
+        let bytes = blob.fulu_sidecar(3, &block);
+        if on_our_branch {
+            rig.follow(parent);
+        } else {
+            rig.follow([0xee; 32]);
+            rig.tile.validator.note_validated(parent, SLOT - 1);
+        }
+        rig.tile.tracker.set_signature(
+            root,
+            *DataColumnSidecarFuluView::block_signature(&bytes),
+            rig.tile.spec.fork_version_at(SignedBeaconBlockView::slot(&block) / SLOTS_PER_EPOCH),
+        );
+        let domain = rig.tile.validator.domain_at(SLOT).unwrap();
+
+        let read = tcache_write(allocator.producer_mut(), &bytes);
+        rig.cached_gossip(read, 3, domain);
+        rig.turn();
+
+        let out = rig.drain();
+        assert_eq!(out.misbehaviours, penalties, "on our branch: {on_our_branch}");
+        assert!(out.publications.is_empty(), "never relayed");
     }
 }
 
@@ -343,7 +425,9 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
             rig.tile.tracker.set_signature(
                 root,
                 *DataColumnSidecarFuluView::block_signature(&bytes),
-                [0; 4],
+                rig.tile
+                    .spec
+                    .fork_version_at(SignedBeaconBlockView::slot(&block) / SLOTS_PER_EPOCH),
             );
             let read = tcache_write(allocator.producer_mut(), &bytes);
             rig.cached_gossip(read, 3, domain);
@@ -528,7 +612,9 @@ fn fulu_columns_are_not_accepted_at_or_after_gloas_activation() {
             rig.tile.tracker.set_signature(
                 block_root,
                 *DataColumnSidecarFuluView::block_signature(&sidecar),
-                [0; 4],
+                rig.tile
+                    .spec
+                    .fork_version_at(SignedBeaconBlockView::slot(&block) / SLOTS_PER_EPOCH),
             );
 
             rig.receive_column(source, 3, &sidecar);
@@ -562,7 +648,7 @@ fn fulu_column_publication_requires_a_resolved_proposer() {
         rig.tile.tracker.set_signature(
             block_root,
             *DataColumnSidecarFuluView::block_signature(&sidecar),
-            [0; 4],
+            rig.tile.spec.fork_version_at(SignedBeaconBlockView::slot(&block) / SLOTS_PER_EPOCH),
         );
         rig.gossip_sidecar(3, &sidecar);
         rig.turn();

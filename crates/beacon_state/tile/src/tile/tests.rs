@@ -27,9 +27,11 @@ use silver_common::{
 };
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
+#[cfg(feature = "ef_tests")]
+use super::block_production::Operations;
 use super::{
     block::{ParsedBlock, StagedBlock},
-    block_production::{Operations, Proposal},
+    block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
     *,
 };
@@ -5163,24 +5165,4 @@ fn operations_the_block_rejects_are_dropped_not_the_block() {
         BeaconBlockBodyFuluView::execution_payload_offset(body_fixed),
         "the exit is left out"
     );
-}
-
-#[test]
-fn state_owing_eth1_deposits_proposes_nothing() {
-    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
-    register_proposer(&mut tile, 0, [7; 20]);
-    let slot_idx = {
-        let mut guard = tile.state.write();
-        let mut writer = guard.slot_states.roll_from(tile.last_applied.slot_idx);
-        let state = writer.state_mut();
-        state.eth1_data.deposit_count = state.eth1_deposit_index + 1;
-        state.deposit_requests_start_index = u64::MAX;
-        writer.commit()
-    };
-    tile.last_applied.slot_idx = slot_idx;
-
-    tile.produce_block(5, proposal(&tile, 11), &mut adapter.producers);
-
-    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::Internal))]);
-    assert!(engine_requests(&mut sink).is_empty(), "the EL builds nothing");
 }

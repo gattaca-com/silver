@@ -1,0 +1,70 @@
+# net-participant.yaml with two silver nodes, one driven by a Lighthouse VC
+# and one by a Prysm VC, for the VC endpoint scenarios. Each silver holds
+# 128 of 640 keys, so the chain still finalizes if either one fails.
+#
+#   kurtosis run ../ethereum-package-vc \
+#     --args-file kurtosis/net-vc.yaml \
+#     --enclave silver-vc --image-download missing
+
+participants:
+  - el_type: reth
+    cl_type: silver
+    cl_image: silver:proposing
+    use_separate_vc: true
+    vc_type: lighthouse
+    vc_image: ethpandaops/lighthouse:unstable
+    cl_extra_env_vars:
+      RUST_LOG: "info,silver_network=info,silver_peer=info,silver_beacon_api=debug"
+  # Prysm VC over REST, which the package picks for a non-prysm CL.
+  - el_type: geth
+    el_image: ethpandaops/geth:master
+    cl_type: silver
+    cl_image: silver:proposing
+    use_separate_vc: true
+    vc_type: prysm
+    vc_image: ethpandaops/prysm-validator:develop
+    cl_extra_env_vars:
+      RUST_LOG: "info,silver_network=info,silver_peer=info,silver_beacon_api=debug"
+
+  - el_type: geth
+    el_image: ethpandaops/geth:master
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+  - el_type: reth
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+  - el_type: nethermind
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+
+network_params:
+  preset: mainnet
+  seconds_per_slot: 12
+  num_validator_keys_per_node: 128
+  genesis_delay: 60
+  deneb_fork_epoch: 0
+  electra_fork_epoch: 0
+  fulu_fork_epoch: 0
+
+global_log_level: debug
+
+additional_services:
+  - dora
+  - spamoor
+
+spamoor_params:
+  spammers:
+    - scenario: blobs
+      name: blob-spammer
+      config:
+        throughput: 2
+        sidecars: 3

@@ -522,6 +522,7 @@ impl DataColumnsTile {
     ) {
         let parent_root = match t_read.buffer() {
             Ok((buf, _)) if SignedBeaconBlockView::check_size(buf) => {
+                self.proposed.prune_submitted(SignedBeaconBlockView::slot(buf));
                 *SignedBeaconBlockView::parent_root(buf)
             }
             Ok((buf, _)) => {
@@ -534,12 +535,10 @@ impl DataColumnsTile {
             }
         };
 
-        // Ahead of the block: our own custody is then already held, so none
-        // of it is requested from peers or the EL.
         if stream_id == LOCAL_GOSSIP_STREAM_ID &&
             let Ok((block, _)) = t_read.buffer()
         {
-            self.hold_proposed_block(block_root(block, false), block, producers);
+            self.hold_proposal_columns(block_root(block, false), block, producers);
         }
         let root = self.beacon_block(stream_id, t_read, producers);
 
@@ -910,10 +909,9 @@ impl Tile<SilverSpine> for DataColumnsTile {
         // Before gossip: a proposed block's contents precede its local injection.
         adapter.consume(|request: BeaconApiRequest, _| {
             if let BeaconApiRequest::LocalGossip { topic: GossipTopic::BeaconBlock, ssz, .. } =
-                request &&
-                let Ok((bytes, _)) = self.reader.acquire(ssz).buffer()
+                request
             {
-                self.proposed.submit(ssz, bytes);
+                self.proposed.submit(self.reader.acquire(ssz));
             }
         });
 
@@ -1239,6 +1237,10 @@ mod tests {
                         };
                         (ColumnOrigin::Gossip, topic, domain, read)
                     }
+                    PeerEvent::RpcMisbehaviour { .. } => {
+                        out.misbehaviours += 1;
+                        return;
+                    }
                     _ => return,
                 };
                 let (bytes, _) = sidecar.buffer().expect("published bytes readable");
@@ -1268,6 +1270,7 @@ mod tests {
         domains: Vec<silver_common::GossipDomain>,
         engine: usize,
         missing: Vec<SyncNeed>,
+        misbehaviours: usize,
     }
 
     impl Produced {

@@ -295,22 +295,33 @@ impl ColumnValidator {
         // notional read lock too long otherwise).
         let validated_parent_slot = self.validated_block_roots.get(parent_root).copied();
         let checks = self.beacon_state.read(|v| {
+            let ancestor_slot = if parent_root == sync_state.head_root() {
+                Some(v.slot.state().latest_block_header.slot)
+            } else {
+                v.block_roots.slot_of(parent_root, v.slot.slot_number())
+            };
             let parent = match validated_parent_slot {
                 Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
                 None if parent_root == sync_state.head_root() => ParentCheck::Seen,
-                None => match v.block_roots.slot_of(parent_root, v.slot.slot_number()) {
+                None => match ancestor_slot {
                     Some(parent_slot) => ParentCheck::extending(slot, parent_slot),
                     None => ParentCheck::Unseen,
                 },
             };
-            (
-                header.read_state(&v),
-                parent,
-                v.epoch.fork().current_version, // TODO for backfill
-            )
+            let mut state = header.read_state(&v);
+            // Epoch E's proposers follow the chain to the end of E - 2, so the
+            // snapshot's lookahead vouches for a sidecar only on its own
+            // branch, at most one epoch past the parent.
+            let vouched = ancestor_slot.is_some_and(|parent_slot| {
+                slot / SLOTS_PER_EPOCH <= parent_slot / SLOTS_PER_EPOCH + 1
+            });
+            if !vouched && state.proposer == ProposerCheck::Mismatch {
+                state.proposer = ProposerCheck::Unresolvable;
+            }
+            (state, parent)
         });
         // No snapshot yet (pre-bootstrap): nothing can be validated.
-        let Some((state, parent, fork_version)) = checks else {
+        let Some((state, parent)) = checks else {
             silver_log::warn!(?stream_id, "sidecar before first beacon state snapshot");
             return ColumnOutcome::Reject { block_root, slot, column: Some(column_index) };
         };
@@ -353,7 +364,11 @@ impl ColumnValidator {
             }
         };
 
-        match header.verify_signature(&state, fork_version, tracker) {
+        match header.verify_signature(
+            &state,
+            self.spec.fork_version_at(slot / SLOTS_PER_EPOCH),
+            tracker,
+        ) {
             Ok(()) => {}
             Err(SignatureError::UnknownProposer) => {
                 silver_log::warn!(?stream_id, "sidecar proposer_index out of range");

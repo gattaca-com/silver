@@ -7,8 +7,6 @@ use crate::{
     http::{response::Response, router::Request},
 };
 
-/// Lighthouse and Prysm both publish as SSZ. The block is answered once it
-/// passes gossip validation, which is `broadcast_validation=gossip`.
 pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !req.body_is_ssz() {
         return resp.error(415, "only application/octet-stream bodies are read");

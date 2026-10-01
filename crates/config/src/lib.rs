@@ -197,7 +197,9 @@ pub struct Config {
     /// all of them at once.
     #[serde(default = "default_beacon_api_bind")]
     beacon_api_bind: Vec<String>,
-    #[serde(default = "default_usize::<64>")]
+    /// Prysm holds a connection per in-flight request, and posts each sync
+    /// committee message on its own: up to 512 at once in one slot.
+    #[serde(default = "default_usize::<1024>")]
     beacon_api_max_connections: usize,
     /// Refreshed by any byte read or written, so a slow but progressing
     /// transfer never trips it.
@@ -499,7 +501,7 @@ mod tests {
         assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 7);
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
-        assert_eq!(cfg.beacon_api_max_connections(), 64);
+        assert_eq!(cfg.beacon_api_max_connections(), 1024);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
     }
@@ -551,7 +553,7 @@ mod tests {
     #[test]
     fn builder_sets_beacon_api_max_connections() {
         let cfg = Config::mainnet().unwrap();
-        assert_eq!(cfg.beacon_api_max_connections(), 64);
+        assert_eq!(cfg.beacon_api_max_connections(), 1024);
         let cfg = cfg.with_beacon_api_max_connections(2);
         assert_eq!(cfg.beacon_api_max_connections(), 2);
     }

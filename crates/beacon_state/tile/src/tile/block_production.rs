@@ -8,7 +8,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconApiResponse, EngineGetPayloadReq, EngineGetPayloadResp, EnginePreparePayloadReq,
     EnginePreparePayloadResp, EngineReq, PayloadFrame, ProduceBlockFailure, ProducedBlock,
-    TCacheProducer, TCacheRead,
+    TCacheProducer, TCacheRead, TRead,
     ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
 };
 use silver_ssz::block_body::{BeaconBlockBodyFulu, EMPTY_SYNC_AGGREGATE};
@@ -62,7 +62,6 @@ impl Payload {
     }
 }
 
-/// A body's operations, each as its SSZ list.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Operations<'a> {
     pub(super) proposer_slashings: &'a [u8],
@@ -89,6 +88,7 @@ impl Operations<'static> {
 struct BuiltBlock {
     proposal: Proposal,
     block: ProducedBlock,
+    payload: Option<TRead>,
     body_root: B256,
     block_fork: BlockFork,
     block_root: B256,
@@ -140,6 +140,9 @@ impl BlockProduction {
 
     pub(super) fn prune_before(&mut self, slot: Slot, producers: &mut Producers) {
         self.payloads.retain(|payload| payload.slot >= slot);
+        if let Some(built) = self.built.as_mut().filter(|built| built.proposal.slot < slot) {
+            built.payload = None;
+        }
         for (request_id, _) in self.pending.extract_if(.., |(_, p)| p.slot < slot) {
             answer(producers, request_id, Err(ProduceBlockFailure::PayloadUnavailable));
         }
@@ -378,8 +381,7 @@ impl BeaconStateTile {
     pub(super) fn built_body_hash(&mut self, slot: Slot, body: &[u8]) -> Option<(B256, BlockFork)> {
         let built = self.block_production.built.as_ref().filter(|b| b.proposal.slot == slot)?;
         let contents = self.events_producer.read_buffer(built.block.header).ok()?;
-        let payload = self.reader.acquire(built.block.payload);
-        let frame = PayloadFrame::parse(payload.buffer().ok()?.0)?;
+        let frame = PayloadFrame::parse(built.payload.as_ref()?.buffer().ok()?.0)?;
 
         let (before_payload, bls_changes) = contents.split_at(built.block.payload_at as usize);
         let body_head = &before_payload[BLOCK_CONTENTS_FIXED + BEACON_BLOCK_FIXED..];
@@ -489,9 +491,10 @@ impl BeaconStateTile {
             block: ProducedBlock {
                 header: contents,
                 payload_at,
-                payload,
+                payload: acquired.to_read(),
                 execution_payload_value: frame.block_value,
             },
+            payload: Some(acquired),
             body_root,
             block_fork,
             block_root,

@@ -4,7 +4,7 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, GossipDomain, IngestionTime, SilverSpineProducers, SszCache,
-    TCacheProducer, TCacheRead, TProducer,
+    TCacheProducer, TCacheRead, TProducer, TRead,
     block_contents::SignedBlockContents,
     column_util::{
         CellScratch, cell_bytes, data_column_sidecar_len, fulu_signed_block_header,
@@ -20,16 +20,14 @@ use silver_common::{
 use super::DataColumnsTile;
 use crate::BlockRoot;
 
-/// Contents a validator client submitted, kept until the block passes the
+/// Block a validator client submitted, pinned until it passes the
 /// slashing-protection lock and comes back as a local gossip block.
 struct Submitted {
     slot: u64,
     proposer_index: u64,
-    contents: TCacheRead,
+    block: TRead,
 }
 
-/// A proposed block whose custody is recorded. Its columns go out once beacon
-/// state has imported the block, so an invalid one publishes none.
 struct HeldBlock {
     block_root: BlockRoot,
     slot: u64,
@@ -38,8 +36,6 @@ struct HeldBlock {
     sidecars: [TCacheRead; NUMBER_OF_COLUMNS],
 }
 
-/// The columns of blocks this node proposes: all of them are published,
-/// custody or not.
 pub(super) struct ProposedBlocks {
     pub(super) producer: TProducer,
     cells: CellScratch,
@@ -52,26 +48,33 @@ impl ProposedBlocks {
         Self { producer, cells: CellScratch::default(), submitted: Vec::new(), held: Vec::new() }
     }
 
-    pub(super) fn submit(&mut self, contents: TCacheRead, bytes: &[u8]) {
-        let Some(block) = SignedBlockContents::signed_block(bytes)
+    pub(super) fn submit(&mut self, contents: TRead) {
+        let Some(block) = contents
+            .buffer()
+            .ok()
+            .and_then(|(bytes, _)| SignedBlockContents::signed_block(bytes))
             .filter(|block| SignedBeaconBlockView::check_size(block))
         else {
             return;
         };
         let slot = SignedBeaconBlockView::slot(block);
         let proposer_index = SignedBeaconBlockView::proposer_index(block);
+        self.prune_submitted(slot);
         self.submitted.retain(|submitted| {
-            submitted.slot + 1 >= slot &&
-                (submitted.slot, submitted.proposer_index) != (slot, proposer_index)
+            (submitted.slot, submitted.proposer_index) != (slot, proposer_index)
         });
-        self.submitted.push(Submitted { slot, proposer_index, contents });
+        self.submitted.push(Submitted { slot, proposer_index, block: contents });
     }
 
-    fn take_submitted(&mut self, slot: u64, proposer_index: u64) -> Option<TCacheRead> {
+    pub(super) fn prune_submitted(&mut self, slot: u64) {
+        self.submitted.retain(|submitted| submitted.slot + 1 >= slot);
+    }
+
+    fn take_submitted(&mut self, slot: u64, proposer_index: u64) -> Option<TRead> {
         let at = self.submitted.iter().position(|submitted| {
             (submitted.slot, submitted.proposer_index) == (slot, proposer_index)
         })?;
-        Some(self.submitted.swap_remove(at).contents)
+        Some(self.submitted.swap_remove(at).block)
     }
 
     #[timed]
@@ -161,7 +164,7 @@ impl ProposedBlocks {
 impl DataColumnsTile {
     /// Records the custody of a proposed block that just passed its lock, so
     /// none of it is chased, and holds every column until the block imports.
-    pub(super) fn hold_proposed_block(
+    pub(super) fn hold_proposal_columns(
         &mut self,
         block_root: BlockRoot,
         block: &[u8],
@@ -180,8 +183,7 @@ impl DataColumnsTile {
             return;
         };
         let Some(domain) = self.validator.domain_at(slot) else { return };
-        let acquired = self.reader.acquire(submitted);
-        let Some(contents) = acquired
+        let Some(contents) = submitted
             .buffer()
             .ok()
             .and_then(|(bytes, _)| SignedBlockContents::parse(bytes))
