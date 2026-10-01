@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{cell::Cell, fmt::Debug, sync::Arc};
 
 use flux::{
     spine::{FluxSpine, SpineAdapter, SpineProducers},
@@ -62,6 +62,8 @@ mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
 mod sync_contribution_pool;
+
+pub(super) const UNSPECIFIED_REJECT: &str = "unspecified";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
@@ -202,6 +204,9 @@ pub struct BeaconStateTile {
     pending_envelopes: FxHashMap<B256, TRead>,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
+    /// Why the current gossip message is being rejected; set at the reject
+    /// site, read and cleared when the penalty is issued.
+    reject_reason: Cell<&'static str>,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
 
@@ -278,6 +283,7 @@ impl BeaconStateTile {
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
             payload_bids_pool: BidPool::default(),
+            reject_reason: Cell::new(UNSPECIFIED_REJECT),
             pending_bounds: syncing.pending,
             verify_weak_subjectivity,
             reader: TCacheReader::new(tcaches),

@@ -391,9 +391,17 @@ impl PeerManager {
                 continue;
             }
             let b = peer.last_breakdown;
+            let invalid_by_topic: Vec<_> = peer
+                .topic_stats
+                .iter()
+                .filter(|(_, t)| t.invalid_deliveries > 0.0)
+                .map(|(topic, t)| (*topic, t.invalid_deliveries))
+                .collect();
             silver_log::warn!(
                 peer_id = ?peer.peer_id,
                 addr = ?peer.addr,
+                user_agent = peer.user_agent.as_str(),
+                ?invalid_by_topic,
                 total = b.total,
                 threshold,
                 dc_subscribed,

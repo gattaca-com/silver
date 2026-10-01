@@ -2867,6 +2867,29 @@ fn ignored_local_aggregate_emits_a_terminal_verdict() {
     ]);
 }
 
+/// The reason a handler records goes out with the penalty and is cleared,
+/// so it cannot be misattributed to the next rejected message.
+#[test]
+fn gossip_reject_reason_is_consumed_by_the_penalty() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+
+    assert_eq!(tile.handle_aggregate_and_proof(&[0u8; 10]), Feedback::Reject(None));
+    assert_eq!(tile.reject_reason.get(), "aggregate malformed");
+
+    let message = gossip_msg(&mut gp, &[0u8; 10], GossipTopic::BeaconAggregateAndProof);
+    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    let mut invalid = 0;
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::P2pGossipInvalidMsg { .. } = event {
+            invalid += 1;
+        }
+    });
+    assert_eq!(invalid, 1, "the peer is still penalized");
+    assert_eq!(tile.reject_reason.get(), UNSPECIFIED_REJECT);
+}
+
 /// A non-attestation gossip message flushes the pending batch first, so
 /// queue order is preserved.
 #[test]
