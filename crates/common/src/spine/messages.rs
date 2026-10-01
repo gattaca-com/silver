@@ -1281,7 +1281,9 @@ impl From<IpAddr> for IpBytes {
 #[repr(u8)]
 pub enum BlockSource {
     Gossip,
+    /// Includes disk replay.
     Rpc,
+    LocalGossip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TypeHash)]

@@ -1918,19 +1918,24 @@ impl BeaconStateTile {
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
         let pre_verified = pre_verified || m.is_api_verified();
 
+        let source = if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+            BlockSource::LocalGossip
+        } else {
+            BlockSource::Gossip
+        };
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
                 match self.parse_and_verify_block(data, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, Some(parsed.block_root), producers)
                     }
-                    Err(err) if matches!(err.feedback(), Feedback::Reject { .. }) => producers
-                        .produce(PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: m.stream_id.peer(),
-                            topic: m.topic,
-                            hash: m.msg_hash,
-                        }),
-                    _ => {}
+                    Ok(_) => {}
+                    Err(err) => match err.feedback() {
+                        Feedback::Reject { reason, .. } => {
+                            self.reject_gossip(&m, data, reason, producers)
+                        }
+                        feedback => Self::local_verdict(&m, feedback, producers),
+                    },
                 }
                 return true;
             }
@@ -1940,7 +1945,7 @@ impl BeaconStateTile {
                 let feedback = self.apply_block(
                     data,
                     &acquired,
-                    BlockSource::Gossip,
+                    source,
                     pre_verified,
                     producers,
                     |block_root, p| {

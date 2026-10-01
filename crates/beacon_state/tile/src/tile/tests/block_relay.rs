@@ -248,23 +248,30 @@ fn disabling_relay_suppresses_the_gossip_notification() {
 /// A missing parent fails precheck before signature verification. The parent's
 /// import retries the child through the block handler.
 #[test]
-fn a_parked_block_is_relayed_by_the_retry_that_admits_it() {
+fn parked_blocks_keep_their_source_and_relay_when_admitted() {
     let (pre_ssz, first) = sanity_fixture("attestation");
     let second = sanity_file("attestation", "blocks_1.ssz_snappy");
-    let mut rig = BlockPublications::new(&pre_ssz, &second, SyncUpdate::Following);
+    for source in [BlockSource::Gossip, BlockSource::LocalGossip] {
+        let mut rig = BlockPublications::new(&pre_ssz, &second, SyncUpdate::Following);
+        let submit = |rig: &mut BlockPublications, block: &[u8]| match source {
+            BlockSource::LocalGossip => drop(rig.on_local(block, BroadcastValidation::Gossip)),
+            _ => rig.on_gossip(block),
+        };
 
-    rig.on_gossip(&second);
-    let parked = rig.drain();
-    assert_eq!(stages_of(&parked.receipts()), [BlockStage::AwaitParent]);
-    assert!(parked.relays.is_empty(), "the missing parent prevents validation");
-    let child = parked.receipts()[0].block_root;
+        submit(&mut rig, &second);
+        let parked = rig.drain();
+        assert_eq!(stages_of(&parked.receipts()), [BlockStage::AwaitParent]);
+        assert!(parked.relays.is_empty(), "the missing parent prevents validation");
+        let child = parked.receipts()[0].block_root;
 
-    rig.on_gossip(&first);
-    let released = rig.drain();
-    assert_eq!(released.relays, [fulu_relayed(&first), fulu_relayed(&second)]);
-    let of_child =
-        released.receipts().into_iter().filter(|r| r.block_root == child).collect::<Vec<_>>();
-    assert_eq!(stages_of(&of_child), [BlockStage::Applied]);
+        submit(&mut rig, &first);
+        let released = rig.drain();
+        assert_eq!(released.relays, [fulu_relayed(&first), fulu_relayed(&second)]);
+        let of_child =
+            released.receipts().into_iter().filter(|r| r.block_root == child).collect::<Vec<_>>();
+        assert_eq!(stages_of(&of_child), [BlockStage::Applied]);
+        assert!(parked.receipts().iter().chain(&of_child).all(|r| r.source == source));
+    }
 }
 
 #[test]
@@ -514,4 +521,13 @@ fn block_staged_from_gossip_is_published_with_its_root() {
             .collect();
         assert_eq!(verdicts, [(Ok(()), Some(block_root))], "{validation:?}");
     }
+}
+
+#[test]
+fn local_block_rejected_while_syncing_gets_a_verdict() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    let syncing = SyncUpdate::SyncingHead { head_slot: 400, head_root: [9; 32] };
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, syncing);
+    rig.on_local(&block_ssz[..block_ssz.len() - 1], BroadcastValidation::Gossip);
+    assert_eq!(rig.drain().verdicts(), [Err(LocalGossipFailure::Invalid)]);
 }

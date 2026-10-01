@@ -123,6 +123,7 @@ pub(super) fn stage_record(e: &StageEvent) -> StageRecord {
     let source = |s: BlockSource| match s {
         BlockSource::Gossip => 0,
         BlockSource::Rpc => 1,
+        BlockSource::LocalGossip => 2,
     };
     let origin = |o: ColumnOrigin| match o {
         ColumnOrigin::Gossip => 0,
