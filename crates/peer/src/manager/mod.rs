@@ -9,8 +9,8 @@ use std::{
 };
 
 use silver_common::{
-    AgentString, Enr, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId, RpcOutbound,
-    RpcSeverity, StreamProtocol, SyncUpdate,
+    AgentString, Enr, ForkName, GossipDomain, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId,
+    RpcOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
     ssz_view::{METADATA_SIZE, MetadataView, STATUS_V2_SIZE},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -113,6 +113,7 @@ pub struct PeerManager {
     /// Current and optional neighbouring gossip domain, independent of
     /// discovery history.
     active_gossip_digests: [Option<[u8; 4]>; 2],
+    active_gossip_domains: [Option<GossipDomain>; 2],
 
     /// The digest we advertised before the last fork.
     previous_fork_digest: Option<[u8; 4]>,
@@ -260,6 +261,7 @@ impl PeerManager {
             remote_banned_peers: HashMap::with_capacity(128),
             our_fork_digest: Some(fork_digest),
             active_gossip_digests: [Some(fork_digest), None],
+            active_gossip_domains: [Some(GossipDomain::new(fork_digest, ForkName::Fulu)), None],
             previous_fork_digest: None,
             rejected,
             syncing,

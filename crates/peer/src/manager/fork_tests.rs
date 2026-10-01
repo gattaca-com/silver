@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
 use silver_common::{
-    GossipTopic, P2pSend, PeerControl, PeerEvent, PeerStatus, TCache, TCacheId, TCacheProducer,
+    ForkName, GossipDomain, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerStatus, TCache,
+    TCacheId, TCacheProducer,
 };
 use silver_config::ScoreParams;
 
@@ -80,6 +81,29 @@ fn connections_and_deferred_topics_subscribe_to_both_domains() {
     captured.0.clear();
     manager.fan_out_subscriptions(&mut |event| captured.0.push(event));
     assert_eq!(captured.0.len(), 4);
+}
+
+#[test]
+fn gloas_only_topics_subscribe_only_to_gloas_domain() {
+    let now = Instant::now();
+    let topic = GossipTopic::ExecutionPayloadBid;
+    let old = GossipDomain::new(OLD, ForkName::Fulu);
+    let new = GossipDomain::new(NEW, ForkName::Gloas);
+    let (mut manager, mut captured) = fixture(vec![], ScoreParams::default());
+    manager.set_active_gossip_domains(old, Some(new), &mut |_| {});
+    connect(&mut manager, &mut captured, 1, 1, now);
+
+    captured.0.clear();
+    manager.activate_topics([topic], &mut |event| captured.0.push(event));
+    assert!(matches!(
+        captured.0.as_slice(),
+        [PeerControl::P2pGossipSubscribe { topic: t, digest: NEW, .. }] if *t == topic
+    ));
+    assert!(manager.mesh[&topic].get(OLD).is_none());
+    assert!(manager.mesh[&topic].get(NEW).is_some());
+
+    manager.on_subscribe(1, topic, OLD, now, &mut |_| {});
+    assert!(!manager.peers[&1].subscriptions.contains_key(&(OLD, topic)));
 }
 
 #[test]

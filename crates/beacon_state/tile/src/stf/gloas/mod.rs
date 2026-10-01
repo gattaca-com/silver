@@ -6,10 +6,13 @@ mod parent_payload;
 mod payload_attestation;
 mod withdrawals;
 
-pub use bid::{collect_sigs_execution_payload_bid, process_execution_payload_bid};
+pub use bid::{
+    collect_sigs_execution_payload_bid, decode_bid, process_execution_payload_bid,
+    validate_bid_builder, verify_execution_payload_bid_signature,
+};
 pub(crate) use builders::{BUILDER_INDEX_SELF_BUILD, PAYLOAD_BUILDER_VERSION};
 pub use builders::{
-    get_builder_payment_quorum_threshold, process_builder_deposit_request,
+    BuilderLedger, get_builder_payment_quorum_threshold, process_builder_deposit_request,
     process_builder_exit_request, process_builder_pending_payments,
 };
 pub use committee::process_ptc_window;

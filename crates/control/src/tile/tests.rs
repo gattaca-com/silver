@@ -203,12 +203,45 @@ fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_
     assert_eq!(capture.controller.gossip_handler.current_domain(), Some(old));
     let mut subscriptions = Vec::new();
     capture.observer.consume(|event: PeerControl, _| {
-        if let PeerControl::P2pGossipSubscribe { digest, .. } = event {
-            subscriptions.push(digest);
+        if let PeerControl::P2pGossipSubscribe { topic, digest, .. } = event {
+            subscriptions.push((topic, digest));
         }
     });
-    assert_eq!(subscriptions.iter().filter(|digest| **digest == old.digest()).count(), 2);
-    assert_eq!(subscriptions.iter().filter(|digest| **digest == new.digest()).count(), 2);
+    assert_eq!(
+        subscriptions
+            .iter()
+            .filter(|(subscribed, digest)| *subscribed == topic && *digest == old.digest())
+            .count(),
+        2
+    );
+    assert_eq!(
+        subscriptions
+            .iter()
+            .filter(|(subscribed, digest)| *subscribed == topic && *digest == new.digest())
+            .count(),
+        2
+    );
+    for gloas_topic in [
+        GossipTopic::ExecutionPayloadBid,
+        GossipTopic::ExecutionPayload,
+        GossipTopic::PayloadAttestationMessage,
+        GossipTopic::ProposerPreferences,
+    ] {
+        assert_eq!(
+            subscriptions
+                .iter()
+                .filter(|(subscribed, digest)| *subscribed == gloas_topic && *digest == old.digest())
+                .count(),
+            0
+        );
+        assert_eq!(
+            subscriptions
+                .iter()
+                .filter(|(subscribed, digest)| *subscribed == gloas_topic && *digest == new.digest())
+                .count(),
+            2
+        );
+    }
     for peer in [1, 2] {
         for domain in [old, new] {
             capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {

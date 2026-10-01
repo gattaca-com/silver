@@ -80,6 +80,7 @@ pub struct Controller {
     /// the wall slot.
     spec: Arc<SpecConfig>,
     gossip_schedule: Option<GossipSchedule>,
+    scheduled_gossip_topics: Vec<GossipTopic>,
 
     // Last: acquired reads above point into it.
     reader: TCacheReader,
@@ -127,6 +128,7 @@ impl Controller {
             partial_exchange: None,
             spec,
             gossip_schedule: None,
+            scheduled_gossip_topics: Vec::new(),
             reader: TCacheReader::new(tcaches),
         })
     }
@@ -318,7 +320,7 @@ impl Controller {
             Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
     }
 
-    fn advance_gossip_domains(&mut self, producers: &mut SilverSpineProducers) {
+    fn advance_gossip_domains(&mut self, now: Instant, producers: &mut SilverSpineProducers) {
         let Some(update) = self.gossip_schedule.as_mut().and_then(GossipSchedule::advance) else {
             return;
         };
@@ -326,22 +328,62 @@ impl Controller {
             silver_log::info!(domain = ?update.current, "fork digest changed; gossip subscriptions updated");
         }
         self.gossip_handler.set_domains(update.current, update.other);
-        self.peer_manager.set_active_domains(
-            update.current.digest(),
-            update.other.map(|domain| domain.digest()),
-            &mut |event| {
+        self.peer_manager.set_active_gossip_domains(update.current, update.other, &mut |event| {
+            handle_peer_control(&mut self.gossip_handler, &mut self.rpc_producer, event, producers)
+        });
+        self.update_scheduled_gossip_topics(&update.topics, now, producers);
+        producers.peer_control.produce(
+            &PeerControl::UpdateEnrForkId { epoch: update.epoch, enr_fork_id: update.enr_fork_id }
+                .into(),
+        );
+    }
+
+    fn update_scheduled_gossip_topics(
+        &mut self,
+        wanted: &[GossipTopic],
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let mut activate = Vec::new();
+        for &topic in wanted {
+            if self.scheduled_gossip_topics.contains(&topic) {
+                continue;
+            }
+            if !self.peer_manager.has_topic(topic) {
+                self.scheduled_gossip_topics.push(topic);
+                activate.push(topic);
+            }
+        }
+        if !activate.is_empty() {
+            self.peer_manager.activate_topics(activate, &mut |event| {
                 handle_peer_control(
                     &mut self.gossip_handler,
                     &mut self.rpc_producer,
                     event,
                     producers,
                 )
-            },
-        );
-        producers.peer_control.produce(
-            &PeerControl::UpdateEnrForkId { epoch: update.epoch, enr_fork_id: update.enr_fork_id }
-                .into(),
-        );
+            });
+        }
+
+        let mut deactivate = Vec::new();
+        self.scheduled_gossip_topics.retain(|topic| {
+            if wanted.contains(topic) {
+                true
+            } else {
+                deactivate.push(*topic);
+                false
+            }
+        });
+        if !deactivate.is_empty() {
+            self.peer_manager.deactivate_topics(deactivate, now, &mut |event| {
+                handle_peer_control(
+                    &mut self.gossip_handler,
+                    &mut self.rpc_producer,
+                    event,
+                    producers,
+                )
+            });
+        }
     }
 
     pub fn set_status(&mut self, mut status: [u8; STATUS_V2_SIZE]) {
@@ -389,7 +431,7 @@ impl Controller {
                     silver_log::info!(?domain, "fork digest changed; gossip subscriptions updated");
                 }
                 self.gossip_handler.set_domains(domain, None);
-                self.peer_manager.set_active_domains(domain.digest(), None, &mut |event| {
+                self.peer_manager.set_active_gossip_domains(domain, None, &mut |event| {
                     handle_peer_control(
                         &mut self.gossip_handler,
                         &mut self.rpc_producer,
@@ -436,7 +478,7 @@ impl Tile<SilverSpine> for Controller {
             ingress.loop_start();
         }
         let now = Instant::now();
-        self.advance_gossip_domains(&mut adapter.producers);
+        self.advance_gossip_domains(now, &mut adapter.producers);
         self.reader.free();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);

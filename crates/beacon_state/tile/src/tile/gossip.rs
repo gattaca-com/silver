@@ -1,7 +1,8 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
-    SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView, SyncSubcommittee, gloas::PTC_SIZE,
+    B256, Epoch, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
+    SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView,
+    SyncSubcommittee, gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -17,6 +18,7 @@ use silver_common::{
         SignedVoluntaryExitView, SingleAttestationView, SyncCommitteeView,
     },
 };
+use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
@@ -26,8 +28,14 @@ use super::{
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
+    error::ExecutionPayloadBidError as BidError,
     fork_choice::ExecutionStatus,
-    merkle, ssz_hash, stf, validate,
+    merkle, ssz_hash,
+    stf::{
+        self, BuilderLedger, decode_bid, validate_bid_builder,
+        verify_execution_payload_bid_signature,
+    },
+    validate,
 };
 
 pub(super) const VOTE_BATCH_CAP: usize = 1024;
@@ -574,6 +582,102 @@ impl BeaconStateTile {
         // Not pooled: aggregators build contributions from messages alone.
         // TODO: Proposing will want them, to fill the sync aggregate with messages
         // the mesh never delivered here.
+        Feedback::Accept
+    }
+
+    #[timed]
+    fn handle_execution_payload_bid(&mut self, signed_bid: &[u8]) -> Feedback {
+        let Ok(bid) = decode_bid(signed_bid) else {
+            return Feedback::Reject(None);
+        };
+        let signature = SignedExecutionPayloadBidView::signature(signed_bid);
+
+        if !self.payload_bids_pool.is_candidate(&bid) {
+            return Feedback::Ignore;
+        }
+        let is_current =
+            |slot| self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY);
+        let current_or_next = is_current(bid.slot) || (bid.slot > 0 && is_current(bid.slot - 1));
+        if !current_or_next {
+            return Feedback::Ignore;
+        }
+        // In-protocol bids pay only through `value`; the pool also ranks
+        // out-of-protocol bids, so this belongs to gossip, not the pool.
+        if bid.execution_payment != 0 {
+            return Feedback::Reject(None);
+        }
+        if bid.block_hash == bid.parent_block_hash {
+            return Feedback::Reject(None);
+        }
+        let bid_epoch = bid.slot / SLOTS_PER_EPOCH;
+        let max_blobs = self.spec.blob_params_at(bid_epoch).max_blobs_per_block as usize;
+        if bid.blob_kzg_commitments.len() > max_blobs {
+            return Feedback::Reject(None);
+        }
+
+        let Some(idx) = self.fork_choice.find_node_idx(&bid.parent_block_root) else {
+            return Feedback::Ignore;
+        };
+        let node = self.fork_choice.node(idx);
+        if bid.slot <= node.slot {
+            return Feedback::Reject(None);
+        }
+        let (parent_state, parent_payload) = (node.state_id, node.payload);
+        {
+            let parent = self.state.read_view(parent_state);
+
+            // Full: the bid builds on the parent's own payload, which must be
+            // verified. Empty: on the payload the parent itself built on.
+            let full = bid.parent_block_hash == parent_payload.bid_block_hash;
+            if full && !parent_payload.verified {
+                return Feedback::Ignore;
+            }
+            if !full && bid.parent_block_hash != parent.slot.state().latest_block_hash {
+                return Feedback::Ignore;
+            }
+
+            let parent_epoch = parent.slot.state().slot / SLOTS_PER_EPOCH;
+            if bid_epoch > parent_epoch + MIN_SEED_LOOKAHEAD {
+                return Feedback::Ignore;
+            }
+            if bid.prev_randao != parent.randao_mixes.at_epoch(parent_epoch) {
+                return Feedback::Reject(None);
+            }
+        }
+
+        // The spec checks the builder on `process_slots(parent, bid.slot)`.
+        // Only epoch processing moves what those checks read (finalization,
+        // pending payments); `process_slot` touches none of it. So the
+        // epoch-start state of the bid's epoch is exact, and it is the cached
+        // one the slot tick reuses rather than a fork-choice advance.
+        let at_bid = self.epoch_start_state(parent_state, bid.slot);
+        let view = self.state.read_view(at_bid);
+
+        let finalized_epoch = view.epoch.state().finalized_checkpoint.epoch;
+        match validate_bid_builder(&BuilderLedger::of_reader(&view), finalized_epoch, &bid) {
+            Ok(()) => {}
+            Err(e @ BidError::InsufficientBalance { .. }) => {
+                silver_log::debug!(?e, "execution payload bid ignored");
+                return Feedback::Ignore;
+            }
+            Err(e) => {
+                silver_log::debug!(?e, "invalid execution payload bid");
+                return Feedback::Reject(None);
+            }
+        }
+        // Last of the checks: a pairing costs more than all of them together.
+        if let Err(e) = verify_execution_payload_bid_signature(
+            view.imm,
+            &view.epoch,
+            &view.builders,
+            &bid,
+            signature,
+        ) {
+            silver_log::debug!(?e, "execution payload bid signature rejected");
+            return Feedback::Reject(None);
+        }
+
+        self.payload_bids_pool.add(bid, *signature);
         Feedback::Accept
     }
 
@@ -1227,6 +1331,7 @@ impl BeaconStateTile {
                 producers,
             ),
             GossipTopic::SyncCommitteeContributionAndProof => self.handle_sync_contribution(data),
+            GossipTopic::ExecutionPayloadBid => self.handle_execution_payload_bid(data),
             _ => return true,
         };
         match feedback {

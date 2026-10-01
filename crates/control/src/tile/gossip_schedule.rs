@@ -1,5 +1,7 @@
 use silver_chain_spec::{ForkName, SpecConfig};
-use silver_common::{FAR_FUTURE_EPOCH, GossipDomain, SLOTS_PER_EPOCH, ticker::SlotTicker};
+use silver_common::{
+    FAR_FUTURE_EPOCH, GossipDomain, GossipTopic, SLOTS_PER_EPOCH, ticker::SlotTicker,
+};
 
 const ADVANCE_EPOCHS: u64 = 1;
 const RETAIN_EPOCHS: u64 = 2;
@@ -20,11 +22,26 @@ pub(super) struct GossipSchedule {
 pub(super) struct DomainUpdate {
     pub current: GossipDomain,
     pub other: Option<GossipDomain>,
+    pub topics: Vec<GossipTopic>,
     pub epoch: u64,
     pub enr_fork_id: [u8; 16],
 }
 
 impl GossipSchedule {
+    fn gloas_topics(current: GossipDomain, other: Option<GossipDomain>) -> Vec<GossipTopic> {
+        if current.format() != ForkName::Gloas &&
+            other.is_none_or(|domain| domain.format() != ForkName::Gloas)
+        {
+            return Vec::new();
+        }
+        vec![
+            GossipTopic::ExecutionPayloadBid,
+            GossipTopic::ExecutionPayload,
+            GossipTopic::PayloadAttestationMessage,
+            GossipTopic::ProposerPreferences,
+        ]
+    }
+
     pub(super) fn new(
         spec: &SpecConfig,
         genesis_validators_root: &[u8; 32],
@@ -87,6 +104,7 @@ impl GossipSchedule {
         Some(DomainUpdate {
             current: self.current,
             other,
+            topics: Self::gloas_topics(self.current, other),
             epoch,
             enr_fork_id: transition.enr_fork_id,
         })
@@ -127,12 +145,21 @@ mod tests {
         let advance = at(&mut schedule, 9);
         let gloas = advance.other.unwrap();
         assert_eq!(gloas.format(), ForkName::Gloas);
+        assert_eq!(advance.topics, [
+            GossipTopic::ExecutionPayloadBid,
+            GossipTopic::ExecutionPayload,
+            GossipTopic::PayloadAttestationMessage,
+            GossipTopic::ProposerPreferences
+        ]);
         let cutover = at(&mut schedule, 10);
         assert_eq!(cutover.current, gloas);
         assert_eq!(cutover.other, Some(initial.current));
+        assert_eq!(cutover.topics, advance.topics);
         assert_eq!(&cutover.enr_fork_id[..4], &gloas.digest());
         assert_eq!(at(&mut schedule, 11).other, Some(initial.current));
-        assert!(at(&mut schedule, 12).other.is_none());
+        let steady = at(&mut schedule, 12);
+        assert!(steady.other.is_none());
+        assert_eq!(steady.topics, advance.topics);
     }
 
     #[test]
