@@ -9,12 +9,14 @@ use silver_beacon_state_data::{
     Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
+#[cfg(feature = "ef_tests")]
+use silver_common::ProducedBlock;
 use silver_common::{
     BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, ProduceBlockFailure, ProducedBlock, ProposerPreparation, StreamProtocol, SyncNeed,
-    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
+    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -5218,6 +5220,50 @@ fn pooled_slashings_land_in_the_produced_block() {
     let validators = tile.state.read_view(post_state).validators;
     assert!(validators.is_slashed(equivocator as usize));
     assert!(validators.is_slashed(double_voter as usize));
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_sync_messages_land_in_the_produced_block() {
+    use blst::min_pk::{AggregateSignature, Signature};
+    use silver_beacon_state_data::SyncSubcommittee;
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+    use silver_ssz::block_body::EMPTY_SYNC_AGGREGATE;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let head = tile.state.read_view(tile.canonical_state_id());
+    let committee = SyncSubcommittee::of(&head, 1);
+    let participant = committee.validator_at(3, &head.validators).unwrap();
+    let positions = committee.positions(participant, &head.validators);
+    let balance_before = head.balances.get(participant);
+    let signature = Signature::from_bytes(&test_signing::sign(0, &[0xCD; 32])).unwrap();
+    let parent_root = tile.head_block_root();
+    tile.sync_contribution_pool.insert_verified(slot - 1, 1, parent_root, &positions, &signature);
+    tile.sync_contribution_pool.insert_verified(slot - 1, 2, [0xBC; 32], &positions, &signature);
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let sync_aggregate = BeaconBlockBodyFuluView::sync_aggregate(&header[12 + 84..]);
+    let mut expected = EMPTY_SYNC_AGGREGATE;
+    for (word, bytes) in positions.iter().zip(expected[16..32].as_chunks_mut().0) {
+        *bytes = word.to_le_bytes();
+    }
+    let copies = positions.iter().map(|word| word.count_ones()).sum::<u32>();
+    let copies = vec![&signature; copies as usize];
+    let expected_signature = AggregateSignature::aggregate(&copies, false).unwrap();
+    expected[64..].copy_from_slice(&expected_signature.to_signature().to_bytes());
+    assert_eq!(sync_aggregate, &expected, "only the parent's messages are packed");
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let balance_after = tile.state.read_view(post_state).balances.get(participant);
+    assert!(balance_after > balance_before, "{balance_after} <= {balance_before}");
 }
 
 #[cfg(feature = "ef_tests")]

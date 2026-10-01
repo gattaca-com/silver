@@ -84,20 +84,28 @@ impl Operations<'static> {
     };
 }
 
-#[derive(Default)]
 pub(super) struct PackedOperations {
     slashings: Selection,
+    sync_aggregate: [u8; BLOCK_SYNC_AGGREGATE_SIZE],
+}
+
+impl Default for PackedOperations {
+    fn default() -> Self {
+        Self { slashings: Selection::default(), sync_aggregate: EMPTY_SYNC_AGGREGATE }
+    }
 }
 
 impl PackedOperations {
     fn clear(&mut self) {
         self.slashings.clear();
+        self.sync_aggregate = EMPTY_SYNC_AGGREGATE;
     }
 
     fn operations(&self) -> Operations<'_> {
         Operations {
             proposer_slashings: self.slashings.proposer_slashings(),
             attester_slashings: self.slashings.attester_slashings(),
+            sync_aggregate: &self.sync_aggregate,
             ..Operations::NONE
         }
     }
@@ -408,6 +416,11 @@ impl BeaconStateTile {
         };
         let pre_state = self.state.read_view(parent);
         self.slashing_pool.select(&pre_state, &mut packed.slashings);
+        self.sync_contribution_pool.write_sync_aggregate(
+            proposal.slot - 1,
+            proposal.parent_root,
+            &mut packed.sync_aggregate,
+        );
     }
 
     /// The built block's `(body_root, fork)` when `body` is its body. Comparing
