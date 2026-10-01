@@ -184,6 +184,10 @@ pub enum ExecutionPayloadBidError {
     BuilderOutOfRange { index: u64, count: usize },
     #[error("builder {index} pubkey is not a valid BLS point")]
     BadBuilderPubkey { index: u64 },
+    #[error("builder {index} bid signature is invalid")]
+    BadSignature { index: u64 },
+    #[error("self-build bid has no builder signature to verify")]
+    SelfBuildUnsigned,
     #[error("builder {index} is not active")]
     BuilderInactive { index: u64 },
     #[error("builder {index} version {version} != PAYLOAD_BUILDER_VERSION")]

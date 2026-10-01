@@ -8,10 +8,12 @@ use ef_common::{
 };
 use silver_beacon_state::{
     bls::SigBatch,
+    error::ExecutionPayloadBidError,
     ssz_hash::PayloadRoots,
     stf::{self, ShufflingRef},
 };
 use silver_beacon_state_data::{BeaconBlockHeader, Payload, SLOTS_PER_EPOCH};
+use silver_common::ssz_view::SignedExecutionPayloadBidView;
 
 fn operations_handler(
     handler_name: &str,
@@ -425,13 +427,14 @@ fn gloas_execution_payload_bid() {
             let current_epoch = s.slot() / SLOTS_PER_EPOCH;
             let mut batch = SigBatch::new();
             let sid = s.state_id;
-            {
+            let batch_ok = {
                 let (p, eg, _) = s.view();
                 let ev = eg.view_opt(sid.epoch_idx);
+                let builders = p.builders.reader();
                 if stf::collect_sigs_execution_payload_bid(
                     p.imm,
                     &ev,
-                    &p.builders.reader(),
+                    &builders,
                     op,
                     current_epoch,
                     &mut batch,
@@ -440,8 +443,21 @@ fn gloas_execution_payload_bid() {
                 {
                     return false;
                 }
-            }
-            if !batch.verify_all() {
+                let batch_ok = batch.verify_all();
+                // The gossip path verifies the same bid singly; it must agree.
+                let bid = stf::decode_bid(op).unwrap();
+                let signature = SignedExecutionPayloadBidView::signature(op);
+                match stf::verify_execution_payload_bid_signature(
+                    p.imm, &ev, &builders, &bid, signature,
+                ) {
+                    Err(ExecutionPayloadBidError::SelfBuildUnsigned) => {}
+                    single => {
+                        assert_eq!(single.is_ok(), batch_ok, "single and batch bid verify disagree")
+                    }
+                }
+                batch_ok
+            };
+            if !batch_ok {
                 return false;
             }
             s.with_view_and_epoch(|view, e| {

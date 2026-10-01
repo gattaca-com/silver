@@ -107,8 +107,6 @@ fn default_gossip_topics() -> Vec<String> {
         GossipTopic::ProposerSlashing.to_string(),
         GossipTopic::AttesterSlashing.to_string(),
         GossipTopic::BlsToExecutionChange.to_string(),
-        GossipTopic::ExecutionPayload.to_string(),
-        GossipTopic::PayloadAttestationMessage.to_string(),
         GossipTopic::SyncCommitteeContributionAndProof.to_string(),
     ]
 }
@@ -599,7 +597,7 @@ mod tests {
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 12);
         assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
-        assert_eq!(cfg.gossip_topics().unwrap().len(), 9);
+        assert_eq!(cfg.gossip_topics().unwrap().len(), 7);
         assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));

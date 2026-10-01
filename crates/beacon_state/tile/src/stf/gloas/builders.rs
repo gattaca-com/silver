@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{
-    Builder, BuilderPendingPayment, Epoch, FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, StateWriterView,
-    Withdrawals,
+    Builder, BuilderPendingPayment, BuildersView, Epoch, FAR_FUTURE_EPOCH, PendingView,
+    SLOTS_PER_EPOCH, SlotState, StateReadView, StateWriterView, Withdrawals,
 };
 use silver_common::ssz_view::{
     BUILDER_DEPOSIT_REQUEST_SIZE, BUILDER_EXIT_REQUEST_SIZE, BuilderDepositRequestView,
@@ -49,35 +49,54 @@ pub(crate) fn is_active_builder(builder: &Builder, finalized_epoch: u64) -> bool
     builder.deposit_epoch < finalized_epoch && builder.withdrawable_epoch == FAR_FUTURE_EPOCH
 }
 
-pub(crate) fn get_pending_balance_to_withdraw_for_builder(
-    view: &StateWriterView,
-    builder_index: u64,
-) -> u64 {
-    let mut total = 0u64;
-    let withdrawals = view.pending.builder_withdrawals.reader();
-    for i in 0..withdrawals.len() {
-        let w = withdrawals.get(i);
-        if w.builder_index == builder_index {
-            total += w.amount;
-        }
-    }
-    for payment in view.slot.state().builder_pending_payments.iter() {
-        if payment.withdrawal.builder_index == builder_index {
-            total += payment.withdrawal.amount;
-        }
-    }
-    total
+/// The state a builder's obligations are read from; block import projects it
+/// from its writer, gossip from the parent post-state.
+#[derive(Clone, Copy)]
+pub struct BuilderLedger<'a> {
+    builders: BuildersView<'a>,
+    pending: PendingView<'a>,
+    slot: &'a SlotState,
 }
 
-pub(crate) fn can_builder_cover_bid(
-    view: &StateWriterView,
-    builder_index: u64,
-    bid_amount: u64,
-) -> bool {
-    let balance = view.builders.reader().get(builder_index as usize).map_or(0, |b| b.balance);
-    let min_balance =
-        MIN_DEPOSIT_AMOUNT + get_pending_balance_to_withdraw_for_builder(view, builder_index);
-    balance >= min_balance && balance - min_balance >= bid_amount
+impl<'a> BuilderLedger<'a> {
+    pub fn of_writer(view: &'a StateWriterView) -> Self {
+        Self {
+            builders: view.builders.reader(),
+            pending: view.pending.reader(),
+            slot: view.slot.state(),
+        }
+    }
+
+    pub fn of_reader(view: &StateReadView<'a>) -> Self {
+        Self { builders: view.builders, pending: view.pending, slot: view.slot.state() }
+    }
+
+    pub fn builders(&self) -> &BuildersView<'a> {
+        &self.builders
+    }
+
+    pub(crate) fn pending_balance_to_withdraw(&self, builder_index: u64) -> u64 {
+        let mut total = 0u64;
+        let withdrawals = self.pending.builder_withdrawals;
+        for i in 0..withdrawals.len() {
+            let w = withdrawals.get(i);
+            if w.builder_index == builder_index {
+                total += w.amount;
+            }
+        }
+        for payment in self.slot.builder_pending_payments.iter() {
+            if payment.withdrawal.builder_index == builder_index {
+                total += payment.withdrawal.amount;
+            }
+        }
+        total
+    }
+
+    pub(crate) fn can_cover_bid(&self, builder_index: u64, bid_amount: u64) -> bool {
+        let balance = self.builders.get(builder_index as usize).map_or(0, |b| b.balance);
+        let min_balance = MIN_DEPOSIT_AMOUNT + self.pending_balance_to_withdraw(builder_index);
+        balance >= min_balance && balance - min_balance >= bid_amount
+    }
 }
 
 pub fn get_builder_payment_quorum_threshold(view: &StateWriterView, current_epoch: Epoch) -> u64 {
@@ -200,7 +219,7 @@ pub fn process_builder_exit_request(
     if builder.execution_address != source_address {
         return;
     }
-    if get_pending_balance_to_withdraw_for_builder(view, builder_index as u64) != 0 {
+    if BuilderLedger::of_writer(view).pending_balance_to_withdraw(builder_index as u64) != 0 {
         return;
     }
     initiate_builder_exit(view, builder_index);

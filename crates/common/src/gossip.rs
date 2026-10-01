@@ -121,6 +121,22 @@ impl From<GossipTopic> for String {
     }
 }
 
+impl GossipTopic {
+    pub const fn is_gloas_only(self) -> bool {
+        matches!(
+            self,
+            Self::ExecutionPayloadBid |
+                Self::ExecutionPayload |
+                Self::PayloadAttestationMessage |
+                Self::ProposerPreferences
+        )
+    }
+
+    pub const fn supports_format(self, format: ForkName) -> bool {
+        !self.is_gloas_only() || matches!(format, ForkName::Gloas)
+    }
+}
+
 pub const ATTESTATION_SUBNETS: usize = 64;
 
 pub struct SubnetsBySlot {

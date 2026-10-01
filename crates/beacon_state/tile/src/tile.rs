@@ -29,6 +29,7 @@ use crate::{
     tile::{
         attestation_pool::AttestationPool,
         attestation_root_memo::AttestationRootMemo,
+        bid_pool::BidPool,
         block_production::{BlockProduction, Proposal},
         fork_data_roots::ForkDataRoots,
         gossip::BatchedVote,
@@ -47,6 +48,7 @@ mod attestation_pool;
 mod precomputed_epochs;
 // `pub` for the crate's `attestation_root_memo` criterion bench.
 pub mod attestation_root_memo;
+mod bid_pool;
 mod block;
 mod block_production;
 mod finalize;
@@ -198,6 +200,8 @@ pub struct BeaconStateTile {
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: FxHashMap<B256, TRead>,
+    /// Gload: payload bids for the current slot
+    payload_bids_pool: BidPool,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
 
@@ -273,6 +277,7 @@ impl BeaconStateTile {
             sig_batch: bls::SigBatch::new(),
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
+            payload_bids_pool: BidPool::default(),
             pending_bounds: syncing.pending,
             verify_weak_subjectivity,
             reader: TCacheReader::new(tcaches),
@@ -752,6 +757,7 @@ impl BeaconStateTile {
         self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
+        self.payload_bids_pool.on_slot(slot);
         if slot.is_multiple_of(SLOTS_PER_EPOCH) {
             self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
         }

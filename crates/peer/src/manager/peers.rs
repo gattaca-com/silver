@@ -11,8 +11,8 @@ use std::{
 use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
-    ATTESTATION_SUBNETS, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId, PeerScores,
-    PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
+    ATTESTATION_SUBNETS, GossipDomain, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId,
+    PeerScores, PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
     ssz_view::MetadataView,
 };
 
@@ -38,6 +38,48 @@ const OPPORTUNISTIC_GRAFT_INTERVAL: Duration = Duration::from_secs(60);
 const OPPORTUNISTIC_GRAFT_PEERS: usize = 2;
 
 impl PeerManager {
+    fn digests(domains: [Option<GossipDomain>; 2]) -> [Option<[u8; 4]>; 2] {
+        domains.map(|domain| domain.map(|domain| domain.digest()))
+    }
+
+    fn topic_domains(
+        domains: [Option<GossipDomain>; 2],
+        topic: GossipTopic,
+    ) -> [Option<GossipDomain>; 2] {
+        let mut out = [None, None];
+        let mut len = 0;
+        for domain in domains.into_iter().flatten() {
+            if topic.supports_format(domain.format()) {
+                out[len] = Some(domain);
+                len += 1;
+            }
+        }
+        out
+    }
+
+    fn active_topic_domains(&self, topic: GossipTopic) -> [Option<GossipDomain>; 2] {
+        Self::topic_domains(self.active_gossip_domains, topic)
+    }
+
+    fn active_topic_digests(&self, topic: GossipTopic) -> [Option<[u8; 4]>; 2] {
+        Self::digests(self.active_topic_domains(topic))
+    }
+
+    fn topic_active_on_digest(&self, topic: GossipTopic, digest: [u8; 4]) -> bool {
+        Self::topic_active_on_domains(self.active_gossip_domains, topic, digest)
+    }
+
+    fn topic_active_on_domains(
+        domains: [Option<GossipDomain>; 2],
+        topic: GossipTopic,
+        digest: [u8; 4],
+    ) -> bool {
+        domains
+            .into_iter()
+            .flatten()
+            .any(|domain| domain.digest() == digest && topic.supports_format(domain.format()))
+    }
+
     /// Current cached score. Recomputed on `tick`.
     pub fn score(&self, conn: usize) -> Option<f64> {
         self.peers.get(&conn).map(|p| p.cached_score)
@@ -146,8 +188,8 @@ impl PeerManager {
         }
 
         // Announce our own topic subscriptions to this peer.
-        for digest in self.active_gossip_digests.into_iter().flatten() {
-            for &topic in &self.our_topics {
+        for &topic in &self.our_topics {
+            for digest in self.active_topic_digests(topic).into_iter().flatten() {
                 emit(PeerControl::P2pGossipSubscribe {
                     p2p: peer_id,
                     p2p_connection: conn,
@@ -326,26 +368,57 @@ impl PeerManager {
         other: Option<[u8; 4]>,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let other = other.filter(|digest| *digest != current);
-        let wanted = [Some(current), other];
-        self.adopt_fork_digest(current);
+        let current_format =
+            self.active_gossip_domains[0].map_or(silver_common::ForkName::Fulu, |d| d.format());
+        self.set_active_gossip_domains(
+            GossipDomain::new(current, current_format),
+            other.map(|digest| GossipDomain::new(digest, current_format)),
+            emit,
+        );
+    }
+
+    pub fn set_active_gossip_domains(
+        &mut self,
+        current: GossipDomain,
+        other: Option<GossipDomain>,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let other = other.filter(|domain| domain.digest() != current.digest());
+        let wanted_domains = [Some(current), other];
+        let wanted = Self::digests(wanted_domains);
+        self.adopt_fork_digest(current.digest());
         if let Some(status) = &mut self.status {
-            status[..4].copy_from_slice(&current);
+            status[..4].copy_from_slice(&current.digest());
         }
-        if self.active_gossip_digests == wanted {
+        if self.active_gossip_domains == wanted_domains {
             return;
         }
-        let old = std::mem::replace(&mut self.active_gossip_digests, wanted);
+        let old_domains = std::mem::replace(&mut self.active_gossip_domains, wanted_domains);
+        self.active_gossip_digests = wanted;
         let capacity = self.params.d_high as usize;
         for &topic in &self.our_topics {
-            let meshes = self
-                .mesh
-                .entry(topic)
-                .or_insert_with(|| mesh::TopicMeshes::single(current, capacity));
+            let topic_wanted = Self::topic_domains(wanted_domains, topic);
+            let topic_old = Self::topic_domains(old_domains, topic);
+            let wanted_digests = Self::digests(topic_wanted);
+            let old_digests = Self::digests(topic_old);
 
-            let retired = meshes.set_domains(current, other, capacity);
-            for digest in
-                wanted.into_iter().flatten().filter(|digest| !old.contains(&Some(*digest)))
+            let retired = if let Some(primary) = wanted_digests[0] {
+                let meshes = self
+                    .mesh
+                    .entry(topic)
+                    .or_insert_with(|| mesh::TopicMeshes::single(primary, capacity));
+                meshes.set_domains(primary, wanted_digests[1], capacity)
+            } else {
+                self.mesh.remove(&topic).map_or([None, None], |meshes| match meshes {
+                    mesh::TopicMeshes::Single(a) => [Some(a), None],
+                    mesh::TopicMeshes::Multi([a, b]) => [Some(a), Some(b)],
+                })
+            };
+
+            for digest in wanted_digests
+                .into_iter()
+                .flatten()
+                .filter(|digest| !old_digests.contains(&Some(*digest)))
             {
                 for (&conn, peer) in &self.peers {
                     emit(PeerControl::P2pGossipSubscribe {
@@ -363,7 +436,7 @@ impl PeerManager {
                 let digest = retired.digest;
                 for conn in retired.peers {
                     let Some(peer) = self.peers.get_mut(&conn) else { continue };
-                    if !meshes.contains(conn) &&
+                    if !self.mesh.get(&topic).is_some_and(|meshes| meshes.contains(conn)) &&
                         let Some(score) = peer.topic_stats.get_mut(&topic)
                     {
                         score.meshed_since = None;
@@ -388,8 +461,11 @@ impl PeerManager {
                 }
             }
         }
+        let active_domains = self.active_gossip_domains;
         for peer in self.peers.values_mut() {
-            peer.subscriptions.retain(|(digest, _), _| wanted.contains(&Some(*digest)));
+            peer.subscriptions.retain(|(digest, topic), _| {
+                Self::topic_active_on_domains(active_domains, *topic, *digest)
+            });
         }
     }
 
@@ -400,6 +476,20 @@ impl PeerManager {
     ) {
         self.subscribe_topics(topics, emit);
         self.on_subscriptions_changed(emit);
+    }
+
+    pub fn deactivate_topics(
+        &mut self,
+        topics: impl IntoIterator<Item = GossipTopic>,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        self.unsubscribe_topics(topics, now, emit);
+        self.on_subscriptions_changed(emit);
+    }
+
+    pub fn has_topic(&self, topic: GossipTopic) -> bool {
+        self.our_topics.contains(&topic)
     }
 
     /// `attesting` are the attestation subnets local validators publish on
@@ -428,12 +518,14 @@ impl PeerManager {
                 continue;
             }
             self.our_topics.push(topic);
-            let digest = self.current_digest();
             let capacity = self.params.d_high as usize;
-            let mut meshes = mesh::TopicMeshes::single(digest, capacity);
-            meshes.set_domains(digest, self.active_gossip_digests[1], capacity);
-            self.mesh.insert(topic, meshes);
-            for digest in self.active_gossip_digests.into_iter().flatten() {
+            let digests = self.active_topic_digests(topic);
+            if let Some(primary) = digests[0] {
+                let mut meshes = mesh::TopicMeshes::single(primary, capacity);
+                meshes.set_domains(primary, digests[1], capacity);
+                self.mesh.insert(topic, meshes);
+            }
+            for digest in digests.into_iter().flatten() {
                 for (&conn, peer) in &self.peers {
                     emit(PeerControl::P2pGossipSubscribe {
                         p2p: peer.peer_id,
@@ -476,7 +568,7 @@ impl PeerManager {
                 );
             }
             self.mesh.remove(&topic);
-            for digest in self.active_gossip_digests.into_iter().flatten() {
+            for digest in self.active_topic_digests(topic).into_iter().flatten() {
                 for (&conn, peer) in &self.peers {
                     emit(PeerControl::P2pGossipUnsubscribe {
                         p2p: peer.peer_id,
@@ -517,9 +609,9 @@ impl PeerManager {
     }
 
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        for digest in self.active_gossip_digests.into_iter().flatten() {
-            for (&conn, peer) in &self.peers {
-                for &topic in &self.our_topics {
+        for &topic in &self.our_topics {
+            for digest in self.active_topic_digests(topic).into_iter().flatten() {
+                for (&conn, peer) in &self.peers {
                     emit(PeerControl::P2pGossipSubscribe {
                         p2p: peer.peer_id,
                         p2p_connection: conn,
@@ -573,7 +665,7 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.active_gossip_digests.contains(&Some(digest)) {
+        if !self.topic_active_on_digest(topic, digest) {
             return;
         }
         let (peer_id, score, is_trusted) = {
@@ -639,7 +731,7 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.active_gossip_digests.contains(&Some(digest)) {
+        if !self.topic_active_on_digest(topic, digest) {
             return;
         }
         let Some(peer) = self.peers.get(&conn) else {
@@ -697,7 +789,7 @@ impl PeerManager {
         backoff_seconds: Option<u64>,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.active_gossip_digests.contains(&Some(digest)) {
+        if !self.topic_active_on_digest(topic, digest) {
             return;
         }
         let meshed_since = self
@@ -964,7 +1056,7 @@ impl PeerManager {
         let mut deficit_columns = 0u128;
         let mut deficits = 0u64;
         for topic in &our_topics {
-            for digest in self.active_gossip_digests.into_iter().flatten() {
+            for digest in self.active_topic_digests(*topic).into_iter().flatten() {
                 self.prune_negative_mesh_peers(*topic, digest, now, emit);
                 self.ensure_mesh_filled(*topic, digest, now, emit);
                 self.ensure_mesh_capped(*topic, digest, now, emit);

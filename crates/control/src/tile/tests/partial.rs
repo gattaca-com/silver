@@ -314,9 +314,18 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
                 if subscription.subscribe != Some(true) {
                     continue;
                 }
-                subscriptions += 1;
-                assert_eq!(subscription.requests_partial, Some(true));
-                assert_eq!(subscription.supports_sending_partial, Some(true));
+                if subscription
+                    .topic_id
+                    .as_deref()
+                    .is_some_and(|topic| topic.contains("/data_column_sidecar_0/"))
+                {
+                    subscriptions += 1;
+                    assert_eq!(subscription.requests_partial, Some(true));
+                    assert_eq!(subscription.supports_sending_partial, Some(true));
+                } else {
+                    assert_eq!(subscription.requests_partial, None);
+                    assert_eq!(subscription.supports_sending_partial, None);
+                }
             }
         }
         if epoch < 10 {
