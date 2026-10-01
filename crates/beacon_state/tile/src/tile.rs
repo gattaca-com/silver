@@ -893,7 +893,7 @@ impl BeaconStateTile {
             return;
         }
         self.flush_votes(producers);
-        self.handle_gossip(m.ssz, m, true, false, producers);
+        self.handle_gossip(m.ssz, m, true, producers);
     }
 
     fn consume_shared(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -940,7 +940,7 @@ impl BeaconStateTile {
                 if id.is(DataKind::Block, Origin::Live) =>
             {
                 silver_log::debug!(?stream_id, "received beacon block over rpc");
-                self.handle_rpc_block(stream_id, ssz, false, producers);
+                self.handle_rpc_block(stream_id, ssz, producers);
             }
             RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz }
                 if id.is(DataKind::Envelope, Origin::Live) =>
@@ -1116,7 +1116,7 @@ impl BeaconStateTile {
     /// The `beacon_block` gossip verdict: precheck plus proposer signature,
     /// which is what production relays on.
     pub fn ef_gossip_block(&mut self, ssz: &[u8]) -> Feedback {
-        match self.parse_and_verify_block(ssz, false) {
+        match self.parse_and_verify_block(ssz) {
             Ok(_) => Feedback::Accept,
             Err(err) => err.feedback(),
         }

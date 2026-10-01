@@ -112,7 +112,7 @@ impl StagedBlock {
 
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        match self.parse_and_verify_block(data, false) {
+        match self.parse_and_verify_block(data) {
             Ok(parsed) => self.apply_and_import(parsed, data, None),
             Err(err) => err.feedback(),
         }
@@ -126,7 +126,6 @@ impl BeaconStateTile {
         data: &[u8],
         ssz: &TRead,
         source: BlockSource,
-        pre_verified: bool,
         producers: &mut Producers,
         mut send_gossip: impl FnMut(&mut Producers),
     ) -> Feedback {
@@ -136,7 +135,7 @@ impl BeaconStateTile {
         }
 
         let slot = SignedBeaconBlockView::slot(data);
-        let parsed = match self.parse_and_verify_block(data, pre_verified) {
+        let parsed = match self.parse_and_verify_block(data) {
             Ok(parsed) => {
                 if parsed.relay_eligible {
                     send_gossip(producers);
@@ -333,7 +332,6 @@ impl BeaconStateTile {
     pub(super) fn parse_and_verify_block(
         &mut self,
         data: &[u8],
-        pre_verified: bool,
     ) -> Result<ParsedBlock, PrecheckError> {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
@@ -343,7 +341,7 @@ impl BeaconStateTile {
             }
         };
 
-        if !pre_verified && !self.verify_block_signature(data, &parsed) {
+        if !self.verify_block_signature(data, &parsed) {
             silver_log::warn!(
                 head_slot = self.head_state_slot(),
                 block_root = ?hex32(&parsed.block_root),

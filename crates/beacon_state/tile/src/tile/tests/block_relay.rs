@@ -100,7 +100,7 @@ impl BlockPublications {
 
     fn on_gossip_unrelayed(&mut self, block_ssz: &[u8]) {
         let m = gossip_msg(&mut self.gossip, block_ssz, GossipTopic::BeaconBlock);
-        self.tile.handle_gossip(m.ssz, m, false, false, &mut self.adapter.producers);
+        self.tile.handle_gossip(m.ssz, m, false, &mut self.adapter.producers);
     }
 
     fn on_rpc_block(&mut self, block_ssz: &[u8]) {

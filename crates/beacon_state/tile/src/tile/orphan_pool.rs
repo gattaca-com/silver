@@ -36,11 +36,8 @@ impl BeaconStateTile {
 
     pub(super) fn replay_orphans(&mut self, parent_root: B256, producers: &mut Producers) {
         for child in self.held.orphans.take(&parent_root) {
-            // First successful validation of an orphan held on a missing
-            // parent: relay it now. Recursively applies chained orphans.
-            // Not pre-verified — precheck bailed at parent-missing before
-            // the BLS check, so the signature is still unverified.
-            self.replay_pending_block(child, true, false, producers);
+            // Missing-parent gossip has not been relayed yet.
+            self.replay_pending_block(child, true, producers);
         }
     }
 
@@ -127,24 +124,18 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) {
         for child in self.held.payload_orphans.take(&verified_root) {
-            self.replay_pending_block(child, false, false, producers);
+            self.replay_pending_block(child, false, producers);
         }
     }
 
-    fn replay_pending_block(
-        &mut self,
-        orphan: Orphan,
-        do_relay: bool,
-        pre_verified: bool,
-        producers: &mut Producers,
-    ) {
+    fn replay_pending_block(&mut self, orphan: Orphan, do_relay: bool, producers: &mut Producers) {
         let Orphan { block_root, slot, msg, .. } = orphan;
         let replayed = match msg {
             BlockSourceMsg::Gossip(g, pin) => {
-                self.handle_gossip(pin.to_read(), g, do_relay, pre_verified, producers)
+                self.handle_gossip(pin.to_read(), g, do_relay, producers)
             }
             BlockSourceMsg::Rpc(stream_id, pin) => {
-                self.handle_rpc_block(stream_id, pin.to_read(), pre_verified, producers)
+                self.handle_rpc_block(stream_id, pin.to_read(), producers)
             }
         };
         if !replayed {
@@ -231,7 +222,6 @@ impl BeaconStateTile {
         &mut self,
         sender: P2pStreamId,
         read: TCacheRead,
-        pre_verified: bool,
         producers: &mut Producers,
     ) -> bool {
         let acquired = self.reader.acquire(read);
@@ -247,8 +237,7 @@ impl BeaconStateTile {
             return true;
         }
 
-        let feedback =
-            self.apply_block(data, &acquired, BlockSource::Rpc, pre_verified, producers, |_| {});
+        let feedback = self.apply_block(data, &acquired, BlockSource::Rpc, producers, |_| {});
         match feedback {
             Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),

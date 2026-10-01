@@ -1457,7 +1457,6 @@ impl BeaconStateTile {
         read: TCacheRead,
         m: NewGossipMsg,
         mut do_relay: bool,
-        pre_verified: bool,
         producers: &mut Producers,
     ) -> bool {
         let acquired = self.reader.acquire(read);
@@ -1465,7 +1464,7 @@ impl BeaconStateTile {
 
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
-                match self.parse_and_verify_block(data, pre_verified) {
+                match self.parse_and_verify_block(data) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, producers)
                     }
@@ -1481,18 +1480,12 @@ impl BeaconStateTile {
                 return true;
             }
             GossipTopic::BeaconBlock => {
-                let feedback = self.apply_block(
-                    data,
-                    &acquired,
-                    BlockSource::Gossip,
-                    pre_verified,
-                    producers,
-                    |p| {
+                let feedback =
+                    self.apply_block(data, &acquired, BlockSource::Gossip, producers, |p| {
                         if do_relay {
                             Self::relay_gossip(&m, p);
                         }
-                    },
-                );
+                    });
                 do_relay = false; // relayed on callback.
                 feedback
             }
