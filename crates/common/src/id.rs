@@ -1,5 +1,12 @@
-use std::fmt;
+use std::{
+    fmt,
+    fs::OpenOptions,
+    io::{self, Write},
+    os::unix::fs::OpenOptionsExt,
+    path::Path,
+};
 
+use rand::RngCore;
 use secp256k1::{
     SECP256K1, SecretKey,
     hashes::{Hash, sha256},
@@ -98,6 +105,31 @@ pub struct Keypair {
 }
 
 impl Keypair {
+    const FILE: &str = "node.key";
+
+    /// Created once, so the peer id survives restarts.
+    pub fn load_or_create(data_dir: &Path) -> Result<Self, Error> {
+        let path = data_dir.join(Self::FILE);
+        let mut secret = [0u8; 32];
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                hex::decode_to_slice(text.trim(), &mut secret).map_err(|e| {
+                    Error::ConfigError(format!("{} is not a hex secret key: {e}", path.display()))
+                })?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                rand::thread_rng().fill_bytes(&mut secret);
+                std::fs::create_dir_all(data_dir)?;
+                let mut file =
+                    OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+                file.write_all(hex::encode(secret).as_bytes())?;
+                silver_log::info!(path = %path.display(), "generated a new node key");
+            }
+            Err(e) => return Err(e.into()),
+        }
+        Self::from_secret(&secret)
+    }
+
     /// Create from raw 32-byte secret key.
     pub fn from_secret(secret: &[u8; 32]) -> Result<Self, Error> {
         let signing_key = SecretKey::from_slice(secret).map_err(|_| Error::BadPrivateKey)?;
@@ -160,6 +192,15 @@ mod tests {
         let pid = PeerId::from_secp256k1_pubkey(kp.public_key_compressed());
         // `pubkey()` returns the 33 compressed bytes embedded in the id.
         assert_eq!(pid.pubkey(), &kp.public_key_compressed()[..]);
+    }
+
+    #[test]
+    fn the_node_key_is_created_once_and_reused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let first = Keypair::load_or_create(dir.path()).unwrap();
+        let second = Keypair::load_or_create(dir.path()).unwrap();
+        assert_eq!(first.peer_id(), second.peer_id());
+        assert!(dir.path().join(Keypair::FILE).exists());
     }
 }
 

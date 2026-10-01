@@ -5029,7 +5029,6 @@ name = "silver_config"
 version = "0.0.1"
 dependencies = [
  "hex",
- "secp256k1",
  "serde",
  "serde_yml",
  "silver_chain_spec",

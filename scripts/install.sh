@@ -38,11 +38,8 @@ cd data
 ./mainnet_finalized.sh
 cd
 
-# create a secret key
-KEY=$(openssl rand -hex 32)
 # add config file
 cat > config/config.toml << EOF
-secret_key = "${KEY}"
 data_column_custody_group_count = 128
 attestation_subnet_count = 64
 fork_digest = "8c9f62fe"
