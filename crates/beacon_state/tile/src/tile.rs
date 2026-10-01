@@ -65,6 +65,7 @@ mod seen_aggregates;
 mod seen_proposer_preferences;
 mod seen_validators;
 mod shuffling_cache;
+mod slashing_detection;
 mod sync_contribution_pool;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1116,9 +1117,9 @@ impl BeaconStateTile {
     /// The `beacon_block` gossip verdict: precheck plus proposer signature,
     /// which is what production relays on.
     pub fn ef_gossip_block(&mut self, ssz: &[u8]) -> Feedback {
-        match self.parse_and_verify_block(ssz) {
+        match self.admit_block(ssz, BlockSource::Gossip) {
             Ok(_) => Feedback::Accept,
-            Err(err) => err.feedback(),
+            Err(feedback) => feedback,
         }
     }
 

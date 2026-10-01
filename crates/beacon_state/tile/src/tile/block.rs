@@ -112,9 +112,9 @@ impl StagedBlock {
 
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        match self.parse_and_verify_block(data) {
+        match self.admit_block(data, BlockSource::Rpc) {
             Ok(parsed) => self.apply_and_import(parsed, data, None),
-            Err(err) => err.feedback(),
+            Err(feedback) => feedback,
         }
     }
 
@@ -135,15 +135,14 @@ impl BeaconStateTile {
         }
 
         let slot = SignedBeaconBlockView::slot(data);
-        let parsed = match self.parse_and_verify_block(data) {
+        let parsed = match self.admit_block(data, source) {
             Ok(parsed) => {
                 if parsed.relay_eligible {
                     send_gossip(producers);
                 }
                 parsed
             }
-            Err(e) => {
-                let f = e.feedback();
+            Err(f) => {
                 if let Feedback::BlockKnown(block_root) = f {
                     self.emit_block_received(
                         data,

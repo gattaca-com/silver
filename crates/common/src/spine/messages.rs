@@ -1058,14 +1058,13 @@ impl From<IpAddr> for IpBytes {
     }
 }
 
-/// Origin of a rejected block. PM treats RPC rejects as evidence that the
-/// active syncing target is bad (chain poisoning); gossip rejects are not
-/// chain-attributable and only blacklist the individual block_root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BlockSource {
     Gossip,
+    /// Includes disk replay.
     Rpc,
+    LocalGossip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

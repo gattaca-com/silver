@@ -34,7 +34,7 @@ export const Stage = {
   StfDone: 7,
   Attestable: 8,
 };
-export const BLOCK_SOURCE = ['gossip', 'rpc'];
+export const BLOCK_SOURCE = ['gossip', 'rpc', 'local'];
 export const COLUMN_ORIGIN = ['gossip', 'rpc', 'el', 'assembly'];
 export const EL_VERDICT = ['valid', 'invalid', 'syncing', 'accepted'];
 

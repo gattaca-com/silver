@@ -1462,30 +1462,29 @@ impl BeaconStateTile {
         let acquired = self.reader.acquire(read);
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
 
+        let source = if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+            BlockSource::LocalGossip
+        } else {
+            BlockSource::Gossip
+        };
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
-                match self.parse_and_verify_block(data) {
+                match self.admit_block(data, source) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, producers)
                     }
-                    Err(err) if matches!(err.feedback(), Feedback::Reject(_)) => {
-                        producers.produce(PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: m.stream_id.peer(),
-                            topic: m.topic,
-                            hash: m.msg_hash,
-                        })
-                    }
-                    _ => {}
+                    Ok(_) => {}
+                    Err(Feedback::Reject(_)) => Self::reject_gossip(&m, producers),
+                    Err(feedback) => Self::local_verdict(&m, feedback, producers),
                 }
                 return true;
             }
             GossipTopic::BeaconBlock => {
-                let feedback =
-                    self.apply_block(data, &acquired, BlockSource::Gossip, producers, |p| {
-                        if do_relay {
-                            Self::relay_gossip(&m, p);
-                        }
-                    });
+                let feedback = self.apply_block(data, &acquired, source, producers, |p| {
+                    if do_relay {
+                        Self::relay_gossip(&m, p);
+                    }
+                });
                 do_relay = false; // relayed on callback.
                 feedback
             }

@@ -14,7 +14,7 @@ use silver_common::{
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
     PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -4621,6 +4621,71 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
             "persisted checkpoint diverges from the live state at `{name}`"
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Receipt {
+    slot: Slot,
+    block_root: B256,
+    stage: BlockStage,
+    source: BlockSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Relayed {
+    slot: Slot,
+    block_root: B256,
+}
+
+struct GossipPublications {
+    events: Vec<BeaconStateEvent>,
+    relays: Vec<Relayed>,
+}
+
+impl GossipPublications {
+    fn drain(sink: &mut SpineAdapter<SilverSpine>, gossip: &mut TCacheReader) -> Self {
+        let mut events = Vec::new();
+        sink.consume(|event: BeaconStateEvent, _| events.push(event));
+        let mut relays = Vec::new();
+        sink.consume(|event: PeerEvent, _| match event {
+            PeerEvent::SendGossip { topic, ssz, .. } => {
+                let relayed = gossip.acquire(ssz);
+                let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
+                match topic {
+                    GossipTopic::BeaconBlock => relays.push(fulu_relayed(bytes)),
+                    _ => panic!("unexpected relay on {topic:?}"),
+                }
+            }
+            _ => {}
+        });
+        Self { events, relays }
+    }
+
+    fn verdicts(&self) -> Vec<Result<(), LocalGossipFailure>> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::LocalGossipVerdict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn receipts(&self) -> Vec<Receipt> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockReceived { slot, block_root, stage, source, .. } => {
+                    Some(Receipt { slot, block_root, stage, source })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn fulu_relayed(bytes: &[u8]) -> Relayed {
+    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
 }
 
 #[cfg(feature = "ef_tests")]

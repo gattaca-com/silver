@@ -1,54 +1,4 @@
-use silver_common::TCacheReader;
-
 use super::*;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Receipt {
-    slot: Slot,
-    block_root: B256,
-    stage: BlockStage,
-    source: BlockSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Relayed {
-    slot: Slot,
-    block_root: B256,
-}
-
-struct Published {
-    events: Vec<BeaconStateEvent>,
-    relays: Vec<Relayed>,
-}
-
-impl Published {
-    fn drain(sink: &mut SpineAdapter<SilverSpine>, gossip: &mut TCacheReader) -> Self {
-        let mut events = Vec::new();
-        sink.consume(|event: BeaconStateEvent, _| events.push(event));
-        let mut relays = Vec::new();
-        sink.consume(|event: PeerEvent, _| {
-            if let PeerEvent::SendGossip { topic, ssz, .. } = event {
-                assert_eq!(topic, GossipTopic::BeaconBlock);
-                let relayed = gossip.acquire(ssz);
-                let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
-                relays.push(fulu_relayed(bytes));
-            }
-        });
-        Self { events, relays }
-    }
-
-    fn receipts(&self) -> Vec<Receipt> {
-        self.events
-            .iter()
-            .filter_map(|event| match *event {
-                BeaconStateEvent::BlockReceived { slot, block_root, stage, source, .. } => {
-                    Some(Receipt { slot, block_root, stage, source })
-                }
-                _ => None,
-            })
-            .collect()
-    }
-}
 
 fn fulu_from_genesis() -> SpecConfig {
     SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
@@ -80,11 +30,14 @@ struct BlockPublications {
 
 impl BlockPublications {
     fn new(pre_ssz: &[u8], block_ssz: &[u8], target: SyncUpdate) -> Self {
+        Self::at_wall_slot(pre_ssz, SignedBeaconBlockView::slot(block_ssz) + 1, target)
+    }
+
+    fn at_wall_slot(pre_ssz: &[u8], wall_slot: Slot, target: SyncUpdate) -> Self {
         let state = BeaconState::from_checkpoint(pre_ssz, &fulu_from_genesis(), &[])
             .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
-        let block_slot = SignedBeaconBlockView::slot(block_ssz);
         let (mut tile, gossip, rpc, replay) =
-            make_tile_with_producers(block_slot + 1, state, fulu_from_genesis());
+            make_tile_with_producers(wall_slot, state, fulu_from_genesis());
         tile.sync_target = target;
         let (mut spine, adapter) = spine_adapter(&tile);
         let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
@@ -113,17 +66,32 @@ impl BlockPublications {
         self.tile.on_replay(ReplayBlock::Block { ssz: read }, &mut self.adapter.producers);
     }
 
-    fn drain(&mut self) -> Published {
-        Published::drain(&mut self.sink, &mut self.tile.reader)
+    fn on_local_gossip(&mut self, topic: GossipTopic, ssz: &[u8]) {
+        let mut m = gossip_msg(&mut self.gossip, ssz, topic);
+        m.stream_id = LOCAL_GOSSIP_STREAM_ID;
+        self.tile.on_gossip(m, &mut self.adapter.producers);
     }
+
+    fn on_block(&mut self, path: Path, block_ssz: &[u8]) {
+        match path {
+            Path::Gossip => self.on_gossip(block_ssz),
+            Path::Local => self.on_local_gossip(GossipTopic::BeaconBlock, block_ssz),
+        }
+    }
+
+    fn drain(&mut self) -> GossipPublications {
+        GossipPublications::drain(&mut self.sink, &mut self.tile.reader)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Path {
+    Gossip,
+    Local,
 }
 
 fn stages_of(receipts: &[Receipt]) -> Vec<BlockStage> {
     receipts.iter().map(|r| r.stage).collect()
-}
-
-fn fulu_relayed(bytes: &[u8]) -> Relayed {
-    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
 }
 
 #[test]
@@ -243,23 +211,29 @@ fn disabling_relay_suppresses_the_gossip_notification() {
 /// A missing parent fails precheck before signature verification. The parent's
 /// import retries the child through the block handler.
 #[test]
-fn a_parked_block_is_relayed_by_the_retry_that_admits_it() {
-    let (pre_ssz, first) = sanity_fixture("attestation");
+fn parked_blocks_keep_their_source_and_relay_when_admitted() {
+    let (pre, first) = sanity_fixture("attestation");
     let second = sanity_file("attestation", "blocks_1.ssz_snappy");
-    let mut rig = BlockPublications::new(&pre_ssz, &second, SyncUpdate::Following);
-
-    rig.on_gossip(&second);
-    let parked = rig.drain();
-    assert_eq!(stages_of(&parked.receipts()), [BlockStage::AwaitParent]);
-    assert!(parked.relays.is_empty(), "the missing parent prevents validation");
-    let child = parked.receipts()[0].block_root;
-
-    rig.on_gossip(&first);
-    let released = rig.drain();
-    assert_eq!(released.relays, [fulu_relayed(&first), fulu_relayed(&second)]);
-    let of_child =
-        released.receipts().into_iter().filter(|r| r.block_root == child).collect::<Vec<_>>();
-    assert_eq!(stages_of(&of_child), [BlockStage::Applied]);
+    for (path, source) in
+        [(Path::Gossip, BlockSource::Gossip), (Path::Local, BlockSource::LocalGossip)]
+    {
+        let mut rig = BlockPublications::new(&pre, &second, SyncUpdate::Following);
+        rig.on_block(path, &second);
+        let parked = rig.drain();
+        assert_eq!(stages_of(&parked.receipts()), [BlockStage::AwaitParent]);
+        assert!(parked.relays.is_empty());
+        rig.on_block(path, &first);
+        let released = rig.drain();
+        assert_eq!(released.relays, [fulu_relayed(&first), fulu_relayed(&second)]);
+        let child = block_root_fulu(&second);
+        assert!(
+            released
+                .receipts()
+                .iter()
+                .any(|r| r.block_root == child && r.stage == BlockStage::Applied)
+        );
+        assert!(parked.receipts().iter().chain(&released.receipts()).all(|r| r.source == source));
+    }
 }
 
 #[test]
@@ -314,4 +288,22 @@ fn a_replayed_block_reports_no_gossip() {
     let published = rig.drain();
     assert!(published.receipts().is_empty(), "replay emits no block receipts");
     assert!(published.relays.is_empty(), "replay requests no gossip relay");
+}
+
+#[test]
+fn local_same_root_blocks_complete_when_known_or_staged() {
+    for fixture in ["attestation", "one_blob"] {
+        let (pre, block) = sanity_fixture(fixture);
+        for first in [Path::Gossip, Path::Local] {
+            let mut rig = BlockPublications::new(&pre, &block, SyncUpdate::Following);
+            rig.on_block(first, &block);
+            let expected =
+                if fixture == "one_blob" { BlockStage::AwaitData } else { BlockStage::Applied };
+            assert_eq!(stages_of(&rig.drain().receipts()), [expected]);
+            rig.on_local_gossip(GossipTopic::BeaconBlock, &block);
+            let result = rig.drain();
+            assert_eq!(result.verdicts(), [Ok(())]);
+            assert!(result.relays.is_empty());
+        }
+    }
 }
