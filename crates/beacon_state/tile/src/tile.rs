@@ -750,7 +750,8 @@ impl BeaconStateTile {
         }
         self.fork_choice_tick();
         let floor = slot.saturating_sub(1);
-        self.attestation_pool.prune_before(floor);
+        let inclusion_floor = (slot / SLOTS_PER_EPOCH).saturating_sub(1) * SLOTS_PER_EPOCH;
+        self.attestation_pool.prune_before(inclusion_floor);
         self.sync_contribution_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);

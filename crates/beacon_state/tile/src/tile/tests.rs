@@ -3583,6 +3583,27 @@ fn agg_accept() {
     assert_eq!(voted_weight(&mut tile, beacon_block_root), MAX_EFFECTIVE_BALANCE);
 }
 
+#[test]
+fn agg_accept_pools_the_aggregate() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let buf = build_agg_for_vi0(&tile);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let data_root =
+        ssz_hash::hash_attestation_data(SignedAggregateAndProofView::agg_data(&buf).as_bytes());
+    let pooled = tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap();
+    assert_eq!(
+        AttestationView::aggregation_bits(&pooled),
+        SignedAggregateAndProofView::agg_aggregation_bits(&buf)
+    );
+    assert_eq!(
+        AttestationView::signature(&pooled),
+        SignedAggregateAndProofView::agg_signature(&buf)
+    );
+}
+
 /// `handle_attestation` derives the attester domain from the state's
 /// `genesis_validators_root` (through the tile's `ForkDataRoots`). Every
 /// other signing test runs with gvr = 0 (`seed_immutable`), so this is the
@@ -5264,6 +5285,121 @@ fn pooled_sync_messages_land_in_the_produced_block() {
     let post_state = *tile.block_production.state_ids_mut().next().unwrap();
     let balance_after = tile.state.read_view(post_state).balances.get(participant);
     assert!(balance_after > balance_before, "{balance_after} <= {balance_before}");
+}
+
+/// Fixture validator `vi` signs with the spec's test key `vi + 1`.
+#[cfg(feature = "ef_tests")]
+fn fixture_secret_key(vi: usize) -> blst::min_pk::SecretKey {
+    let mut scalar = [0u8; 32];
+    scalar[24..].copy_from_slice(&(vi as u64 + 1).to_be_bytes());
+    blst::min_pk::SecretKey::from_bytes(&scalar).unwrap()
+}
+
+/// Every member of the parent slot's first committee but one attests the
+/// parent, singly. The packed attestation carries their bits and verifies
+/// against the parent state. A larger vote with the wrong source is left out.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_attestations_land_in_the_produced_block() {
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let parent = tile.canonical_state_id();
+    let parent_root = tile.head_block_root();
+    let (att_slot, epoch) = (slot - 1, slot / SLOTS_PER_EPOCH);
+    assert_eq!(att_slot / SLOTS_PER_EPOCH, epoch, "fixture premise: one epoch");
+    let view = tile.state.read_view(parent);
+    assert_eq!(
+        fixture_secret_key(0).sk_to_pk().to_bytes(),
+        *view.validators.pubkey(0),
+        "fixture premise: spec test keys"
+    );
+    tile.shuffling_cache.ensure_window(&view, epoch);
+    let committee =
+        tile.shuffling_cache.lookup(&view, epoch).unwrap().committee(att_slot, 0).to_vec();
+    assert!(committee.len() > 1, "fixture premise: a committee to leave one out of");
+
+    let mut data = [0u8; ATTESTATION_DATA_SIZE];
+    let justified = view.epoch.state().current_justified_checkpoint;
+    let epoch_start = epoch * SLOTS_PER_EPOCH;
+    let target_root = if epoch_start < view.slot.slot_number() {
+        view.block_roots.at_slot(epoch_start)
+    } else {
+        parent_root
+    };
+    data[0..8].copy_from_slice(&att_slot.to_le_bytes());
+    data[16..48].copy_from_slice(&parent_root);
+    data[48..56].copy_from_slice(&justified.epoch.to_le_bytes());
+    data[56..88].copy_from_slice(&justified.root);
+    data[88..96].copy_from_slice(&epoch.to_le_bytes());
+    data[96..128].copy_from_slice(&target_root);
+    let data_root = ssz_hash::hash_attestation_data(&data);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        view.epoch.fork_version_at(epoch),
+        &view.imm.genesis_validators_root,
+    );
+    let signing_root = bls::compute_signing_root(&data_root, &domain);
+    let attesters = &committee[1..];
+    for (position, &vi) in committee.iter().enumerate().skip(1) {
+        let signature = fixture_secret_key(vi as usize).sign(&signing_root, bls::DST, &[]);
+        let mut single = [0u8; SINGLE_ATT_SIZE];
+        single[8..16].copy_from_slice(&(vi as u64).to_le_bytes());
+        single[16..144].copy_from_slice(&data);
+        single[144..].copy_from_slice(&signature.to_bytes());
+        let verified = bls::VerifiedSingleAttestation { data_root, signature };
+        tile.attestation_pool.insert_verified(&single, position, committee.len(), &verified);
+    }
+
+    let mut wrong_source = data;
+    wrong_source[56] ^= 1;
+    let data_root = ssz_hash::hash_attestation_data(&wrong_source);
+    for position in 0..committee.len() {
+        let mut single = [0u8; SINGLE_ATT_SIZE];
+        single[16..144].copy_from_slice(&wrong_source);
+        let signature = fixture_secret_key(0).sign(&signing_root, bls::DST, &[]);
+        let verified = bls::VerifiedSingleAttestation { data_root, signature };
+        tile.attestation_pool.insert_verified(&single, position, committee.len(), &verified);
+    }
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body = &header[12 + 84..];
+    let attestations = &body[BeaconBlockBodyFuluView::attestations_offset(body) as usize..
+        BeaconBlockBodyFuluView::deposits_offset(body) as usize];
+    let attestation = &attestations[4..];
+    assert_eq!(&attestations[..4], &4u32.to_le_bytes(), "one attestation");
+    assert_eq!(AttestationView::data(attestation).as_bytes(), &data, "not the wrong source");
+    assert_eq!(AttestationView::committee_bits(attestation), &1u64.to_le_bytes());
+
+    let view = tile.state.read_view(parent);
+    let shuffling = tile.shuffling_cache.build_ref(&view, epoch);
+    let mut sigs = bls::SigBatch::new();
+    stf::collect_sigs_attestations(
+        view.imm,
+        &view.epoch,
+        &view.validators,
+        attestations,
+        slot,
+        &shuffling,
+        &mut sigs,
+    )
+    .unwrap();
+    assert!(sigs.verify_all(), "the packed signature verifies");
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let post_state = tile.state.read_view(post_state);
+    assert_eq!(post_state.current_participation.get(committee[0] as usize), 0);
+    for &vi in attesters {
+        assert_ne!(post_state.current_participation.get(vi as usize), 0, "validator {vi}");
+    }
 }
 
 #[cfg(feature = "ef_tests")]
