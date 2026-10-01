@@ -845,12 +845,23 @@ impl BeaconStateTile {
         self.pending_envelopes.insert(block_root, acquired);
     }
 
-    pub(super) fn drain_pending_envelope(&mut self, block_root: B256, producers: &mut Producers) {
+    pub(super) fn drain_pending_envelope(
+        &mut self,
+        block_root: B256,
+        slot: Slot,
+        producers: &mut Producers,
+    ) {
         let Some(acquired) = self.pending_envelopes.remove(&block_root) else {
             return;
         };
 
         let Some((ssz, _)) = acquired.buffer().ok() else {
+            silver_log::warn!(
+                block = hex32(&block_root),
+                slot,
+                "parked envelope lapped; refetching"
+            );
+            producers.produce(SyncNeed::missing_envelope(block_root, slot));
             return;
         };
 

@@ -222,6 +222,7 @@ fn block_received(slot: u64, byte: u8, stage: BlockStage) -> BeaconStateEvent {
         stage,
         source: BlockSource::Gossip,
         parent_slot: Some(slot - 1),
+        parent_empty: false,
     }
 }
 

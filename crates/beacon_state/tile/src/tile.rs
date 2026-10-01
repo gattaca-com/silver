@@ -475,18 +475,8 @@ impl BeaconStateTile {
 
     fn status_payload(&mut self, head_root: B256, head_idx: usize) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
-        let node = self.fork_choice.node(head_idx);
-        let slot = node.slot;
-        let mut finalized = node.checkpoints.finalized;
-
-        if finalized.root == [0u8; 32] {
-            // Genesis placeholder: the head state's finalized root is zero until
-            // the first finalization, but peers (lighthouse/prysm) report the
-            // genesis *block* root from fork choice and reject a zero finalized
-            // root in Status validation. Mirror them — fork choice holds the
-            // trusted anchor root set at bootstrap.
-            finalized.root = self.fork_choice.finalized_checkpoint.root;
-        }
+        let slot = self.fork_choice.node(head_idx).slot;
+        let finalized = self.fork_choice.finalized_checkpoint;
 
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;
 

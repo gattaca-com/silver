@@ -1169,6 +1169,7 @@ pub enum BeaconStateEvent {
         // missing if we haven't seen the parent, which is then reported
         // separately as `RequestBlock`
         parent_slot: Option<u64>,
+        parent_empty: bool,
     },
     BlockRejected {
         block_root: [u8; 32],

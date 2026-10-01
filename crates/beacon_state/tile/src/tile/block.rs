@@ -34,7 +34,6 @@ pub(super) struct ParsedBlock {
 pub(super) struct AppliedBlock {
     id: StateId,
     justified: Checkpoint,
-    finalized: Checkpoint,
     unrealized: (Checkpoint, Checkpoint),
     execution_block_hash: B256,
     bid_block_hash: B256,
@@ -50,7 +49,7 @@ impl AppliedBlock {
         votes: stf::BlockVotes,
     ) -> Self {
         let es = fork.epoch_view().state();
-        let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
+        let justified = es.current_justified_checkpoint;
         // Spec `compute_pulled_up_tip`: the j/f this post-state would realize at
         // its epoch boundary, read-only on the live view.
         let unrealized = stf::unrealized_checkpoints(&fork.view, es, header.slot / SLOTS_PER_EPOCH);
@@ -64,8 +63,7 @@ impl AppliedBlock {
 
         Self {
             id: fork.commit(),
-            justified: checkpoints.0,
-            finalized: checkpoints.1,
+            justified,
             unrealized,
             execution_block_hash,
             bid_block_hash,
@@ -103,7 +101,6 @@ impl StagedBlock {
         let applied = AppliedBlock {
             id,
             justified: Checkpoint::default(),
-            finalized: Checkpoint::default(),
             unrealized: Default::default(),
             execution_block_hash: [0u8; 32],
             bid_block_hash: [0u8; 32],
@@ -238,7 +235,7 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
-        self.drain_pending_envelope(block_root, producers);
+        self.drain_pending_envelope(block_root, slot, producers);
         self.publish_status(producers);
 
         self.replay_orphans(block_root, producers);
@@ -440,8 +437,7 @@ impl BeaconStateTile {
     /// Run the per-block STF against a COW child of the parent post-state and
     /// commit it. Holds the `&mut self.state` borrow for the whole transition
     /// (ending at `commit`), then returns the committed `StateId`, the post-
-    /// state `(justified, finalized)` checkpoints, and the execution block
-    /// hash.
+    /// state justified checkpoint, and the execution block hash.
     #[timed]
     fn apply_stf_and_commit(
         &mut self,
@@ -503,7 +499,6 @@ impl BeaconStateTile {
         let AppliedBlock {
             id: new_id,
             justified,
-            finalized,
             unrealized,
             execution_block_hash,
             bid_block_hash,
@@ -535,7 +530,6 @@ impl BeaconStateTile {
             parent_root: parsed.header.parent_root,
             execution_block_hash,
             justified,
-            finalized,
             unrealized_justified: unrealized.0,
             unrealized_finalized: unrealized.1,
             state_id: new_id,

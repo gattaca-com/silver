@@ -148,10 +148,16 @@ impl Syncing {
             emit(SyncAction::DiscoverPeers);
             let (needs_outstanding, oldest) = ctx.root_requests.outstanding();
             let arrivals = window.seen_blocks(slot);
+            let (coverage, needs) = (window.coverage(slot), self.needs(ctx));
+            let owed: Vec<_> = DataKind::ALL
+                .into_iter()
+                .filter(|&kind| coverage.owes(kind, slot, needs))
+                .collect();
             silver_log::error!(
                 owed_from = slot,
+                ?owed,
                 applied_head = ctx.local.head_imported_slot,
-                coverage = ?window.coverage(slot),
+                ?coverage,
                 block_root = (arrivals.count > 0).then(|| hex32(&arrivals.root)),
                 blocks_seen = arrivals.count,
                 asked_for_blocks = ?self.inflight_span(DataKind::Block),

@@ -118,8 +118,13 @@ fn onboard_builders_from_pending_deposits(view: &mut StateWriterView) {
             view.pending.deposits.push(d);
             continue;
         }
-        if !is_valid_deposit_signature(&d.pubkey, &d.withdrawal_credentials, d.amount, &d.signature)
-        {
+        if !is_valid_deposit_signature(
+            view.imm.genesis_fork_version,
+            &d.pubkey,
+            &d.withdrawal_credentials,
+            d.amount,
+            &d.signature,
+        ) {
             continue;
         }
         view.builders.push(Builder {
@@ -141,6 +146,7 @@ fn pending_deposit_has_valid_sig(view: &StateWriterView, pubkey: &[u8; 48]) -> b
         let pd = q.get(i);
         pd.pubkey == *pubkey &&
             is_valid_deposit_signature(
+                view.imm.genesis_fork_version,
                 &pd.pubkey,
                 &pd.withdrawal_credentials,
                 pd.amount,

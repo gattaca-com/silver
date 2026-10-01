@@ -321,7 +321,7 @@ fn configured(spec: &SpecConfig) -> impl IntoIterator<Item = (&'static str, u64)
         ("SHARD_COMMITTEE_PERIOD", spec.shard_committee_period),
         ("MIN_VALIDATOR_WITHDRAWABILITY_DELAY", spec.min_validator_withdrawability_delay),
         ("MAX_SEED_LOOKAHEAD", spec.max_seed_lookahead),
-        ("MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA", spec.min_per_epoch_churn_limit),
+        ("MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA", spec.min_per_epoch_churn_limit_electra),
         (
             "MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT",
             spec.max_per_epoch_activation_exit_churn_limit,
@@ -632,7 +632,7 @@ mod tests {
     fn churn_and_penalty_scalars_are_served_under_their_fork_suffixed_names() {
         let spec: SpecConfig = toml::from_str(
             r#"
-            MIN_PER_EPOCH_CHURN_LIMIT = 7
+            MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA = 7
             MIN_SLASHING_PENALTY_QUOTIENT = 64
             INACTIVITY_PENALTY_QUOTIENT = 128
             PROPORTIONAL_SLASHING_MULTIPLIER = 5

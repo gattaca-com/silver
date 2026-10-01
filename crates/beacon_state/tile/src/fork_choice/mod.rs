@@ -73,7 +73,6 @@ pub struct BlockImport {
     pub parent_root: B256,
     pub execution_block_hash: B256,
     pub justified: Checkpoint,
-    pub finalized: Checkpoint,
     pub unrealized_justified: Checkpoint,
     pub unrealized_finalized: Checkpoint,
     pub state_id: StateId,
@@ -112,7 +111,6 @@ impl ForkChoice {
             empty: Branch::new_leaf(0),
             checkpoints: NodeCheckpoints {
                 justified: justified_checkpoint,
-                finalized: finalized_checkpoint,
                 unrealized_justified: justified_checkpoint,
             },
             // A pre-Gloas anchor is fully-resolved (full, verified); a Gloas
@@ -175,7 +173,6 @@ impl ForkChoice {
             empty: Branch::new_leaf(node_idx),
             checkpoints: NodeCheckpoints {
                 justified: b.justified,
-                finalized: b.finalized,
                 unrealized_justified: b.unrealized_justified,
             },
             payload: PayloadAxis {

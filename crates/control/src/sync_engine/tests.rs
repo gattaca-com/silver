@@ -1687,6 +1687,31 @@ fn envelopes_are_requested_alongside_blocks_in_gloas() {
     );
 }
 
+/// A child whose bid skips the parent's payload orphans that envelope: range
+/// servers follow the canonical chain and will never return it.
+#[test]
+fn empty_parent_owes_no_envelope() {
+    let now = Instant::now();
+    let mut e = gloas_engine(0, 0);
+    peer_status(&mut e, PEER, HEAD_ROOT, 200);
+    local_status(&mut e, 0, 200);
+    advance(&mut e);
+
+    block_at(&mut e, 1, Some(0));
+    e.on_beacon_state_event(&BeaconStateEvent::BlockReceived {
+        slot: 2,
+        block_root: [2; 32],
+        stage: BlockStage::Applied,
+        source: BlockSource::Rpc,
+        parent_slot: Some(1),
+        parent_empty: true,
+    });
+
+    let issued = drive_all(&mut e, now);
+    let (_, estart, _) = issued.envelope.expect("envelope range issued");
+    assert_eq!(estart, 2, "slot 1's payload is not on the chain");
+}
+
 #[test]
 fn no_envelopes_below_gloas_fork() {
     let now = Instant::now();

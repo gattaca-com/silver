@@ -96,7 +96,7 @@ pub(crate) fn get_balance_churn_limit(
         cfg.churn_limit_quotient
     };
     let total_active = slot.total_active_balance(current_epoch);
-    let churn = max(cfg.min_per_epoch_churn_limit, total_active / quotient);
+    let churn = max(cfg.min_per_epoch_churn_limit_electra, total_active / quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 

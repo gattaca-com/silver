@@ -179,9 +179,8 @@ impl DataColumnsTile {
         let block_root = block_root(buffer, is_gloas);
         self.validator.cache_parent_state_root(block_root, buffer);
 
-        // Trivial coverage: no commitments, so no columns are owed.
         if !has_columns {
-            producers.produce(DataColumnsEvent::Available { block_root, slot });
+            self.tracker.record_columnless(block_root, slot, producers);
             return None;
         }
 
@@ -822,10 +821,14 @@ impl DataColumnsTile {
                 match t_read.buffer() {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
-                        let block_root = block_root(buf, self.spec.is_gloas_at_slot(slot));
+                        let is_gloas = self.spec.is_gloas_at_slot(slot);
+                        let block_root = block_root(buf, is_gloas);
                         self.validator.cache_parent_state_root(block_root, buf);
+                        if !SignedBeaconBlockView::has_data_columns(buf, is_gloas) {
+                            self.tracker.record_columnless(block_root, slot, producers);
+                        }
 
-                        if self.spec.is_gloas_at_slot(slot) {
+                        if is_gloas {
                             self.validator.cache_gloas_commitments(block_root, buf);
                         } else if self.sync_state.is_synced() &&
                             slot > self.sync_state.data_availability_floor() &&
@@ -860,6 +863,11 @@ impl Tile<SilverSpine> for DataColumnsTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.reader.free();
         self.persist_reader.free();
+
+        adapter.consume(|sync_update: SyncUpdate, _| {
+            self.sync_state.set_sync_target(sync_update);
+        });
+
         if let Some(cells) = &mut self.cells {
             cells.advance(Instant::now(), self.sync_state.data_availability_floor());
             adapter.consume(|event: RetentionEvent, _| {
@@ -965,10 +973,6 @@ impl Tile<SilverSpine> for DataColumnsTile {
         if !self.kzg_batch.is_empty() || self.cells.as_ref().is_some_and(CellHandler::has_pending) {
             self.flush_kzg_batch(&mut adapter.producers);
         }
-
-        adapter.consume(|sync_update: SyncUpdate, _| {
-            self.sync_state.set_sync_target(sync_update);
-        });
 
         adapter.consume(|resp: EngineResp, _| {
             if let EngineResp::GetBlobs(r) = resp {
@@ -1279,6 +1283,7 @@ mod tests {
             stage,
             source: BlockSource::Rpc,
             parent_slot: None,
+            parent_empty: false,
         }
     }
 
@@ -1680,6 +1685,36 @@ mod tests {
 
         assert!(ret.is_none(), "no column tracking below the floor");
         assert_eq!(out.available + out.receipts.len() + out.engine + out.missing.len(), 0);
+    }
+
+    /// No peer can serve columns for a block without blobs, so its custody set
+    /// is complete on sight and the later import report must not chase it.
+    #[test]
+    fn blobless_block_completes_custody_without_a_chase() {
+        let mut rig = Rig::new(CUSTODY_COLUMNS);
+        rig.follow([0u8; 32]);
+
+        let mut block_bytes = blob_block_bytes(42);
+        block_bytes[184 + 392..184 + 396].copy_from_slice(&400u32.to_le_bytes());
+        let root = block_root(&block_bytes, false);
+        let (mut consumer, ssz) = produce_block(&block_bytes, "blobless_block_prod");
+        let read = consumer.acquire(ssz);
+
+        let ret = rig.tile.beacon_block(
+            P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRoot, true),
+            read,
+            &mut rig.conn.producers,
+        );
+        rig.tile.handle_beacon_state_event(
+            block_received(BlockStage::Applied, root, 42),
+            &mut rig.conn.producers,
+        );
+        let out = rig.drain();
+
+        assert!(ret.is_none());
+        assert_eq!(out.available, 1);
+        assert_eq!(out.custody_complete, 1, "the sync window learns the slot is covered");
+        assert!(out.missing.is_empty(), "no chase for columns that do not exist");
     }
 
     /// A known column answers an outstanding chase without trusting the

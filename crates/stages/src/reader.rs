@@ -215,7 +215,14 @@ mod tests {
         source: BlockSource,
         stage: BlockStage,
     ) -> BeaconStateEvent {
-        BeaconStateEvent::BlockReceived { slot, block_root: root, stage, source, parent_slot: None }
+        BeaconStateEvent::BlockReceived {
+            slot,
+            block_root: root,
+            stage,
+            source,
+            parent_slot: None,
+            parent_empty: false,
+        }
     }
 
     fn parked(root: [u8; 32], slot: u64, source: BlockSource) -> BeaconStateEvent {
