@@ -1,4 +1,7 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use serde::Deserialize;
 use silver_chain_spec::{ForkName, SpecConfig};
@@ -17,13 +20,21 @@ pub struct ChainOverrides {
     bootstrap_enrs: Option<Vec<Enr>>,
 }
 
+/// Where the node takes the state it boots on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BootSource {
+    /// A state file, booted from on every start: `checkpoint_file`, else a
+    /// devnet's `genesis.ssz`.
+    File { ssz: PathBuf, pubkeys: Option<PathBuf> },
+    /// The persisted checkpoint, downloaded from these Beacon API bases (e.g.
+    /// checkpointz instances) when missing or far behind.
+    Providers(Vec<String>),
+}
+
 #[derive(Clone, Debug)]
 pub struct ChainConfig {
     pub prepare_payload_lookahead_millis: u64,
-    pub checkpoint_file: Option<String>,
-    pub checkpoint_pubkeys_file: Option<String>,
-    /// Beacon API bases serving finalized states, e.g. checkpointz instances.
-    pub checkpoint_sync_urls: Vec<String>,
+    pub boot: BootSource,
     pub bootstrap_enrs: Vec<Enr>,
     pub spec: SpecConfig,
     pub data_dir: String,
@@ -40,6 +51,14 @@ impl ChainConfig {
             Some(enrs) => enrs.clone(),
             None => network.bootnodes()?,
         };
+        let boot = match (&overrides.checkpoint_file, &overrides.checkpoint_sync_urls) {
+            (Some(ssz), _) => BootSource::File {
+                ssz: ssz.into(),
+                pubkeys: overrides.checkpoint_pubkeys_file.as_ref().map(PathBuf::from),
+            },
+            (None, Some(urls)) => BootSource::Providers(urls.clone()),
+            (None, None) => network.boot_source()?,
+        };
         let spec = network.spec()?;
         let data_dir =
             data_dir.map_or_else(|| default_data_dir(&spec.network_name()), str::to_owned);
@@ -47,10 +66,7 @@ impl ChainConfig {
             prepare_payload_lookahead_millis: overrides
                 .prepare_payload_lookahead_millis
                 .unwrap_or(4000),
-            checkpoint_file: overrides.checkpoint_file.clone(),
-            checkpoint_pubkeys_file: overrides.checkpoint_pubkeys_file.clone(),
-            checkpoint_sync_urls: (overrides.checkpoint_sync_urls.clone())
-                .unwrap_or_else(|| network.checkpoint_sync_urls()),
+            boot,
             bootstrap_enrs,
             spec,
             data_dir,
