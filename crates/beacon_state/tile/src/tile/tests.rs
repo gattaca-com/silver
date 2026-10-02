@@ -144,6 +144,24 @@ fn make_tile_with_gossip(
     (tile, gossip, rpc)
 }
 
+fn slash_head(tile: &mut BeaconStateTile, validator: u32) {
+    let head = tile.canonical_state_id();
+    let validators = {
+        let mut state = tile.state.write();
+        let mut registry = state.validators.roll_from(head.validators_idx);
+        registry.set_slashed(validator, true);
+        registry.commit()
+    };
+    for id in tile.fork_choice.live_state_ids_mut() {
+        if *id == head {
+            id.validators_idx = validators;
+        }
+    }
+    if tile.last_applied == head {
+        tile.last_applied.validators_idx = validators;
+    }
+}
+
 /// Keeps the replay producer alive for tests that feed cached block bytes.
 fn make_tile_with_producers(
     wall_slot: u64,
@@ -1396,7 +1414,7 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| false);
     let Feedback::BlockImported(block_root) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
@@ -1426,7 +1444,7 @@ fn block_before_slot_tick_takes_proposer_boost() {
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| false);
 
     assert_eq!(feedback, Feedback::BlockImported(tile.fork_choice.proposer_boost_root));
 }
@@ -1586,7 +1604,8 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
         let pinned = tile.reader.acquire(read);
         let feedback =
             tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
-                relayed = true
+                relayed = true;
+                true
             });
 
         // The well-formed case still fails the STF (synthetic parent root), so
@@ -1678,7 +1697,8 @@ fn non_canonical_body_is_rejected_before_relay() {
         let pinned = tile.reader.acquire(read);
         let feedback =
             tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
-                relayed = true
+                relayed = true;
+                true
             });
 
         assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
@@ -1704,7 +1724,9 @@ fn block_at_the_finalized_start_slot_is_ignored() {
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
         let pinned = tile.reader.acquire(read);
         let feedback =
-            tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {});
+            tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
+                false
+            });
 
         assert_eq!(matches!(feedback, Feedback::Ignore), want_ignore, "slot {slot}: {feedback:?}");
     }
@@ -4640,25 +4662,45 @@ struct Relayed {
 struct GossipPublications {
     events: Vec<BeaconStateEvent>,
     relays: Vec<Relayed>,
+    relayed_slashings: Vec<Vec<u8>>,
+    originated: Vec<(GossipTopic, Vec<u8>)>,
+    invalid_msgs: usize,
 }
 
 impl GossipPublications {
-    fn drain(sink: &mut SpineAdapter<SilverSpine>, gossip: &mut TCacheReader) -> Self {
+    fn drain(
+        sink: &mut SpineAdapter<SilverSpine>,
+        gossip: &mut TCacheReader,
+        handoff: &mut TCacheReader,
+    ) -> Self {
         let mut events = Vec::new();
-        sink.consume(|event: BeaconStateEvent, _| events.push(event));
+        let mut originated = Vec::new();
+        sink.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::PublishGossip { topic, ssz } = event {
+                let bytes = handoff.acquire(ssz);
+                originated.push((topic, bytes.buffer().expect("originated bytes").0.to_vec()));
+            }
+            events.push(event)
+        });
         let mut relays = Vec::new();
+        let mut relayed_slashings = Vec::new();
+        let mut invalid_msgs = 0;
         sink.consume(|event: PeerEvent, _| match event {
             PeerEvent::SendGossip { topic, ssz, .. } => {
                 let relayed = gossip.acquire(ssz);
                 let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
                 match topic {
                     GossipTopic::BeaconBlock => relays.push(fulu_relayed(bytes)),
+                    GossipTopic::ProposerSlashing | GossipTopic::AttesterSlashing => {
+                        relayed_slashings.push(bytes.to_vec())
+                    }
                     _ => panic!("unexpected relay on {topic:?}"),
                 }
             }
+            PeerEvent::P2pGossipInvalidMsg { .. } => invalid_msgs += 1,
             _ => {}
         });
-        Self { events, relays }
+        Self { events, relays, relayed_slashings, originated, invalid_msgs }
     }
 
     fn verdicts(&self) -> Vec<Result<(), LocalGossipFailure>> {
@@ -4666,6 +4708,19 @@ impl GossipPublications {
             .iter()
             .filter_map(|event| match *event {
                 BeaconStateEvent::LocalGossipVerdict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn rejected(&self, block: &[u8]) -> Vec<BlockSource> {
+        let root = block_root_fulu(block);
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockRejected { block_root, source } if block_root == root => {
+                    Some(source)
+                }
                 _ => None,
             })
             .collect()
@@ -5146,7 +5201,7 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     assert_eq!(produced_states, usize::from(reuse_produced_state));
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| false);
     // Checked before a blob block is staged on its columns.
     assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
     assert_eq!(tile.block_production.state_ids_mut().count(), 0, "import takes the post-state");

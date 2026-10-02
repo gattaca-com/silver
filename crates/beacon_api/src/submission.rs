@@ -90,6 +90,9 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
             "the node does not know the attested block, its target or the committee"
         }
         LocalGossipFailure::Internal => "the node could not publish it",
+        LocalGossipFailure::SlashableAgainstPublicGossip => {
+            "slashable against a message from this validator already on the network"
+        }
     }
 }
 

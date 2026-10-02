@@ -20,6 +20,7 @@ use silver_common::{
         SingleAttestationView, SyncCommitteeView,
     },
 };
+use silver_slashing::SignedHeader;
 use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use super::{
@@ -1471,7 +1472,13 @@ impl BeaconStateTile {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
                 match self.admit_block(data, source) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
-                        Self::relay_gossip(&m, producers)
+                        Self::relay_gossip(&m, producers);
+                        if source == BlockSource::LocalGossip {
+                            self.detection.proposals.observe(
+                                SignedHeader::of_block(data, &parsed.header.body_root),
+                                true,
+                            );
+                        }
                     }
                     Ok(_) => {}
                     Err(Feedback::Reject(_)) => Self::reject_gossip(&m, producers),
@@ -1484,6 +1491,7 @@ impl BeaconStateTile {
                     if do_relay {
                         Self::relay_gossip(&m, p);
                     }
+                    do_relay
                 });
                 do_relay = false; // relayed on callback.
                 feedback
@@ -1534,9 +1542,11 @@ impl BeaconStateTile {
                 producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
                 Self::local_verdict(&m, feedback, producers);
             }
-            Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {
-                Self::local_verdict(&m, feedback, producers)
-            }
+            Feedback::Ignore |
+            Feedback::Slashable |
+            Feedback::AlreadySeen |
+            Feedback::TooOld |
+            Feedback::Future => Self::local_verdict(&m, feedback, producers),
             Feedback::BlockImported(_) | Feedback::AwaitData(_) | Feedback::BlockKnown(_) => {}
         }
         true
@@ -1579,6 +1589,7 @@ impl BeaconStateTile {
             // Already on the network is published, as fallback validator
             // clients that submit to several nodes rely on.
             Feedback::AlreadySeen => Ok(()),
+            Feedback::Slashable => Err(LocalGossipFailure::SlashableAgainstPublicGossip),
             Feedback::TooOld => Err(LocalGossipFailure::TooOld),
             Feedback::Future => Err(LocalGossipFailure::Future),
             _ => Err(LocalGossipFailure::Unverifiable),

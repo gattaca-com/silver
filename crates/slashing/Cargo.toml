@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+rustc-hash.workspace = true
 silver_beacon_state_data.workspace = true
 silver_ssz.workspace = true
 

@@ -267,6 +267,7 @@ pub enum LocalGossipFailure {
     Invalid,
     Unverifiable,
     Internal,
+    SlashableAgainstPublicGossip,
 }
 
 /// New decoded gossip message, either received from the network or injected

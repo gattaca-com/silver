@@ -237,7 +237,7 @@ impl BeaconStateTile {
             return true;
         }
 
-        let feedback = self.apply_block(data, &acquired, BlockSource::Rpc, producers, |_| {});
+        let feedback = self.apply_block(data, &acquired, BlockSource::Rpc, producers, |_| false);
         match feedback {
             Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),
@@ -247,6 +247,7 @@ impl BeaconStateTile {
             Feedback::AwaitData(_) |
             Feedback::BlockKnown(_) |
             Feedback::Ignore |
+            Feedback::Slashable |
             Feedback::AlreadySeen |
             Feedback::TooOld |
             Feedback::Future => {}

@@ -9,6 +9,7 @@ use silver_common::{
     SyncNeed, SyncUpdate, TCacheRead, TRead, hex32,
     ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
+use silver_slashing::SignedHeader;
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers, gossip::EnvelopeCheck,
@@ -127,7 +128,7 @@ impl BeaconStateTile {
         ssz: &TRead,
         source: BlockSource,
         producers: &mut Producers,
-        mut send_gossip: impl FnMut(&mut Producers),
+        mut send_gossip: impl FnMut(&mut Producers) -> bool,
     ) -> Feedback {
         if let Err(e) = Self::check_block_size(data) {
             silver_log::warn!(?source, "{e}");
@@ -137,8 +138,13 @@ impl BeaconStateTile {
         let slot = SignedBeaconBlockView::slot(data);
         let parsed = match self.admit_block(data, source) {
             Ok(parsed) => {
-                if parsed.relay_eligible {
-                    send_gossip(producers);
+                if parsed.relay_eligible &&
+                    send_gossip(producers) &&
+                    source == BlockSource::LocalGossip
+                {
+                    self.detection
+                        .proposals
+                        .observe(SignedHeader::of_block(data, &parsed.header.body_root), true);
                 }
                 parsed
             }
@@ -597,18 +603,11 @@ impl BeaconStateTile {
         })
     }
 
-    fn precheck_block(&mut self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
-        Self::check_block_size(data)?;
-
+    pub(super) fn decode_body<'a>(&self, data: &'a [u8]) -> Result<BodyOffsets<'a>, PrecheckError> {
+        debug_assert!(SignedBeaconBlockView::check_size(data));
         let block_slot = SignedBeaconBlockView::slot(data);
-        let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        let proposer_index = SignedBeaconBlockView::proposer_index(data);
-        let parent_root = *SignedBeaconBlockView::parent_root(data);
-        let state_root = *SignedBeaconBlockView::state_root(data);
-
         let body = SignedBeaconBlockView::body(data);
-
-        let is_gloas = self.spec.is_gloas_at(block_epoch);
+        let is_gloas = self.spec.is_gloas_at(block_slot / SLOTS_PER_EPOCH);
 
         let canonical = if is_gloas {
             BeaconBlockBodyGloasView::check_canonical(body)
@@ -620,8 +619,22 @@ impl BeaconStateTile {
         }
 
         let body_fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
-        let offsets = BodyOffsets::validated(body, body_fork)
-            .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
+        BodyOffsets::validated(body, body_fork)
+            .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })
+    }
+
+    fn precheck_block(&mut self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
+        Self::check_block_size(data)?;
+
+        let block_slot = SignedBeaconBlockView::slot(data);
+        let block_epoch = block_slot / SLOTS_PER_EPOCH;
+        let proposer_index = SignedBeaconBlockView::proposer_index(data);
+        let parent_root = *SignedBeaconBlockView::parent_root(data);
+        let state_root = *SignedBeaconBlockView::state_root(data);
+
+        let body = SignedBeaconBlockView::body(data);
+        let offsets = self.decode_body(data)?;
+        let is_gloas = offsets.fork() == BodyFork::Gloas;
         let (body_root, fork) = match self.built_body_hash(block_slot, body) {
             Some(hashed) => hashed,
             None => stf::hash_body(&offsets),

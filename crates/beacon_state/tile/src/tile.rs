@@ -20,7 +20,7 @@ use silver_common::{
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
 use silver_config::{PendingBounds, SyncingConfig};
-use silver_slashing::SlashingPool;
+use silver_slashing::{SlashingDetection, SlashingPool};
 
 use crate::{
     bls,
@@ -92,6 +92,8 @@ pub enum Feedback {
         att_slot: Slot,
     },
     Ignore,
+    /// Ignored: a local message slashable against one seen on public gossip.
+    Slashable,
     AlreadySeen,
     TooOld,
     Future,
@@ -105,6 +107,7 @@ impl Debug for Feedback {
             Self::Accept => f.write_str("Accept"),
             Self::BlockImported(r) => write!(f, "BlockImported(0x{})", hex32(r)),
             Self::Ignore => f.write_str("Ignore"),
+            Self::Slashable => f.write_str("Slashable"),
             Self::AlreadySeen => f.write_str("AlreadySeen"),
             Self::TooOld => f.write_str("TooOld"),
             Self::Future => f.write_str("Future"),
@@ -175,6 +178,7 @@ pub struct BeaconStateTile {
     seen_proposer_slashings: SeenIndices,
     seen_attester_slashed: SeenIndices,
     slashing_pool: SlashingPool,
+    detection: SlashingDetection,
     fork_data_roots: ForkDataRoots,
 
     /// Canonical in-process state: finalized base + per-fork per-tier rings.
@@ -248,6 +252,7 @@ impl BeaconStateTile {
         };
         let mut owner = BeaconStateOwner::new(state);
         let val_cap = owner.state().validators.finalized().capacity();
+        let detection = SlashingDetection::default();
         let (anchor, anchor_header) = Self::roll_anchor(&mut owner, expected_root);
         let mut tile = Self {
             sync_target: SyncUpdate::default(),
@@ -275,6 +280,7 @@ impl BeaconStateTile {
             seen_proposer_slashings: SeenIndices::new(val_cap),
             seen_attester_slashed: SeenIndices::new(val_cap),
             slashing_pool: SlashingPool::default(),
+            detection,
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
@@ -874,6 +880,7 @@ impl BeaconStateTile {
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, producers));
         self.flush_votes(&mut adapter.producers);
+        self.publish_slashings(&mut adapter.producers);
         self.reader.free();
 
         self.post_shufflings(&mut adapter.producers);
