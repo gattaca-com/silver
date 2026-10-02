@@ -1,4 +1,5 @@
 mod double_proposals;
+mod public_votes;
 mod slashing_detection;
 mod slashing_pool;
 

@@ -524,7 +524,7 @@ impl BeaconStateTile {
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
             if p.is_seen(self) {
-                Self::local_verdict(&m, Feedback::AlreadySeen, producers);
+                Self::local_verdict(&m, self.seen_vote_feedback(&m, p.message()), producers);
                 continue;
             }
             let (pk, root) = p.pubkey_and_root();
@@ -535,7 +535,13 @@ impl BeaconStateTile {
                 continue;
             }
             committed_ptc |= matches!(p, PreparedVote::Ptc(_));
-            match self.commit_vote(&p, &sig) {
+            let feedback = self.commit_vote(&p, &sig);
+            if let PreparedVote::Attestation(p) = &p &&
+                (m.stream_id != LOCAL_GOSSIP_STREAM_ID || feedback == Feedback::Accept)
+            {
+                self.detection.record_vote(&p.buf);
+            }
+            match feedback {
                 Feedback::Accept => {
                     Self::relay_gossip(&m, None, producers);
                     accepted = true;
@@ -593,6 +599,9 @@ impl BeaconStateTile {
                 Ok(p) => self.votes.prepared.push((BatchedVote { vote, pin }, p)),
                 Err(Feedback::Reject { reason, .. }) => {
                     self.reject_gossip(&vote, data, reason, producers)
+                }
+                Err(Feedback::AlreadySeen) => {
+                    Self::local_verdict(&vote, self.seen_vote_feedback(&vote, data), producers)
                 }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
@@ -2146,9 +2155,10 @@ impl BeaconStateTile {
             // Already on the network is published, as fallback validator
             // clients that submit to several nodes rely on.
             Feedback::AlreadySeen | Feedback::BlockKnown(_) => Ok(()),
-            Feedback::Slashable(Offence::DoubleProposal) => {
-                Err(LocalGossipFailure::ConflictingProposal)
-            }
+            Feedback::Slashable(offence) => Err(match offence {
+                Offence::DoubleProposal => LocalGossipFailure::ConflictingProposal,
+                Offence::DoubleVote => LocalGossipFailure::ConflictingAttestation,
+            }),
             Feedback::TooOld => Err(LocalGossipFailure::TooOld),
             Feedback::Future => Err(LocalGossipFailure::Future),
             _ => Err(LocalGossipFailure::Unverifiable),

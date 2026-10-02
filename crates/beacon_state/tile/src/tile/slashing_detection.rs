@@ -1,12 +1,14 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{Slot, StateReadView};
 use silver_common::{
-    BeaconStateEvent, BlockSource, GossipTopic, TCacheProducer, TProducer,
-    ssz_view::{ProposerSlashingView, SignedBeaconBlockView},
+    BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, TCacheProducer, TProducer,
+    ssz_view::{ProposerSlashingView, SignedBeaconBlockView, SingleAttestationView},
 };
 use silver_slashing::{Observation, Offence, SignedHeader};
 
-use super::{BeaconStateTile, Producers, block::ParsedBlock, seen_validators::SeenIndices};
+use super::{
+    BeaconStateTile, Feedback, Producers, block::ParsedBlock, seen_validators::SeenIndices,
+};
 use crate::error::PrecheckError;
 
 impl BeaconStateTile {
@@ -52,6 +54,30 @@ impl BeaconStateTile {
             Observation::Conflict { .. } => {
                 Err(PrecheckError::SecondProposal { slot, proposer_index })
             }
+        }
+    }
+
+    /// A local vote at a seen key is refused when it conflicts with a public
+    /// one. The API verified its signature under the spec's fork version, as
+    /// gossip verified the public one. Refusal needs the head to verify both
+    /// the same way.
+    pub(super) fn seen_vote_feedback(&self, m: &NewGossipMsg, vote: &[u8]) -> Feedback {
+        let (GossipTopic::BeaconAttestation(_), Ok(single)) = (m.topic, vote.try_into()) else {
+            return Feedback::AlreadySeen;
+        };
+        if !m.is_api_verified() {
+            return Feedback::AlreadySeen;
+        }
+        let head = self.state.read_view(self.canonical_state_id());
+        let verifiable =
+            |epoch| self.spec.fork_version_at(epoch) == head.epoch.fork_version_at(epoch);
+        match self.detection.conflicts_with_public(single, verifiable) {
+            Some(offence) => {
+                let validator_index = SingleAttestationView::attester_index(single);
+                refuse_local(offence, validator_index, SingleAttestationView::slot(single));
+                Feedback::Slashable(offence)
+            }
+            None => Feedback::AlreadySeen,
         }
     }
 
