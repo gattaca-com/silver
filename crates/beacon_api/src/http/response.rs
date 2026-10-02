@@ -117,6 +117,21 @@ impl<'a> Response<'a> {
         self.json_framed(200, &[], render);
     }
 
+    /// Discards the frame if rendering fails, including after a state-read
+    /// retry.
+    pub(crate) fn try_json_body<E>(
+        &mut self,
+        render: impl FnOnce(&mut Json<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let start = self.out.len();
+        let mut result = Ok(());
+        self.json_body(|json| result = render(json));
+        if result.is_err() {
+            self.out.truncate(start);
+        }
+        result
+    }
+
     pub(crate) fn versioned_json(&mut self, version: &str, render: impl FnOnce(&mut Json<'_>)) {
         self.json_framed(200, &[("Eth-Consensus-Version", version)], |json| {
             json.versioned_envelope(version, render)
@@ -254,6 +269,18 @@ mod tests {
         let earlier = out.len();
         Response::new(&mut out, &mut submissions()).json_body(|json| json.begin_array());
         assert!(out[earlier..].ends_with(b"Content-Length:                    1\r\n\r\n["));
+    }
+
+    #[test]
+    fn failed_json_render_leaves_only_the_error_response() {
+        let out = framed(|resp| {
+            let result = resp.try_json_body(|json| {
+                json.data_envelope(|json| json.u64(7));
+                Err("state changed")
+            });
+            resp.error(503, result.unwrap_err());
+        });
+        assert_eq!(out, framed(|resp| resp.error(503, "state changed")));
     }
 
     #[test]

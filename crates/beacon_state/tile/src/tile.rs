@@ -448,10 +448,9 @@ impl BeaconStateTile {
         // message, so no block or attestation pays a shuffle inline.
         let anchor_epoch = slot / SLOTS_PER_EPOCH;
         let view = self.state.read_view(anchor);
-        self.shuffling_cache.ensure_window(&view, anchor_epoch + 1);
-        self.shuffling_cache.ensure_window(&view, anchor_epoch);
-        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch + 1);
-        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch);
+        self.shuffling_cache.protect_head(&view);
+        self.shuffling_cache.precompute(&view, anchor_epoch + 1);
+        self.shuffling_cache.precompute(&view, anchor_epoch);
         self.fork_choice.justified.precompute(trusted, view.validators);
     }
 
@@ -663,9 +662,9 @@ impl BeaconStateTile {
     }
 
     fn post_shufflings(&mut self, producers: &mut Producers) {
-        let head_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
+        let view = self.state.read_view(self.last_applied);
         let producer = &mut self.events_producer;
-        self.shuffling_cache.post_fresh(head_epoch, producer, |event| producers.produce(event));
+        self.shuffling_cache.post_fresh(&view, producer, |event| producers.produce(event));
     }
 
     /// Covers changes since the last Status, including execution verdicts.
@@ -687,6 +686,7 @@ impl BeaconStateTile {
 
         let new_id = self.state_at(self.last_applied, target_slot);
         self.last_applied = new_id;
+        self.shuffling_cache.protect_head(&self.state.read_view(new_id));
         self.state.publish_state_id(new_id);
         // Empty-slot epoch transitions can advance justified/finalized in the
         // head post-state; reflect that in fork choice before finalizing.

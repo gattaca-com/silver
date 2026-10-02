@@ -32,8 +32,7 @@ impl SubmittedEntry for SubmittedAttestation {
     fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str> {
         let slot = self.data.slot;
         let committees_per_slot = ctx
-            .shufflings
-            .committees_per_slot(slot / SLOTS_PER_EPOCH)
+            .read_state(|view| ctx.shufflings.committees_per_slot(&view, slot / SLOTS_PER_EPOCH))
             .ok_or("no committee shuffling for the attestation's epoch")?;
         if self.committee_index >= committees_per_slot {
             return Err("committee_index is past the epoch's committee count");

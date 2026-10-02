@@ -3,7 +3,6 @@ use silver_beacon_state_data::{
     Epoch, RandaoMixesView, Slot, StateReadView, ValidatorsView, committee_range,
     committees_per_slot,
 };
-use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
 use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed};
 
@@ -11,10 +10,8 @@ use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed};
 pub struct EpochShuffling<'a> {
     shuffled: &'a [u32],
     pub committees_per_slot: usize,
-    /// Registry size the shuffle was taken against. Every index in `shuffled`
-    /// is below it, so one comparison against a later count proves the whole
-    /// shuffling is still addressable.
-    pub built_against: usize,
+    /// One past the largest shuffled validator index, or zero for an empty set.
+    pub required_validator_count: usize,
     /// One aggregate pubkey per beacon committee, indexed
     /// `slot_in_epoch * committees_per_slot + committee_index`; `None` until
     /// the aggregates have been precomputed for this epoch.
@@ -27,24 +24,24 @@ impl<'a> EpochShuffling<'a> {
         Self::from_views(&rv.validators, &rv.randao_mixes, epoch, buf)
     }
 
-    pub fn from_views(
+    pub(super) fn from_views(
         validators: &ValidatorsView,
         randao: &RandaoMixesView,
         epoch: Epoch,
         buf: &'a mut Vec<u32>,
     ) -> Self {
         let seed = Seed::from_randao(randao, epoch, DOMAIN_BEACON_ATTESTER);
-        let built_against = validators.count();
         validators.active_indices_into(epoch, buf);
+        let required_validator_count = buf.last().map_or(0, |&i| i as usize + 1);
         seed.shuffle(buf);
-        Self::new(buf, built_against)
+        Self::new(buf, required_validator_count)
     }
 
-    pub fn new(shuffled: &'a [u32], built_against: usize) -> Self {
+    pub(crate) fn new(shuffled: &'a [u32], required_validator_count: usize) -> Self {
         Self {
             shuffled,
             committees_per_slot: committees_per_slot(shuffled.len()),
-            built_against,
+            required_validator_count,
             committee_aggs: None,
         }
     }
@@ -54,38 +51,24 @@ impl<'a> EpochShuffling<'a> {
         shuffled: &'a [u32],
         committees_per_slot: usize,
     ) -> Self {
-        Self { shuffled, committees_per_slot, built_against: shuffled.len(), committee_aggs: None }
+        Self {
+            shuffled,
+            committees_per_slot,
+            required_validator_count: shuffled.iter().max().map_or(0, |&i| i as usize + 1),
+            committee_aggs: None,
+        }
     }
 
     pub fn indices_in_range(&self, validators_count: usize) -> bool {
-        self.built_against <= validators_count
+        self.required_validator_count <= validators_count
     }
 
-    pub fn with_committee_aggs(self, committee_aggs: Option<&'a [PublicKey]>) -> Self {
+    pub(crate) fn with_committee_aggs(self, committee_aggs: Option<&'a [PublicKey]>) -> Self {
         Self { committee_aggs, ..self }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.shuffled.is_empty() || self.committees_per_slot == 0
-    }
-
-    pub fn post(
-        &self,
-        epoch: Epoch,
-        producer: &mut TProducer,
-        emit: impl FnOnce(BeaconStateEvent),
-    ) -> bool {
-        let len = size_of_val(self.shuffled);
-        let Some(indices) = producer.write_with(len, |buffer| {
-            for (bytes, index) in buffer.chunks_exact_mut(size_of::<u32>()).zip(self.shuffled) {
-                bytes.copy_from_slice(&index.to_le_bytes());
-            }
-        }) else {
-            silver_log::warn!(epoch, len, "beacon_state tcache full; shuffling not posted");
-            return false;
-        };
-        emit(BeaconStateEvent::AttestersShuffling { epoch, indices });
-        true
     }
 
     /// Proportional split, so sizes differ by at most one and the committees

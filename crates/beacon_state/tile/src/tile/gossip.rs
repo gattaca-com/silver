@@ -192,12 +192,11 @@ impl BeaconStateTile {
             false
         };
 
-        let canon_id = self.canonical_state_id();
+        let canon_id = self.epoch_start_state(self.canonical_state_id(), att_slot);
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
         // Validate committee membership against the canonical head.
         let view = self.state.read_view(canon_id);
-        self.shuffling_cache.ensure_window(&view, att_epoch);
-        let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
+        let Some(shuffling) = self.shuffling_cache.get(&view, att_epoch) else {
             return Err(Feedback::Ignore);
         };
         if committee_index >= shuffling.committees_per_slot {
@@ -859,13 +858,12 @@ impl BeaconStateTile {
             return f;
         }
 
-        let canon_id = self.canonical_state_id();
+        let canon_id = self.epoch_start_state(self.canonical_state_id(), data.slot());
         let att_epoch = data.slot() / SLOTS_PER_EPOCH;
-        let n = self.head_validator_count();
         {
             let view = self.state.read_view(canon_id);
-            self.shuffling_cache.ensure_window(&view, att_epoch);
-            let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
+            let n = view.validators.count();
+            let Some(shuffling) = self.shuffling_cache.get(&view, att_epoch) else {
                 return Feedback::Ignore;
             };
             if stf::AttestedCommittees::new(att, &shuffling)
@@ -876,6 +874,7 @@ impl BeaconStateTile {
             }
         }
 
+        let n = self.state.read_view(canon_id).validators.count();
         self.record_attester_votes(data, n);
         Feedback::Accept
     }
@@ -946,15 +945,14 @@ impl BeaconStateTile {
             }
         }
 
-        let canon_id = self.canonical_state_id();
+        let canon_id = self.epoch_start_state(self.canonical_state_id(), parsed.agg_slot);
         let view = self.state.read_view(canon_id);
-        self.shuffling_cache.ensure_window(&view, parsed.att_epoch);
         let count = view.validators.count();
         if parsed.aggregator_index >= count {
             return Feedback::Reject(None);
         }
 
-        let Some(shuffling) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
+        let Some(shuffling) = self.shuffling_cache.get(&view, parsed.att_epoch) else {
             return Feedback::Ignore;
         };
         if committee_index >= shuffling.committees_per_slot {

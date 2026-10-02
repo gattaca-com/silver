@@ -95,7 +95,7 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
+    use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, ShufflingId, SpecConfig};
     use silver_common::SyncUpdate;
 
     use crate::ctx::{ApiCtx, test_ctx};
@@ -108,15 +108,16 @@ pub(crate) mod tests {
         let owner = BeaconStateOwner::published_empty_test(SLOT);
         let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status.target = Some(SyncUpdate::Following);
-        ctx.shufflings.record(SLOT / SLOTS_PER_EPOCH, &[0u8; ACTIVE * size_of::<u32>()]);
+        let id =
+            ctx.read_state(|view| ShufflingId::from_state(&view, SLOT / SLOTS_PER_EPOCH).unwrap());
+        ctx.shufflings.record(id, &[0u8; ACTIVE * size_of::<u32>()]);
         ctx
     }
 
     /// How many committees the posted active set shuffles into, which bounds
     /// the committee index a submission may name.
     pub(crate) fn posted_committees(ctx: &ApiCtx) -> u64 {
-        ctx.shufflings
-            .committees_per_slot(SLOT / SLOTS_PER_EPOCH)
+        ctx.read_state(|view| ctx.shufflings.committees_per_slot(&view, SLOT / SLOTS_PER_EPOCH))
             .expect("the fixture posts a shuffling")
     }
 }

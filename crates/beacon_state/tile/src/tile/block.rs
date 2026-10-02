@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     Error, bls,
-    error::{PrecheckError, RejectReason},
+    error::{BlockError, PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
     ssz_hash,
     stf::{self, BlockFork, BlockInput},
@@ -254,12 +254,11 @@ impl BeaconStateTile {
     /// Warm epoch `block_epoch + 1`'s attester shuffling and committee
     /// aggregates on the head post-state: its inputs (the `E-1` randao mix,
     /// the active set) are fixed once `block_epoch` begins, so the boundary
-    /// block's inline `ensure_window` becomes a cache hit and every block's
+    /// block's shuffling lookup becomes a cache hit and every block's
     /// `collect_sigs` gets the aggregate-subtract path.
     pub(super) fn precompute_next_epoch_shuffling(&mut self, block_epoch: Epoch) {
         let view = self.state.read_view(self.last_applied);
-        self.shuffling_cache.ensure_window(&view, block_epoch + 1);
-        self.shuffling_cache.try_cache_committee_aggs(&view, block_epoch + 1);
+        self.shuffling_cache.precompute(&view, block_epoch + 1);
     }
 
     pub(super) fn da_required(&self) -> bool {
@@ -456,12 +455,21 @@ impl BeaconStateTile {
         // Per-block attester shuffling against the pre-block state (active set
         // + seed for an epoch are fixed at its prior boundary). Done before
         // the held-writer view takes the `&mut self.state` borrow. Reuse the
-        // `(epoch, mix)`-keyed cache so consecutive same-epoch blocks skip the
+        // branch-aware cache so consecutive same-epoch blocks skip the
         // O(rounds·n) shuffle.
         let sref = {
             let view = self.state.read_view(parent);
-            self.shuffling_cache.ensure_window(&view, block_epoch);
-            self.shuffling_cache.build_ref(&view, block_epoch)
+            self.shuffling_cache.for_block(&view, block_epoch).ok_or_else(|| {
+                silver_log::error!(
+                    block_epoch,
+                    state_epoch = view.slot.current_epoch(),
+                    "block shuffling state is in the wrong epoch"
+                );
+                Error::invalid_block(parsed.header.state_root, BlockError::SlotStateMismatch {
+                    block: parsed.header.slot,
+                    state: view.slot.slot_number(),
+                })
+            })?
         };
 
         let body =
