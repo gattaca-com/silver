@@ -32,7 +32,8 @@ use crate::{
     counters::BeaconStateCounters,
     error::ExecutionPayloadBidError as BidError,
     fork_choice::{
-        ExecutionStatus, compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot,
+        ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
+        compute_shuffling_lookahead_start_slot,
     },
     merkle, ssz_hash,
     stf::{
@@ -627,64 +628,15 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let (parent_state, parent_payload) = (node.state_id, node.payload);
-        let full = {
-            let parent = self.state.read_view(parent_state);
-            let parent_epoch = parent.slot.state().slot / SLOTS_PER_EPOCH;
-            if bid_epoch > parent_epoch + MIN_SEED_LOOKAHEAD {
-                return Feedback::Ignore;
-            }
-
-            let Some(dependent_root) =
-                self.fork_choice.shuffling_dependent_root(&bid.parent_block_root, bid_epoch)
-            else {
-                return Feedback::Ignore;
-            };
-            let Some(prefs) = self.seen_proposer_preferences.get(bid.slot, &dependent_root) else {
-                return Feedback::Ignore;
-            };
-            if bid.fee_recipient != prefs.fee_recipient {
-                return Feedback::Ignore;
-            }
-
-            // Full: the bid builds on the parent's own payload. Empty: on the
-            // payload the parent itself built on, committed by an ancestor.
-            let full = bid.parent_block_hash == parent_payload.bid_block_hash;
-            if !full && bid.parent_block_hash != parent.slot.state().latest_block_hash {
-                return Feedback::Ignore;
-            }
-            let Some(owner_idx) = self.fork_choice.payload_owner(idx, &bid.parent_block_hash)
-            else {
-                return Feedback::Ignore;
-            };
-            let owner = self.fork_choice.node(owner_idx);
-            if !owner.payload.verified {
-                return Feedback::Ignore;
-            }
-            // Envelope verification pins a payload's gas limit to its block's
-            // committed bid; pre-Gloas the block carries the payload itself.
-            let owner_state = self.state.read_view(owner.state_id);
-            let owner_slot = owner_state.slot.state();
-            let parent_gas_limit = if owner.payload.is_gloas {
-                owner_slot.latest_execution_payload_bid.gas_limit
-            } else {
-                owner_slot.latest_execution_payload_header.gas_limit
-            };
-            if !is_gas_limit_target_compatible(
-                parent_gas_limit,
-                bid.gas_limit,
-                prefs.target_gas_limit,
-            ) {
-                return Feedback::Ignore;
-            }
-
-            if !self.is_bid_compatible_with_head(&bid) {
-                return Feedback::Ignore;
-            }
-
-            if bid.prev_randao != parent.randao_mixes.at_epoch(parent_epoch) {
-                return Feedback::Reject(None);
-            }
-            full
+        let full = match self.check_bid_against_parent_payload(
+            &bid,
+            parent_state,
+            &parent_payload,
+            bid_epoch,
+            idx,
+        ) {
+            Ok(full) => full,
+            Err(feedback) => return feedback,
         };
 
         // The spec checks the builder on `process_slots(parent, bid.slot)`.
@@ -734,6 +686,70 @@ impl BeaconStateTile {
 
         self.payload_bids_pool.add(bid, *signature);
         Feedback::Accept
+    }
+
+    /// Retunrs whetehr the parent payload was full or not.
+    fn check_bid_against_parent_payload(
+        &self,
+        bid: &ExecutionPayloadBid,
+        parent_state: StateId,
+        parent_payload: &PayloadAxis,
+        bid_epoch: u64,
+        idx: usize,
+    ) -> Result<bool, Feedback> {
+        let parent = self.state.read_view(parent_state);
+        let parent_epoch = parent.slot.state().slot / SLOTS_PER_EPOCH;
+        if bid_epoch > parent_epoch + MIN_SEED_LOOKAHEAD {
+            return Err(Feedback::Ignore);
+        }
+
+        let Some(dependent_root) =
+            self.fork_choice.shuffling_dependent_root(&bid.parent_block_root, bid_epoch)
+        else {
+            return Err(Feedback::Ignore);
+        };
+        let Some(prefs) = self.seen_proposer_preferences.get(bid.slot, &dependent_root) else {
+            return Err(Feedback::Ignore);
+        };
+        if bid.fee_recipient != prefs.fee_recipient {
+            return Err(Feedback::Ignore);
+        }
+
+        // Full: the bid builds on the parent's own payload. Empty: on the
+        // payload the parent itself built on, committed by an ancestor.
+        let full = bid.parent_block_hash == parent_payload.bid_block_hash;
+        if !full && bid.parent_block_hash != parent.slot.state().latest_block_hash {
+            return Err(Feedback::Ignore);
+        }
+        let Some(owner_idx) = self.fork_choice.payload_owner(idx, &bid.parent_block_hash) else {
+            return Err(Feedback::Ignore);
+        };
+        let owner = self.fork_choice.node(owner_idx);
+        if !owner.payload.verified {
+            return Err(Feedback::Ignore);
+        }
+        // Envelope verification pins a payload's gas limit to its block's
+        // committed bid; pre-Gloas the block carries the payload itself.
+        let owner_state = self.state.read_view(owner.state_id);
+        let owner_slot = owner_state.slot.state();
+        let parent_gas_limit = if owner.payload.is_gloas {
+            owner_slot.latest_execution_payload_bid.gas_limit
+        } else {
+            owner_slot.latest_execution_payload_header.gas_limit
+        };
+        if !is_gas_limit_target_compatible(parent_gas_limit, bid.gas_limit, prefs.target_gas_limit)
+        {
+            return Err(Feedback::Ignore);
+        }
+
+        if !self.is_bid_compatible_with_head(bid) {
+            return Err(Feedback::Ignore);
+        }
+
+        if bid.prev_randao != parent.randao_mixes.at_epoch(parent_epoch) {
+            return Err(Feedback::Reject(None));
+        }
+        Ok(full)
     }
 
     /// Spec `is_bid_compatible_with_head`.
