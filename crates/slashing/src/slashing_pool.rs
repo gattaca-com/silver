@@ -33,9 +33,26 @@ pub enum Admission {
     UnfinalizedSigner,
 }
 
-pub struct Selection<'a> {
-    pub proposer_slashings: Vec<&'a [u8; PROPOSER_SLASHING_SIZE]>,
-    pub attester_slashing: Option<&'a [u8]>,
+/// The SSZ lists a block body carries, reused across selections.
+#[derive(Default)]
+pub struct Selection {
+    proposer_slashings: Vec<u8>,
+    attester_slashings: Vec<u8>,
+}
+
+impl Selection {
+    pub fn proposer_slashings(&self) -> &[u8] {
+        &self.proposer_slashings
+    }
+
+    pub fn attester_slashings(&self) -> &[u8] {
+        &self.attester_slashings
+    }
+
+    pub fn clear(&mut self) {
+        self.proposer_slashings.clear();
+        self.attester_slashings.clear();
+    }
 }
 
 impl Default for SlashingPool {
@@ -85,41 +102,50 @@ impl SlashingPool {
     ///
     /// Proposer slashings apply first. An attester slashing must still slash
     /// someone afterward, or the block is invalid.
-    pub fn select(&self, pre_state: &StateReadView) -> Selection<'_> {
+    pub fn select(&self, pre_state: &StateReadView, into: &mut Selection) {
         let pre_state = ForkFacts::of(pre_state);
+        into.clear();
 
-        let mut ranked: Vec<_> = self
-            .proposer
-            .0
-            .iter()
-            .map(|p| (p.value(pre_state), p))
-            .filter(|&(balance, _)| balance > 0)
-            .collect();
-        ranked.sort_by_key(|&(balance, _)| Reverse(balance));
+        let mut ranked = [(Reverse(0), 0); PROPOSER_SLASHINGS_CAPACITY];
+        let mut ranked_len = 0;
+        for (i, p) in self.proposer.0.iter().enumerate() {
+            let balance = p.value(pre_state);
+            if balance > 0 {
+                ranked[ranked_len] = (Reverse(balance), i);
+                ranked_len += 1;
+            }
+        }
+        // Ties keep insertion order.
+        ranked[..ranked_len].sort_unstable();
 
-        let mut slashed = Vec::with_capacity(MAX_PROPOSER_SLASHINGS);
-        let mut proposer_slashings = Vec::with_capacity(MAX_PROPOSER_SLASHINGS);
-        for (_, p) in ranked {
-            if proposer_slashings.len() == MAX_PROPOSER_SLASHINGS {
+        let mut slashed = [0; MAX_PROPOSER_SLASHINGS];
+        let mut slashed_len = 0;
+        for &(_, i) in &ranked[..ranked_len] {
+            if slashed_len == MAX_PROPOSER_SLASHINGS {
                 break;
             }
-            if slashed.contains(&p.offender()) {
+            let p = &self.proposer.0[i];
+            if slashed[..slashed_len].contains(&p.offender()) {
                 continue;
             }
-            slashed.push(p.offender());
-            proposer_slashings.push(&p.ssz);
+            slashed[slashed_len] = p.offender();
+            slashed_len += 1;
+            into.proposer_slashings.extend_from_slice(&p.ssz);
         }
+        let slashed = &slashed[..slashed_len];
 
         let attester_slashing = self
             .attester
             .0
             .iter()
-            .map(|a| (a.value(pre_state, &slashed), a))
+            .map(|a| (a.value(pre_state, slashed), a))
             .filter(|&(balance, _)| balance > 0)
-            .max_by_key(|&(balance, _)| balance)
-            .map(|(_, a)| a.ssz.as_slice());
-
-        Selection { proposer_slashings, attester_slashing }
+            .max_by_key(|&(balance, _)| balance);
+        if let Some((_, a)) = attester_slashing {
+            let only_offset = size_of::<u32>() as u32;
+            into.attester_slashings.extend_from_slice(&only_offset.to_le_bytes());
+            into.attester_slashings.extend_from_slice(&a.ssz);
+        }
     }
 
     /// Retains proofs until all offenders are slashed or withdrawable in

@@ -1,9 +1,14 @@
 use blst::min_pk::{AggregateSignature, Signature};
 use rustc_hash::FxHashMap;
-use silver_beacon_state_data::{B256, SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot};
-use silver_common::{
-    SYNC_COMMITTEE_SUBNETS, metrics::timed, ssz_view::SYNC_COMMITTEE_CONTRIBUTION_SIZE,
+use silver_beacon_state_data::{
+    B256, SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot,
 };
+use silver_common::{
+    SYNC_COMMITTEE_SUBNETS,
+    metrics::timed,
+    ssz_view::{BLOCK_SYNC_AGGREGATE_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
+};
+use silver_ssz::block_body::EMPTY_SYNC_AGGREGATE;
 
 use super::attestation_pool::InsertOutcome;
 
@@ -81,6 +86,39 @@ impl SyncContributionPool {
     ) -> Option<PooledContribution<'_>> {
         let key = ContributionKey { slot, subcommittee_index, beacon_block_root };
         self.entries.get(&key).map(|entry| PooledContribution { key, entry })
+    }
+
+    /// The `SyncAggregate` of the messages for `beacon_block_root` at `slot`.
+    #[timed]
+    pub(super) fn write_sync_aggregate(
+        &self,
+        slot: Slot,
+        beacon_block_root: B256,
+        out: &mut [u8; BLOCK_SYNC_AGGREGATE_SIZE],
+    ) {
+        *out = EMPTY_SYNC_AGGREGATE;
+        let mut signature: Option<AggregateSignature> = None;
+        for subcommittee_index in 0..SYNC_COMMITTEE_SUBNETS {
+            let key = ContributionKey {
+                slot,
+                subcommittee_index: subcommittee_index as u64,
+                beacon_block_root,
+            };
+            let Some(entry) = self.entries.get(&key) else {
+                continue;
+            };
+            let bits = &mut out[subcommittee_index * AGGREGATION_BITS_BYTES..];
+            for (word, bytes) in entry.aggregation_bits.iter().zip(bits.as_chunks_mut().0) {
+                *bytes = word.to_le_bytes();
+            }
+            match &mut signature {
+                Some(signature) => signature.add_aggregate(&entry.signature),
+                None => signature = Some(entry.signature),
+            }
+        }
+        if let Some(signature) = signature {
+            out[SYNC_COMMITTEE_SIZE / 8..].copy_from_slice(&signature.to_signature().to_bytes());
+        }
     }
 
     #[timed]
@@ -262,6 +300,37 @@ mod tests {
             InsertOutcome::Duplicate
         );
         assert_eq!(pool.contribution_ssz(SLOT, SUBCOMMITTEE, BLOCK_ROOT).unwrap(), before);
+    }
+
+    #[test]
+    fn sync_aggregate_concatenates_subcommittees_for_its_root() {
+        let mut pool = SyncContributionPool::new();
+        assert_eq!(pool_aggregate(&pool), EMPTY_SYNC_AGGREGATE);
+
+        pool.insert_verified(SLOT, 0, BLOCK_ROOT, &positions(&[1]), &signature(0));
+        pool.insert_verified(SLOT, 2, BLOCK_ROOT, &positions(&[64]), &signature(1));
+        pool.insert_verified(SLOT, 1, [0xBC; 32], &positions(&[0]), &signature(2));
+        pool.insert_verified(SLOT + 1, 3, BLOCK_ROOT, &positions(&[0]), &signature(2));
+
+        let out = pool_aggregate(&pool);
+        let (bits, sig) = out.split_at(SYNC_COMMITTEE_SIZE / 8);
+        let mut expected_bits = [0u8; SYNC_COMMITTEE_SIZE / 8];
+        expected_bits[0] = 0b0000_0010;
+        expected_bits[2 * AGGREGATION_BITS_BYTES + 8] = 0b0000_0001;
+        assert_eq!(bits, expected_bits);
+
+        let sig = Signature::from_bytes(sig).unwrap();
+        let pks = [&test_signing::pubkey_pk(0), &test_signing::pubkey_pk(1)];
+        assert_eq!(
+            sig.fast_aggregate_verify(true, &SIGNING_ROOT, bls::DST, &pks),
+            BLST_ERROR::BLST_SUCCESS
+        );
+    }
+
+    fn pool_aggregate(pool: &SyncContributionPool) -> [u8; BLOCK_SYNC_AGGREGATE_SIZE] {
+        let mut out = [0; BLOCK_SYNC_AGGREGATE_SIZE];
+        pool.write_sync_aggregate(SLOT, BLOCK_ROOT, &mut out);
+        out
     }
 
     #[test]

@@ -105,12 +105,12 @@ impl ProduceBlockRequest {
             return resp.error(500, "the block could not be read");
         };
         let payload_value = wei_decimal(&block.execution_payload_value);
+        let block_value = wei_decimal(&block.consensus_block_value);
         let headers = [
             ("Eth-Consensus-Version", spec.fork_at_slot(self.slot).name()),
             ("Eth-Execution-Payload-Blinded", "false"),
             ("Eth-Execution-Payload-Value", payload_value.as_str()),
-            // TODO: The body packs nothing that pays the proposer yet.
-            ("Eth-Consensus-Block-Value", "0"),
+            ("Eth-Consensus-Block-Value", block_value.as_str()),
         ];
         let parts = [before_payload, payload.execution_payload, bls_changes, payload.after_payload];
         resp.send(200, Some(SSZ_MEDIA_TYPE), &headers, &parts);

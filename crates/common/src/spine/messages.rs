@@ -228,6 +228,8 @@ pub struct ProducedBlock {
     pub payload: TCacheRead,
     /// Little-endian wei.
     pub execution_payload_value: [u8; 32],
+    /// Little-endian wei.
+    pub consensus_block_value: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

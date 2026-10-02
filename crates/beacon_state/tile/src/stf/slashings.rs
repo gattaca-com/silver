@@ -83,12 +83,13 @@ pub fn process_proposer_slashings(
     epoch: EpochView,
     cfg: &SpecConfig,
     data: &[u8],
-) -> Result<(), ProposerSlashingError> {
+) -> Result<u64, ProposerSlashingError> {
     let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = view.validators.count();
     let proposer_index = get_beacon_proposer_index(&view.slot, epoch);
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let mut proposer_reward = 0;
     for i in 0..count {
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
@@ -112,9 +113,9 @@ pub fn process_proposer_slashings(
                 current_epoch,
             );
         }
-        slash_validator(cfg, view, vi, proposer_index);
+        proposer_reward += slash_validator(cfg, view, vi, proposer_index);
     }
-    Ok(())
+    Ok(proposer_reward)
 }
 
 fn clear_builder_payment_on_slash(
@@ -243,14 +244,15 @@ pub fn process_attester_slashings(
     cfg: &SpecConfig,
     data: &[u8],
     slashed_sink: &mut Vec<u32>,
-) -> Result<(), AttesterSlashingError> {
+) -> Result<u64, AttesterSlashingError> {
     if data.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let proposer_index = get_beacon_proposer_index(&view.slot, epoch);
     let n = view.validators.count();
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
 
+    let mut proposer_reward = 0;
     for_each_ssz_list_item(
         data,
         |start, end| AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() },
@@ -281,11 +283,12 @@ pub fn process_attester_slashings(
                 return Err(AttesterSlashingError::NoSlashedIntersection);
             }
             for &vi in &slashed_sink[start..] {
-                slash_validator(cfg, view, vi, proposer_index);
+                proposer_reward += slash_validator(cfg, view, vi, proposer_index);
             }
             Ok(())
         },
-    )
+    )?;
+    Ok(proposer_reward)
 }
 
 /// Gossip's dedup, ahead of any validity check: does the intersection of the
@@ -398,7 +401,13 @@ pub(crate) fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> 
     &slice[..whole]
 }
 
-fn slash_validator(cfg: &SpecConfig, view: &mut StateWriterView, vi: u32, proposer_index: u32) {
+/// Returns the proposer's reward.
+fn slash_validator(
+    cfg: &SpecConfig,
+    view: &mut StateWriterView,
+    vi: u32,
+    proposer_index: u32,
+) -> u64 {
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let effective_balance = view.validators.effective_balance(vi as usize);
 
@@ -438,6 +447,7 @@ fn slash_validator(cfg: &SpecConfig, view: &mut StateWriterView, vi: u32, propos
     let whistleblower_reward = effective_balance / WHISTLEBLOWER_REWARD_QUOTIENT;
     let bal_pi = view.balances.get(proposer_index as usize);
     view.balances.set(proposer_index, bal_pi.saturating_add(whistleblower_reward));
+    whistleblower_reward
 }
 
 pub(crate) fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {

@@ -544,14 +544,16 @@ fn apply_block_body(
     process_randao(view, offsets.fixed(), block_slot / SLOTS_PER_EPOCH);
     process_eth1_data(&mut view.slot, &mut view.eth1, offsets.fixed());
 
+    let mut proposer_reward = 0;
     if let Some(section) = offsets.proposer_slashings() {
-        process_proposer_slashings(&mut *view, epoch, cfg, section)?;
+        proposer_reward += process_proposer_slashings(&mut *view, epoch, cfg, section)?;
     }
     if let Some(section) = offsets.attester_slashings() {
-        process_attester_slashings(&mut *view, epoch, cfg, section, &mut out.slashed)?;
+        proposer_reward +=
+            process_attester_slashings(&mut *view, epoch, cfg, section, &mut out.slashed)?;
     }
     if let Some(section) = offsets.attestations() {
-        process_attestations(
+        proposer_reward += process_attestations(
             &mut *view,
             epoch,
             section,
@@ -579,8 +581,10 @@ fn apply_block_body(
         process_execution_requests(&mut *view, cfg, offsets.execution_requests());
     }
 
-    process_sync_aggregate(&mut *view, longtail, offsets.sync_aggregate(), proposer_index)?;
+    proposer_reward +=
+        process_sync_aggregate(&mut *view, longtail, offsets.sync_aggregate(), proposer_index)?;
 
+    out.proposer_reward = proposer_reward;
     Ok(())
 }
 
