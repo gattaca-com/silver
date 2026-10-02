@@ -3169,7 +3169,9 @@ fn ptc_requires_referenced_block_at_message_slot() {
 #[test]
 fn ptc_vote_records_every_matching_committee_position() {
     let slot = 31;
-    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+    let spec = SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let (mut tile, mut gp, _rp, _spine, mut adapter) =
+        tile_with_producers_on(slot, BeaconState::empty_test(0), spec);
     seed_tile_with_keys(&mut tile, 128, slot);
     adapter.consume(|_: PeerEvent, _| {});
     let root = tile.head_block_root();

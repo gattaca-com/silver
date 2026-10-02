@@ -13,7 +13,8 @@ use silver_common::{
         AttestationView, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView,
         BeaconBlockBodyGloasView, ExecutionPayloadBidView, ExecutionPayloadEnvelopeView,
         ExecutionPayloadView, IndexedAttestationView, PayloadAttestationView,
-        SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
+        ProposerPreferencesView, SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
+        SignedProposerPreferencesView,
     },
 };
 use silver_ssz::block_body::BeaconBlockBodyFulu;
@@ -187,6 +188,20 @@ fn gloas_attester_slashing() {
 fn gloas_execution_payload_bid() {
     run_ssz_static("gloas", "ExecutionPayloadBid", move |ssz| {
         ExecutionPayloadBidView::hash_tree_root(ssz)
+    });
+}
+
+#[test]
+fn gloas_proposer_preferences() {
+    run_ssz_static("gloas", "ProposerPreferences", move |ssz| {
+        ProposerPreferencesView::hash_tree_root(ssz.try_into().unwrap())
+    });
+}
+
+#[test]
+fn gloas_signed_proposer_preferences() {
+    run_ssz_static("gloas", "SignedProposerPreferences", move |ssz| {
+        SignedProposerPreferencesView::hash_tree_root(ssz.try_into().unwrap())
     });
 }
 

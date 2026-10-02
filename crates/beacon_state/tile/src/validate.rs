@@ -94,6 +94,24 @@ pub fn validate_voluntary_exit(
     exit_epoch: Epoch,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
+    validate_exit_eligibility(cfg, validators, vi, current_epoch)?;
+    if current_epoch < exit_epoch {
+        return Err(VoluntaryExitError::ExitEpochInFuture {
+            current: current_epoch,
+            exit: exit_epoch,
+        });
+    }
+    Ok(())
+}
+
+/// `process_voluntary_exit` minus its exit-epoch assert, which gossip checks
+/// against the wall clock instead.
+pub fn validate_exit_eligibility(
+    cfg: &SpecConfig,
+    validators: &ValidatorsView,
+    vi: u32,
+    current_epoch: Epoch,
+) -> Result<(), VoluntaryExitError> {
     let count = validators.count();
     if (vi as usize) >= count {
         return Err(VoluntaryExitError::ValidatorOutOfRange { vi: vi as usize, count });
@@ -106,12 +124,6 @@ pub fn validate_voluntary_exit(
     }
     if exit != u64::MAX {
         return Err(VoluntaryExitError::AlreadyExiting { vi: vi as usize, pubkey });
-    }
-    if current_epoch < exit_epoch {
-        return Err(VoluntaryExitError::ExitEpochInFuture {
-            current: current_epoch,
-            exit: exit_epoch,
-        });
     }
     if current_epoch < act + cfg.shard_committee_period {
         return Err(VoluntaryExitError::TooEarly { vi: vi as usize, pubkey });

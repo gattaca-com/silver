@@ -239,7 +239,7 @@ fn fulu_headers_use_snapshot_ancestry_and_validate_signature_and_inclusion() {
     let root = util::block_root_from_sidecar(&sidecar);
     let mut rig = Rig::with_state(1 << index, reader.clone(), SpecConfig {
         max_blobs_per_block_electra: 12,
-        blob_schedule: Vec::new(),
+        blob_schedule: ef_blob_schedule(CASE),
         ..fulu_from_genesis()
     });
     let data = ContextData::Fulu {

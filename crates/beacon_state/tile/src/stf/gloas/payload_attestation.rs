@@ -1,7 +1,7 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    EpochView, Immutable, SLOTS_PER_EPOCH, StateWriterView, ValidatorsView, gloas::PTC_SIZE,
+    Epoch, EpochView, Immutable, SLOTS_PER_EPOCH, StateWriterView, ValidatorsView, gloas::PTC_SIZE,
 };
 use silver_common::ssz_view::{
     PAYLOAD_ATTESTATION_SIZE, PayloadAttestationDataView, PayloadAttestationView,
@@ -58,12 +58,21 @@ pub fn collect_sigs_payload_attestations(
     imm: &Immutable,
     validators: &ValidatorsView,
     epoch: &EpochView,
+    gloas_fork_epoch: Epoch,
     state_slot: u64,
     section: &[u8],
     batch: &mut SigBatch,
 ) -> Result<(), E> {
     for pa in section.chunks_exact(PAYLOAD_ATTESTATION_SIZE) {
-        collect_sigs_payload_attestation(imm, validators, epoch, state_slot, pa, batch)?;
+        collect_sigs_payload_attestation(
+            imm,
+            validators,
+            epoch,
+            gloas_fork_epoch,
+            state_slot,
+            pa,
+            batch,
+        )?;
     }
     Ok(())
 }
@@ -73,6 +82,7 @@ fn collect_sigs_payload_attestation(
     imm: &Immutable,
     validators: &ValidatorsView,
     epoch: &EpochView,
+    gloas_fork_epoch: Epoch,
     state_slot: u64,
     pa: &[u8],
     batch: &mut SigBatch,
@@ -86,7 +96,7 @@ fn collect_sigs_payload_attestation(
     let signature = PayloadAttestationView::signature(pa);
     let pa_slot = PayloadAttestationDataView::slot(data);
 
-    let Some(ptc) = get_ptc(epoch, state_slot / SLOTS_PER_EPOCH, pa_slot) else {
+    let Some(ptc) = get_ptc(epoch, gloas_fork_epoch, state_slot / SLOTS_PER_EPOCH, pa_slot) else {
         return Err(E::BadSlot { slot: pa_slot, state: state_slot });
     };
     let pubkeys: Vec<&PublicKey> = (0..PTC_SIZE)

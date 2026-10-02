@@ -12,6 +12,7 @@ mod payload;
 mod tests;
 mod vote;
 
+pub(crate) use head::{compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot};
 pub use justified_balances::JustifiedBalances;
 pub use lookup::NodeLookup;
 use node::{Branch, NodeCheckpoints, PtcVotes};

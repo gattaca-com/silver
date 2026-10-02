@@ -316,7 +316,7 @@ impl BeaconStateTile {
                     silver_log::warn!("replayed on-disk envelope has unexpected withdrawals");
                     return;
                 }
-                self.fork_choice.mark_payload_verified(&block_root);
+                self.mark_envelope_verified(block_root, data);
                 self.recompute_head();
             }
             EnvelopeCheck::AwaitBlock(block_root) => silver_log::error!(

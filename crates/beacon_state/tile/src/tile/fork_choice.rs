@@ -194,7 +194,8 @@ impl BeaconStateTile {
 
         let rv = self.state.read_view(state_id);
         let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
-        let Some(ptc) = stf::get_ptc(&rv.epoch, state_epoch, slot) else {
+        let Some(ptc) = stf::get_ptc(&rv.epoch, self.spec.gloas_fork_epoch, state_epoch, slot)
+        else {
             return Err(Feedback::Ignore);
         };
         let mut ptc_positions = [0u64; crate::tile::gossip::PTC_MASK_WORDS];

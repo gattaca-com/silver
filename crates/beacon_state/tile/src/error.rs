@@ -202,6 +202,8 @@ pub enum ExecutionPayloadBidError {
     GenesisSlot,
     #[error("bid parent_block_hash does not match latest_block_hash")]
     ParentBlockHashMismatch,
+    #[error("bid block_hash equals its parent_block_hash")]
+    BlockHashIsParent,
     #[error("bid parent_block_root does not match block root at slot-1")]
     ParentBlockRootMismatch,
     #[error("bid prev_randao does not match the current randao mix")]

@@ -147,6 +147,12 @@ impl SlotTicker {
         self.millis_since_genesis().saturating_add(disparity_ms) < slot.saturating_mul(self.slot_ms)
     }
 
+    /// Spec `is_past_slot`: `slot` started more than `disparity` ago.
+    pub fn is_past_slot(&self, slot: Slot, disparity: Duration) -> bool {
+        let disparity_ms = u64::try_from(disparity.as_millis()).unwrap_or(u64::MAX);
+        self.millis_since_genesis() > slot.saturating_mul(self.slot_ms).saturating_add(disparity_ms)
+    }
+
     /// Spec `is_within_slot_range`: now lies in `[slot, slot + range]`, each
     /// end stretched by `disparity`.
     pub fn is_within_slot_range(&self, slot: Slot, range: u64, disparity: Duration) -> bool {

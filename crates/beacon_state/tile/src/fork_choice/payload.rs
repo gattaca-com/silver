@@ -88,6 +88,20 @@ impl ForkChoice {
         }
     }
 
+    /// The node at or above `idx` whose block committed to `block_hash`.
+    pub fn payload_owner(&self, mut idx: usize, block_hash: &B256) -> Option<usize> {
+        loop {
+            let n = &self.nodes[idx];
+            if n.payload.bid_block_hash == *block_hash {
+                return Some(idx);
+            }
+            if n.parent_ix == NULL {
+                return None;
+            }
+            idx = n.parent_ix;
+        }
+    }
+
     pub fn is_payload_verified(&self, block_root: &B256) -> bool {
         self.find_node_idx(block_root).is_some_and(|idx| self.nodes[idx].payload.verified)
     }

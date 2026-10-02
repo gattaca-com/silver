@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::PayloadResolution;
 
-use super::{vote::branch_voted_for, *};
+use super::{node::PTC_SIZE, vote::branch_voted_for, *};
 use crate::stf::VoteTarget;
 
 /// Opaque per-tier bundle for topology/weight tests that never resolve
@@ -882,6 +882,30 @@ fn gloas_tie_broken_by_should_extend_payload() {
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
+}
+
+/// Next slot: FULL unless a PTC majority voted the payload untimely or its
+/// data unavailable. Later slots: the head's resolution alone.
+#[test]
+fn should_build_on_full_follows_ptc_for_the_next_slot() {
+    let g = cp(0, 1);
+    let mut fc = anchored(8);
+    fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, true));
+    fc.on_block(gloas_block(1, root(3), root(1), g, g, PayloadStatus::Full, false));
+    fc.on_tick(1);
+    let (head, unverified) =
+        (fc.find_node_idx(&root(2)).unwrap(), fc.find_node_idx(&root(3)).unwrap());
+
+    assert!(fc.should_build_on_full(head, 2));
+    assert!(!fc.should_build_on_full(unverified, 2), "unverified payload resolves EMPTY");
+
+    for i in 0..PTC_SIZE / 2 {
+        fc.record_ptc_vote(&root(2), i, false, true);
+    }
+    assert!(fc.should_build_on_full(head, 2), "half untimely is not a majority");
+    fc.record_ptc_vote(&root(2), PTC_SIZE / 2, false, true);
+    assert!(!fc.should_build_on_full(head, 2));
+    assert!(fc.should_build_on_full(head, 3), "a later slot ignores the PTC");
 }
 
 /// Spec `get_shuffling_dependent_root`: the ancestor at the last slot of the
