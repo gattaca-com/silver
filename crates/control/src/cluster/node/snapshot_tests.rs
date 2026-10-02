@@ -2,7 +2,7 @@ use raft::{
     Storage,
     eraftpb::{HardState, MessageType, Snapshot},
 };
-use silver_common::ssz_view::SINGLE_ATT_SIZE;
+use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
 use crate::cluster::AttestationKey;
@@ -18,10 +18,14 @@ fn config(id: u64) -> SlashingProtectionConfig {
 }
 
 fn command(validator: u64, root: u8) -> AttestationLockCommand {
+    let slot = 100;
+    let mut ssz = [root; SINGLE_ATT_SIZE];
+    ssz[64..72].fill(0);
+    ssz[104..112].copy_from_slice(&(slot / SLOTS_PER_EPOCH).to_le_bytes());
     AttestationLockCommand {
-        key: AttestationKey { attester_index: validator, slot: 100 },
+        key: AttestationKey { attester_index: validator, slot },
         subnet: 0,
-        ssz: [root; SINGLE_ATT_SIZE],
+        ssz,
     }
 }
 
