@@ -8,7 +8,7 @@ use serde::Deserialize;
 use silver_chain_spec::SpecConfig;
 use silver_common::{Enr, Error};
 
-use crate::BootSource;
+use crate::{BootSource, Genesis};
 
 /// Independent operators, so agreement between them means something.
 const MAINNET_CHECKPOINT_SYNC_URLS: [&str; 5] = [
@@ -101,6 +101,23 @@ impl Network {
                     Error::ConfigError(format!("{} is not a spec config: {e}", path.display()))
                 })?
             }
+        })
+    }
+
+    /// A named network's state is told apart by its fork versions alone; a
+    /// devnet can reuse them across re-genesis, so its `genesis.ssz` decides.
+    pub fn devnet_genesis(&self) -> Result<Option<Genesis>, Error> {
+        let Self::Devnet(dir) = self else { return Ok(None) };
+        let genesis = dir.join("genesis.ssz");
+        genesis.exists().then(|| Genesis::from_state_file(&genesis)).transpose()
+    }
+
+    /// Devnets often share a `CONFIG_NAME` (ethpandaops' are all `testnet`),
+    /// so a devnet with a genesis is named after its root instead.
+    pub fn data_dir_name(&self, spec: &SpecConfig) -> Result<String, Error> {
+        Ok(match self.devnet_genesis()? {
+            Some(genesis) => format!("devnet-{}", hex::encode(&genesis.validators_root[..4])),
+            None => spec.network_name(),
         })
     }
 

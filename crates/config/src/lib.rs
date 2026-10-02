@@ -690,6 +690,6 @@ mod tests {
             ssz: dir.path().join("genesis.ssz"),
             pubkeys: None
         });
-        assert!(chain.data_dir.ends_with("/devnet-10000038"));
+        assert!(chain.data_dir.ends_with("/devnet-abababab"), "named after the genesis root");
     }
 }
