@@ -2,7 +2,7 @@ use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
     B256, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
     SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView,
-    SyncSubcommittee, gloas::PTC_SIZE,
+    SyncSubcommittee, Version, gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -56,8 +56,10 @@ pub(super) struct PreparedAttestation {
     signing_root: B256,
     data_root: B256,
     signature: CheckedSignature,
+    fork_version: Version,
     attester: u32,
     target: stf::VoteTarget,
+    local: bool,
 }
 
 pub(super) struct PreparedSyncMessage {
@@ -135,7 +137,7 @@ pub(super) struct BatchedVote {
 impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
-        let prepared = match self.prepare_attestation(data, subnet) {
+        let prepared = match self.prepare_attestation(data, subnet, false) {
             Ok(prepared) => prepared,
             Err(feedback) => return feedback,
         };
@@ -155,6 +157,7 @@ impl BeaconStateTile {
         &mut self,
         data: &[u8],
         subnet: u64,
+        local: bool,
     ) -> Result<PreparedAttestation, Feedback> {
         // Exact size: trailing bytes parse fine here (fixed-size prefix) but
         // strict-SSZ peers reject the relayed message — their P4 lands on us,
@@ -175,7 +178,7 @@ impl BeaconStateTile {
 
         self.seen_attesters.rotate_to(self.seen_window_epoch());
         if self.seen_attesters.contains(target_epoch, attester_index) {
-            return Err(Feedback::AlreadySeen);
+            return Err(if local { self.local_repeat_verdict(buf) } else { Feedback::AlreadySeen });
         }
 
         // Pre-Gloas single attestations encode the committee in
@@ -241,6 +244,7 @@ impl BeaconStateTile {
             signing_root,
             data_root,
             signature,
+            fork_version,
             attester: attester_index as u32,
             target: stf::VoteTarget {
                 block_root,
@@ -248,6 +252,7 @@ impl BeaconStateTile {
                 attestation_slot: att_slot,
                 payload_present,
             },
+            local,
         })
     }
 
@@ -280,6 +285,9 @@ impl BeaconStateTile {
         );
 
         self.seen_attesters.mark(p.target.target_epoch, p.attester as usize);
+        if !p.local {
+            self.detection.record_vote(&p.buf, p.fork_version);
+        }
     }
 
     pub(super) fn defer_vote(&mut self, vote: NewGossipMsg, producers: &mut Producers) {
@@ -318,7 +326,8 @@ impl BeaconStateTile {
             };
             let prepared = match vote.topic {
                 GossipTopic::BeaconAttestation(subnet) => {
-                    self.prepare_attestation(data, subnet).map(PreparedVote::Attestation)
+                    let local = vote.stream_id == LOCAL_GOSSIP_STREAM_ID;
+                    self.prepare_attestation(data, subnet, local).map(PreparedVote::Attestation)
                 }
                 GossipTopic::SyncCommittee(subnet) => {
                     self.prepare_sync_message(data, subnet).map(PreparedVote::SyncMessage)
@@ -367,7 +376,11 @@ impl BeaconStateTile {
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
             if p.is_seen(self) {
-                Self::local_verdict(&m, Feedback::AlreadySeen, producers);
+                let feedback = match &p {
+                    PreparedVote::Attestation(p) if p.local => self.local_repeat_verdict(&p.buf),
+                    _ => Feedback::AlreadySeen,
+                };
+                Self::local_verdict(&m, feedback, producers);
                 continue;
             }
             let (pk, sig, root) = p.sig_parts();

@@ -4664,6 +4664,7 @@ struct GossipPublications {
     relays: Vec<Relayed>,
     relayed_slashings: Vec<Vec<u8>>,
     originated: Vec<(GossipTopic, Vec<u8>)>,
+    relayed_votes: usize,
     invalid_msgs: usize,
 }
 
@@ -4685,6 +4686,7 @@ impl GossipPublications {
         let mut relays = Vec::new();
         let mut relayed_slashings = Vec::new();
         let mut invalid_msgs = 0;
+        let mut relayed_votes = 0;
         sink.consume(|event: PeerEvent, _| match event {
             PeerEvent::SendGossip { topic, ssz, .. } => {
                 let relayed = gossip.acquire(ssz);
@@ -4694,13 +4696,16 @@ impl GossipPublications {
                     GossipTopic::ProposerSlashing | GossipTopic::AttesterSlashing => {
                         relayed_slashings.push(bytes.to_vec())
                     }
+                    GossipTopic::BeaconAttestation(_) | GossipTopic::BeaconAggregateAndProof => {
+                        relayed_votes += 1
+                    }
                     _ => panic!("unexpected relay on {topic:?}"),
                 }
             }
             PeerEvent::P2pGossipInvalidMsg { .. } => invalid_msgs += 1,
             _ => {}
         });
-        Self { events, relays, relayed_slashings, originated, invalid_msgs }
+        Self { events, relays, relayed_slashings, originated, invalid_msgs, relayed_votes }
     }
 
     fn verdicts(&self) -> Vec<Result<(), LocalGossipFailure>> {
@@ -4745,6 +4750,7 @@ fn fulu_relayed(bytes: &[u8]) -> Relayed {
 
 #[cfg(feature = "ef_tests")]
 mod block_relay;
+mod slashable_votes;
 
 fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
     let mut topics = Vec::new();

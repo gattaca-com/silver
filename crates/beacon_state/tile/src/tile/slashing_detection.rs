@@ -2,14 +2,16 @@ use flux::spine::SpineProducers;
 use silver_beacon_state_data::{Slot, StateReadView};
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, TCacheProducer, TProducer,
-    ssz_view::{ProposerSlashingView, SignedBeaconBlockView},
+    ssz_view::{
+        ProposerSlashingView, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
+    },
 };
 use silver_slashing::{Observation, Offence, SignedHeader};
 
 use super::{
     BeaconStateTile, Feedback, Producers, block::ParsedBlock, seen_validators::SeenIndices,
 };
-use crate::error::PrecheckError;
+use crate::{bls, error::PrecheckError, ssz_hash};
 
 impl BeaconStateTile {
     /// Closed gossip keys cannot add evidence, so they skip hashing and BLS.
@@ -94,6 +96,21 @@ impl BeaconStateTile {
         }
     }
 
+    /// A local vote at a seen key. Only one conflicting with a public vote has
+    /// its signature checked, to tell a refusal from garbage.
+    pub(super) fn local_repeat_verdict(&self, single: &[u8; SINGLE_ATT_SIZE]) -> Feedback {
+        let head = self.state.read_view(self.canonical_state_id());
+        let signing_version = |epoch| head.epoch.fork_version_at(epoch);
+        match self.detection.conflicts_with_public(single, signing_version) {
+            None => Feedback::AlreadySeen,
+            Some(_) if !verifies_in_view(&head, single) => Feedback::Reject(None),
+            Some(offence) => {
+                let validator_index = SingleAttestationView::attester_index(single);
+                Self::refuse_local(offence, validator_index, SingleAttestationView::slot(single))
+            }
+        }
+    }
+
     pub(super) fn refuse_local(offence: Offence, validator_index: u64, slot: Slot) -> Feedback {
         silver_log::error!(
             ?offence,
@@ -118,6 +135,25 @@ fn publish_gossip(
     };
     producers.produce(BeaconStateEvent::PublishGossip { topic, ssz: ssz_read });
     true
+}
+
+// Activation requires finalization, so an active attester's key is stable
+// across forks.
+fn verifies_in_view(head: &StateReadView<'_>, single: &[u8; SINGLE_ATT_SIZE]) -> bool {
+    let validator_index = SingleAttestationView::attester_index(single) as usize;
+    if validator_index >= head.validators.count() {
+        return false;
+    }
+    let data = SingleAttestationView::data(single);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        head.epoch.fork_version_at(data.target_epoch()),
+        &head.imm.genesis_validators_root,
+    );
+    let signing_root =
+        bls::compute_signing_root(&ssz_hash::hash_attestation_data(data.as_bytes()), &domain);
+    let pubkey = head.validators.pubkey_decompressed(validator_index);
+    bls::verify_one(pubkey, SingleAttestationView::signature(single), &signing_root)
 }
 
 /// Spec `is_slashable_validator` at the head's epoch, for a validator no seen

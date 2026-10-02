@@ -1,5 +1,5 @@
-use silver_slashing::{DoubleProposals, Observation, SignedHeader};
-use silver_ssz::ssz_view::{ProposerSlashingView, SIGNED_BEACON_BLOCK_MIN};
+use silver_slashing::{DoubleProposals, Observation, Offence, SignedHeader, SlashingDetection};
+use silver_ssz::ssz_view::{ProposerSlashingView, SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE};
 
 #[test]
 fn proposals_remain_reportable_until_queued_and_prune_only_finalized_keys() {
@@ -35,4 +35,36 @@ fn header(index: u64, slot: u64, tag: u8) -> SignedHeader {
     block[100..108].copy_from_slice(&slot.to_le_bytes());
     block[108..116].copy_from_slice(&index.to_le_bytes());
     SignedHeader::of_block(&block, &[tag; 32])
+}
+
+const VERSION: [u8; 4] = [1, 0, 0, 0];
+
+fn vote(index: u64, source: u64, target: u64) -> [u8; SINGLE_ATT_SIZE] {
+    let mut ssz = [0; SINGLE_ATT_SIZE];
+    ssz[8..16].copy_from_slice(&index.to_le_bytes());
+    ssz[16..24].copy_from_slice(&(target * 32).to_le_bytes());
+    ssz[64..72].copy_from_slice(&source.to_le_bytes());
+    ssz[104..112].copy_from_slice(&target.to_le_bytes());
+    ssz
+}
+
+#[test]
+fn local_vote_conflicts_with_retained_public_votes() {
+    let mut detection = SlashingDetection::default();
+    let public = vote(7, 0, 2);
+    let mut next_slot = vote(7, 1, 2);
+    next_slot[16..24].copy_from_slice(&65u64.to_le_bytes());
+    let conflict = |detection: &SlashingDetection, version| {
+        detection.conflicts_with_public(&next_slot, |_| version)
+    };
+    detection.record_vote(&public, VERSION);
+    assert_eq!(conflict(&detection, VERSION), Some(Offence::DoubleVote), "either slot");
+    assert_eq!(detection.conflicts_with_public(&public, |_| VERSION), None, "a repeat");
+    assert_eq!(conflict(&detection, [2; 4]), None, "another fork version");
+    for slot in [66u64, 67] {
+        let mut later = vote(8, 0, 2);
+        later[16..24].copy_from_slice(&slot.to_le_bytes());
+        detection.record_vote(&later, VERSION);
+    }
+    assert_eq!(conflict(&detection, VERSION), None, "two newer slots evict it");
 }
