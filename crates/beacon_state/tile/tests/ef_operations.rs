@@ -1,5 +1,7 @@
 #![cfg(feature = "ef_tests")]
 
+use std::{fs, path::Path};
+
 mod ef_common;
 
 use ef_common::{
@@ -24,6 +26,15 @@ fn operations_handler(
     operations_handler_fork("fulu", handler_name, operation_file, detects_reject, run);
 }
 
+/// One integer key of the case's `config.yaml`. The whole file does not load:
+/// it writes values wider than any YAML number type.
+fn config_u64(dir: &Path, key: &str) -> Option<u64> {
+    let yaml = fs::read_to_string(dir.join("config.yaml")).ok()?;
+    yaml.lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
+        .and_then(|value| value.trim().parse().ok())
+}
+
 fn gloas_cfg() -> silver_beacon_state_data::SpecConfig {
     let mut cfg = silver_beacon_state_data::SpecConfig::mainnet();
     cfg.gloas_fork_epoch = 0;
@@ -36,6 +47,20 @@ fn operations_handler_fork(
     operation_file: &str,
     detects_reject: bool,
     run: impl Fn(&mut LoadedState, &[u8]) -> bool,
+) {
+    operations_handler_cases(fork, handler_name, operation_file, detects_reject, |_, s, op| {
+        run(s, op)
+    });
+}
+
+/// `run` also gets the case directory, for cases whose `config.yaml` departs
+/// from `gloas_cfg`.
+fn operations_handler_cases(
+    fork: &str,
+    handler_name: &str,
+    operation_file: &str,
+    detects_reject: bool,
+    run: impl Fn(&Path, &mut LoadedState, &[u8]) -> bool,
 ) {
     let base =
         spec_tests_dir().join("tests/mainnet").join(fork).join("operations").join(handler_name);
@@ -70,7 +95,7 @@ fn operations_handler_fork(
             // Expected-reject case: op must be rejected and pre-state
             // must not be mutated past the rejection point.
             let mut pre_snapshot = loader(&pre_path);
-            let accepted = run(&mut pre, &op_ssz);
+            let accepted = run(dir, &mut pre, &op_ssz);
             if accepted {
                 fail += 1;
                 eprintln!("{name}: expected reject, but op was accepted");
@@ -89,7 +114,7 @@ fn operations_handler_fork(
             continue;
         }
 
-        let accepted = run(&mut pre, &op_ssz);
+        let accepted = run(dir, &mut pre, &op_ssz);
         if !accepted {
             fail += 1;
             eprintln!("{name}: expected accept, but op was rejected");
@@ -518,12 +543,13 @@ fn gloas_parent_execution_payload() {
 
 #[test]
 fn gloas_payload_attestation() {
-    operations_handler_fork(
+    operations_handler_cases(
         "gloas",
         "payload_attestation",
         "payload_attestation",
         true,
-        |s, op| {
+        |dir, s, op| {
+            let gloas_fork_epoch = config_u64(dir, "GLOAS_FORK_EPOCH").unwrap_or(0);
             let state_slot = s.slot();
             let mut batch = SigBatch::new();
             {
@@ -534,6 +560,7 @@ fn gloas_payload_attestation() {
                     p.imm,
                     &p.validators.reader(),
                     &epoch_view,
+                    gloas_fork_epoch,
                     state_slot,
                     op,
                     &mut batch,

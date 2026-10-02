@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{
-    EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, RandaoMixesView, SLOTS_PER_EPOCH,
+    Epoch, EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, RandaoMixesView, SLOTS_PER_EPOCH,
     StateWriterView, ValidatorsView,
     gloas::{PTC_SIZE, PtcCommittee},
 };
@@ -10,10 +10,14 @@ const SPE: usize = SLOTS_PER_EPOCH as usize;
 
 pub(crate) fn get_ptc<'a>(
     epoch: &EpochView<'a>,
+    gloas_fork_epoch: Epoch,
     state_epoch: u64,
     slot: u64,
 ) -> Option<&'a PtcCommittee> {
     let target_epoch = slot / SLOTS_PER_EPOCH;
+    if target_epoch < gloas_fork_epoch {
+        return None;
+    }
     let idx = if target_epoch < state_epoch {
         if target_epoch + 1 != state_epoch {
             return None;

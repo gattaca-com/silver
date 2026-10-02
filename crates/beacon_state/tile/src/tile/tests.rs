@@ -954,7 +954,7 @@ fn head_change_is_classified_against_the_last_complete_status() {
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().changes(), [HeadChange::Head]);
 
-    rig.tile.fork_choice.mark_payload_verified(&A_ROOT, Box::default());
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     assert_eq!(rig.crank().changes(), [HeadChange::Payload]);
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
@@ -1095,7 +1095,7 @@ fn payload_verification_and_execution_validation_update_the_head_independently()
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().last_head(), head_a_empty(true));
 
-    rig.tile.fork_choice.mark_payload_verified(&A_ROOT, Box::default());
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     let events = rig.crank();
     assert_eq!(events.last_head(), head_a(true));
     assert!(events.reorgs().is_empty(), "the head block did not move");
@@ -3165,7 +3165,9 @@ fn ptc_requires_referenced_block_at_message_slot() {
 #[test]
 fn ptc_vote_records_every_matching_committee_position() {
     let slot = 31;
-    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
+    let spec = SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let (mut tile, mut gp, _rp, _spine, mut adapter) =
+        tile_with_producers_on(slot, BeaconState::empty_test(0), spec);
     seed_tile_with_keys(&mut tile, 128, slot);
     adapter.consume(|_: PeerEvent, _| {});
     let root = tile.head_block_root();

@@ -1006,7 +1006,7 @@ impl Tile<SilverSpine> for DataColumnsTile {
 mod tests {
     use std::{io::Write, path::Path};
 
-    use silver_beacon_state_data::{BeaconState, BeaconStateOwner, ForkName};
+    use silver_beacon_state_data::{BeaconState, BeaconStateOwner, BlobParameters, ForkName};
     use silver_common::{
         BlockSource, BlockStage, EngineGetBlobsResp, EngineReq, HeadChange, MESSAGE_ID_LEN,
         MessageId, Nanos, P2pStreamId, PayloadResolution, StreamProtocol, TCache, TCacheId,
@@ -1317,6 +1317,32 @@ mod tests {
             snap::raw::Decoder::new().decompress_vec(&compressed).expect("decode EF fixture")
         };
         Some((decode(sidecar), decode(&directory.join("state.ssz_snappy"))))
+    }
+
+    /// The case's `BLOB_SCHEDULE`. The whole `config.yaml` does not parse: it
+    /// writes integers wider than any YAML number type.
+    fn ef_blob_schedule(case: &str) -> Vec<BlobParameters> {
+        let config = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu")
+            .join(case)
+            .join("config.yaml");
+        let yaml = std::fs::read_to_string(config).unwrap_or_default();
+        let entries = yaml
+            .lines()
+            .skip_while(|line| !line.starts_with("BLOB_SCHEDULE:"))
+            .skip(1)
+            .take_while(|line| line.starts_with([' ', '-']));
+        let mut schedule = Vec::new();
+        for line in entries {
+            let (key, value) = line.trim_start_matches([' ', '-']).split_once(':').unwrap();
+            let value = value.trim().parse().unwrap();
+            match key {
+                "EPOCH" => schedule.push(BlobParameters { epoch: value, max_blobs_per_block: 0 }),
+                "MAX_BLOBS_PER_BLOCK" => schedule.last_mut().unwrap().max_blobs_per_block = value,
+                other => panic!("unexpected BLOB_SCHEDULE key {other}"),
+            }
+        }
+        schedule
     }
 
     fn reader_over(state_ssz: &[u8]) -> BeaconStateReader {

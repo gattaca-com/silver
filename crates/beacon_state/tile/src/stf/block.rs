@@ -490,7 +490,7 @@ pub fn process_block_body(
     if let Some(sig_batch) = sig_batch {
         sig_batch.clear();
         // Pass 1 is read-only: hand it the read-only sibling over the same fork.
-        collect_sigs_block_body(&fork.read(), &mut scratch.active, sig_batch, offsets, input)?;
+        collect_sigs_block_body(cfg, &fork.read(), &mut scratch.active, sig_batch, offsets, input)?;
         if !sig_batch.verify_all() {
             return Err(Error::SigBatchFailed);
         }
@@ -577,6 +577,7 @@ fn apply_block_body(
 
 #[timed]
 fn collect_sigs_block_body(
+    cfg: &SpecConfig,
     rv: &StateReadView,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
@@ -641,6 +642,7 @@ fn collect_sigs_block_body(
                 imm,
                 &validators,
                 &rv.epoch,
+                cfg.gloas_fork_epoch,
                 block_slot,
                 section,
                 sig_batch,

@@ -44,6 +44,7 @@ impl BeaconStateTile {
         self.held.drop_outdated(|parent| fork_choice.find_node_idx(parent).is_some());
         self.precomputed_epochs.drop_outdated(fork_choice);
         self.block_production.drop_outdated(|parent| fork_choice.find_node_idx(parent).is_some());
+        self.payload_builder_exits.drop_outdated(|root| fork_choice.find_node_idx(root).is_some());
 
         {
             // The head's rebased bundle must publish in the same seqlock

@@ -34,6 +34,7 @@ use crate::{
         fork_data_roots::ForkDataRoots,
         gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
+        payload_builder_exits::PayloadBuilderExits,
         precomputed_epochs::PrecomputedEpochs,
         proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
@@ -58,6 +59,7 @@ mod fork_data_roots;
 mod gossip;
 mod held_blocks;
 mod orphan_pool;
+mod payload_builder_exits;
 mod proposer_preparations;
 mod seen_aggregates;
 mod seen_proposer_preferences;
@@ -204,6 +206,7 @@ pub struct BeaconStateTile {
     pending_envelopes: FxHashMap<B256, TRead>,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
+    payload_builder_exits: PayloadBuilderExits,
     seen_proposer_preferences: SeenProposerPreferences,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
@@ -281,6 +284,7 @@ impl BeaconStateTile {
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
             payload_bids_pool: BidPool::default(),
+            payload_builder_exits: PayloadBuilderExits::default(),
             seen_proposer_preferences: SeenProposerPreferences::default(),
             pending_bounds: syncing.pending,
             verify_weak_subjectivity,
@@ -1020,7 +1024,7 @@ impl BeaconStateTile {
         // EF vectors have no execution client: validate against the committed bid
         // and mark the payload valid synchronously (production notifies the EL).
         let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
-        self.fork_choice.mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
+        self.mark_envelope_verified(block_root, ssz);
         self.fork_choice.on_payload_valid(&block_root);
         self.recompute_head();
         true
@@ -1064,7 +1068,7 @@ impl BeaconStateTile {
     /// verdict still outstanding (`ef_payload_verdict` delivers it).
     pub fn ef_receive_execution_payload(&mut self, ssz: &[u8]) -> bool {
         let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
-        self.fork_choice.mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
+        self.mark_envelope_verified(block_root, ssz);
         self.recompute_head();
         true
     }
@@ -1159,8 +1163,7 @@ impl BeaconStateTile {
                 if self.fork_choice.is_payload_verified(&block_root) {
                     return Feedback::AlreadySeen;
                 }
-                self.fork_choice
-                    .mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
+                self.mark_envelope_verified(block_root, ssz);
                 self.recompute_head();
                 Feedback::Accept
             }

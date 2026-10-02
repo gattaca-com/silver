@@ -981,7 +981,7 @@ fn gloas_unverified_payload_forces_empty() {
     assert_eq!(fc.find_head(), root(4));
 
     // Once the envelope is verified, the heavier FULL branch wins.
-    fc.mark_payload_verified(&root(2), Box::default());
+    fc.mark_payload_verified(&root(2));
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
@@ -1055,7 +1055,7 @@ fn gloas_boost_is_pending_not_empty() {
 
     // Envelope verified → resolves FULL. With boost wrongly in `empty` this
     // would stay EMPTY.
-    fc.mark_payload_verified(&root(2), Box::default());
+    fc.mark_payload_verified(&root(2));
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert!(fc.head_payload_present());
@@ -1089,7 +1089,7 @@ fn payload_resolution_follows_the_selected_node() {
     assert_eq!(fc.find_head(), root(3));
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty, "no envelope yet");
 
-    fc.mark_payload_verified(&root(3), Box::default());
+    fc.mark_payload_verified(&root(3));
     assert_eq!(fc.find_head(), root(3));
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
 }
@@ -1110,7 +1110,7 @@ fn a_gloas_anchor_resolves_empty_until_its_envelope_is_verified() {
     );
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty);
 
-    fc.mark_payload_verified(&root(1), Box::default());
+    fc.mark_payload_verified(&root(1));
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
 }
 

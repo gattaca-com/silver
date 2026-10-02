@@ -1,5 +1,4 @@
 use silver_beacon_state_data::{B256, Checkpoint, Slot, StateId};
-use silver_common::ssz_view::BUILDER_EXIT_REQUEST_SIZE;
 
 use super::NULL;
 
@@ -42,9 +41,6 @@ pub struct ForkChoiceNode {
 
     pub checkpoints: NodeCheckpoints,
     pub payload: PayloadAxis,
-    /// The verified payload's builder exit requests. A child building on this
-    /// payload applies them; this node's post-state never does.
-    pub builder_exits: Box<[[u8; BUILDER_EXIT_REQUEST_SIZE]]>,
     pub(super) ptc: PtcVotes,
 }
 

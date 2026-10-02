@@ -87,6 +87,9 @@ fn validate_execution_payload_bid(
     if bid.parent_block_hash != view.slot.state().latest_block_hash {
         return Err(E::ParentBlockHashMismatch);
     }
+    if bid.block_hash == bid.parent_block_hash {
+        return Err(E::BlockHashIsParent);
+    }
     if bid.parent_block_root != view.block_roots.at_slot(slot - 1) {
         return Err(E::ParentBlockRootMismatch);
     }

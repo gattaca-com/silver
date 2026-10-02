@@ -1,6 +1,5 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::B256;
-use silver_common::ssz_view::BUILDER_EXIT_REQUEST_SIZE;
 use silver_log::info;
 
 use super::{ExecutionStatus, ForkChoice, NULL, node::PTC_SIZE};
@@ -82,15 +81,9 @@ impl ForkChoice {
         }
     }
 
-    pub fn mark_payload_verified(
-        &mut self,
-        block_root: &B256,
-        builder_exits: Box<[[u8; BUILDER_EXIT_REQUEST_SIZE]]>,
-    ) {
+    pub fn mark_payload_verified(&mut self, block_root: &B256) {
         if let Some(idx) = self.find_node_idx(block_root) {
-            let node = &mut self.nodes[idx];
-            node.payload.verified = true;
-            node.builder_exits = builder_exits;
+            self.nodes[idx].payload.verified = true;
             self.head_moved = true;
         }
     }

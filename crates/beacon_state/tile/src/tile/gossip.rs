@@ -711,7 +711,7 @@ impl BeaconStateTile {
         // state above still shows the builder active.
         if full {
             let builder = view.builders.get(bid.builder_index as usize).expect("validated builder");
-            let exits = &self.fork_choice.node(idx).builder_exits;
+            let exits = self.payload_builder_exits.get(&bid.parent_block_root);
             if exits.iter().any(|request| {
                 *BuilderExitRequestView::pubkey(request) == builder.pubkey &&
                     *BuilderExitRequestView::source_address(request) == builder.execution_address
@@ -1011,6 +1011,12 @@ impl BeaconStateTile {
         EnvelopeCheck::Ready { block_root, state_id }
     }
 
+    /// `signed` passed `verify_execution_payload_envelope`.
+    pub(super) fn mark_envelope_verified(&mut self, block_root: B256, signed: &[u8]) {
+        self.fork_choice.mark_payload_verified(&block_root);
+        self.payload_builder_exits.insert(block_root, stf::envelope_builder_exits(signed));
+    }
+
     fn emit_envelope_available(
         acquired: &TRead,
         source: BlockSource,
@@ -1068,7 +1074,7 @@ impl BeaconStateTile {
             None => return Feedback::Reject(None),
         };
 
-        self.fork_choice.mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
+        self.mark_envelope_verified(block_root, ssz);
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.to_read(),
             block_root,
@@ -1258,17 +1264,23 @@ impl BeaconStateTile {
         if self.seen_exits.contains(vi) {
             return Feedback::AlreadySeen;
         }
+        let exit_start = exit_epoch.saturating_mul(SLOTS_PER_EPOCH);
+        if self.ticker.is_future_slot(exit_start, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Feedback::Ignore;
+        }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
         if vi >= view.validators.count() {
             return Feedback::Reject(None);
         }
+        if view.validators.exit_epoch(vi) != u64::MAX {
+            return Feedback::Ignore;
+        }
         let current_epoch = view.slot.current_epoch();
-        if let Err(e) = validate::validate_voluntary_exit(
+        if let Err(e) = validate::validate_exit_eligibility(
             &self.spec,
             &view.validators,
             vi_u as u32,
-            exit_epoch,
             current_epoch,
         ) {
             silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
