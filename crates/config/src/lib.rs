@@ -1,10 +1,9 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub use chain_config::{ChainConfig, ChainOverrides};
+pub use chain_config::{BootSource, ChainConfig, ChainOverrides};
 pub use cluster_config::ClusterConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
@@ -230,7 +229,7 @@ impl Config {
         silver_log::info!(
             network = %spec.network_name(),
             bootnodes = chain.bootstrap_enrs.len(),
-            checkpoint_providers = chain.checkpoint_sync_urls.len(),
+            boot = ?chain.boot,
             data_dir = %chain.data_dir,
             "resolved chain"
         );
@@ -243,8 +242,8 @@ impl Config {
             );
         }
 
-        if let Some(path) = &chain.checkpoint_file {
-            let genesis = Genesis::from_state_file(Path::new(path))?;
+        if let BootSource::File { ssz, .. } = &chain.boot {
+            let genesis = Genesis::from_state_file(ssz)?;
             chain.checked_fork_digest(chain.wall_epoch(&genesis), &genesis)?;
         }
         Ok(chain)
@@ -410,6 +409,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -453,6 +454,7 @@ mod tests {
             "config.yaml",
             "CONFIG_NAME: mainnet\nGENESIS_FORK_VERSION: 0x10000910\n",
         );
+        std::fs::write(dir.path().join("genesis.ssz"), [0u8; 64]).unwrap();
 
         let devnet = Network::Devnet(dir.path().to_owned());
         let cfg = Config::load(None, Overrides { network: Some(devnet), ..Overrides::default() })
@@ -599,7 +601,7 @@ mod tests {
         let chain = Config::from_toml(overridden, Overrides::default()).unwrap().chain().unwrap();
         assert_eq!(chain.spec.network_name(), "hoodi");
         assert!(chain.bootstrap_enrs.is_empty());
-        assert!(!chain.checkpoint_sync_urls.is_empty());
+        assert!(matches!(&chain.boot, BootSource::Providers(urls) if !urls.is_empty()));
     }
 
     /// A devnet gets nothing of mainnet's, not even as a default.
@@ -613,6 +615,9 @@ mod tests {
         );
         let enr = Network::Mainnet.bootnodes().unwrap()[0].to_base64();
         write_file(dir.path(), "bootstrap_nodes.yaml", &format!("- \"{enr}\"\n"));
+        let mut genesis = vec![0u8; 8];
+        genesis.extend_from_slice(&[0xab; 32]);
+        std::fs::write(dir.path().join("genesis.ssz"), genesis).unwrap();
 
         let cfg = Config::load(None, Overrides {
             network: Some(Network::Devnet(dir.path().to_owned())),
@@ -622,7 +627,10 @@ mod tests {
         let chain = cfg.chain().unwrap();
         assert_eq!(chain.spec.seconds_per_slot(), 6);
         assert_eq!(chain.bootstrap_enrs.len(), 1);
-        assert!(chain.checkpoint_sync_urls.is_empty());
+        assert_eq!(chain.boot, BootSource::File {
+            ssz: dir.path().join("genesis.ssz"),
+            pubkeys: None
+        });
         assert!(chain.data_dir.ends_with("/devnet-10000038"));
     }
 }

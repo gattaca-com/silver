@@ -45,7 +45,7 @@ RUST_LOG=info,silver_network=info,silver_peer=info \
 | `setup.sh` | Starts the enclave, harvests network values, writes the config TOML. |
 | `run-reth.sh` | Runs silver's own reth from the harvested `el/` files. |
 | `silver-devnet.toml` | silver's config, generated. Gitignored. |
-| `genesis.ssz` | Genesis state, silver's sync anchor. Generated. |
+| `silver-devnet-network/` | The devnet's metadata directory, laid out like a published devnet's. Generated. Gitignored. |
 | `el/` | EL genesis, enodes, JWT and datadir for the local reth. Generated. |
 
 ## What `setup.sh` writes
@@ -57,7 +57,8 @@ into `silver-devnet.toml` and its `network` directory, `silver-devnet-network/`:
 |-------|--------|
 | `network/config.yaml` | `/eth/v1/config/spec` — fork versions, fork epochs, blob schedule. |
 | `network/bootstrap_nodes.yaml` | `/eth/v1/node/identity` on each CL node. |
-| `chain_config.checkpoint_file` | `genesis.ssz`, or the finalized state with `--finalized-anchor`. |
+| `network/genesis.ssz` | the genesis state, which silver boots from by default. |
+| `chain_config.checkpoint_sync_urls` | only with `--finalized-anchor`: the enclave's CLs, which silver downloads the finalized state from. |
 | `external_ip_v4` | the `kt-<enclave>` bridge gateway, so peers can dial silver back. |
 | `engine_config.*` | the local reth's endpoint and `el/jwt.hex`. |
 

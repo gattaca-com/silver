@@ -8,6 +8,8 @@ use serde::Deserialize;
 use silver_chain_spec::SpecConfig;
 use silver_common::{Enr, Error};
 
+use crate::BootSource;
+
 /// Independent operators, so agreement between them means something.
 const MAINNET_CHECKPOINT_SYNC_URLS: [&str; 5] = [
     "https://mainnet.checkpoint.sigp.io",
@@ -120,15 +122,26 @@ impl Network {
         Ok(enrs.iter().map(|enr| Enr::from_str(enr).expect("bundled bootnode ENR")).collect())
     }
 
-    /// Empty for a devnet.
-    pub fn checkpoint_sync_urls(&self) -> Vec<String> {
+    /// A public network's checkpoint providers; a devnet publishes none, but
+    /// ships its genesis state.
+    pub fn boot_source(&self) -> Result<BootSource, Error> {
         let urls: &[&str] = match self {
             Self::Mainnet => &MAINNET_CHECKPOINT_SYNC_URLS,
             Self::Hoodi => &HOODI_CHECKPOINT_SYNC_URLS,
             Self::Sepolia => &SEPOLIA_CHECKPOINT_SYNC_URLS,
-            Self::Devnet(_) => &[],
+            Self::Devnet(dir) => {
+                let genesis = dir.join("genesis.ssz");
+                if !genesis.exists() {
+                    return Err(Error::ConfigError(format!(
+                        "{} has no genesis.ssz; set chain_config.checkpoint_file or \
+                         checkpoint_sync_urls",
+                        dir.display()
+                    )));
+                }
+                return Ok(BootSource::File { ssz: genesis, pubkeys: None });
+            }
         };
-        urls.iter().map(|url| url.to_string()).collect()
+        Ok(BootSource::Providers(urls.iter().map(|url| url.to_string()).collect()))
     }
 
     fn name(&self) -> Option<&'static str> {
@@ -176,7 +189,10 @@ mod tests {
             let name = network.name().unwrap();
             assert_eq!(network.spec().unwrap().network_name(), name);
             assert!(!network.bootnodes().unwrap().is_empty());
-            assert!(!network.checkpoint_sync_urls().is_empty());
+            assert!(matches!(
+                network.boot_source().unwrap(),
+                BootSource::Providers(urls) if !urls.is_empty()
+            ));
             assert_eq!(name.parse::<Network>().unwrap(), network);
         }
     }
