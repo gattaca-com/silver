@@ -108,10 +108,13 @@ impl CheckpointProviders {
         Err(io::Error::other(format!("no checkpoint provider served the state at slot {slot}")))
     }
 
+    /// Asks the head state: a beacon node answers `finalized` from the
+    /// finalized state, whose own finalized checkpoint lags by an epoch or
+    /// more.
     fn finalized(&self, url: &str) -> io::Result<Checkpoint> {
         let body = self
             .agent
-            .get(&format!("{url}/eth/v1/beacon/states/finalized/finality_checkpoints"))
+            .get(&format!("{url}/eth/v1/beacon/states/head/finality_checkpoints"))
             .timeout(FINALITY_TIMEOUT)
             .call()
             .map_err(io::Error::other)?
