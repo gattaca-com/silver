@@ -682,6 +682,7 @@ pub enum PeerEvent {
     RpcMisbehaviour {
         p2p_peer: usize,
         severity: RpcSeverity,
+        offence: RpcOffence,
     },
     /// Peer status received over RPC
     P2pPeerStatus {
@@ -897,6 +898,32 @@ pub enum PeerStatus {
 
 /// Severity levels for RPC misbehaviour reports. Mirrors lighthouse's
 /// `PeerAction` taxonomy. Mapping to score deltas lives in the peer manager.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RpcOffence {
+    ChunkFraming,
+    ErrorResponse,
+    OversizedBlock,
+    InvalidBlock,
+    InvalidColumn,
+    KzgProof,
+    InvalidBackfillColumn,
+}
+
+impl RpcOffence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChunkFraming => "rpc chunk/framing violation",
+            Self::ErrorResponse => "rpc error response",
+            Self::OversizedBlock => "oversized rpc block",
+            Self::InvalidBlock => "invalid rpc block",
+            Self::InvalidColumn => "invalid data column",
+            Self::KzgProof => "data column kzg proof failed",
+            Self::InvalidBackfillColumn => "invalid backfill data column",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 pub enum RpcSeverity {

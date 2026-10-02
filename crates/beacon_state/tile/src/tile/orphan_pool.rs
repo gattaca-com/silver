@@ -1,8 +1,8 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
-    BeaconStateEvent, BlockSource, BlockStage, P2pStreamId, PeerEvent, RpcSeverity, SyncNeed,
-    TCacheRead, hex32,
+    BeaconStateEvent, BlockSource, BlockStage, P2pStreamId, PeerEvent, RpcOffence, RpcSeverity,
+    SyncNeed, TCacheRead, hex32,
     metrics::timed,
     ssz_view::{ExecutionPayloadBidView, SignedBeaconBlockView},
 };
@@ -243,6 +243,7 @@ impl BeaconStateTile {
             producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::LowTolerance,
+                offence: RpcOffence::OversizedBlock,
             });
             return true;
         }
@@ -253,6 +254,7 @@ impl BeaconStateTile {
             Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),
                 severity: RpcSeverity::Fatal,
+                offence: RpcOffence::InvalidBlock,
             }),
             Feedback::BlockImported(_) |
             Feedback::AwaitData(_) |
