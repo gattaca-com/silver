@@ -14,8 +14,8 @@ use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut,
-    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOutbound,
-    SLOTS_PER_EPOCH, SilverSpine, TCacheError,
+    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOutbound, SLOTS_PER_EPOCH,
+    SilverSpine, TCacheError,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
