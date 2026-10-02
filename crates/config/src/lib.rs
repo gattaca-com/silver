@@ -209,12 +209,10 @@ pub struct Config {
     beacon_api_idle_timeout_secs: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
-    /// Surround detection defaults to one epoch; zero disables it.
-    /// All 64 subnets provide full gossip coverage for retained surrounds.
-    /// Nonzero settings retain that many lanes plus the current epoch's lane.
-    /// Each lane reserves about 236 bytes per validator, rounded to 65,536
-    /// validators. At 2.3 million validators, the default reserves about
-    /// 1.04 GiB.
+    /// Surround detection requires ~ 0.5GB of memory per epoch for 2.3M
+    /// validators + another 0.5GB for the current epoch. Default is 1 epoch
+    /// i.e. ~ 1GB, maximum is 16 epochs. Zero disables surround detection.
+    /// Disable if the node does not subscribe to all 64 attestation subnets.
     #[serde(default = "default_u8::<1>")]
     surround_epochs: u8,
     #[serde(default)]
