@@ -4,7 +4,7 @@ use std::{
 };
 
 use silver_beacon_state_data::{B256, CheckpointState, SLOTS_PER_EPOCH, SpecConfig};
-use silver_config::{ChainConfig, Config, Genesis};
+use silver_config::{BootSource, ChainConfig, Genesis};
 use silver_storage::latest_local_checkpoint;
 
 use self::checkpoint_providers::CheckpointProviders;
@@ -22,20 +22,19 @@ pub struct BootCheckpoint {
 }
 
 impl BootCheckpoint {
-    /// The configured `checkpoint_file`, else a provider download when the
-    /// persisted checkpoint is missing or behind, else the persisted one.
-    pub fn load(config: &Config) -> io::Result<Self> {
-        let chain_config = config.chain_config();
-        if let Some(file) = &chain_config.checkpoint_file {
-            return Self::from_file(file, chain_config.checkpoint_pubkeys_file.as_deref());
-        }
-
-        let local = latest_local_checkpoint(config.data_storage_dir());
-        let local_head =
-            local.as_ref().map(|(slot, ssz, _)| (slot / SLOTS_PER_EPOCH, ssz.as_path()));
-        match Self::download_if_behind(chain_config, local_head)? {
-            Some(downloaded) => Ok(downloaded),
-            None => Self::persisted(local, config.data_storage_dir()),
+    pub fn load(chain_config: &ChainConfig) -> io::Result<Self> {
+        let data_dir = &chain_config.data_dir;
+        match &chain_config.boot {
+            BootSource::File { ssz, pubkeys } => Self::from_file(ssz, pubkeys.as_deref()),
+            BootSource::Providers(urls) => {
+                let local = latest_local_checkpoint(data_dir);
+                let local_head =
+                    local.as_ref().map(|(slot, ssz, _)| (slot / SLOTS_PER_EPOCH, ssz.as_path()));
+                match Self::download_if_behind(chain_config, urls, local_head)? {
+                    Some(downloaded) => Ok(downloaded),
+                    None => Self::persisted(local, data_dir),
+                }
+            }
         }
     }
 
@@ -55,8 +54,8 @@ impl BootCheckpoint {
         }
     }
 
-    fn from_file(file: &str, pubkeys_file: Option<&str>) -> io::Result<Self> {
-        silver_log::info!("using the config checkpoint at {}", file);
+    fn from_file(file: &Path, pubkeys_file: Option<&Path>) -> io::Result<Self> {
+        silver_log::info!("using the config checkpoint at {}", file.display());
         let ssz = std::fs::read(file)?;
         let pubkeys = match pubkeys_file {
             Some(file) if !ssz.is_empty() => std::fs::read(file)?,
@@ -70,6 +69,7 @@ impl BootCheckpoint {
     /// one exists, or it is close to their finalized epoch.
     fn download_if_behind(
         chain_config: &ChainConfig,
+        urls: &[String],
         local: Option<(u64, &Path)>,
     ) -> io::Result<Option<Self>> {
         let local_epoch = local.map(|(epoch, _)| epoch);
@@ -81,7 +81,7 @@ impl BootCheckpoint {
             }
         }
 
-        let mut providers = CheckpointProviders::new(&chain_config.checkpoint_sync_urls);
+        let mut providers = CheckpointProviders::new(urls);
         if providers.is_empty() {
             return Ok(None);
         }

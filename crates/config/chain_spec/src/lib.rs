@@ -605,6 +605,75 @@ impl SpecConfig {
         }
     }
 
+    /// Sepolia testnet, transcribed from `eth-clients/sepolia/metadata/
+    /// config.yaml` as of 2026-09-10. Like Hoodi, everything but the fork
+    /// schedule, genesis, TTD, deposit contract and `BLOB_SCHEDULE` is
+    /// mainnet's.
+    pub fn sepolia() -> Self {
+        Self {
+            config_name: None,
+            // Sepolia fork-version pattern is `0x900000NN`.
+            genesis_fork_version: default_fork_version::<0x90000069>(),
+            min_genesis_active_validator_count: 1300,
+            min_genesis_time: 1_655_647_200,
+            genesis_delay: 86_400,
+            altair_fork_version: default_fork_version::<0x90000070>(),
+            altair_fork_epoch: 50,
+            bellatrix_fork_version: default_fork_version::<0x90000071>(),
+            bellatrix_fork_epoch: 100,
+            terminal_total_difficulty: 17_000_000_000_000_000,
+            terminal_block_hash: [0; 32],
+            terminal_block_hash_activation_epoch: unscheduled(),
+            capella_fork_version: default_fork_version::<0x90000072>(),
+            capella_fork_epoch: 56832,
+            deneb_fork_version: default_fork_version::<0x90000073>(),
+            deneb_fork_epoch: 132608,
+            electra_fork_version: default_fork_version::<0x90000074>(),
+            electra_fork_epoch: 222464,
+            fulu_fork_version: default_fork_version::<0x90000075>(),
+            fulu_fork_epoch: 272640,
+            gloas_fork_version: default_fork_version::<0x90000076>(),
+            gloas_fork_epoch: unscheduled(),
+            blob_schedule: vec![
+                BlobParameters { epoch: 274176, max_blobs_per_block: 15 },
+                BlobParameters { epoch: 275712, max_blobs_per_block: 21 },
+            ],
+            max_blobs_per_block_electra: 9,
+            blob_sidecar_subnet_count: 6,
+            blob_sidecar_subnet_count_electra: 9,
+            max_request_blob_sidecars: 768,
+            max_request_blob_sidecars_electra: 1152,
+            min_epochs_for_blob_sidecars_requests: 4096,
+            deposit_chain_id: 11_155_111,
+            deposit_network_id: 11_155_111,
+            deposit_contract_address: [
+                0x7f, 0x02, 0xc3, 0xe3, 0xc9, 0x8b, 0x13, 0x30, 0x55, 0xb8, 0xb3, 0x48, 0xb2, 0xac,
+                0x62, 0x56, 0x69, 0xed, 0x29, 0x5d,
+            ],
+            seconds_per_slot: None,
+            slot_duration_ms: None,
+            seconds_per_eth1_block: 14,
+            eth1_follow_distance: 2048,
+            // Identical to mainnet preset / config below this line.
+            shard_committee_period: 256,
+            min_validator_withdrawability_delay: 256,
+            max_seed_lookahead: 4,
+            min_per_epoch_churn_limit_electra: 128_000_000_000,
+            max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
+            churn_limit_quotient: 1 << 16,
+            churn_limit_quotient_gloas: 1 << 15,
+            consolidation_churn_limit_quotient: 1 << 16,
+            max_per_epoch_activation_churn_limit_gloas: 256_000_000_000,
+            inactivity_score_bias: 4,
+            inactivity_score_recovery_rate: 16,
+            inactivity_penalty_quotient: 1 << 24,
+            min_epochs_to_inactivity_penalty: 4,
+            proportional_slashing_multiplier: 3,
+            min_slashing_penalty_quotient: 4096,
+            ejection_balance: 16_000_000_000,
+        }
+    }
+
     pub fn mainnet() -> Self {
         Self {
             config_name: None,
