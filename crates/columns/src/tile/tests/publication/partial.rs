@@ -58,7 +58,7 @@ fn full_and_partial_keep_missing_snapshot_and_unresolved_proposer_policies() {
         let mut rig = Rig::with_state(CUSTODY_COLUMNS, owner.reader(), spec.clone());
         rig.follow([0; 32]);
         // Isolate state policy from the synthetic header's unsigned signature.
-        rig.tile.tracker.set_signature(root, [0; 96], [0; 4]);
+        rig.tile.tracker.set_signature(root, [0; 96], spec.fork_version_at(slot / SLOTS_PER_EPOCH));
         if published {
             assert!(matches!(rig.full_outcome(&sidecar), ColumnOutcome::Record {
                 relay_eligible: false,
@@ -153,7 +153,8 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
             let store = rig.tile.cells.as_mut().unwrap().store_mut();
             store.admit_context(context, domain, data).unwrap();
             rig.conn.produce(CellStoreEvent::Allocate(store.request_assemblies(&root).unwrap()));
-            rig.tile.tracker.set_signature(root, [0; 96], [0; 4]);
+            let fork_version = rig.tile.spec.fork_version_at(SLOT / SLOTS_PER_EPOCH);
+            rig.tile.tracker.set_signature(root, [0; 96], fork_version);
         }
         rig.allocate_cells(&mut allocator);
         assert_eq!(
@@ -163,7 +164,7 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
 
         let mut full = Vec::new();
         if format == ForkName::Fulu {
-            util::push_data_column_sidecar_prefix(&mut full, 7, 2, &header, &proof);
+            full.extend_from_slice(&util::data_column_sidecar_prefix_fulu(7, 2, &header, &proof));
         } else {
             full.resize(56, 0);
             full[..8].copy_from_slice(&7u64.to_le_bytes());

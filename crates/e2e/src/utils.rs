@@ -146,6 +146,7 @@ impl PmBsHarness {
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,
             CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), &[]),
+            None,
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
@@ -182,6 +183,7 @@ impl PmBsHarness {
                 rpc_p.cache_ref(),
                 cluster_in.cache_ref(),
                 TCache::producer(TCacheId::BoundaryProcessing, 32).cache_ref(),
+                TCache::producer(TCacheId::ProposedColumns, 32).cache_ref(),
             ]),
             TCache::producer(TCacheId::ClusterOutbound, 1 << 12),
             None,

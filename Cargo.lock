@@ -4891,6 +4891,7 @@ dependencies = [
 name = "silver_beacon_api"
 version = "0.0.1"
 dependencies = [
+ "flux-profiler",
  "hex",
  "mio",
  "rustc-hash",
@@ -5048,6 +5049,7 @@ dependencies = [
  "crc32c",
  "flux",
  "flux-disk",
+ "flux-profiler",
  "fxhash",
  "raft",
  "rand 0.8.6",
@@ -5139,6 +5141,7 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "flux",
+ "flux-profiler",
  "hex",
  "hmac",
  "httparse",

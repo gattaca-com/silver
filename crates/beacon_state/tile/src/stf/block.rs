@@ -102,6 +102,7 @@ pub fn apply_block(
 /// fills from the result, and without the signature pass: a proposer verifies
 /// every signature it packs before building.
 #[inline]
+#[timed]
 pub fn post_state_root_unchecked(
     cfg: &SpecConfig,
     fork: &mut ForkWriter,
@@ -527,7 +528,15 @@ fn apply_block_body(
         BlockFork::Fulu { payload_roots } => {
             let payload = offsets.payload();
             process_withdrawals_fulu(&mut *view, payload)?;
-            process_execution_payload(&mut *view, cfg, payload, block_slot, payload_roots)?;
+            let commitments = offsets.blob_commitments_fulu();
+            process_execution_payload(
+                &mut *view,
+                cfg,
+                payload,
+                commitments,
+                block_slot,
+                payload_roots,
+            )?;
             None
         }
     };

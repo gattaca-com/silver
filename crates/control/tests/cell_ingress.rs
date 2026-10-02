@@ -20,7 +20,7 @@ use silver_common::{
         CellValidationRequest, ColumnRef, CommitmentContext, ContextData, RetentionEvent,
         StoreError,
     },
-    column_util::push_data_column_sidecar_prefix,
+    column_util::data_column_sidecar_prefix_fulu,
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_PROOF},
     test_util::follow_producer_floor,
 };
@@ -194,7 +194,12 @@ impl Rig {
         if self.context.format == ForkName::Fulu {
             let mut header = [0x33; 208];
             header[..8].copy_from_slice(&self.context.slot.to_le_bytes());
-            push_data_column_sidecar_prefix(&mut bytes, column as u64, 2, &header, &[0x33; 128]);
+            bytes.extend_from_slice(&data_column_sidecar_prefix_fulu(
+                column as u64,
+                2,
+                &header,
+                &[0x33; 128],
+            ));
         } else {
             bytes.extend_from_slice(&(column as u64).to_le_bytes());
             bytes.extend_from_slice(&56u32.to_le_bytes());

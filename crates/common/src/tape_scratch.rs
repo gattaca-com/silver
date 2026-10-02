@@ -4,6 +4,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use flux_profiler::timed;
 use simd_json::{Buffers, Tape, value::tape::Value as TapeValue};
 
 use crate::{TCacheProducer, TCacheRead, TProducer};
@@ -32,6 +33,7 @@ impl TapeScratch {
     }
 
     /// `None` when the tcache has no room for the frame.
+    #[timed]
     pub fn encode<T, E: From<TapeError>>(
         &mut self,
         raw: &mut [u8],

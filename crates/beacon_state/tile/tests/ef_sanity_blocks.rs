@@ -26,30 +26,35 @@ fn gloas_sanity_blocks() {
 }
 
 /// A proposer fills `state_root` from `post_state_root_unchecked`; every
-/// accepted block's root must come out of it unchanged.
+/// accepted block's root must come out of it unchanged. `random` and
+/// `finality` blocks carry the operations a packed body will.
 #[test]
-fn fulu_sanity_blocks_state_roots_match_the_proposal_path() {
+fn fulu_state_roots_match_the_proposal_path() {
     let cfg = SpecConfig::mainnet();
-    let base = spec_tests_dir().join("tests/mainnet/fulu/sanity/blocks");
-    let mut checked = 0;
-    for (name, dir) in &iter_test_cases(&base) {
-        if !dir.join("post.ssz_snappy").exists() {
-            continue;
-        }
-        let mut pre = load_state(&dir.join("pre.ssz_snappy"));
-        for i in 0.. {
-            let path = dir.join(format!("blocks_{i}.ssz_snappy"));
-            if !path.exists() {
-                break;
+    for suite in ["sanity/blocks", "random/random", "finality/finality"] {
+        let base = spec_tests_dir().join("tests/mainnet/fulu").join(suite);
+        let mut checked = 0;
+        for (name, dir) in &iter_test_cases(&base) {
+            if !dir.join("post.ssz_snappy").exists() {
+                continue;
             }
-            let block = snappy_decode(&path);
-            let expected = *SignedBeaconBlockView::state_root(&block);
-            assert_eq!(proposal_state_root(&cfg, &mut pre, &block), Ok(expected), "{name}: {i}");
-            pre.apply_block(&cfg, &block).unwrap();
-            checked += 1;
+            let mut pre = load_state(&dir.join("pre.ssz_snappy"));
+            for i in 0.. {
+                let path = dir.join(format!("blocks_{i}.ssz_snappy"));
+                if !path.exists() {
+                    break;
+                }
+                let block = snappy_decode(&path);
+                let expected = *SignedBeaconBlockView::state_root(&block);
+                let got = proposal_state_root(&cfg, &mut pre, &block);
+                assert_eq!(got, Ok(expected), "{suite}/{name}: block {i}");
+                pre.apply_block(&cfg, &block).unwrap();
+                checked += 1;
+            }
         }
+        assert!(checked > 0, "{suite}: no blocks ran");
+        eprintln!("{suite}: {checked} blocks match the proposal path");
     }
-    assert!(checked > 0, "no sanity blocks ran");
 }
 
 fn proposal_state_root(

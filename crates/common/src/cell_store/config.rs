@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use silver_beacon_state_data::{FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, SpecConfig};
+use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 
 use super::StoreError;
 use crate::{
@@ -30,12 +30,7 @@ impl CellStoreConfig {
         columns: u128,
         delivery_retention: Duration,
     ) -> Result<Self, StoreError> {
-        let max_blobs = spec
-            .blob_schedule
-            .iter()
-            .filter(|entry| entry.epoch != FAR_FUTURE_EPOCH)
-            .map(|entry| entry.max_blobs_per_block)
-            .fold(spec.max_blobs_per_block_electra, u64::max);
+        let max_blobs = spec.max_scheduled_blobs_per_block();
         if max_blobs > u128::BITS as u64 {
             return Err(StoreError::UnsupportedBlobCount(max_blobs));
         }

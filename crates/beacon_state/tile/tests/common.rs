@@ -241,6 +241,7 @@ impl Harness {
                 TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
                 true,
                 CheckpointState::trusted(checkpoint_ssz, &spec, &[]),
+                None,
             )
         });
         h.gloas = gloas;

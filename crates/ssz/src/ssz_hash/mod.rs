@@ -16,8 +16,9 @@ pub use attestation::{
     hash_tree_root_aggregate_and_proof,
 };
 pub use block_body::{
-    hash_eth1_data_bytes, hash_sync_aggregate, hash_tree_root_body, hash_tree_root_body_fulu,
-    hash_tree_root_body_fulu_with_roots, kzg_commitments_inclusion_proof,
+    body_root_and_commitments_proof, hash_eth1_data_bytes, hash_sync_aggregate,
+    hash_tree_root_body, hash_tree_root_body_fulu, hash_tree_root_body_fulu_with_roots,
+    kzg_commitments_inclusion_proof,
 };
 pub use execution_payload::{PayloadRoots, hash_execution_payload_with_roots};
 pub use execution_requests::hash_execution_requests_fulu;

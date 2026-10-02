@@ -452,6 +452,8 @@ pub enum ExecutionPayloadError {
     TimestampMismatch { expected: u64, got: u64 },
     #[error("prev_randao mismatch: expected=0x{} got=0x{}", b256_hex(expected), b256_hex(got))]
     RandaoMismatch { expected: B256, got: B256 },
+    #[error("{got} blob commitments, over the schedule's {max}")]
+    TooManyBlobCommitments { got: usize, max: usize },
 }
 
 fn b256_hex(b: &B256) -> String {

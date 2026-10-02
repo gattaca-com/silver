@@ -35,13 +35,12 @@ fn full_column(format: ForkName, column: u64, block: &[u8], blobs: &[BlockBlob])
         else {
             unreachable!()
         };
-        util::push_data_column_sidecar_prefix(
-            &mut bytes,
+        bytes.extend_from_slice(&util::data_column_sidecar_prefix_fulu(
             column,
             blobs.len(),
             signed_header,
             inclusion_proof,
-        );
+        ));
     } else {
         bytes.resize(DATA_COLUMN_SIDECAR_GLOAS_MIN, 0);
         bytes[..8].copy_from_slice(&column.to_le_bytes());

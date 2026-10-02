@@ -137,6 +137,11 @@ impl StorageTile {
             "ds_persist_control_slot",
             TReadMode::Sliding,
         )?;
+        self.persist_reader.open(
+            TCacheId::ProposedColumns,
+            "ds_persist_proposed_columns",
+            TReadMode::Sliding,
+        )?;
         let forwarders = [TileId::BeaconState, TileId::Columns];
         self.persist_reader.declare(TCacheId::ControlProcessing, &forwarders);
         self.persist_reader.declare(TCacheId::NetworkProcessing, &forwarders);
@@ -551,8 +556,9 @@ mod tests {
         let pg = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
         let dc = TCache::producer(TCacheId::ControlSlot, 1 << 16);
         let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let proposed = TCache::producer(TCacheId::ProposedColumns, 1 << 12);
         let mut tile = StorageTile::new(
-            TCacheTable::from_iter([&pg, &dc, &rpc].map(|p| p.cache_ref())),
+            TCacheTable::from_iter([&pg, &dc, &rpc, &proposed].map(|p| p.cache_ref())),
             TCache::producer(TCacheId::StorageDelivery, 1 << 16),
             BeaconStateOwner::empty_test(0).reader(),
             0,
@@ -656,9 +662,10 @@ mod tests {
         let pg_tc = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
         let dc_tc = TCache::producer(TCacheId::ControlSlot, 1 << 20);
         let rpc_tc = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
+        let proposed_tc = TCache::producer(TCacheId::ProposedColumns, 1 << 12);
 
         let mut tile = StorageTile::new(
-            TCacheTable::from_iter([&pg_tc, &dc_tc, &rpc_tc].map(|p| p.cache_ref())),
+            TCacheTable::from_iter([&pg_tc, &dc_tc, &rpc_tc, &proposed_tc].map(|p| p.cache_ref())),
             TCache::producer(TCacheId::StorageDelivery, 1 << 20),
             BeaconStateOwner::empty_test(0).reader(),
             custody,

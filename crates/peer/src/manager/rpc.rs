@@ -152,6 +152,16 @@ impl PeerManager {
         }
     }
 
+    fn serves(&self, peer: usize, request: &SyncRequest) -> bool {
+        if request.origin == Origin::Live &&
+            request.kind != DataKind::Columns &&
+            matches!(request.scope, Scope::Root(_))
+        {
+            return true;
+        }
+        self.holds_slots_from(peer, self.first_slot_asked(request))
+    }
+
     /// Whether `peer` was obliged to hold what request `request_id` asked it
     /// for.
     fn owed_the_request(&self, peer: usize, request_id: u64) -> bool {
@@ -197,8 +207,6 @@ impl PeerManager {
             Scope::Root(_) => 0,
         };
 
-        let asking_for = self.first_slot_asked(request);
-
         self.database
             .live_peers_supporting(protocol)
             .filter_map(|p| {
@@ -212,7 +220,7 @@ impl PeerManager {
                     return None;
                 }
 
-                if !self.holds_slots_from(p, asking_for) {
+                if !self.serves(p, request) {
                     return None;
                 }
 
@@ -598,7 +606,6 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) -> bool {
         let (protocol, tokens) = (request.protocol(), request.tokens());
-        let asking_for = self.first_slot_asked(&request);
         // A forward range has to come from a peer claiming the chain we are
         // chasing; backfill and by-root only need a peer that can serve it.
         let peer = match request.scope {
@@ -606,7 +613,7 @@ impl PeerManager {
                 self.pick_sync_peer(start, count, now)
             }
             _ => self.best_peer_for(protocol, |i| {
-                self.holds_slots_from(i, asking_for) &&
+                self.serves(i, &request) &&
                     self.outbound_has_capacity(
                         i,
                         protocol,
@@ -1208,6 +1215,58 @@ mod tests {
             "slot 200 is above the peer's floor"
         );
         assert_eq!(mgr.outbound_attempts.len(), 1);
+    }
+
+    /// The floor is a column-custody start: chasing columns below it asks a
+    /// peer for what it said it lacks. On kurtosis, three unanswerable genesis
+    /// chases retried every 3 s across every peer.
+    #[test]
+    fn live_column_chase_stays_gated_by_a_peers_earliest_slot() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect_column_peer_pruned_below(&mut mgr, &mut cap, 32, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRoot.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        mgr.set_local_head_imported(0);
+        cap.0.clear();
+
+        let request = SyncRequest {
+            kind: DataKind::Columns,
+            origin: Origin::Live,
+            scope: Scope::Root([3; 32]),
+            columns: 0b11,
+        };
+        assert!(!mgr.place(request, 1, now, &mut |c| cap.0.push(c)), "nothing goes out");
+        assert!(mgr.outbound_attempts.is_empty());
+    }
+
+    /// Kurtosis at genesis: every Lighthouse peer advertised 32 while we sat at
+    /// head 0, so no parent chase ever placed and gossip import wedged.
+    #[test]
+    fn live_block_chase_is_placed_below_a_peers_earliest_slot() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRoot.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        let mut ssz = status_v2_ssz([0u8; 4], [0u8; 32], 0, [7u8; 32], 40);
+        ssz[84..92].copy_from_slice(&32u64.to_le_bytes());
+        send_status(&mut mgr, &mut cap, 1, PeerStatus::V2(ssz));
+        cap.0.clear();
+
+        let request = SyncRequest {
+            kind: DataKind::Block,
+            origin: Origin::Live,
+            scope: Scope::Root([3; 32]),
+            columns: 0,
+        };
+        assert!(mgr.place(request, 1, now, &mut |c| cap.0.push(c)), "chase placed");
     }
 
     /// A column range, for tests that build attempts directly.

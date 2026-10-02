@@ -198,13 +198,12 @@ pub(in crate::store) mod fixtures {
             header[112..].copy_from_slice(&block[4..100]);
             let n = self.commitments.len() / 48;
             let mut out = Vec::new();
-            column_util::push_data_column_sidecar_prefix(
-                &mut out,
+            out.extend_from_slice(&column_util::data_column_sidecar_prefix_fulu(
                 column,
                 n,
                 &header,
                 &kzg_commitments_inclusion_proof(body),
-            );
+            ));
             out.extend_from_slice(&self.cells[column as usize]);
             out.extend_from_slice(&self.commitments);
             out.extend_from_slice(&self.proofs[column as usize]);

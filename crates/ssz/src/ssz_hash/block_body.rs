@@ -63,8 +63,14 @@ pub fn hash_tree_root_body_fulu_with_roots(offsets: &BodyOffsets<'_>) -> (B256, 
 /// `hash_tree_root_body_fulu`'s fallback).
 #[timed]
 pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
+    body_root_and_commitments_proof(body).1
+}
+
+/// Both from one pass over the field roots, which hash the whole payload.
+#[timed]
+pub fn body_root_and_commitments_proof(body: &[u8]) -> (B256, [u8; 128]) {
     let Ok(offsets) = BodyOffsets::new(body, BodyFork::Fulu) else {
-        return [0u8; 128];
+        return (ZERO_HASH, [0u8; 128]);
     };
     let roots = field_roots(&offsets);
 
@@ -85,7 +91,7 @@ pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
         idx >>= 1;
         width = half;
     }
-    proof
+    (layer[0], proof)
 }
 
 /// The 13 field roots of a fulu `BeaconBlockBody`, in field order (`None` below

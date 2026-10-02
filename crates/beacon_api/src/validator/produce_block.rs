@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{Slot, SpecConfig};
 use silver_common::{
     BeaconApiRequest, PayloadFrame, ProduceBlockFailure, ProducedBlock, TCacheReader,
@@ -59,6 +60,7 @@ impl ProduceBlockRequest {
         }
     }
 
+    #[timed]
     pub(crate) fn respond(
         self,
         resp: &mut Response<'_>,

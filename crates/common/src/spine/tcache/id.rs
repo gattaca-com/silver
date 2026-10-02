@@ -13,10 +13,11 @@ pub enum TCacheId {
     StorageDelivery,
     BoundaryProcessing,
     BeaconStateHandoff,
+    ProposedColumns,
 }
 
 impl TCacheId {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 12;
     pub const ALL: [Self; Self::COUNT] = [
         Self::NetworkIngress,
         Self::NetworkProcessing,
@@ -29,6 +30,7 @@ impl TCacheId {
         Self::StorageDelivery,
         Self::BoundaryProcessing,
         Self::BeaconStateHandoff,
+        Self::ProposedColumns,
     ];
 
     pub fn from_index(index: u64) -> Option<Self> {
@@ -49,8 +51,9 @@ impl TCacheId {
             Self::StorageDelivery => "storage_delivery",
             Self::BoundaryProcessing => "boundary_processing",
             Self::BeaconStateHandoff => "beacon_state_handoff",
+            Self::ProposedColumns => "proposed_columns",
         }
     }
 }
 
-const _: () = assert!(TCacheId::BeaconStateHandoff as usize + 1 == TCacheId::COUNT);
+const _: () = assert!(TCacheId::ProposedColumns as usize + 1 == TCacheId::COUNT);

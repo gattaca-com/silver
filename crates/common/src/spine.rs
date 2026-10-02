@@ -44,6 +44,8 @@ pub struct SilverSpine {
     /// Responses returned to the Beacon API.
     #[queue(size(2usize.pow(14)))]
     pub beacon_api_responses: SpineQueue<BeaconApiResponse>,
+    #[queue(size(2usize.pow(4)))]
+    pub locked_proposals: SpineQueue<LockedProposal>,
     #[queue(size(2usize.pow(16)))]
     pub peer_events: SpineQueue<PeerEvent>,
     #[queue(size(2usize.pow(16)))]

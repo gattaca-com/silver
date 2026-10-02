@@ -551,6 +551,7 @@ impl BeaconApi {
         self.reader.declare(TCacheId::ControlProcessing, &forwarders);
         self.reader.declare(TCacheId::NetworkProcessing, &forwarders);
         self.reader.declare(TCacheId::ControlSlot, &[TileId::Columns]);
+        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::BeaconState]);
         Ok(())
     }
 

@@ -5,7 +5,7 @@ use silver_common::{
     SubReservationError, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheRef, TReadMode,
     TReservation,
     cell_store::{AcquiredCell, CELL_RECORD_BYTES, PendingCell},
-    column_util::push_data_column_sidecar_prefix,
+    column_util::data_column_sidecar_prefix_fulu,
     test_util::follow_producer_floor,
 };
 use silver_control::cell_allocator::CellAllocator;
@@ -213,13 +213,12 @@ impl Harness {
         let bytes = &block.data[..block.data_len];
         let mut full = Vec::new();
         match context.format {
-            ForkName::Fulu => push_data_column_sidecar_prefix(
-                &mut full,
+            ForkName::Fulu => full.extend_from_slice(&data_column_sidecar_prefix_fulu(
                 column as u64,
                 context.blob_count,
                 bytes[4..212].try_into().unwrap(),
                 bytes[212..340].try_into().unwrap(),
-            ),
+            )),
             ForkName::Gloas => {
                 full.extend_from_slice(&(column as u64).to_le_bytes());
                 full.extend_from_slice(&56u32.to_le_bytes());

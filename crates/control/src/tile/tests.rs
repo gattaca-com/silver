@@ -45,10 +45,11 @@ impl GossipPublications {
             TCacheReader::single(protobuf.cache_ref(), "publication_observer", TReadMode::Sliding)
                 .unwrap();
         let boundary = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
+        let proposed = TCache::producer(TCacheId::ProposedColumns, 1 << 12);
         // Plays the network: the handler's mcache pins forward to it.
         outbound.declare(TCacheId::ControlGossip, &[TileId::Control]);
         let tcaches = TCacheTable::from_iter(
-            [&incoming, &cluster_in, &rpc, &protobuf, &boundary].map(|p| p.cache_ref()),
+            [&incoming, &cluster_in, &rpc, &protobuf, &boundary, &proposed].map(|p| p.cache_ref()),
         );
         let mut controller = Controller::new(
             PeerManager::new(

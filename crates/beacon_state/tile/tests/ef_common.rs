@@ -453,6 +453,7 @@ pub fn ef_tile_with_spec(
         TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20),
         false,
         CheckpointState::Trusted(state),
+        None,
     );
     tile.open_tcaches().unwrap();
     tile

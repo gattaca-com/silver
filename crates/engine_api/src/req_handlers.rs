@@ -1,4 +1,5 @@
 use flux::spine::FluxSpine;
+use flux_profiler::timed;
 use silver_common::{
     EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadReq,
     EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq, EngineNewPayloadResp,
@@ -170,6 +171,7 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
 }
 
 #[inline]
+#[timed]
 fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq) {
     silver_log::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "preparePayload ← spine");
     let withdrawals = r

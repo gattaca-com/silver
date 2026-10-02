@@ -21,10 +21,12 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, GossipTopic, Keypair, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify, SilverSpine, TCache,
-    TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify,
+    SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
     cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
+    column_util::data_column_sidecar_len,
     profiler::enable_profiler,
+    ssz_view::NUMBER_OF_COLUMNS,
     tracing::initialise_tracing_log,
 };
 use silver_config::Genesis;
@@ -60,6 +62,13 @@ const CONTROL_RPC_TCACHE_SIZE: usize = 1 << 20;
 /// two-million-validator set, so the two the validator API serves never wait
 /// on the one being written.
 const BEACON_STATE_TCACHE_SIZE: usize = 1 << 25;
+/// Every column of a full block is about 6 MiB.
+const PROPOSED_COLUMNS_TCACHE_SIZE: usize = 1 << 24;
+const _: () = assert!(
+    PROPOSED_COLUMNS_TCACHE_SIZE >=
+        2 * NUMBER_OF_COLUMNS * data_column_sidecar_len(MAX_BLOBS_PER_BLOCK),
+    "two held proposals must fit without wrapping"
+);
 
 /// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = build_info::format!(
@@ -130,6 +139,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCache::producer(TCacheId::StorageDelivery, config.outgoing_rpc_tcache_size());
     let beacon_state_handoff_producer =
         TCache::producer(TCacheId::BeaconStateHandoff, BEACON_STATE_TCACHE_SIZE);
+    let proposed_columns_producer =
+        TCache::producer(TCacheId::ProposedColumns, PROPOSED_COLUMNS_TCACHE_SIZE);
 
     // Tiles.
     let keypair = Keypair::load_or_create(Path::new(config.data_storage_dir()))?;
@@ -248,6 +259,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         storage_delivery_producer.cache_ref(),
         beacon_state_handoff_producer.cache_ref(),
         control_slot_producer.cache_ref(),
+        proposed_columns_producer.cache_ref(),
     ]);
 
     let p2p_context = Context {
@@ -315,6 +327,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         beacon_state_handoff_producer,
         !config.disable_weak_subjectivity_check(),
         checkpoint,
+        config.suggested_fee_recipient(),
     );
     let state_reader = beacon_state_tile.reader();
 
@@ -339,6 +352,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             chain_config.slot_duration(),
             chain_config.playload_lookahead(),
         ),
+        proposed_columns_producer,
     )
     .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)
     .map_err(|error| format!("cell store construction: {error:?}"))?;

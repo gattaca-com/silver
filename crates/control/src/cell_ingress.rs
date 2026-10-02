@@ -28,15 +28,20 @@ pub(super) fn handle_data_column_event<F>(
 ) where
     F: FnMut(PeerControl, &mut GossipHandler),
 {
-    let DataColumnsEvent::Persist { ssz, origin, ssz_cache, domain, column_index, .. } = event
-    else {
-        return;
+    let (ssz, ssz_cache, domain, column_index) = match event {
+        DataColumnsEvent::Persist { ssz, origin, ssz_cache, domain, column_index, .. } => {
+            if origin == ColumnOrigin::Gossip {
+                return;
+            }
+            (ssz, ssz_cache, domain, column_index)
+        }
+        DataColumnsEvent::Publish { ssz, domain, column_index } => {
+            (ssz, SszCache::ProposedColumns, Some(domain), column_index)
+        }
+        DataColumnsEvent::Available { .. } | DataColumnsEvent::Validated { .. } => return,
     };
-    if origin == ColumnOrigin::Gossip {
-        return;
-    }
     let read = match ssz_cache {
-        SszCache::Rpc => Some(reader.acquire(ssz)),
+        SszCache::Rpc | SszCache::ProposedColumns => Some(reader.acquire(ssz)),
         SszCache::DataColumns => None,
         SszCache::Gossip => return,
     };

@@ -1,7 +1,4 @@
-use std::{
-    ptr,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use flux::spine::SpineProducers;
 use silver_common::{
@@ -13,8 +10,8 @@ use silver_common::{
         ColumnRef, CommitmentContext, ContextData, DataColumnCounters, HeaderValidationRequest,
         RetentionEvent, StoreError,
     },
-    column_util::{SidecarIdentity, columns_of},
-    ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF},
+    column_util::{SidecarIdentity, cell_bytes, columns_of},
+    ssz_view::{BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF},
 };
 
 use crate::{
@@ -206,9 +203,7 @@ impl CellHandler {
             else {
                 continue
             };
-            // SAFETY: Cell is repr(C) over [u8; BYTES_PER_CELL].
-            let cell: &[u8; BYTES_PER_CELL] =
-                unsafe { &*ptr::from_ref(&cells[column as usize]).cast() };
+            let cell = cell_bytes(&cells[column as usize]);
             match reference.stage(&mut self.reader, row, cell, proof) {
                 Ok(Some(pending)) => {
                     DataColumnCounters::ElCellsQueued.inc();

@@ -362,8 +362,15 @@ impl SpecConfig {
         self.slot_duration_ms.unwrap_or_else(|| self.seconds_per_slot.unwrap_or(12) * 1000)
     }
 
-    /// Spec `get_blob_parameters`: the highest `blob_schedule` entry at or
-    /// below `epoch`, and `default_blob_params` when none covers it.
+    pub fn max_scheduled_blobs_per_block(&self) -> u64 {
+        self.blob_schedule
+            .iter()
+            .filter(|entry| entry.epoch != unscheduled())
+            .map(|entry| entry.max_blobs_per_block)
+            .fold(self.max_blobs_per_block_electra, u64::max)
+    }
+
+    /// Spec `get_blob_parameters`.
     pub fn blob_params_at(&self, epoch: u64) -> BlobParameters {
         for entry in self.blob_schedule.iter().rev() {
             if epoch >= entry.epoch {
@@ -374,8 +381,7 @@ impl SpecConfig {
     }
 
     /// Spec `compute_fork_digest`, including the Fulu EIP-7892 mix of the
-    /// active `BLOB_SCHEDULE` entry. Pre-Fulu the digest is the plain
-    /// fork-data root, which no blob schedule can alter.
+    /// active `BLOB_SCHEDULE` entry.
     pub fn fork_digest_at(&self, epoch: u64, genesis_validators_root: &B256) -> [u8; 4] {
         let base = hash_tree_root_fork_data(self.fork_version_at(epoch), genesis_validators_root);
         if self.fork_at(epoch) < ForkName::Fulu {

@@ -19,11 +19,13 @@ impl TileId {
         match (self, cache) {
             (Self::BeaconState, TCacheId::ControlProcessing) => "bs_control_processing",
             (Self::BeaconState, TCacheId::NetworkProcessing) => "bs_network_processing",
+            (Self::BeaconState, TCacheId::BoundaryProcessing) => "bs_boundary_processing",
             (Self::Columns, TCacheId::ControlProcessing) => "dc_control_processing",
             (Self::Columns, TCacheId::NetworkProcessing) => "dc_network_processing",
             (Self::Columns, TCacheId::ControlGossip) => "dc_control_gossip",
             (Self::Columns, TCacheId::ControlSlot) => "dc_control_slot",
             (Self::Control, TCacheId::ControlGossip) => "gossip_mcache",
+            (Self::Control, TCacheId::BoundaryProcessing) => "ctl_boundary_processing",
             _ => panic!("{self:?} does not forward reads of {cache:?}"),
         }
     }

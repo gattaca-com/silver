@@ -1,4 +1,5 @@
 use flux::spine::SpineAdapter;
+use flux_profiler::timed;
 use serde::Deserialize;
 use silver_common::{
     ELSyncStatus, EngineFcuResp, EngineGetBlobsResp, EngineGetPayloadResp, EngineHealthEvent,
@@ -203,6 +204,7 @@ impl<'a> Responses<'a> {
     }
 
     #[inline]
+    #[timed]
     pub(crate) fn prepare_payload(
         &mut self,
         spine_id: u64,

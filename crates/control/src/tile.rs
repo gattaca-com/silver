@@ -16,8 +16,8 @@ use silver_common::{
     TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
-        METADATA_SIZE, SIGNED_BEACON_BLOCK_MIN, STATUS_V2_SIZE, SignedAggregateAndProofView,
-        SignedSyncCommitteeProofView, StatusView, SyncCommitteeView,
+        METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
+        StatusView, SyncCommitteeView,
     },
     ticker::SlotTicker,
 };
@@ -223,25 +223,14 @@ impl Controller {
                     producers,
                 )
             }
-            GossipTopic::BeaconBlock => {
-                if ssz.len() < SIGNED_BEACON_BLOCK_MIN {
-                    silver_log::error!(request_id, len = ssz.len(), "submitted block is misframed");
-                    return produce_response(
-                        producers,
-                        request_id,
-                        Err(LocalGossipFailure::Internal),
-                    );
-                }
-                self.slashing_protection.on_local_block(
-                    request_id,
-                    ssz_read,
-                    ssz,
-                    now,
-                    &mut self.local_gossip,
-                    &mut self.gossip_handler,
-                    producers,
-                )
-            }
+            GossipTopic::BeaconBlock => self.slashing_protection.on_local_block(
+                request_id,
+                acquired,
+                now,
+                &mut self.local_gossip,
+                &mut self.gossip_handler,
+                producers,
+            ),
             topic => {
                 silver_log::error!(request_id, ?topic, "no local submission path for the topic");
                 produce_response(producers, request_id, Err(LocalGossipFailure::Internal))
@@ -295,6 +284,7 @@ impl Controller {
             TReadMode::Sliding,
         )?;
         self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, TileId::Columns]);
+        self.reader.open(TCacheId::ProposedColumns, "ctl_proposed_columns", TReadMode::Sliding)?;
         self.gossip_handler.open_tcaches()
     }
 

@@ -41,7 +41,7 @@ pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, b
 pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
 pub use silver_beacon_state_data::{FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH};
-pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
+pub use silver_ssz::{block_contents, merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
 pub use tape_scratch::{FrameOut, TapeError, TapeScratch};
 #[cfg(feature = "test-util")]
 pub mod test_util;

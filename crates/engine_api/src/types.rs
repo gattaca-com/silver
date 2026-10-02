@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::{
     FrameOut, PayloadFrame,
@@ -312,8 +313,8 @@ pub(crate) fn write_new_payload_params_fulu(
     write_execution_payload_obj(execution_payload, out, false)?;
 
     // versionedHashes — derived from blob_kzg_commitments
-    let blob_kzg_off: usize = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
-    let blob_kzg_data = &body[blob_kzg_off..execution_requests_offset];
+    let blob_kzg_data =
+        BeaconBlockBodyFuluView::blob_kzg_commitments(body).expect("offsets validated above");
     // blob_kzg_data is a flat list of 48-byte KZG commitments (no SSZ list offsets,
     // because each element is fixed-size, so SSZ encodes it as a plain
     // concatenation).
@@ -580,6 +581,7 @@ fn fstr<'input>(v: TapeValue<'_, 'input>, field: &str) -> Result<&'input str, cr
 
 // Write SSZ transaction list (offset header + tx bytes) from JSON hex-string
 // array.
+#[timed]
 fn encode_txs_json(
     arr: TapeArray<'_, '_>,
     out: &mut FrameOut<'_>,
@@ -620,6 +622,7 @@ fn encode_withdrawals_json(
 
 /// Write the [`PayloadFrame`] of an `engine_getPayloadV5` JSON-RPC response
 /// into `out`.
+#[timed]
 pub(crate) fn json_get_payload_to_tcache(
     root: TapeValue<'_, '_>,
     out: &mut FrameOut<'_>,
@@ -1571,7 +1574,7 @@ mod tests {
             expected.len() - tail_at,
             2 * (PayloadFrame::CELL_PROOFS_PER_BLOB_LEN + BYTES_PER_BLOB)
         );
-        assert_eq!(frame.cell_proofs_len(), 2 * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN);
+        assert_eq!(frame.cell_proofs.len(), 2 * PayloadFrame::CELL_PROOFS_PER_BLOB_LEN);
         assert_eq!(frame.block_value, block_value);
     }
 
