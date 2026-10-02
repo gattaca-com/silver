@@ -1135,7 +1135,7 @@ impl BeaconStateTile {
     }
 
     pub fn ef_gossip_aggregate_and_proof(&mut self, ssz: &[u8]) -> Feedback {
-        self.handle_aggregate_and_proof(ssz)
+        self.handle_aggregate_and_proof(ssz, false)
     }
 
     pub fn ef_gossip_voluntary_exit(&mut self, ssz: &[u8]) -> Feedback {

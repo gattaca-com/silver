@@ -910,7 +910,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
+    pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8], local: bool) -> Feedback {
         let Some(parsed) = ParsedAggregateAndProof::try_from(data) else {
             return Feedback::Reject(None);
         };
@@ -1003,6 +1003,10 @@ impl BeaconStateTile {
             &mut self.sig_batch,
         ) {
             return Feedback::Reject(None);
+        }
+        if !local {
+            let fork_version = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
+            self.detection.record_aggregate(parsed.aggregate_bytes, committee, fork_version);
         }
 
         // A union-covered aggregate's votes are all already folded; it still
@@ -1510,7 +1514,9 @@ impl BeaconStateTile {
                 feedback
             }
             GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
-            GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
+            GossipTopic::BeaconAggregateAndProof => {
+                self.handle_aggregate_and_proof(data, m.stream_id == LOCAL_GOSSIP_STREAM_ID)
+            }
             GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
             GossipTopic::AttesterSlashing => self.handle_attester_slashing(data),

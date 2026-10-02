@@ -81,8 +81,9 @@ impl BeaconStateTile {
         if !self.detection.has_proofs() {
             return;
         }
+        let wall_slot = self.ticker.current_slot();
         let head = self.state.read_view(self.canonical_state_id());
-        let proposers = &self.seen_proposer_slashings;
+        let (proposers, attesters) = (&self.seen_proposer_slashings, &self.seen_attester_slashed);
         let events = &mut self.events_producer;
 
         let slashable_proposer = |index| slashable(&head, proposers, index);
@@ -92,6 +93,19 @@ impl BeaconStateTile {
             if publish_gossip(events, GossipTopic::ProposerSlashing, proof, producers) {
                 silver_log::info!(slot, proposer_index, "detected a double proposal");
                 self.detection.proposals.pop_proof();
+            }
+        }
+
+        let slashable_attester = |index| slashable(&head, attesters, index);
+        let signing_version = |epoch| head.epoch.fork_version_at(epoch);
+        if let Some(proof) =
+            self.detection.next_attester_proof(wall_slot, slashable_attester, signing_version)
+        {
+            let validator_index = proof.offenders().next();
+            let offenders = proof.offenders().count();
+            if publish_gossip(events, GossipTopic::AttesterSlashing, &proof.slashing(), producers) {
+                silver_log::info!(validator_index, offenders, "detected a double vote");
+                self.detection.pop_attester_proof();
             }
         }
     }
