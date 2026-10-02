@@ -267,6 +267,7 @@ pub enum LocalGossipFailure {
     Invalid,
     Unverifiable,
     Internal,
+    SlashableAgainstPublicGossip,
 }
 
 /// New decoded gossip message, either received from the network or injected
@@ -1058,14 +1059,13 @@ impl From<IpAddr> for IpBytes {
     }
 }
 
-/// Origin of a rejected block. PM treats RPC rejects as evidence that the
-/// active syncing target is bad (chain poisoning); gossip rejects are not
-/// chain-attributable and only blacklist the individual block_root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BlockSource {
     Gossip,
+    /// Includes disk replay.
     Rpc,
+    LocalGossip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1184,6 +1184,11 @@ pub enum BeaconStateEvent {
         source: BlockSource,
         slot: u64,
         block_root: [u8; 32],
+    },
+    /// Enters local gossip validation before network publication.
+    PublishGossip {
+        topic: GossipTopic,
+        ssz: TCacheRead,
     },
 }
 
@@ -1435,6 +1440,7 @@ impl BeaconStateEvent {
             Self::EnvelopeAvailable { .. } => {
                 SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
             }
+            Self::PublishGossip { topic, .. } => topic.view(),
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
             Self::LocalGossipVerdict { .. } |

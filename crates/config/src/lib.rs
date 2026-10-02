@@ -135,6 +135,8 @@ mod optional_address {
     }
 }
 
+pub const MAX_SURROUND_EPOCHS: u8 = 16;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -207,6 +209,12 @@ pub struct Config {
     beacon_api_idle_timeout_secs: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
+    /// Surround detection requires ~ 0.5GB of memory per epoch for 2.3M
+    /// validators + another 0.5GB for the current epoch. Default is 1 epoch
+    /// i.e. ~ 1GB, maximum is 16 epochs. Zero disables surround detection.
+    /// Disable if the node does not subscribe to all 64 attestation subnets.
+    #[serde(default = "default_u8::<1>")]
+    surround_epochs: u8,
     #[serde(default)]
     trusted_peers: Vec<Enr>,
     #[serde(default)]
@@ -227,6 +235,12 @@ impl Config {
 
     fn from_toml(text: &str) -> Result<Self, Error> {
         let mut config: Self = toml::from_str(text)?;
+        if config.surround_epochs > MAX_SURROUND_EPOCHS {
+            return Err(Error::ConfigError(format!(
+                "surround_epochs = {} exceeds the maximum of {MAX_SURROUND_EPOCHS}",
+                config.surround_epochs
+            )));
+        }
         config.resolve_from_network_files()?;
 
         let spec = &config.chain_config.spec;
@@ -460,6 +474,10 @@ impl Config {
         self.disable_weak_subjectivity_check
     }
 
+    pub fn surround_epochs(&self) -> u8 {
+        self.surround_epochs
+    }
+
     pub fn attestation_subnet_count(&self) -> u8 {
         self.attestation_subnet_count
     }
@@ -504,6 +522,21 @@ mod tests {
         assert_eq!(cfg.beacon_api_max_connections(), 1024);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
+        assert_eq!(cfg.surround_epochs(), 1);
+    }
+
+    #[test]
+    fn surround_epochs_are_capped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("surround.toml");
+        let config = |surround_epochs: u8| {
+            std::fs::write(&path, format!("surround_epochs = {surround_epochs}")).unwrap();
+            Config::from_file(&path)
+        };
+
+        assert_eq!(config(MAX_SURROUND_EPOCHS).unwrap().surround_epochs(), MAX_SURROUND_EPOCHS);
+        assert_eq!(config(0).unwrap().surround_epochs(), 0);
+        assert!(config(MAX_SURROUND_EPOCHS + 1).is_err());
     }
 
     #[test]

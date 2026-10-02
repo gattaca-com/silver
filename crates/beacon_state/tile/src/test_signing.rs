@@ -34,6 +34,12 @@ pub fn privkey(idx: usize) -> SecretKey {
     SecretKey::from_bytes(&bytes).unwrap()
 }
 
+pub fn pyspec_privkey(validator_index: u64) -> SecretKey {
+    let mut bytes = [0u8; 32];
+    bytes[24..].copy_from_slice(&(validator_index + 1).to_be_bytes());
+    SecretKey::from_bytes(&bytes).unwrap()
+}
+
 pub fn pubkey_pk(idx: usize) -> PublicKey {
     privkey(idx).sk_to_pk()
 }

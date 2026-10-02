@@ -3,7 +3,8 @@ use std::collections::hash_map::Entry;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot, StateId};
 use silver_common::{
-    BlockSource, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TRead, hex32,
+    BlockSource, LOCAL_GOSSIP_STREAM_ID, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TRead,
+    hex32,
 };
 use silver_config::PendingBounds;
 
@@ -37,6 +38,7 @@ pub(super) enum BlockSourceMsg {
 impl BlockSourceMsg {
     pub(super) fn source(&self) -> BlockSource {
         match self {
+            Self::Gossip(m, _) if m.stream_id == LOCAL_GOSSIP_STREAM_ID => BlockSource::LocalGossip,
             Self::Gossip(..) => BlockSource::Gossip,
             Self::Rpc(..) => BlockSource::Rpc,
         }

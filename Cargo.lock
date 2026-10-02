@@ -5281,6 +5281,7 @@ dependencies = [
 name = "silver_slashing"
 version = "0.0.1"
 dependencies = [
+ "rustc-hash",
  "silver_beacon_state_data",
  "silver_ssz",
 ]

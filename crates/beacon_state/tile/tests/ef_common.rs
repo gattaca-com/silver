@@ -454,6 +454,7 @@ pub fn ef_tile_with_spec(
         false,
         CheckpointState::Trusted(state),
         None,
+        0,
     );
     tile.open_tcaches().unwrap();
     tile

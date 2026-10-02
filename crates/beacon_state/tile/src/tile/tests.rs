@@ -14,7 +14,7 @@ use silver_common::{
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
     PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -128,6 +128,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         verify_weak_subjectivity,
         CheckpointState::Trusted(BeaconState::empty_test(0)),
         None,
+        0,
     );
     tile.open_tcaches().unwrap();
     tile
@@ -140,8 +141,26 @@ fn make_tile_with_gossip(
     state: BeaconState,
 ) -> (BeaconStateTile, TProducer, TProducer) {
     let (tile, gossip, rpc, _replay) =
-        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet(), 0);
     (tile, gossip, rpc)
+}
+
+fn slash_head(tile: &mut BeaconStateTile, validator: u32) {
+    let head = tile.canonical_state_id();
+    let validators = {
+        let mut state = tile.state.write();
+        let mut registry = state.validators.roll_from(head.validators_idx);
+        registry.set_slashed(validator, true);
+        registry.commit()
+    };
+    for id in tile.fork_choice.live_state_ids_mut() {
+        if *id == head {
+            id.validators_idx = validators;
+        }
+    }
+    if tile.last_applied == head {
+        tile.last_applied.validators_idx = validators;
+    }
 }
 
 /// Keeps the replay producer alive for tests that feed cached block bytes.
@@ -149,6 +168,7 @@ fn make_tile_with_producers(
     wall_slot: u64,
     state: BeaconState,
     spec: SpecConfig,
+    surround_epochs: u8,
 ) -> (BeaconStateTile, TProducer, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -170,6 +190,7 @@ fn make_tile_with_producers(
         true,
         CheckpointState::Trusted(state),
         None,
+        surround_epochs,
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)
@@ -1241,14 +1262,10 @@ fn short_gossip_block_rejected_before_any_field_read() {
     for len in [0, 1, 100, 107, SIGNED_BEACON_BLOCK_MIN - 1] {
         let (data, read) = publish_block_bytes(&mut gp, &vec![0u8; len]);
         let pinned = tile.reader.acquire(read);
-        let feedback = tile.apply_block(
-            &data,
-            &pinned,
-            BlockSource::Gossip,
-            false,
-            &mut adapter.producers,
-            |_| panic!("a malformed block must never be relayed"),
-        );
+        let feedback =
+            tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
+                panic!("a malformed block must never be relayed")
+            });
         assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
     }
 
@@ -1259,14 +1276,10 @@ fn short_gossip_block_rejected_before_any_field_read() {
     bytes[116] = 0xFF; // unknown parent_root
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
     let pinned = tile.reader.acquire(read);
-    let feedback = tile.apply_block(
-        &data,
-        &pinned,
-        BlockSource::Gossip,
-        false,
-        &mut adapter.producers,
-        |_| panic!("an unimportable block must never be relayed"),
-    );
+    let feedback =
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
+            panic!("an unimportable block must never be relayed")
+        });
     assert!(matches!(feedback, Feedback::RequestParent { .. }), "{feedback:?}");
 }
 
@@ -1341,7 +1354,7 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+        tile.apply_block(&data, &pinned, BlockSource::Rpc, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::BlockKnown(block_root));
@@ -1393,27 +1406,25 @@ fn fixture_head_roots(block_ssz: &[u8], post_ssz: &[u8]) -> HeadRoots {
 #[test]
 fn a_block_is_applied_once_and_already_known_on_repeat() {
     let (pre_ssz, block_ssz, _) = sanity_fixture("attestation");
-    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
+    let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[])
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let block_slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(block_slot + 1, state, SpecConfig::mainnet());
+        tile_with_producers_on(block_slot + 1, state, fulu_from_genesis());
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
 
-    // The checkpoint was loaded without decompressed pubkeys, so this import
-    // bypasses proposer-signature verification.
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| false);
     let Feedback::BlockImported(block_root) = feedback else { panic!("{feedback:?}") };
     assert_eq!(block_stages(&mut sink), [(block_root, BlockStage::Applied)]);
 
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Rpc, false, &mut adapter.producers, |_| {
+        tile.apply_block(&data, &pinned, BlockSource::Rpc, &mut adapter.producers, |_| {
             panic!("a repeat is never relayed")
         });
     assert_eq!(feedback, Feedback::BlockKnown(block_root));
@@ -1426,17 +1437,17 @@ fn a_block_is_applied_once_and_already_known_on_repeat() {
 #[test]
 fn block_before_slot_tick_takes_proposer_boost() {
     let (pre_ssz, block_ssz, _) = sanity_fixture("attestation");
-    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[]).unwrap();
     let slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, _spine, mut adapter) =
-        tile_with_producers_on(slot - 1, state, SpecConfig::mainnet());
+        tile_with_producers_on(slot - 1, state, fulu_from_genesis());
     tile.fork_choice.set_proposer_boost(tile.head_block_root());
 
     tile.ticker.set_current_slot(slot);
     let (data, read) = publish_block_bytes(&mut gp, &block_ssz);
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| false);
 
     assert_eq!(feedback, Feedback::BlockImported(tile.fork_choice.proposer_boost_root));
 }
@@ -1479,7 +1490,7 @@ fn a_replayed_block_publishes_its_own_head_metadata() {
     let expected = fixture_head_roots(&block_ssz, &post_ssz);
     let slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, _gp, _rp, mut replay) =
-        make_tile_with_producers(slot + 1, state, fulu_from_genesis());
+        make_tile_with_producers(slot + 1, state, fulu_from_genesis(), 0);
     let (mut spine, mut adapter) = spine_adapter(&tile);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
@@ -1517,7 +1528,7 @@ fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
     assert_ne!(header.state_root, [0u8; 32], "fixture premise: the header names its state");
 
     let (mut tile, _gp, _rp, _replay) =
-        make_tile_with_producers(state_slot, state, SpecConfig::mainnet());
+        make_tile_with_producers(state_slot, state, SpecConfig::mainnet(), 0);
     let BeaconStateEvent::Status { ssz, head_roots, .. } = tile.status_event(tile.selected_head())
     else {
         panic!("status_event produces Status")
@@ -1586,22 +1597,19 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
         (good_stamp, max_blobs + 1, false),
     ] {
         let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(PARENT_SLOT + 2);
-        seed_tile(&mut tile, 4, PARENT_SLOT);
+        seed_tile_with_keys(&mut tile, 4, PARENT_SLOT);
         tile.sync_target = SyncUpdate::Following;
 
-        let bytes = fulu_block_with_payload(slot, stamp, commitments);
+        let bytes = signed_by_proposer(fulu_block_with_payload(slot, stamp, commitments));
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
 
         let mut relayed = false;
         let pinned = tile.reader.acquire(read);
-        let feedback = tile.apply_block(
-            &data,
-            &pinned,
-            BlockSource::Gossip,
-            true, // pre_verified: the signature is not what these cases are about
-            &mut adapter.producers,
-            |_| relayed = true,
-        );
+        let feedback =
+            tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
+                relayed = true;
+                true
+            });
 
         // The well-formed case still fails the STF (synthetic parent root), so
         // only the precheck rejections are observable through the feedback.
@@ -1635,6 +1643,21 @@ fn fulu_block_with_payload(slot: u64, timestamp: u64, n_commitments: usize) -> V
     b
 }
 
+/// Matches the keys assigned by `seed_tile_with_keys`.
+fn signed_by_proposer(mut block: Vec<u8>) -> Vec<u8> {
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_PROPOSER,
+        SpecConfig::mainnet()
+            .fork_version_at(SignedBeaconBlockView::slot(&block) / SLOTS_PER_EPOCH),
+        &Immutable::default().genesis_validators_root,
+    );
+    let signing_root = bls::compute_signing_root(&block_root_fulu(&block), &domain);
+    let proposer = SignedBeaconBlockView::proposer_index(&block) as usize;
+    let key = proposer % test_signing::PRIVKEY_HEX.len();
+    block[4..100].copy_from_slice(&test_signing::sign(key, &signing_root));
+    block
+}
+
 /// Non-canonical re-encoding of a Fulu block with the same field contents:
 /// a 4-byte gap between the body's fixed part and its first list, every body
 /// offset shifted past it.
@@ -1659,7 +1682,7 @@ fn non_canonical_body_is_rejected_before_relay() {
     let slot = PARENT_SLOT + 1;
     let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
 
-    let honest = fulu_block_with_payload(slot, stamp, 0);
+    let honest = signed_by_proposer(fulu_block_with_payload(slot, stamp, 0));
     let gapped = body_with_gap(&honest);
     assert_eq!(
         ssz_hash::hash_tree_root_body_fulu(&honest[BODY..]),
@@ -1669,20 +1692,17 @@ fn non_canonical_body_is_rejected_before_relay() {
 
     for (bytes, want_reject) in [(honest, false), (gapped, true)] {
         let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(PARENT_SLOT + 2);
-        seed_tile(&mut tile, 4, PARENT_SLOT);
+        seed_tile_with_keys(&mut tile, 4, PARENT_SLOT);
         tile.sync_target = SyncUpdate::Following;
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
 
         let mut relayed = false;
         let pinned = tile.reader.acquire(read);
-        let feedback = tile.apply_block(
-            &data,
-            &pinned,
-            BlockSource::Gossip,
-            true,
-            &mut adapter.producers,
-            |_| relayed = true,
-        );
+        let feedback =
+            tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
+                relayed = true;
+                true
+            });
 
         assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
         assert_eq!(relayed, !want_reject, "relay must follow the canonical check");
@@ -1698,28 +1718,23 @@ fn block_at_the_finalized_start_slot_is_ignored() {
 
     for (slot, want_ignore) in [(finalized_slot, true), (finalized_slot + 1, false)] {
         let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot + 1);
-        seed_tile(&mut tile, 4, PARENT_SLOT);
+        seed_tile_with_keys(&mut tile, 4, PARENT_SLOT);
         tile.sync_target = SyncUpdate::Following;
         tile.fork_choice.finalized_checkpoint.epoch = 1;
 
         let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
-        let bytes = fulu_block_with_payload(slot, stamp, 0);
+        let bytes = signed_by_proposer(fulu_block_with_payload(slot, stamp, 0));
         let (data, read) = publish_block_bytes(&mut gp, &bytes);
         let pinned = tile.reader.acquire(read);
-        let feedback = tile.apply_block(
-            &data,
-            &pinned,
-            BlockSource::Gossip,
-            true,
-            &mut adapter.producers,
-            |_| {},
-        );
+        let feedback =
+            tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| {
+                false
+            });
 
         assert_eq!(matches!(feedback, Feedback::Ignore), want_ignore, "slot {slot}: {feedback:?}");
     }
 }
 
-/// Fixture bypass: signature checking is skipped to isolate proposer lookup.
 #[test]
 fn block_relay_requires_a_resolved_proposer() {
     const PARENT_SLOT: u64 = 10;
@@ -1734,15 +1749,15 @@ fn block_relay_requires_a_resolved_proposer() {
             (last_in_window + SLOTS_PER_EPOCH, false),
         ] {
             let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot);
-            seed_tile(&mut tile, 4, PARENT_SLOT);
+            seed_tile_with_keys(&mut tile, 4, PARENT_SLOT);
             tile.sync_target = target;
             adapter.consume(|_: PeerEvent, _| {});
 
             let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
-            let bytes = fulu_block_with_payload(slot, stamp, 0);
+            let bytes = signed_by_proposer(fulu_block_with_payload(slot, stamp, 0));
             let msg = gossip_msg(&mut gp, &bytes, GossipTopic::BeaconBlock);
             let msg_seq = msg.ssz.seq();
-            assert!(tile.handle_gossip(msg.ssz, msg, true, true, &mut adapter.producers));
+            assert!(tile.handle_gossip(msg.ssz, msg, true, &mut adapter.producers));
 
             let mut relays = Vec::new();
             adapter.consume(|event: PeerEvent, _| {
@@ -1796,7 +1811,7 @@ fn tile_with_producers_on(
     state: BeaconState,
     spec: SpecConfig,
 ) -> (BeaconStateTile, TProducer, TProducer, TestSpine, SpineAdapter<SilverSpine>) {
-    let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec);
+    let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec, 0);
     let (spine, adapter) = spine_adapter(&tile);
     (tile, gp, rp, spine, adapter)
 }
@@ -2850,14 +2865,14 @@ fn ignored_local_aggregate_emits_a_terminal_verdict() {
     let mut message = gossip_msg(&mut gp, &unknown_root, GossipTopic::BeaconAggregateAndProof);
     message.stream_id = LOCAL_GOSSIP_STREAM_ID;
     message.msg_hash = MessageId { id: [0x55; 20] };
-    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    tile.handle_gossip(message.ssz, message, true, &mut adapter.producers);
 
     let message = gossip_msg(&mut gp, &aggregate, GossipTopic::BeaconAggregateAndProof);
-    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    tile.handle_gossip(message.ssz, message, true, &mut adapter.producers);
     let mut message = gossip_msg(&mut gp, &aggregate, GossipTopic::BeaconAggregateAndProof);
     message.stream_id = LOCAL_GOSSIP_STREAM_ID;
     message.msg_hash = MessageId { id: [0x66; 20] };
-    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    tile.handle_gossip(message.ssz, message, true, &mut adapter.producers);
 
     let mut verdicts = Vec::new();
     adapter.consume(|event: BeaconStateEvent, _| {
@@ -4330,7 +4345,7 @@ fn el_invalid_staged_block_is_remembered_as_rejected() {
     forks.tile.handle_engine_response(verdict, &mut adapter.producers);
 
     let child = empty_block_at(4, S_ROOT);
-    let Err(err) = forks.tile.parse_and_verify_block(&child, false) else {
+    let Err(err) = forks.tile.parse_and_verify_block(&child) else {
         panic!("a child of the rejected block is not parked");
     };
     assert!(matches!(err, PrecheckError::ParentRejected {
@@ -4351,7 +4366,7 @@ fn child_of_transition_failed_block_is_rejected() {
     forks.tile.held.reject(X_ROOT, 3);
 
     let child = empty_block_at(4, X_ROOT);
-    let Err(err) = forks.tile.parse_and_verify_block(&child, false) else {
+    let Err(err) = forks.tile.parse_and_verify_block(&child) else {
         panic!("a child of the rejected block is not parked");
     };
     assert!(matches!(err, PrecheckError::ParentRejected {
@@ -4633,8 +4648,112 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Receipt {
+    slot: Slot,
+    block_root: B256,
+    stage: BlockStage,
+    source: BlockSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Relayed {
+    slot: Slot,
+    block_root: B256,
+}
+
+struct GossipPublications {
+    events: Vec<BeaconStateEvent>,
+    relays: Vec<Relayed>,
+    relayed_slashings: Vec<Vec<u8>>,
+    originated: Vec<(GossipTopic, Vec<u8>)>,
+    relayed_votes: usize,
+    invalid_msgs: usize,
+}
+
+impl GossipPublications {
+    fn drain(
+        sink: &mut SpineAdapter<SilverSpine>,
+        gossip: &mut TCacheReader,
+        handoff: &mut TCacheReader,
+    ) -> Self {
+        let mut events = Vec::new();
+        let mut originated = Vec::new();
+        sink.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::PublishGossip { topic, ssz } = event {
+                let bytes = handoff.acquire(ssz);
+                originated.push((topic, bytes.buffer().expect("originated bytes").0.to_vec()));
+            }
+            events.push(event)
+        });
+        let mut relays = Vec::new();
+        let mut relayed_slashings = Vec::new();
+        let mut invalid_msgs = 0;
+        let mut relayed_votes = 0;
+        sink.consume(|event: PeerEvent, _| match event {
+            PeerEvent::SendGossip { topic, ssz, .. } => {
+                let relayed = gossip.acquire(ssz);
+                let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
+                match topic {
+                    GossipTopic::BeaconBlock => relays.push(fulu_relayed(bytes)),
+                    GossipTopic::ProposerSlashing | GossipTopic::AttesterSlashing => {
+                        relayed_slashings.push(bytes.to_vec())
+                    }
+                    GossipTopic::BeaconAttestation(_) | GossipTopic::BeaconAggregateAndProof => {
+                        relayed_votes += 1
+                    }
+                    _ => panic!("unexpected relay on {topic:?}"),
+                }
+            }
+            PeerEvent::P2pGossipInvalidMsg { .. } => invalid_msgs += 1,
+            _ => {}
+        });
+        Self { events, relays, relayed_slashings, originated, invalid_msgs, relayed_votes }
+    }
+
+    fn verdicts(&self) -> Vec<Result<(), LocalGossipFailure>> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::LocalGossipVerdict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn rejected(&self, block: &[u8]) -> Vec<BlockSource> {
+        let root = block_root_fulu(block);
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockRejected { block_root, source } if block_root == root => {
+                    Some(source)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn receipts(&self) -> Vec<Receipt> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockReceived { slot, block_root, stage, source, .. } => {
+                    Some(Receipt { slot, block_root, stage, source })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn fulu_relayed(bytes: &[u8]) -> Relayed {
+    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
+}
+
 #[cfg(feature = "ef_tests")]
 mod block_relay;
+mod slashable_votes;
 
 fn non_block_relays(adapter: &mut SpineAdapter<SilverSpine>) -> Vec<GossipTopic> {
     let mut topics = Vec::new();
@@ -5013,10 +5132,10 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     use silver_common::PayloadFrame;
 
     let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
-    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let state = BeaconState::from_checkpoint(&pre_ssz, &fulu_from_genesis(), &[]).unwrap();
     let slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+        tile_with_producers_on(slot, state, fulu_from_genesis());
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     engine_requests(&mut sink);
     produced_blocks(&mut sink);
@@ -5065,11 +5184,18 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     assert_eq!(&contents[proofs_at..blobs_at], frame.cell_proofs);
     assert_eq!(&contents[blobs_at..], frame.blobs);
 
-    // The checkpoint was loaded without decompressed pubkeys, so this import
-    // bypasses proposer-signature verification.
     let mut signed = 100u32.to_le_bytes().to_vec();
     signed.extend_from_slice(&[0; 96]);
     signed.extend_from_slice(produced_message);
+    let proposer_index = SignedBeaconBlockView::proposer_index(&signed);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_PROPOSER,
+        tile.spec.fork_version_at(slot / SLOTS_PER_EPOCH),
+        &tile.state.state().immutable.genesis_validators_root,
+    );
+    let signing_root = bls::compute_signing_root(&block_root_fulu(&signed), &domain);
+    let signature = test_signing::pyspec_privkey(proposer_index).sign(&signing_root, bls::DST, &[]);
+    signed[4..100].copy_from_slice(&signature.to_bytes());
     let (data, read) = publish_block_bytes(&mut gp, &signed);
     if !reuse_produced_state {
         tile.block_production.drop_outdated(|_| false);
@@ -5084,7 +5210,7 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     assert_eq!(produced_states, usize::from(reuse_produced_state));
     let pinned = tile.reader.acquire(read);
     let feedback =
-        tile.apply_block(&data, &pinned, BlockSource::Gossip, true, &mut adapter.producers, |_| {});
+        tile.apply_block(&data, &pinned, BlockSource::Gossip, &mut adapter.producers, |_| false);
     // Checked before a blob block is staged on its columns.
     assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
     assert_eq!(tile.block_production.state_ids_mut().count(), 0, "import takes the post-state");

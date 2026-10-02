@@ -288,6 +288,7 @@ fn source_label(source: BlockSource) -> &'static str {
     match source {
         BlockSource::Gossip => "gossip",
         BlockSource::Rpc => "rpc",
+        BlockSource::LocalGossip => "local",
     }
 }
 
