@@ -29,6 +29,7 @@ use silver_common::{
         SyncCommitteeView,
     },
 };
+use silver_slashing::Offence;
 use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use super::{
@@ -1925,9 +1926,10 @@ impl BeaconStateTile {
         };
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
-                match self.parse_and_verify_block(data, pre_verified) {
+                match self.admit_block(data, source, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
-                        Self::relay_gossip(&m, Some(parsed.block_root), producers)
+                        Self::relay_gossip(&m, Some(parsed.block_root), producers);
+                        self.detection.proposals.observe_public_copy(data, &parsed.block_root);
                     }
                     Ok(_) => {}
                     Err(err) => match err.feedback() {
@@ -1941,7 +1943,7 @@ impl BeaconStateTile {
             }
             GossipTopic::BeaconBlock => {
                 let relay_once_parsed = m.validation == BroadcastValidation::Gossip;
-                let mut relayed = false;
+                let mut relayed = None;
                 let feedback = self.apply_block(
                     data,
                     &acquired,
@@ -1951,12 +1953,18 @@ impl BeaconStateTile {
                     |block_root, p| {
                         if do_relay && relay_once_parsed {
                             Self::relay_gossip(&m, Some(block_root), p);
-                            relayed = true;
+                            relayed = Some(block_root);
                         }
                     },
                 );
-                if do_relay && !relayed && m.stream_id == LOCAL_GOSSIP_STREAM_ID {
-                    self.relay_once_applied(&m, data, feedback, producers);
+                match relayed {
+                    Some(block_root) => {
+                        self.detection.proposals.observe_public_copy(data, &block_root)
+                    }
+                    None if do_relay && m.stream_id == LOCAL_GOSSIP_STREAM_ID => {
+                        self.relay_once_applied(&m, data, feedback, producers)
+                    }
+                    None => {}
                 }
                 do_relay = false; // relayed on callback or once applied.
                 feedback
@@ -2009,9 +2017,11 @@ impl BeaconStateTile {
                 producers.produce(need);
                 Self::local_verdict(&m, feedback, producers);
             }
-            Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {
-                Self::local_verdict(&m, feedback, producers)
-            }
+            Feedback::Ignore |
+            Feedback::Slashable(_) |
+            Feedback::AlreadySeen |
+            Feedback::TooOld |
+            Feedback::Future => Self::local_verdict(&m, feedback, producers),
             Feedback::BlockKnown(_) => Self::local_verdict(&m, feedback, producers),
             Feedback::BlockImported(_) | Feedback::AwaitData(_) => {}
         }
@@ -2022,7 +2032,7 @@ impl BeaconStateTile {
     /// staged before it arrived, is relayed once its transition has passed; a
     /// block waiting on its columns has passed it.
     pub(super) fn relay_once_applied(
-        &self,
+        &mut self,
         m: &NewGossipMsg,
         data: &[u8],
         feedback: Feedback,
@@ -2047,6 +2057,7 @@ impl BeaconStateTile {
             return;
         }
         Self::relay_gossip(m, Some(block_root), producers);
+        self.detection.proposals.observe_public_copy(data, &block_root);
     }
 
     /// Another block in fork choice from the same proposer for the same slot.
@@ -2135,6 +2146,9 @@ impl BeaconStateTile {
             // Already on the network is published, as fallback validator
             // clients that submit to several nodes rely on.
             Feedback::AlreadySeen | Feedback::BlockKnown(_) => Ok(()),
+            Feedback::Slashable(Offence::DoubleProposal) => {
+                Err(LocalGossipFailure::ConflictingProposal)
+            }
             Feedback::TooOld => Err(LocalGossipFailure::TooOld),
             Feedback::Future => Err(LocalGossipFailure::Future),
             _ => Err(LocalGossipFailure::Unverifiable),

@@ -253,6 +253,7 @@ impl BeaconStateTile {
             Feedback::AwaitData(_) |
             Feedback::BlockKnown(_) |
             Feedback::Ignore |
+            Feedback::Slashable(_) |
             Feedback::AlreadySeen |
             Feedback::TooOld |
             Feedback::Future => {}

@@ -127,7 +127,7 @@ impl StagedBlock {
 
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8], emit: impl FnMut(BeaconStateEvent)) -> Feedback {
-        match self.parse_and_verify_block(data, false) {
+        match self.admit_block(data, BlockSource::Rpc, false) {
             Ok(parsed) => {
                 let feedback = self.apply_and_import(parsed, data, None, emit);
                 self.maybe_finalize();
@@ -155,7 +155,7 @@ impl BeaconStateTile {
         }
 
         let slot = SignedBeaconBlockView::slot(data);
-        let parsed = match self.parse_and_verify_block(data, pre_verified) {
+        let parsed = match self.admit_block(data, source, pre_verified) {
             Ok(parsed) => {
                 if parsed.relay_eligible {
                     send_gossip(parsed.block_root, producers);
@@ -675,18 +675,11 @@ impl BeaconStateTile {
         })
     }
 
-    fn precheck_block(&mut self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
-        Self::check_block_size(data)?;
-
+    pub(super) fn decode_body<'a>(&self, data: &'a [u8]) -> Result<BodyOffsets<'a>, PrecheckError> {
+        debug_assert!(SignedBeaconBlockView::check_size(data));
         let block_slot = SignedBeaconBlockView::slot(data);
-        let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        let proposer_index = SignedBeaconBlockView::proposer_index(data);
-        let parent_root = *SignedBeaconBlockView::parent_root(data);
-        let state_root = *SignedBeaconBlockView::state_root(data);
-
         let body = SignedBeaconBlockView::body(data);
-
-        let is_gloas = self.spec.is_gloas_at(block_epoch);
+        let is_gloas = self.spec.is_gloas_at(block_slot / SLOTS_PER_EPOCH);
 
         let canonical = if is_gloas {
             BeaconBlockBodyGloasView::check_canonical(body)
@@ -698,8 +691,22 @@ impl BeaconStateTile {
         }
 
         let body_fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
-        let offsets = BodyOffsets::validated(body, body_fork)
-            .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
+        BodyOffsets::validated(body, body_fork)
+            .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })
+    }
+
+    fn precheck_block(&mut self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
+        Self::check_block_size(data)?;
+
+        let block_slot = SignedBeaconBlockView::slot(data);
+        let block_epoch = block_slot / SLOTS_PER_EPOCH;
+        let proposer_index = SignedBeaconBlockView::proposer_index(data);
+        let parent_root = *SignedBeaconBlockView::parent_root(data);
+        let state_root = *SignedBeaconBlockView::state_root(data);
+
+        let body = SignedBeaconBlockView::body(data);
+        let offsets = self.decode_body(data)?;
+        let is_gloas = self.spec.is_gloas_at(block_epoch);
         let HashedBody { root: body_root, fork } =
             self.built_body_hash(block_slot, body).unwrap_or_else(|| HashedBody::of(&offsets));
 

@@ -13,10 +13,10 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineFcuResp, EngineGetPayloadResp,
     EngineNewPayloadResp, EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange,
-    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, NodeId, P2pStreamId, PayloadResolution,
-    PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation,
-    StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer,
-    block_root_fulu,
+    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, LocalGossipResult, MessageId, NodeId, P2pStreamId,
+    PayloadResolution, PayloadValidationStatus, PeerEvent, PoolChange, ProduceBlockFailure,
+    ProposerPreparation, StreamProtocol, SyncNeed, TCache, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheTable, TProducer, block_root_fulu,
     ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
@@ -1464,7 +1464,7 @@ fn publish_block_bytes(producer: &mut TProducer, bytes: &[u8]) -> (Vec<u8>, TCac
 #[cfg(feature = "ef_tests")]
 #[test]
 fn api_block_reaches_storage_through_control_and_beacon_state() {
-    use silver_common::{BlockSource, TCacheReader, TReadMode, TileId};
+    use silver_common::{BlockSource, TReadMode, TileId};
     use silver_storage::tile::StorageTile;
 
     let (pre_ssz, block_ssz, _) = sanity_fixture_of("gloas", "empty_block_transition");
@@ -5680,6 +5680,122 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
             reload_root, live_root,
             "persisted checkpoint diverges from the live state at `{name}`"
         );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Receipt {
+    slot: Slot,
+    block_root: B256,
+    stage: BlockStage,
+    source: BlockSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Relayed {
+    slot: Slot,
+    block_root: B256,
+}
+
+struct GossipPublications {
+    events: Vec<BeaconStateEvent>,
+    relays: Vec<Relayed>,
+    relayed_slashings: Vec<Vec<u8>>,
+    originated: Vec<(GossipTopic, Vec<u8>)>,
+    invalid_msgs: usize,
+}
+
+impl GossipPublications {
+    fn drain(
+        sink: &mut SpineAdapter<SilverSpine>,
+        gossip: &mut TCacheReader,
+        handoff: &mut TCacheReader,
+    ) -> Self {
+        let mut events = Vec::new();
+        let mut originated = Vec::new();
+        sink.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::PublishGossip { topic, ssz } = event {
+                let bytes = handoff.acquire(ssz);
+                originated.push((topic, bytes.buffer().expect("originated bytes").0.to_vec()));
+            }
+            events.push(event)
+        });
+        let mut relays = Vec::new();
+        let mut relayed_slashings = Vec::new();
+        let mut invalid_msgs = 0;
+        sink.consume(|event: PeerEvent, _| match event {
+            PeerEvent::SendGossip { topic, ssz, .. } => {
+                let relayed = gossip.acquire(ssz);
+                let (bytes, _) = relayed.buffer().expect("relayed bytes readable");
+                match topic {
+                    GossipTopic::BeaconBlock => relays.push(fulu_relayed(bytes)),
+                    GossipTopic::ProposerSlashing | GossipTopic::AttesterSlashing => {
+                        relayed_slashings.push(bytes.to_vec())
+                    }
+                    _ => panic!("unexpected relay on {topic:?}"),
+                }
+            }
+            PeerEvent::P2pGossipInvalidMsg { .. } => invalid_msgs += 1,
+            _ => {}
+        });
+        Self { events, relays, relayed_slashings, originated, invalid_msgs }
+    }
+
+    fn receipts(&self) -> Vec<Receipt> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockReceived { slot, block_root, stage, source, .. } => {
+                    Some(Receipt { slot, block_root, stage, source })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn verdicts(&self) -> Vec<LocalGossipResult> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::LocalGossipVerdict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn rejected(&self, block: &[u8]) -> Vec<BlockSource> {
+        let root = block_root_fulu(block);
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::BlockRejected { block_root, source } if block_root == root => {
+                    Some(source)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn fulu_relayed(bytes: &[u8]) -> Relayed {
+    Relayed { slot: SignedBeaconBlockView::slot(bytes), block_root: block_root_fulu(bytes) }
+}
+
+fn slash_head(tile: &mut BeaconStateTile, validator: u32) {
+    let head = tile.canonical_state_id();
+    let validators = {
+        let mut state = tile.state.write();
+        let mut registry = state.validators.roll_from(head.validators_idx);
+        registry.set_slashed(validator, true);
+        registry.commit()
+    };
+    for id in tile.fork_choice.live_state_ids_mut() {
+        if *id == head {
+            id.validators_idx = validators;
+        }
+    }
+    if tile.last_applied == head {
+        tile.last_applied.validators_idx = validators;
     }
 }
 
