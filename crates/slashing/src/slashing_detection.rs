@@ -3,7 +3,7 @@ use silver_ssz::ssz_view::SINGLE_ATT_SIZE;
 
 use crate::{
     DoubleProposals, aggregate_votes::AggregateVotes, public_votes::PublicVotes,
-    signed_vote::AttesterProof,
+    signed_vote::AttesterProof, surround_votes::SurroundVotes,
 };
 
 // Each publication costs two signature checks when gossip validation sees it.
@@ -14,6 +14,7 @@ const PROOFS_CAPACITY: usize = 64;
 pub enum Offence {
     DoubleProposal,
     DoubleVote,
+    SurroundVote,
 }
 
 #[derive(Default)]
@@ -34,27 +35,39 @@ impl<const PER_SLOT: u8> SlotBudget<PER_SLOT> {
 pub struct SlashingDetection {
     pub proposals: DoubleProposals,
     votes: PublicVotes,
+    surround: Option<SurroundVotes>,
     aggregates: AggregateVotes,
     proofs: Vec<AttesterProof>,
     publications: SlotBudget<PUBLICATIONS_PER_SLOT>,
 }
 
-impl Default for SlashingDetection {
-    fn default() -> Self {
+impl SlashingDetection {
+    /// Zero `surround_epochs` disables surround detection. Otherwise it
+    /// reserves one lane per epoch, plus one for the current epoch.
+    pub fn new(surround_epochs: u8, validators: usize) -> Self {
         Self {
             proposals: DoubleProposals::default(),
             votes: PublicVotes::default(),
+            surround: (surround_epochs > 0)
+                .then(|| SurroundVotes::new(surround_epochs, validators)),
             aggregates: AggregateVotes::default(),
             proofs: Vec::with_capacity(PROOFS_CAPACITY),
             publications: SlotBudget::default(),
         }
     }
-}
 
-impl SlashingDetection {
+    pub fn reserved_bytes(&self) -> usize {
+        self.surround.as_ref().map_or(0, SurroundVotes::reserved_bytes)
+    }
+
     /// Takes a public vote whose signature verified.
     pub fn record_vote(&mut self, accepted: &[u8; SINGLE_ATT_SIZE], fork_version: Version) {
         self.votes.record(accepted, fork_version);
+        if let Some(proof) =
+            self.surround.as_mut().and_then(|history| history.record(accepted, fork_version))
+        {
+            self.queue(proof);
+        }
     }
 
     /// Takes a public `Attestation` of one committee whose signature verified
@@ -77,7 +90,14 @@ impl SlashingDetection {
         single: &[u8; SINGLE_ATT_SIZE],
         signing_version: impl Fn(Epoch) -> Version,
     ) -> Option<Offence> {
-        self.votes.conflicts(single, signing_version).then_some(Offence::DoubleVote)
+        if self.votes.conflicts(single, &signing_version) {
+            return Some(Offence::DoubleVote);
+        }
+        let surrounds = self
+            .surround
+            .as_ref()
+            .is_some_and(|history| history.conflicts(single, &signing_version));
+        surrounds.then_some(Offence::SurroundVote)
     }
 
     pub fn has_proofs(&self) -> bool {
@@ -109,5 +129,11 @@ impl SlashingDetection {
     pub fn pop_attester_proof(&mut self) {
         self.proofs.pop();
         self.publications.spent += 1;
+    }
+
+    fn queue(&mut self, proof: AttesterProof) {
+        if self.proofs.len() < PROOFS_CAPACITY {
+            self.proofs.push(proof);
+        }
     }
 }

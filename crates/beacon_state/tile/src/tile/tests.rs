@@ -128,6 +128,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
         verify_weak_subjectivity,
         CheckpointState::Trusted(BeaconState::empty_test(0)),
         None,
+        0,
     );
     tile.open_tcaches().unwrap();
     tile
@@ -140,7 +141,7 @@ fn make_tile_with_gossip(
     state: BeaconState,
 ) -> (BeaconStateTile, TProducer, TProducer) {
     let (tile, gossip, rpc, _replay) =
-        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+        make_tile_with_producers(wall_slot, state, SpecConfig::mainnet(), 0);
     (tile, gossip, rpc)
 }
 
@@ -167,6 +168,7 @@ fn make_tile_with_producers(
     wall_slot: u64,
     state: BeaconState,
     spec: SpecConfig,
+    surround_epochs: u8,
 ) -> (BeaconStateTile, TProducer, TProducer, TProducer) {
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -188,6 +190,7 @@ fn make_tile_with_producers(
         true,
         CheckpointState::Trusted(state),
         None,
+        surround_epochs,
     );
     tile.open_tcaches().unwrap();
     (tile, gossip_p, event_p, delivery_p)
@@ -1487,7 +1490,7 @@ fn a_replayed_block_publishes_its_own_head_metadata() {
     let expected = fixture_head_roots(&block_ssz, &post_ssz);
     let slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, _gp, _rp, mut replay) =
-        make_tile_with_producers(slot + 1, state, fulu_from_genesis());
+        make_tile_with_producers(slot + 1, state, fulu_from_genesis(), 0);
     let (mut spine, mut adapter) = spine_adapter(&tile);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
@@ -1525,7 +1528,7 @@ fn the_anchor_reports_its_block_slot_not_the_checkpoint_state_slot() {
     assert_ne!(header.state_root, [0u8; 32], "fixture premise: the header names its state");
 
     let (mut tile, _gp, _rp, _replay) =
-        make_tile_with_producers(state_slot, state, SpecConfig::mainnet());
+        make_tile_with_producers(state_slot, state, SpecConfig::mainnet(), 0);
     let BeaconStateEvent::Status { ssz, head_roots, .. } = tile.status_event(tile.selected_head())
     else {
         panic!("status_event produces Status")
@@ -1808,7 +1811,7 @@ fn tile_with_producers_on(
     state: BeaconState,
     spec: SpecConfig,
 ) -> (BeaconStateTile, TProducer, TProducer, TestSpine, SpineAdapter<SilverSpine>) {
-    let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec);
+    let (tile, gp, rp, _replay) = make_tile_with_producers(wall_slot, state, spec, 0);
     let (spine, adapter) = spine_adapter(&tile);
     (tile, gp, rp, spine, adapter)
 }

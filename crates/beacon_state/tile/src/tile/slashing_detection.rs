@@ -1,5 +1,5 @@
 use flux::spine::SpineProducers;
-use silver_beacon_state_data::{Slot, StateReadView};
+use silver_beacon_state_data::{Slot, StateReadView, Version};
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, TCacheProducer, TProducer,
     ssz_view::{
@@ -101,10 +101,15 @@ impl BeaconStateTile {
         if let Some(proof) =
             self.detection.next_attester_proof(wall_slot, slashable_attester, signing_version)
         {
-            let validator_index = proof.offenders().next();
+            let (offence, validator_index) = (proof.offence, proof.offenders().next());
             let offenders = proof.offenders().count();
             if publish_gossip(events, GossipTopic::AttesterSlashing, &proof.slashing(), producers) {
-                silver_log::info!(validator_index, offenders, "detected a double vote");
+                match offence {
+                    Offence::SurroundVote => {
+                        silver_log::info!(validator_index, "detected a surround vote")
+                    }
+                    _ => silver_log::info!(validator_index, offenders, "detected a double vote"),
+                }
                 self.detection.pop_attester_proof();
             }
         }
@@ -123,6 +128,21 @@ impl BeaconStateTile {
                 Self::refuse_local(offence, validator_index, SingleAttestationView::slot(single))
             }
         }
+    }
+
+    /// For a local vote whose signature verified under `fork_version`.
+    pub(super) fn public_conflict(
+        &self,
+        single: &[u8; SINGLE_ATT_SIZE],
+        fork_version: Version,
+    ) -> Option<Offence> {
+        let head = self.state.read_view(self.canonical_state_id());
+        let signing_version = |epoch| head.epoch.fork_version_at(epoch);
+        // Refusal requires the same fork version used to verify this vote.
+        if fork_version != signing_version(SingleAttestationView::target_epoch(single)) {
+            return None;
+        }
+        self.detection.conflicts_with_public(single, signing_version)
     }
 
     pub(super) fn refuse_local(offence: Offence, validator_index: u64, slot: Slot) -> Feedback {

@@ -40,7 +40,7 @@ impl BlockPublications {
         let state = BeaconState::from_checkpoint(pre_ssz, &fulu_from_genesis(), &[])
             .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
         let (mut tile, gossip, rpc, replay) =
-            make_tile_with_producers(wall_slot, state, fulu_from_genesis());
+            make_tile_with_producers(wall_slot, state, fulu_from_genesis(), 0);
         tile.sync_target = target;
         let handoff = TCacheReader::single(
             tile.events_producer.cache_ref(),

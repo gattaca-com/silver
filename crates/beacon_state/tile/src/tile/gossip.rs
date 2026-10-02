@@ -370,6 +370,8 @@ impl BeaconStateTile {
 
         let mut accepted = false;
         let mut committed_ptc = false;
+        // Refusing a batch representative leaves later same-key candidates unverified.
+        let mut unpaired_keys = Vec::new();
         self.vote_pending.reverse();
         while let Some((m, p)) = self.vote_pending.pop() {
             // Deduplicate only against votes whose signatures have already
@@ -383,9 +385,21 @@ impl BeaconStateTile {
                 Self::local_verdict(&m, feedback, producers);
                 continue;
             }
+            let key = p.dedup_key();
             let (pk, sig, root) = p.sig_parts();
-            let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
+            let valid = batch_ok && !unpaired_keys.contains(&key) ||
+                bls::verify_one_checked(pk, &sig, root);
             if valid {
+                if let PreparedVote::Attestation(p) = &p &&
+                    p.local &&
+                    let Some(offence) = self.public_conflict(&p.buf, p.fork_version)
+                {
+                    let refused =
+                        Self::refuse_local(offence, p.attester.into(), p.target.attestation_slot);
+                    Self::local_verdict(&m, refused, producers);
+                    unpaired_keys.push(key);
+                    continue;
+                }
                 match &p {
                     PreparedVote::Attestation(p) => self.commit_attestation(p),
                     PreparedVote::SyncMessage(p) => self.commit_sync_message(p),

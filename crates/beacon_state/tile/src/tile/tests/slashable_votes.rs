@@ -24,10 +24,10 @@ struct Votes {
 }
 
 impl Votes {
-    fn at(wall_slot: Slot) -> Self {
+    fn at(wall_slot: Slot, surround_epochs: u8) -> Self {
         let state = BeaconState::empty_test(0);
         let (mut tile, gossip, _rpc, _replay) =
-            make_tile_with_producers(wall_slot, state, SpecConfig::mainnet());
+            make_tile_with_producers(wall_slot, state, SpecConfig::mainnet(), surround_epochs);
         let (mut spine, adapter) = spine_adapter(&tile);
         seed_tile_with_keys(&mut tile, 128, 0);
         tile.sync_target = SyncUpdate::Following;
@@ -44,8 +44,8 @@ impl Votes {
     }
 
     /// Votes in epochs 0 and 1 are current at this wall slot.
-    fn started() -> Self {
-        let mut rig = Self::at(2 * SLOTS_PER_EPOCH - 1);
+    fn started(surround_epochs: u8) -> Self {
+        let mut rig = Self::at(2 * SLOTS_PER_EPOCH - 1, surround_epochs);
         rig.step();
         rig
     }
@@ -150,7 +150,7 @@ impl Votes {
 #[test]
 fn repeat_vote_is_ignored_without_verification() {
     for one_batch in [true, false] {
-        let mut rig = Votes::started();
+        let mut rig = Votes::started(0);
         let (first, subnet) = rig.vote_in(1, 0);
         let (conflicting, _) = rig.vote_in(1, 1);
         rig.submit(&first, subnet, false);
@@ -170,8 +170,77 @@ fn repeat_vote_is_ignored_without_verification() {
 }
 
 #[test]
+fn public_surrounds_publish_only_when_enabled_and_useful() {
+    for (history, first_local, covered, slashed, expected) in [
+        (1, false, false, false, true),
+        (0, false, false, false, false),
+        (1, true, false, false, false),
+        (1, false, true, false, false),
+        (1, false, false, true, false),
+    ] {
+        for one_batch in [false, true] {
+            let mut rig = Votes::started(history);
+            if slashed {
+                slash_head(&mut rig.tile, 0);
+            }
+            if covered {
+                let proof = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &rig.imm);
+                rig.gossip_in(&proof, GossipTopic::AttesterSlashing, false);
+                rig.step();
+                assert_eq!(pooled(&rig.tile).1.as_deref(), Some(proof.as_slice()));
+            }
+            let (inner, inner_subnet) = rig.vote_in(0, 1);
+            let (outer, outer_subnet) = rig.vote_in(1, 0);
+            rig.submit(&inner, inner_subnet, first_local);
+            if !one_batch {
+                rig.step();
+            }
+            rig.submit(&outer, outer_subnet, false);
+            let drained = rig.step();
+            assert_eq!(drained.originated.len(), usize::from(expected));
+            if expected {
+                let (topic, proof) = &drained.originated[0];
+                assert_eq!(*topic, GossipTopic::AttesterSlashing);
+                let actual = [
+                    AttesterSlashingView::att1_data(proof),
+                    AttesterSlashingView::att2_data(proof),
+                ];
+                assert_eq!(
+                    actual.map(|d| *d.as_bytes()),
+                    [&outer, &inner].map(|v| *SingleAttestationView::data(v).as_bytes())
+                );
+                rig.gossip_in(proof, *topic, false);
+                rig.step();
+                assert_eq!(pooled(&rig.tile).1.as_ref(), Some(proof));
+            }
+        }
+    }
+}
+
+/// Refusal commits nothing, so a forged copy of the refused vote is no repeat.
+/// It must verify on its own signature.
+#[test]
+fn refused_local_surround_leaves_no_vote_unverified() {
+    let mut rig = Votes::started(1);
+    let (inner, inner_subnet) = rig.vote_in(0, 1);
+    let (outer, outer_subnet) = rig.vote_in(1, 0);
+    let forged = rig.forged(outer);
+    rig.submit(&inner, inner_subnet, false);
+    assert_eq!(rig.step().relayed_votes, 1);
+    rig.submit(&outer, outer_subnet, true);
+    rig.submit(&forged, outer_subnet, false);
+
+    let drained = rig.step();
+
+    assert_eq!(drained.verdicts(), [Err(LocalGossipFailure::SlashableAgainstPublicGossip)]);
+    assert_eq!(drained.relayed_votes, 0);
+    assert_eq!(drained.invalid_msgs, 1, "the forged vote is rejected");
+    assert!(drained.originated.is_empty());
+}
+
+#[test]
 fn failed_handoff_keeps_the_attester_proof_queued() {
-    let mut rig = Votes::started();
+    let mut rig = Votes::started(0);
     let [x, y, _] = peers(&mut rig);
     for (source, aggregator) in [(0, x), (1, y)] {
         let aggregate = rig.aggregate(&[0], source, aggregator);
@@ -196,13 +265,16 @@ fn failed_handoff_keeps_the_attester_proof_queued() {
 fn local_vote_is_refused_only_against_public_evidence() {
     let refused = Err(LocalGossipFailure::SlashableAgainstPublicGossip);
     // Votes are (target epoch, source epoch).
-    for (public_at, local_at, signed, verdict) in [
-        ((1, 0), (1, 1), true, refused),
-        ((1, 0), (1, 0), true, Ok(())),
-        ((1, 0), (1, 1), false, Err(LocalGossipFailure::Invalid)),
+    for (surround_epochs, public_at, local_at, signed, verdict) in [
+        (0, (1, 0), (1, 1), true, refused),
+        (0, (1, 0), (1, 0), true, Ok(())),
+        (0, (1, 0), (1, 1), false, Err(LocalGossipFailure::Invalid)),
+        (1, (0, 1), (1, 0), true, refused),
+        (1, (0, 1), (1, 1), true, Ok(())),
+        (0, (0, 1), (1, 0), true, Ok(())),
     ] {
         for one_batch in [true, false] {
-            let mut rig = Votes::started();
+            let mut rig = Votes::started(surround_epochs);
             let (public, public_subnet) = rig.vote_in(public_at.0, public_at.1);
             let (mut local, local_subnet) = rig.vote_in(local_at.0, local_at.1);
             if !signed {
@@ -217,11 +289,20 @@ fn local_vote_is_refused_only_against_public_evidence() {
             let drained = rig.step();
 
             let case = format!(
-                "public {public_at:?}, local {local_at:?}, \
+                "surround_epochs {surround_epochs}, public {public_at:?}, local {local_at:?}, \
                  signed: {signed}, one batch: {one_batch}"
             );
             assert_eq!(drained.verdicts(), [verdict], "{case}");
             assert!(drained.originated.is_empty(), "{case}: not reported");
+            if verdict == refused && surround_epochs > 0 {
+                assert_eq!(drained.relayed_votes, usize::from(one_batch), "{case}: not published");
+                rig.submit(&local, local_subnet, false);
+                let reported = rig.step().originated;
+                assert!(
+                    matches!(&reported[..], [(GossipTopic::AttesterSlashing, _)]),
+                    "{case}: reported once public: {reported:?}"
+                );
+            }
         }
     }
 }
@@ -239,7 +320,7 @@ fn peers(rig: &mut Votes) -> [u32; 3] {
 #[test]
 fn aggregates_prove_only_public_conflicting_overlaps_once() {
     for case in ["double", "same", "disjoint", "local first", "local second"] {
-        let mut rig = Votes::started();
+        let mut rig = Votes::started(0);
         let [x, y, z] = peers(&mut rig);
         let first = rig.aggregate(&[0, x], 0, x);
         let second_signers = if case == "disjoint" { vec![y] } else { vec![0, y] };
@@ -266,5 +347,98 @@ fn aggregates_prove_only_public_conflicting_overlaps_once() {
         rig.gossip_in(slashing, *topic, false);
         rig.step();
         assert_eq!(pooled(&rig.tile).1.as_ref(), Some(slashing));
+    }
+}
+
+fn signed_epoch(tile: &BeaconStateTile, validators: usize) -> Vec<([u8; SINGLE_ATT_SIZE], u64)> {
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let shuffling = tile.shuffling_cache.lookup(&view, 0).expect("epoch 0 shuffling");
+    let bbr = tile.head_block_root();
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        view.epoch.fork_version_at(0),
+        &view.imm.genesis_validators_root,
+    );
+    let mut votes = Vec::with_capacity(validators);
+    for slot in 0..SLOTS_PER_EPOCH {
+        for ci in 0..shuffling.committees_per_slot {
+            let subnet = compute_subnet_for_attestation(
+                shuffling.committees_per_slot as u64,
+                slot,
+                ci as u64,
+            );
+            for &validator in shuffling.committee(slot, ci) {
+                let imm = Immutable::default();
+                let mut vote = test_signing::sign_single_attestation(
+                    0,
+                    validator as u64,
+                    ci as u64,
+                    slot,
+                    bbr,
+                    0,
+                    bbr,
+                    &imm,
+                );
+                let data = SingleAttestationView::data(&vote).as_bytes();
+                let signing_root =
+                    bls::compute_signing_root(&ssz_hash::hash_attestation_data(data), &domain);
+                let key = test_signing::pyspec_privkey(validator as u64);
+                vote[144..].copy_from_slice(&key.sign(&signing_root, bls::DST, &[]).to_bytes());
+                votes.push((vote, subnet));
+            }
+        }
+    }
+    votes
+}
+
+fn tile_with_distinct_keys(validators: usize, surround_epochs: u8) -> Votes {
+    let mut rig = Votes::at(31, surround_epochs);
+    let (epoch_base, mut seeds) = build_seed_finalized(validators, false);
+    for (i, seed) in seeds.iter_mut().enumerate() {
+        seed.pubkey = test_signing::pyspec_privkey(i as u64).sk_to_pk().to_bytes();
+    }
+    arm_tile(&mut rig.tile, epoch_base, &seeds, 0);
+    // Production sizes the history for the checkpoint's registry; this one
+    // is armed after construction.
+    rig.tile.detection = SlashingDetection::new(surround_epochs, validators);
+    rig
+}
+
+// Includes gossip tcache writes and initial history population for epoch 0.
+// Fixture signing and tile construction are outside the timed interval.
+#[test]
+#[ignore = "opt-in timing harness"]
+fn vote_flush_timing() {
+    const VALIDATORS: usize = 8192;
+    const ROUNDS: usize = 4;
+    const SETTINGS: [u8; 3] = [0, 1, 16];
+
+    let votes = signed_epoch(&tile_with_distinct_keys(VALIDATORS, 0).tile, VALIDATORS);
+    let mut totals = [Duration::ZERO; SETTINGS.len()];
+    for round in 0..ROUNDS {
+        for k in 0..SETTINGS.len() {
+            let setting = (round + k) % SETTINGS.len();
+            let mut rig = tile_with_distinct_keys(VALIDATORS, SETTINGS[setting]);
+
+            let start = std::time::Instant::now();
+            for (vote, subnet) in &votes {
+                let message =
+                    gossip_msg(&mut rig.gossip, vote, GossipTopic::BeaconAttestation(*subnet));
+                rig.tile.defer_vote(message, &mut rig.adapter.producers);
+                if rig.tile.vote_batch.is_empty() {
+                    rig.tile.reader.free();
+                }
+            }
+            rig.tile.flush_votes(&mut rig.adapter.producers);
+            rig.tile.publish_slashings(&mut rig.adapter.producers);
+            totals[setting] += start.elapsed();
+
+            let accepted = (0..VALIDATORS).filter(|&v| rig.tile.seen_attesters.contains(0, v));
+            assert_eq!(accepted.count(), VALIDATORS, "every vote verifies");
+        }
+    }
+    for (setting, total) in SETTINGS.iter().zip(totals) {
+        let per_vote = total / (ROUNDS * VALIDATORS) as u32;
+        eprintln!("surround_epochs = {setting:2}: {per_vote:?} per accepted single");
     }
 }

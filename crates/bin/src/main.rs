@@ -328,6 +328,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         !config.disable_weak_subjectivity_check(),
         checkpoint,
         config.suggested_fee_recipient(),
+        config.surround_epochs(),
     );
     let state_reader = beacon_state_tile.reader();
 

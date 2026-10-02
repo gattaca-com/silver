@@ -173,6 +173,7 @@ fn finalized_state_loads() {
         true,
         checkpoint,
         None,
+        0,
     );
     tile.open_tcaches().unwrap();
 
@@ -325,6 +326,7 @@ fn tile_apply_block_ef_fixture() {
         true,
         CheckpointState::trusted(&pre_ssz, &SpecConfig::mainnet(), &[]),
         None,
+        0,
     );
     tile.open_tcaches().unwrap();
 

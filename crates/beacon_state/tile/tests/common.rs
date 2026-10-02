@@ -245,6 +245,7 @@ impl Harness {
                 true,
                 CheckpointState::trusted(checkpoint_ssz, &spec, &[]),
                 None,
+                0,
             )
         });
         h.gloas = gloas;

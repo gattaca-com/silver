@@ -245,6 +245,7 @@ impl BeaconStateTile {
         verify_weak_subjectivity: bool,
         checkpoint: CheckpointState,
         default_fee_recipient: Option<ExecutionAddress>,
+        surround_epochs: u8,
     ) -> Self {
         let (state, expected_root) = match checkpoint {
             CheckpointState::Trusted(state) => (state, None),
@@ -252,7 +253,16 @@ impl BeaconStateTile {
         };
         let mut owner = BeaconStateOwner::new(state);
         let val_cap = owner.state().validators.finalized().capacity();
-        let detection = SlashingDetection::default();
+        let validators = owner.state().validators.finalized().validator_count();
+        let detection = SlashingDetection::new(surround_epochs, validators);
+        if surround_epochs > 0 {
+            silver_log::info!(
+                surround_epochs,
+                validators,
+                reserved_mib = detection.reserved_bytes() >> 20,
+                "reserved surround vote history"
+            );
+        }
         let (anchor, anchor_header) = Self::roll_anchor(&mut owner, expected_root);
         let mut tile = Self {
             sync_target: SyncUpdate::default(),

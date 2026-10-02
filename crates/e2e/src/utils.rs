@@ -149,6 +149,7 @@ impl PmBsHarness {
             false,
             CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), &[]),
             None,
+            0,
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
