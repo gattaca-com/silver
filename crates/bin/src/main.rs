@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use clap::Parser;
 use flux::{
     tile::{TileConfig, attach_tile},
     utils::ThreadNiceness,
@@ -26,7 +27,7 @@ use silver_common::{
     profiler::enable_profiler,
     tracing::initialise_tracing_log,
 };
-use silver_config::{Config, Genesis};
+use silver_config::Genesis;
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
@@ -35,8 +36,9 @@ use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::tile::StorageTile;
 
-use crate::{checkpoint::BootCheckpoint, cluster::ClusterStartup};
+use crate::{args::Args, checkpoint::BootCheckpoint, cluster::ClusterStartup};
 
+mod args;
 mod checkpoint;
 mod cluster;
 
@@ -59,9 +61,11 @@ const CONTROL_RPC_TCACHE_SIZE: usize = 1 << 20;
 /// on the one being written.
 const BEACON_STATE_TCACHE_SIZE: usize = 1 << 25;
 
+/// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = build_info::format!(
-    "{} · {}",
+    "{} · v{} · {}",
     $.version_control?.git()?.commit_short_id,
+    $.crate_info.version,
     $.timestamp
 );
 
@@ -72,6 +76,7 @@ fn publish_for_telemetry(file: &str, contents: &str) -> io::Result<()> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let args = Args::parse();
     let build_info_log = format!("silver build info: {BUILD_INFO}");
     let _tracing = initialise_tracing_log("silver", 10, None, false, Some(&build_info_log));
     if let Err(e) = silver_log::counts::enable(APP_NAME) {
@@ -83,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     enable_profiler(APP_NAME);
     publish_for_telemetry("build-info", BUILD_INFO)?;
 
-    let config = load_config()?;
+    let config = args.config()?;
 
     let boot_checkpoint = BootCheckpoint::load(&config)
         .inspect_err(|e| silver_log::error!(%e, "no boot checkpoint"))?;
@@ -382,40 +387,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn load_config() -> Result<Config, silver_common::Error> {
-    let args = std::env::args().collect::<Vec<_>>();
-    let config_path = args.iter().position(|a| a == "--config").and_then(|i| args.get(i + 1));
-    let mut config = match config_path {
-        Some(path) => Config::from_file(path)?,
-        None => {
-            let mut config = Config::mainnet()?;
-            if let Some(ckpt) = args.get(1).filter(|a| !a.starts_with("--")) {
-                config = config.with_checkpoint(ckpt.to_string());
-                if let Some(pk) = args.get(2).filter(|a| !a.starts_with("--")) {
-                    config = config.with_checkpoint_pubkeys(pk.to_string());
-                }
-            }
-            config
-        }
-    };
-
-    if args.iter().any(|a| a == "--disable-weak-subjectivity") {
-        config = config.with_disable_weak_subjectivity_check(true);
-    }
-    if args.iter().any(|a| a == "--unsafe-no-el") {
-        config = config.with_unsafe_no_el(true);
-    }
-    if let Some(binds) =
-        args.iter().position(|a| a == "--beacon-api-bind").and_then(|i| args.get(i + 1))
-    {
-        config = config.with_beacon_api_bind(comma_separated(binds));
-    }
-
-    silver_log::info!("loaded config: {config:#?}");
-
-    Ok(config)
-}
-
 fn sleep_until_genesis(genesis_unix_secs: u64) {
     let genesis = UNIX_EPOCH + Duration::from_secs(genesis_unix_secs);
     let Ok(remaining) = genesis.duration_since(SystemTime::now()) else {
@@ -424,11 +395,4 @@ fn sleep_until_genesis(genesis_unix_secs: u64) {
 
     silver_log::info!("waiting {}s for genesis at {genesis_unix_secs}", remaining.as_secs());
     std::thread::sleep(remaining);
-}
-
-/// List form for CLI flags whose config counterpart is a TOML array. A comma
-/// is neither valid in a `SocketAddr` nor sane in a socket path, so it can
-/// never be part of one value.
-fn comma_separated(value: &str) -> Vec<String> {
-    value.split(',').map(str::to_owned).collect()
 }
