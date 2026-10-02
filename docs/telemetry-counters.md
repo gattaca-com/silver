@@ -39,6 +39,25 @@ also reads. `value` is the reading at the end of the slot. `delta` is the change
 during it, negative for a falling gauge. To export another group, add its name
 to `EXPORTED`; its names come from `silver_stages::counter_names`.
 
+## Shuffling cache misses
+
+The `beacon_state` component counts epoch shufflings built during request handling:
+
+| Counter | Request path |
+|---|---|
+| `AttestationShufflingCacheMiss` | Single attestations and aggregates |
+| `BlockShufflingCacheMiss` | Block verification |
+| `BlockProductionShufflingCacheMiss` | Block production |
+
+A cold block request can build two epoch shufflings and increment its counter twice.
+Cache hits, precomputation, slot-tick warming and API publication do not increment these counters.
+Requests later rejected by validation can still contribute misses. These are counts,
+not miss rates or elapsed time; there is no corresponding hit counter.
+
+`BlockShufflingUncached` counts block requests that compute both shufflings without
+resolved cache identities. This fallback leaves keyed entries untouched. It is
+reported separately because increasing cache capacity cannot resolve a missing identity.
+
 ## Finding the data
 
 `silver_telemetry` reads its ClickHouse address from the node config it gets
