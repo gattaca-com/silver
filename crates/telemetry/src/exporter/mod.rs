@@ -10,14 +10,14 @@ use std::{
 
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
-use silver_common::{APP_NAME, Nanos, NodeChain, SilverSpine};
+use silver_common::{APP_NAME, Nanos, NodeChain, PeerStats, SilverSpine};
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 use silver_stages::StageEvent;
 
 use crate::exporter::{
     sources::ExportSources,
-    streams::{drain_peer_stats, encode_stage},
+    streams::{p2p_record, scores_record, stage_record, topic_record},
 };
 
 mod sources;
@@ -99,7 +99,7 @@ impl Exporter {
     /// Streamed into the open datagram; `spin` flushes it.
     pub fn on_stage(&mut self, event: &StageEvent) {
         let Self { encoder, sink, .. } = self;
-        encode_stage(encoder, Nanos::now().0, event, &mut |d| sink.send(d));
+        encoder.stage(Nanos::now().0, &stage_record(event), &mut |d| sink.send(d));
     }
 
     pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
@@ -107,7 +107,16 @@ impl Exporter {
 
         let now = Nanos::now();
         let Self { encoder, sink, .. } = self;
-        drain_peer_stats(adapter, encoder, now.0, &mut |d| sink.send(d));
+
+        adapter.consume(|stats: PeerStats, _| match &stats {
+            PeerStats::P2p(s) => encoder.peer_p2p(now.0, &p2p_record(s), &mut |d| sink.send(d)),
+            PeerStats::Scores(s) => {
+                encoder.peer_scores(now.0, &scores_record(s), &mut |d| sink.send(d))
+            }
+            PeerStats::Topic(s) => {
+                encoder.peer_topic(now.0, &topic_record(s), &mut |d| sink.send(d))
+            }
+        });
 
         if now >= self.next_bucket {
             self.follow_node(now);
