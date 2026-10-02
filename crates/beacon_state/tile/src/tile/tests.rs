@@ -33,7 +33,6 @@ use super::{
     block::{ParsedBlock, StagedBlock},
     block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
-    shuffling_cache::BlockShufflingUse,
     *,
 };
 use crate::{
@@ -319,9 +318,7 @@ fn arm_tile_state(
     );
 
     let view = tile.state.read_view(anchor);
-    tile.shuffling_cache
-        .for_block(&view, start_slot / SLOTS_PER_EPOCH, BlockShufflingUse::Verification)
-        .unwrap();
+    tile.shuffling_cache.for_block(&view, start_slot / SLOTS_PER_EPOCH).unwrap();
 }
 
 fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
@@ -4743,7 +4740,7 @@ fn shufflings_follow_head_selection_across_reorgs() {
     for branch in 10..20 {
         let fork = rig.post_state(rig.anchor, [branch; 32], 70, [branch; 32], [branch; 32]);
         let view = rig.tile.state.read_view(fork);
-        rig.tile.shuffling_cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
+        rig.tile.shuffling_cache.for_block(&view, 2).unwrap();
     }
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     assert!(posted(rig.drain()).is_empty(), "eviction does not change the published selection");
@@ -4791,7 +4788,7 @@ fn selected_head_shufflings_survive_side_branch_cache_pressure() {
             let fork = rig.post_state(rig.anchor, root, 71, root, root);
             let view = rig.tile.state.read_view(fork);
             rig.tile.shuffling_cache.precompute(&view, 2);
-            rig.tile.shuffling_cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
+            rig.tile.shuffling_cache.for_block(&view, 2).unwrap();
         }
         let view = rig.tile.state.read_view(head);
         for epoch in 1..=3 {

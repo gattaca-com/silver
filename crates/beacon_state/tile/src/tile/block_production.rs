@@ -13,7 +13,7 @@ use silver_common::{
 };
 use silver_ssz::block_body::{BeaconBlockBodyFulu, EMPTY_SYNC_AGGREGATE};
 
-use super::{BeaconStateTile, Producers, block::AppliedBlock, shuffling_cache::BlockShufflingUse};
+use super::{BeaconStateTile, Producers, block::AppliedBlock};
 use crate::{
     ssz_hash,
     stf::{self, BlockFork, BlockInput, ExpectedWithdrawals, get_expected_withdrawals},
@@ -515,16 +515,14 @@ impl BeaconStateTile {
         let epoch = slot / SLOTS_PER_EPOCH;
         let shuffling = {
             let view = self.state.read_view(parent);
-            self.shuffling_cache.for_block(&view, epoch, BlockShufflingUse::Production).ok_or_else(
-                || {
-                    silver_log::error!(
-                        epoch,
-                        state_epoch = view.slot.current_epoch(),
-                        "production shuffling state is in the wrong epoch"
-                    );
-                    ProduceBlockFailure::Internal
-                },
-            )?
+            self.shuffling_cache.for_block(&view, epoch).ok_or_else(|| {
+                silver_log::error!(
+                    epoch,
+                    state_epoch = view.slot.current_epoch(),
+                    "production shuffling state is in the wrong epoch"
+                );
+                ProduceBlockFailure::Internal
+            })?
         };
         let mut fork = self.state.apply_block_view(parent);
         let mut votes = self.stf_scratch.votes.take();

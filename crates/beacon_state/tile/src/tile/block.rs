@@ -12,7 +12,6 @@ use silver_common::{
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers, gossip::EnvelopeCheck,
-    shuffling_cache::BlockShufflingUse,
 };
 use crate::{
     Error, bls,
@@ -460,19 +459,17 @@ impl BeaconStateTile {
         // O(rounds·n) shuffle.
         let sref = {
             let view = self.state.read_view(parent);
-            self.shuffling_cache
-                .for_block(&view, block_epoch, BlockShufflingUse::Verification)
-                .ok_or_else(|| {
-                    silver_log::error!(
-                        block_epoch,
-                        state_epoch = view.slot.current_epoch(),
-                        "block shuffling state is in the wrong epoch"
-                    );
-                    Error::invalid_block(parsed.header.state_root, BlockError::SlotStateMismatch {
-                        block: parsed.header.slot,
-                        state: view.slot.slot_number(),
-                    })
-                })?
+            self.shuffling_cache.for_block(&view, block_epoch).ok_or_else(|| {
+                silver_log::error!(
+                    block_epoch,
+                    state_epoch = view.slot.current_epoch(),
+                    "block shuffling state is in the wrong epoch"
+                );
+                Error::invalid_block(parsed.header.state_root, BlockError::SlotStateMismatch {
+                    block: parsed.header.slot,
+                    state: view.slot.slot_number(),
+                })
+            })?
         };
 
         let body =

@@ -30,10 +30,5 @@ silver_common::declare_counters! {
         // Valid sync messages are still accepted and relayed when this is
         // full; only creation of a local contribution is skipped.
         SyncContributionPoolFull,
-        // One per epoch shuffling built during the named request path.
-        // Background precomputation and publication are excluded.
-        AttestationShufflingCacheMiss,
-        BlockShufflingCacheMiss,
-        BlockProductionShufflingCacheMiss,
     }
 }

@@ -3,7 +3,7 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
 use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
-use crate::{bls, counters::BeaconStateCounters, stf};
+use crate::{bls, stf};
 
 // Steady state holds {E-1, E, E+1} plus reorg/precompute transients.
 const MAX_SHUFFLING_CACHE: usize = 8;
@@ -14,11 +14,6 @@ pub struct ShufflingCache {
     posted: [Option<ShufflingId>; 2],
     head: Option<HeadShufflings>,
     uncached: [Vec<u32>; 2],
-}
-
-pub enum BlockShufflingUse {
-    Verification,
-    Production,
 }
 
 struct HeadShufflings {
@@ -141,8 +136,7 @@ impl ShufflingCache {
     /// decision root leaves the cache untouched.
     pub fn get(&mut self, view: &StateReadView, epoch: Epoch) -> Option<stf::EpochShuffling<'_>> {
         let id = ShufflingId::from_state(view, epoch)?;
-        let index =
-            self.ensure(view, id, &[], Some(BeaconStateCounters::AttestationShufflingCacheMiss));
+        let index = self.ensure(view, id, &[]);
         Some(self.entries[index].shuffling())
     }
 
@@ -152,16 +146,11 @@ impl ShufflingCache {
         &mut self,
         view: &StateReadView,
         epoch: Epoch,
-        usage: BlockShufflingUse,
     ) -> Option<stf::ShufflingRef<'_>> {
         if epoch != view.slot.current_epoch() {
             return None;
         }
-        let counter = match usage {
-            BlockShufflingUse::Verification => BeaconStateCounters::BlockShufflingCacheMiss,
-            BlockShufflingUse::Production => BeaconStateCounters::BlockProductionShufflingCacheMiss,
-        };
-        let Some([curr, prev]) = self.ensure_pair(view, epoch, Some(counter)) else {
+        let Some([curr, prev]) = self.ensure_pair(view, epoch) else {
             silver_log::warn!(
                 epoch,
                 "block shuffling identity unavailable; computing without cache"
@@ -181,7 +170,7 @@ impl ShufflingCache {
 
     /// Warm an epoch and its predecessor, including their committee aggregates.
     pub fn precompute(&mut self, view: &StateReadView, epoch: Epoch) {
-        let Some(indices) = self.ensure_pair(view, epoch, None) else {
+        let Some(indices) = self.ensure_pair(view, epoch) else {
             return;
         };
         for index in indices {
@@ -189,17 +178,12 @@ impl ShufflingCache {
         }
     }
 
-    fn ensure_pair(
-        &mut self,
-        view: &StateReadView,
-        epoch: Epoch,
-        miss_counter: Option<BeaconStateCounters>,
-    ) -> Option<[usize; 2]> {
+    fn ensure_pair(&mut self, view: &StateReadView, epoch: Epoch) -> Option<[usize; 2]> {
         let ids = [
             ShufflingId::from_state(view, epoch)?,
             ShufflingId::from_state(view, epoch.saturating_sub(1))?,
         ];
-        Some(ids.map(|id| self.ensure(view, id, &ids, miss_counter)))
+        Some(ids.map(|id| self.ensure(view, id, &ids)))
     }
 
     fn ensure(
@@ -207,7 +191,6 @@ impl ShufflingCache {
         view: &StateReadView,
         id: ShufflingId,
         protected: &[ShufflingId],
-        miss_counter: Option<BeaconStateCounters>,
     ) -> usize {
         if let Some(index) = self.entries.iter().position(|entry| entry.id == Some(id)) {
             return index;
@@ -228,9 +211,6 @@ impl ShufflingCache {
             .map(|(index, _)| index)
             .expect("at most five identities protected in an eight-entry cache");
         self.entries[index].fill(view, id);
-        if let Some(counter) = miss_counter {
-            counter.inc();
-        }
         index
     }
 
@@ -251,7 +231,7 @@ impl ShufflingCache {
             if self.posted[slot] == Some(id) {
                 continue;
             }
-            let index = self.ensure(view, id, &[], None);
+            let index = self.ensure(view, id, &[]);
             if self.entries[index].post(producer, &mut emit) {
                 self.posted[slot] = Some(id);
                 any_posted = true;
@@ -263,12 +243,9 @@ impl ShufflingCache {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, process::Command};
-
     use silver_beacon_state_data::{
         BeaconState, BeaconStateOwner, EpochStateFinalized, StateId, ValSeed,
     };
-    use silver_common::test_util::ShmemDir;
 
     use super::*;
     use crate::test_signing;
@@ -320,7 +297,7 @@ mod tests {
             let (other, id) = state(branch, 7, 8);
             let view = other.read_view(id);
             cache.precompute(&view, 2);
-            let pair = cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
+            let pair = cache.for_block(&view, 2).unwrap();
             assert_eq!(members(&pair.curr, 2), (0..7).collect::<Vec<_>>());
             assert_eq!(members(&pair.prev, 1), (0..7).collect::<Vec<_>>());
             for epoch in 1..=3 {
@@ -377,7 +354,7 @@ mod tests {
         let mut cache = ShufflingCache::with_capacity(8);
         for (view, active) in [(&a, 8), (&b, 7), (&a, 8)] {
             cache.precompute(view, 2);
-            let pair = cache.for_block(view, 2, BlockShufflingUse::Verification).unwrap();
+            let pair = cache.for_block(view, 2).unwrap();
             for (epoch, shuffling) in [(2, pair.curr), (1, pair.prev)] {
                 assert_eq!(members(&shuffling, epoch), (0..active).collect::<Vec<_>>());
                 let aggregates = shuffling.committee_aggs.unwrap();
@@ -423,14 +400,14 @@ mod tests {
         cache.precompute(&view, 1);
         // Displace epoch zero so the requested previous epoch is the oldest.
         cache.get(&view, 3).unwrap();
-        let pair = cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
+        let pair = cache.for_block(&view, 2).unwrap();
         assert_eq!(members(&pair.curr, 2), (0..5).collect::<Vec<_>>());
         assert_eq!(members(&pair.prev, 1), (0..5).collect::<Vec<_>>());
         assert!(pair.prev.committee_aggs.is_some(), "requested identity was retained");
         for branch in 21..=28 {
             let (owner, id) = state(branch, 6, 8);
             let view = owner.read_view(id);
-            let pair = cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
+            let pair = cache.for_block(&view, 2).unwrap();
             assert_eq!(members(&pair.curr, 2), (0..6).collect::<Vec<_>>());
             assert_eq!(members(&pair.prev, 1), (0..6).collect::<Vec<_>>());
         }
@@ -452,68 +429,11 @@ mod tests {
                 assert_eq!(members(&shuffling, epoch), (0..7).collect::<Vec<_>>());
                 assert!(shuffling.committee_aggs.is_none());
             }
-            let pair = cache.for_block(&head, 2, BlockShufflingUse::Verification).unwrap();
+            let pair = cache.for_block(&head, 2).unwrap();
             assert!(pair.curr.committee_aggs.is_some());
             assert!(pair.prev.committee_aggs.is_some());
             assert_eq!(members(&pair.curr, 2), (0..8).collect::<Vec<_>>());
         }
-    }
-
-    #[test]
-    fn miss_counters_exclude_background_work_and_cache_hits() {
-        // Counters are process-global; isolate assertions from parallel tests.
-        const CHILD: &str = "SILVER_SHUFFLING_COUNTER_TEST";
-        if env::var_os(CHILD).is_none() {
-            let status = Command::new(env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "tile::shuffling_cache::tests::miss_counters_exclude_background_work_and_cache_hits",
-                    "--test-threads=1",
-                ])
-                .env(CHILD, "1")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            return;
-        }
-        let dir = ShmemDir::new().unwrap();
-        BeaconStateCounters::init_with_base(dir.path(), "shuffling-test").unwrap();
-        let counters = [
-            BeaconStateCounters::AttestationShufflingCacheMiss,
-            BeaconStateCounters::BlockShufflingCacheMiss,
-            BeaconStateCounters::BlockProductionShufflingCacheMiss,
-        ];
-        let counts = || counters.map(BeaconStateCounters::get);
-        let (owner, id) = state(1, 8, 8);
-        let view = owner.read_view(id);
-        let mut cache = ShufflingCache::with_capacity(8);
-        cache.get(&view, 2).unwrap();
-        assert_eq!(counts(), [1, 0, 0]);
-        cache.get(&view, 2).unwrap();
-        assert_eq!(counts(), [1, 0, 0]);
-        cache.precompute(&view, 3);
-        cache.precompute(&view, 2);
-        cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
-        cache.for_block(&view, 2, BlockShufflingUse::Production).unwrap();
-        assert_eq!(counts(), [1, 0, 0]);
-
-        let (other, id) = state(2, 7, 8);
-        let other = other.read_view(id);
-        cache.for_block(&other, 2, BlockShufflingUse::Verification).unwrap();
-        assert_eq!(counts(), [1, 2, 0]);
-        cache.for_block(&other, 2, BlockShufflingUse::Verification).unwrap();
-        assert_eq!(counts(), [1, 2, 0]);
-
-        let (third, id) = state(3, 8, 8);
-        let third = third.read_view(id);
-        cache.for_block(&third, 2, BlockShufflingUse::Production).unwrap();
-        assert_eq!(counts(), [1, 2, 2]);
-        for epoch in [1, 3] {
-            assert!(cache.for_block(&view, epoch, BlockShufflingUse::Verification).is_none());
-        }
-        assert_eq!(counts(), [1, 2, 2]);
-        cache.uncached_for_block(&third);
-        assert_eq!(counts(), [1, 2, 2]);
     }
 
     #[test]
@@ -523,7 +443,9 @@ mod tests {
         let mut cache = ShufflingCache::with_capacity(8);
         cache.precompute(&view, 2);
         assert!(cache.get(&view, 4).is_none());
-        assert!(cache.for_block(&view, 4, BlockShufflingUse::Verification).is_none());
+        for epoch in [1, 3, 4] {
+            assert!(cache.for_block(&view, epoch).is_none());
+        }
         assert!(cache.get(&view, 2).unwrap().committee_aggs.is_some());
     }
 }
