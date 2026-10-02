@@ -29,7 +29,12 @@ use silver_beacon_state_data::{
 use silver_columns::tile::{DataColumnsTile, EfVerdict};
 use silver_common::{
     PayloadValidationStatus, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheRead,
-    TCacheTable, TProducer, ssz_view::SignedBeaconBlockView, test_util::ShmemDir,
+    TCacheTable, TProducer,
+    ssz_view::{
+        ExecutionPayloadEnvelopeView, ExecutionPayloadView, SignedBeaconBlockView,
+        SignedExecutionPayloadEnvelopeView,
+    },
+    test_util::ShmemDir,
 };
 
 const HANDLED_TOPICS: &[&str] = &[
@@ -45,6 +50,8 @@ const HANDLED_TOPICS: &[&str] = &[
     "execution_payload_envelope",
     "payload_attestation_message",
     "data_column_sidecar",
+    "proposer_preferences",
+    "execution_payload_bid",
 ];
 
 #[derive(Deserialize)]
@@ -247,6 +254,7 @@ fn import_setup(
     slot_ms: u64,
 ) -> Result<(), &'static str> {
     let anchor_root = tile.ef_fork_choice().find_head();
+    let mut last_root = anchor_root;
     for (i, setup) in meta.blocks.iter().enumerate() {
         let ssz = case_file(dir, &setup.block);
         let root = if i == 0 {
@@ -259,9 +267,28 @@ fn import_setup(
             assert!(tile.ef_apply_block(&ssz).is_some(), "setup block {} rejected", setup.block);
             root
         };
+        last_root = root;
+        // Bid cases put setup envelopes in the store, not the gossip-seen set;
+        // the tile keeps one set. The head's stays unreceived, and one a later
+        // setup block builds on cannot also be sent as an unseen message.
         if let Some(payload) = &setup.payload {
-            let received = tile.ef_receive_execution_payload(&case_file(dir, payload));
-            assert!(received, "setup payload {payload} not accepted for {}", setup.block);
+            let unseen_head = meta.topic == "execution_payload_bid" && i + 1 == meta.blocks.len();
+            let sent_later = meta.messages.iter().any(|m| m.message.trim() == payload.trim());
+            if sent_later && !unseen_head {
+                return Err("setup payload needed by a later block is also a case message");
+            }
+            if !unseen_head {
+                let received = tile.ef_receive_execution_payload(&case_file(dir, payload));
+                assert!(received, "setup payload {payload} not accepted for {}", setup.block);
+            } else if case_path(dir, payload).exists() {
+                // `_run_bid_gas_limit_scenario` rewrites the head post-state's
+                // bid `gas_limit` after building the block and records it only
+                // in the envelope. Mirror it so the envelope matches its state.
+                let envelope = case_file(dir, payload);
+                let message = SignedExecutionPayloadEnvelopeView::message(&envelope);
+                let payload = ExecutionPayloadEnvelopeView::payload(message);
+                tile.ef_set_state_bid_gas_limit(&root, ExecutionPayloadView::gas_limit(payload));
+            }
         }
         if let Some(status) = setup.payload_status.as_deref().and_then(payload_status) {
             tile.ef_payload_verdict(root, status, None);
@@ -273,13 +300,32 @@ fn import_setup(
             (None, Some(block)) => block_root(&case_file(dir, block), is_gloas),
             (None, None) => panic!("finalized_checkpoint without root or block"),
         };
-        tile.ef_set_finalized_checkpoint(Checkpoint { epoch: cp.epoch, root });
+        let cp = Checkpoint { epoch: cp.epoch, root };
+        tile.ef_set_finalized_checkpoint(cp);
         if tile.ef_fork_choice().finalized_checkpoint.root != root {
             return Err("finalized root is not a block in the store");
+        }
+        // `activate_builders` also finalizes the last block's post-state.
+        if meta.topic == "execution_payload_bid" {
+            tile.ef_set_state_finalized_checkpoint(&last_root, cp);
         }
     }
     tile.ef_tick(base_time_ms);
     Ok(())
+}
+
+fn case_path(dir: &Path, stem: &str) -> PathBuf {
+    dir.join(format!("{}.ssz_snappy", stem.trim()))
+}
+
+/// Bid cases interleave the preferences and envelopes a bid depends on; the
+/// file name carries each message's type.
+fn message_topic<'a>(case_topic: &'a str, message: &str) -> &'a str {
+    match message.rsplit_once("_0x").map(|(kind, _)| kind) {
+        Some("proposer_preferences") => "proposer_preferences",
+        Some("execution_payload_envelope") => "execution_payload",
+        _ => case_topic,
+    }
 }
 
 fn dispatch(tile: &mut BeaconStateTile, topic: &str, msg: &Message, ssz: &[u8]) -> Feedback {
@@ -304,6 +350,8 @@ fn dispatch(tile: &mut BeaconStateTile, topic: &str, msg: &Message, ssz: &[u8]) 
         "sync_committee_contribution_and_proof" => tile.ef_gossip_sync_contribution(ssz),
         "execution_payload" => tile.ef_gossip_execution_payload(ssz),
         "payload_attestation_message" => tile.ef_gossip_payload_attestation(ssz),
+        "proposer_preferences" => tile.ef_gossip_proposer_preferences(ssz),
+        "execution_payload_bid" => tile.ef_gossip_execution_payload_bid(ssz),
         other => panic!("unhandled topic {other}"),
     }
 }
@@ -350,7 +398,9 @@ fn run_case(dir: &Path, is_gloas: bool) -> Result<Vec<String>, &'static str> {
                 rig.sync_with(&tile, at);
                 rig.sidecar(&bytes, msg.subnet_id)
             }
-            None => outcome(&dispatch(&mut tile, &meta.topic, msg, &bytes)),
+            None => {
+                outcome(&dispatch(&mut tile, message_topic(&meta.topic, &msg.message), msg, &bytes))
+            }
         };
         if got != msg.expected {
             let reason = msg.reason.as_deref().unwrap_or("");

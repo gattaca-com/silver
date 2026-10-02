@@ -954,7 +954,7 @@ fn head_change_is_classified_against_the_last_complete_status() {
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().changes(), [HeadChange::Head]);
 
-    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT, Box::default());
     assert_eq!(rig.crank().changes(), [HeadChange::Payload]);
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
@@ -1095,7 +1095,7 @@ fn payload_verification_and_execution_validation_update_the_head_independently()
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().last_head(), head_a_empty(true));
 
-    rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
+    rig.tile.fork_choice.mark_payload_verified(&A_ROOT, Box::default());
     let events = rig.crank();
     assert_eq!(events.last_head(), head_a(true));
     assert!(events.reorgs().is_empty(), "the head block did not move");

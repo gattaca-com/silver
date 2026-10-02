@@ -1,6 +1,6 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
+    B256, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
     SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView,
     SyncSubcommittee, gloas::PTC_SIZE,
 };
@@ -10,12 +10,14 @@ use silver_common::{
     SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
-        AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
-        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SYNC_COMMITTEE_MSG_SIZE, SignedBlsToExecutionChangeView,
-        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedSyncCommitteeProofView,
-        SignedVoluntaryExitView, SingleAttestationView, SyncCommitteeView,
+        AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
+        ExecutionPayloadEnvelopeView as Envelope, PROPOSER_SLASHING_SIZE,
+        ProposerPreferencesView as Prefs, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
+        SignedBlsToExecutionChangeView, SignedExecutionPayloadEnvelopeView as SignedPayload,
+        SignedProposerPreferencesView, SignedSyncCommitteeProofView, SignedVoluntaryExitView,
+        SingleAttestationView, SyncCommitteeView,
     },
 };
 use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
@@ -23,16 +25,18 @@ use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
     attestation_pool::InsertOutcome, fork_data_roots::ForkDataRoots, held_blocks::BlockSourceMsg,
-    seen_aggregates::Coverage,
+    seen_aggregates::Coverage, seen_proposer_preferences::ProposerPreferences,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
     error::ExecutionPayloadBidError as BidError,
-    fork_choice::ExecutionStatus,
+    fork_choice::{
+        ExecutionStatus, compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot,
+    },
     merkle, ssz_hash,
     stf::{
-        self, BuilderLedger, decode_bid, validate_bid_builder,
+        self, BuilderLedger, decode_bid, is_gas_limit_target_compatible, validate_bid_builder,
         verify_execution_payload_bid_signature,
     },
     validate,
@@ -623,27 +627,65 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let (parent_state, parent_payload) = (node.state_id, node.payload);
-        {
+        let full = {
             let parent = self.state.read_view(parent_state);
-
-            // Full: the bid builds on the parent's own payload, which must be
-            // verified. Empty: on the payload the parent itself built on.
-            let full = bid.parent_block_hash == parent_payload.bid_block_hash;
-            if full && !parent_payload.verified {
-                return Feedback::Ignore;
-            }
-            if !full && bid.parent_block_hash != parent.slot.state().latest_block_hash {
-                return Feedback::Ignore;
-            }
-
             let parent_epoch = parent.slot.state().slot / SLOTS_PER_EPOCH;
             if bid_epoch > parent_epoch + MIN_SEED_LOOKAHEAD {
                 return Feedback::Ignore;
             }
+
+            let Some(dependent_root) =
+                self.fork_choice.shuffling_dependent_root(&bid.parent_block_root, bid_epoch)
+            else {
+                return Feedback::Ignore;
+            };
+            let Some(prefs) = self.seen_proposer_preferences.get(bid.slot, &dependent_root) else {
+                return Feedback::Ignore;
+            };
+            if bid.fee_recipient != prefs.fee_recipient {
+                return Feedback::Ignore;
+            }
+
+            // Full: the bid builds on the parent's own payload. Empty: on the
+            // payload the parent itself built on, committed by an ancestor.
+            let full = bid.parent_block_hash == parent_payload.bid_block_hash;
+            if !full && bid.parent_block_hash != parent.slot.state().latest_block_hash {
+                return Feedback::Ignore;
+            }
+            let Some(owner_idx) = self.fork_choice.payload_owner(idx, &bid.parent_block_hash)
+            else {
+                return Feedback::Ignore;
+            };
+            let owner = self.fork_choice.node(owner_idx);
+            if !owner.payload.verified {
+                return Feedback::Ignore;
+            }
+            // Envelope verification pins a payload's gas limit to its block's
+            // committed bid; pre-Gloas the block carries the payload itself.
+            let owner_state = self.state.read_view(owner.state_id);
+            let owner_slot = owner_state.slot.state();
+            let parent_gas_limit = if owner.payload.is_gloas {
+                owner_slot.latest_execution_payload_bid.gas_limit
+            } else {
+                owner_slot.latest_execution_payload_header.gas_limit
+            };
+            if !is_gas_limit_target_compatible(
+                parent_gas_limit,
+                bid.gas_limit,
+                prefs.target_gas_limit,
+            ) {
+                return Feedback::Ignore;
+            }
+
+            if !self.is_bid_compatible_with_head(&bid) {
+                return Feedback::Ignore;
+            }
+
             if bid.prev_randao != parent.randao_mixes.at_epoch(parent_epoch) {
                 return Feedback::Reject(None);
             }
-        }
+            full
+        };
 
         // The spec checks the builder on `process_slots(parent, bid.slot)`.
         // Only epoch processing moves what those checks read (finalization,
@@ -665,6 +707,19 @@ impl BeaconStateTile {
                 return Feedback::Reject(None);
             }
         }
+        // The parent payload's exits apply only in the bid's own block, so the
+        // state above still shows the builder active.
+        if full {
+            let builder = view.builders.get(bid.builder_index as usize).expect("validated builder");
+            let exits = &self.fork_choice.node(idx).builder_exits;
+            if exits.iter().any(|request| {
+                *BuilderExitRequestView::pubkey(request) == builder.pubkey &&
+                    *BuilderExitRequestView::source_address(request) == builder.execution_address
+            }) {
+                return Feedback::Ignore;
+            }
+        }
+
         // Last of the checks: a pairing costs more than all of them together.
         if let Err(e) = verify_execution_payload_bid_signature(
             view.imm,
@@ -678,6 +733,101 @@ impl BeaconStateTile {
         }
 
         self.payload_bids_pool.add(bid, *signature);
+        Feedback::Accept
+    }
+
+    /// Spec `is_bid_compatible_with_head`.
+    fn is_bid_compatible_with_head(&self, bid: &ExecutionPayloadBid) -> bool {
+        let Some(head_idx) = self.fork_choice.find_node_idx(&self.fork_choice.find_head()) else {
+            return false;
+        };
+        let head = self.fork_choice.node(head_idx);
+        let head_state = self.state.read_view(head.state_id);
+        let head_slot = head_state.slot.state();
+        // Pre-Gloas the head block carries its payload, which the header holds.
+        let head_parent_hash = if head.payload.is_gloas {
+            head_slot.latest_execution_payload_bid.parent_block_hash
+        } else {
+            head_slot.latest_execution_payload_header.parent_hash
+        };
+
+        let builds_on_parent_payload = bid.parent_block_hash == head_parent_hash;
+        if bid.parent_block_root == head_slot.latest_block_header.parent_root &&
+            builds_on_parent_payload
+        {
+            return true;
+        }
+        if bid.parent_block_root != head.block_root {
+            return false;
+        }
+        if self.fork_choice.should_build_on_full(head_idx, bid.slot) {
+            bid.parent_block_hash == head.payload.bid_block_hash
+        } else {
+            builds_on_parent_payload
+        }
+    }
+
+    #[timed]
+    fn handle_proposer_preferences(&mut self, data: &[u8]) -> Feedback {
+        let Ok(signed) = <&[u8; SIGNED_PROPOSER_PREFERENCES_SIZE]>::try_from(data) else {
+            return Feedback::Reject(None);
+        };
+        let prefs = SignedProposerPreferencesView::message(signed);
+        let proposal_slot = Prefs::proposal_slot(prefs);
+        let dependent_root = *Prefs::dependent_root(prefs);
+
+        if self.seen_proposer_preferences.contains(proposal_slot, &dependent_root) {
+            return Feedback::AlreadySeen;
+        }
+        let proposal_epoch = proposal_slot / SLOTS_PER_EPOCH;
+        if !self.spec.is_gloas_at(proposal_epoch) {
+            return Feedback::Ignore;
+        }
+        if self.ticker.is_past_slot(proposal_slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Feedback::Ignore;
+        }
+        let lookahead_start = compute_shuffling_lookahead_start_slot(proposal_epoch);
+        if self.ticker.is_future_slot(lookahead_start, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
+            return Feedback::Ignore;
+        }
+
+        let Some(idx) = self.fork_choice.find_node_idx(&dependent_root) else {
+            return Feedback::Ignore;
+        };
+        let dependent_slot = compute_shuffling_dependent_slot(proposal_epoch);
+        if self.fork_choice.node(idx).slot > dependent_slot {
+            return Feedback::Reject(None);
+        }
+        if !self.fork_choice.is_valid_dependent_root(idx, dependent_slot) {
+            return Feedback::Ignore;
+        }
+
+        let at_lookahead =
+            self.epoch_start_state(self.fork_choice.node(idx).state_id, lookahead_start);
+        let view = self.state.read_view(at_lookahead);
+        let validator_index = Prefs::validator_index(prefs);
+        let lookahead_idx = (proposal_slot - lookahead_start) as usize;
+        if view.epoch.proposer_at(lookahead_idx) != Some(validator_index) {
+            return Feedback::Reject(None);
+        }
+
+        // `compute_fork_version(proposal_epoch)`: Gloas is the last scheduled fork.
+        let domain = bls::compute_domain(
+            bls::DOMAIN_PROPOSER_PREFERENCES,
+            view.imm.gloas_fork_version,
+            &view.imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&Prefs::hash_tree_root(prefs), &domain);
+        let pubkey = view.validators.pubkey_decompressed(validator_index as usize);
+        if !bls::verify_one(pubkey, SignedProposerPreferencesView::signature(signed), &signing_root)
+        {
+            return Feedback::Reject(None);
+        }
+
+        self.seen_proposer_preferences.insert(proposal_slot, dependent_root, ProposerPreferences {
+            fee_recipient: *Prefs::fee_recipient(prefs),
+            target_gas_limit: Prefs::target_gas_limit(prefs),
+        });
         Feedback::Accept
     }
 
@@ -918,7 +1068,7 @@ impl BeaconStateTile {
             None => return Feedback::Reject(None),
         };
 
-        self.fork_choice.mark_payload_verified(&block_root);
+        self.fork_choice.mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.to_read(),
             block_root,
@@ -1332,6 +1482,7 @@ impl BeaconStateTile {
             ),
             GossipTopic::SyncCommitteeContributionAndProof => self.handle_sync_contribution(data),
             GossipTopic::ExecutionPayloadBid => self.handle_execution_payload_bid(data),
+            GossipTopic::ProposerPreferences => self.handle_proposer_preferences(data),
             _ => return true,
         };
         match feedback {
@@ -1435,6 +1586,14 @@ pub(super) fn is_sync_aggregator(selection_proof: &[u8; 96]) -> bool {
 /// each survivor.
 #[cfg(feature = "ef_tests")]
 impl BeaconStateTile {
+    pub fn ef_gossip_proposer_preferences(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_proposer_preferences(ssz)
+    }
+
+    pub fn ef_gossip_execution_payload_bid(&mut self, ssz: &[u8]) -> Feedback {
+        self.handle_execution_payload_bid(ssz)
+    }
+
     pub fn ef_gossip_sync_committee_message(&mut self, ssz: &[u8], subnet: u64) -> Feedback {
         let prepared = match self.prepare_sync_message(ssz, subnet) {
             Ok(p) => PreparedVote::SyncMessage(p),

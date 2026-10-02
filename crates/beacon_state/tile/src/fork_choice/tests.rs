@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::PayloadResolution;
 
-use super::{vote::branch_voted_for, *};
+use super::{node::PTC_SIZE, vote::branch_voted_for, *};
 use crate::stf::VoteTarget;
 
 /// Opaque per-tier bundle for topology/weight tests that never resolve
@@ -884,6 +884,30 @@ fn gloas_tie_broken_by_should_extend_payload() {
     assert_eq!(fc.find_head(), root(4));
 }
 
+/// Next slot: FULL unless a PTC majority voted the payload untimely or its
+/// data unavailable. Later slots: the head's resolution alone.
+#[test]
+fn should_build_on_full_follows_ptc_for_the_next_slot() {
+    let g = cp(0, 1);
+    let mut fc = anchored(8);
+    fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, true));
+    fc.on_block(gloas_block(1, root(3), root(1), g, g, PayloadStatus::Full, false));
+    fc.on_tick(1);
+    let (head, unverified) =
+        (fc.find_node_idx(&root(2)).unwrap(), fc.find_node_idx(&root(3)).unwrap());
+
+    assert!(fc.should_build_on_full(head, 2));
+    assert!(!fc.should_build_on_full(unverified, 2), "unverified payload resolves EMPTY");
+
+    for i in 0..PTC_SIZE / 2 {
+        fc.record_ptc_vote(&root(2), i, false, true);
+    }
+    assert!(fc.should_build_on_full(head, 2), "half untimely is not a majority");
+    fc.record_ptc_vote(&root(2), PTC_SIZE / 2, false, true);
+    assert!(!fc.should_build_on_full(head, 2));
+    assert!(fc.should_build_on_full(head, 3), "a later slot ignores the PTC");
+}
+
 /// Spec `get_shuffling_dependent_root`: the ancestor at the last slot of the
 /// epoch before `epoch - MIN_SEED_LOOKAHEAD`, walking past skipped slots; the
 /// first two epochs resolve to genesis.
@@ -957,7 +981,7 @@ fn gloas_unverified_payload_forces_empty() {
     assert_eq!(fc.find_head(), root(4));
 
     // Once the envelope is verified, the heavier FULL branch wins.
-    fc.mark_payload_verified(&root(2));
+    fc.mark_payload_verified(&root(2), Box::default());
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
@@ -1031,7 +1055,7 @@ fn gloas_boost_is_pending_not_empty() {
 
     // Envelope verified → resolves FULL. With boost wrongly in `empty` this
     // would stay EMPTY.
-    fc.mark_payload_verified(&root(2));
+    fc.mark_payload_verified(&root(2), Box::default());
     fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
     fc.apply_score_changes();
     assert!(fc.head_payload_present());
@@ -1065,7 +1089,7 @@ fn payload_resolution_follows_the_selected_node() {
     assert_eq!(fc.find_head(), root(3));
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty, "no envelope yet");
 
-    fc.mark_payload_verified(&root(3));
+    fc.mark_payload_verified(&root(3), Box::default());
     assert_eq!(fc.find_head(), root(3));
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
 }
@@ -1086,7 +1110,7 @@ fn a_gloas_anchor_resolves_empty_until_its_envelope_is_verified() {
     );
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty);
 
-    fc.mark_payload_verified(&root(1));
+    fc.mark_payload_verified(&root(1), Box::default());
     assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Full);
 }
 

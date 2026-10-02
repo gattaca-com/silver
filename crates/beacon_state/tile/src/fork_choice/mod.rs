@@ -12,6 +12,7 @@ mod payload;
 mod tests;
 mod vote;
 
+pub(crate) use head::{compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot};
 pub use justified_balances::JustifiedBalances;
 pub use lookup::NodeLookup;
 use node::{Branch, NodeCheckpoints, PtcVotes};
@@ -121,6 +122,7 @@ impl ForkChoice {
                 verified: !anchor_is_gloas,
                 is_gloas: anchor_is_gloas,
             },
+            builder_exits: Box::default(),
             ptc: PtcVotes::default(),
         });
         lookup.insert(finalized_block_root, 0);
@@ -181,6 +183,7 @@ impl ForkChoice {
                 verified: b.payload_verified,
                 is_gloas: b.is_gloas,
             },
+            builder_exits: Box::default(),
             ptc: PtcVotes::default(),
         });
         self.lookup.insert(b.block_root, node_idx);

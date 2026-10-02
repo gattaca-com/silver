@@ -199,11 +199,37 @@ pub fn decode_bid(signed_bid: &[u8]) -> Result<ExecutionPayloadBid, E> {
     ExecutionPayloadBid::from_ssz(message).map_err(|_| E::Malformed { len: signed_bid.len() })
 }
 
+/// Spec `is_gas_limit_target_compatible`: the EIP-1559 step from `parent`
+/// towards `target`, clamped to the reachable range.
+pub fn is_gas_limit_target_compatible(parent: u64, gas_limit: u64, target: u64) -> bool {
+    let max_step = (parent / 1024).saturating_sub(1);
+    gas_limit == target.clamp(parent - max_step, parent.saturating_add(max_step))
+}
+
 #[cfg(test)]
 mod tests {
     use silver_common::ssz_view::SIGNED_EXECUTION_PAYLOAD_BID_MIN;
 
     use super::*;
+
+    #[test]
+    fn gas_limit_moves_one_step_towards_target() {
+        let parent = 60_000_000;
+        let step = parent / 1024 - 1;
+        assert!(is_gas_limit_target_compatible(parent, parent, parent));
+        assert!(is_gas_limit_target_compatible(parent, parent + 100, parent + 100));
+        assert!(!is_gas_limit_target_compatible(parent, parent, parent + 100), "target reachable");
+        assert!(is_gas_limit_target_compatible(parent, parent + step, u64::MAX));
+        assert!(!is_gas_limit_target_compatible(parent, parent + step + 1, u64::MAX));
+        assert!(is_gas_limit_target_compatible(parent, parent - step, 0));
+        assert!(!is_gas_limit_target_compatible(parent, parent - step - 1, 0));
+    }
+
+    #[test]
+    fn gas_limit_under_one_step_cannot_move() {
+        assert!(is_gas_limit_target_compatible(1023, 1023, 0));
+        assert!(!is_gas_limit_target_compatible(1023, 1024, u64::MAX));
+    }
 
     #[test]
     fn decode_bid_rejects_bad_inner_bid_offset() {

@@ -132,6 +132,27 @@ impl ForkChoice {
         self.get_checkpoint_block(root, compute_shuffling_dependent_slot(epoch))
     }
 
+    /// Spec `should_build_on_full`, with the head's payload resolved as head
+    /// selection resolves it. FULL implies a verified payload, which covers
+    /// the spec's unverified-counts-as-untimely case.
+    pub fn should_build_on_full(&self, head_idx: usize, slot: Slot) -> bool {
+        let head = &self.nodes[head_idx];
+        let full = self.resolves_to_full(head_idx);
+        if head.slot + 1 != slot {
+            return full;
+        }
+        full && head.ptc.untimely_count() <= PTC_SIZE / 2 &&
+            head.ptc.unavailable_count() <= PTC_SIZE / 2
+    }
+
+    /// Spec `is_valid_dependent_root`: on some branch the block is, or can
+    /// still become, the latest block at or before `dependent_slot`.
+    pub fn is_valid_dependent_root(&self, idx: usize, dependent_slot: Slot) -> bool {
+        // Children follow their parent in `nodes`.
+        self.nodes[idx + 1..].iter().any(|n| n.parent_ix == idx && n.slot > dependent_slot) ||
+            self.find_head() == self.nodes[idx].block_root
+    }
+
     pub fn checkpoint_block_of(&self, mut idx: usize, epoch_start_slot: Slot) -> Option<B256> {
         loop {
             let n = &self.nodes[idx];
@@ -272,12 +293,14 @@ impl ForkChoice {
     }
 }
 
+/// Spec `compute_shuffling_lookahead_start_slot`: the first slot whose state
+/// holds `epoch` in its `proposer_lookahead`.
+pub(crate) fn compute_shuffling_lookahead_start_slot(epoch: Epoch) -> Slot {
+    epoch.saturating_sub(MIN_SEED_LOOKAHEAD) * SLOTS_PER_EPOCH
+}
+
 /// Spec `compute_shuffling_dependent_slot`: the last slot whose block can
 /// still change `epoch`'s shuffling.
-fn compute_shuffling_dependent_slot(epoch: Epoch) -> Slot {
-    const GENESIS_SLOT: Slot = 0;
-    if epoch <= MIN_SEED_LOOKAHEAD {
-        return GENESIS_SLOT;
-    }
-    (epoch - MIN_SEED_LOOKAHEAD) * SLOTS_PER_EPOCH - 1
+pub(crate) fn compute_shuffling_dependent_slot(epoch: Epoch) -> Slot {
+    compute_shuffling_lookahead_start_slot(epoch).saturating_sub(1)
 }

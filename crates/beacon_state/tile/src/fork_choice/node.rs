@@ -1,4 +1,5 @@
 use silver_beacon_state_data::{B256, Checkpoint, Slot, StateId};
+use silver_common::ssz_view::BUILDER_EXIT_REQUEST_SIZE;
 
 use super::NULL;
 
@@ -41,6 +42,9 @@ pub struct ForkChoiceNode {
 
     pub checkpoints: NodeCheckpoints,
     pub payload: PayloadAxis,
+    /// The verified payload's builder exit requests. A child building on this
+    /// payload applies them; this node's post-state never does.
+    pub builder_exits: Box<[[u8; BUILDER_EXIT_REQUEST_SIZE]]>,
     pub(super) ptc: PtcVotes,
 }
 
@@ -134,6 +138,17 @@ impl PtcVotes {
         popcount(&self.da)
     }
 
+    /// Cast "not timely" votes; an uncast vote counts for neither side.
+    #[inline]
+    pub(super) fn untimely_count(&self) -> usize {
+        popcount_unset(&self.voted, &self.present)
+    }
+
+    #[inline]
+    pub(super) fn unavailable_count(&self) -> usize {
+        popcount_unset(&self.voted, &self.da)
+    }
+
     #[cfg(any(test, feature = "ef_tests"))]
     pub(super) fn timeliness(&self) -> [Option<bool>; PTC_SIZE] {
         self.optional(&self.present)
@@ -161,4 +176,9 @@ impl PtcVotes {
 #[inline]
 fn popcount(bits: &[u64; 8]) -> usize {
     bits.iter().map(|w| w.count_ones() as usize).sum()
+}
+
+#[inline]
+fn popcount_unset(voted: &[u64; 8], set: &[u64; 8]) -> usize {
+    voted.iter().zip(set).map(|(v, s)| (v & !s).count_ones() as usize).sum()
 }

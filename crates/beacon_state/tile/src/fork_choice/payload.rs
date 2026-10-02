@@ -1,5 +1,6 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::B256;
+use silver_common::ssz_view::BUILDER_EXIT_REQUEST_SIZE;
 use silver_log::info;
 
 use super::{ExecutionStatus, ForkChoice, NULL, node::PTC_SIZE};
@@ -81,10 +82,30 @@ impl ForkChoice {
         }
     }
 
-    pub fn mark_payload_verified(&mut self, block_root: &B256) {
+    pub fn mark_payload_verified(
+        &mut self,
+        block_root: &B256,
+        builder_exits: Box<[[u8; BUILDER_EXIT_REQUEST_SIZE]]>,
+    ) {
         if let Some(idx) = self.find_node_idx(block_root) {
-            self.nodes[idx].payload.verified = true;
+            let node = &mut self.nodes[idx];
+            node.payload.verified = true;
+            node.builder_exits = builder_exits;
             self.head_moved = true;
+        }
+    }
+
+    /// The node at or above `idx` whose block committed to `block_hash`.
+    pub fn payload_owner(&self, mut idx: usize, block_hash: &B256) -> Option<usize> {
+        loop {
+            let n = &self.nodes[idx];
+            if n.payload.bid_block_hash == *block_hash {
+                return Some(idx);
+            }
+            if n.parent_ix == NULL {
+                return None;
+            }
+            idx = n.parent_ix;
         }
     }
 

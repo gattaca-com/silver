@@ -37,6 +37,7 @@ use crate::{
         precomputed_epochs::PrecomputedEpochs,
         proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
+        seen_proposer_preferences::SeenProposerPreferences,
         seen_validators::{SeenIndices, SeenValidators},
         shuffling_cache::ShufflingCache,
         sync_contribution_pool::SyncContributionPool,
@@ -59,6 +60,7 @@ mod held_blocks;
 mod orphan_pool;
 mod proposer_preparations;
 mod seen_aggregates;
+mod seen_proposer_preferences;
 mod seen_validators;
 mod shuffling_cache;
 mod sync_contribution_pool;
@@ -202,6 +204,7 @@ pub struct BeaconStateTile {
     pending_envelopes: FxHashMap<B256, TRead>,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
+    seen_proposer_preferences: SeenProposerPreferences,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
 
@@ -278,6 +281,7 @@ impl BeaconStateTile {
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
             payload_bids_pool: BidPool::default(),
+            seen_proposer_preferences: SeenProposerPreferences::default(),
             pending_bounds: syncing.pending,
             verify_weak_subjectivity,
             reader: TCacheReader::new(tcaches),
@@ -758,6 +762,7 @@ impl BeaconStateTile {
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
         self.payload_bids_pool.on_slot(slot);
+        self.seen_proposer_preferences.on_slot(slot);
         if slot.is_multiple_of(SLOTS_PER_EPOCH) {
             self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
         }
@@ -1015,7 +1020,7 @@ impl BeaconStateTile {
         // EF vectors have no execution client: validate against the committed bid
         // and mark the payload valid synchronously (production notifies the EL).
         let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
-        self.fork_choice.mark_payload_verified(&block_root);
+        self.fork_choice.mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
         self.fork_choice.on_payload_valid(&block_root);
         self.recompute_head();
         true
@@ -1059,7 +1064,7 @@ impl BeaconStateTile {
     /// verdict still outstanding (`ef_payload_verdict` delivers it).
     pub fn ef_receive_execution_payload(&mut self, ssz: &[u8]) -> bool {
         let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
-        self.fork_choice.mark_payload_verified(&block_root);
+        self.fork_choice.mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
         self.recompute_head();
         true
     }
@@ -1067,6 +1072,43 @@ impl BeaconStateTile {
     pub fn ef_set_finalized_checkpoint(&mut self, cp: Checkpoint) {
         self.fork_choice.lift_finalized(cp);
         self.recompute_head();
+    }
+
+    /// Overwrites `block_root`'s post-state `finalized_checkpoint` in a new
+    /// epoch entry; siblings sharing the old entry keep theirs.
+    pub fn ef_set_state_finalized_checkpoint(&mut self, block_root: &B256, cp: Checkpoint) {
+        let old = self.ef_state_of(block_root);
+        let epoch_idx = {
+            let mut g = self.state.write();
+            let mut w = g.epoch.roll_inheriting(old.epoch_idx);
+            w.state_mut().finalized_checkpoint = cp;
+            w.commit()
+        };
+        self.ef_replace_state(block_root, StateId { epoch_idx: Some(epoch_idx), ..old });
+    }
+
+    /// Overwrites `block_root`'s post-state committed bid `gas_limit` in a
+    /// child fork.
+    pub fn ef_set_state_bid_gas_limit(&mut self, block_root: &B256, gas_limit: u64) {
+        let mut fork = self.state.apply_block_view(self.ef_state_of(block_root));
+        fork.view.slot.state_mut().latest_execution_payload_bid.gas_limit = gas_limit;
+        let new = fork.commit();
+        self.ef_replace_state(block_root, new);
+    }
+
+    fn ef_state_of(&self, block_root: &B256) -> StateId {
+        let idx = self.fork_choice.find_node_idx(block_root).expect("block in fork choice");
+        self.fork_choice.node(idx).state_id
+    }
+
+    fn ef_replace_state(&mut self, block_root: &B256, new: StateId) {
+        let idx = self.fork_choice.find_node_idx(block_root).expect("block in fork choice");
+        let state_id = &mut self.fork_choice.nodes[idx].state_id;
+        let old = *state_id;
+        *state_id = new;
+        if self.last_applied == old {
+            self.last_applied = new;
+        }
     }
 
     /// The `beacon_block` gossip verdict: precheck plus proposer signature,
@@ -1117,7 +1159,8 @@ impl BeaconStateTile {
                 if self.fork_choice.is_payload_verified(&block_root) {
                     return Feedback::AlreadySeen;
                 }
-                self.fork_choice.mark_payload_verified(&block_root);
+                self.fork_choice
+                    .mark_payload_verified(&block_root, stf::envelope_builder_exits(ssz));
                 self.recompute_head();
                 Feedback::Accept
             }

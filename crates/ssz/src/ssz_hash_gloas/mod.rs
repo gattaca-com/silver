@@ -11,6 +11,7 @@ mod execution_payload;
 mod execution_payload_bid;
 mod execution_requests;
 mod payload_attestation;
+mod proposer_preferences;
 
 pub use execution_requests::{
     EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView, RequestCountOutOfBounds,

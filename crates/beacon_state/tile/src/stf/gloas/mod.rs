@@ -7,8 +7,8 @@ mod payload_attestation;
 mod withdrawals;
 
 pub use bid::{
-    collect_sigs_execution_payload_bid, decode_bid, process_execution_payload_bid,
-    validate_bid_builder, verify_execution_payload_bid_signature,
+    collect_sigs_execution_payload_bid, decode_bid, is_gas_limit_target_compatible,
+    process_execution_payload_bid, validate_bid_builder, verify_execution_payload_bid_signature,
 };
 pub(crate) use builders::{BUILDER_INDEX_SELF_BUILD, PAYLOAD_BUILDER_VERSION};
 pub use builders::{
@@ -17,7 +17,9 @@ pub use builders::{
 };
 pub use committee::process_ptc_window;
 pub(crate) use committee::{fill_epoch_ptc, get_ptc};
-pub use envelope::{envelope_withdrawals_match_expected, verify_execution_payload_envelope};
+pub use envelope::{
+    envelope_builder_exits, envelope_withdrawals_match_expected, verify_execution_payload_envelope,
+};
 pub use parent_payload::process_parent_execution_payload;
 pub(crate) use payload_attestation::hash_payload_attestation_data;
 pub use payload_attestation::{collect_sigs_payload_attestations, process_payload_attestations};
