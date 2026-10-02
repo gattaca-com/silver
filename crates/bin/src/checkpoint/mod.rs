@@ -4,7 +4,7 @@ use std::{
 };
 
 use silver_beacon_state_data::{B256, CheckpointState, SLOTS_PER_EPOCH, SpecConfig};
-use silver_config::{ChainConfig, Config, Genesis};
+use silver_config::{ChainConfig, Genesis};
 use silver_storage::latest_local_checkpoint;
 
 use self::checkpoint_providers::CheckpointProviders;
@@ -24,18 +24,17 @@ pub struct BootCheckpoint {
 impl BootCheckpoint {
     /// The configured `checkpoint_file`, else a provider download when the
     /// persisted checkpoint is missing or behind, else the persisted one.
-    pub fn load(config: &Config) -> io::Result<Self> {
-        let chain_config = config.chain_config();
+    pub fn load(chain_config: &ChainConfig) -> io::Result<Self> {
         if let Some(file) = &chain_config.checkpoint_file {
             return Self::from_file(file, chain_config.checkpoint_pubkeys_file.as_deref());
         }
 
-        let local = latest_local_checkpoint(config.data_storage_dir());
+        let local = latest_local_checkpoint(&chain_config.data_dir);
         let local_head =
             local.as_ref().map(|(slot, ssz, _)| (slot / SLOTS_PER_EPOCH, ssz.as_path()));
         match Self::download_if_behind(chain_config, local_head)? {
             Some(downloaded) => Ok(downloaded),
-            None => Self::persisted(local, config.data_storage_dir()),
+            None => Self::persisted(local, &chain_config.data_dir),
         }
     }
 

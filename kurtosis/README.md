@@ -51,13 +51,13 @@ RUST_LOG=info,silver_network=info,silver_peer=info \
 ## What `setup.sh` writes
 
 silver takes a whole `Config` from `--config <file>`. The script harvests these
-into `silver-devnet.toml`:
+into `silver-devnet.toml` and its `network` directory, `silver-devnet-network/`:
 
 | Field | Source |
 |-------|--------|
-| `chain_config.spec` | `/eth/v1/config/spec` — fork versions, fork epochs, blob schedule. |
+| `network/config.yaml` | `/eth/v1/config/spec` — fork versions, fork epochs, blob schedule. |
+| `network/bootstrap_nodes.yaml` | `/eth/v1/node/identity` on each CL node. |
 | `chain_config.checkpoint_file` | `genesis.ssz`, or the finalized state with `--finalized-anchor`. |
-| `chain_config.bootstrap_enrs` | `/eth/v1/node/identity` on each CL node. |
 | `external_ip_v4` | the `kt-<enclave>` bridge gateway, so peers can dial silver back. |
 | `engine_config.*` | the local reth's endpoint and `el/jwt.hex`. |
 
@@ -65,7 +65,7 @@ The ports come from env-overridable vars in the script. silver keeps its peer id
 in `node.key` under `data_storage_dir`; delete that file to get a new one.
 
 `fork_digest`, `next_fork_version` and `genesis_unix_secs` are **not** written.
-silver derives them from `chain_config.spec` and the anchor state, so the config
+silver derives them from the spec and the anchor state, so the config
 cannot contradict the network. The spec must therefore be right: a wrong
 `FULU_FORK_EPOCH` gives a wrong digest, and silver refuses a spec that reads
 earlier than Fulu.
