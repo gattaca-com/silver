@@ -1,6 +1,5 @@
-//! The daemon's CLI flags, plus the two things it reads out of the node's own
-//! config file: the slot clock block-event rows are timed against and the
-//! ClickHouse endpoint they go to.
+//! The daemon's CLI flags, plus the two endpoints it reads out of the node's
+//! own config file: ClickHouse and the dashboard.
 
 use std::{
     fs,
@@ -11,7 +10,6 @@ use std::{
 
 use bytesize::ByteSize;
 use clap::Parser;
-use silver_config::ChainConfig;
 
 #[derive(Parser)]
 #[command(about = "Rotate silver's #[timed] marks into .fxt.gz segment files")]
@@ -34,11 +32,10 @@ pub struct Args {
     /// oldest ones until the directory fits.
     #[arg(long, default_value = "20GB")]
     pub retain: ByteSize,
-    /// The node's own config file: `[chain_config]` gives the slot clock the
-    /// rows are timed against, and a `[telemetry] clickhouse_addr = "..."`
-    /// endpoint turns on the ClickHouse inserts. Unknown keys
-    /// are ignored; without the file, mainnet timings apply and nothing is
-    /// inserted.
+    /// The node's own config file, where a `[telemetry] clickhouse_addr =
+    /// "..."` endpoint turns on the ClickHouse inserts. The chain comes from
+    /// the node once it boots. Unknown keys are ignored; without the file,
+    /// nothing is inserted.
     #[arg(long)]
     config: Option<PathBuf>,
     /// Dashboard `host:port` to stream live metrics to over UDP; unset
@@ -64,8 +61,6 @@ impl Args {
 pub struct FileConfig {
     #[serde(default)]
     pub telemetry: TelemetrySection,
-    #[serde(default)]
-    pub chain_config: ChainConfig,
     #[serde(default)]
     pub exporter: ExporterSection,
 }

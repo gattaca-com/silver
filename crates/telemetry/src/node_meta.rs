@@ -2,8 +2,7 @@ use std::{fs, thread, time::Duration};
 
 use flux::utils::directories::shmem_dir_queues;
 use flux_profiler::published_pid;
-use silver_common::APP_NAME;
-use silver_config::ChainConfig;
+use silver_common::{APP_NAME, NodeChain};
 use silver_stages::SlotClock;
 
 /// The per-node values joined onto every row.
@@ -17,15 +16,14 @@ pub struct NodeMeta {
     pub version: String,
 }
 
-/// The genesis of the state node `pid` booted from, since slot times mean
-/// nothing without it. `None` once that node is gone: one that dies while
-/// loading its checkpoint never publishes.
-pub fn wait_for_node_genesis(pid: u32) -> Option<u64> {
-    let path = shmem_dir_queues(APP_NAME).join("genesis");
-    silver_log::info!(path = %path.display(), "waiting for the node to publish its genesis");
+/// The chain node `pid` booted into, since slot times mean nothing without
+/// it. `None` once that node is gone: one that dies while loading its
+/// checkpoint never publishes.
+pub fn wait_for_node_chain(pid: u32) -> Option<NodeChain> {
+    silver_log::info!("waiting for the node to publish its chain");
     loop {
-        if let Some(genesis) = fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()) {
-            return Some(genesis);
+        if let Some(chain) = NodeChain::read() {
+            return Some(chain);
         }
         if published_pid(APP_NAME) != Some(pid) {
             return None;
@@ -35,12 +33,11 @@ pub fn wait_for_node_genesis(pid: u32) -> Option<u64> {
 }
 
 impl NodeMeta {
-    pub fn new(chain: &ChainConfig, genesis_unix_secs: u64) -> Self {
-        let slot_ms = chain.slot_duration().as_millis() as u64;
+    pub fn new(chain: &NodeChain) -> Self {
         Self {
             node: Self::hostname(),
-            network: chain.spec.network_name(),
-            clock: SlotClock::new(genesis_unix_secs, slot_ms),
+            network: chain.network.clone(),
+            clock: SlotClock::new(chain.genesis_unix_secs, chain.slot_ms),
             version: String::new(),
         }
     }

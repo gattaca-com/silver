@@ -10,8 +10,7 @@ use std::{
 
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
-use silver_common::{APP_NAME, Nanos, SilverSpine};
-use silver_config::ChainConfig;
+use silver_common::{APP_NAME, Nanos, NodeChain, SilverSpine};
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 
@@ -68,12 +67,7 @@ pub struct Exporter {
 }
 
 impl Exporter {
-    pub fn open(
-        dest: SocketAddr,
-        label: String,
-        chain: &ChainConfig,
-        genesis_unix_secs: u64,
-    ) -> Result<Self, String> {
+    pub fn open(dest: SocketAddr, label: String, chain: &NodeChain) -> Result<Self, String> {
         let bind: SocketAddr =
             if dest.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
         let socket = UdpSocket::bind(bind).map_err(|e| format!("bind: {e}"))?;
@@ -87,8 +81,8 @@ impl Exporter {
             base_dir: flux::utils::directories::local_share_dir(),
             label,
             instance_id,
-            genesis_unix_secs,
-            slot_ms: chain.slot_duration().as_millis() as u64,
+            genesis_unix_secs: chain.genesis_unix_secs,
+            slot_ms: chain.slot_ms,
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),

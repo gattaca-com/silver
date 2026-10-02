@@ -69,10 +69,10 @@ const BUILD_INFO: &str = build_info::format!(
     $.timestamp
 );
 
-fn publish_for_telemetry(file: &str, contents: &str) -> io::Result<()> {
+fn publish_build_info() -> io::Result<()> {
     let dir = flux::utils::directories::shmem_dir_queues(APP_NAME);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(file), contents)
+    std::fs::write(dir.join("build-info"), BUILD_INFO)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -86,7 +86,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // `#[timed]` is inert until a process opts in.
     enable_profiler(APP_NAME);
-    publish_for_telemetry("build-info", BUILD_INFO)?;
 
     let config = args.config()?;
 
@@ -96,12 +95,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     silver_log::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
     let genesis = Genesis::from_state(boot_checkpoint.ssz())?;
-    publish_for_telemetry("genesis", &genesis.unix_secs.to_string())?;
 
     let chain_config = config.chain_config();
     let wall_epoch = chain_config.wall_epoch(&genesis);
     let fork_digest = chain_config.checked_fork_digest(wall_epoch, &genesis)?;
     silver_log::info!("loaded config with fork digest: {}", hex::encode(fork_digest));
+
+    publish_build_info()?;
+    chain_config.node_chain(&genesis).publish()?;
 
     // TCaches
     let network_ingress_producer =
