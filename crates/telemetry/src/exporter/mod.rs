@@ -10,11 +10,15 @@ use std::{
 
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
-use silver_common::{APP_NAME, Nanos, NodeChain, SilverSpine};
+use silver_common::{APP_NAME, Nanos, NodeChain, PeerStats, SilverSpine};
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
+use silver_stages::StageEvent;
 
-use crate::exporter::{sources::ExportSources, streams::SpineStreams};
+use crate::exporter::{
+    sources::ExportSources,
+    streams::{p2p_record, scores_record, stage_record, topic_record},
+};
 
 mod sources;
 mod streams;
@@ -59,7 +63,6 @@ pub struct Exporter {
     node_pid: Option<u32>,
     encoder: Encoder,
     sources: ExportSources,
-    streams: SpineStreams,
     sink: Sink,
     next_bucket: Nanos,
     next_fast: Nanos,
@@ -86,7 +89,6 @@ impl Exporter {
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),
-            streams: SpineStreams::default(),
             sink: Sink { socket, bytes: [0; KINDS], datagrams: 0, dropped: 0 },
             next_bucket: now,
             next_fast: now,
@@ -94,12 +96,27 @@ impl Exporter {
         })
     }
 
+    /// Streamed into the open datagram; `spin` flushes it.
+    pub fn on_stage(&mut self, event: &StageEvent) {
+        let Self { encoder, sink, .. } = self;
+        encoder.stage(Nanos::now().0, &stage_record(event), &mut |d| sink.send(d));
+    }
+
     pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.sources.drain();
 
         let now = Nanos::now();
-        let Self { encoder, streams, sink, .. } = self;
-        streams.drain(adapter, encoder, now.0, &mut |d| sink.send(d));
+        let Self { encoder, sink, .. } = self;
+
+        adapter.consume(|stats: PeerStats, _| match &stats {
+            PeerStats::P2p(s) => encoder.peer_p2p(now.0, &p2p_record(s), &mut |d| sink.send(d)),
+            PeerStats::Scores(s) => {
+                encoder.peer_scores(now.0, &scores_record(s), &mut |d| sink.send(d))
+            }
+            PeerStats::Topic(s) => {
+                encoder.peer_topic(now.0, &topic_record(s), &mut |d| sink.send(d))
+            }
+        });
 
         if now >= self.next_bucket {
             self.follow_node(now);
@@ -118,10 +135,6 @@ impl Exporter {
         }
         let Self { encoder, sink, .. } = self;
         encoder.flush(&mut |d| sink.send(d));
-
-        // Queue drains are invisible to the adapter, and under `flux/park` an
-        // idle-looking loop parks with nobody left to signal it.
-        adapter.mark_work();
     }
 
     /// Stale mmaps and queue cursors of the departed node are dropped with the
