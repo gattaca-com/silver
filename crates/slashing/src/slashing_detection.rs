@@ -60,7 +60,7 @@ impl SlashingDetection {
         self.surround.as_ref().map_or(0, SurroundVotes::reserved_bytes)
     }
 
-    /// Takes a public vote whose signature verified.
+    /// Takes a verified vote received from the network or accepted for relay.
     pub fn record_vote(&mut self, accepted: &[u8; SINGLE_ATT_SIZE], fork_version: Version) {
         self.votes.record(accepted, fork_version);
         if let Some(proof) =
@@ -70,8 +70,8 @@ impl SlashingDetection {
         }
     }
 
-    /// Takes a public `Attestation` of one committee whose signature verified
-    /// against `committee` under `fork_version`.
+    /// Takes a verified `Attestation` received from the network or accepted
+    /// for relay, signed by `committee` under `fork_version`.
     pub fn record_aggregate(
         &mut self,
         attestation: &[u8],

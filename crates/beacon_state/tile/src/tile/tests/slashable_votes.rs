@@ -174,7 +174,7 @@ fn public_surrounds_publish_only_when_enabled_and_useful() {
     for (history, first_local, covered, slashed, expected) in [
         (1, false, false, false, true),
         (0, false, false, false, false),
-        (1, true, false, false, false),
+        (1, true, false, false, true),
         (1, false, true, false, false),
         (1, false, false, true, false),
     ] {
@@ -244,7 +244,7 @@ fn failed_handoff_keeps_the_attester_proof_queued() {
     let [x, y, _] = peers(&mut rig);
     for (source, aggregator) in [(0, x), (1, y)] {
         let aggregate = rig.aggregate(&[0], source, aggregator);
-        assert_eq!(rig.tile.handle_aggregate_and_proof(&aggregate, false), Feedback::Accept);
+        assert_eq!(rig.tile.handle_aggregate_and_proof(&aggregate), Feedback::Accept);
     }
     rig.drain();
     let mut reservations = Vec::new();
@@ -273,16 +273,17 @@ fn local_vote_is_refused_only_against_public_evidence() {
         (1, (0, 1), (1, 1), true, Ok(())),
         (0, (0, 1), (1, 0), true, Ok(())),
     ] {
-        for one_batch in [true, false] {
+        for (one_batch, first_local) in [(true, false), (false, false), (true, true), (false, true)]
+        {
             let mut rig = Votes::started(surround_epochs);
             let (public, public_subnet) = rig.vote_in(public_at.0, public_at.1);
             let (mut local, local_subnet) = rig.vote_in(local_at.0, local_at.1);
             if !signed {
                 local = rig.forged(local);
             }
-            rig.submit(&public, public_subnet, false);
+            rig.submit(&public, public_subnet, first_local);
             if !one_batch {
-                rig.step();
+                assert_eq!(rig.step().relayed_votes, 1);
             }
             rig.submit(&local, local_subnet, true);
 
@@ -290,9 +291,17 @@ fn local_vote_is_refused_only_against_public_evidence() {
 
             let case = format!(
                 "surround_epochs {surround_epochs}, public {public_at:?}, local {local_at:?}, \
-                 signed: {signed}, one batch: {one_batch}"
+                 signed: {signed}, one batch: {one_batch}, first local: {first_local}"
             );
-            assert_eq!(drained.verdicts(), [verdict], "{case}");
+            let expected =
+                if one_batch && first_local { vec![Ok(()), verdict] } else { vec![verdict] };
+            assert_eq!(drained.verdicts(), expected, "{case}");
+            let local_relays = verdict == Ok(()) && public_at.0 != local_at.0;
+            assert_eq!(
+                drained.relayed_votes,
+                usize::from(one_batch) + usize::from(local_relays),
+                "{case}: only accepted votes relay"
+            );
             assert!(drained.originated.is_empty(), "{case}: not reported");
             if verdict == refused && surround_epochs > 0 {
                 assert_eq!(drained.relayed_votes, usize::from(one_batch), "{case}: not published");
@@ -329,8 +338,9 @@ fn aggregates_prove_only_public_conflicting_overlaps_once() {
         rig.gossip_in(&second, GossipTopic::BeaconAggregateAndProof, case == "local second");
         let drained = rig.step();
         assert_eq!(drained.relayed_votes, 2, "{case}: both accepted");
-        assert_eq!(drained.originated.len(), usize::from(case == "double"), "{case}");
-        if case != "double" {
+        let proves = matches!(case, "double" | "local first" | "local second");
+        assert_eq!(drained.originated.len(), usize::from(proves), "{case}");
+        if !proves {
             continue;
         }
         let (topic, slashing) = &drained.originated[0];
