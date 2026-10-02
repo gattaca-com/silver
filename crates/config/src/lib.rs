@@ -248,28 +248,18 @@ impl Config {
         self
     }
 
-    pub fn with_checkpoint(mut self, path: String) -> Self {
-        self.chain_config.checkpoint_file = Some(path);
+    pub fn with_execution_endpoint(mut self, url: String) -> Self {
+        self.engine_config.execution_endpoint = url;
         self
     }
 
-    pub fn with_checkpoint_pubkeys(mut self, path: String) -> Self {
-        self.chain_config.checkpoint_pubkeys_file = Some(path);
-        self
-    }
-
-    pub fn with_disable_weak_subjectivity_check(mut self, disable: bool) -> Self {
-        self.disable_weak_subjectivity_check = disable;
+    pub fn with_jwt_secret(mut self, path: String) -> Self {
+        self.engine_config.jwt_secret = path;
         self
     }
 
     pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
         self.engine_config.unsafe_no_el = unsafe_no_el;
-        self
-    }
-
-    pub fn with_beacon_api_bind(mut self, binds: Vec<String>) -> Self {
-        self.beacon_api_bind = binds;
         self
     }
 
@@ -516,14 +506,6 @@ mod tests {
             "127.0.0.1:5052",
             "/run/silver/beacon.sock"
         ]);
-    }
-
-    #[test]
-    fn builder_sets_beacon_api_bind() {
-        let cfg = Config::mainnet().unwrap();
-        assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
-        let cfg = cfg.with_beacon_api_bind(vec!["/run/beacon.sock".into()]);
-        assert_eq!(cfg.beacon_api_bind(), ["/run/beacon.sock"]);
     }
 
     #[test]
