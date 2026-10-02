@@ -68,7 +68,12 @@ pub struct Exporter {
 }
 
 impl Exporter {
-    pub fn open(dest: SocketAddr, label: String, chain: &ChainConfig) -> Result<Self, String> {
+    pub fn open(
+        dest: SocketAddr,
+        label: String,
+        chain: &ChainConfig,
+        genesis_unix_secs: u64,
+    ) -> Result<Self, String> {
         let bind: SocketAddr =
             if dest.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
         let socket = UdpSocket::bind(bind).map_err(|e| format!("bind: {e}"))?;
@@ -82,7 +87,7 @@ impl Exporter {
             base_dir: flux::utils::directories::local_share_dir(),
             label,
             instance_id,
-            genesis_unix_secs: chain.genesis_unix_secs,
+            genesis_unix_secs,
             slot_ms: chain.slot_duration().as_millis() as u64,
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),

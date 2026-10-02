@@ -1,6 +1,7 @@
-use std::fs;
+use std::{fs, thread, time::Duration};
 
 use flux::utils::directories::shmem_dir_queues;
+use flux_profiler::published_pid;
 use silver_common::APP_NAME;
 use silver_config::ChainConfig;
 use silver_stages::SlotClock;
@@ -16,13 +17,30 @@ pub struct NodeMeta {
     pub version: String,
 }
 
+/// The genesis of the state node `pid` booted from, since slot times mean
+/// nothing without it. `None` once that node is gone: one that dies while
+/// loading its checkpoint never publishes.
+pub fn wait_for_node_genesis(pid: u32) -> Option<u64> {
+    let path = shmem_dir_queues(APP_NAME).join("genesis");
+    silver_log::info!(path = %path.display(), "waiting for the node to publish its genesis");
+    loop {
+        if let Some(genesis) = fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()) {
+            return Some(genesis);
+        }
+        if published_pid(APP_NAME) != Some(pid) {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 impl NodeMeta {
-    pub fn new(chain: &ChainConfig) -> Self {
+    pub fn new(chain: &ChainConfig, genesis_unix_secs: u64) -> Self {
         let slot_ms = chain.slot_duration().as_millis() as u64;
         Self {
             node: Self::hostname(),
             network: chain.spec.network_name(),
-            clock: SlotClock::new(chain.genesis_unix_secs, slot_ms),
+            clock: SlotClock::new(genesis_unix_secs, slot_ms),
             version: String::new(),
         }
     }

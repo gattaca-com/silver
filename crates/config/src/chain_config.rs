@@ -1,8 +1,13 @@
-use std::{str::FromStr, time::Duration};
+use std::{
+    str::FromStr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
-use silver_chain_spec::SpecConfig;
-use silver_common::Enr;
+use silver_chain_spec::{ForkName, SpecConfig};
+use silver_common::{Enr, Error, SLOTS_PER_EPOCH};
+
+use crate::Genesis;
 
 /// Independent operators, so agreement between them means something.
 const MAINNET_CHECKPOINT_SYNC_URLS: [&str; 5] = [
@@ -36,7 +41,6 @@ const MAINNET_BOOTNODES: [&str; 17] = [
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ChainConfig {
-    pub genesis_unix_secs: u64,
     pub prepare_payload_lookahead_millis: u64,
     pub checkpoint_file: Option<String>,
     pub checkpoint_pubkeys_file: Option<String>,
@@ -55,7 +59,6 @@ pub struct ChainConfig {
 impl Default for ChainConfig {
     fn default() -> Self {
         Self {
-            genesis_unix_secs: 1606824023,
             prepare_payload_lookahead_millis: 4000,
             checkpoint_file: None,
             checkpoint_pubkeys_file: None,
@@ -70,6 +73,26 @@ impl Default for ChainConfig {
 }
 
 impl ChainConfig {
+    /// Zero before genesis.
+    pub fn wall_epoch(&self, genesis: &Genesis) -> u64 {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let since_genesis = now.as_millis().saturating_sub(genesis.unix_secs as u128 * 1000);
+        (since_genesis / self.slot_duration().as_millis()) as u64 / SLOTS_PER_EPOCH
+    }
+
+    /// Refuses a spec that puts `epoch` earlier than Fulu.
+    pub fn checked_fork_digest(&self, epoch: u64, genesis: &Genesis) -> Result<[u8; 4], Error> {
+        let fork = self.spec.fork_at(epoch);
+        if fork < ForkName::Fulu {
+            return Err(Error::ConfigError(format!(
+                "chain_config.spec puts epoch {epoch} in {}; silver runs Fulu and Gloas only \
+                 (check FULU_FORK_EPOCH)",
+                fork.name()
+            )));
+        }
+        Ok(self.spec.fork_digest_at(epoch, &genesis.validators_root))
+    }
+
     pub fn slot_duration(&self) -> Duration {
         Duration::from_millis(self.spec.slot_duration_ms())
     }

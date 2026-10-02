@@ -490,6 +490,15 @@ impl SpecConfig {
         }
     }
 
+    pub fn enr_fork_id(&self, epoch: u64, fork_digest: [u8; 4]) -> [u8; 16] {
+        let (next_version, next_epoch) = self.next_fork(epoch);
+        let mut eth2 = [0u8; 16];
+        eth2[..4].copy_from_slice(&fork_digest);
+        eth2[4..8].copy_from_slice(&next_version);
+        eth2[8..].copy_from_slice(&next_epoch.to_le_bytes());
+        eth2
+    }
+
     /// What this node calls the network it runs: `CONFIG_NAME` when the
     /// config file names one, and the name its `genesis_fork_version` carries
     /// otherwise.

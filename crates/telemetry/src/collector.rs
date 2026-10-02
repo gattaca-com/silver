@@ -22,7 +22,10 @@ use silver_common::{APP_NAME, Nanos, SilverSpine};
 use silver_log::{info, warn};
 
 use crate::{
-    clickhouse_tables::ClickHouseTables, config::Args, exporter::Exporter, node_meta::NodeMeta,
+    clickhouse_tables::ClickHouseTables,
+    config::Args,
+    exporter::Exporter,
+    node_meta::{NodeMeta, wait_for_node_genesis},
 };
 
 /// Loop iterations between the pid-file reads that detect the node's exit;
@@ -67,26 +70,31 @@ impl TraceCollector {
         // Block events are only consumed once the tile is up, so this wait is
         // the window in which a starting node's first ones go unseen.
         info!("waiting for the node's rings");
-        let mut reader = loop {
-            if let Some(reader) = CrossProcessReader::attach(APP_NAME) {
-                break reader;
+        let (mut reader, genesis_unix_secs) = loop {
+            let Some(reader) = CrossProcessReader::attach(APP_NAME) else {
+                thread::sleep(ATTACH_POLL);
+                continue;
+            };
+            info!(pid = reader.pid(), "attached");
+            match wait_for_node_genesis(reader.pid()) {
+                Some(genesis) => break (reader, genesis),
+                None => info!(pid = reader.pid(), "node exited before publishing its genesis"),
             }
-            thread::sleep(ATTACH_POLL);
         };
-        info!(pid = reader.pid(), "attached");
 
         reader.filter_short_frames(args.filter_short_frames);
 
         let clickhouse = file_config
             .telemetry
             .clickhouse_addr()?
-            .map(|addr| ClickHouseTables::open(addr, &file_config.chain_config));
+            .map(|addr| ClickHouseTables::open(addr, &file_config.chain_config, genesis_unix_secs));
 
         let exporter = file_config.exporter.dashboard_addr()?.and_then(|addr| {
             Exporter::open(
                 addr,
                 args.instance.clone().unwrap_or_else(NodeMeta::hostname),
                 &file_config.chain_config,
+                genesis_unix_secs,
             )
             .ok()
         });
