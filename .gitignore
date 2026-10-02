@@ -33,6 +33,7 @@ target/
 # kurtosis generated files
 kurtosis/silver-devnet.toml
 kurtosis/silver-gloas.toml
+kurtosis/silver-*-network/
 # ethereum consensus-spec-tests
 crates/beacon_state/consensus-spec-tests/
 kurtosis/el/
