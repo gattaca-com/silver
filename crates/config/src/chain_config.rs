@@ -60,8 +60,10 @@ impl ChainConfig {
             (None, None) => network.boot_source()?,
         };
         let spec = network.spec()?;
-        let data_dir =
-            data_dir.map_or_else(|| default_data_dir(&spec.network_name()), str::to_owned);
+        let data_dir = match data_dir {
+            Some(dir) => dir.to_owned(),
+            None => default_data_dir(&network.data_dir_name(&spec)?),
+        };
         Ok(Self {
             prepare_payload_lookahead_millis: overrides
                 .prepare_payload_lookahead_millis
