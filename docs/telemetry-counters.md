@@ -54,10 +54,6 @@ Cache hits, precomputation, slot-tick warming and API publication do not increme
 Requests later rejected by validation can still contribute misses. These are counts,
 not miss rates or elapsed time; there is no corresponding hit counter.
 
-`BlockShufflingUncached` counts block requests that compute both shufflings without
-resolved cache identities. This fallback leaves keyed entries untouched. It is
-reported separately because increasing cache capacity cannot resolve a missing identity.
-
 ## Finding the data
 
 `silver_telemetry` reads its ClickHouse address from the node config it gets

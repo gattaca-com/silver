@@ -175,7 +175,6 @@ impl ShufflingCache {
     }
 
     fn uncached_for_block(&mut self, view: &StateReadView) -> stf::ShufflingRef<'_> {
-        BeaconStateCounters::BlockShufflingUncached.inc();
         let [curr, prev] = &mut self.uncached;
         stf::ShufflingRef::build(view, view.slot.current_epoch(), curr, prev)
     }
@@ -483,39 +482,38 @@ mod tests {
             BeaconStateCounters::AttestationShufflingCacheMiss,
             BeaconStateCounters::BlockShufflingCacheMiss,
             BeaconStateCounters::BlockProductionShufflingCacheMiss,
-            BeaconStateCounters::BlockShufflingUncached,
         ];
         let counts = || counters.map(BeaconStateCounters::get);
         let (owner, id) = state(1, 8, 8);
         let view = owner.read_view(id);
         let mut cache = ShufflingCache::with_capacity(8);
         cache.get(&view, 2).unwrap();
-        assert_eq!(counts(), [1, 0, 0, 0]);
+        assert_eq!(counts(), [1, 0, 0]);
         cache.get(&view, 2).unwrap();
-        assert_eq!(counts(), [1, 0, 0, 0]);
+        assert_eq!(counts(), [1, 0, 0]);
         cache.precompute(&view, 3);
         cache.precompute(&view, 2);
         cache.for_block(&view, 2, BlockShufflingUse::Verification).unwrap();
         cache.for_block(&view, 2, BlockShufflingUse::Production).unwrap();
-        assert_eq!(counts(), [1, 0, 0, 0]);
+        assert_eq!(counts(), [1, 0, 0]);
 
         let (other, id) = state(2, 7, 8);
         let other = other.read_view(id);
         cache.for_block(&other, 2, BlockShufflingUse::Verification).unwrap();
-        assert_eq!(counts(), [1, 2, 0, 0]);
+        assert_eq!(counts(), [1, 2, 0]);
         cache.for_block(&other, 2, BlockShufflingUse::Verification).unwrap();
-        assert_eq!(counts(), [1, 2, 0, 0]);
+        assert_eq!(counts(), [1, 2, 0]);
 
         let (third, id) = state(3, 8, 8);
         let third = third.read_view(id);
         cache.for_block(&third, 2, BlockShufflingUse::Production).unwrap();
-        assert_eq!(counts(), [1, 2, 2, 0]);
+        assert_eq!(counts(), [1, 2, 2]);
         for epoch in [1, 3] {
             assert!(cache.for_block(&view, epoch, BlockShufflingUse::Verification).is_none());
         }
-        assert_eq!(counts(), [1, 2, 2, 0]);
+        assert_eq!(counts(), [1, 2, 2]);
         cache.uncached_for_block(&third);
-        assert_eq!(counts(), [1, 2, 2, 1]);
+        assert_eq!(counts(), [1, 2, 2]);
     }
 
     #[test]

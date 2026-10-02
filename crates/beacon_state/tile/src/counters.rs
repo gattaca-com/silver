@@ -35,7 +35,5 @@ silver_common::declare_counters! {
         AttestationShufflingCacheMiss,
         BlockShufflingCacheMiss,
         BlockProductionShufflingCacheMiss,
-        // Block requests computed without cache identities; not capacity misses.
-        BlockShufflingUncached,
     }
 }
