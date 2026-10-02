@@ -61,9 +61,11 @@ const CONTROL_RPC_TCACHE_SIZE: usize = 1 << 20;
 /// on the one being written.
 const BEACON_STATE_TCACHE_SIZE: usize = 1 << 25;
 
+/// The commit stays first: telemetry reads the first field as the commit.
 const BUILD_INFO: &str = build_info::format!(
-    "{} · {}",
+    "{} · v{} · {}",
     $.version_control?.git()?.commit_short_id,
+    $.crate_info.version,
     $.timestamp
 );
 
