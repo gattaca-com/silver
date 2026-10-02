@@ -25,7 +25,7 @@ use crate::{
     clickhouse_tables::ClickHouseTables,
     config::Args,
     exporter::Exporter,
-    node_meta::{NodeMeta, wait_for_node_genesis},
+    node_meta::{NodeMeta, wait_for_node_chain},
 };
 
 /// Loop iterations between the pid-file reads that detect the node's exit;
@@ -70,15 +70,15 @@ impl TraceCollector {
         // Block events are only consumed once the tile is up, so this wait is
         // the window in which a starting node's first ones go unseen.
         info!("waiting for the node's rings");
-        let (mut reader, genesis_unix_secs) = loop {
+        let (mut reader, chain) = loop {
             let Some(reader) = CrossProcessReader::attach(APP_NAME) else {
                 thread::sleep(ATTACH_POLL);
                 continue;
             };
             info!(pid = reader.pid(), "attached");
-            match wait_for_node_genesis(reader.pid()) {
-                Some(genesis) => break (reader, genesis),
-                None => info!(pid = reader.pid(), "node exited before publishing its genesis"),
+            match wait_for_node_chain(reader.pid()) {
+                Some(chain) => break (reader, chain),
+                None => info!(pid = reader.pid(), "node exited before publishing its chain"),
             }
         };
 
@@ -87,16 +87,11 @@ impl TraceCollector {
         let clickhouse = file_config
             .telemetry
             .clickhouse_addr()?
-            .map(|addr| ClickHouseTables::open(addr, &file_config.chain_config, genesis_unix_secs));
+            .map(|addr| ClickHouseTables::open(addr, &chain));
 
         let exporter = file_config.exporter.dashboard_addr()?.and_then(|addr| {
-            Exporter::open(
-                addr,
-                args.instance.clone().unwrap_or_else(NodeMeta::hostname),
-                &file_config.chain_config,
-                genesis_unix_secs,
-            )
-            .ok()
+            Exporter::open(addr, args.instance.clone().unwrap_or_else(NodeMeta::hostname), &chain)
+                .ok()
         });
 
         // Floored at a second: `round_to_interval` divides by the period.

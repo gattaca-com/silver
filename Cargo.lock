@@ -5361,7 +5361,6 @@ dependencies = [
  "serde",
  "serde_json",
  "silver_common",
- "silver_config",
  "silver_log",
  "silver_observe",
  "silver_observe_wire",

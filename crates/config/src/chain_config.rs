@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use silver_chain_spec::{ForkName, SpecConfig};
-use silver_common::{Enr, Error, SLOTS_PER_EPOCH};
+use silver_common::{Enr, Error, NodeChain, SLOTS_PER_EPOCH};
 
 use crate::Genesis;
 
@@ -91,6 +91,14 @@ impl ChainConfig {
             )));
         }
         Ok(self.spec.fork_digest_at(epoch, &genesis.validators_root))
+    }
+
+    pub fn node_chain(&self, genesis: &Genesis) -> NodeChain {
+        NodeChain {
+            genesis_unix_secs: genesis.unix_secs,
+            slot_ms: self.spec.slot_duration_ms(),
+            network: self.spec.network_name(),
+        }
     }
 
     pub fn slot_duration(&self) -> Duration {

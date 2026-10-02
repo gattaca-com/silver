@@ -4,8 +4,7 @@ use flux::spine::SpineAdapter;
 use flux_clickhouse::{ClickHouse, Error};
 use flux_network::Network;
 use serde::Serialize;
-use silver_common::{Nanos, SilverSpine};
-use silver_config::ChainConfig;
+use silver_common::{Nanos, NodeChain, SilverSpine};
 use silver_log::{info, warn};
 use silver_stages::StageReader;
 
@@ -37,14 +36,14 @@ pub struct ClickHouseTables {
 }
 
 impl ClickHouseTables {
-    pub fn open(addr: SocketAddr, chain: &ChainConfig, genesis_unix_secs: u64) -> Self {
+    pub fn open(addr: SocketAddr, chain: &NodeChain) -> Self {
         let mut net = Network::default();
         let mut client = ClickHouse::new(addr, 1)
             .with_compression()
             .with_max_queued_bytes(MAX_QUEUED_BYTES)
             .with_request_timeout(REQUEST_TIMEOUT);
         client.connect(&mut net);
-        let meta = NodeMeta::new(chain, genesis_unix_secs);
+        let meta = NodeMeta::new(chain);
         info!(node = meta.node, network = meta.network, %addr, "clickhouse inserts open");
 
         let mut tables = Self {
