@@ -53,6 +53,9 @@ pub struct UringIo {
 unsafe impl Send for UringIo {}
 
 impl UringIo {
+    /// Receives start on the first flush or poll, so construction can precede
+    /// moving to another thread without assigning receive task work to the
+    /// creator.
     pub fn new(
         config: &UringConfig,
         quic_addr: SocketAddr,
@@ -92,8 +95,6 @@ impl UringIo {
         for pool in receiver.pools.iter_mut() {
             pool.register(&receiver.ring)?;
         }
-        receiver.rearm();
-        receiver.ring.submit()?;
         Ok(receiver)
     }
 
@@ -145,7 +146,14 @@ impl UringIo {
             self.tx[index].submit(&mut self.ring, self.sockets[index].as_raw_fd());
         }
         self.next_tx_socket ^= 1;
-        self.ring.submit().map(|_| ())
+        let pending = {
+            let submission = self.ring.submission();
+            !submission.is_empty() || submission.cq_overflow() || submission.taskrun()
+        };
+        if pending {
+            self.ring.submit()?;
+        }
+        Ok(())
     }
 
     /// Retained packets keep their pool slots until a later call can reclaim

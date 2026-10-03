@@ -3,6 +3,7 @@ mod tx;
 mod wake;
 
 use std::{
+    hint::spin_loop,
     net::{Ipv4Addr, Ipv6Addr},
     panic::{AssertUnwindSafe, catch_unwind},
     thread,
@@ -10,6 +11,13 @@ use std::{
 
 use super::*;
 use crate::socket::RX_BUF_SIZE;
+
+fn sqpoll_cpus() -> [Option<u32>; 2] {
+    // SAFETY: sched_getcpu takes no pointers and returns the current CPU or -1.
+    let cpu = unsafe { libc::sched_getcpu() };
+    assert!(cpu >= 0);
+    [None, Some(cpu as u32)]
+}
 
 fn receiver(quic_rx_buffers: u16, discovery_rx_buffers: u16) -> Option<UringIo> {
     let config = UringConfig {
@@ -54,6 +62,7 @@ fn completion_queue_pressure_does_not_lose_packets_or_stop_receiving() {
             peer.send_to(&[number], destination(&receiver, socket, false)).unwrap();
         }
     }
+    receiver.flush().unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !receiver.ring.submission().cq_overflow() {
         assert!(Instant::now() < deadline, "CQ did not overflow");
@@ -131,6 +140,48 @@ fn multishot_receives_both_sockets_and_address_families_on_the_tile_thread() {
 }
 
 #[test]
+fn nonblocking_receive_progresses_without_new_submissions_in_both_modes() {
+    for sqpoll_cpu in sqpoll_cpus() {
+        let config = UringConfig {
+            sqpoll_cpu,
+            quic_rx_buffers: 4,
+            discovery_rx_buffers: 4,
+            ..Default::default()
+        };
+        let Some(mut io) = receiver_with_config(&config) else { return };
+        assert_eq!(io.active, [false; 2]);
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let destination = destination(&io, SocketId::Quic, false);
+        thread::spawn(move || {
+            io.flush().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !io.ring.submission().is_empty() {
+                assert!(Instant::now() < deadline, "initial receives were not submitted");
+                spin_loop();
+            }
+            let sender = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(20));
+                peer.send_to(b"after submission", destination).unwrap();
+            });
+            let mut received = false;
+            while !received {
+                assert!(Instant::now() < deadline, "nonblocking receive deadline");
+                io.poll(Duration::ZERO, |socket, data, _| {
+                    assert_eq!(socket, SocketId::Quic);
+                    assert_eq!(&data[..], b"after submission");
+                    received = true;
+                })
+                .unwrap();
+            }
+            sender.join().unwrap();
+            io.shutdown().unwrap();
+        })
+        .join()
+        .unwrap();
+    }
+}
+
+#[test]
 fn exhausted_quic_pool_keeps_discovery_live_and_recovers_after_packet_release() {
     let Some(mut receiver) = receiver(1, 2) else { return };
     let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -183,6 +234,7 @@ fn truncated_datagrams_are_dropped_and_buffers_remain_reusable() {
 #[test]
 fn shutdown_drains_busy_receives_and_releases_socket_ports() {
     let Some(mut receiver) = receiver(4, 4) else { return };
+    receiver.flush().unwrap();
     let addresses = SOCKETS.map(|socket| receiver.local_addr(socket).unwrap());
     let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
     for _ in 0..32 {

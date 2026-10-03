@@ -6,15 +6,14 @@ use std::io;
 use io_uring::{IoUring, Probe, opcode};
 use silver_config::UringConfig;
 
-/// Creates a SQPOLL ring without binding sockets or submitting operations.
 /// Opcode probes cannot validate provided-buffer registration or multishot
 /// receive flags.
 pub(super) fn build(config: &UringConfig) -> io::Result<IoUring> {
     let idle_millis = config.validate()?;
     let mut builder = IoUring::builder();
-    builder.setup_sqpoll(idle_millis).setup_cqsize(config.cq_entries);
+    builder.setup_cqsize(config.cq_entries);
     if let Some(cpu) = config.sqpoll_cpu {
-        builder.setup_sqpoll_cpu(cpu);
+        builder.setup_sqpoll(idle_millis).setup_sqpoll_cpu(cpu);
     }
     let ring = builder.build(config.sq_entries)?;
 
@@ -22,7 +21,10 @@ pub(super) fn build(config: &UringConfig) -> io::Result<IoUring> {
     for (supported, name) in [
         (params.is_feature_nodrop(), "IORING_FEAT_NODROP"),
         (params.is_feature_fast_poll(), "IORING_FEAT_FAST_POLL"),
-        (params.is_feature_sqpoll_nonfixed(), "IORING_FEAT_SQPOLL_NONFIXED"),
+        (
+            !params.is_setup_sqpoll() || params.is_feature_sqpoll_nonfixed(),
+            "IORING_FEAT_SQPOLL_NONFIXED",
+        ),
         (params.is_feature_ext_arg(), "IORING_FEAT_EXT_ARG"),
     ] {
         if !supported {

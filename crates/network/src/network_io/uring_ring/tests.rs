@@ -48,47 +48,55 @@ fn idle_duration_rounds_up_without_changing_zero_into_the_kernel_default() {
 }
 
 #[test]
-fn sqpoll_ring_completes_after_idle_and_can_move_to_the_tile_thread() {
-    let config = UringConfig { sq_entries: 8, cq_entries: 64, ..Default::default() };
-    let mut ring = match build(&config) {
-        Ok(ring) => ring,
-        Err(error)
-            if matches!(
-                error.raw_os_error(),
-                Some(libc::EPERM | libc::EACCES | libc::ENOSYS | libc::EOPNOTSUPP)
-            ) =>
-        {
-            eprintln!("SKIP SQPOLL setup test: {error}");
-            return;
-        }
-        Err(error) => panic!("create network SQPOLL ring: {error}"),
-    };
-    assert!(ring.params().is_setup_sqpoll());
-    assert!(!ring.params().is_setup_iopoll());
-    assert_eq!(ring.params().sq_entries(), config.sq_entries);
-    assert_eq!(ring.params().cq_entries(), config.cq_entries);
+fn both_submission_modes_complete_on_the_tile_thread_after_idle() {
+    // SAFETY: sched_getcpu takes no pointers and returns the current CPU or -1.
+    let cpu = unsafe { libc::sched_getcpu() };
+    assert!(cpu >= 0);
+    for sqpoll_cpu in [None, Some(cpu as u32)] {
+        let config =
+            UringConfig { sq_entries: 8, cq_entries: 64, sqpoll_cpu, ..Default::default() };
+        let mut ring = match build(&config) {
+            Ok(ring) => ring,
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EPERM | libc::EACCES | libc::ENOSYS | libc::EOPNOTSUPP)
+                ) =>
+            {
+                eprintln!("SKIP io_uring setup test: {error}");
+                return;
+            }
+            Err(error) => panic!("create network io_uring ring: {error}"),
+        };
+        assert_eq!(ring.params().is_setup_sqpoll(), sqpoll_cpu.is_some());
+        assert!(!ring.params().is_setup_iopoll());
+        assert_eq!(ring.params().sq_entries(), config.sq_entries);
+        assert_eq!(ring.params().cq_entries(), config.cq_entries);
 
-    thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !ring.submission().need_wakeup() {
-            assert!(Instant::now() < deadline, "SQPOLL thread did not go idle");
-            thread::sleep(Duration::from_millis(1));
-        }
+        thread::spawn(move || {
+            if sqpoll_cpu.is_some() {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !ring.submission().need_wakeup() {
+                    assert!(Instant::now() < deadline, "SQPOLL thread did not go idle");
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
 
-        let entry = opcode::Nop::new().build().user_data(17);
-        // SAFETY: NOP contains no pointers or borrowed resources.
-        unsafe { ring.submission().push(&entry).unwrap() };
-        let timeout = types::Timespec::from(Duration::from_secs(2));
-        let args = types::SubmitArgs::new().timespec(&timeout);
-        ring.submitter().submit_with_args(1, &args).expect("SQPOLL completion deadline");
-        let completion = ring.completion().next().expect("missing completion");
-        assert_eq!(completion.user_data(), 17);
-        assert_eq!(completion.result(), 0);
-    })
-    .join()
-    .unwrap();
+            let entry = opcode::Nop::new().build().user_data(17);
+            // SAFETY: NOP contains no pointers or borrowed resources.
+            unsafe { ring.submission().push(&entry).unwrap() };
+            let timeout = types::Timespec::from(Duration::from_secs(2));
+            let args = types::SubmitArgs::new().timespec(&timeout);
+            ring.submitter().submit_with_args(1, &args).expect("io_uring completion deadline");
+            let completion = ring.completion().next().expect("missing completion");
+            assert_eq!(completion.user_data(), 17);
+            assert_eq!(completion.result(), 0);
+        })
+        .join()
+        .unwrap();
+    }
 
-    let invalid_cpu = UringConfig { sqpoll_cpu: Some(i32::MAX as u32), ..config };
+    let invalid_cpu = UringConfig { sqpoll_cpu: Some(i32::MAX as u32), ..Default::default() };
     let error = build(&invalid_cpu).err().expect("invalid SQPOLL CPU was ignored");
     assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
 }

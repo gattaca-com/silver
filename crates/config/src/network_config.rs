@@ -19,6 +19,7 @@ pub struct UringConfig {
     pub cq_entries: u32,
     #[serde(with = "milliseconds", rename = "sqpoll_idle_ms")]
     pub sqpoll_idle: Duration,
+    /// `Some(cpu)` enables pinned SQPOLL; `None` uses regular submissions.
     pub sqpoll_cpu: Option<u32>,
     pub quic_rx_buffers: u16,
     pub discovery_rx_buffers: u16,

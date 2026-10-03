@@ -1,5 +1,5 @@
 use std::{
-    io::Error,
+    io::{Error, ErrorKind},
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
@@ -46,7 +46,10 @@ impl MioIo {
 
     pub(crate) fn poll(&mut self, timeout: Duration) -> Result<(), Error> {
         if self.events.is_empty() {
-            self.poll.poll(&mut self.events, Some(timeout))?;
+            match self.poll.poll(&mut self.events, Some(timeout)) {
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                result => result?,
+            }
         }
         Ok(())
     }

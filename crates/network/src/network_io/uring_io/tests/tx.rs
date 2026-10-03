@@ -51,10 +51,14 @@ fn drain(io: &mut UringIo) {
 
 #[test]
 fn zero_copy_and_copy_sends_cover_both_sockets_address_families_and_empty_datagrams() {
-    for threshold in [0, usize::MAX] {
-        let Some(mut io) =
-            receiver_with_config(&UringConfig { send_zc_min_size: threshold, ..config() })
-        else {
+    for (sqpoll_cpu, threshold) in
+        sqpoll_cpus().into_iter().flat_map(|cpu| [0, usize::MAX].map(|threshold| (cpu, threshold)))
+    {
+        let Some(mut io) = receiver_with_config(&UringConfig {
+            sqpoll_cpu,
+            send_zc_min_size: threshold,
+            ..config()
+        }) else {
             return
         };
         for ipv6 in [false, true] {
@@ -238,6 +242,7 @@ fn shutdown_cancels_submitted_sends_and_discards_only_unsubmitted_sends() {
         ..config()
     };
     let Some(mut io) = receiver_with_config(&config) else { return };
+    io.flush().unwrap();
     let addresses = SOCKETS.map(|socket| io.local_addr(socket).unwrap());
     let peer = peer(false);
     for number in 0..16u8 {
