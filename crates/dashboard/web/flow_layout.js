@@ -18,15 +18,22 @@ const NEAR_BOX = 220;
 
 /** Keyed by the tile's Rust type name, as flux names its metrics files.
  *  Network and ApplicationBoundary flank the two columns, mirrored about the
- *  Network–ApplicationBoundary axis. The narrowest spacing on a 10-unit grid
- *  where every straight tile-to-tile line clears every other box by ≥ 10. */
+ *  Network–ApplicationBoundary axis. Every straight tile-to-tile line clears
+ *  every other box by ≥ 28, except the two that `PAIR_BOW` curves. */
 export const TILES = {
   NetworkTile: { label: 'Network', x: 75, y: 380 },
-  Controller: { label: 'Control', x: 180, y: 50 },
-  StorageTile: { label: 'Storage', x: 180, y: 710 },
-  BeaconStateTile: { label: 'BeaconState', x: 350, y: 260 },
-  DataColumnsTile: { label: 'DataColumns', x: 350, y: 500 },
+  Controller: { label: 'Control', x: 240, y: 50 },
+  StorageTile: { label: 'Storage', x: 240, y: 710 },
+  BeaconStateTile: { label: 'BeaconState', x: 450, y: 260 },
+  DataColumnsTile: { label: 'DataColumns', x: 450, y: 500 },
   ApplicationBoundaryTile: { label: 'API', x: 660, y: 380 },
+};
+
+/** Base bow of a tile pair, against its sorted direction as in `laneBows`:
+ *  Control and Storage reach API around BeaconState and DataColumns. */
+const PAIR_BOW = {
+  'ApplicationBoundaryTile|Controller': 150,
+  'ApplicationBoundaryTile|StorageTile': -150,
 };
 
 export const NET = 'NetworkTile';
@@ -121,9 +128,10 @@ export function laneBows(edges) {
     // Bow is measured against the pair's sorted direction, so lanes running
     // opposite ways fan out instead of mirroring onto each other.
     const [lo, hi] = e.fromName < e.toName ? [e.fromName, e.toName] : [e.toName, e.fromName];
-    const side = laneSide(lo, hi);
+    const base = PAIR_BOW[`${lo}|${hi}`] ?? 0;
+    const side = base ? Math.sign(base) : laneSide(lo, hi);
     const lane = side === 0 ? i - (n - 1) / 2 : side * i;
-    return lane * LANE_GAP * 2 * (e.fromName < e.toName ? 1 : -1);
+    return (base + lane * LANE_GAP * 2) * (e.fromName < e.toName ? 1 : -1);
   });
 }
 
