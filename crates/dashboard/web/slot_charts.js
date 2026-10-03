@@ -82,7 +82,8 @@ function attestationSeries(inst, slot, startS, bins) {
 /** One line per client over a fixed x axis: the seconds of the current slot.
  *  The bins run to now, so the lines grow across the slot and restart at the
  *  next one. A dashed line marks when each client received a block this slot:
- *  attesters broadcast once the block is valid, at the latest by the deadline. */
+ *  attesters broadcast once the block is valid, at the latest by the deadline.
+ *  The top-right totals count each client's attestations so far this slot. */
 function attestationSpec(instances, nowS) {
   const clock = instances.find((i) => i.clock)?.clock;
   if (!clock) return null;
@@ -102,6 +103,7 @@ function attestationSpec(instances, nowS) {
     xRange: [0, slotS],
     spanGaps: true,
     markers: series.flatMap((s, i) => (s.blockX === null ? [] : [{ x: s.blockX, series: i }])),
+    cornerLabels: series.map((s) => String(s.ys.reduce((sum, v) => sum + (v ?? 0), 0))),
   };
   return { spec, slot, startS };
 }
