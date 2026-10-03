@@ -20,8 +20,10 @@ const HIST_MAX_NS: u64 = 60_000_000_000;
 const TCACHE_FIXED_SLOTS: usize = 2;
 /// Counter slots also sampled at the fast cadence and published as source
 /// `fast:{source}`, for intra-slot resolution the 1 s bucket cannot give.
-const FAST: &[(&str, &[&str])] =
-    &[("beacon_state", &["AttestationRootMemoHit", "AttestationRootMemoMiss"])];
+const FAST: &[(&str, &[&str])] = &[
+    ("beacon_state", &["AttestationRootMemoHit", "AttestationRootMemoMiss"]),
+    ("network", &["P2pBytesRecv"]),
+];
 
 struct CounterSource {
     id: u16,

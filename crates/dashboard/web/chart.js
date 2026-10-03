@@ -126,23 +126,6 @@ function options(spec, width, holder) {
   };
 }
 
-/** Series with their own x values on the union of those values; a series
- *  is null where it has no point. */
-export function alignSeries(series) {
-  const xs = [...new Set(series.flatMap((s) => s.xs))].sort((a, b) => a - b);
-  const at = new Map(xs.map((x, i) => [x, i]));
-  return [
-    xs,
-    ...series.map((s) => {
-      const ys = new Array(xs.length).fill(null);
-      s.xs.forEach((x, k) => {
-        ys[at.get(x)] = s.ys[k];
-      });
-      return ys;
-    }),
-  ];
-}
-
 export class LineCharts {
   constructor() {
     this.charts = new Map();
