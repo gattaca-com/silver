@@ -2,6 +2,8 @@
 //! side runs its network tile and its gossip handler on **separate
 //! threads** — the spine's lock-free MPMC queues and the shmem-backed
 //! TCaches make this safe. Publisher runs on the main thread.
+//! Both latency histograms exclude the first second after the first
+//! received message. Delivery counts include that warmup period.
 //!
 //! Threading layout:
 //!   - main thread: silver publisher.
@@ -21,9 +23,17 @@
 //!     about to exit; the network thread spins until this so QUIC stays alive
 //!     long enough to deliver the last bytes.
 //!
-//! Usage:
-//!   cargo run -p silver_e2e --example gossip_oneway -- \
-//!     --duration 5 --rate 500 --payload-size 1024 --dup-pct 10
+//! Mio (default):
+//! ```sh
+//! cargo run --release -p silver_e2e --example gossip_oneway -- \
+//!   --backend mio --duration 5 --rate 500 --payload-size 1024 --dup-pct 10
+//! ```
+//!
+//! io_uring (Linux):
+//! ```sh
+//! cargo run --release -p silver_e2e --features io-uring --example gossip_oneway -- \
+//!   --backend io-uring --duration 5 --rate 500 --payload-size 1024 --dup-pct 10
+//! ```
 
 use std::{
     env, io,
@@ -45,6 +55,7 @@ use silver_common::metrics::CountingAllocator;
 use silver_common::{
     GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TCacheReader, test_util::ShmemDir,
 };
+use silver_config::NetworkConfig;
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
     inject::{build_publish_frame, snappy_compress},
@@ -59,6 +70,7 @@ const DEFAULT_DUP_PCT: u8 = 0;
 const FORK_DIGEST_HEX: &str = "abcd1234";
 const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const LATENCY_WARMUP: Duration = Duration::from_secs(1);
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -85,13 +97,14 @@ fn main() {
     // Build EchoStack on main so the QUIC socket is bound before we
     // spawn anything; then split into network + compression halves and
     // move each onto its own thread.
-    let mut echo = EchoStack::new(
+    let mut echo = EchoStack::new_with_network(
         tempdir.path(),
         "_echo",
         echo_addr,
         echo_disc_addr,
         echo_kp,
         FORK_DIGEST_HEX.into(),
+        &args.network,
     )
     .expect("echo stack");
     echo.controller.set_auto_ping(false);
@@ -111,9 +124,15 @@ fn main() {
     let comp_handle =
         thread::spawn(move || compression_thread(comp_half, pd_comp, ec_comp, cd_comp, stats_tx));
 
-    let mut publisher =
-        PublisherStack::new(tempdir.path(), "_pub", pub_addr, pub_disc_addr, pub_kp)
-            .expect("publisher stack");
+    let mut publisher = PublisherStack::new_with_network(
+        tempdir.path(),
+        "_pub",
+        pub_addr,
+        pub_disc_addr,
+        pub_kp,
+        &args.network,
+    )
+    .expect("publisher stack");
     publisher.controller.set_auto_ping(false);
     publisher.network.p2p_mut().connect(echo_peer_id, echo_addr, Instant::now()).expect("connect");
 
@@ -135,8 +154,12 @@ fn main() {
         std::process::exit(1);
     };
 
+    let backend = match args.network {
+        NetworkConfig::Mio => "mio",
+        NetworkConfig::IoUring(_) => "io-uring",
+    };
     println!(
-        "connected; publishing for {}s at {} Hz, dup-pct={}",
+        "connected; backend={backend}; publishing for {}s at {} Hz, dup-pct={}",
         args.duration_s, args.rate_hz, args.dup_pct
     );
 
@@ -195,19 +218,20 @@ fn main() {
     println!("received:      {}", stats.gossip_received);
     println!("invalid:       {}", stats.invalid_msgs);
     println!("throughput:    {:.1} msg/s received", stats.gossip_received as f64 / publish_window);
+    println!("latency warmup: {:?} (excluded from histograms)", LATENCY_WARMUP);
     let h = &stats.latency_ns;
+    println!("latency (μs):  samples={}", h.len());
     if h.len() > 0 {
         let us = |ns: u64| ns as f64 / 1000.0;
-        println!("latency (μs):  samples={}", h.len());
         println!("  p10:         {:.1}", us(h.value_at_quantile(0.10)));
         println!("  p50:         {:.1}", us(h.value_at_quantile(0.50)));
         println!("  p90:         {:.1}", us(h.value_at_quantile(0.90)));
         println!("  p99:         {:.1}", us(h.value_at_quantile(0.99)));
     }
     let h = &stats.receive_ns;
+    println!("receive latency (μs):  samples={}", h.len());
     if h.len() > 0 {
         let us = |ns: u64| ns as f64 / 1000.0;
-        println!("receive latency (μs):  samples={}", h.len());
         println!("  p10:         {:.1}", us(h.value_at_quantile(0.10)));
         println!("  p50:         {:.1}", us(h.value_at_quantile(0.50)));
         println!("  p90:         {:.1}", us(h.value_at_quantile(0.90)));
@@ -261,12 +285,16 @@ fn drain_compression_stats(c: &mut EchoCompressionHalf) {
     let stats = &mut c.stats;
     let consumer = &mut c.ssz_consumer;
     c.stats_adapter.consume::<NewGossipMsg, _>(|new_msg, _p| {
-        let _ = stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
+        let receive_ns = new_msg.recv_ts.elapsed_saturating().0;
         let now_wall = Instant::now();
         stats.gossip_received += 1;
-        stats.first_seen_at.get_or_insert(now_wall);
+        let first_seen_at = *stats.first_seen_at.get_or_insert(now_wall);
+        let record_sample = now_wall.duration_since(first_seen_at) >= LATENCY_WARMUP;
         stats.last_seen_at = Some(now_wall);
-        record_latency(consumer, &new_msg, stats);
+        if record_sample {
+            let _ = stats.receive_ns.record(receive_ns);
+        }
+        record_latency(consumer, &new_msg, stats, record_sample);
     });
     c.stats_adapter.consume::<PeerEvent, _>(|event, _p| {
         if let PeerEvent::P2pGossipInvalidMsg { .. } = event {
@@ -275,11 +303,16 @@ fn drain_compression_stats(c: &mut EchoCompressionHalf) {
     });
 }
 
-fn record_latency(consumer: &mut TCacheReader, msg: &NewGossipMsg, stats: &mut Stats) {
+fn record_latency(
+    consumer: &mut TCacheReader,
+    msg: &NewGossipMsg,
+    stats: &mut Stats,
+    record_sample: bool,
+) {
     let acquired = consumer.acquire(msg.ssz);
     if let Ok((bytes, _)) = acquired.buffer() {
         stats.gossip_decompressed_bytes += bytes.len() as u64;
-        if bytes.len() >= 8 {
+        if record_sample && bytes.len() >= 8 {
             let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
             let _ = stats.latency_ns.record(Nanos(sent_ns).elapsed_saturating().0);
         }
@@ -296,6 +329,7 @@ fn pick_free_port() -> io::Result<u16> {
 }
 
 struct Args {
+    network: NetworkConfig,
     duration_s: u64,
     rate_hz: u64,
     payload_size: usize,
@@ -303,6 +337,7 @@ struct Args {
 }
 
 fn parse_args() -> Args {
+    let mut network = NetworkConfig::Mio;
     let mut duration_s = DEFAULT_DURATION_S;
     let mut rate_hz = DEFAULT_RATE_HZ;
     let mut payload_size = DEFAULT_PAYLOAD_SIZE;
@@ -312,6 +347,25 @@ fn parse_args() -> Args {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
+            "--backend" => {
+                network = match argv.get(i + 1).map(String::as_str) {
+                    Some("mio") => NetworkConfig::Mio,
+                    Some("io-uring") => {
+                        if !cfg!(all(target_os = "linux", feature = "io-uring")) {
+                            eprintln!(
+                                "--backend io-uring requires Linux and a build with --features io-uring"
+                            );
+                            std::process::exit(2);
+                        }
+                        NetworkConfig::IoUring(Default::default())
+                    }
+                    _ => {
+                        eprintln!("--backend expects mio or io-uring");
+                        std::process::exit(2);
+                    }
+                };
+                i += 2;
+            }
             "--duration" => {
                 duration_s = argv[i + 1].parse().expect("--duration: u64 seconds");
                 i += 2;
@@ -336,5 +390,5 @@ fn parse_args() -> Args {
             }
         }
     }
-    Args { duration_s, rate_hz, payload_size, dup_pct }
+    Args { network, duration_s, rate_hz, payload_size, dup_pct }
 }

@@ -9,6 +9,7 @@ pub use cluster_config::ClusterConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use genesis::Genesis;
+pub use network_config::{NetworkConfig, UringConfig};
 pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
@@ -23,6 +24,7 @@ mod cluster_config;
 mod discovery_config;
 mod engine_config;
 mod genesis;
+mod network_config;
 mod peer_score_params;
 mod syncing_config;
 
@@ -164,6 +166,8 @@ pub struct Config {
     chain_config: ChainConfig,
     #[serde(default)]
     discovery_config: DiscoveryConfig,
+    #[serde(default)]
+    network: NetworkConfig,
     #[serde(default)]
     peer_score_params: ScoreParams,
     #[serde(default)]
@@ -386,6 +390,10 @@ impl Config {
 
     pub fn chain_config(&self) -> &ChainConfig {
         &self.chain_config
+    }
+
+    pub fn network_config(&self) -> &NetworkConfig {
+        &self.network
     }
 
     pub fn discovery_config(&self) -> DiscoveryConfig {

@@ -17,7 +17,7 @@ use silver_common::{
     Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer,
     TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode, ssz_view::METADATA_SIZE,
 };
-use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
+use silver_config::{DiscoveryConfig, NetworkConfig, ScoreParams, SyncingConfig};
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::DiscV5;
 use silver_gossip::GossipHandler;
@@ -225,6 +225,17 @@ impl PublisherStack {
         disc_addr: SocketAddr,
         keypair: Keypair,
     ) -> std::io::Result<Self> {
+        Self::new_with_network(base_dir, path_suffix, addr, disc_addr, keypair, &NetworkConfig::Mio)
+    }
+
+    pub fn new_with_network(
+        base_dir: &std::path::Path,
+        path_suffix: &str,
+        addr: SocketAddr,
+        disc_addr: SocketAddr,
+        keypair: Keypair,
+        network_config: &NetworkConfig,
+    ) -> std::io::Result<Self> {
         let peer_id = keypair.peer_id();
 
         // TCaches needed by the network tile on the publisher side.
@@ -296,8 +307,9 @@ impl PublisherStack {
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
-        let mut network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
-            .map_err(std::io::Error::other)?;
+        let mut network =
+            NetworkTile::new(disc_addr, discovery, addr, p2p, context, network_config)
+                .map_err(std::io::Error::other)?;
         network.open_tcaches().map_err(std::io::Error::other)?;
 
         // Tests don't subscribe to gossip topics, so PeerManager runs with
@@ -365,6 +377,26 @@ impl EchoStack {
         disc_addr: SocketAddr,
         keypair: Keypair,
         fork_digest_hex: String,
+    ) -> std::io::Result<Self> {
+        Self::new_with_network(
+            base_dir,
+            path_suffix,
+            addr,
+            disc_addr,
+            keypair,
+            fork_digest_hex,
+            &NetworkConfig::Mio,
+        )
+    }
+
+    pub fn new_with_network(
+        base_dir: &std::path::Path,
+        path_suffix: &str,
+        addr: SocketAddr,
+        disc_addr: SocketAddr,
+        keypair: Keypair,
+        fork_digest_hex: String,
+        network_config: &NetworkConfig,
     ) -> std::io::Result<Self> {
         let peer_id = keypair.peer_id();
         let boot_domain = (!fork_digest_hex.is_empty()).then(|| {
@@ -435,8 +467,9 @@ impl EchoStack {
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
-        let mut network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
-            .map_err(std::io::Error::other)?;
+        let mut network =
+            NetworkTile::new(disc_addr, discovery, addr, p2p, context, network_config)
+                .map_err(std::io::Error::other)?;
         network.open_tcaches().map_err(std::io::Error::other)?;
 
         let compression =

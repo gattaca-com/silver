@@ -15,10 +15,11 @@ use std::time::{Duration, Instant};
 
 use flux::tile::Tile;
 use silver_common::{
-    P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
-    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, StreamProtocol,
-    TCacheProducer, ssz_view::BLOCKS_BY_RANGE_REQ_SIZE, test_util::ShmemDir,
+    IngestionTime, P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcOutbound, RpcRequest,
+    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
+    StreamProtocol, TCacheProducer, ssz_view::BLOCKS_BY_RANGE_REQ_SIZE, test_util::ShmemDir,
 };
+use silver_config::NetworkConfig;
 use silver_e2e::{PublisherStack, keypair_from_seed, on_free_loopback_ports};
 use tracing_subscriber::filter::LevelFilter;
 
@@ -26,11 +27,12 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const CHUNK_COUNT: usize = 3;
 const FORK_DIGEST: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
 
-fn build_stack(td: &ShmemDir, suffix: &str, seed: u8) -> PublisherStack {
+fn build_stack(td: &ShmemDir, suffix: &str, seed: u8, config: &NetworkConfig) -> PublisherStack {
     let kp = keypair_from_seed(seed);
-    let mut stack =
-        on_free_loopback_ports(|addr, disc| PublisherStack::new(td.path(), suffix, addr, disc, kp))
-            .expect("silver stack");
+    let mut stack = on_free_loopback_ports(|addr, disc| {
+        PublisherStack::new_with_network(td.path(), suffix, addr, disc, kp, config)
+    })
+    .expect("silver stack");
     // Heartbeat ping fan-out would otherwise inject background traffic
     // that races with this test's stream-id capture.
     stack.controller.set_auto_ping(false);
@@ -38,8 +40,10 @@ fn build_stack(td: &ShmemDir, suffix: &str, seed: u8) -> PublisherStack {
 }
 
 fn spin_both(a: &mut PublisherStack, b: &mut PublisherStack) {
+    a.network_adapter.begin_loop(IngestionTime::now());
     a.network.loop_body(&mut a.network_adapter);
     a.controller.loop_body(&mut a.controller_adapter);
+    b.network_adapter.begin_loop(IngestionTime::now());
     b.network.loop_body(&mut b.network_adapter);
     b.controller.loop_body(&mut b.controller_adapter);
 }
@@ -117,11 +121,30 @@ fn synth_block_bytes(chunk_index: u8, len: usize) -> Vec<u8> {
 
 #[test]
 fn silver_receives_multipart_blocks_by_range_response() {
+    multipart_response(&NetworkConfig::Mio, &NetworkConfig::Mio);
+}
+
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+#[test]
+fn uring_receives_multipart_blocks_by_range_response() {
+    let config = NetworkConfig::IoUring(Default::default());
+    multipart_response(&config, &config);
+}
+
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+#[test]
+fn mio_and_uring_exchange_multipart_responses() {
+    let config = NetworkConfig::IoUring(Default::default());
+    multipart_response(&config, &NetworkConfig::Mio);
+    multipart_response(&NetworkConfig::Mio, &config);
+}
+
+fn multipart_response(requester_config: &NetworkConfig, responder_config: &NetworkConfig) {
     tracing_subscriber::fmt().with_max_level(LevelFilter::INFO).try_init().ok();
 
     let td = ShmemDir::new().expect("tempdir");
-    let mut requester = build_stack(&td, "_req", 21);
-    let mut responder = build_stack(&td, "_resp", 22);
+    let mut requester = build_stack(&td, "_req", 21, requester_config);
+    let mut responder = build_stack(&td, "_resp", 22, responder_config);
 
     // Wire-level connect: requester dials responder.
     let resp_peer_id = responder.peer_id;

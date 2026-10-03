@@ -271,7 +271,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         partial_columns: partial_columns.supports_sending(),
         reader: TCacheReader::new(tcaches),
     };
-    let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
+    let network_tile = NetworkTile::new(
+        discv5_addr,
+        discv5,
+        p2p_addr,
+        p2p_endpoint,
+        p2p_context,
+        config.network_config(),
+    )
+    .map_err(|error| format!("network socket backend: {error}"))?;
 
     let gossip_handler = GossipHandler::new(
         tcaches,
@@ -385,7 +393,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
 
         attach_tile(control_tile, scoped_spine, TileConfig::new(1, Some(ThreadNiceness::Highest)));
-        attach_tile(network_tile, scoped_spine, TileConfig::new(2, Some(ThreadNiceness::Highest)));
+        attach_tile(
+            network_tile,
+            scoped_spine,
+            TileConfig::new(2, Some(ThreadNiceness::Highest)).without_park(),
+        );
         attach_tile(
             beacon_state_tile,
             scoped_spine,

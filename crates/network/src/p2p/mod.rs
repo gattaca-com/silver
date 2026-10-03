@@ -10,13 +10,13 @@ use std::{
 };
 
 use buffa::{Message, MessageView};
+use bytes::BytesMut;
 pub use context::{ClusterNodes, Context};
 use fxhash::{FxHashMap, FxHashSet};
-use mio::{Poll, net::UdpSocket};
 use quic::SegmentedGossipLimits;
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
-use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
+use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, Transmit};
 use silver_common::{
     CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pSend,
     P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound,
@@ -25,28 +25,10 @@ use silver_common::{
 
 use crate::{
     NetworkCounters, RemotePeer,
+    network_io::{NetworkIo, SocketId},
     p2p::streams::{AcquiredRpcOutbound, RpcCodecPool},
-    socket::{MAX_GSO_SEGMENTS, Socket},
+    socket::MAX_GSO_SEGMENTS,
 };
-
-/// Function to spin the P2p stack - invoked from tile main loop.
-pub fn p2p_spin<F: FnMut(NetEvent)>(
-    poll: &Poll,
-    p2p_endpoint: &mut P2p,
-    p2p_socket: &mut Socket,
-    context: &mut Context,
-    now: Instant,
-    on_event: &mut F,
-) -> bool {
-    p2p_socket.flush(poll);
-    let mut did_work = false;
-    did_work |= p2p_endpoint.poll(now, poll, p2p_socket, context, &mut |evt| {
-        did_work = true;
-        on_event(evt);
-    });
-    p2p_socket.flush(poll);
-    did_work
-}
 
 /// Lifecycle events surfaced by the network layer during `poll()`. The
 /// application handles these inline via the callback passed to `poll`.
@@ -229,16 +211,13 @@ impl P2p {
     pub(crate) fn recv(
         &mut self,
         now: Instant,
-        data: bytes::BytesMut,
+        data: BytesMut,
         remote: SocketAddr,
         scratch: &mut Vec<u8>,
-        socket: &UdpSocket,
-    ) -> bool {
+    ) -> Option<Transmit> {
         self.recv_count += data.len();
 
-        let Some(event) = self.endpoint.handle(now, remote, None, None, data, scratch) else {
-            return false;
-        };
+        let event = self.endpoint.handle(now, remote, None, None, data, scratch)?;
         match event {
             DatagramEvent::ConnectionEvent(handle, conn_event) => {
                 if let Some(peer) = self.peers.get_mut(&handle) {
@@ -257,9 +236,7 @@ impl P2p {
 
                 if !is_trusted_ip && self.peers.len() >= self.max_connections {
                     crate::NetworkCounters::InboundRefused.inc();
-                    let rsp = self.endpoint.refuse(incoming, scratch);
-                    let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
-                    return true;
+                    return Some(self.endpoint.refuse(incoming, scratch));
                 }
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
@@ -270,33 +247,32 @@ impl P2p {
                     }
                     Err(e) => {
                         silver_log::error!(cause=?e.cause, "accept");
-                        if let Some(rsp) = e.response {
-                            let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
-                        }
+                        return e.response;
                     }
                 }
             }
-            DatagramEvent::Response(rsp) => {
-                let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
-            }
+            DatagramEvent::Response(rsp) => return Some(rsp),
         }
-        true
+        None
     }
 
-    /// Drive the network. `data` handles byte movement for streams;
-    /// `on_event` is called inline for lifecycle events.
-    pub fn poll<E>(
+    pub(crate) fn poll<E>(
         &mut self,
         now: Instant,
-        poll: &Poll,
-        socket: &mut Socket,
+        io: &mut NetworkIo,
         context: &mut Context,
         on_event: &mut E,
     ) -> bool
     where
         E: FnMut(NetEvent),
     {
+        io.flush(SocketId::Quic);
         let mut did_work = false;
+        let mut emitted_event = false;
+        let mut on_event = |event| {
+            emitted_event = true;
+            on_event(event);
+        };
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
 
         let mut any_dirty = false;
@@ -315,19 +291,19 @@ impl P2p {
             }
 
             // N.B. peer transmit MUST be called before peer.spin();
-            did_work |= drain_transmits(peer, socket, poll, now);
+            did_work |= drain_transmits(peer, io, now);
             peer.spin(
                 now,
                 &mut ep_callback,
                 context,
-                on_event,
+                &mut on_event,
                 &self.banned,
                 &mut self.rpc_codec_pool,
             );
             // Send what spin produced this pass — a settled peer gets no
             // further visit to flush it.
-            did_work |= drain_transmits(peer, socket, poll, now);
-            peer.settle(socket.is_blocked());
+            did_work |= drain_transmits(peer, io, now);
+            peer.settle(io.is_blocked(SocketId::Quic));
 
             // Local closes emit no ConnectionLost event; clear identities before handle
             // reuse.
@@ -366,7 +342,8 @@ impl P2p {
         if let Some(limits) = &self.segmented_limits {
             limits.publish_gauges();
         }
-        did_work
+        io.flush(SocketId::Quic);
+        did_work || emitted_event
     }
 
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
@@ -506,10 +483,10 @@ impl P2p {
 
 /// Drain the peer's pending quinn transmits onto the socket until it has
 /// nothing to send, the pacer defers, or the socket blocks.
-fn drain_transmits(peer: &mut Peer, socket: &mut Socket, poll: &Poll, now: Instant) -> bool {
+fn drain_transmits(peer: &mut Peer, io: &mut NetworkIo, now: Instant) -> bool {
     let mut did_work = false;
-    while !socket.is_blocked() &&
-        socket.send(poll, |buf| {
+    while !io.is_blocked(SocketId::Quic) &&
+        io.send(SocketId::Quic, |buf| {
             let transmit = peer.transmit(now, MAX_GSO_SEGMENTS, buf);
             if let Some(t) = &transmit {
                 did_work = true;

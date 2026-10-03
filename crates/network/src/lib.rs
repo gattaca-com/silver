@@ -1,13 +1,17 @@
+mod network_io;
 mod p2p;
 mod socket;
 mod tile;
 
 use std::net::SocketAddr;
 
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+pub use network_io::{SocketId, uring_io::UringIo};
 pub use p2p::{
     ClusterNodes, Context, NetEvent, P2p, SendResult, create_endpoint, create_server_config,
 };
 use silver_common::PeerId;
+pub use silver_config::{NetworkConfig, UringConfig};
 pub use tile::{Event as NetworkTileEvent, NetworkTile, NetworkTileInner};
 
 silver_common::declare_counters! {
@@ -55,6 +59,26 @@ silver_common::declare_counters! {
         PartialFramesWritten,
         PartialResponsesSent,
         PartialCellsServed,
+        // Provided includes buffers whose receive CQE has not been processed.
+        // InUse counts completed buffers awaiting recycling; HighWater tracks its peak per registration.
+        // These four gauges are zero after unregistration or when using Mio.
+        UringQuicRxBuffersCapacity,
+        UringQuicRxBuffersProvided,
+        UringQuicRxBuffersInUse,
+        UringQuicRxBuffersHighWater,
+        // Consumed counts selected buffers, including errors and discarded packets.
+        // Recycled excludes initial provisioning and buffers discarded during shutdown.
+        UringQuicRxBuffersConsumed,
+        UringQuicRxBuffersRecycled,
+        // ENOBUFS completions, not a count of dropped UDP datagrams.
+        UringQuicRxNoBuffers,
+        UringDiscoveryRxBuffersCapacity,
+        UringDiscoveryRxBuffersProvided,
+        UringDiscoveryRxBuffersInUse,
+        UringDiscoveryRxBuffersHighWater,
+        UringDiscoveryRxBuffersConsumed,
+        UringDiscoveryRxBuffersRecycled,
+        UringDiscoveryRxNoBuffers,
     }
 }
 

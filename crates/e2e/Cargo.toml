@@ -47,6 +47,7 @@ tokio = { version = "1", features = ["rt", "time", "macros"], optional = true }
 
 [features]
 default = []
+io-uring = ["silver_network/io-uring", "silver_network/thread_park"]
 lh-client = ["dep:futures", "dep:libp2p", "dep:tokio", "dep:async-trait"]
 alloc-profile = ["silver_common/alloc-profile"]
 # Adds a hardware-counter column (LLC-miss/call, IPC) to the perf call tree

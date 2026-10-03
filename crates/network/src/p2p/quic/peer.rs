@@ -1260,7 +1260,6 @@ impl<T> OutBuffer<T> {
 mod tests {
     use std::{collections::HashMap, io::Write, net::SocketAddr, sync::Arc, time::Instant};
 
-    use mio::{Poll, Token};
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
     use silver_common::{
         CacheFrameError, CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut,
@@ -1271,11 +1270,11 @@ mod tests {
 
     use super::*;
     use crate::{
+        network_io::NetworkIo,
         p2p::{
             ClusterNodes, P2p,
             quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK},
         },
-        socket::Socket,
     };
 
     const TCACHE_BYTES: usize = 64 * 1024;
@@ -1952,15 +1951,15 @@ mod tests {
                 p2p.disconnect(handle.0, now);
             }
 
-            let poll = Poll::new().unwrap();
-            let mut socket = Socket::new("127.0.0.1:0".parse().unwrap(), &poll, Token(0)).unwrap();
-            p2p.poll(now, &poll, &mut socket, &mut client_h.context, &mut |_| {});
+            let addr = "127.0.0.1:0".parse().unwrap();
+            let mut io = NetworkIo::new(addr, addr, &Default::default()).unwrap();
+            p2p.poll(now, &mut io, &mut client_h.context, &mut |_| {});
             assert_eq!(client_h.context.cluster_peer(7), None);
             assert_eq!(client_h.context.raft_id(handle.0), None);
             assert!(p2p.peers.contains_key(&handle), "cleanup must precede the drained reap");
 
             let after_drain = now + Duration::from_secs(60);
-            p2p.poll(after_drain, &poll, &mut socket, &mut client_h.context, &mut |_| {});
+            p2p.poll(after_drain, &mut io, &mut client_h.context, &mut |_| {});
             assert!(!p2p.peers.contains_key(&handle));
 
             let non_member = Keypair::from_secret(&[3; 32]).unwrap().peer_id();

@@ -22,13 +22,18 @@ ring.workspace = true
 secp256k1.workspace = true
 rustls.workspace = true
 silver_common.workspace = true
+silver_config.workspace = true
 silver_discovery.workspace = true
 snap.workspace = true
 thiserror.workspace = true
 x509-parser.workspace = true
 yasna.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true, optional = true }
+
 [features]
+io-uring = ["dep:io-uring"]
 thread_park = ["flux/park"]
 
 [dev-dependencies]
@@ -38,6 +43,7 @@ ipnet-trie = "0.3.0"
 pprof.workspace = true
 rand.workspace = true
 rand_core.workspace = true
+tempfile = "3"
 tracing-subscriber.workspace = true
 
 [lints]

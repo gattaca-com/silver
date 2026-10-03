@@ -5,11 +5,15 @@ mod udp;
 #[path = "portable.rs"]
 mod udp;
 
+#[cfg(test)]
+mod tests;
+
 use std::{
     io::Error,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket as StdUdpSocket},
 };
 
+use bytes::BytesMut;
 use flux_profiler::timed;
 use fxhash::FxHasher;
 use mio::{Interest, Poll, Token, net::UdpSocket};
@@ -19,45 +23,18 @@ pub(crate) use udp::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 
 pub(crate) const MAX_GSO_SEGMENTS: usize = 10;
 
-pub struct Socket {
+pub(crate) struct Socket {
     socket: UdpSocket,
     token: Token,
     rx_batch: RxBatch,
     tx_batch: TxBatch,
     blocked: bool,
-    scratch_buffer: Vec<u8>,
     banned_ips: WitherFilter<IpAddr, FxHasher, 1024>,
 }
 
 impl Socket {
     pub(crate) fn new(addr: SocketAddr, poll: &Poll, token: Token) -> Result<Self, Error> {
-        silver_log::debug!("bind to: {addr:?}");
-        let bind_addr = match addr {
-            SocketAddr::V4(v4) => {
-                let ip = if v4.ip().is_unspecified() {
-                    Ipv6Addr::UNSPECIFIED
-                } else {
-                    v4.ip().to_ipv6_mapped()
-                };
-                SocketAddr::V6(SocketAddrV6::new(ip, v4.port(), 0, 0))
-            }
-            SocketAddr::V6(v6) => SocketAddr::V6(v6),
-        };
-
-        let domain =
-            if bind_addr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
-        let socket2 =
-            socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
-        if bind_addr.is_ipv6() {
-            socket2.set_only_v6(false)?;
-        }
-        socket2.set_recv_buffer_size(32 * 1024 * 1024)?;
-        socket2.set_send_buffer_size(32 * 1024 * 1024)?;
-        socket2.bind(&bind_addr.into())?;
-        socket2.set_nonblocking(true)?;
-
-        let std_socket: std::net::UdpSocket = socket2.into();
-        let mut socket = UdpSocket::from_std(std_socket);
+        let mut socket = UdpSocket::from_std(bind_udp(addr)?);
         poll.registry().register(&mut socket, token, Interest::READABLE)?;
 
         Ok(Self {
@@ -66,7 +43,6 @@ impl Socket {
             rx_batch: RxBatch::new(),
             tx_batch: TxBatch::new(),
             blocked: false,
-            scratch_buffer: vec![0u8; RX_BUF_SIZE],
             banned_ips: WitherFilter::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         })
     }
@@ -107,12 +83,12 @@ impl Socket {
         }
     }
 
-    pub(crate) fn send<F>(&mut self, poll: &Poll, mut f: F) -> bool
+    pub(crate) fn send<F>(&mut self, poll: &Poll, f: F) -> bool
     where
-        F: FnMut(&mut Vec<u8>) -> Option<Transmit>,
+        F: FnOnce(&mut Vec<u8>) -> Option<Transmit>,
     {
         let buf_idx = self.tx_batch.entries.len();
-        if buf_idx >= self.tx_batch.bufs.len() {
+        if self.blocked || buf_idx >= self.tx_batch.bufs.len() {
             return false;
         }
         self.tx_batch.bufs[buf_idx].clear();
@@ -134,9 +110,9 @@ impl Socket {
     }
 
     #[timed]
-    pub(crate) fn recv<F>(&mut self, mut f: F)
+    pub(crate) fn recv<F>(&mut self, poll: &Poll, scratch: &mut Vec<u8>, mut f: F)
     where
-        F: FnMut(bytes::BytesMut, SocketAddr, &mut Vec<u8>, &UdpSocket) -> bool,
+        F: FnMut(BytesMut, SocketAddr, &mut Vec<u8>) -> Option<Transmit>,
     {
         loop {
             let n = self.rx_batch.recv(&self.socket);
@@ -148,8 +124,13 @@ impl Socket {
                 let (data, remote) = self.rx_batch.take(i);
 
                 if !self.banned_ips.contains(&remote.ip()) {
-                    self.scratch_buffer.clear();
-                    f(data, remote, &mut self.scratch_buffer, &self.socket);
+                    scratch.clear();
+                    if let Some(response) = f(data, remote, scratch) {
+                        self.send(poll, |buffer| {
+                            buffer.extend_from_slice(&scratch[..response.size]);
+                            Some(response)
+                        });
+                    }
                 }
             }
 
@@ -166,4 +147,31 @@ impl Socket {
     pub(crate) fn unban(&mut self, ip: IpAddr) {
         self.banned_ips.remove(&ip);
     }
+}
+
+pub(crate) fn bind_udp(addr: SocketAddr) -> Result<StdUdpSocket, Error> {
+    silver_log::debug!("bind to: {addr:?}");
+    let bind_addr = match addr {
+        SocketAddr::V4(v4) => {
+            let ip = if v4.ip().is_unspecified() {
+                Ipv6Addr::UNSPECIFIED
+            } else {
+                v4.ip().to_ipv6_mapped()
+            };
+            SocketAddr::V6(SocketAddrV6::new(ip, v4.port(), 0, 0))
+        }
+        SocketAddr::V6(v6) => SocketAddr::V6(v6),
+    };
+
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV6,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    socket.set_only_v6(false)?;
+    socket.set_recv_buffer_size(32 * 1024 * 1024)?;
+    socket.set_send_buffer_size(32 * 1024 * 1024)?;
+    socket.bind(&bind_addr.into())?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
 }

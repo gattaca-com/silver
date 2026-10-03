@@ -9,7 +9,6 @@ use flux::{
     tile::Tile,
 };
 use flux_profiler::timed;
-use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
@@ -17,18 +16,17 @@ use silver_common::{
     IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOutbound, SLOTS_PER_EPOCH,
     SilverSpine, TCacheError,
 };
+use silver_config::NetworkConfig;
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
     NetEvent, NetworkCounters, SendResult,
-    p2p::{self, Context, P2p},
-    socket::Socket,
+    network_io::{NetworkIo, SocketId},
+    p2p::{Context, P2p},
 };
 
 const MAX_PENDING_OUTBOUND_GOSSIP_MSGS: usize = 1024;
 const MAX_PENDING_OUTBOUND_RPC_MSGS: usize = 128;
-const P2P_SOCKET_TOKEN: Token = Token(0);
-const DISC_SOCKET_TOKEN: Token = Token(1);
 
 #[cfg(feature = "thread_park")]
 const POLL_TIMEOUT: Duration = Duration::from_millis(10);
@@ -51,9 +49,16 @@ impl NetworkTile {
         p2p_addr: SocketAddr,
         p2p_endpoint: P2p,
         p2p_context: Context,
+        config: &NetworkConfig,
     ) -> Result<Self, Error> {
-        let inner =
-            NetworkTileInner::new(p2p_addr, p2p_endpoint, p2p_context, discv5_addr, discv5)?;
+        let inner = NetworkTileInner::new(
+            p2p_addr,
+            p2p_endpoint,
+            p2p_context,
+            discv5_addr,
+            discv5,
+            config,
+        )?;
         Ok(Self { inner, last_peer_stats: Instant::now(), last_fork_epoch: None })
     }
 
@@ -77,12 +82,10 @@ impl NetworkTile {
                 self.inner.p2p_endpoint.unban_peer(p2p);
             }
             PeerControl::BanIp { ip } => {
-                self.inner.p2p_socket.ban(ip);
-                self.inner.disc_socket.ban(ip);
+                self.inner.io.ban(ip);
             }
             PeerControl::UnbanIp { ip } => {
-                self.inner.p2p_socket.unban(ip);
-                self.inner.disc_socket.unban(ip);
+                self.inner.io.unban(ip);
             }
             PeerControl::DiscoverNodes => self.inner.discovery.find_nodes(),
             PeerControl::UpdateEnrForkId { epoch, enr_fork_id } => {
@@ -117,7 +120,7 @@ impl NetworkTile {
         }
     }
 
-    fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.inner.context.loop_start();
         // Consume peer control messages
         let now = Instant::now();
@@ -208,7 +211,7 @@ impl NetworkTile {
             }
         };
 
-        self.inner.spin(&mut on_event);
+        let network_work = self.inner.spin(&mut on_event);
 
         let mut rpcs = 0;
         let mut gossips = 0;
@@ -285,6 +288,7 @@ impl NetworkTile {
                 break;
             };
         }
+        network_work
     }
 }
 
@@ -302,47 +306,44 @@ impl NetworkTile {
 
 impl Tile<SilverSpine> for NetworkTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        self.body(adapter);
+        // Snapshot before checking any spine queue; a racing producer must prevent
+        // sleep.
+        self.inner.io.start_loop();
+        let network_work = self.body(adapter);
+        if !network_work && !adapter.did_work() {
+            let timeout =
+                self.inner.p2p_endpoint.timeout().unwrap_or(POLL_TIMEOUT).min(POLL_TIMEOUT);
+            if let Err(error) = self.inner.io.wait(timeout) {
+                silver_log::error!(?error, "network wait failed");
+            }
+        }
     }
 
-    fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.open_tcaches().expect("tcache wiring");
         #[cfg(feature = "thread_park")]
-        {
-            const WAKER_TOKEN: Token = Token(3);
-            let waker = mio::Waker::new(self.inner.poll.registry(), WAKER_TOKEN)
-                .expect("failed to create network waker");
-            adapter.register_waker(waker);
-        }
-        #[cfg(not(feature = "thread_park"))]
-        let _ = adapter;
+        self.inner.io.register_spine_waker().expect("failed to create network waker");
         true
     }
 
     fn teardown(mut self, _adapter: &mut SpineAdapter<SilverSpine>) {
         // Enqueue goodbyes
         self.inner.goodbye_all();
-        p2p::p2p_spin(
-            &self.inner.poll,
-            &mut self.inner.p2p_endpoint,
-            &mut self.inner.p2p_socket,
-            &mut self.inner.context,
+        self.inner.p2p_endpoint.poll(
             Instant::now(),
+            &mut self.inner.io,
+            &mut self.inner.context,
             &mut |_| {},
         );
-        self.inner.p2p_socket.flush(&self.inner.poll);
 
         // Close all p2p connections
         self.p2p_mut().shutdown();
-        p2p::p2p_spin(
-            &self.inner.poll,
-            &mut self.inner.p2p_endpoint,
-            &mut self.inner.p2p_socket,
-            &mut self.inner.context,
+        self.inner.p2p_endpoint.poll(
             Instant::now(),
+            &mut self.inner.io,
+            &mut self.inner.context,
             &mut |_| {},
         );
-        self.inner.p2p_socket.flush(&self.inner.poll);
     }
 }
 
@@ -350,12 +351,9 @@ pub struct NetworkTileInner<D>
 where
     D: Discovery,
 {
-    p2p_socket: Socket,
+    io: NetworkIo,
     p2p_endpoint: P2p,
-    poll: Poll,
-    events: Events,
     context: Context,
-    disc_socket: Socket,
     discovery: D,
     // The last send pass ran the `P2pSend` queue empty; licenses snapshots.
     send_drained: bool,
@@ -371,17 +369,12 @@ where
         context: Context,
         discovery_addr: SocketAddr,
         discovery: D,
+        config: &NetworkConfig,
     ) -> Result<Self, Error> {
-        let poll = Poll::new()?;
-        let p2p_socket = Socket::new(p2p_addr, &poll, P2P_SOCKET_TOKEN)?;
-        let disc_socket = Socket::new(discovery_addr, &poll, DISC_SOCKET_TOKEN)?;
         Ok(Self {
-            p2p_socket,
+            io: NetworkIo::new(p2p_addr, discovery_addr, config)?,
             p2p_endpoint,
-            poll,
-            events: Events::with_capacity(8),
             context,
-            disc_socket,
             discovery,
             send_drained: true,
         })
@@ -415,57 +408,41 @@ where
         self.p2p_endpoint.goodbye_all(&mut self.context);
     }
 
-    fn poll(&mut self) -> Result<(), Error> {
-        let timeout =
-            self.p2p_endpoint.timeout().map(|d| d.min(POLL_TIMEOUT)).or(Some(POLL_TIMEOUT));
-        self.poll.poll(&mut self.events, timeout)
-    }
-
     pub fn spin<E>(&mut self, on_event: &mut E) -> bool
     where
         E: FnMut(Event) + Send,
     {
         let mut did_work = false;
 
-        if let Err(e) = self.poll() {
-            silver_log::error!(error=?e, "poll");
-            return false;
-        }
-
         let now = Instant::now();
 
-        for evt in &self.events {
-            if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
-                self.disc_socket.recv(|data, remote, _scratch, _socket| {
-                    did_work = true;
+        if let Err(error) = self.io.recv(|socket, data, remote, scratch| {
+            did_work = true;
+            match socket {
+                SocketId::Discovery => {
                     NetworkCounters::DiscBytesRecv.add(data.len() as u64);
-                    self.discovery.handle(remote, &data[..], now);
-                    true
-                });
-            } else if evt.token() == P2P_SOCKET_TOKEN && evt.is_readable() {
-                self.p2p_socket.recv(|data, remote, scratch, socket| {
-                    did_work = true;
+                    self.discovery.handle(remote, &data, now);
+                    None
+                }
+                SocketId::Quic => {
                     NetworkCounters::P2pBytesRecv.add(data.len() as u64);
-                    self.p2p_endpoint.recv(now, data, remote, scratch, socket)
-                });
+                    self.p2p_endpoint.recv(now, data, remote, scratch)
+                }
             }
+        }) {
+            silver_log::error!(?error, "network receive failed");
         }
 
-        did_work |= p2p::p2p_spin(
-            &self.poll,
-            &mut self.p2p_endpoint,
-            &mut self.p2p_socket,
-            &mut self.context,
-            now,
-            &mut |evt| on_event(Event::P2pNet(evt)),
-        );
+        did_work |= self
+            .p2p_endpoint
+            .poll(now, &mut self.io, &mut self.context, &mut |evt| on_event(Event::P2pNet(evt)));
 
-        self.disc_socket.flush(&self.poll);
+        self.io.flush(SocketId::Discovery);
         self.discovery.poll(|disc_event| match disc_event {
             DiscoveryEvent::SendMessage { to, data } => {
                 did_work = true;
                 NetworkCounters::DiscBytesSent.add(data.len() as u64);
-                self.disc_socket.send(&self.poll, |buffer| {
+                self.io.send(SocketId::Discovery, |buffer| {
                     buffer.extend_from_slice(&data);
                     Some(Transmit {
                         destination: to,
@@ -491,6 +468,8 @@ where
             }
             other => on_event(Event::Discovery(other)),
         });
+
+        self.io.flush(SocketId::Discovery);
 
         if self.send_drained {
             self.context.reader.free();

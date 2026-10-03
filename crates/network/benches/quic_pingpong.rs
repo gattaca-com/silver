@@ -85,6 +85,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 context,
                                 "0.0.0.0:12345".parse().unwrap(),
                                 DummyDisc,
+                                &Default::default(),
                             )
                             .unwrap();
                             tile.context_mut().open_tcaches().unwrap();
@@ -169,6 +170,7 @@ pub fn broadcast(c: &mut Criterion) {
                         context,
                         "0.0.0.0:12346".parse().unwrap(),
                         DummyDisc,
+                        &Default::default(),
                     )
                     .unwrap();
                     client.context_mut().open_tcaches().unwrap();
