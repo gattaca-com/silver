@@ -9,7 +9,7 @@ export const NODE_H = 66;
 /** Room left of the canvas for the p2p arrows into and out of Network. */
 export const P2P_MARGIN = 100;
 export const COLOUR_STEPS = 10;
-export const WIDTH_MIN = 1.5;
+const WIDTH_MIN = 1.5;
 export const WIDTH_MAX = 10;
 const LANE_GAP = 16;
 /** A box whose centre sits within this of a pair's line pushes its lanes to
@@ -68,7 +68,7 @@ export function logWidth(value, floor, decades) {
 }
 
 /** Where the segment from the box centre towards (tx, ty) leaves the box. */
-export function border(node, tx, ty) {
+function border(node, tx, ty) {
   const dx = tx - node.x;
   const dy = ty - node.y;
   const sx = dx === 0 ? Infinity : NODE_W / 2 / Math.abs(dx);
@@ -78,16 +78,79 @@ export function border(node, tx, ty) {
 }
 
 /** Quadratic curve between two points, bowed perpendicular by `bow`. */
-export function curve(a, b, bow) {
+function curve(a, b, bow) {
   const mx = (a.x + b.x) / 2;
   const my = (a.y + b.y) / 2;
   const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
   const cx = mx - ((b.y - a.y) / len) * bow;
   const cy = my + ((b.x - a.x) / len) * bow;
+  const at = (t) => ({
+    x: (1 - t) ** 2 * a.x + 2 * (1 - t) * t * cx + t ** 2 * b.x,
+    y: (1 - t) ** 2 * a.y + 2 * (1 - t) * t * cy + t ** 2 * b.y,
+  });
   return {
     d: `M${a.x.toFixed(1)},${a.y.toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${b.x.toFixed(1)},${b.y.toFixed(1)}`,
-    mid: { x: (a.x + 2 * cx + b.x) / 4, y: (a.y + 2 * cy + b.y) / 4 },
+    mid: at(0.5),
+    at,
   };
+}
+
+const SPOT_R_MIN = 3;
+const SPOT_R_MAX = 8;
+
+/** Spot radius for a stroke width from `logWidth`, on the same log scale. */
+export function spotRadius(width) {
+  return SPOT_R_MIN + ((SPOT_R_MAX - SPOT_R_MIN) * (width - WIDTH_MIN)) / (WIDTH_MAX - WIDTH_MIN);
+}
+
+/** One line per direction between two tiles, as wide as `width(total)` of
+ *  its items' rates, with one spot per item spaced evenly in list order, so a
+ *  spot keeps its place as traffic comes and goes. An item is `{ fromName,
+ *  toName, rate, counted, fill, r, hollow, show, mark, attrs, title, label,
+ *  pinned }`:
+ *  `counted` adds its rate to the line, `fill` is the spot's class, `show`
+ *  the hovered item's labels, `mark`
+ *  (`selected` / `related`) also marks its line, `attrs` carries its selection
+ *  and hover keys. Idle spots are painted first, marked ones last. */
+export function drawTrunks(items, width) {
+  const trunks = new Map();
+  for (const it of items) {
+    const k = `${it.fromName}>${it.toName}`;
+    let t = trunks.get(k);
+    if (!t) trunks.set(k, (t = { fromName: it.fromName, toName: it.toName, items: [], total: 0, mark: '' }));
+    t.items.push(it);
+    if (it.counted) t.total += it.rate ?? 0;
+    if (it.mark === 'selected' || (it.mark && !t.mark)) t.mark = it.mark;
+  }
+  const list = [...trunks.values()];
+  const bows = laneBows(list);
+  const lines = [];
+  const idle = [];
+  const active = [];
+  const top = [];
+  const labels = [];
+  list.forEach((t, i) => {
+    const from = TILES[t.fromName];
+    const to = TILES[t.toName];
+    const { d, at } = curve(border(from, to.x, to.y), border(to, from.x, from.y), bows[i]);
+    const busy = t.total > 0;
+    const w = busy ? width(t.total) : WIDTH_MIN;
+    const mark = t.mark ? ` ${t.mark}` : '';
+    lines.push(`<path class="trunk${busy ? '' : ' idle'}${mark}" d="${d}" stroke-width="${w.toFixed(1)}" marker-end="url(#ah-trunk)"/>`);
+    t.items.forEach((it, k) => {
+      const p = at((k + 1) / (t.items.length + 1));
+      const [x, y] = [p.x.toFixed(1), p.y.toFixed(1)];
+      const fill = it.hollow ? `spot hollow ${it.fill}` : `spot ${it.fill}`;
+      const show = it.show ? ' show' : '';
+      const group = `<g class="edge${show}${it.mark ? ` ${it.mark}` : ''}" ${it.attrs}><title>${escape(it.title)}</title>
+        <circle class="hit" cx="${x}" cy="${y}" r="${SPOT_R_MAX + 3}"/>
+        <circle class="${fill}" cx="${x}" cy="${y}" r="${it.r.toFixed(1)}"/></g>`;
+      (it.mark ? top : it.fill === 'qf-idle' ? idle : active).push(group);
+      const pinned = it.pinned ? ' sel' : '';
+      labels.push(`<text class="elabel${show}${pinned}" ${it.attrs} x="${x}" y="${(p.y - SPOT_R_MAX - 4).toFixed(1)}">${escape(it.label)}</text>`);
+    });
+  });
+  return { paths: lines.join('') + idle.join('') + active.join('') + top.join(''), labels: labels.join('') };
 }
 
 /** Side of the sorted pair's line A→B, as the sign of the bow `curve` bends
@@ -113,7 +176,7 @@ function laneSide(aName, bName) {
 /** Bow per edge, `{ fromName, toName }`, so parallel edges between one tile
  *  pair fan apart. Assigned in list order: a fixed order keeps each edge in
  *  its lane as its traffic comes and goes. */
-export function laneBows(edges) {
+function laneBows(edges) {
   const pairKey = (e) => (e.fromName < e.toName ? `${e.fromName}|${e.toName}` : `${e.toName}|${e.fromName}`);
   const lanes = new Map();
   for (const e of edges) lanes.set(pairKey(e), (lanes.get(pairKey(e)) ?? 0) + 1);
@@ -137,12 +200,10 @@ export function laneBows(edges) {
 
 /** Arrowhead of a selected line; markers do not inherit their line's colour. */
 export const SEL_MARKER = 'sel';
-/** Arrowhead of a line related to the selected one, fainter. */
-export const REL_MARKER = 'rel';
 
 export function markers() {
   const steps = [...Array(COLOUR_STEPS).keys()].map((s) => [s, `qf${s}`]);
-  return [...steps, ['idle', 'qf-idle'], [SEL_MARKER, 'qf-sel'], [REL_MARKER, 'qf-rel']]
+  return [...steps, ['idle', 'qf-idle'], ['trunk', 'qf-trunk'], [SEL_MARKER, 'qf-sel']]
     .map(
       ([id, cls]) =>
         `<marker id="ah-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse" style="overflow:visible"><path class="${cls}" d="M0,0 L10,5 L0,10 z" transform="scale(1.4)"/></marker>`,

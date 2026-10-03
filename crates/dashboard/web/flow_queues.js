@@ -1,12 +1,13 @@
-// Spine-queue mode of the Flow pane. Each edge is one producer → consumer
-// pair of one message type, read from flux's lazily created per-pair timers
+// Spine-queue mode of the Flow pane. One line per direction between two
+// tiles; each spot on it is one producer → consumer pair of one message type,
+// read from flux's lazily created per-pair timers
 // `{Consumer}-{Producer}-{MessageType}`.
 
 import { SourceClass, TimingChannel } from './wire.js';
 import { escape } from './view.js';
 import {
-  AB, BS, COLOUR_STEPS, CTL, DC, NET, NO_BUCKETS, SEL_MARKER, STO, TILES, WIDTH_MIN, border, chartSlot,
-  colourRamp, curve, detailPanel, fmtNs, fmtRate, laneBows, logWidth, widthSwatch,
+  AB, BS, COLOUR_STEPS, CTL, DC, NET, NO_BUCKETS, STO, TILES, chartSlot, colourRamp, detailPanel,
+  drawTrunks, fmtNs, fmtRate, logWidth, spotRadius, widthSwatch,
 } from './flow_layout.js';
 
 /** Width spans 1/s … 100k/s. */
@@ -122,33 +123,31 @@ function edgeTitle(e, utils) {
   return lines.join('\n');
 }
 
-/** Idle edges are painted first so traffic draws over them, and the selected
- *  edge last. Every edge carries its own hover label: hovering a queue shows
- *  the per-pair rate of each of its edges; the selected edge's stays shown. */
+const rateWidth = (rate) => logWidth(rate, 1, RATE_DECADES);
+
+/** A spot per pair: coloured by handler p50, sized by msgs/s. Hovering a
+ *  queue labels each of its spots; the selected spot's label stays shown. */
 function drawEdges(edges, utils, hovered, selected) {
-  const bows = laneBows(edges);
-  const idle = [];
-  const active = [];
-  const top = [];
-  const labels = [];
-  edges.forEach((e, i) => {
-    const from = TILES[e.fromName];
-    const to = TILES[e.toName];
-    const { d, mid } = curve(border(from, to.x, to.y), border(to, from.x, from.y), bows[i]);
+  const items = edges.map((e) => {
     const step = e.rate > 0 ? handlerStep(e.processing?.p50Ns) : null;
-    const cls = step === null ? 'q-idle' : `q${step}`;
-    const width = step === null ? WIDTH_MIN : logWidth(e.rate, 1, RATE_DECADES);
-    const show = e.queue === hovered ? ' show' : '';
     const isSel = Boolean(e.timer) && e.timer === selected;
-    const sel = isSel ? ' selected' : '';
     const timer = e.timer ? ` data-timer="${escape(e.timer)}"` : '';
-    const marker = isSel ? SEL_MARKER : step === null ? 'idle' : step;
-    (isSel ? top : step === null ? idle : active).push(`<g class="edge${show}${sel}" data-q="${e.queue}"${timer}><title>${escape(edgeTitle(e, utils))}</title>
-      <path class="hit" d="${d}"/>
-      <path class="${cls}" d="${d}" stroke-width="${width.toFixed(1)}" marker-end="url(#ah-${marker})"/></g>`);
-    labels.push(`<text class="elabel${show}${isSel ? ' sel' : ''}" data-q="${e.queue}" x="${mid.x.toFixed(1)}" y="${mid.y.toFixed(1)}">${escape(e.queue)} ${e.rate ? fmtRate(e.rate) : 'idle'}</text>`);
+    return {
+      fromName: e.fromName,
+      toName: e.toName,
+      rate: e.rate,
+      counted: true,
+      fill: step === null ? 'qf-idle' : `qf${step}`,
+      r: spotRadius(step === null ? 0 : rateWidth(e.rate)),
+      show: e.queue === hovered,
+      mark: isSel ? 'selected' : '',
+      attrs: `data-q="${e.queue}"${timer}`,
+      title: edgeTitle(e, utils),
+      label: `${e.queue} ${e.rate ? fmtRate(e.rate) : 'idle'}`,
+      pinned: isSel,
+    };
   });
-  return { paths: idle.join('') + active.join('') + top.join(''), labels: labels.join('') };
+  return drawTrunks(items, rateWidth);
 }
 
 /** Charts of the selected pair's timer over the retained buckets. */
@@ -170,11 +169,11 @@ function edgeDetail(e, histories, specs) {
 }
 
 function legend() {
-  const widths = [1, 10, 100, 1e3, 1e4, 1e5].map((r) => widthSwatch(logWidth(r, 1, RATE_DECADES), fmtRate(r))).join('');
+  const widths = [1, 10, 100, 1e3, 1e4, 1e5].map((r) => widthSwatch(rateWidth(r), fmtRate(r))).join('');
   return `<div class="flow-legend">
-    <div><span class="meta">colour: consumer handler p50</span> <span class="ramp">100ns ${colourRamp()} 10ms</span> <span class="meta">grey: no traffic · hover an edge for its queue, click for its timings</span></div>
-    <div><span class="meta">width: msgs/s</span> ${widths}</div>
-    <div class="meta">One edge per producer → consumer pair and message type, from flux's per-pair timers.</div>
+    <div><span class="meta">spot colour: consumer handler p50</span> <span class="ramp">100ns ${colourRamp()} 10ms</span> <span class="meta">grey: no traffic · hover a spot for its queue, click for its timings</span></div>
+    <div><span class="meta">line width: total msgs/s · spot size: its msgs/s, same scale</span> ${widths}</div>
+    <div class="meta">One line per direction between two tiles; one spot per producer → consumer pair and message type on it, from flux's per-pair timers.</div>
   </div>`;
 }
 

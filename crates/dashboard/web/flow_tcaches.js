@@ -1,15 +1,16 @@
-// TCache mode of the Flow pane. One line per tcache and consumer tile, from
-// the producer, as thick as that tile's read rate and coloured by its lag.
-// Dashed lines are declared ref forwarding. Selecting a line highlights the
-// rest of its tcache's lines, fainter, and opens its row in the tcache table
-// below the diagram; selecting a row highlights all of its tcache's lines.
+// TCache mode of the Flow pane. One line per direction between two tiles;
+// each spot on it is one tcache read by the consumer tile from its producer,
+// sized by that tile's read rate and coloured by its lag. Hollow spots are
+// declared ref forwarding. Selecting a spot highlights the rest of its
+// tcache's spots, fainter, and opens its row in the tcache table; selecting a
+// row highlights all of its tcache's spots.
 
 import { tcacheMinTail } from './state.js';
 import { tcacheTable } from './tcaches.js';
 import { escape, fmtBytes } from './view.js';
 import {
-  AB, BS, COLOUR_STEPS, CTL, DC, NET, REL_MARKER, SEL_MARKER, STO, TILES, WIDTH_MIN, border,
-  colourRamp, curve, fmtBytesRate, laneBows, logWidth, widthSwatch,
+  AB, BS, COLOUR_STEPS, CTL, DC, NET, STO, TILES, colourRamp, drawTrunks, fmtBytesRate, logWidth,
+  spotRadius, widthSwatch,
 } from './flow_layout.js';
 
 /** Width spans 1 KiB/s … ~100 MiB/s. */
@@ -136,79 +137,68 @@ function lagTitle(v, b) {
   );
 }
 
-/** Data lines and dashed forwarding lines share lanes, so neither lies on
- *  the other. Idle lines are painted first, the selected tcache's last. */
+const bytesWidth = (rate) => logWidth(rate, BYTES_FLOOR, BYTES_DECADES);
+
+/** Data and forwarding spots share their direction's line; only data reads
+ *  add to its width. */
 function drawLines(views, hovered, selected) {
-  // A row selects a whole tcache (no tile): all its data lines are selected.
+  // A row selects a whole tcache (no tile): all its data spots are selected.
   const [selCache, selTile] = selected?.split('|') ?? [];
   const byCache = new Map(views.map((v) => [v.cache, v]));
-  const lines = [];
+  const items = [];
   for (const v of views) {
     for (const b of v.branches.values()) {
-      lines.push({ cache: v.cache, fromName: v.producer, toName: b.tile, view: v, branch: b });
+      const reading = b.rate > 0;
+      const step = fillStep(v.capacity ? b.lag / v.capacity : 0);
+      const isSel = v.cache === selCache && (selTile === undefined || b.tile === selTile);
+      const mark = isSel ? 'selected' : v.cache === selCache ? 'related' : '';
+      items.push({
+        fromName: v.producer,
+        toName: b.tile,
+        rate: b.rate,
+        counted: true,
+        fill: reading ? `qf${step}` : 'qf-idle',
+        r: spotRadius(reading ? bytesWidth(b.rate) : 0),
+        show: v.cache === hovered,
+        mark,
+        attrs: `data-q="${v.cache}" data-tc="${v.cache}|${b.tile}"`,
+        title: lagTitle(v, b),
+        label: `${v.cache} ${reading ? fmtBytesRate(b.rate) : 'idle'} · lag ${pct(b.lag, v.capacity).toFixed(0)}%`,
+        pinned: Boolean(mark),
+      });
     }
   }
   for (const [cache, forwarder, emitter, receivers] of FORWARDS) {
-    for (const r of receivers) lines.push({ cache, fromName: forwarder, toName: r, emitter, forward: true });
-  }
-  const bows = laneBows(lines);
-  const idle = [];
-  const active = [];
-  const top = [];
-  const labels = [];
-  lines.forEach((e, i) => {
-    const from = TILES[e.fromName];
-    const to = TILES[e.toName];
-    const { d, mid } = curve(border(from, to.x, to.y), border(to, from.x, from.y), bows[i]);
-    const show = e.cache === hovered ? ' show' : '';
-    const key = `${e.cache}|${e.toName}`;
-    const isSel = !e.forward && e.cache === selCache && (selTile === undefined || e.toName === selTile);
-    const related = !isSel && e.cache === selCache;
-    const mark = isSel ? ' selected' : related ? ' related' : '';
-    let cls;
-    let width;
-    let marker;
-    let title;
-    let label;
-    if (e.forward) {
-      const rate = byCache.get(e.cache)?.consumers.get(e.emitter)?.rate;
-      cls = rate > 0 ? 'q3' : 'q-idle';
-      width = WIDTH_MIN;
-      marker = rate > 0 ? 3 : 'idle';
-      title = `${e.cache}: ${from.label} forwards refs to ${to.label}\nreads via ${e.emitter}${rate > 0 ? ` at ${fmtBytesRate(rate)}` : ''}`;
-      label = `${e.cache} refs`;
-    } else {
-      const { view: v, branch: b } = e;
-      const reading = b.rate > 0;
-      const step = fillStep(v.capacity ? b.lag / v.capacity : 0);
-      cls = reading ? `q${step}` : 'q-idle';
-      width = reading ? logWidth(b.rate, BYTES_FLOOR, BYTES_DECADES) : WIDTH_MIN;
-      marker = reading ? step : 'idle';
-      title = lagTitle(v, b);
-      label = `${e.cache} ${reading ? fmtBytesRate(b.rate) : 'idle'} · lag ${pct(b.lag, v.capacity).toFixed(0)}%`;
+    const rate = byCache.get(cache)?.consumers.get(emitter)?.rate;
+    for (const r of receivers) {
+      items.push({
+        fromName: forwarder,
+        toName: r,
+        rate,
+        counted: false,
+        fill: rate > 0 ? 'qf3' : 'qf-idle',
+        r: spotRadius(0),
+        hollow: true,
+        show: cache === hovered,
+        mark: '',
+        attrs: `data-q="${cache}"`,
+        title: `${cache}: ${TILES[forwarder].label} forwards refs to ${TILES[r].label}\nreads via ${emitter}${rate > 0 ? ` at ${fmtBytesRate(rate)}` : ''}`,
+        label: `${cache} refs`,
+        pinned: false,
+      });
     }
-    if (isSel) marker = SEL_MARKER;
-    else if (related) marker = REL_MARKER;
-    const sel = e.forward ? '' : ` data-tc="${key}"`;
-    const group = `<g class="edge${e.forward ? ' forward' : ''}${show}${mark}" data-q="${e.cache}"${sel}><title>${escape(title)}</title>
-      <path class="hit" d="${d}"/>
-      <path class="${cls}" d="${d}" stroke-width="${width.toFixed(1)}" marker-end="url(#ah-${marker})"/></g>`;
-    (mark ? top : cls === 'q-idle' ? idle : active).push(group);
-    // Forwarding labels stay hover-only; a selection labels its data lines.
-    const pinned = mark && !e.forward ? ' sel' : '';
-    labels.push(`<text class="elabel${show}${pinned}" data-q="${e.cache}" x="${mid.x.toFixed(1)}" y="${mid.y.toFixed(1)}">${escape(label)}</text>`);
-  });
-  return { paths: idle.join('') + active.join('') + top.join(''), labels: labels.join('') };
+  }
+  return drawTrunks(items, bytesWidth);
 }
 
 function legend() {
   const widths = [1024, 1024 ** 2, 10 * 1024 ** 2, 100 * 1024 ** 2]
-    .map((r) => widthSwatch(logWidth(r, BYTES_FLOOR, BYTES_DECADES), fmtBytesRate(r)))
+    .map((r) => widthSwatch(bytesWidth(r), fmtBytesRate(r)))
     .join('');
   return `<div class="flow-legend">
-    <div><span class="meta">colour: consumer lag, % of capacity</span> <span class="ramp">0% ${colourRamp()} 100%</span> <span class="meta">grey: idle · hover for the tcache, click to open it in the table below</span></div>
-    <div><span class="meta">width: consumer read</span> ${widths}</div>
-    <div class="meta">One line per tcache and consumer tile, from its producer. Dashed: declared ref forwarding; the receiver reads the producer's ring.</div>
+    <div><span class="meta">spot colour: consumer lag, % of capacity</span> <span class="ramp">0% ${colourRamp()} 100%</span> <span class="meta">grey: idle · hover a spot for its tcache, click to open it in the table</span></div>
+    <div><span class="meta">line width: total consumer read · spot size: its read, same scale</span> ${widths}</div>
+    <div class="meta">One line per direction between two tiles; one spot per tcache and consumer tile on it, from the producer. Hollow: declared ref forwarding; the receiver reads the producer's ring.</div>
   </div>`;
 }
 
