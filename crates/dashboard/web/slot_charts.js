@@ -1,11 +1,11 @@
 // Charts at the top of the Slots pane: each client's slot over time, from
 // its block `Received` events, and each client's attestations processed per
-// 50 ms sample of the `fast:beacon_state` source, over the last 30 s.
+// 100 ms of the current slot, from the 50 ms `fast:beacon_state` samples.
 
 import { alignSeries } from './chart.js';
 
 const WINDOW_S = 240;
-const ATTESTATION_WINDOW_S = 30;
+const BIN_S = 0.1;
 const HEIGHT = 160;
 /** Every attestation-data root lookup: single attestations past the
  *  committee checks, plus aggregates. */
@@ -54,39 +54,47 @@ function slotSpec(instances, nowS) {
   };
 }
 
-/** Attestations per 50 ms sample: the delta of the summed counters. A
- *  counter reset breaks the delta. */
-function attestationSeries(inst, nowS) {
+/** Attestations per bin of the slot starting at `startS`: each sample's
+ *  delta of the summed counters lands in the bin holding its timestamp. A bin
+ *  with no sample is null; a counter reset breaks the delta. */
+function attestationSeries(inst, startS, bins) {
   const s = inst.samples('beacon_state');
   if (!s) return null;
   const cols = ATTESTATION_SLOTS.map((n) => s.history.values[s.names.indexOf(n)]);
   if (cols.some((c) => !c)) return null;
-  const xs = [];
-  const ys = [];
+  const ys = new Array(bins).fill(null);
   let prevTotal = null;
   s.history.ts.forEach((x, k) => {
     const parts = cols.map((c) => c[k]);
     const total = parts.some((v) => v === null || v === undefined) ? null : parts.reduce((a, b) => a + b, 0);
-    if (x >= nowS - ATTESTATION_WINDOW_S) {
-      xs.push(x);
-      ys.push(total === null || prevTotal === null || total < prevTotal ? null : total - prevTotal);
+    const bin = Math.floor((x - startS) / BIN_S);
+    if (bin >= 0 && bin < bins && total !== null && prevTotal !== null && total >= prevTotal) {
+      ys[bin] = (ys[bin] ?? 0) + total - prevTotal;
     }
     prevTotal = total;
   });
-  return xs.length ? { label: inst.label, xs, ys } : null;
+  return ys.some((v) => v !== null) ? { label: inst.label, ys } : null;
 }
 
-/** One line per client. Clients sample on their own clocks, so the aligned
- *  series interleave with nulls and the lines span them. */
+/** One line per client over a fixed x axis: the seconds of the current slot.
+ *  The bins run to now, so the lines grow across the slot and restart at the
+ *  next one. */
 function attestationSpec(instances, nowS) {
-  const series = instances.map((inst) => attestationSeries(inst, nowS)).filter(Boolean);
+  const clock = instances.find((i) => i.clock)?.clock;
+  if (!clock) return null;
+  const slotS = clock.slotNs / 1e9;
+  const startS = Number(clock.slotStart(slotAt(clock, nowS))) / 1e9;
+  const bins = Math.min(Math.floor((nowS - startS) / BIN_S) + 1, Math.round(slotS / BIN_S));
+  const series = instances.map((inst) => attestationSeries(inst, startS, bins)).filter(Boolean);
   if (!series.length) return null;
+  const xs = Array.from({ length: bins }, (_, i) => Math.round(i * BIN_S * 10) / 10);
   return {
     labels: series.map((s) => s.label),
-    data: alignSeries(series),
+    data: [xs, ...series.map((s) => s.ys)],
     fmt: (v) => String(Math.round(v)),
     height: HEIGHT,
-    xRange: [nowS - ATTESTATION_WINDOW_S, nowS],
+    xSeconds: true,
+    xRange: [0, slotS],
     spanGaps: true,
   };
 }
@@ -108,7 +116,7 @@ export function slotCharts(fleet, specs) {
   const attestations = attestationSpec(instances, nowS);
   if (attestations) {
     specs.set('slots-att', attestations);
-    cards.push(card('slots-att', 'attestations per 50 ms'));
+    cards.push(card('slots-att', 'attestations per 100 ms, current slot'));
   }
   return cards.length ? `<div class="slot-charts">${cards.join('')}</div>` : '';
 }
