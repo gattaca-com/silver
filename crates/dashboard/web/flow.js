@@ -6,7 +6,7 @@ import { SourceClass } from './wire.js';
 import { escape, instanceTabs } from './view.js';
 import {
   H, NODE_W, NO_BUCKETS, P2P_MARGIN, SEL_MARKER, TILES, W, chartSlot, detailPanel, drawNodes, fmtBytesRate,
-  markers,
+  isDefaultLayout, markers, moveTile, resetLayout, saveLayout,
 } from './flow_layout.js';
 import * as queues from './flow_queues.js';
 import * as tcaches from './flow_tcaches.js';
@@ -45,12 +45,13 @@ function p2pRates(inst) {
   return { recv: rate('recv'), sent: rate('sent') };
 }
 
-/** Wire traffic enters and leaves Network through its left edge. */
+/** Wire traffic enters and leaves Network through its left edge, each arrow
+ *  with its name on the outside of its rate. */
 function drawP2p(rates, selected) {
   const net = TILES.NetworkTile;
   const edge = net.x - NODE_W / 2 - 2;
-  const far = -P2P_MARGIN + 20;
-  const arrow = (dir, y, from, to, textY) => {
+  const far = -P2P_MARGIN + 10;
+  const arrow = (dir, y, from, to, textYs) => {
     const { label, counter } = P2P[dir];
     const rate = rates[dir];
     const active = rate > 0;
@@ -60,11 +61,14 @@ function drawP2p(rates, selected) {
     return `<g class="p2p${sel}" data-p2p="${dir}"><title>${escape(`${label}: ${counter} delta over the last 1 s bucket`)}</title>
       <path class="hit" d="${d}"/>
       <path class="${active ? 'q5' : 'q-idle'}" d="${d}" stroke-width="3" marker-end="url(#ah-${sel ? SEL_MARKER : active ? 5 : 'idle'})"/>
-      <text class="plabel" x="${(far + edge) / 2}" y="${textY}">${escape(label)} ${value}</text></g>`;
+      <text class="plabel" x="${(far + edge) / 2}" y="${textYs.label}">${escape(label)}</text>
+      <text class="plabel" x="${(far + edge) / 2}" y="${textYs.value}">${value}</text></g>`;
   };
+  const inY = net.y - P2P_OFFSET;
+  const outY = net.y + P2P_OFFSET;
   return (
-    arrow('recv', net.y - P2P_OFFSET, far, edge, net.y - P2P_OFFSET - 8) +
-    arrow('sent', net.y + P2P_OFFSET, edge, far, net.y + P2P_OFFSET + 18)
+    arrow('recv', inY, far, edge, { label: inY - 22, value: inY - 8 }) +
+    arrow('sent', outY, edge, far, { label: outY + 32, value: outY + 18 })
   );
 }
 
@@ -85,14 +89,16 @@ function modeSwitch(active) {
   const buttons = Object.keys(MODES)
     .map((m) => `<button class="${m === active ? 'active' : ''}" data-mode="${m}">${m}</button>`)
     .join('');
-  return `<div class="subtabs flow-modes">${buttons}</div>`;
+  const reset = isDefaultLayout() ? '' : '<button class="reset-layout" data-reset-layout>reset layout</button>';
+  return `<div class="subtabs flow-modes">${buttons}${reset}</div>`;
 }
 
-/** Ctrl/Cmd+click on the instance tabs selects several, drawn side by side. */
+/** Ctrl/Cmd+click on the instance tabs selects several, stacked. */
 export const multiInstance = true;
 
-/** One instance's diagram and detail. Chart keys are namespaced by instance
- *  so side-by-side columns do not share plots. */
+/** One instance's diagram, with its detail to the right: a greyed box until
+ *  something is selected. Chart keys are namespaced by instance so stacked
+ *  rows do not share plots. */
 function column(inst, ui, specs, multi) {
   const utils = tileUtils(inst);
   const own = new Map();
@@ -102,11 +108,14 @@ function column(inst, ui, specs, multi) {
   const p2p = ui.selected?.startsWith(P2P_SELECT) ? p2pDetail(inst, ui.selected.slice(P2P_SELECT.length), own) : '';
   for (const [key, spec] of own) specs.set(`${inst.key}/${key}`, spec);
   const detail = (p2p + g.detail).replaceAll('data-chart="', `data-chart="${inst.key}/`);
+  const side = detail
+    ? `<div class="flow-side">${detail}</div>`
+    : '<div class="flow-side flow-unselected">select a line or arrow</div>';
   const heading = multi ? `<h3>${escape(inst.label)}</h3>` : '';
   const html = `<div class="flow-col">${heading}<svg class="${ui.selected ? 'has-sel' : ''}" viewBox="${-P2P_MARGIN} 0 ${W + P2P_MARGIN} ${H}" role="img" aria-label="Tile ${ui.mode} flow for ${escape(inst.label)}">
       <defs>${markers()}</defs>
       ${g.paths}${drawP2p(p2pRates(inst), ui.selected)}${drawNodes(utils, g.notes)}${g.labels}
-    </svg>${detail}</div>`;
+    </svg>${side}</div>`;
   return { html, legend: g.legend };
 }
 
@@ -120,13 +129,22 @@ export function render(fleet, root, now, ui) {
   const specs = new Map();
   const cols = insts.map((inst) => column(inst, ui, specs, insts.length > 1));
   root.innerHTML = `${tabs}${modeSwitch(ui.mode)}
-    <section class="flow"><div class="flow-cols" style="--cols:${cols.length}">${cols.map((c) => c.html).join('')}</div>${cols[0].legend}</section>`;
+    <section class="flow"><div class="flow-cols">${cols.map((c) => c.html).join('')}</div>${cols[0].legend}</section>`;
   ui.charts ??= new LineCharts();
   ui.charts.mount(root, specs);
 }
 
 /** A mode switch drops the selection: keys belong to one mode's graph. */
 export function click(target, ui) {
+  // The click that ends a drag is not a selection.
+  if (ui.dragged) {
+    ui.dragged = false;
+    return;
+  }
+  if (target.closest('[data-reset-layout]')) {
+    resetLayout();
+    return;
+  }
   const mode = target.closest('[data-mode]')?.dataset.mode;
   if (mode && MODES[mode]) {
     if (mode !== ui.mode) ui.selected = null;
@@ -142,13 +160,59 @@ export function click(target, ui) {
   if (key) ui.selected = ui.selected === key ? null : key;
 }
 
-/** Shows the hovered queue's or tcache's labels and highlights its lines in
- *  place; the next render re-applies it from `ui.hover`. */
+/** Shows the hovered queue's or tcache's labels and splits the hovered
+ *  trunk in place; the next render re-applies both from `ui`. */
 export function hover(target, ui, root) {
   const key = target.closest?.('.flow [data-q]')?.dataset.q ?? null;
-  if (key === ui.hover) return;
-  ui.hover = key;
-  for (const el of root.querySelectorAll('.flow [data-q]')) {
-    el.classList.toggle('show', el.dataset.q === key);
+  if (key !== ui.hover) {
+    ui.hover = key;
+    for (const el of root.querySelectorAll('.flow [data-q]')) {
+      el.classList.toggle('show', el.dataset.q === key);
+    }
   }
+  const trunk = target.closest?.('.flow [data-trunk]')?.dataset.trunk ?? null;
+  if (trunk !== ui.trunk) {
+    ui.trunk = trunk;
+    for (const el of root.querySelectorAll('.flow [data-trunk]')) {
+      el.classList.toggle('split', el.dataset.trunk === trunk);
+    }
+  }
+}
+
+/** Diagram coordinates of a pointer event over the `index`th diagram. Each
+ *  render replaces the SVG, so it is looked up afresh. */
+function diagramPoint(root, index, e) {
+  const svg = root.querySelectorAll('.flow-col > svg')[index];
+  const ctm = svg?.getScreenCTM();
+  if (!ctm) return null;
+  return new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+}
+
+/** A tile box starts a drag; the layout is shared by every diagram. */
+export function dragStart(e, ui, root) {
+  ui.dragged = false;
+  const node = e.target.closest?.('.flow .node[data-tile]');
+  if (!node) return false;
+  const index = [...root.querySelectorAll('.flow-col > svg')].indexOf(node.closest('svg'));
+  const p = diagramPoint(root, index, e);
+  if (!p) return false;
+  const t = TILES[node.dataset.tile];
+  ui.drag = { tile: node.dataset.tile, index, dx: t.x - p.x, dy: t.y - p.y, moved: false };
+  return true;
+}
+
+export function dragMove(e, ui, root) {
+  const d = ui.drag;
+  const p = d && diagramPoint(root, d.index, e);
+  if (!p) return false;
+  moveTile(d.tile, p.x + d.dx, p.y + d.dy);
+  d.moved = true;
+  return true;
+}
+
+export function dragEnd(ui) {
+  if (!ui.drag) return;
+  if (ui.drag.moved) saveLayout();
+  ui.dragged = ui.drag.moved;
+  ui.drag = null;
 }

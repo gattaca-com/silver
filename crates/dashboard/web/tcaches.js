@@ -8,7 +8,7 @@ import { escape, fmtBytes } from './view.js';
 
 const HEAD_SLOT = 1;
 const FIXED_SLOTS = 2;
-const COLUMNS = 7;
+const COLUMNS = 6;
 
 /** Filled spans of the ring as [start, end) fractions of capacity. */
 function occupied(capacity, head, minTail) {
@@ -79,14 +79,13 @@ export function tcacheTable(inst, specs, focus) {
         <td class="num">${fmtBytes(minTail)}</td>
         <td class="num">${fmtBytes(capacity)}</td>
         <td class="num">${fmtBytes(tcacheLength(v))}</td>
-        <td class="num">${fmtBytes(inst.tcacheMaxLength.get(id) ?? 0)}</td>
       </tr>${chart}`;
     })
     .join('');
   return `<table class="tcache-table">
     <thead><tr>
       <th>name</th><th>occupancy</th><th>head</th><th>min_tail</th>
-      <th>capacity</th><th>length</th><th>max_length</th>
+      <th>capacity</th><th>length</th>
     </tr></thead>
     <tbody>${rows || `<tr><td colspan="${COLUMNS}" class="empty">no tcaches described yet</td></tr>`}</tbody>
   </table>`;

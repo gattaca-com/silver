@@ -111,22 +111,47 @@
   .chart { width: 100%; }
   .chart .u-legend { font-size: 11px; color: var(--fg); }
   .flow-col > svg { width: 100%; height: auto; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
-  .flow .edge path, .flow .p2p path { fill: none; }
-  .flow .edge path.hit, .flow .p2p path.hit { stroke: transparent; stroke-width: 12; }
-  .flow .edge.show path:not(.hit) { filter: drop-shadow(0 0 2px var(--fg)); }
+  .flow .p2p path { fill: none; }
+  .flow .p2p path.hit { stroke: transparent; stroke-width: 12; }
+  /* Heat runs from a faint orange on idle lines to a bright orange. */
+  .flow { --trunk-cold: color-mix(in srgb, var(--series-2) 30%, var(--panel)); --trunk-hot: #ff8a1f; }
+  .flow .trunk { fill: none; stroke: color-mix(in oklab, var(--trunk-hot) var(--heat), var(--trunk-cold)); }
+  .flow .qf-trunk { fill: color-mix(in oklab, var(--trunk-hot) 50%, var(--trunk-cold)); }
+  .flow .edge circle.hit { fill: transparent; }
+  .flow .trunk-hit { fill: none; stroke: transparent; stroke-width: 12px; }
+  .flow .trunk-hit.split { stroke-width: var(--fan); }
+  .flow .trunk { transition: opacity 120ms; }
+  .flow .trunk.split { opacity: 0; }
+  .flow .subline { fill: none; opacity: 0; pointer-events: none; transition: opacity 120ms; }
+  .flow .subline.split { opacity: 1; }
+  .flow .subline.hollow { stroke-dasharray: 4 3; }
+  .flow .subline.selected { filter: drop-shadow(0 0 1.5px var(--fg)); }
+  .flow .subline-hit { fill: none; stroke: transparent; stroke-width: 8px; pointer-events: none; }
+  .flow .subline-hit.split { pointer-events: stroke; }
+  .flow .subline-hit.split[data-timer], .flow .subline-hit.split[data-tc] { cursor: pointer; }
+  .flow .edge, .flow .elabel { transition: transform 120ms; }
+  .flow .edge.split, .flow .elabel.split { transform: translate(var(--sx), var(--sy)); }
+  .flow .spot { stroke: var(--panel); stroke-width: 1; }
+  .flow .spot.hollow { fill: var(--panel); stroke: var(--idle); stroke-width: 1.5; }
+  .flow .spot.hollow.qf3 { stroke: var(--seq-3); }
+  .flow .edge.show .spot { filter: drop-shadow(0 0 2px var(--fg)); }
   .flow .edge[data-timer] { cursor: pointer; }
   .flow .plabel { font-size: 11px; text-anchor: middle; fill: var(--fg); }
   .flow .p2p { cursor: pointer; }
-  .flow .forward path:not(.hit) { stroke-dasharray: 5 4; }
   .flow-modes { margin-top: -4px; }
-  .flow-cols { display: grid; gap: 12px; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); }
-  .flow-col { min-width: 0; }
-  .flow-col h3 { font-size: 13px; margin: 0 0 4px; }
-  .flow .edge.selected path:not(.hit), .flow .p2p.selected path:not(.hit) { stroke: var(--series-2); }
+  .flow-modes .reset-layout { margin-left: 12px; }
+  .flow .node { cursor: grab; touch-action: none; }
+  .flow-cols { display: grid; gap: 16px; }
+  .flow-col { display: grid; gap: 12px; grid-template-columns: 50vw minmax(0, 1fr); align-items: start; }
+  .flow-col h3 { font-size: 13px; margin: 0; grid-column: 1 / -1; }
+  .flow-side { min-width: 0; }
+  .flow-side > .flow-detail:first-child { margin-top: 0; }
+  .flow-unselected { align-self: stretch; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--line); opacity: 0.5; border-radius: 4px; }
+  .flow .p2p.selected path:not(.hit) { stroke: var(--series-2); }
+  .flow .edge.selected .spot { stroke: var(--fg); stroke-width: 3; }
   .flow .qf-sel { fill: var(--series-2); }
-  .flow .edge.related path:not(.hit) { stroke: var(--series-2); stroke-opacity: 0.4; }
-  .flow svg.has-sel .edge:not(.selected):not(.related), .flow svg.has-sel .p2p:not(.selected) { filter: grayscale(1); opacity: 0.35; }
-  .flow .qf-rel { fill: var(--series-2); fill-opacity: 0.4; }
+  .flow .edge.related .spot { stroke: var(--fg); stroke-width: 1.5; stroke-opacity: 0.6; }
+  .flow svg.has-sel .edge:not(.selected):not(.related), .flow svg.has-sel .p2p:not(.selected), .flow svg.has-sel .trunk:not(.selected):not(.related) { filter: grayscale(1); opacity: 0.35; }
   .flow .edge[data-tc] { cursor: pointer; }
   .tcache-table { margin-top: 10px; }
   .tcache-table tr.focus td { background: var(--sel); }
@@ -135,7 +160,7 @@
   .flow-detail h3 { font-size: 13px; margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
   .flow-detail h4 { font-size: 12px; margin: 8px 0 4px; }
   .flow-detail .close { margin-left: auto; font: inherit; font-size: 16px; line-height: 1; color: var(--muted); background: none; border: none; cursor: pointer; }
-  .flow-charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .flow-charts { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
   .flow-charts .meta { margin: 0 0 2px; }
   .slot-charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); margin-bottom: 14px; }
   .slot-charts .meta { margin: 0 0 2px; }
