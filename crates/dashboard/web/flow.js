@@ -88,11 +88,12 @@ function modeSwitch(active) {
   return `<div class="subtabs flow-modes">${buttons}</div>`;
 }
 
-/** Ctrl/Cmd+click on the instance tabs selects several, drawn side by side. */
+/** Ctrl/Cmd+click on the instance tabs selects several, stacked. */
 export const multiInstance = true;
 
-/** One instance's diagram and detail. Chart keys are namespaced by instance
- *  so side-by-side columns do not share plots. */
+/** One instance's diagram, with its detail to the right: a greyed box until
+ *  something is selected. Chart keys are namespaced by instance so stacked
+ *  rows do not share plots. */
 function column(inst, ui, specs, multi) {
   const utils = tileUtils(inst);
   const own = new Map();
@@ -102,11 +103,14 @@ function column(inst, ui, specs, multi) {
   const p2p = ui.selected?.startsWith(P2P_SELECT) ? p2pDetail(inst, ui.selected.slice(P2P_SELECT.length), own) : '';
   for (const [key, spec] of own) specs.set(`${inst.key}/${key}`, spec);
   const detail = (p2p + g.detail).replaceAll('data-chart="', `data-chart="${inst.key}/`);
+  const side = detail
+    ? `<div class="flow-side">${detail}</div>`
+    : '<div class="flow-side flow-unselected">select a line or arrow</div>';
   const heading = multi ? `<h3>${escape(inst.label)}</h3>` : '';
   const html = `<div class="flow-col">${heading}<svg class="${ui.selected ? 'has-sel' : ''}" viewBox="${-P2P_MARGIN} 0 ${W + P2P_MARGIN} ${H}" role="img" aria-label="Tile ${ui.mode} flow for ${escape(inst.label)}">
       <defs>${markers()}</defs>
       ${g.paths}${drawP2p(p2pRates(inst), ui.selected)}${drawNodes(utils, g.notes)}${g.labels}
-    </svg>${detail}</div>`;
+    </svg>${side}</div>`;
   return { html, legend: g.legend };
 }
 
@@ -120,7 +124,7 @@ export function render(fleet, root, now, ui) {
   const specs = new Map();
   const cols = insts.map((inst) => column(inst, ui, specs, insts.length > 1));
   root.innerHTML = `${tabs}${modeSwitch(ui.mode)}
-    <section class="flow"><div class="flow-cols" style="--cols:${cols.length}">${cols.map((c) => c.html).join('')}</div>${cols[0].legend}</section>`;
+    <section class="flow"><div class="flow-cols">${cols.map((c) => c.html).join('')}</div>${cols[0].legend}</section>`;
   ui.charts ??= new LineCharts();
   ui.charts.mount(root, specs);
 }

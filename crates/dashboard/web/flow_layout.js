@@ -2,9 +2,9 @@
 
 import { escape, fmtBytes } from './view.js';
 
-export const W = 1420;
+export const W = 760;
 export const H = 760;
-export const NODE_W = 240;
+export const NODE_W = 130;
 export const NODE_H = 66;
 /** Room left of the canvas for the p2p arrows into and out of Network. */
 export const P2P_MARGIN = 170;
@@ -17,16 +17,16 @@ const LANE_GAP = 16;
 const NEAR_BOX = 220;
 
 /** Keyed by the tile's Rust type name, as flux names its metrics files.
- *  Network and ApplicationBoundary flank the two columns; BeaconState sits
- *  just right of centre so the Control–ApplicationBoundary line clears it,
- *  and the layout mirrors about the Network–ApplicationBoundary axis. */
+ *  Network and ApplicationBoundary flank the two columns, mirrored about the
+ *  Network–ApplicationBoundary axis. The narrowest spacing on a 10-unit grid
+ *  where every straight tile-to-tile line clears every other box by ≥ 10. */
 export const TILES = {
-  NetworkTile: { label: 'Network', x: 150, y: 380 },
-  Controller: { label: 'Control', x: 440, y: 50 },
-  StorageTile: { label: 'Storage', x: 440, y: 710 },
-  BeaconStateTile: { label: 'BeaconState', x: 760, y: 270 },
-  DataColumnsTile: { label: 'DataColumns', x: 760, y: 490 },
-  ApplicationBoundaryTile: { label: 'ApplicationBoundary', x: 1270, y: 380 },
+  NetworkTile: { label: 'Network', x: 100, y: 380 },
+  Controller: { label: 'Control', x: 180, y: 50 },
+  StorageTile: { label: 'Storage', x: 180, y: 710 },
+  BeaconStateTile: { label: 'BeaconState', x: 350, y: 260 },
+  DataColumnsTile: { label: 'DataColumns', x: 350, y: 500 },
+  ApplicationBoundaryTile: { label: 'API', x: 660, y: 380 },
 };
 
 export const NET = 'NetworkTile';

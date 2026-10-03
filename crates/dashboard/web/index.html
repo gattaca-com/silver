@@ -119,9 +119,12 @@
   .flow .p2p { cursor: pointer; }
   .flow .forward path:not(.hit) { stroke-dasharray: 5 4; }
   .flow-modes { margin-top: -4px; }
-  .flow-cols { display: grid; gap: 12px; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); }
-  .flow-col { min-width: 0; }
-  .flow-col h3 { font-size: 13px; margin: 0 0 4px; }
+  .flow-cols { display: grid; gap: 16px; }
+  .flow-col { display: grid; gap: 12px; grid-template-columns: 50vw minmax(0, 1fr); align-items: start; }
+  .flow-col h3 { font-size: 13px; margin: 0; grid-column: 1 / -1; }
+  .flow-side { min-width: 0; }
+  .flow-side > .flow-detail:first-child { margin-top: 0; }
+  .flow-unselected { align-self: stretch; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--line); opacity: 0.5; border-radius: 4px; }
   .flow .edge.selected path:not(.hit), .flow .p2p.selected path:not(.hit) { stroke: var(--series-2); }
   .flow .qf-sel { fill: var(--series-2); }
   .flow .edge.related path:not(.hit) { stroke: var(--series-2); stroke-opacity: 0.4; }
