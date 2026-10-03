@@ -122,8 +122,8 @@ impl Peer {
         self.connection.handle_event(event);
     }
 
-    pub(crate) fn is_drained(&self) -> bool {
-        self.connection.is_drained()
+    pub(crate) fn should_reap(&self) -> bool {
+        self.connection.is_drained() || self.outbound_lease_wheel.is_expired()
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -135,7 +135,7 @@ impl Peer {
     /// connection to reap. A missing deadline is quiescent, not due — treating
     /// it as due pinned `P2p::poll` at `Duration::ZERO`.
     pub(crate) fn due(&self, now: Instant) -> bool {
-        self.dirty || self.wake_at.is_some_and(|t| t <= now) || self.is_drained()
+        self.dirty || self.wake_at.is_some_and(|t| t <= now) || self.should_reap()
     }
 
     pub(crate) fn wake_at(&self) -> Option<Instant> {
@@ -263,10 +263,6 @@ impl Peer {
         now: Instant,
         rpc_codec_pool: &mut RpcCodecPool,
     ) -> bool {
-        if self.connection.is_closed() {
-            self.outbound_lease_wheel.terminate();
-            return false;
-        }
         if let Some(retained) = self.outbound_lease_wheel.expire(now) {
             silver_log::warn!(id = ?self.id, retained, "outbound gossip delivery timeout");
             self.disconnect_on_stall(now, rpc_codec_pool);
@@ -335,7 +331,8 @@ impl Peer {
     pub(crate) fn shutdown(&mut self, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
         self.dirty = true;
         self.pending_shutdown = None;
-        self.outbound_lease_wheel.terminate();
+        // Quinn retains send buffers while closing, so delivery deadlines must stay
+        // armed.
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
         self.clear_streams(rpc_codec_pool);
     }
@@ -1267,10 +1264,13 @@ mod tests {
         TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode,
         test_util::follow_producer_floor,
     };
+    use silver_config::NetworkConfig;
+    #[cfg(all(target_os = "linux", feature = "io-uring"))]
+    use silver_config::UringConfig;
 
     use super::*;
     use crate::{
-        network_io::NetworkIo,
+        network_io::{NetworkIo, SocketId},
         p2p::{
             ClusterNodes, P2p,
             quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK},
@@ -2120,12 +2120,121 @@ mod tests {
 
         assert!(client_peer.connection.is_closed(), "delivery timeout must close the connection");
         assert!(client_peer.streams.is_empty(), "closing drops every stream");
-        assert!(client_peer.outbound_lease_wheel.is_terminal());
+        assert!(client_peer.outbound_lease_wheel.is_expired());
 
         // Model Quinn releasing its send buffer during the later connection
         // drop: terminal buckets remain valid for late lease destruction.
         drop(retained);
         assert_eq!(client_peer.outbound_lease_wheel.active_count(), 0);
+    }
+
+    #[test]
+    fn outbound_delivery_timeout_releases_quinn_tcache_owner() {
+        let configs = vec![NetworkConfig::Mio];
+        #[cfg(all(target_os = "linux", feature = "io-uring"))]
+        let configs = {
+            let mut configs = configs;
+            // SAFETY: sched_getcpu has no preconditions.
+            let cpu = unsafe { libc::sched_getcpu() };
+            assert!(cpu >= 0);
+            for sqpoll_cpu in [None, Some(cpu as u32)] {
+                configs.push(NetworkConfig::IoUring(UringConfig {
+                    sqpoll_cpu,
+                    quic_tx_buffers: 1,
+                    ..UringConfig::default()
+                }));
+            }
+            configs
+        };
+        for config in configs {
+            for closing in [false, true] {
+                let mut h = PeerHarness::new();
+                h.reopen(TCacheId::ControlGossip, TReadMode::Strict);
+                let pair = PeerPair::new();
+                let handle = pair.client_peer.handle;
+                let mut endpoint = pair.into_client();
+                let mut io = match NetworkIo::new(
+                    "127.0.0.1:0".parse().unwrap(),
+                    "127.0.0.1:0".parse().unwrap(),
+                    &config,
+                ) {
+                    Ok(io) => io,
+                    Err(error)
+                        if matches!(config, NetworkConfig::IoUring(_)) &&
+                            matches!(
+                                error.raw_os_error(),
+                                Some(libc::EPERM | libc::EACCES | libc::ENOSYS | libc::EOPNOTSUPP)
+                            ) =>
+                    {
+                        eprintln!("SKIP {config:?}: {error}");
+                        continue;
+                    }
+                    Err(error) => panic!("network backend {config:?}: {error}"),
+                };
+                if matches!(config, NetworkConfig::IoUring(_)) {
+                    assert!(io.send(SocketId::Quic, |buffer| {
+                        buffer.extend_from_slice(b"held");
+                        Some(Transmit {
+                            destination: "127.0.0.1:9".parse().unwrap(),
+                            size: buffer.len(),
+                            ecn: None,
+                            segment_size: None,
+                            src_ip: None,
+                        })
+                    }));
+                    assert!(io.is_blocked(SocketId::Quic));
+                }
+
+                let now = Instant::now();
+                let acquired = now - GOSSIP_DELIVERY_TIMEOUT;
+                let peer = endpoint.peers.get_mut(&handle).unwrap();
+                peer.outbound_lease_wheel = Box::new(OutboundLeaseWheel::new(acquired));
+                let payload = vec![42; 4096];
+                let read = h
+                    .gossip_out_producer
+                    .write_with(payload.len(), |out| {
+                        out.copy_from_slice(&payload);
+                    })
+                    .unwrap();
+                let owner = peer.outbound_lease_wheel.leased(
+                    h.context.reader.acquire_strict(read).unwrap().with_offset(0).unwrap(),
+                    acquired,
+                );
+                let stream = peer.connection.streams().open(Dir::Bi).unwrap();
+                let mut chunks = [Bytes::from_owner(owner)];
+                let written =
+                    peer.connection.send_stream(stream).write_chunks(&mut chunks).unwrap();
+                assert_eq!(written.bytes, payload.len());
+                drop(chunks);
+                assert_eq!(peer.outbound_lease_wheel.active_count(), 1);
+                if closing {
+                    peer.shutdown(now, &mut h.rpc_codec_pool);
+                }
+                assert_eq!(peer.outbound_lease_wheel.deadline(), Some(now));
+                peer.settle(false);
+                while h.gossip_out_producer.write_with(payload.len(), |out| out.fill(0)).is_some() {
+                }
+                h.gossip_out_producer.loop_start();
+                h.gossip_out_producer.loop_start();
+                follow_producer_floor(&mut h.context.reader);
+                assert!(h.gossip_out_producer.reserve(payload.len(), true).is_none());
+
+                let mut disconnected = 0;
+                endpoint.poll(now, &mut io, &mut h.context, &mut |event| {
+                    if matches!(event, NetEvent::PeerDisconnected { .. }) {
+                        disconnected += 1;
+                    }
+                });
+                assert!(
+                    !endpoint.peers.contains_key(&handle),
+                    "expired peer still owns send buffers"
+                );
+                assert_eq!(disconnected, 1);
+                assert_eq!(endpoint.endpoint.open_connections(), 0);
+                follow_producer_floor(&mut h.context.reader);
+                assert!(h.gossip_out_producer.reserve(payload.len(), true).is_some());
+            }
+        }
     }
 
     /// A negotiated inbound RPC stream whose request never arrives must be

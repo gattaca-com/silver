@@ -29,7 +29,7 @@ pub(crate) struct OutboundLeaseWheel {
     /// Bucket inspected at `next_tick`.
     head: Cell<usize>,
     next_tick: Cell<Instant>,
-    /// Set once the connection starts teardown. Buckets are never reused after
+    /// Set when a delivery deadline expires. Buckets are never reused after
     /// this point, but late Quinn drops still decrement their original count.
     terminal: Cell<bool>,
 }
@@ -72,7 +72,7 @@ impl OutboundLeaseWheel {
     }
 
     /// Process every elapsed bucket. A non-zero expired bucket is terminal:
-    /// callers close the peer, so it is neither cleared nor reused while late
+    /// callers reap the peer, so it is neither cleared nor reused while late
     /// `Bytes` drops may still refer to it.
     pub(crate) fn expire(&self, now: Instant) -> Option<u32> {
         if self.terminal.get() {
@@ -116,12 +116,7 @@ impl OutboundLeaseWheel {
         })
     }
 
-    pub(crate) fn terminate(&self) {
-        self.terminal.set(true);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_terminal(&self) -> bool {
+    pub(crate) fn is_expired(&self) -> bool {
         self.terminal.get()
     }
 

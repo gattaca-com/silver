@@ -16,7 +16,7 @@ use fxhash::{FxHashMap, FxHashSet};
 use quic::SegmentedGossipLimits;
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
-use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, Transmit};
+use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, EndpointEvent, Transmit};
 use silver_common::{
     CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pSend,
     P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound,
@@ -319,15 +319,18 @@ impl P2p {
                 fold_wake(&mut min_wake, peer.wake_at());
             }
 
-            if peer.is_drained() {
-                silver_log::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "peer is drained");
+            if peer.should_reap() {
+                silver_log::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "reaping peer");
                 dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }
         }
 
         for dead_peer in dead_peers {
-            self.peers.remove(&ConnectionHandle(dead_peer.connection));
+            let handle = ConnectionHandle(dead_peer.connection);
+            // Forced teardown must also release Quinn's endpoint routing state.
+            let _ = self.endpoint.handle_event(handle, EndpointEvent::drained());
+            self.peers.remove(&handle);
         }
 
         // Still-dirty peers need an immediate re-poll; otherwise sleep until
