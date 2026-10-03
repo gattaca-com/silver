@@ -45,12 +45,13 @@ function p2pRates(inst) {
   return { recv: rate('recv'), sent: rate('sent') };
 }
 
-/** Wire traffic enters and leaves Network through its left edge. */
+/** Wire traffic enters and leaves Network through its left edge, each arrow
+ *  with its name on the outside of its rate. */
 function drawP2p(rates, selected) {
   const net = TILES.NetworkTile;
   const edge = net.x - NODE_W / 2 - 2;
-  const far = -P2P_MARGIN + 20;
-  const arrow = (dir, y, from, to, textY) => {
+  const far = -P2P_MARGIN + 10;
+  const arrow = (dir, y, from, to, textYs) => {
     const { label, counter } = P2P[dir];
     const rate = rates[dir];
     const active = rate > 0;
@@ -60,11 +61,14 @@ function drawP2p(rates, selected) {
     return `<g class="p2p${sel}" data-p2p="${dir}"><title>${escape(`${label}: ${counter} delta over the last 1 s bucket`)}</title>
       <path class="hit" d="${d}"/>
       <path class="${active ? 'q5' : 'q-idle'}" d="${d}" stroke-width="3" marker-end="url(#ah-${sel ? SEL_MARKER : active ? 5 : 'idle'})"/>
-      <text class="plabel" x="${(far + edge) / 2}" y="${textY}">${escape(label)} ${value}</text></g>`;
+      <text class="plabel" x="${(far + edge) / 2}" y="${textYs.label}">${escape(label)}</text>
+      <text class="plabel" x="${(far + edge) / 2}" y="${textYs.value}">${value}</text></g>`;
   };
+  const inY = net.y - P2P_OFFSET;
+  const outY = net.y + P2P_OFFSET;
   return (
-    arrow('recv', net.y - P2P_OFFSET, far, edge, net.y - P2P_OFFSET - 8) +
-    arrow('sent', net.y + P2P_OFFSET, edge, far, net.y + P2P_OFFSET + 18)
+    arrow('recv', inY, far, edge, { label: inY - 22, value: inY - 8 }) +
+    arrow('sent', outY, edge, far, { label: outY + 32, value: outY + 18 })
   );
 }
 

@@ -7,7 +7,7 @@ export const H = 760;
 export const NODE_W = 130;
 export const NODE_H = 66;
 /** Room left of the canvas for the p2p arrows into and out of Network. */
-export const P2P_MARGIN = 170;
+export const P2P_MARGIN = 100;
 export const COLOUR_STEPS = 10;
 export const WIDTH_MIN = 1.5;
 export const WIDTH_MAX = 10;
@@ -21,7 +21,7 @@ const NEAR_BOX = 220;
  *  Network–ApplicationBoundary axis. The narrowest spacing on a 10-unit grid
  *  where every straight tile-to-tile line clears every other box by ≥ 10. */
 export const TILES = {
-  NetworkTile: { label: 'Network', x: 100, y: 380 },
+  NetworkTile: { label: 'Network', x: 75, y: 380 },
   Controller: { label: 'Control', x: 180, y: 50 },
   StorageTile: { label: 'Storage', x: 180, y: 710 },
   BeaconStateTile: { label: 'BeaconState', x: 350, y: 260 },
