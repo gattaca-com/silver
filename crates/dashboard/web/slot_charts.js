@@ -57,7 +57,7 @@ function slotSpec(instances, nowS) {
 /** Attestations per bin of the slot starting at `startS`: each sample's
  *  delta of the summed counters lands in the bin holding its timestamp. A bin
  *  with no sample is null; a counter reset breaks the delta. */
-function attestationSeries(inst, startS, bins) {
+function attestationSeries(inst, slot, startS, bins) {
   const s = inst.samples('beacon_state');
   if (!s) return null;
   const cols = ATTESTATION_SLOTS.map((n) => s.history.values[s.names.indexOf(n)]);
@@ -73,22 +73,27 @@ function attestationSeries(inst, startS, bins) {
     }
     prevTotal = total;
   });
-  return ys.some((v) => v !== null) ? { label: inst.label, ys } : null;
+  if (!ys.some((v) => v !== null)) return null;
+  const block = inst.traces.find((t) => t.slot === slot && t.receivedAt !== null);
+  const blockX = block ? (Number(block.base) + block.receivedAt) / 1e9 - startS : null;
+  return { label: inst.label, ys, blockX };
 }
 
 /** One line per client over a fixed x axis: the seconds of the current slot.
  *  The bins run to now, so the lines grow across the slot and restart at the
- *  next one. */
+ *  next one. A dashed line marks when each client received a block this slot:
+ *  attesters broadcast once the block is valid, at the latest by the deadline. */
 function attestationSpec(instances, nowS) {
   const clock = instances.find((i) => i.clock)?.clock;
   if (!clock) return null;
   const slotS = clock.slotNs / 1e9;
-  const startS = Number(clock.slotStart(slotAt(clock, nowS))) / 1e9;
+  const slot = slotAt(clock, nowS);
+  const startS = Number(clock.slotStart(slot)) / 1e9;
   const bins = Math.min(Math.floor((nowS - startS) / BIN_S) + 1, Math.round(slotS / BIN_S));
-  const series = instances.map((inst) => attestationSeries(inst, startS, bins)).filter(Boolean);
+  const series = instances.map((inst) => attestationSeries(inst, slot, startS, bins)).filter(Boolean);
   if (!series.length) return null;
   const xs = Array.from({ length: bins }, (_, i) => Math.round(i * BIN_S * 10) / 10);
-  return {
+  const spec = {
     labels: series.map((s) => s.label),
     data: [xs, ...series.map((s) => s.ys)],
     fmt: (v) => String(Math.round(v)),
@@ -96,7 +101,9 @@ function attestationSpec(instances, nowS) {
     xSeconds: true,
     xRange: [0, slotS],
     spanGaps: true,
+    markers: series.flatMap((s, i) => (s.blockX === null ? [] : [{ x: s.blockX, series: i }])),
   };
+  return { spec, slot, startS };
 }
 
 function card(key, title) {
@@ -115,8 +122,10 @@ export function slotCharts(fleet, specs) {
   }
   const attestations = attestationSpec(instances, nowS);
   if (attestations) {
-    specs.set('slots-att', attestations);
-    cards.push(card('slots-att', 'attestations per 100 ms, current slot'));
+    const { spec, slot, startS } = attestations;
+    const start = new Date(startS * 1000).toISOString().slice(11, 23);
+    specs.set('slots-att', spec);
+    cards.push(card('slots-att', `attestations per 100 ms, slot ${slot} from ${start} UTC`));
   }
   return cards.length ? `<div class="slot-charts">${cards.join('')}</div>` : '';
 }

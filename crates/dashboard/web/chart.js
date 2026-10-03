@@ -34,11 +34,33 @@ function endLabels(colours, holder) {
   };
 }
 
+/** A dashed full-height line at each `{ x, series }` of `holder.spec.markers`,
+ *  in that series' colour. */
+function markers(colours, holder) {
+  return (u) => {
+    const dpr = devicePixelRatio;
+    const { ctx } = u;
+    const { top, height } = u.bbox;
+    ctx.save();
+    ctx.lineWidth = dpr;
+    ctx.setLineDash([4 * dpr, 3 * dpr]);
+    for (const { x, series } of holder.spec.markers ?? []) {
+      const px = u.valToPos(x, 'x', true);
+      ctx.strokeStyle = colours[series];
+      ctx.beginPath();
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, top + height);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+}
+
 /** Optional spec fields: `height`; `xSeconds`, a plain seconds x axis in
  *  place of wall-clock time; `xRange` / `yRange`, fixed [min, max]
  *  re-read on every redraw; `right` (series indexes on a right axis) with
  *  `fmtRight`; `stepped`; `spanGaps`; `endLabel(i, v)` for a label at each
- *  series' last point. `holder.spec` is the latest spec. */
+ *  series' last point; `markers`. `holder.spec` is the latest spec. */
 function options(spec, width, holder) {
   const muted = cssVar('--muted');
   const grid = { stroke: cssVar('--line'), width: 1 };
@@ -73,7 +95,12 @@ function options(spec, width, holder) {
         value: (_u, v) => (v === null ? '·' : fmtOf(i)(v)),
       })),
     ],
-    hooks: spec.endLabel ? { draw: [endLabels(colours, holder)] } : {},
+    hooks: {
+      draw: [
+        ...(spec.endLabel ? [endLabels(colours, holder)] : []),
+        ...(spec.markers ? [markers(colours, holder)] : []),
+      ],
+    },
     legend: { live: true },
   };
 }
@@ -113,7 +140,7 @@ export class LineCharts {
       const width = Math.max(slot.clientWidth, 200);
       // Series identity, layout and theme are baked into the plot; a change
       // rebuilds it.
-      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel];
+      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers];
       const shape = `${spec.labels.join('\u0000')}|${JSON.stringify(layout)}|${cssVar('--series-1')}`;
       let chart = this.charts.get(key);
       if (chart && chart.shape !== shape) {
