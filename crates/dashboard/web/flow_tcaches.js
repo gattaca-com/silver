@@ -141,7 +141,7 @@ const bytesWidth = (rate) => logWidth(rate, BYTES_FLOOR, BYTES_DECADES);
 
 /** Data and forwarding spots share their direction's line; only data reads
  *  add to its width. */
-function drawLines(views, hovered, selected) {
+function drawLines(views, hovered, selected, split) {
   // A row selects a whole tcache (no tile): all its data spots are selected.
   const [selCache, selTile] = selected?.split('|') ?? [];
   const byCache = new Map(views.map((v) => [v.cache, v]));
@@ -188,7 +188,7 @@ function drawLines(views, hovered, selected) {
       });
     }
   }
-  return drawTrunks(items, bytesWidth);
+  return drawTrunks(items, bytesWidth, split);
 }
 
 function legend() {
@@ -196,7 +196,7 @@ function legend() {
     .map((r) => widthSwatch(bytesWidth(r), fmtBytesRate(r)))
     .join('');
   return `<div class="flow-legend">
-    <div><span class="meta">spot colour: consumer lag, % of capacity</span> <span class="ramp">0% ${colourRamp()} 100%</span> <span class="meta">grey: idle · hover a spot for its tcache, click to open it in the table</span></div>
+    <div><span class="meta">spot colour: consumer lag, % of capacity</span> <span class="ramp">0% ${colourRamp()} 100%</span> <span class="meta">grey: idle · hover a spot for its tcache, click to open it in the table · hover a line to split it per tcache</span></div>
     <div><span class="meta">line width and orange shade: total consumer read · spot size: its read, same scale</span> ${widths}</div>
     <div class="meta">One line per direction between two tiles; one spot per tcache and consumer tile on it, from the producer. Hollow: declared ref forwarding; the receiver reads the producer's ring.</div>
   </div>`;
@@ -224,7 +224,7 @@ export function selectKey(target) {
 export function graph(inst, _utils, ui, specs) {
   const views = TCACHES.map(([cache, producer]) => cacheView(inst, cache, producer)).filter(Boolean);
   const key = ui.selected?.startsWith(SELECT) ? ui.selected.slice(SELECT.length) : null;
-  const { paths, labels } = drawLines(views, ui.hover, key);
+  const { paths, labels } = drawLines(views, ui.hover, key, ui.trunk);
 
   const notes = new Map();
   const note = (tile, text) => notes.set(tile, [...(notes.get(tile) ?? []), text]);

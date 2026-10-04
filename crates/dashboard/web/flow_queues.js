@@ -127,7 +127,7 @@ const rateWidth = (rate) => logWidth(rate, 1, RATE_DECADES);
 
 /** A spot per pair: coloured by handler p50, sized by msgs/s. Hovering a
  *  queue labels each of its spots; the selected spot's label stays shown. */
-function drawEdges(edges, utils, hovered, selected) {
+function drawEdges(edges, utils, hovered, selected, split) {
   const items = edges.map((e) => {
     const step = e.rate > 0 ? handlerStep(e.processing?.p50Ns) : null;
     const isSel = Boolean(e.timer) && e.timer === selected;
@@ -147,7 +147,7 @@ function drawEdges(edges, utils, hovered, selected) {
       pinned: isSel,
     };
   });
-  return drawTrunks(items, rateWidth);
+  return drawTrunks(items, rateWidth, split);
 }
 
 /** Charts of the selected pair's timer over the retained buckets. */
@@ -171,7 +171,7 @@ function edgeDetail(e, histories, specs) {
 function legend() {
   const widths = [1, 10, 100, 1e3, 1e4, 1e5].map((r) => widthSwatch(rateWidth(r), fmtRate(r))).join('');
   return `<div class="flow-legend">
-    <div><span class="meta">spot colour: consumer handler p50</span> <span class="ramp">100ns ${colourRamp()} 10ms</span> <span class="meta">grey: no traffic · hover a spot for its queue, click for its timings</span></div>
+    <div><span class="meta">spot colour: consumer handler p50</span> <span class="ramp">100ns ${colourRamp()} 10ms</span> <span class="meta">grey: no traffic · hover a spot for its queue, click for its timings · hover a line to split it per queue</span></div>
     <div><span class="meta">line width and orange shade: total msgs/s · spot size: its msgs/s, same scale</span> ${widths}</div>
     <div class="meta">One line per direction between two tiles; one spot per producer → consumer pair and message type on it, from flux's per-pair timers.</div>
   </div>`;
@@ -185,7 +185,7 @@ export function selectKey(target) {
 export function graph(inst, utils, ui, specs) {
   const { latest, histories } = timers(inst);
   const { edges, selfs } = layoutEdges(latest);
-  const { paths, labels } = drawEdges(edges, utils, ui.hover, ui.selected);
+  const { paths, labels } = drawEdges(edges, utils, ui.hover, ui.selected, ui.trunk);
   const notes = new Map();
   for (const s of selfs) {
     const line = `self: ${s.queue} ${fmtRate(s.rate)}, handler p50 ${fmtNs(s.processing?.p50Ns)}`;

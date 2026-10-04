@@ -12,6 +12,9 @@ export const COLOUR_STEPS = 10;
 const WIDTH_MIN = 1.5;
 export const WIDTH_MAX = 10;
 const LANE_GAP = 16;
+/** Spacing at the midpoint between the lines of a split trunk. */
+const SPLIT_GAP = 12;
+const TRUNK_HIT = 12;
 /** A box whose centre sits within this of a pair's line pushes its lanes to
  *  the other side. */
 const NEAR_BOX = 220;
@@ -150,8 +153,11 @@ export function spotRadius(width) {
  *  `counted` adds its rate to the line, `fill` is the spot's class, `show`
  *  the hovered item's labels, `mark`
  *  (`selected` / `related`) also marks its line, `attrs` carries its selection
- *  and hover keys. Idle spots are painted first, marked ones last. */
-export function drawTrunks(items, width) {
+ *  and hover keys. Idle spots are painted first, marked ones last.
+ *  Hovering a trunk splits it: each item gets its own line in its spot's
+ *  colour, selectable like its spot, and its spot and label move onto it.
+ *  `split` is the hovered trunk's key, so a re-render keeps it split. */
+export function drawTrunks(items, width, split) {
   const trunks = new Map();
   for (const it of items) {
     const k = `${it.fromName}>${it.toName}`;
@@ -171,24 +177,41 @@ export function drawTrunks(items, width) {
   list.forEach((t, i) => {
     const from = TILES[t.fromName];
     const to = TILES[t.toName];
-    const { d, at } = curve(border(from, to.x, to.y), border(to, from.x, from.y), bows[i]);
+    const a = border(from, to.x, to.y);
+    const b = border(to, from.x, from.y);
+    const { d, at } = curve(a, b, bows[i]);
     const busy = t.total > 0;
     const w = busy ? width(t.total) : WIDTH_MIN;
     const mark = t.mark ? ` ${t.mark}` : '';
+    const key = escape(`${t.fromName}>${t.toName}`);
+    const cls = `${t.fromName}>${t.toName}` === split ? ' split' : '';
+    const n = t.items.length;
     // Orange strength follows traffic on the width's scale; idle is faintest.
     const heat = Math.round(TRUNK_HEAT_MIN + ((100 - TRUNK_HEAT_MIN) * (w - WIDTH_MIN)) / (WIDTH_MAX - WIDTH_MIN));
-    lines.push(`<path class="trunk${mark}" d="${d}" stroke-width="${w.toFixed(1)}" style="--heat:${heat}%" marker-end="url(#ah-trunk)"/>`);
+    lines.push(`<path class="trunk${mark}${cls}" data-trunk="${key}" d="${d}" stroke-width="${w.toFixed(1)}" style="--heat:${heat}%" marker-end="url(#ah-trunk)"/>`);
+    lines.push(`<path class="trunk-hit${cls}" data-trunk="${key}" d="${d}" style="--fan:${((n - 1) * SPLIT_GAP + TRUNK_HIT).toFixed(0)}px"/>`);
     t.items.forEach((it, k) => {
-      const p = at((k + 1) / (t.items.length + 1));
+      const tk = (k + 1) / (n + 1);
+      const p = at(tk);
       const [x, y] = [p.x.toFixed(1), p.y.toFixed(1)];
+      // A quadratic's midpoint moves half its bow, so double the gap.
+      const own = curve(a, b, bows[i] + (k - (n - 1) / 2) * SPLIT_GAP * 2);
+      const q = own.at(tk);
+      const shift = `--sx:${(q.x - p.x).toFixed(1)}px;--sy:${(q.y - p.y).toFixed(1)}px`;
+      const step = it.fill.slice('qf'.length);
+      const ownW = it.counted && it.rate > 0 ? width(it.rate) : WIDTH_MIN;
+      const dash = it.hollow ? ' hollow' : '';
+      const ownMark = it.mark ? ` ${it.mark}` : '';
+      lines.push(`<path class="subline q${step}${dash}${ownMark}${cls}" data-trunk="${key}" d="${own.d}" stroke-width="${ownW.toFixed(1)}" marker-end="url(#ah-${step.replace(/^-/, '')})"/>`);
+      lines.push(`<path class="subline-hit${cls}" ${it.attrs} data-trunk="${key}" d="${own.d}"><title>${escape(it.title)}</title></path>`);
       const fill = it.hollow ? `spot hollow ${it.fill}` : `spot ${it.fill}`;
       const show = it.show ? ' show' : '';
-      const group = `<g class="edge${show}${it.mark ? ` ${it.mark}` : ''}" ${it.attrs}><title>${escape(it.title)}</title>
+      const group = `<g class="edge${show}${it.mark ? ` ${it.mark}` : ''}${cls}" ${it.attrs} data-trunk="${key}" style="${shift}"><title>${escape(it.title)}</title>
         <circle class="hit" cx="${x}" cy="${y}" r="${SPOT_R_MAX + 3}"/>
         <circle class="${fill}" cx="${x}" cy="${y}" r="${it.r.toFixed(1)}"/></g>`;
       (it.mark ? top : it.fill === 'qf-idle' ? idle : active).push(group);
       const pinned = it.pinned ? ' sel' : '';
-      labels.push(`<text class="elabel${show}${pinned}" ${it.attrs} x="${x}" y="${(p.y - SPOT_R_MAX - 4).toFixed(1)}">${escape(it.label)}</text>`);
+      labels.push(`<text class="elabel${show}${pinned}${cls}" ${it.attrs} data-trunk="${key}" style="${shift}" x="${x}" y="${(p.y - SPOT_R_MAX - 4).toFixed(1)}">${escape(it.label)}</text>`);
     });
   });
   return { paths: lines.join('') + idle.join('') + active.join('') + top.join(''), labels: labels.join('') };

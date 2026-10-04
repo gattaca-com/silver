@@ -160,14 +160,22 @@ export function click(target, ui) {
   if (key) ui.selected = ui.selected === key ? null : key;
 }
 
-/** Shows the hovered queue's or tcache's labels and highlights its lines in
- *  place; the next render re-applies it from `ui.hover`. */
+/** Shows the hovered queue's or tcache's labels and splits the hovered
+ *  trunk in place; the next render re-applies both from `ui`. */
 export function hover(target, ui, root) {
   const key = target.closest?.('.flow [data-q]')?.dataset.q ?? null;
-  if (key === ui.hover) return;
-  ui.hover = key;
-  for (const el of root.querySelectorAll('.flow [data-q]')) {
-    el.classList.toggle('show', el.dataset.q === key);
+  if (key !== ui.hover) {
+    ui.hover = key;
+    for (const el of root.querySelectorAll('.flow [data-q]')) {
+      el.classList.toggle('show', el.dataset.q === key);
+    }
+  }
+  const trunk = target.closest?.('.flow [data-trunk]')?.dataset.trunk ?? null;
+  if (trunk !== ui.trunk) {
+    ui.trunk = trunk;
+    for (const el of root.querySelectorAll('.flow [data-trunk]')) {
+      el.classList.toggle('split', el.dataset.trunk === trunk);
+    }
   }
 }
 

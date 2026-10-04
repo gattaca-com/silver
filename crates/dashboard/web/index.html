@@ -118,6 +118,19 @@
   .flow .trunk { fill: none; stroke: color-mix(in oklab, var(--trunk-hot) var(--heat), var(--trunk-cold)); }
   .flow .qf-trunk { fill: color-mix(in oklab, var(--trunk-hot) 50%, var(--trunk-cold)); }
   .flow .edge circle.hit { fill: transparent; }
+  .flow .trunk-hit { fill: none; stroke: transparent; stroke-width: 12px; }
+  .flow .trunk-hit.split { stroke-width: var(--fan); }
+  .flow .trunk { transition: opacity 120ms; }
+  .flow .trunk.split { opacity: 0; }
+  .flow .subline { fill: none; opacity: 0; pointer-events: none; transition: opacity 120ms; }
+  .flow .subline.split { opacity: 1; }
+  .flow .subline.hollow { stroke-dasharray: 4 3; }
+  .flow .subline.selected { filter: drop-shadow(0 0 1.5px var(--fg)); }
+  .flow .subline-hit { fill: none; stroke: transparent; stroke-width: 8px; pointer-events: none; }
+  .flow .subline-hit.split { pointer-events: stroke; }
+  .flow .subline-hit.split[data-timer], .flow .subline-hit.split[data-tc] { cursor: pointer; }
+  .flow .edge, .flow .elabel { transition: transform 120ms; }
+  .flow .edge.split, .flow .elabel.split { transform: translate(var(--sx), var(--sy)); }
   .flow .spot { stroke: var(--panel); stroke-width: 1; }
   .flow .spot.hollow { fill: var(--panel); stroke: var(--idle); stroke-width: 1.5; }
   .flow .spot.hollow.qf3 { stroke: var(--seq-3); }
