@@ -40,6 +40,7 @@ pub struct UringIo {
     header: ManuallyDrop<Box<libc::msghdr>>,
     tx: ManuallyDrop<[TxPool; 2]>,
     active: [bool; 2],
+    files_registered: bool,
     next_tx_socket: usize,
     enabled: bool,
     stopped: bool,
@@ -64,6 +65,7 @@ impl UringIo {
     ) -> io::Result<Self> {
         let ring = uring_ring::build(config)?;
         let sockets = [bind_udp(quic_addr)?, bind_udp(discovery_addr)?];
+        ring.submitter().register_files(&[sockets[0].as_raw_fd(), sockets[1].as_raw_fd()])?;
         let pools = [
             ProvidedBuffers::new(SocketId::Quic, config.quic_rx_buffers)?,
             ProvidedBuffers::new(SocketId::Discovery, config.discovery_rx_buffers)?,
@@ -86,6 +88,7 @@ impl UringIo {
                 ),
             ]),
             active: [false; 2],
+            files_registered: true,
             next_tx_socket: 0,
             enabled: false,
             stopped: false,
@@ -149,7 +152,7 @@ impl UringIo {
         }
         self.rearm();
         for index in [self.next_tx_socket, self.next_tx_socket ^ 1] {
-            self.tx[index].submit(&mut self.ring, self.sockets[index].as_raw_fd());
+            self.tx[index].submit(&mut self.ring);
         }
         self.next_tx_socket ^= 1;
         let pending = {
@@ -216,21 +219,20 @@ impl UringIo {
 
         let mut received = 0;
         for completion in &mut self.ring.completion() {
+            let user_data = completion.user_data();
             #[cfg(feature = "thread_park")]
-            if completion.user_data() == FUTEX_TAG {
+            if user_data == FUTEX_TAG {
                 self.wake
                     .as_mut()
                     .ok_or_else(|| io::Error::other("unregistered futex wake"))?
                     .complete(completion.result())?;
                 continue;
             }
-            if completion.user_data() & TX_TAG != 0 {
-                let index = (completion.user_data() & 1) as usize;
-                if let Err(error) = self.tx[index].complete(
-                    completion.user_data(),
-                    completion.result(),
-                    completion.flags(),
-                ) {
+            if user_data & TX_TAG != 0 {
+                let index = (user_data & 1) as usize;
+                if let Err(error) =
+                    self.tx[index].complete(user_data, completion.result(), completion.flags())
+                {
                     if error.kind() == io::ErrorKind::InvalidData {
                         return Err(error);
                     }
@@ -238,7 +240,7 @@ impl UringIo {
                 }
                 continue;
             }
-            let socket = match completion.user_data() {
+            let socket = match user_data {
                 0 => SocketId::Quic,
                 1 => SocketId::Discovery,
                 _ => return Err(io::Error::other("unexpected receive completion tag")),
@@ -303,13 +305,10 @@ impl UringIo {
             if self.active[index] || !self.pools[index].has_buffers() {
                 continue;
             }
-            let entry = opcode::RecvMsgMulti::new(
-                types::Fd(self.sockets[index].as_raw_fd()),
-                &**self.header,
-                index as u16,
-            )
-            .build()
-            .user_data(index as u64);
+            let entry =
+                opcode::RecvMsgMulti::new(types::Fixed(index as u32), &**self.header, index as u16)
+                    .build()
+                    .user_data(index as u64);
             // SAFETY: sockets, header, and pools stay alive until the terminal receive CQEs
             // arrive.
             if unsafe { self.ring.submission().push(&entry) }.is_err() {
@@ -420,6 +419,10 @@ impl UringIo {
         }
         for pool in self.pools.iter_mut() {
             pool.unregister(&self.ring)?;
+        }
+        if self.files_registered {
+            self.ring.submitter().unregister_files()?;
+            self.files_registered = false;
         }
         Ok(())
     }

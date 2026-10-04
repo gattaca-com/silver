@@ -2,7 +2,7 @@
 mod tests;
 mod tx_message;
 
-use std::{collections::VecDeque, io, os::fd::RawFd};
+use std::{collections::VecDeque, io};
 
 use io_uring::{IoUring, cqueue, opcode, types};
 use quinn_proto::Transmit;
@@ -22,7 +22,7 @@ enum State {
 
 struct Slot {
     buffer: Vec<u8>,
-    message: Box<TxMessage>,
+    message: TxMessage,
     state: State,
     tag: u64,
     size: usize,
@@ -30,6 +30,8 @@ struct Slot {
 }
 
 pub(super) struct TxPool {
+    socket: SocketId,
+    // Messages point into their own slot; never resized.
     slots: Box<[Slot]>,
     free: Vec<u16>,
     queued: VecDeque<u16>,
@@ -42,10 +44,11 @@ impl TxPool {
     pub(super) fn new(socket: SocketId, entries: u16, zero_copy_min_size: usize) -> Self {
         assert!(entries > 0);
         Self {
+            socket,
             slots: (0..entries)
                 .map(|id| Slot {
                     buffer: Vec::with_capacity(MAX_GSO_SEGMENTS * 1500),
-                    message: Box::new(TxMessage::new()),
+                    message: TxMessage::new(),
                     state: State::Free,
                     tag: TX_TAG | (u64::from(id) << 1) | socket as u64,
                     size: 0,
@@ -84,7 +87,7 @@ impl TxPool {
         Ok(true)
     }
 
-    pub(super) fn submit(&mut self, ring: &mut IoUring, fd: RawFd) {
+    pub(super) fn submit(&mut self, ring: &mut IoUring) {
         let mut submission = ring.submission();
         while let Some(&id) = self.queued.front() {
             if submission.is_full() {
@@ -96,11 +99,11 @@ impl TxPool {
                 (u64::from(generation.wrapping_add(1)) << GENERATION_SHIFT) |
                 (slot.tag & ((1 << GENERATION_SHIFT) - 1));
             let entry = if slot.zero_copy {
-                opcode::SendMsgZc::new(types::Fd(fd), &slot.message.header)
+                opcode::SendMsgZc::new(types::Fixed(self.socket as u32), &slot.message.header)
                     .flags(libc::MSG_NOSIGNAL as u32)
                     .build()
             } else {
-                opcode::SendMsg::new(types::Fd(fd), &slot.message.header)
+                opcode::SendMsg::new(types::Fixed(self.socket as u32), &slot.message.header)
                     .flags(libc::MSG_NOSIGNAL as u32)
                     .build()
             }
@@ -155,16 +158,16 @@ impl TxPool {
         } else {
             None
         };
-        if let Some(result) = *send_result {
-            if !*more || *notified {
-                self.in_flight -= 1;
-                if !self.stopped && (result == -libc::EAGAIN || result == -libc::EINTR) {
-                    slot.state = State::Queued;
-                    self.queued.push_back(id);
-                } else {
-                    slot.state = State::Free;
-                    self.free.push(id);
-                }
+        if let Some(result) = *send_result &&
+            (!*more || *notified)
+        {
+            self.in_flight -= 1;
+            if !self.stopped && (result == -libc::EAGAIN || result == -libc::EINTR) {
+                slot.state = State::Queued;
+                self.queued.push_back(id);
+            } else {
+                slot.state = State::Free;
+                self.free.push(id);
             }
         }
         error.map_or(Ok(()), Err)

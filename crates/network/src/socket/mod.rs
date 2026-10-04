@@ -169,8 +169,20 @@ pub(crate) fn bind_udp(addr: SocketAddr) -> Result<StdUdpSocket, Error> {
         Some(socket2::Protocol::UDP),
     )?;
     socket.set_only_v6(false)?;
-    socket.set_recv_buffer_size(32 * 1024 * 1024)?;
-    socket.set_send_buffer_size(32 * 1024 * 1024)?;
+    const BUFFER_SIZE: usize = 32 * 1024 * 1024;
+    socket.set_recv_buffer_size(BUFFER_SIZE)?;
+    socket.set_send_buffer_size(BUFFER_SIZE)?;
+    // Linux silently caps these at net.core.rmem_max / wmem_max.
+    let (recv, send) = (socket.recv_buffer_size()?, socket.send_buffer_size()?);
+    if recv < BUFFER_SIZE || send < BUFFER_SIZE {
+        silver_log::warn!(
+            ?addr,
+            recv,
+            send,
+            requested = BUFFER_SIZE,
+            "UDP socket buffers capped; raise net.core.rmem_max / wmem_max"
+        );
+    }
     socket.bind(&bind_addr.into())?;
     socket.set_nonblocking(true)?;
     Ok(socket.into())

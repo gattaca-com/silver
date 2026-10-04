@@ -21,6 +21,10 @@ sudo curl -sSL \
 -o "${BIN}/buf" && \
 sudo chmod +x "${BIN}/buf"
 
+# socket buffer limits
+sudo sysctl -w net.core.wmem_max=33554432
+sudo sysctl -w net.core.rmem_max=33554432
+
 # builder silver
 cd silver
 cargo build --release

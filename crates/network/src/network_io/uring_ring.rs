@@ -44,6 +44,7 @@ pub(super) fn build(config: &UringConfig) -> io::Result<IoUring> {
         (opcode::SendMsg::CODE, "IORING_OP_SENDMSG"),
         (opcode::SendMsgZc::CODE, "IORING_OP_SENDMSG_ZC"),
         (opcode::AsyncCancel::CODE, "IORING_OP_ASYNC_CANCEL"),
+        #[cfg(feature = "thread_park")]
         (opcode::FutexWait::CODE, "IORING_OP_FUTEX_WAIT"),
     ] {
         if !probe.is_supported(code) {
