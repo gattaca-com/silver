@@ -12,6 +12,7 @@ use std::{
 use buffa::{Message, MessageView};
 use bytes::BytesMut;
 pub use context::{ClusterNodes, Context};
+use flux_profiler::timed;
 use fxhash::{FxHashMap, FxHashSet};
 use quic::SegmentedGossipLimits;
 pub(crate) use quic::{Peer, create_client_config};
@@ -208,6 +209,7 @@ impl P2p {
         self.banned.remove(&peer_id);
     }
 
+    #[timed]
     pub(crate) fn recv(
         &mut self,
         now: Instant,
@@ -490,6 +492,7 @@ impl P2p {
 
 /// Drain the peer's pending quinn transmits onto the socket until it has
 /// nothing to send, the pacer defers, or the socket blocks.
+#[timed]
 fn drain_transmits(peer: &mut Peer, io: &mut NetworkIo, now: Instant) -> bool {
     let mut did_work = false;
     while !io.is_blocked(SocketId::Quic) &&

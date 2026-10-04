@@ -68,6 +68,7 @@ impl Socket {
         self.blocked
     }
 
+    #[timed]
     pub(crate) fn flush(&mut self, poll: &Poll) -> bool {
         if !self.tx_batch.entries.is_empty() {
             if self.tx_batch.flush(&self.socket) {
@@ -83,6 +84,7 @@ impl Socket {
         }
     }
 
+    #[timed]
     pub(crate) fn send<F>(&mut self, poll: &Poll, f: F) -> bool
     where
         F: FnOnce(&mut Vec<u8>) -> Option<Transmit>,

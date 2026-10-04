@@ -466,6 +466,7 @@ impl Peer {
         self.connection.poll_transmit(now, max_datagrams, buf)
     }
 
+    #[timed]
     pub(crate) fn spin<F, E>(
         &mut self,
         now: Instant,
@@ -629,6 +630,7 @@ impl Peer {
 
     /// Spin one stream and re-arm its bookkeeping: the `needs_spin` flag
     /// for non-event work and the min read-response deadline.
+    #[timed]
     fn spin_stream<E>(
         &mut self,
         id: StreamId,
@@ -954,6 +956,7 @@ enum SpinResult {
 }
 
 impl Stream {
+    #[timed]
     fn spin<E>(
         &mut self,
         connection: &mut Connection,

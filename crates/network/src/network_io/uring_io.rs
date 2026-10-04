@@ -142,6 +142,7 @@ impl UringIo {
 
     /// Publishes queued work. Transmit slots remain reserved until poll
     /// processes their completions.
+    #[timed]
     pub fn flush(&mut self) -> io::Result<()> {
         if self.stopped {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "io_uring is stopped"));
