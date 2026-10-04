@@ -70,6 +70,8 @@ silver_common::declare_counters! {
         // Recycled excludes initial provisioning and buffers discarded during shutdown.
         UringQuicRxBuffersConsumed,
         UringQuicRxBuffersRecycled,
+        // Pinned buffers swapped for fresh allocations when the pool is exhausted.
+        UringQuicRxBuffersReplaced,
         // ENOBUFS completions, not a count of dropped UDP datagrams.
         UringQuicRxNoBuffers,
         UringDiscoveryRxBuffersCapacity,
@@ -78,6 +80,7 @@ silver_common::declare_counters! {
         UringDiscoveryRxBuffersHighWater,
         UringDiscoveryRxBuffersConsumed,
         UringDiscoveryRxBuffersRecycled,
+        UringDiscoveryRxBuffersReplaced,
         UringDiscoveryRxNoBuffers,
     }
 }

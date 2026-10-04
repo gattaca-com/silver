@@ -12,6 +12,7 @@ fn config() -> UringConfig {
         discovery_rx_buffers: 4,
         quic_tx_buffers: 1,
         discovery_tx_buffers: 1,
+        send_zc_min_size: 0,
         ..Default::default()
     }
 }
@@ -94,9 +95,10 @@ fn transmit_pools_are_independent_and_headers_survive_moving_the_owner() {
     assert!(io.is_blocked(SocketId::Quic));
     assert!(!io.is_blocked(SocketId::Discovery));
     send(&mut io, SocketId::Discovery, peer.local_addr().unwrap(), b"discovery");
-    io.flush().unwrap();
     let io = thread::spawn(move || {
+        io.flush().unwrap();
         drain(&mut io);
+        io.shutdown().unwrap();
         io
     })
     .join()
@@ -215,15 +217,10 @@ fn full_submission_and_completion_queues_preserve_transmits() {
 fn failed_send_releases_its_slot_after_any_notification_and_allows_reuse() {
     let Some(mut io) = receiver_with_config(&config()) else { return };
     send(&mut io, SocketId::Quic, SocketAddr::from(([127, 0, 0, 1], 0)), b"invalid port");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let error = loop {
-        assert!(Instant::now() < deadline, "failed send completion deadline");
-        if let Err(error) = io.poll(Duration::from_millis(10), |_, _, _| {}) {
-            break error;
-        }
-    };
-    assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+    assert!(io.is_blocked(SocketId::Quic));
+    // Send errors are logged; the poll itself succeeds.
     drain(&mut io);
+    assert!(!io.is_blocked(SocketId::Quic));
     let peer = peer(false);
     send(&mut io, SocketId::Quic, peer.local_addr().unwrap(), b"valid");
     drain(&mut io);

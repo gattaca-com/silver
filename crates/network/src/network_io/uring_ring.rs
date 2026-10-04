@@ -11,10 +11,12 @@ use silver_config::UringConfig;
 pub(super) fn build(config: &UringConfig) -> io::Result<IoUring> {
     let idle_millis = config.validate()?;
     let mut builder = IoUring::builder();
-    builder.setup_cqsize(config.cq_entries);
-    if let Some(cpu) = config.sqpoll_cpu {
-        builder.setup_sqpoll(idle_millis).setup_sqpoll_cpu(cpu);
-    }
+    // R_DISABLED defers SINGLE_ISSUER's thread binding to register_enable_rings.
+    builder.setup_cqsize(config.cq_entries).setup_single_issuer().setup_r_disabled();
+    match config.sqpoll_cpu {
+        Some(cpu) => builder.setup_sqpoll(idle_millis).setup_sqpoll_cpu(cpu),
+        None => builder.setup_defer_taskrun().setup_taskrun_flag(),
+    };
     let ring = builder.build(config.sq_entries)?;
 
     let params = ring.params();

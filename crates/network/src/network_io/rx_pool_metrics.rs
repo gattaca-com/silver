@@ -9,6 +9,7 @@ pub(super) struct RxPoolMetrics {
     high_water: u64,
     consumed: u64,
     recycled: u64,
+    replaced: u64,
     no_buffers: u64,
     dirty: bool,
 }
@@ -21,6 +22,7 @@ impl RxPoolMetrics {
             high_water: 0,
             consumed: 0,
             recycled: 0,
+            replaced: 0,
             no_buffers: 0,
             dirty: true,
         }
@@ -30,7 +32,7 @@ impl RxPoolMetrics {
         if !self.dirty {
             return;
         }
-        let [capacity, provided, used, high_water, consumed, recycled, no_buffers] =
+        let [capacity, provided, used, high_water, consumed, recycled, replaced, no_buffers] =
             match self.socket {
                 SocketId::Quic => [
                     NetworkCounters::UringQuicRxBuffersCapacity,
@@ -39,6 +41,7 @@ impl RxPoolMetrics {
                     NetworkCounters::UringQuicRxBuffersHighWater,
                     NetworkCounters::UringQuicRxBuffersConsumed,
                     NetworkCounters::UringQuicRxBuffersRecycled,
+                    NetworkCounters::UringQuicRxBuffersReplaced,
                     NetworkCounters::UringQuicRxNoBuffers,
                 ],
                 SocketId::Discovery => [
@@ -48,6 +51,7 @@ impl RxPoolMetrics {
                     NetworkCounters::UringDiscoveryRxBuffersHighWater,
                     NetworkCounters::UringDiscoveryRxBuffersConsumed,
                     NetworkCounters::UringDiscoveryRxBuffersRecycled,
+                    NetworkCounters::UringDiscoveryRxBuffersReplaced,
                     NetworkCounters::UringDiscoveryRxNoBuffers,
                 ],
             };
@@ -58,6 +62,7 @@ impl RxPoolMetrics {
         for (counter, delta) in [
             (consumed, mem::take(&mut self.consumed)),
             (recycled, mem::take(&mut self.recycled)),
+            (replaced, mem::take(&mut self.replaced)),
             (no_buffers, mem::take(&mut self.no_buffers)),
         ] {
             if delta != 0 {
@@ -78,6 +83,11 @@ impl RxPoolMetrics {
 
     pub(super) fn recycled(&mut self, count: usize) {
         self.recycled += count as u64;
+        self.dirty |= count != 0;
+    }
+
+    pub(super) fn replaced(&mut self, count: usize) {
+        self.replaced += count as u64;
         self.dirty |= count != 0;
     }
 

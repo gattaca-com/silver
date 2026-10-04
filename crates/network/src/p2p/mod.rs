@@ -321,16 +321,20 @@ impl P2p {
 
             if peer.should_reap() {
                 silver_log::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "reaping peer");
+                // Quinn emits Drained once drained; a forced reap must release endpoint state.
+                if !peer.is_drained() {
+                    let _ = ep_callback(
+                        ConnectionHandle(peer.id().connection),
+                        EndpointEvent::drained(),
+                    );
+                }
                 dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }
         }
 
         for dead_peer in dead_peers {
-            let handle = ConnectionHandle(dead_peer.connection);
-            // Forced teardown must also release Quinn's endpoint routing state.
-            let _ = self.endpoint.handle_event(handle, EndpointEvent::drained());
-            self.peers.remove(&handle);
+            self.peers.remove(&ConnectionHandle(dead_peer.connection));
         }
 
         // Still-dirty peers need an immediate re-poll; otherwise sleep until

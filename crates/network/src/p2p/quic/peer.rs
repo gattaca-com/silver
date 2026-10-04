@@ -122,8 +122,12 @@ impl Peer {
         self.connection.handle_event(event);
     }
 
+    pub(crate) fn is_drained(&self) -> bool {
+        self.connection.is_drained()
+    }
+
     pub(crate) fn should_reap(&self) -> bool {
-        self.connection.is_drained() || self.outbound_lease_wheel.is_expired()
+        self.is_drained() || self.outbound_lease_wheel.is_expired()
     }
 
     pub(crate) fn is_closed(&self) -> bool {

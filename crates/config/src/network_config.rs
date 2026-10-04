@@ -41,7 +41,7 @@ impl Default for UringConfig {
             discovery_rx_buffers: 256,
             quic_tx_buffers: 256,
             discovery_tx_buffers: 64,
-            send_zc_min_size: 0,
+            send_zc_min_size: 1400,
         }
     }
 }

@@ -41,7 +41,7 @@ fn gauges(socket: SocketId) -> [u64; 4] {
 }
 
 #[test]
-fn provided_pool_metrics_track_retention_exhaustion_recycling_and_shutdown() {
+fn provided_pool_metrics_track_retention_replacement_recycling_and_shutdown() {
     let directory = tempfile::tempdir().unwrap();
     NetworkCounters::init_with_base(directory.path(), "uring-buffer-metrics").unwrap();
     let config = UringConfig {
@@ -60,23 +60,30 @@ fn provided_pool_metrics_track_retention_exhaustion_recycling_and_shutdown() {
     assert_eq!(gauges(SocketId::Quic), [1, 1, 0, 0]);
     assert_eq!(gauges(SocketId::Discovery), [2, 2, 0, 0]);
 
+    // Each multishot pass that fills the only buffer completes with ENOBUFS.
     peer.send_to(b"held", quic).unwrap();
+    peer.send_to(b"queued", quic).unwrap();
     let (socket, held) = receive(&mut io);
     assert_eq!(socket, SocketId::Quic);
+    assert_eq!(&held[..], b"held");
     assert_eq!(gauges(SocketId::Quic), [1, 0, 1, 1]);
     assert_eq!(NetworkCounters::UringQuicRxBuffersConsumed.get(), 1);
     assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 0);
 
-    peer.send_to(b"queued", quic).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while NetworkCounters::UringQuicRxNoBuffers.get() == 0 {
-        assert!(Instant::now() < deadline, "buffer exhaustion deadline");
-        io.poll(Duration::from_millis(10), |_, _, _| panic!("reused a retained buffer")).unwrap();
-    }
-    for _ in 0..4 {
-        io.poll(Duration::ZERO, |_, _, _| panic!("reused a retained buffer")).unwrap();
-    }
-    assert_eq!(NetworkCounters::UringQuicRxNoBuffers.get(), 1);
+    let (_, queued) = receive(&mut io);
+    assert_eq!(&queued[..], b"queued");
+    assert_eq!(&held[..], b"held");
+    assert_eq!(NetworkCounters::UringQuicRxNoBuffers.get(), 2);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersReplaced.get(), 1);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersConsumed.get(), 2);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 0);
+    assert_eq!(gauges(SocketId::Quic), [1, 0, 1, 1]);
+    drop(held);
+    drop(queued);
+    io.poll(Duration::ZERO, |_, _, _| panic!("unexpected packet")).unwrap();
+    assert_eq!(gauges(SocketId::Quic), [1, 1, 0, 1]);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 1);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersReplaced.get(), 1);
 
     peer.send_to(b"discovery", discovery).unwrap();
     let (socket, data) = receive(&mut io);
@@ -87,18 +94,9 @@ fn provided_pool_metrics_track_retention_exhaustion_recycling_and_shutdown() {
     assert_eq!(gauges(SocketId::Discovery), [2, 2, 0, 1]);
     assert_eq!(NetworkCounters::UringDiscoveryRxBuffersConsumed.get(), 1);
     assert_eq!(NetworkCounters::UringDiscoveryRxBuffersRecycled.get(), 1);
+    assert_eq!(NetworkCounters::UringDiscoveryRxBuffersReplaced.get(), 0);
     assert_eq!(NetworkCounters::UringDiscoveryRxNoBuffers.get(), 0);
-    assert_eq!(gauges(SocketId::Quic), [1, 0, 1, 1]);
-
-    drop(held);
-    let (_, queued) = receive(&mut io);
-    assert_eq!(&queued[..], b"queued");
-    assert_eq!(NetworkCounters::UringQuicRxBuffersConsumed.get(), 2);
-    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 1);
-    drop(queued);
-    io.poll(Duration::ZERO, |_, _, _| panic!("unexpected packet")).unwrap();
     assert_eq!(gauges(SocketId::Quic), [1, 1, 0, 1]);
-    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 2);
 
     peer.send_to(&[0; 4096], quic).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -106,7 +104,7 @@ fn provided_pool_metrics_track_retention_exhaustion_recycling_and_shutdown() {
         assert!(Instant::now() < deadline, "truncated packet deadline");
         io.poll(Duration::from_millis(10), |_, _, _| panic!("truncated packet delivered")).unwrap();
     }
-    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 3);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 2);
     assert_eq!(gauges(SocketId::Quic), [1, 1, 0, 1]);
 
     peer.send_to(b"outlives pool", quic).unwrap();
@@ -116,7 +114,7 @@ fn provided_pool_metrics_track_retention_exhaustion_recycling_and_shutdown() {
     assert_eq!(gauges(SocketId::Quic), [0; 4]);
     assert_eq!(gauges(SocketId::Discovery), [0; 4]);
     assert_eq!(NetworkCounters::UringQuicRxBuffersConsumed.get(), 4);
-    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 3);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 2);
     drop(io);
     assert_eq!(&retained[..], b"outlives pool");
 
@@ -124,6 +122,6 @@ fn provided_pool_metrics_track_retention_exhaustion_recycling_and_shutdown() {
     assert_eq!(gauges(SocketId::Quic), [1, 1, 0, 0]);
     assert_eq!(gauges(SocketId::Discovery), [2, 2, 0, 0]);
     assert_eq!(NetworkCounters::UringQuicRxBuffersConsumed.get(), 4);
-    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 3);
+    assert_eq!(NetworkCounters::UringQuicRxBuffersRecycled.get(), 2);
     io.shutdown().unwrap();
 }

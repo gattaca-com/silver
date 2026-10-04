@@ -74,6 +74,7 @@ fn both_submission_modes_complete_on_the_tile_thread_after_idle() {
         assert_eq!(ring.params().cq_entries(), config.cq_entries);
 
         thread::spawn(move || {
+            ring.submitter().register_enable_rings().unwrap();
             if sqpoll_cpu.is_some() {
                 let deadline = Instant::now() + Duration::from_secs(2);
                 while !ring.submission().need_wakeup() {

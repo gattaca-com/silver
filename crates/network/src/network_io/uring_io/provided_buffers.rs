@@ -21,8 +21,11 @@ use crate::{
 };
 
 // io_uring_recvmsg_out has four u32 fields, followed by the reserved sockaddr
-// space.
-const PAYLOAD_OFFSET: usize = 4 * size_of::<u32>() + size_of::<libc::sockaddr_storage>();
+// space. A cache-line payload offset keeps the payload at the allocation's
+// alignment.
+const PAYLOAD_OFFSET: usize = 64;
+pub(super) const NAME_SPACE: usize = PAYLOAD_OFFSET - 4 * size_of::<u32>();
+const _: () = assert!(NAME_SPACE >= size_of::<libc::sockaddr_in6>());
 const BUFFER_SIZE: usize = PAYLOAD_OFFSET + RX_BUF_SIZE;
 
 pub(super) struct ProvidedBuffers {
@@ -147,6 +150,22 @@ impl ProvidedBuffers {
         }
         self.metrics.recycled(retired - self.retired.len());
         self.metrics.publish(self.retired.len());
+    }
+
+    /// Fresh allocations replace buffers pinned by their packets, so retention
+    /// cannot stop receiving. Packets keep the old allocations until dropped.
+    pub(super) fn replace_if_exhausted(&mut self) {
+        if self.has_buffers() {
+            return;
+        }
+        let replaced = self.retired.len();
+        while let Some(id) = self.retired.pop() {
+            self.buffers[usize::from(id)] = BytesMut::zeroed(BUFFER_SIZE);
+            self.provide(id);
+        }
+        self.publish();
+        self.metrics.replaced(replaced);
+        self.metrics.publish(0);
     }
 
     pub(super) fn no_buffers(&mut self) {

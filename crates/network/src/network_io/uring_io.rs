@@ -7,7 +7,7 @@ mod tx_pool;
 
 use std::{
     io,
-    mem::{ManuallyDrop, size_of},
+    mem::ManuallyDrop,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     os::fd::AsRawFd,
     time::{Duration, Instant},
@@ -20,7 +20,7 @@ use flux::park::SIGNAL;
 use futex_wake::{FUTEX_TAG, FutexWake};
 use fxhash::FxHasher;
 use io_uring::{IoUring, cqueue, opcode, types};
-use provided_buffers::ProvidedBuffers;
+use provided_buffers::{NAME_SPACE, ProvidedBuffers};
 use quinn_proto::Transmit;
 use silver_common::WitherFilter;
 use silver_config::UringConfig;
@@ -41,6 +41,7 @@ pub struct UringIo {
     tx: ManuallyDrop<[TxPool; 2]>,
     active: [bool; 2],
     next_tx_socket: usize,
+    enabled: bool,
     stopped: bool,
     scratch: Vec<u8>,
     banned_ips: WitherFilter<IpAddr, FxHasher, 1024>,
@@ -53,9 +54,9 @@ pub struct UringIo {
 unsafe impl Send for UringIo {}
 
 impl UringIo {
-    /// Receives start on the first flush or poll, so construction can precede
-    /// moving to another thread without assigning receive task work to the
-    /// creator.
+    /// The ring is enabled on the first flush or poll, which binds it to that
+    /// thread as its single issuer. Construction may happen on another thread;
+    /// shutdown and drop must run on the issuer.
     pub fn new(
         config: &UringConfig,
         quic_addr: SocketAddr,
@@ -70,7 +71,7 @@ impl UringIo {
         // SAFETY: null pointers and zero lengths are valid; multishot reads only the
         // reserved lengths.
         let mut header: Box<libc::msghdr> = Box::new(unsafe { std::mem::zeroed() });
-        header.msg_namelen = size_of::<libc::sockaddr_storage>() as _;
+        header.msg_namelen = NAME_SPACE as _;
         let mut receiver = Self {
             ring,
             sockets,
@@ -86,6 +87,7 @@ impl UringIo {
             ]),
             active: [false; 2],
             next_tx_socket: 0,
+            enabled: false,
             stopped: false,
             scratch: Vec::with_capacity(RX_BUF_SIZE),
             banned_ips: WitherFilter::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
@@ -141,6 +143,10 @@ impl UringIo {
         if self.stopped {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "io_uring is stopped"));
         }
+        if !self.enabled {
+            self.ring.submitter().register_enable_rings()?;
+            self.enabled = true;
+        }
         self.rearm();
         for index in [self.next_tx_socket, self.next_tx_socket ^ 1] {
             self.tx[index].submit(&mut self.ring, self.sockets[index].as_raw_fd());
@@ -173,6 +179,11 @@ impl UringIo {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "io_uring is stopped"));
         }
         self.recycle();
+        // The caller has run since the last poll, so buffers still retained here
+        // are pinned by unread data rather than in transit.
+        for pool in self.pools.iter_mut() {
+            pool.replace_if_exhausted();
+        }
         #[cfg(feature = "thread_park")]
         if !timeout.is_zero() &&
             let Some(wake) = &mut self.wake
@@ -215,11 +226,16 @@ impl UringIo {
             }
             if completion.user_data() & TX_TAG != 0 {
                 let index = (completion.user_data() & 1) as usize;
-                self.tx[index].complete(
+                if let Err(error) = self.tx[index].complete(
                     completion.user_data(),
                     completion.result(),
                     completion.flags(),
-                )?;
+                ) {
+                    if error.kind() == io::ErrorKind::InvalidData {
+                        return Err(error);
+                    }
+                    silver_log::warn!(?error, socket = ?SOCKETS[index], "network io_uring send failed");
+                }
                 continue;
             }
             let socket = match completion.user_data() {
@@ -260,10 +276,12 @@ impl UringIo {
                             "response exceeds scratch buffer",
                         ));
                     }
-                    self.tx[index].enqueue(|buffer| {
+                    if let Err(error) = self.tx[index].enqueue(|buffer| {
                         buffer.extend_from_slice(&self.scratch[..response.size]);
                         Some(response)
-                    })?;
+                    }) {
+                        silver_log::warn!(?error, ?socket, "network io_uring response dropped");
+                    }
                 }
             }
         }

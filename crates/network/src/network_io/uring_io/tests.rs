@@ -182,7 +182,7 @@ fn nonblocking_receive_progresses_without_new_submissions_in_both_modes() {
 }
 
 #[test]
-fn exhausted_quic_pool_keeps_discovery_live_and_recovers_after_packet_release() {
+fn exhausted_quic_pool_replaces_retained_buffers_and_keeps_discovery_live() {
     let Some(mut receiver) = receiver(1, 2) else { return };
     let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
     let quic = destination(&receiver, SocketId::Quic, false);
@@ -190,31 +190,22 @@ fn exhausted_quic_pool_keeps_discovery_live_and_recovers_after_packet_release() 
     peer.send_to(b"retained", quic).unwrap();
     let mut packets = receive(&mut receiver, 1);
     let (_, retained, _) = packets.pop().unwrap();
-    let retained_ptr = retained.as_ptr();
-    peer.send_to(b"queued", quic).unwrap();
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while receiver.active[SocketId::Quic as usize] {
-        assert!(Instant::now() < deadline, "receive did not terminate on buffer exhaustion");
-        receiver
-            .poll(Duration::from_millis(10), |_, _, _| panic!("reused a retained buffer"))
-            .unwrap();
-    }
     for _ in 0..16 {
         peer.send_to(b"discovery", discovery).unwrap();
         let packets = receive(&mut receiver, 1);
         assert_eq!(packets[0].0, SocketId::Discovery);
         assert_eq!(&packets[0].1[..], b"discovery");
-        assert_eq!(&retained[..], b"retained");
     }
-    drop(retained);
+    peer.send_to(b"queued", quic).unwrap();
     let packets = receive(&mut receiver, 1);
     assert_eq!(packets[0].0, SocketId::Quic);
     assert_eq!(&packets[0].1[..], b"queued");
-    assert_eq!(packets[0].1.as_ptr(), retained_ptr, "pool allocated a replacement buffer");
+    assert_ne!(packets[0].1.as_ptr(), retained.as_ptr(), "reused a retained buffer");
+    assert_eq!(&retained[..], b"retained");
     receiver.shutdown().unwrap();
     drop(receiver);
     assert_eq!(&packets[0].1[..], b"queued", "packet did not outlive the receiver");
+    assert_eq!(&retained[..], b"retained", "packet did not outlive the receiver");
 }
 
 #[test]
