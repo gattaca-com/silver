@@ -29,8 +29,50 @@ export const TILES = {
   ApplicationBoundaryTile: { label: 'API', x: 660, y: 380 },
 };
 
+const DEFAULTS = Object.fromEntries(Object.entries(TILES).map(([name, t]) => [name, { x: t.x, y: t.y }]));
+const LAYOUT_KEY = 'silver-dashboard.tile-layout';
+
+const atDefault = (name) => TILES[name].x === DEFAULTS[name].x && TILES[name].y === DEFAULTS[name].y;
+
+export function isDefaultLayout() {
+  return Object.keys(TILES).every(atDefault);
+}
+
+/** Centre of `name`, kept inside the diagram. */
+export function moveTile(name, x, y) {
+  TILES[name].x = Math.round(Math.min(W - NODE_W / 2, Math.max(NODE_W / 2, x)));
+  TILES[name].y = Math.round(Math.min(H - NODE_H / 2, Math.max(NODE_H / 2, y)));
+}
+
+/** Per browser; storage may be unavailable, and then the layout lives only
+ *  until reload. */
+export function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(Object.fromEntries(Object.entries(TILES).map(([n, t]) => [n, { x: t.x, y: t.y }]))));
+  } catch {}
+}
+
+export function resetLayout() {
+  for (const [name, p] of Object.entries(DEFAULTS)) moveTile(name, p.x, p.y);
+  try {
+    localStorage.removeItem(LAYOUT_KEY);
+  } catch {}
+}
+
+function loadLayout() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null');
+  } catch {}
+  for (const [name, p] of Object.entries(saved ?? {})) {
+    if (TILES[name] && Number.isFinite(p?.x) && Number.isFinite(p?.y)) moveTile(name, p.x, p.y);
+  }
+}
+loadLayout();
+
 /** Base bow of a tile pair, against its sorted direction as in `laneBows`:
- *  Control and Storage reach API around BeaconState and DataColumns. */
+ *  Control and Storage reach API around BeaconState and DataColumns. Only
+ *  while both tiles sit where the default layout puts them. */
 const PAIR_BOW = {
   'ApplicationBoundaryTile|Controller': 150,
   'ApplicationBoundaryTile|StorageTile': -150,
@@ -191,7 +233,7 @@ function laneBows(edges) {
     // Bow is measured against the pair's sorted direction, so lanes running
     // opposite ways fan out instead of mirroring onto each other.
     const [lo, hi] = e.fromName < e.toName ? [e.fromName, e.toName] : [e.toName, e.fromName];
-    const base = PAIR_BOW[`${lo}|${hi}`] ?? 0;
+    const base = atDefault(lo) && atDefault(hi) ? (PAIR_BOW[`${lo}|${hi}`] ?? 0) : 0;
     const side = base ? Math.sign(base) : laneSide(lo, hi);
     const lane = side === 0 ? i - (n - 1) / 2 : side * i;
     return (base + lane * LANE_GAP * 2) * (e.fromName < e.toName ? 1 : -1);
@@ -220,7 +262,7 @@ export function drawNodes(utils, notes) {
       const pct = busy === null ? 0 : Math.round(busy * 100);
       const detail = u ? `busy ${pct}%` : 'no tile metrics';
       const extra = (notes.get(name) ?? []).map((l) => `\n${l}`).join('');
-      return `<g class="node" transform="translate(${t.x - NODE_W / 2},${t.y - NODE_H / 2})">
+      return `<g class="node" data-tile="${name}" transform="translate(${t.x - NODE_W / 2},${t.y - NODE_H / 2})">
         <title>${escape(`${t.label} (${name})\n${detail}${extra}`)}</title>
         <rect width="${NODE_W}" height="${NODE_H}" rx="6" style="--busy:${pct}%"/>
         <text class="nlabel" x="${NODE_W / 2}" y="26">${escape(t.label)}</text>

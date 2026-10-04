@@ -41,6 +41,21 @@ function render() {
 root.addEventListener('mouseover', (e) => PANES[active].hover?.(e.target, ui[active], root));
 root.addEventListener('mouseleave', () => PANES[active].hover?.(root, ui[active], root));
 
+// Drags follow the pointer on the document: the pane's HTML is replaced on
+// every render, so an element-bound drag would not survive one.
+let dragFrame = 0;
+root.addEventListener('pointerdown', (e) => {
+  if (e.button === 0 && PANES[active].dragStart?.(e, ui[active], root)) e.preventDefault();
+});
+document.addEventListener('pointermove', (e) => {
+  if (!PANES[active].dragMove?.(e, ui[active], root) || dragFrame) return;
+  dragFrame = requestAnimationFrame(() => {
+    dragFrame = 0;
+    render();
+  });
+});
+document.addEventListener('pointerup', () => PANES[active].dragEnd?.(ui[active]));
+
 root.addEventListener('click', (e) => {
   const tab = e.target.closest('[data-instance]');
   if (tab) {

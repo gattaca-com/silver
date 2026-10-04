@@ -6,7 +6,7 @@ import { SourceClass } from './wire.js';
 import { escape, instanceTabs } from './view.js';
 import {
   H, NODE_W, NO_BUCKETS, P2P_MARGIN, SEL_MARKER, TILES, W, chartSlot, detailPanel, drawNodes, fmtBytesRate,
-  markers,
+  isDefaultLayout, markers, moveTile, resetLayout, saveLayout,
 } from './flow_layout.js';
 import * as queues from './flow_queues.js';
 import * as tcaches from './flow_tcaches.js';
@@ -89,7 +89,8 @@ function modeSwitch(active) {
   const buttons = Object.keys(MODES)
     .map((m) => `<button class="${m === active ? 'active' : ''}" data-mode="${m}">${m}</button>`)
     .join('');
-  return `<div class="subtabs flow-modes">${buttons}</div>`;
+  const reset = isDefaultLayout() ? '' : '<button class="reset-layout" data-reset-layout>reset layout</button>';
+  return `<div class="subtabs flow-modes">${buttons}${reset}</div>`;
 }
 
 /** Ctrl/Cmd+click on the instance tabs selects several, stacked. */
@@ -135,6 +136,15 @@ export function render(fleet, root, now, ui) {
 
 /** A mode switch drops the selection: keys belong to one mode's graph. */
 export function click(target, ui) {
+  // The click that ends a drag is not a selection.
+  if (ui.dragged) {
+    ui.dragged = false;
+    return;
+  }
+  if (target.closest('[data-reset-layout]')) {
+    resetLayout();
+    return;
+  }
   const mode = target.closest('[data-mode]')?.dataset.mode;
   if (mode && MODES[mode]) {
     if (mode !== ui.mode) ui.selected = null;
@@ -159,4 +169,42 @@ export function hover(target, ui, root) {
   for (const el of root.querySelectorAll('.flow [data-q]')) {
     el.classList.toggle('show', el.dataset.q === key);
   }
+}
+
+/** Diagram coordinates of a pointer event over the `index`th diagram. Each
+ *  render replaces the SVG, so it is looked up afresh. */
+function diagramPoint(root, index, e) {
+  const svg = root.querySelectorAll('.flow-col > svg')[index];
+  const ctm = svg?.getScreenCTM();
+  if (!ctm) return null;
+  return new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+}
+
+/** A tile box starts a drag; the layout is shared by every diagram. */
+export function dragStart(e, ui, root) {
+  ui.dragged = false;
+  const node = e.target.closest?.('.flow .node[data-tile]');
+  if (!node) return false;
+  const index = [...root.querySelectorAll('.flow-col > svg')].indexOf(node.closest('svg'));
+  const p = diagramPoint(root, index, e);
+  if (!p) return false;
+  const t = TILES[node.dataset.tile];
+  ui.drag = { tile: node.dataset.tile, index, dx: t.x - p.x, dy: t.y - p.y, moved: false };
+  return true;
+}
+
+export function dragMove(e, ui, root) {
+  const d = ui.drag;
+  const p = d && diagramPoint(root, d.index, e);
+  if (!p) return false;
+  moveTile(d.tile, p.x + d.dx, p.y + d.dy);
+  d.moved = true;
+  return true;
+}
+
+export function dragEnd(ui) {
+  if (!ui.drag) return;
+  if (ui.drag.moved) saveLayout();
+  ui.dragged = ui.drag.moved;
+  ui.drag = null;
 }
