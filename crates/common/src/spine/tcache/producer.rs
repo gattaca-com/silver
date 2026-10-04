@@ -302,6 +302,7 @@ impl Reservation {
         Ok(buffer.len() - self.offset)
     }
 
+    #[timed]
     pub fn increment_offset(&mut self, len: usize) {
         let Ok(buffer_len) = self.buffer().map(|buffer| buffer.len()) else {
             return;
