@@ -4,6 +4,7 @@ mod tx_message;
 
 use std::{collections::VecDeque, io};
 
+use flux_profiler::timed;
 use io_uring::{IoUring, cqueue, opcode, types};
 use quinn_proto::Transmit;
 use tx_message::TxMessage;
@@ -87,6 +88,7 @@ impl TxPool {
         Ok(true)
     }
 
+    #[timed]
     pub(super) fn submit(&mut self, ring: &mut IoUring) {
         let mut submission = ring.submission();
         while let Some(&id) = self.queued.front() {
