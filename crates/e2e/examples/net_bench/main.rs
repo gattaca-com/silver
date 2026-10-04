@@ -35,7 +35,7 @@ use node::Node;
 use probe::{Probe, ProbeEncoder};
 use report::Latency;
 use serde::Serialize;
-use silver_common::{GossipTopic, Nanos, test_util::ShmemDir};
+use silver_common::{GossipTopic, Nanos, profiler::enable_profiler, test_util::ShmemDir};
 use silver_e2e::keypair_from_seed;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -51,6 +51,7 @@ const ECHO_SEED: u8 = 2;
 
 fn main() {
     tracing_subscriber::fmt().with_max_level(LevelFilter::WARN).try_init().ok();
+    enable_profiler("net_bench");
     let args = Args::parse();
 
     let tempdir = ShmemDir::new().expect("tempdir");

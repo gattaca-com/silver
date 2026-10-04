@@ -14,9 +14,9 @@ use std::{
 };
 
 use bytes::BytesMut;
-use flux_profiler::timed;
 #[cfg(feature = "thread_park")]
 use flux::park::SIGNAL;
+use flux_profiler::timed;
 #[cfg(feature = "thread_park")]
 use futex_wake::{FUTEX_TAG, FutexWake};
 use fxhash::FxHasher;
