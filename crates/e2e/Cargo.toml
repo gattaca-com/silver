@@ -58,6 +58,9 @@ perf-counters = ["silver_metrics/perf"]
 name = "gossip_oneway"
 
 [[example]]
+name = "net_bench"
+
+[[example]]
 name = "gossip_oneway_lh"
 required-features = ["lh-client"]
 
