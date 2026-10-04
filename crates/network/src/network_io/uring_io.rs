@@ -14,6 +14,7 @@ use std::{
 };
 
 use bytes::BytesMut;
+use flux_profiler::timed;
 #[cfg(feature = "thread_park")]
 use flux::park::SIGNAL;
 #[cfg(feature = "thread_park")]
@@ -133,6 +134,7 @@ impl UringIo {
 
     /// Calls the producer only when a slot is available. Accepted packets are
     /// submitted by flush or poll.
+    #[timed]
     pub fn send<F>(&mut self, socket: SocketId, produce: F) -> io::Result<bool>
     where
         F: FnOnce(&mut Vec<u8>) -> Option<Transmit>,
@@ -168,6 +170,7 @@ impl UringIo {
 
     /// Retained packets keep their pool slots until a later call can reclaim
     /// their storage.
+    #[timed]
     pub fn poll<F>(&mut self, timeout: Duration, mut receive: F) -> io::Result<usize>
     where
         F: FnMut(SocketId, BytesMut, SocketAddr),
@@ -178,6 +181,7 @@ impl UringIo {
         })
     }
 
+    #[timed]
     pub(crate) fn wait_for_completions(&mut self, timeout: Duration) -> io::Result<()> {
         if self.stopped {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "io_uring is stopped"));
@@ -205,6 +209,7 @@ impl UringIo {
         Ok(())
     }
 
+    #[timed]
     pub(crate) fn poll_with_response<F>(
         &mut self,
         timeout: Duration,
