@@ -18,6 +18,7 @@ pub use consumer::{
 pub use counters::TCacheCounters;
 pub use emitters::TileId;
 use flux::{Timer, timing::Nanos};
+use flux_profiler::timed;
 pub use id::TCacheId;
 pub use producer::{Producer, Reservation, TCacheProducer};
 pub use reader::{ReadMode, TCacheReader, TCacheTable};
@@ -548,6 +549,7 @@ impl TCache {
         slot.data_end = slot.data_start + len;
     }
 
+    #[timed]
     fn commit(&self, seq: u64, success: bool) {
         let idx = self.index(seq);
 

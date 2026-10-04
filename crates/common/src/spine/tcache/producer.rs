@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use flux_profiler::timed;
+
 use super::*;
 
 #[cfg(test)]
@@ -166,6 +168,7 @@ impl TCacheProducer for Producer {
     /// if `auto_commit` the reservation will be commited as soon as it is
     /// filled. otherwise it must ber manually committed by calling `flush`.
     #[inline]
+    #[timed]
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let cache = self.cache_ref();
         self.state.reserve(cache, len, auto_commit)
@@ -353,6 +356,7 @@ impl Reservation {
 }
 
 impl Write for Reservation {
+    #[timed]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let buffer = self.buffer()?;
         let buffer_len = buffer.len();
