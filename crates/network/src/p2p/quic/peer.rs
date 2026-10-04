@@ -117,6 +117,7 @@ impl Peer {
         &self.id
     }
 
+    #[timed]
     pub(crate) fn event(&mut self, event: ConnectionEvent) {
         self.dirty = true;
         self.connection.handle_event(event);
