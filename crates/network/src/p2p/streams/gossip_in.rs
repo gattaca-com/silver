@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux_profiler::timed;
 use silver_common::{
     MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint,
 };
@@ -71,6 +72,7 @@ impl GossipReadState {
         }
     }
 
+    #[timed]
     fn spin_inner<S: StreamIo, F>(
         self,
         io: &mut S,

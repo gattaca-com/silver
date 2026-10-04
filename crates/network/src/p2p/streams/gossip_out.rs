@@ -1,5 +1,6 @@
 use std::slice;
 
+use flux_profiler::timed;
 use silver_common::{
     GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
     MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
@@ -60,6 +61,8 @@ impl GossipWriteState {
             }
         }
     }
+
+    #[timed]
     fn spin_inner<S: StreamIo>(
         self,
         io: &mut S,

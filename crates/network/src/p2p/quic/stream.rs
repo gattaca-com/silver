@@ -1,6 +1,7 @@
 use std::io::{Error, Write};
 
 use bytes::Bytes;
+use flux_profiler::timed;
 use quinn_proto::{Connection, StreamId, WriteError};
 use silver_common::AcquiredWithOffset;
 
@@ -15,6 +16,7 @@ pub struct StreamIoImpl<'a> {
 }
 
 impl<'a> StreamIo for StreamIoImpl<'a> {
+    #[timed]
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError> {
         let mut stream = self.connection.send_stream(id);
         match stream.write(data) {
@@ -24,6 +26,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
+    #[timed]
     fn write_leased_to_stream(
         &mut self,
         id: StreamId,
@@ -38,6 +41,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
+    #[timed]
     fn read_from_stream(&mut self, id: StreamId, data: &mut [u8]) -> Result<usize, StreamError> {
         let mut stream = self.connection.recv_stream(id);
         let mut chunks = stream.read(true)?;
@@ -71,6 +75,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         Ok(offset)
     }
 
+    #[timed]
     fn write_chunks(&mut self, id: StreamId, chunks: &mut [Bytes]) -> Result<usize, StreamError> {
         match self.connection.send_stream(id).write_chunks(chunks) {
             Ok(wrote) => Ok(wrote.bytes),
