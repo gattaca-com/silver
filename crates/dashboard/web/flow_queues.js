@@ -172,7 +172,7 @@ function legend() {
   const widths = [1, 10, 100, 1e3, 1e4, 1e5].map((r) => widthSwatch(rateWidth(r), fmtRate(r))).join('');
   return `<div class="flow-legend">
     <div><span class="meta">spot colour: consumer handler p50</span> <span class="ramp">100ns ${colourRamp()} 10ms</span> <span class="meta">grey: no traffic · hover a spot for its queue, click for its timings</span></div>
-    <div><span class="meta">line width: total msgs/s · spot size: its msgs/s, same scale</span> ${widths}</div>
+    <div><span class="meta">line width and orange shade: total msgs/s · spot size: its msgs/s, same scale</span> ${widths}</div>
     <div class="meta">One line per direction between two tiles; one spot per producer → consumer pair and message type on it, from flux's per-pair timers.</div>
   </div>`;
 }

@@ -17,20 +17,22 @@ const LANE_GAP = 16;
 const NEAR_BOX = 220;
 
 /** Keyed by the tile's Rust type name, as flux names its metrics files.
- *  Network and ApplicationBoundary flank the two columns, mirrored about the
- *  Network–ApplicationBoundary axis. Every straight tile-to-tile line clears
- *  every other box by ≥ 28, except the two that `PAIR_BOW` curves. */
+ *  A hexagon: Network and BeaconState at the middle left and right, the
+ *  others at the top and bottom, mirrored about the centre. Every straight
+ *  tile-to-tile line clears every other box by ≥ 90. */
 export const TILES = {
   NetworkTile: { label: 'Network', x: 75, y: 380 },
   Controller: { label: 'Control', x: 240, y: 50 },
-  StorageTile: { label: 'Storage', x: 240, y: 710 },
-  BeaconStateTile: { label: 'BeaconState', x: 450, y: 260 },
-  DataColumnsTile: { label: 'DataColumns', x: 450, y: 500 },
-  ApplicationBoundaryTile: { label: 'API', x: 660, y: 380 },
+  DataColumnsTile: { label: 'DataColumns', x: 520, y: 50 },
+  ApplicationBoundaryTile: { label: 'API', x: 240, y: 710 },
+  StorageTile: { label: 'Storage', x: 520, y: 710 },
+  BeaconStateTile: { label: 'BeaconState', x: 685, y: 380 },
 };
 
 const DEFAULTS = Object.fromEntries(Object.entries(TILES).map(([name, t]) => [name, { x: t.x, y: t.y }]));
-const LAYOUT_KEY = 'silver-dashboard.tile-layout';
+/** Versioned with the default layout, so a layout saved against an older
+ *  default is not applied over a newer one. */
+const LAYOUT_KEY = 'silver-dashboard.tile-layout.v2';
 
 const atDefault = (name) => TILES[name].x === DEFAULTS[name].x && TILES[name].y === DEFAULTS[name].y;
 
@@ -70,13 +72,6 @@ function loadLayout() {
 }
 loadLayout();
 
-/** Base bow of a tile pair, against its sorted direction as in `laneBows`:
- *  Control and Storage reach API around BeaconState and DataColumns. Only
- *  while both tiles sit where the default layout puts them. */
-const PAIR_BOW = {
-  'ApplicationBoundaryTile|Controller': 150,
-  'ApplicationBoundaryTile|StorageTile': -150,
-};
 
 export const NET = 'NetworkTile';
 export const CTL = 'Controller';
@@ -138,6 +133,8 @@ function curve(a, b, bow) {
 }
 
 const SPOT_R_MIN = 3;
+/** % of orange in an idle line's colour mix with the panel. */
+const TRUNK_HEAT_MIN = 25;
 const SPOT_R_MAX = 8;
 
 /** Spot radius for a stroke width from `logWidth`, on the same log scale. */
@@ -178,7 +175,9 @@ export function drawTrunks(items, width) {
     const busy = t.total > 0;
     const w = busy ? width(t.total) : WIDTH_MIN;
     const mark = t.mark ? ` ${t.mark}` : '';
-    lines.push(`<path class="trunk${busy ? '' : ' idle'}${mark}" d="${d}" stroke-width="${w.toFixed(1)}" marker-end="url(#ah-trunk)"/>`);
+    // Orange strength follows traffic on the width's scale; idle is faintest.
+    const heat = Math.round(TRUNK_HEAT_MIN + ((100 - TRUNK_HEAT_MIN) * (w - WIDTH_MIN)) / (WIDTH_MAX - WIDTH_MIN));
+    lines.push(`<path class="trunk${mark}" d="${d}" stroke-width="${w.toFixed(1)}" style="--heat:${heat}%" marker-end="url(#ah-trunk)"/>`);
     t.items.forEach((it, k) => {
       const p = at((k + 1) / (t.items.length + 1));
       const [x, y] = [p.x.toFixed(1), p.y.toFixed(1)];
@@ -233,10 +232,9 @@ function laneBows(edges) {
     // Bow is measured against the pair's sorted direction, so lanes running
     // opposite ways fan out instead of mirroring onto each other.
     const [lo, hi] = e.fromName < e.toName ? [e.fromName, e.toName] : [e.toName, e.fromName];
-    const base = atDefault(lo) && atDefault(hi) ? (PAIR_BOW[`${lo}|${hi}`] ?? 0) : 0;
-    const side = base ? Math.sign(base) : laneSide(lo, hi);
+    const side = laneSide(lo, hi);
     const lane = side === 0 ? i - (n - 1) / 2 : side * i;
-    return (base + lane * LANE_GAP * 2) * (e.fromName < e.toName ? 1 : -1);
+    return lane * LANE_GAP * 2 * (e.fromName < e.toName ? 1 : -1);
   });
 }
 
@@ -277,7 +275,7 @@ export function colourRamp() {
 }
 
 export function widthSwatch(width, label) {
-  return `<span><svg width="36" height="12"><line x1="2" y1="6" x2="34" y2="6" class="q5" stroke-width="${width}"/></svg>${label}</span>`;
+  return `<span><svg width="36" height="12"><line x1="2" y1="6" x2="34" y2="6" class="trunk" style="--heat:100%" stroke-width="${width}"/></svg>${label}</span>`;
 }
 
 export function detailPanel(title, body) {

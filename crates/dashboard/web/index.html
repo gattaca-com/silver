@@ -113,9 +113,10 @@
   .flow-col > svg { width: 100%; height: auto; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
   .flow .p2p path { fill: none; }
   .flow .p2p path.hit { stroke: transparent; stroke-width: 12; }
-  .flow .trunk { fill: none; stroke: var(--muted); stroke-opacity: 0.45; }
-  .flow .trunk.idle { stroke: var(--idle); stroke-opacity: 1; }
-  .flow .qf-trunk { fill: var(--muted); fill-opacity: 0.45; }
+  /* Heat runs from a faint orange on idle lines to a bright orange. */
+  .flow { --trunk-cold: color-mix(in srgb, var(--series-2) 30%, var(--panel)); --trunk-hot: #ff8a1f; }
+  .flow .trunk { fill: none; stroke: color-mix(in oklab, var(--trunk-hot) var(--heat), var(--trunk-cold)); }
+  .flow .qf-trunk { fill: color-mix(in oklab, var(--trunk-hot) 50%, var(--trunk-cold)); }
   .flow .edge circle.hit { fill: transparent; }
   .flow .spot { stroke: var(--panel); stroke-width: 1; }
   .flow .spot.hollow { fill: var(--panel); stroke: var(--idle); stroke-width: 1.5; }
@@ -134,9 +135,9 @@
   .flow-side > .flow-detail:first-child { margin-top: 0; }
   .flow-unselected { align-self: stretch; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--line); opacity: 0.5; border-radius: 4px; }
   .flow .p2p.selected path:not(.hit) { stroke: var(--series-2); }
-  .flow .edge.selected .spot { fill: var(--series-2); }
+  .flow .edge.selected .spot { stroke: var(--fg); stroke-width: 3; }
   .flow .qf-sel { fill: var(--series-2); }
-  .flow .edge.related .spot { fill: var(--series-2); fill-opacity: 0.4; }
+  .flow .edge.related .spot { stroke: var(--fg); stroke-width: 1.5; stroke-opacity: 0.6; }
   .flow svg.has-sel .edge:not(.selected):not(.related), .flow svg.has-sel .p2p:not(.selected), .flow svg.has-sel .trunk:not(.selected):not(.related) { filter: grayscale(1); opacity: 0.35; }
   .flow .edge[data-tc] { cursor: pointer; }
   .tcache-table { margin-top: 10px; }

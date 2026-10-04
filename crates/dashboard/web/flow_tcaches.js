@@ -197,7 +197,7 @@ function legend() {
     .join('');
   return `<div class="flow-legend">
     <div><span class="meta">spot colour: consumer lag, % of capacity</span> <span class="ramp">0% ${colourRamp()} 100%</span> <span class="meta">grey: idle · hover a spot for its tcache, click to open it in the table</span></div>
-    <div><span class="meta">line width: total consumer read · spot size: its read, same scale</span> ${widths}</div>
+    <div><span class="meta">line width and orange shade: total consumer read · spot size: its read, same scale</span> ${widths}</div>
     <div class="meta">One line per direction between two tiles; one spot per tcache and consumer tile on it, from the producer. Hollow: declared ref forwarding; the receiver reads the producer's ring.</div>
   </div>`;
 }
