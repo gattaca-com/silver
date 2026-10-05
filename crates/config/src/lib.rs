@@ -1,14 +1,14 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub use chain_config::ChainConfig;
+pub use chain_config::{BootSource, ChainConfig, ChainOverrides};
 pub use cluster_config::ClusterConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use genesis::Genesis;
+pub use network::Network;
 pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
@@ -23,6 +23,7 @@ mod cluster_config;
 mod discovery_config;
 mod engine_config;
 mod genesis;
+mod network;
 mod peer_score_params;
 mod syncing_config;
 
@@ -63,15 +64,6 @@ fn default_beacon_api_bind() -> Vec<String> {
     vec!["0.0.0.0:5051".into()]
 }
 
-fn default_data_dir() -> String {
-    std::env::home_dir()
-        .and_then(|mut b| {
-            b = b.join(".local").join("silver");
-            b.to_str().map(|s| s.to_owned())
-        })
-        .unwrap_or("/tmp/silver".into())
-}
-
 fn default_supported_protocols() -> Vec<String> {
     vec![
         StreamProtocol::Identity.multiselect_string(),
@@ -110,17 +102,7 @@ const fn default_quic_port() -> Option<u16> {
 }
 
 mod optional_address {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    pub(super) fn serialize<S: Serializer>(
-        address: &Option<[u8; 20]>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match address {
-            Some(address) => serializer.serialize_str(&format!("0x{}", hex::encode(address))),
-            None => serializer.serialize_none(),
-        }
-    }
+    use serde::{Deserialize, Deserializer, de::Error};
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
@@ -135,8 +117,10 @@ mod optional_address {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    network: Network,
     #[serde(default)]
     external_ip_v4: Option<Ipv4Addr>,
     #[serde(default)]
@@ -161,7 +145,7 @@ pub struct Config {
     #[serde(default = "default_gossip_topics")]
     gossip_topics: Vec<String>,
     #[serde(default)]
-    chain_config: ChainConfig,
+    chain_config: ChainOverrides,
     #[serde(default)]
     discovery_config: DiscoveryConfig,
     #[serde(default)]
@@ -189,8 +173,9 @@ pub struct Config {
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<67108864>")] // 2 << 25
     outgoing_rpc_tcache_size: usize,
-    #[serde(default = "default_data_dir")]
-    data_storage_dir: String,
+    /// Unset takes the network's default.
+    #[serde(default)]
+    data_storage_dir: Option<String>,
     #[serde(default)]
     engine_config: EngineConfig,
     /// Each entry is a TCP `addr:port` or a unix socket path; the API serves
@@ -211,25 +196,63 @@ pub struct Config {
     trusted_peers: Vec<Enr>,
     #[serde(default)]
     cluster_config: Option<ClusterConfig>,
-    #[serde(default, with = "optional_address")]
+    #[serde(default, deserialize_with = "optional_address::deserialize")]
     suggested_fee_recipient: Option<[u8; 20]>,
 }
 
 impl Config {
+    fn apply(&mut self, overrides: Overrides) {
+        if let Some(network) = overrides.network {
+            self.network = network;
+        }
+        if let Some(url) = overrides.execution_endpoint {
+            self.engine_config.execution_endpoint = url;
+        }
+        if let Some(path) = overrides.jwt_secret {
+            self.engine_config.jwt_secret = path;
+        }
+        self.engine_config.unsafe_no_el |= overrides.unsafe_no_el;
+    }
+}
+
+/// What the command line sets over the config file.
+#[derive(Debug, Default)]
+pub struct Overrides {
+    pub network: Option<Network>,
+    pub execution_endpoint: Option<String>,
+    pub jwt_secret: Option<String>,
+    pub unsafe_no_el: bool,
+}
+
+impl Config {
     /// Every key is optional; an empty file is the mainnet node.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        Self::from_toml(&std::fs::read_to_string(path)?)
+    pub fn load(file: Option<&str>, overrides: Overrides) -> Result<Self, Error> {
+        let text = file.map(std::fs::read_to_string).transpose()?.unwrap_or_default();
+        Self::from_toml(&text, overrides)
     }
 
     pub fn mainnet() -> Result<Self, Error> {
-        Self::from_toml("")
+        Self::from_toml("", Overrides::default())
     }
 
-    fn from_toml(text: &str) -> Result<Self, Error> {
+    fn from_toml(text: &str, overrides: Overrides) -> Result<Self, Error> {
         let mut config: Self = toml::from_str(text)?;
-        config.resolve_from_network_files()?;
+        config.apply(overrides);
+        Ok(config)
+    }
 
-        let spec = &config.chain_config.spec;
+    /// Reads a devnet's files, so resolve it once.
+    pub fn chain(&self) -> Result<ChainConfig, Error> {
+        let chain =
+            ChainConfig::new(&self.network, &self.chain_config, self.data_storage_dir.as_deref())?;
+        let spec = &chain.spec;
+        silver_log::info!(
+            network = %spec.network_name(),
+            bootnodes = chain.bootstrap_enrs.len(),
+            boot = ?chain.boot,
+            data_dir = %chain.data_dir,
+            "resolved chain"
+        );
         if let Some(network) = spec.misnamed_network() {
             silver_log::warn!(
                 config_name = %spec.network_name(),
@@ -239,80 +262,24 @@ impl Config {
             );
         }
 
-        Ok(config)
-    }
-
-    fn resolve_from_network_files(&mut self) -> Result<(), Error> {
-        if let Some(path) = &self.chain_config.spec_file {
-            let text = std::fs::read_to_string(path)?;
-            self.chain_config.spec = serde_yml::from_str(&text).map_err(|e| {
-                Error::ConfigError(format!("spec_file {path} is not a spec config: {e}"))
-            })?;
-        }
-
-        let max_blobs = self.chain_config.spec.max_scheduled_blobs_per_block();
+        let max_blobs = spec.max_scheduled_blobs_per_block();
         if max_blobs > MAX_BLOBS_PER_BLOCK as u64 {
             return Err(Error::ConfigError(format!(
-                "chain_config.spec schedules {max_blobs} blobs per block; silver holds at most \
-                 {MAX_BLOBS_PER_BLOCK} (raise MAX_BLOBS_PER_BLOCK)"
+                "{} schedules {max_blobs} blobs per block; silver holds at most \
+                 {MAX_BLOBS_PER_BLOCK} (raise MAX_BLOBS_PER_BLOCK)",
+                spec.network_name()
             )));
         }
 
-        if let Some(path) = &self.chain_config.checkpoint_file {
-            let genesis = Genesis::from_state_file(Path::new(path))?;
-            self.chain_config
-                .checked_fork_digest(self.chain_config.wall_epoch(&genesis), &genesis)?;
+        if let BootSource::File { ssz, .. } = &chain.boot {
+            let genesis = Genesis::from_state_file(ssz)?;
+            chain.checked_fork_digest(chain.wall_epoch(&genesis), &genesis)?;
         }
-        Ok(())
-    }
-
-    pub fn with_discovery_port(mut self, port: u16) -> Self {
-        self.discovery_port = Some(port);
-        self
-    }
-
-    pub fn with_external_ip_v4(mut self, ip: Ipv4Addr) -> Self {
-        self.external_ip_v4 = Some(ip);
-        self
-    }
-
-    pub fn with_quic_port(mut self, port: u16) -> Self {
-        self.quic_port = Some(port);
-        self
-    }
-
-    pub fn with_bootstrap_enrs(mut self, enrs: Vec<Enr>) -> Self {
-        self.chain_config.bootstrap_enrs = enrs;
-        self
-    }
-
-    pub fn with_execution_endpoint(mut self, url: String) -> Self {
-        self.engine_config.execution_endpoint = url;
-        self
-    }
-
-    pub fn with_jwt_secret(mut self, path: String) -> Self {
-        self.engine_config.jwt_secret = path;
-        self
-    }
-
-    pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
-        self.engine_config.unsafe_no_el = unsafe_no_el;
-        self
+        Ok(chain)
     }
 
     pub fn suggested_fee_recipient(&self) -> Option<[u8; 20]> {
         self.suggested_fee_recipient
-    }
-
-    pub fn with_beacon_api_max_connections(mut self, max: usize) -> Self {
-        self.beacon_api_max_connections = max;
-        self
-    }
-
-    pub fn with_beacon_api_idle_timeout_secs(mut self, secs: u64) -> Self {
-        self.beacon_api_idle_timeout_secs = secs;
-        self
     }
 
     pub fn enr(&self, keypair: &Keypair, enr_fork_id: [u8; 16]) -> Result<Enr, Error> {
@@ -384,10 +351,6 @@ impl Config {
         Ok(identify)
     }
 
-    pub fn chain_config(&self) -> &ChainConfig {
-        &self.chain_config
-    }
-
     pub fn discovery_config(&self) -> DiscoveryConfig {
         self.discovery_config.clone()
     }
@@ -436,10 +399,6 @@ impl Config {
         self.outgoing_rpc_tcache_size
     }
 
-    pub fn data_storage_dir(&self) -> &str {
-        &self.data_storage_dir
-    }
-
     pub fn engine_config(&self) -> EngineConfig {
         self.engine_config.clone()
     }
@@ -483,20 +442,22 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use tempfile::TempDir;
 
     use super::*;
 
     #[test]
     fn default_dir() {
-        println!("{}", default_data_dir());
+        println!("{}", Config::mainnet().unwrap().chain().unwrap().data_dir);
     }
 
     #[test]
     fn minimal_toml_populates_defaults() {
         // The lists fall back to their defaults (else a file config silently
         // advertises zero protocols/topics).
-        let cfg: Config = toml::from_str("").unwrap();
+        let cfg = Config::from_toml("", Overrides::default()).unwrap();
         assert_eq!(cfg.supported_protocols().unwrap().len(), 12);
         assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 7);
@@ -508,9 +469,10 @@ mod tests {
 
     #[test]
     fn partial_columns_modes_are_validated() {
-        let cfg: Config = toml::from_str("partial_columns = \"send_only\"").unwrap();
+        let cfg =
+            Config::from_toml("partial_columns = \"send_only\"", Overrides::default()).unwrap();
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::SendOnly);
-        let cfg: Config = toml::from_str("partial_columns = \"enabled\"").unwrap();
+        let cfg = Config::from_toml("partial_columns = \"enabled\"", Overrides::default()).unwrap();
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Enabled);
     }
 
@@ -520,21 +482,20 @@ mod tests {
     #[test]
     fn a_config_name_contradicting_its_fork_version_still_loads() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("misnamed.toml");
-        std::fs::write(
-            &path,
-            r#"
-            [chain_config.spec]
-            CONFIG_NAME = "mainnet"
-            GENESIS_FORK_VERSION = "0x10000910"
-        "#,
-        )
-        .unwrap();
+        write_file(
+            dir.path(),
+            "config.yaml",
+            "CONFIG_NAME: mainnet\nGENESIS_FORK_VERSION: 0x10000910\n",
+        );
+        std::fs::write(dir.path().join("genesis.ssz"), [0u8; 64]).unwrap();
 
-        let cfg = Config::from_file(&path).unwrap();
+        let devnet = Network::Devnet(dir.path().to_owned());
+        let cfg = Config::load(None, Overrides { network: Some(devnet), ..Overrides::default() })
+            .unwrap();
 
-        assert_eq!(cfg.chain_config.spec.misnamed_network(), Some("hoodi"));
-        assert_eq!(cfg.chain_config.spec.network_name(), "mainnet");
+        let spec = cfg.chain().unwrap().spec;
+        assert_eq!(spec.misnamed_network(), Some("hoodi"));
+        assert_eq!(spec.network_name(), "mainnet");
     }
 
     #[test]
@@ -542,7 +503,7 @@ mod tests {
         let toml_str = r#"
             beacon_api_bind = ["0.0.0.0:5051", "127.0.0.1:5052", "/run/silver/beacon.sock"]
         "#;
-        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_toml(toml_str, Overrides::default()).unwrap();
         assert_eq!(cfg.beacon_api_bind(), [
             "0.0.0.0:5051",
             "127.0.0.1:5052",
@@ -550,44 +511,19 @@ mod tests {
         ]);
     }
 
-    #[test]
-    fn builder_sets_beacon_api_max_connections() {
-        let cfg = Config::mainnet().unwrap();
-        assert_eq!(cfg.beacon_api_max_connections(), 1024);
-        let cfg = cfg.with_beacon_api_max_connections(2);
-        assert_eq!(cfg.beacon_api_max_connections(), 2);
-    }
-
-    #[test]
-    fn builder_sets_beacon_api_idle_timeout() {
-        let cfg = Config::mainnet().unwrap();
-        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
-        let cfg = cfg.with_beacon_api_idle_timeout_secs(5);
-        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(5));
-    }
-
     /// discv5 peers silently drop records over 300 bytes — an oversized ENR
     /// makes the node invisible to discovery, not degraded.
     #[test]
     fn production_enr_fits_discv5_record_cap() {
         let key = Keypair::from_secret(&[1u8; 32]).unwrap();
-        let cfg = Config::mainnet()
-            .unwrap()
-            .with_external_ip_v4(Ipv4Addr::new(203, 0, 113, 7))
-            .with_discovery_port(9000)
-            .with_quic_port(9001);
+        let toml = "external_ip_v4 = \"203.0.113.7\"\ndiscovery_port = 9000\nquic_port = 9001\n";
+        let cfg = Config::from_toml(toml, Overrides::default()).unwrap();
         let mut enr = cfg.enr(&key, [0; 16]).unwrap();
         enr.set_attnets([0xff; 8], key.secret_key()).unwrap();
         enr.set_syncnets(SyncCommitteeSubnets::All.long_lived(), key.secret_key()).unwrap();
         // Unpadded base64: 4 chars per 3 bytes.
         let bytes = enr.size();
         assert!(bytes <= 300, "ENR is {bytes} bytes, discv5 caps records at 300");
-    }
-
-    #[test]
-    fn builder_sets_external_ip() {
-        let cfg = Config::mainnet().unwrap().with_external_ip_v4(Ipv4Addr::new(172, 16, 0, 1));
-        assert_eq!(cfg.external_ip_v4, Some(Ipv4Addr::new(172, 16, 0, 1)));
     }
 
     /// A `[u8; 32]` root and a `u64` genesis time at the head of an anchor
@@ -616,7 +552,7 @@ mod tests {
         let gvr = [7u8; 32];
         let genesis = 1_600_000_000;
         let anchor = write_anchor(dir.path(), genesis, gvr);
-        let spec_file = write_file(
+        write_file(
             dir.path(),
             "config.yaml",
             "CONFIG_NAME: kurtosis\n\
@@ -632,14 +568,15 @@ mod tests {
             dir.path(),
             "silver.toml",
             &format!(
-                "[chain_config]\n\
-                 spec_file = \"{spec_file}\"\n\
-                 checkpoint_file = \"{anchor}\"\n"
+                "network = \"{}\"\n\
+                 [chain_config]\n\
+                 checkpoint_file = \"{anchor}\"\n",
+                dir.path().display()
             ),
         );
 
-        let cfg = Config::from_file(&config_file).unwrap();
-        let chain = cfg.chain_config();
+        let cfg = Config::load(Some(&config_file), Overrides::default()).unwrap();
+        let chain = cfg.chain().unwrap();
         assert_eq!(chain.spec.network_name(), "kurtosis", "the spec came from the YAML");
         assert_eq!(chain.spec.fulu_fork_version, [0x70, 0x00, 0x00, 0x38]);
 
@@ -663,7 +600,7 @@ mod tests {
         // below mainnet's fulu_fork_epoch, which is the default in force here.
         let recent = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 3600;
         let anchor = write_anchor(dir.path(), recent, [7u8; 32]);
-        let spec_file = write_file(
+        write_file(
             dir.path(),
             "config.yaml",
             "FULU_FORK_VERSION: 0x70000038\nELECTRA_FORK_EPOCH: 0\n",
@@ -672,20 +609,22 @@ mod tests {
             dir.path(),
             "silver.toml",
             &format!(
-                "[chain_config]\n\
-                 spec_file = \"{spec_file}\"\n\
-                 checkpoint_file = \"{anchor}\"\n"
+                "network = \"{}\"\n\
+                 [chain_config]\n\
+                 checkpoint_file = \"{anchor}\"\n",
+                dir.path().display()
             ),
         );
 
-        let err = Config::from_file(&config_file).unwrap_err();
+        let cfg = Config::load(Some(&config_file), Overrides::default()).unwrap();
+        let err = cfg.chain().unwrap_err();
         let text = format!("{err}");
         assert!(text.contains("FULU_FORK_EPOCH"), "error should name the key: {text}");
     }
 
     #[test]
     fn mainnet_blob_schedule_fits_the_block_capacity() {
-        let max_blobs = ChainConfig::default().spec.max_scheduled_blobs_per_block();
+        let max_blobs = Network::Mainnet.spec().unwrap().max_scheduled_blobs_per_block();
         assert!(max_blobs <= MAX_BLOBS_PER_BLOCK as u64, "{max_blobs} > {MAX_BLOBS_PER_BLOCK}");
     }
 
@@ -693,18 +632,64 @@ mod tests {
     fn blob_schedule_past_the_block_capacity_is_refused() {
         let dir = TempDir::new().unwrap();
         let too_many = MAX_BLOBS_PER_BLOCK + 1;
-        let spec_file = write_file(
+        write_file(
             dir.path(),
             "config.yaml",
             &format!("BLOB_SCHEDULE:\n  - EPOCH: 0\n    MAX_BLOBS_PER_BLOCK: {too_many}\n"),
         );
-        let config_file = write_file(
-            dir.path(),
-            "silver.toml",
-            &format!("[chain_config]\nspec_file = \"{spec_file}\"\n"),
-        );
+        let mut genesis = vec![0u8; 8];
+        genesis.extend_from_slice(&[0xab; 32]);
+        std::fs::write(dir.path().join("genesis.ssz"), genesis).unwrap();
 
-        let err = Config::from_file(&config_file).unwrap_err();
+        let devnet = Network::Devnet(dir.path().to_owned());
+        let cfg = Config::load(None, Overrides { network: Some(devnet), ..Overrides::default() })
+            .unwrap();
+        let err = cfg.chain().unwrap_err();
         assert!(format!("{err}").contains(&format!("schedules {too_many} blobs")), "{err}");
+    }
+
+    #[test]
+    fn network_names_the_chain() {
+        let named = "network = \"hoodi\"\n";
+        let chain = Config::from_toml(named, Overrides::default()).unwrap().chain().unwrap();
+        assert_eq!(chain.spec.network_name(), "hoodi");
+        assert!(chain.data_dir.ends_with("/hoodi"));
+        assert!(!chain.bootstrap_enrs.is_empty());
+
+        let overridden = "network = \"hoodi\"\n[chain_config]\nbootstrap_enrs = []\n";
+        let chain = Config::from_toml(overridden, Overrides::default()).unwrap().chain().unwrap();
+        assert_eq!(chain.spec.network_name(), "hoodi");
+        assert!(chain.bootstrap_enrs.is_empty());
+        assert!(matches!(&chain.boot, BootSource::Providers(urls) if !urls.is_empty()));
+    }
+
+    /// A devnet gets nothing of mainnet's, not even as a default.
+    #[test]
+    fn devnet_dir_supplies_the_chain() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "config.yaml",
+            "GENESIS_FORK_VERSION: 0x10000038\nSECONDS_PER_SLOT: 6\n",
+        );
+        let enr = Network::Mainnet.bootnodes().unwrap()[0].to_base64();
+        write_file(dir.path(), "bootstrap_nodes.yaml", &format!("- \"{enr}\"\n"));
+        let mut genesis = vec![0u8; 8];
+        genesis.extend_from_slice(&[0xab; 32]);
+        std::fs::write(dir.path().join("genesis.ssz"), genesis).unwrap();
+
+        let cfg = Config::load(None, Overrides {
+            network: Some(Network::Devnet(dir.path().to_owned())),
+            ..Overrides::default()
+        })
+        .unwrap();
+        let chain = cfg.chain().unwrap();
+        assert_eq!(chain.spec.seconds_per_slot(), 6);
+        assert_eq!(chain.bootstrap_enrs.len(), 1);
+        assert_eq!(chain.boot, BootSource::File {
+            ssz: dir.path().join("genesis.ssz"),
+            pubkeys: None
+        });
+        assert!(chain.data_dir.ends_with("/devnet-abababab"), "named after the genesis root");
     }
 }

@@ -97,15 +97,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     enable_profiler(APP_NAME);
 
     let config = args.config()?;
+    let chain_config = config.chain()?;
 
-    let boot_checkpoint = BootCheckpoint::load(&config)
+    let boot_checkpoint = BootCheckpoint::load(&chain_config)
         .inspect_err(|e| silver_log::error!(%e, "no boot checkpoint"))?;
     let booting_from_local_checkpoint = !boot_checkpoint.is_empty();
     silver_log::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
     let genesis = Genesis::from_state(boot_checkpoint.ssz())?;
 
-    let chain_config = config.chain_config();
     let wall_epoch = chain_config.wall_epoch(&genesis);
     let fork_digest = chain_config.checked_fork_digest(wall_epoch, &genesis)?;
     silver_log::info!("loaded config with fork digest: {}", hex::encode(fork_digest));
@@ -143,7 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCache::producer(TCacheId::ProposedColumns, PROPOSED_COLUMNS_TCACHE_SIZE);
 
     // Tiles.
-    let keypair = Keypair::load_or_create(Path::new(config.data_storage_dir()))?;
+    let keypair = Keypair::load_or_create(Path::new(&chain_config.data_dir))?;
     let enr_fork_id = chain_config.spec.enr_fork_id(wall_epoch, fork_digest);
     let mut local_enr = config.enr(&keypair, enr_fork_id)?;
 
@@ -181,9 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Cluster configuration
     let cluster_startup = config
         .cluster_config()
-        .map(|cluster| {
-            ClusterStartup::new(cluster, &local_enr, Path::new(config.data_storage_dir()))
-        })
+        .map(|cluster| ClusterStartup::new(cluster, &local_enr, Path::new(&chain_config.data_dir)))
         .transpose()?;
     let cluster_nodes = config.cluster_config().map(|cluster| cluster.nodes.clone());
 
@@ -221,9 +219,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let now = Instant::now();
 
-    let bootnodes = &config.chain_config().bootstrap_enrs;
-
-    for enr in bootnodes {
+    for enr in &chain_config.bootstrap_enrs {
         discv5.add_enr(enr, now);
     }
 
@@ -337,7 +333,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         state_reader,
         das_custody_groups,
         spec.clone(),
-        config.data_storage_dir().into(),
+        chain_config.data_dir.clone(),
         booting_from_local_checkpoint,
     );
 
