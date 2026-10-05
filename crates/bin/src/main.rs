@@ -367,7 +367,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         boundary_processing_producer,
     );
 
-    let dc_api_tile = CompositeTile::new(data_columns_tile, application_boundary_tile);
+    let storage_api_tile = CompositeTile::new(storage_tile, application_boundary_tile);
 
     // Spine
     let spine = SilverSpine::new(None);
@@ -375,7 +375,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Attach application_boundary_tiles first so its `on_attach` can subscribe to
         // peer events before their producers start.
         attach_tile(
-            dc_api_tile,
+            storage_api_tile,
             scoped_spine,
             TileConfig::new(5, Some(ThreadNiceness::Highest)),
         );
@@ -387,12 +387,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             scoped_spine,
             TileConfig::new(3, Some(ThreadNiceness::Highest)),
         );
-        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
-        // attach_tile(
-        //     data_columns_tile,
-        //     scoped_spine,
-        //     TileConfig::new(6, Some(ThreadNiceness::Highest)),
-        // );
+        //attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
+        attach_tile(
+            data_columns_tile,
+            scoped_spine,
+            TileConfig::new(6, Some(ThreadNiceness::Highest)),
+        );
     });
 
     Ok(())
