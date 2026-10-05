@@ -123,7 +123,9 @@ impl<Q: QueueItem> QueueDelta<Q> {
         // fork's own appends, which must survive.
         let drop_n = winner.appended.len() - consumed;
         self.appended.drain_front(drop_n);
-        self.drain_offset = (d.min(old_base_len) - w.min(old_base_len) + consumed) as u32;
+        // Uncapped: drains past the inherited prefix went into an unpromoted
+        // ancestor's appends, which a later rebase against it must still see.
+        self.drain_offset = (d - w) as u32;
     }
 
     /// Fold into the base queue: drain the promoted prefix, append the new

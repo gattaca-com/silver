@@ -325,10 +325,13 @@ impl BeaconStateTile {
                 self.mark_envelope_verified(block_root, data);
                 self.recompute_head();
             }
-            EnvelopeCheck::AwaitBlock(block_root) => silver_log::error!(
-                block = hex32(&block_root),
-                "replayed envelope precedes its block; replay is misordered"
-            ),
+            EnvelopeCheck::AwaitBlock(block_root) => {
+                silver_log::info!(
+                    block = hex32(&block_root),
+                    "replayed envelope parked until its block imports"
+                );
+                self.buffer_pending_envelope(block_root, acquired);
+            }
             EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 silver_log::warn!("replayed on-disk envelope rejected")
             }

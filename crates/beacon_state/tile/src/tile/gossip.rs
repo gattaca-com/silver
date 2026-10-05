@@ -232,7 +232,7 @@ impl BeaconStateTile {
         if attester_index >= view.validators.count() {
             return Err(Feedback::reject("attester index out of range"));
         }
-        let fork_version = view.epoch.fork_version_at(target_epoch);
+        let fork_version = self.spec.fork_version_at(target_epoch);
         let domain = bls::domain_from_fork_data(
             bls::DOMAIN_BEACON_ATTESTER,
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
@@ -450,7 +450,7 @@ impl BeaconStateTile {
         }
 
         let block_root = *SyncCommitteeView::beacon_block_root(buf);
-        let fork_version = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let fork_version = self.spec.fork_version_at(slot / SLOTS_PER_EPOCH);
         let domain = bls::domain_from_fork_data(
             bls::DOMAIN_SYNC_COMMITTEE,
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
@@ -538,7 +538,7 @@ impl BeaconStateTile {
             return Feedback::reject("contribution aggregator not in subcommittee");
         }
 
-        let fv = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let fv = self.spec.fork_version_at(slot / SLOTS_PER_EPOCH);
         let fork_data_root = self.fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
@@ -995,6 +995,7 @@ impl BeaconStateTile {
 
         let Some(signature) = Self::verify_aggregate_and_proof_sigs(
             &view,
+            self.spec.fork_version_at(parsed.agg_data.target_epoch()),
             &parsed,
             &committees,
             data_root,
@@ -1136,7 +1137,7 @@ impl BeaconStateTile {
         Feedback::Accept
     }
 
-    fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
+    pub(super) fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
         let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
             self.pending_envelopes.contains_key(&block_root);
         if !has_room {
@@ -1259,14 +1260,14 @@ impl BeaconStateTile {
 
     fn verify_aggregate_and_proof_sigs(
         view: &StateReadView,
+        fork_version: [u8; 4],
         parsed: &ParsedAggregateAndProof<'_>,
         committees: &stf::AttestedCommittees<'_>,
         data_root: B256,
         fork_data_roots: &mut ForkDataRoots,
         sig_batch: &mut bls::SigBatch,
     ) -> Option<Signature> {
-        let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
-        let fork_data_root = fork_data_roots.root(fv, &view.imm.genesis_validators_root);
+        let fork_data_root = fork_data_roots.root(fork_version, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
@@ -1279,7 +1280,7 @@ impl BeaconStateTile {
             parsed.aggregate_bytes,
             data_root,
             parsed.selection_proof,
-            fv == view.imm.gloas_fork_version,
+            fork_version == view.imm.gloas_fork_version,
         );
         let sr_aap =
             bls::compute_signing_root(&agg_proof_root, &domain(bls::DOMAIN_AGGREGATE_AND_PROOF));

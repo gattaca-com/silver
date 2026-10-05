@@ -2,9 +2,9 @@ use std::{ops::Deref, time::Instant};
 
 use flux_profiler::timed;
 use silver_common::{
-    DataKind, Origin, P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOutbound,
-    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    RpcResponseOutbound, RpcSeverity, Scope, StreamProtocol, SyncRequest,
+    DataKind, Origin, P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOffence,
+    RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, Scope, StreamProtocol, SyncRequest,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RpcRateLimit},
     ssz_view::{MetadataView, StatusView},
 };
@@ -463,7 +463,11 @@ impl PeerManager {
                             self.owed_the_request(stream_id.peer(), application_id),
                         ) {
                             self.handle_event(
-                                PeerEvent::RpcMisbehaviour { p2p_peer: stream_id.peer(), severity },
+                                PeerEvent::RpcMisbehaviour {
+                                    p2p_peer: stream_id.peer(),
+                                    severity,
+                                    offence: RpcOffence::ErrorResponse,
+                                },
                                 now,
                                 emit,
                             );

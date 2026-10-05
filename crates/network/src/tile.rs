@@ -14,8 +14,8 @@ use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
     BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut,
-    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOutbound, SLOTS_PER_EPOCH,
-    SilverSpine, TCacheError,
+    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOffence, RpcOutbound,
+    SLOTS_PER_EPOCH, SilverSpine, TCacheError,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -183,7 +183,11 @@ impl NetworkTile {
                         adapter.produce(rpc_inbound);
                     }
                     NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
-                        adapter.produce(PeerEvent::RpcMisbehaviour { p2p_peer, severity });
+                        adapter.produce(PeerEvent::RpcMisbehaviour {
+                            p2p_peer,
+                            severity,
+                            offence: RpcOffence::ChunkFraming,
+                        });
                     }
                     NetEvent::Gossip { stream, msg } => {
                         //let ts = adapter.producers.timestamp().

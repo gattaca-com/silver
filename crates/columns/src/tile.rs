@@ -14,9 +14,9 @@ use silver_common::TCacheRead;
 use silver_common::{
     BeaconStateEvent, BlockStage, ColumnOrigin, DataColumnsEvent, DataKind, EngineResp, ForkName,
     GossipTopic, IngestionTime, LockedProposal, NewGossipMsg, Origin, P2pStreamId, PeerEvent,
-    RequestId, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache, SyncNeed,
-    SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TRead,
-    TReadMode, TileId, Wheel, block_root,
+    RequestId, RpcInbound, RpcOffence, RpcSeverity, SilverSpine, SilverSpineProducers, SszCache,
+    SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    TProducer, TRead, TReadMode, TileId, Wheel, block_root,
     cell_store::{
         CellStoreConfig, CellStoreEvent, CellValidationOutcome, CommitmentContext, ContextData,
         RetentionEvent, StoreError,
@@ -595,6 +595,7 @@ impl DataColumnsTile {
             producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: stream_id.peer(),
                 severity: RpcSeverity::Fatal,
+                offence: RpcOffence::InvalidColumn,
             });
             if let Some(column) = column {
                 producers.produce(SyncNeed::missing_column(block_root, slot, column));
@@ -711,6 +712,7 @@ impl DataColumnsTile {
         producers.produce(PeerEvent::RpcMisbehaviour {
             p2p_peer: p.stream_id.peer(),
             severity: RpcSeverity::Fatal,
+            offence: RpcOffence::KzgProof,
         });
         producers.produce(SyncNeed::missing_column(p.block_root, p.slot, p.column_index));
     }
