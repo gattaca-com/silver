@@ -70,10 +70,13 @@ mod sync_contribution_pool;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
     Accept,
-    /// Carries the failed `block_root` (only) when the reject came from a
+    /// `block_root` is set (only) when the reject came from a
     /// post-`body_root`/STF path in block validation, so PM can blacklist
     /// the chain.
-    Reject(Option<B256>),
+    Reject {
+        block_root: Option<B256>,
+        reason: &'static str,
+    },
     /// The block was added to fork choice and its status is published.
     BlockImported(B256),
     BlockKnown(B256),
@@ -107,8 +110,10 @@ impl Debug for Feedback {
             Self::AlreadySeen => f.write_str("AlreadySeen"),
             Self::TooOld => f.write_str("TooOld"),
             Self::Future => f.write_str("Future"),
-            Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
-            Self::Reject(None) => f.write_str("Reject(None)"),
+            Self::Reject { block_root: Some(r), reason } => {
+                write!(f, "Reject(0x{}, {reason})", hex32(r))
+            }
+            Self::Reject { block_root: None, reason } => write!(f, "Reject({reason})"),
             Self::RequestParent { parent_root, block_root } => write!(
                 f,
                 "RequestParent(parent=0x{}, block=0x{})",
@@ -127,6 +132,16 @@ impl Debug for Feedback {
             }
             Self::BlockKnown(r) => write!(f, "BlockKnown(0x{})", hex32(r)),
         }
+    }
+}
+
+impl Feedback {
+    pub(crate) const fn reject(reason: &'static str) -> Self {
+        Self::Reject { block_root: None, reason }
+    }
+
+    pub(crate) const fn reject_block(block_root: B256, reason: &'static str) -> Self {
+        Self::Reject { block_root: Some(block_root), reason }
     }
 }
 
@@ -1169,7 +1184,7 @@ impl BeaconStateTile {
             gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => {
                 Feedback::Ignore
             }
-            gossip::EnvelopeCheck::Reject => Feedback::Reject(None),
+            gossip::EnvelopeCheck::Reject => Feedback::reject("envelope invalid"),
         }
     }
 }

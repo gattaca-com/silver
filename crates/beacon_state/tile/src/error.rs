@@ -93,9 +93,9 @@ pub enum PrecheckError {
 impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
-            Self::SizeMismatch { .. } |
-            Self::NonCanonicalBody { .. } |
-            Self::BodyOverLimits { .. } => Feedback::Reject(None),
+            Self::SizeMismatch { .. } => Feedback::reject("block size mismatch"),
+            Self::NonCanonicalBody { .. } => Feedback::reject("block body not canonical"),
+            Self::BodyOverLimits { .. } => Feedback::reject("block body over limits"),
             Self::ParentMissing { parent_root, block_root, .. } => {
                 Feedback::RequestParent { parent_root, block_root }
             }
@@ -104,20 +104,38 @@ impl PrecheckError {
             Self::AwaitingData { .. } |
             Self::Rejected { reason: RejectReason::InvalidPayload, .. } |
             Self::ParentRejected { reason: RejectReason::InvalidPayload, .. } => Feedback::Ignore,
-            Self::PastSlot { .. } => Feedback::Reject(None),
+            Self::PastSlot { .. } => Feedback::reject("block slot not after parent"),
             Self::BlockKnown { block_root } => Feedback::BlockKnown(block_root),
             Self::UnverifiedParentPayload { parent_root, block_root } => {
                 Feedback::AwaitParentPayload { parent_root, block_root }
             }
-            Self::Rejected { block_root, reason: RejectReason::FailedTransition } |
-            Self::ParentRejected { block_root, reason: RejectReason::FailedTransition, .. } |
-            Self::BidParentRootMismatch { block_root } |
-            Self::BidNotOnExecutionHead { block_root } |
-            Self::ProposerLookaheadMismatch { block_root, .. } |
-            Self::ProposerIndexTooBig { block_root, .. } |
-            Self::PayloadTimestamp { block_root, .. } |
-            Self::TooManyCommitments { block_root, .. } => Feedback::Reject(Some(block_root)),
-            Self::InvalidSignature { block_root } => Feedback::Reject(Some(block_root)),
+            Self::Rejected { block_root, reason: RejectReason::FailedTransition } => {
+                Feedback::reject_block(block_root, "block already rejected")
+            }
+            Self::ParentRejected { block_root, reason: RejectReason::FailedTransition, .. } => {
+                Feedback::reject_block(block_root, "block parent rejected")
+            }
+            Self::BidParentRootMismatch { block_root } => {
+                Feedback::reject_block(block_root, "bid parent root mismatch")
+            }
+            Self::BidNotOnExecutionHead { block_root } => {
+                Feedback::reject_block(block_root, "bid not on execution head")
+            }
+            Self::ProposerLookaheadMismatch { block_root, .. } => {
+                Feedback::reject_block(block_root, "proposer lookahead mismatch")
+            }
+            Self::ProposerIndexTooBig { block_root, .. } => {
+                Feedback::reject_block(block_root, "proposer index too big")
+            }
+            Self::PayloadTimestamp { block_root, .. } => {
+                Feedback::reject_block(block_root, "payload timestamp mismatch")
+            }
+            Self::TooManyCommitments { block_root, .. } => {
+                Feedback::reject_block(block_root, "too many blob commitments")
+            }
+            Self::InvalidSignature { block_root } => {
+                Feedback::reject_block(block_root, "invalid block signature")
+            }
         }
     }
 }

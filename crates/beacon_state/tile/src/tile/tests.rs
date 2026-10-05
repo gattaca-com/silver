@@ -1252,7 +1252,10 @@ fn short_gossip_block_rejected_before_any_field_read() {
             &mut adapter.producers,
             |_| panic!("a malformed block must never be relayed"),
         );
-        assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
+        assert!(
+            matches!(feedback, Feedback::Reject { block_root: None, .. }),
+            "len {len}: {feedback:?}"
+        );
     }
 
     // Control: a well-formed block gets through the gate, so the assertions
@@ -1610,7 +1613,7 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
         // only the precheck rejections are observable through the feedback.
         if !want_accepted {
             assert!(
-                matches!(feedback, Feedback::Reject(_)),
+                matches!(feedback, Feedback::Reject { .. }),
                 "stamp={stamp} commitments={commitments}: {feedback:?}"
             );
         }
@@ -1687,7 +1690,11 @@ fn non_canonical_body_is_rejected_before_relay() {
             |_| relayed = true,
         );
 
-        assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
+        assert_eq!(
+            matches!(feedback, Feedback::Reject { block_root: None, .. }),
+            want_reject,
+            "{feedback:?}"
+        );
         assert_eq!(relayed, !want_reject, "relay must follow the canonical check");
     }
 }
@@ -2127,7 +2134,7 @@ fn ve_unknown_validator_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
     buf[8..16].copy_from_slice(&999u64.to_le_bytes());
-    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_voluntary_exit(&buf), Feedback::Reject { block_root: None, .. }));
 }
 
 #[test]
@@ -2145,7 +2152,10 @@ fn ps_identical_headers_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let buf = [0u8; PROPOSER_SLASHING_SIZE];
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2156,7 +2166,10 @@ fn ps_unknown_proposer_rejected() {
     buf[8..16].copy_from_slice(&999u64.to_le_bytes());
     buf[216..224].copy_from_slice(&999u64.to_le_bytes());
     buf[208 + 80] = 0xFF; // distinct body_root in h2
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2174,7 +2187,10 @@ fn ps_mismatched_slot_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
     buf[208] = 1; // h2.slot differs
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2183,7 +2199,10 @@ fn ps_mismatched_proposer_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
     buf[208 + 8] = 1; // h2.proposer_index differs
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// IndexedAttestation with `attesting_indices = indices`, zero sig — for
@@ -2314,7 +2333,10 @@ fn ps_rejected_is_not_pooled() {
     let valid = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
     let mut buf = test_signing::sign_proposer_slashing(1, 0, 0, &imm);
     buf[208..320].copy_from_slice(&valid[208..320]);
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
     assert!(pooled(&tile).0.is_empty());
 }
 
@@ -2419,7 +2441,10 @@ fn bls_change_unknown_validator_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; SIGNED_BLS_CHANGE_SIZE];
     buf[0..8].copy_from_slice(&999u64.to_le_bytes());
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2443,7 +2468,10 @@ fn bls_change_wrong_prefix_rejected() {
     let epoch_base = epoch_base_with(cp, cp);
     arm_tile(&mut tile, epoch_base, &seeds, 0);
     let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi = 0
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2879,6 +2907,28 @@ fn ignored_local_aggregate_emits_a_terminal_verdict() {
     ]);
 }
 
+#[test]
+fn gossip_reject_carries_its_reason_and_penalizes_the_peer() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&[0u8; 10]),
+        Feedback::reject("aggregate malformed")
+    );
+
+    let message = gossip_msg(&mut gp, &[0u8; 10], GossipTopic::BeaconAggregateAndProof);
+    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    let mut invalid = 0;
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::P2pGossipInvalidMsg { .. } = event {
+            invalid += 1;
+        }
+    });
+    assert_eq!(invalid, 1);
+}
+
 /// A non-attestation gossip message flushes the pending batch first, so
 /// queue order is preserved.
 #[test]
@@ -2973,7 +3023,10 @@ fn sync_message_uses_next_committee_at_period_handoff() {
         handoff.head_block_root(),
         &imm,
     );
-    assert!(matches!(handoff.prepare_sync_message(&msg, 0), Err(Feedback::Reject(None))));
+    assert!(matches!(
+        handoff.prepare_sync_message(&msg, 0),
+        Err(Feedback::Reject { block_root: None, .. })
+    ));
 }
 
 #[test]
@@ -3122,7 +3175,10 @@ fn sync_contribution_non_aggregator_rejected() {
     let bbr = tile.head_block_root();
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3135,7 +3191,10 @@ fn sync_contribution_forged_outer_signature_rejected() {
 
     let mut buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
     buf[300] ^= 0x01;
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3153,7 +3212,7 @@ fn ptc_rejects_non_canonical_bool_bytes() {
         &seed_immutable(&tile),
     );
 
-    assert!(matches!(tile.prepare_ptc(&msg), Err(Feedback::Reject(None))));
+    assert!(matches!(tile.prepare_ptc(&msg), Err(Feedback::Reject { block_root: None, .. })));
 }
 
 #[test]
@@ -3257,7 +3316,10 @@ fn single_att_mismatched_target_rejected() {
         wrong_target,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&buf, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// Fulu: a single attestation with a non-zero `AttestationData.index` is
@@ -3283,7 +3345,10 @@ fn single_att_nonzero_data_index_rejected() {
     );
     // AttestationData.index @ buf[24..32]; non-zero is illegal post-Electra.
     buf[24] = 1;
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&buf, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// Spec `validate_on_attestation`: a current-slot vote is held until the
@@ -3339,7 +3404,10 @@ fn single_att_wrong_subnet_rejected() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
     // The reject must not have marked the attester seen.
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
 }
@@ -3402,7 +3470,10 @@ fn single_att_failed_validation_does_not_mark_seen() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&bad, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 
     let honest = test_signing::sign_single_attestation(
         0,
@@ -3562,7 +3633,10 @@ fn agg_multi_committee_bits_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = empty_aggregate();
     buf[436] = 0b0000_0011; // two committee bits
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3636,7 +3710,10 @@ fn single_att_accept_with_nonzero_genesis_validators_root() {
         bbr,
         &Immutable::default(),
     );
-    assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&bad, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 
     let mut imm = Immutable::default();
     imm.genesis_validators_root = GVR;
@@ -3758,7 +3835,10 @@ fn agg_committee_index_oor_rejected() {
         buf[436 + i] = 0;
     }
     buf[436] = 0b0000_0010; // committee_index 1, OOR for committees_per_slot=1
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3781,7 +3861,10 @@ fn agg_is_aggregator_false_rejected() {
         assert!(b < 256, "no parity-flipping byte found (impossible)");
     }
     buf[sp_off..sp_off + 96].copy_from_slice(&sig_arr);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// Spec [IGNORE]: at most one aggregate per (aggregator, target epoch) —
@@ -3804,7 +3887,10 @@ fn agg_failed_validation_does_not_mark_aggregator() {
     let buf = build_agg_for_vi0(&tile);
     let mut forged = buf.clone();
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
-    assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
 }
 
@@ -4388,7 +4474,10 @@ fn child_of_transition_failed_block_is_rejected() {
         reason: RejectReason::FailedTransition,
         ..
     }));
-    assert_eq!(err.feedback(), Feedback::Reject(Some(block_root_fulu(&child))));
+    assert!(matches!(
+        err.feedback(),
+        Feedback::Reject { block_root: Some(r), .. } if r == block_root_fulu(&child)
+    ));
 }
 
 /// Below a finalized target nothing waits for its columns, and range sync

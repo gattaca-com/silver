@@ -197,7 +197,7 @@ impl BeaconStateTile {
             Feedback::AwaitData(_) => {
                 self.emit_block_received(data, block_root, BlockStage::AwaitData, source, producers)
             }
-            Feedback::Reject(_) => {
+            Feedback::Reject { .. } => {
                 producers.produce(BeaconStateEvent::BlockRejected { block_root, source })
             }
             _ => {}
@@ -290,9 +290,10 @@ impl BeaconStateTile {
         let feedback = self.try_apply_block(data);
 
         match feedback {
-            Feedback::Reject(block_root) => silver_log::error!(
+            Feedback::Reject { block_root, reason } => silver_log::error!(
                 block_slot,
                 block_root = ?block_root.map(|r| hex32(&r)),
+                reason,
                 "replayed block rejected",
             ),
             _ => silver_log::info!(
@@ -403,7 +404,7 @@ impl BeaconStateTile {
                     "block rejected"
                 );
                 self.held.reject(parsed.block_root, parsed.header.slot);
-                Err(Feedback::Reject(Some(parsed.block_root)))
+                Err(Feedback::reject_block(parsed.block_root, "block failed transition"))
             }
         }
     }

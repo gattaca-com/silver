@@ -55,9 +55,10 @@ pub(super) fn handle_incoming(
     silver_log::trace!(?stream_id, ?topic, "Gossip message received");
 
     // Decompress: block snappy.
-    let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
+    let len = read_message_length(snappy_data, &topic).inspect_err(|e| {
         let hash = msg_id_invalid_snappy(topic_string, snappy_data);
         if dedup_cache.insert(fast_id, hash) {
+            silver_log::warn!(?stream_id, ?topic, ?e, "gossip rejected: bad snappy length");
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
                 p2p_peer: stream_id.peer(),
                 topic,
@@ -118,6 +119,12 @@ pub(super) fn handle_incoming(
                 _ => {
                     let hash = msg_id_invalid_snappy(topic_string, snappy_data);
                     if dedup_cache.insert(fast_id, hash) {
+                        silver_log::warn!(
+                            ?stream_id,
+                            ?topic,
+                            ?e,
+                            "gossip rejected: bad snappy frame"
+                        );
                         emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
                             p2p_peer: stream_id.peer(),
                             topic,
