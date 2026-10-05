@@ -23,6 +23,12 @@ pub struct BootCheckpoint {
 
 impl BootCheckpoint {
     pub fn load(chain_config: &ChainConfig) -> io::Result<Self> {
+        let checkpoint = Self::load_unchecked(chain_config)?;
+        checkpoint.check_chain(chain_config)?;
+        Ok(checkpoint)
+    }
+
+    fn load_unchecked(chain_config: &ChainConfig) -> io::Result<Self> {
         let data_dir = &chain_config.data_dir;
         match &chain_config.boot {
             BootSource::File { ssz, pubkeys } => Self::from_file(ssz, pubkeys.as_deref()),
@@ -36,6 +42,21 @@ impl BootCheckpoint {
                 }
             }
         }
+    }
+
+    fn check_chain(&self, chain_config: &ChainConfig) -> io::Result<()> {
+        let expected = chain_config.genesis_validators_root;
+        let genesis = Genesis::from_state(&self.ssz).map_err(io::Error::other)?;
+        if genesis.validators_root != expected {
+            return Err(io::Error::other(format!(
+                "boot state has genesis_validators_root 0x{}, but {}'s is 0x{}: it is from \
+                 another chain",
+                hex::encode(genesis.validators_root),
+                chain_config.spec.network_name(),
+                hex::encode(expected)
+            )));
+        }
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -122,5 +143,45 @@ impl BootCheckpoint {
         );
         let pubkeys = pubkeys_path.map(std::fs::read).transpose()?.unwrap_or_default();
         Ok(Self { ssz: std::fs::read(ssz_path)?, pubkeys, expected_root: None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use silver_config::{Config, Network, Overrides};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn mainnet_boot_from(dir: &Path, validators_root: [u8; 32]) -> io::Result<BootCheckpoint> {
+        let ssz = dir.join("state.ssz");
+        let mut head = 1_606_824_023u64.to_le_bytes().to_vec();
+        head.extend_from_slice(&validators_root);
+        std::fs::write(&ssz, head).unwrap();
+        let toml = dir.join("silver.toml");
+        let data_dir = dir.join("data");
+        std::fs::write(
+            &toml,
+            format!(
+                "data_storage_dir = \"{}\"\n[chain_config]\ncheckpoint_file = \"{}\"\n",
+                data_dir.display(),
+                ssz.display()
+            ),
+        )
+        .unwrap();
+        let chain_config =
+            Config::load(toml.to_str(), Overrides::default()).unwrap().chain().unwrap();
+        BootCheckpoint::load(&chain_config)
+    }
+
+    #[test]
+    fn boot_state_from_another_chain_refused() {
+        let dir = TempDir::new().unwrap();
+        let mainnet = Network::Mainnet.genesis_validators_root().unwrap();
+        assert!(mainnet_boot_from(dir.path(), mainnet).is_ok());
+
+        let hoodi = Network::Hoodi.genesis_validators_root().unwrap();
+        let err = mainnet_boot_from(dir.path(), hoodi).err().unwrap();
+        assert!(err.to_string().contains("another chain"), "{err}");
     }
 }

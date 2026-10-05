@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let genesis = Genesis::from_state(boot_checkpoint.ssz())?;
 
     let wall_epoch = chain_config.wall_epoch(&genesis);
-    let fork_digest = chain_config.checked_fork_digest(wall_epoch, &genesis)?;
+    let fork_digest = chain_config.fork_digest(&genesis)?;
     silver_log::info!("loaded config with fork digest: {}", hex::encode(fork_digest));
 
     publish_build_info()?;
