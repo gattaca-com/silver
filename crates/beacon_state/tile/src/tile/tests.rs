@@ -2948,6 +2948,37 @@ fn attestation_batch_flushed_before_other_gossip() {
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
+/// Validators sign for a fork from its first slot, while the canonical head
+/// can still be a pre-fork state; the domain must follow the fork schedule.
+#[test]
+fn sync_message_at_fork_boundary_verifies_against_the_scheduled_fork() {
+    let spec = SpecConfig { gloas_fork_epoch: 1, ..SpecConfig::mainnet() };
+    let fork_slot = SLOTS_PER_EPOCH;
+    let fork_version = spec.fork_version_at(1);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) =
+        tile_with_producers_on(fork_slot, BeaconState::empty_test(0), spec);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    adapter.consume(|_: PeerEvent, _| {});
+    let bbr = tile.head_block_root();
+    assert_ne!(
+        tile.state.read_view(tile.canonical_state_id()).epoch.fork_version_at(1),
+        fork_version,
+        "the head state has not upgraded yet"
+    );
+
+    let mut msg = test_signing::sign_sync_committee_message(0, 0, fork_slot, bbr, &imm);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fork_version, &imm.genesis_validators_root);
+    msg[48..144].copy_from_slice(&test_signing::sign(0, &bls::compute_signing_root(&bbr, &domain)));
+    let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(1));
+    tile.defer_vote(m, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    assert!(tile.seen_sync_msgs[1].contains(fork_slot, 0), "accepted under the new fork");
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
+}
+
 #[test]
 fn sync_message_batch_applies_and_marks_seen() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);

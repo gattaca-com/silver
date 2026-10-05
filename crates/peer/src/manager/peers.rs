@@ -758,10 +758,9 @@ impl PeerManager {
             silver_log::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
         } else {
             crate::PeerCounters::MeshGraftRefusedByUs.inc();
-            // Violation is judged against the advertised deadline, not
-            // `is_backed_off`'s slack: a peer that waits exactly as long as
-            // we asked must not be penalised for our own grace window.
-            if self.backoff_deadline(conn, topic).is_some_and(|deadline| now < deadline) {
+            // Violation is judged against the deadline we advertised, not
+            // `is_backed_off`'s slack or our own wait after the peer pruned us.
+            if self.advertised_backoff(conn, topic).is_some_and(|deadline| now < deadline) {
                 crate::PeerCounters::MeshGraftBackoffViolation.inc();
                 self.add_behaviour_penalty(conn, 1.0, "graft during prune backoff");
             }
@@ -871,6 +870,10 @@ impl PeerManager {
         self.peers.get(&conn).and_then(|p| p.backoffs.get(&topic)).copied()
     }
 
+    fn advertised_backoff(&self, conn: usize, topic: GossipTopic) -> Option<Instant> {
+        self.peers.get(&conn).and_then(|p| p.advertised_backoffs.get(&topic)).copied()
+    }
+
     pub(crate) fn is_backed_off(&self, conn: usize, topic: GossipTopic, now: Instant) -> bool {
         let Some(deadline) = self.backoff_deadline(conn, topic) else {
             return false;
@@ -957,6 +960,15 @@ impl PeerManager {
         let backoff_seconds = self
             .backoff_deadline(conn, topic)
             .map(|deadline| deadline.saturating_duration_since(now).as_secs_f64().ceil() as u64);
+        if let Some(secs) = backoff_seconds &&
+            let Some(peer) = self.peers.get_mut(&conn)
+        {
+            let advertised = now + Duration::from_secs(secs);
+            peer.advertised_backoffs
+                .entry(topic)
+                .and_modify(|current| *current = (*current).max(advertised))
+                .or_insert(advertised);
+        }
         if was_in_mesh {
             crate::PeerCounters::MeshPrunedByUs.inc();
         }
@@ -1815,6 +1827,36 @@ mod tests {
         );
         assert_eq!(mgr.peers[&2].behaviour_penalty, 0.0, "honoured backoff must not earn P7");
         assert!(!mgr.test_mesh(topic).contains(&2), "slack window still refuses the graft");
+    }
+
+    #[test]
+    /// After the remote prunes us, our own wait may be escalated past theirs;
+    /// its GRAFT once its own backoff ends is legal and must not earn P7.
+    fn regraft_after_their_prune_is_not_a_violation() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconBlock;
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.do_graft(1, peer_id(1), topic, [0; 4], now, false, &mut |event| cap.0.push(event));
+        let pruned_at = now + Duration::from_secs(1);
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(60),
+            },
+            pruned_at,
+            &mut |event| cap.0.push(event),
+        );
+        assert_eq!(mgr.peers[&1].backoffs[&topic], pruned_at + Duration::from_secs(120));
+
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicGraft { p2p_peer: 1, topic, digest: [0; 4] },
+            pruned_at + Duration::from_secs(61),
+            &mut |event| cap.0.push(event),
+        );
+        assert_eq!(mgr.peers[&1].behaviour_penalty, 0.0);
     }
 
     #[test]

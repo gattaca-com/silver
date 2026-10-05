@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Instant};
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    DataKind, PREFILL_SLOTS, PeerEvent, Prefill, RpcSeverity, SyncNeed, TRead, merkle::B256,
-    ssz_view::MAX_PAYLOAD_SIZE,
+    DataKind, PREFILL_SLOTS, PeerEvent, Prefill, RpcOffence, RpcSeverity, SyncNeed, TRead,
+    merkle::B256, ssz_view::MAX_PAYLOAD_SIZE,
 };
 
 use super::{
@@ -329,6 +329,7 @@ impl History {
             emit(IoEvent::PeerEvent(PeerEvent::RpcMisbehaviour {
                 p2p_peer: bad.peer,
                 severity: RpcSeverity::Fatal,
+                offence: RpcOffence::InvalidBackfillColumn,
             }));
         }
         verified
