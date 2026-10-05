@@ -28,7 +28,7 @@ use super::{
     seen_aggregates::Coverage, seen_proposer_preferences::ProposerPreferences,
 };
 use crate::{
-    bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
+    bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
     error::ExecutionPayloadBidError as BidError,
     fork_choice::{
@@ -980,15 +980,31 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        if !Self::verify_aggregate_and_proof_sigs(
+        let Some(signature) = Self::verify_aggregate_and_proof_sigs(
             &view,
             &parsed,
             &committees,
             data_root,
             &mut self.fork_data_roots,
             &mut self.sig_batch,
-        ) {
+        ) else {
             return Feedback::Reject(None);
+        };
+        let outcome = self.attestation_pool.insert_verified_aggregate(
+            parsed.agg_data,
+            committee_index as u64,
+            data_root,
+            committee_len,
+            parsed.aggregation_bits,
+            &signature,
+        );
+        if outcome == InsertOutcome::Full {
+            BeaconStateCounters::AttestationPoolFull.inc();
+            silver_log::debug!(
+                slot = parsed.agg_slot,
+                committee = committee_index,
+                "attestation pool full"
+            );
         }
 
         // A union-covered aggregate's votes are all already folded; it still
@@ -1235,7 +1251,7 @@ impl BeaconStateTile {
         data_root: B256,
         fork_data_roots: &mut ForkDataRoots,
         sig_batch: &mut bls::SigBatch,
-    ) -> bool {
+    ) -> Option<Signature> {
         let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
         let fork_data_root = fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
@@ -1263,7 +1279,10 @@ impl BeaconStateTile {
         sig_batch.push_one(aggregator_pk, parsed.selection_proof, sr_sp);
         sig_batch.push_one(aggregator_pk, parsed.outer_sig, sr_aap);
         committees.push_aggregate_sig(&view.validators, parsed.agg_sig, sr_att, sig_batch);
-        sig_batch.verify_all()
+        if !sig_batch.verify_all() {
+            return None;
+        }
+        sig_batch.last_signature().copied()
     }
 
     #[timed]

@@ -1,16 +1,18 @@
-use std::io::Write;
+use std::{io::Write, mem};
 
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyOffsets, ExecutionAddress, SLOTS_PER_EPOCH, Slot, StateId,
+    B256, BeaconBlockHeader, BodyOffsets, Checkpoint, Epoch, ExecutionAddress, SLOTS_PER_EPOCH,
+    Slot, StateId, StateReadView,
 };
 use silver_common::{
     BeaconApiResponse, EngineGetPayloadReq, EngineGetPayloadResp, EnginePreparePayloadReq,
     EnginePreparePayloadResp, EngineReq, PayloadFrame, ProduceBlockFailure, ProducedBlock,
     TCacheProducer, TCacheRead, TRead,
-    ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
+    ssz_view::{AttestationDataView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
 };
+use silver_slashing::Selection;
 use silver_ssz::block_body::{BeaconBlockBodyFulu, EMPTY_SYNC_AGGREGATE};
 
 use super::{BeaconStateTile, Producers, block::AppliedBlock};
@@ -83,6 +85,86 @@ impl Operations<'static> {
     };
 }
 
+pub(super) struct PackedOperations {
+    slashings: Selection,
+    attestations: Vec<u8>,
+    sync_aggregate: [u8; BLOCK_SYNC_AGGREGATE_SIZE],
+}
+
+impl Default for PackedOperations {
+    fn default() -> Self {
+        Self {
+            slashings: Selection::default(),
+            attestations: Vec::new(),
+            sync_aggregate: EMPTY_SYNC_AGGREGATE,
+        }
+    }
+}
+
+impl PackedOperations {
+    fn clear(&mut self) {
+        self.slashings.clear();
+        self.attestations.clear();
+        self.sync_aggregate = EMPTY_SYNC_AGGREGATE;
+    }
+
+    fn operations(&self) -> Operations<'_> {
+        Operations {
+            proposer_slashings: self.slashings.proposer_slashings(),
+            attester_slashings: self.slashings.attester_slashings(),
+            attestations: &self.attestations,
+            sync_aggregate: &self.sync_aggregate,
+            ..Operations::NONE
+        }
+    }
+}
+
+/// The attestations a block on the parent state may include. A matching
+/// target puts the attesters on the parent's chain at the target epoch, so
+/// their committees match the parent's shuffling.
+struct AttestationInclusion {
+    block_slot: Slot,
+    current_epoch: Epoch,
+    /// Indexed by whether the target is the current epoch.
+    justified: [Checkpoint; 2],
+    target_roots: [B256; 2],
+}
+
+impl AttestationInclusion {
+    /// `pre_state` is the parent's state advanced into the block's epoch.
+    fn new(pre_state: &StateReadView, parent_root: B256, block_slot: Slot) -> Self {
+        let current_epoch = block_slot / SLOTS_PER_EPOCH;
+        let previous_epoch = current_epoch.saturating_sub(1);
+        let state_slot = pre_state.slot.slot_number();
+        let root_at = |slot: Slot| {
+            if slot < state_slot { pre_state.block_roots.at_slot(slot) } else { parent_root }
+        };
+        let epoch = pre_state.epoch.state();
+        Self {
+            block_slot,
+            current_epoch,
+            justified: [epoch.previous_justified_checkpoint, epoch.current_justified_checkpoint],
+            target_roots: [previous_epoch, current_epoch].map(|e| root_at(e * SLOTS_PER_EPOCH)),
+        }
+    }
+
+    fn admits(&self, data: AttestationDataView) -> bool {
+        let target_epoch = data.target_epoch();
+        let is_current = target_epoch == self.current_epoch;
+        if data.slot() >= self.block_slot ||
+            data.index() != 0 ||
+            target_epoch != data.slot() / SLOTS_PER_EPOCH ||
+            !(is_current || target_epoch + 1 == self.current_epoch)
+        {
+            return false;
+        }
+        let justified = self.justified[is_current as usize];
+        data.source_epoch() == justified.epoch &&
+            *data.source_root() == justified.root &&
+            *data.target_root() == self.target_roots[is_current as usize]
+    }
+}
+
 /// The post-state is committed, so the import of the signed block skips its
 /// state transition.
 struct BuiltBlock {
@@ -101,6 +183,7 @@ pub(super) struct BlockProduction {
     pending: Vec<(u64, Proposal)>,
     built: Option<BuiltBlock>,
     next_payload_id: u64,
+    packed: PackedOperations,
 }
 
 impl BlockProduction {
@@ -366,13 +449,34 @@ impl BeaconStateTile {
         payload.stage = PayloadStage::Prepared { payload_id };
         let (slot, parent_root) = (payload.slot, payload.parent_root);
 
+        let mut packed = mem::take(&mut self.block_production.packed);
         for (request_id, proposal) in self.block_production.take_pending(slot, parent_root) {
             let block = match response.data {
-                Some(data) => self.block_for(proposal, data, Operations::NONE),
+                Some(data) => {
+                    self.pack_operations(&proposal, &mut packed);
+                    self.block_for(proposal, data, packed.operations())
+                }
                 None => Err(ProduceBlockFailure::PayloadUnavailable),
             };
             answer(producers, request_id, block);
         }
+        self.block_production.packed = packed;
+    }
+
+    #[timed]
+    fn pack_operations(&mut self, proposal: &Proposal, packed: &mut PackedOperations) {
+        let Ok((parent, _)) = self.proposal_parent(proposal) else {
+            return packed.clear();
+        };
+        let pre_state = self.state.read_view(parent);
+        self.slashing_pool.select(&pre_state, &mut packed.slashings);
+        let inclusion = AttestationInclusion::new(&pre_state, proposal.parent_root, proposal.slot);
+        self.attestation_pool.pack(|data| inclusion.admits(data), &mut packed.attestations);
+        self.sync_contribution_pool.write_sync_aggregate(
+            proposal.slot - 1,
+            proposal.parent_root,
+            &mut packed.sync_aggregate,
+        );
     }
 
     /// The built block's `(body_root, fork)` when `body` is its body. Comparing
@@ -493,6 +597,7 @@ impl BeaconStateTile {
                 payload_at,
                 payload: acquired.to_read(),
                 execution_payload_value: frame.block_value,
+                consensus_block_value: wei_from_gwei(post_state.proposer_reward()),
             },
             payload: Some(acquired),
             body_root,
@@ -607,6 +712,12 @@ impl BeaconStateTile {
         };
         Ok((contents, payload_at as u32))
     }
+}
+
+fn wei_from_gwei(gwei: u64) -> [u8; 32] {
+    let mut wei = [0; 32];
+    wei[..16].copy_from_slice(&(u128::from(gwei) * 1_000_000_000).to_le_bytes());
+    wei
 }
 
 fn answer(

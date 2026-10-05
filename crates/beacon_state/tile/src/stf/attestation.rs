@@ -257,14 +257,15 @@ pub fn process_attestations(
     shuffling: &ShufflingRef<'_>,
     votes_sink: &mut VoteBatch,
     scratch: &mut StfScratch,
-) -> Result<(), AttestationError> {
+) -> Result<u64, AttestationError> {
     if attestation_data.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
     let total_active = view.slot.total_active_balance(current_epoch);
+    let mut proposer_rewards = 0;
     for_each_ssz_list_item(
         attestation_data,
         |start, end| AttestationError::BadOffsets {
@@ -291,10 +292,12 @@ pub fn process_attestations(
                 let proposer_reward = reward / proposer_reward_denominator;
                 let balance = view.balances.get(proposer_index as usize);
                 view.balances.set(proposer_index, balance.saturating_add(proposer_reward));
+                proposer_rewards += proposer_reward;
             }
             Ok(())
         },
-    )
+    )?;
+    Ok(proposer_rewards)
 }
 
 /// Pass 2 single-attestation worker — full data + state-dep validation +

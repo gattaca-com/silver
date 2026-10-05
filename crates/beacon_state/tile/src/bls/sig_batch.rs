@@ -128,6 +128,11 @@ impl SigBatch {
         self.msgs.is_empty()
     }
 
+    /// Subgroup-checked, like every signature the batch holds.
+    pub fn last_signature(&self) -> Option<&Signature> {
+        self.sigs.last()
+    }
+
     pub fn push_one(&mut self, pubkey: &PublicKey, sig: &[u8; 96], signing_root: B256) {
         let Some(sig) = CheckedSignature::parse(sig) else {
             self.poisoned = true;

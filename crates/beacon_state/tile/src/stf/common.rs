@@ -85,6 +85,8 @@ impl VoteBatch {
 pub struct BlockVotes {
     pub votes: VoteBatch,
     pub slashed: Vec<u32>,
+    /// Gwei.
+    pub proposer_reward: u64,
 }
 
 impl BlockVotes {
@@ -92,12 +94,14 @@ impl BlockVotes {
         Self {
             votes: VoteBatch::with_capacity(MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES),
             slashed: Vec::with_capacity(MAX_ATTESTING_INDICES),
+            proposer_reward: 0,
         }
     }
 
     pub fn clear(&mut self) {
         self.votes.clear();
         self.slashed.clear();
+        self.proposer_reward = 0;
     }
 }
 
