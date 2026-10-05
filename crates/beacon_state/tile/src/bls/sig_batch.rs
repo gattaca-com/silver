@@ -1,8 +1,8 @@
 use core::{mem, ptr};
 
 use blst::{
-    BLST_ERROR, MultiPoint, Pairing, blst_aggregated_in_g2, blst_fp12, blst_hash_to_g2, blst_p2,
-    blst_p2_affine, blst_p2_to_affine,
+    BLST_ERROR, MultiPoint, Pairing, blst_fp_cneg, blst_hash_to_g2, blst_p1_affine_generator,
+    blst_p2, blst_p2_affine, blst_p2_affine_is_inf, blst_p2_to_affine,
 };
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -224,10 +224,7 @@ impl SigBatch {
                 let SigBatch { pks, sigs, pairing, .. } = self;
                 pairing.init(true, DST);
                 pairing.raw_aggregate(&hashed, pk_affine(&pks[0]));
-                pairing.commit();
-                let mut gtsig = blst_fp12::default();
-                unsafe { blst_aggregated_in_g2(&mut gtsig, sig_affine(&sigs[0])) };
-                pairing.finalverify(Some(&gtsig))
+                pairing_matches_signature(pairing, &sigs[0])
             }
             _ => self.verify_batch(),
         }
@@ -321,12 +318,25 @@ impl SigBatch {
             pairing.raw_aggregate(&hashed_msgs.get(&msg), pk_affine(&pk_sum.to_public_key()));
             start = end;
         }
-        pairing.commit();
-
-        let mut gtsig = blst_fp12::default();
-        unsafe { blst_aggregated_in_g2(&mut gtsig, sig_affine(&sig_sum)) };
-        pairing.finalverify(Some(&gtsig))
+        pairing_matches_signature(pairing, &sig_sum)
     }
+}
+
+/// Pairing the signature with `-G1` lets verification compare the product
+/// against one. Buffered message pairs share the signature's Miller loop
+/// squarings.
+fn pairing_matches_signature(pairing: &mut Pairing, sig: &Signature) -> bool {
+    let sig = sig_affine(sig);
+    // blst 0.3.16 only handles infinity explicitly for a single pair.
+    // Reject infinity here even when valid weighted signatures cancel.
+    if unsafe { blst_p2_affine_is_inf(sig) } {
+        return false;
+    }
+    let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
+    unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
+    pairing.raw_aggregate(sig, &neg_g1);
+    pairing.commit();
+    pairing.finalverify(None)
 }
 
 fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
@@ -579,5 +589,34 @@ mod tests {
         let other = [9u8; 32];
         batched.push_one(&pubkey_pk(2), &sign(2, &other), other);
         assert!(!batched.verify_all());
+    }
+
+    #[test]
+    fn sig_batch_single_entry_verifies_only_its_message() {
+        let msg = [0x01u8; 32];
+
+        let mut valid = SigBatch::new();
+        valid.push_one(&pubkey_pk(0), &sign(0, &msg), msg);
+        assert!(valid.verify_all());
+
+        let mut wrong_message = SigBatch::new();
+        wrong_message.push_one(&pubkey_pk(0), &sign(0, &msg), [0x02u8; 32]);
+        assert!(!wrong_message.verify_all());
+    }
+
+    /// Infinity passes the subgroup check, so rejection must happen during
+    /// verification.
+    #[test]
+    fn sig_batch_rejects_infinite_signature() {
+        let mut single = SigBatch::new();
+        single.push_one(&pubkey_pk(1), &G2_POINT_AT_INFINITY, [7u8; 32]);
+        assert_eq!(single.len(), 1);
+        assert!(!single.verify_all());
+
+        let mut summed = SigBatch::new();
+        summed.push_one(&pubkey_pk(1), &G2_POINT_AT_INFINITY, [7u8; 32]);
+        summed.push_one(&pubkey_pk(2), &G2_POINT_AT_INFINITY, [9u8; 32]);
+        assert_eq!(summed.len(), 2);
+        assert!(!summed.verify_all());
     }
 }
