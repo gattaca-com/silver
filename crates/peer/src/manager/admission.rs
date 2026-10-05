@@ -394,6 +394,7 @@ impl PeerManager {
             silver_log::warn!(
                 peer_id = ?peer.peer_id,
                 addr = ?peer.addr,
+                user_agent = peer.user_agent.as_str(),
                 total = b.total,
                 threshold,
                 dc_subscribed,

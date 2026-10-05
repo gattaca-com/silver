@@ -156,7 +156,7 @@ impl BeaconStateTile {
 
     pub(super) fn prepare_ptc(&mut self, ssz: &[u8]) -> Result<PreparedPtc, Feedback> {
         if ssz.len() != PAYLOAD_ATTESTATION_MESSAGE_SIZE {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("ptc message size"));
         }
         let buf: &[u8; PAYLOAD_ATTESTATION_MESSAGE_SIZE] =
             ssz[..PAYLOAD_ATTESTATION_MESSAGE_SIZE].try_into().unwrap();
@@ -167,7 +167,7 @@ impl BeaconStateTile {
         // intentionally expose bool semantics, so reject non-canonical bytes
         // before converting them.
         if data[40] > 1 || data[41] > 1 {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("ptc non-canonical bool"));
         }
         let block_root = *PayloadAttestationData::beacon_block_root(data);
         let slot = PayloadAttestationData::slot(data);
@@ -205,10 +205,10 @@ impl BeaconStateTile {
             }
         }
         if ptc_positions.iter().all(|&word| word == 0) {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("ptc validator not in committee"));
         };
         if validator_index as usize >= rv.validators.count() {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("ptc validator out of range"));
         }
 
         let fork_version = rv.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
@@ -220,7 +220,7 @@ impl BeaconStateTile {
             bls::compute_signing_root(&stf::hash_payload_attestation_data(data), &domain);
         let Some(signature) = CheckedSignature::parse(PayloadAttestationMessage::signature(buf))
         else {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("ptc signature malformed"));
         };
 
         Ok(PreparedPtc {
