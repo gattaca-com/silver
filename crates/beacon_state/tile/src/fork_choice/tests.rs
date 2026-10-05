@@ -1,6 +1,7 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    FinalizedValidators, HashFormat, MIN_SEED_LOOKAHEAD, ValidatorsGroup, ValidatorsId, Withdrawals,
+    FinalizedValidators, HashFormat, MIN_SEED_LOOKAHEAD, ShufflingId, ValidatorsGroup,
+    ValidatorsId, Withdrawals,
 };
 use silver_common::PayloadResolution;
 
@@ -147,6 +148,45 @@ fn anchored(validators: usize) -> ForkChoice {
         test_state_id(),
         validators,
     )
+}
+
+#[test]
+fn shufflings_are_shared_through_the_decision_block() {
+    let fin = cp(0, 1);
+    let mut fc = anchored(0);
+    fc.on_block(block(10, root(2), root(1), fin, fin));
+    fc.on_block(block(40, root(3), root(2), fin, fin));
+    fc.on_block(block(20, root(4), root(1), fin, fin));
+    let decided_by_root_2 = ShufflingId { epoch: 2, dependent_root: root(2) };
+    assert_eq!(decided_by_root_2.decision_slot(), 31);
+
+    assert!(fc.shares_shuffling(&root(2), decided_by_root_2));
+    assert!(fc.shares_shuffling(&root(3), decided_by_root_2));
+    assert!(!fc.shares_shuffling(&root(4), decided_by_root_2));
+    assert!(!fc.shares_shuffling(&root(9), decided_by_root_2), "unknown block");
+}
+
+#[test]
+fn decisions_before_the_anchor_are_shared_by_every_branch() {
+    let fin = cp(3, 1);
+    let mut fc = ForkChoice::init(
+        fin,
+        fin,
+        100,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
+    fc.on_block(block(101, root(2), root(1), fin, fin));
+    fc.on_block(block(102, root(3), root(1), fin, fin));
+    let before_anchor = ShufflingId { epoch: 3, dependent_root: root(7) };
+    assert!(before_anchor.decision_slot() < 100);
+
+    assert!(fc.shares_shuffling(&root(2), before_anchor));
+    assert!(fc.shares_shuffling(&root(3), before_anchor));
 }
 
 #[test]

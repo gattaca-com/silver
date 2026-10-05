@@ -1,60 +1,93 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, StateReadView};
-use silver_common::{BeaconStateEvent, TProducer};
+use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
+use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
-use crate::{
-    bls,
-    shuffling::{self, DOMAIN_BEACON_ATTESTER},
-    stf,
-};
+use crate::{bls, stf};
 
 // Steady state holds {E-1, E, E+1} plus reorg/precompute transients.
-const MAX_SHUFFLING_CACHE: usize = 6;
+const MAX_SHUFFLING_CACHE: usize = 8;
 
 pub struct ShufflingCache {
     entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
     aggregator: bls::PubkeyAggregator,
+    posted: [Option<ShufflingId>; 2],
+    head: Option<HeadShufflings>,
+}
+
+/// A key paired with the state it was derived from, so a miss fills the entry
+/// from the state its key names.
+#[derive(Clone, Copy)]
+pub struct ShufflingRequest<'a, 'v> {
+    view: &'a StateReadView<'v>,
+    id: ShufflingId,
+}
+
+impl<'a, 'v> ShufflingRequest<'a, 'v> {
+    pub fn new(view: &'a StateReadView<'v>, epoch: Epoch) -> Option<Self> {
+        Some(Self { view, id: ShufflingId::from_state(view, epoch)? })
+    }
+
+    pub fn id(&self) -> ShufflingId {
+        self.id
+    }
+}
+
+struct HeadShufflings {
+    root: B256,
+    epoch: Epoch,
+    ids: [Option<ShufflingId>; 3],
 }
 
 struct ShufflingEntry {
-    epoch: Epoch,
-    mix: B256,
+    id: Option<ShufflingId>,
     shuffled_indices: Vec<u32>,
-    built_against: usize,
+    required_validator_count: usize,
     committee_aggs: Vec<PublicKey>,
-    is_valid: bool,
-    posted: bool,
 }
 
 impl ShufflingEntry {
+    fn post(&self, producer: &mut TProducer, emit: impl FnOnce(BeaconStateEvent)) -> bool {
+        let Some(id) = self.id else {
+            return false;
+        };
+        let len = size_of_val(self.shuffled_indices.as_slice());
+        let Some(indices) = producer.write_with(len, |buffer| {
+            for (bytes, index) in
+                buffer.chunks_exact_mut(size_of::<u32>()).zip(&self.shuffled_indices)
+            {
+                bytes.copy_from_slice(&index.to_le_bytes());
+            }
+        }) else {
+            silver_log::warn!(
+                epoch = id.epoch,
+                len,
+                "beacon_state tcache full; shuffling not posted"
+            );
+            return false;
+        };
+        emit(BeaconStateEvent::AttestersShuffling { id, indices });
+        true
+    }
+
     fn shuffling(&self) -> stf::EpochShuffling<'_> {
         let aggs = (!self.committee_aggs.is_empty()).then_some(self.committee_aggs.as_slice());
-        stf::EpochShuffling::new(&self.shuffled_indices, self.built_against)
+        stf::EpochShuffling::new(&self.shuffled_indices, self.required_validator_count)
             .with_committee_aggs(aggs)
     }
 
-    fn is_valid_for(&self, epoch: Epoch, mix: B256) -> bool {
-        self.is_valid && self.epoch == epoch && self.mix == mix
-    }
-
-    /// Reshuffle in place for `(epoch, mix)`, replacing whatever this slot
-    /// held. Stays invalid until the shuffle completes, so a half-filled
-    /// entry is never readable.
-    fn make_valid_for(&mut self, view: &StateReadView, epoch: Epoch, mix: B256) {
-        self.is_valid = false;
-        self.shuffled_indices.clear();
+    /// Invalid until the complete shuffled active set is ready.
+    #[timed]
+    fn fill(&mut self, request: ShufflingRequest) {
+        self.id = None;
         self.committee_aggs.clear();
-
-        view.validators.active_indices_into(epoch, &mut self.shuffled_indices);
-        shuffling::Seed::new(&mix, epoch, DOMAIN_BEACON_ATTESTER)
-            .shuffle(&mut self.shuffled_indices);
-
-        self.epoch = epoch;
-        self.mix = mix;
-        self.built_against = view.validators.count();
-        self.is_valid = true;
-        self.posted = false;
+        self.required_validator_count = stf::EpochShuffling::from_state(
+            request.view,
+            request.id.epoch,
+            &mut self.shuffled_indices,
+        )
+        .required_validator_count;
+        self.id = Some(request.id);
     }
 
     /// No-op once filled, or while the entry holds no shuffling.
@@ -75,7 +108,8 @@ impl ShufflingEntry {
         view: &StateReadView,
         aggregator: &mut bls::PubkeyAggregator,
     ) {
-        let shuffling = stf::EpochShuffling::new(&self.shuffled_indices, self.built_against);
+        let shuffling =
+            stf::EpochShuffling::new(&self.shuffled_indices, self.required_validator_count);
         for slot_in_epoch in 0..SLOTS_PER_EPOCH {
             for ci in 0..shuffling.committees_per_slot {
                 self.committee_aggs.push(
@@ -95,183 +129,318 @@ impl ShufflingCache {
     pub fn with_capacity(capacity: usize) -> Box<Self> {
         Box::new(Self {
             aggregator: bls::PubkeyAggregator::default(),
+            posted: [None; 2],
+            head: None,
             entries: std::array::from_fn(|_| ShufflingEntry {
-                epoch: 0,
-                mix: [0u8; 32],
+                id: None,
                 shuffled_indices: Vec::with_capacity(capacity),
-                built_against: 0,
+                required_validator_count: 0,
                 committee_aggs: Vec::new(),
-                is_valid: false,
-                posted: false,
             }),
         })
     }
 
-    /// Posts each shuffling computed since the last call and remembers it as
-    /// posted. Epochs below `from_epoch` are dropped unposted: they serve
-    /// attestation validation only.
+    pub fn protect_head(&mut self, view: &StateReadView) {
+        let root = view.slot.state().latest_block_root;
+        let epoch = view.slot.current_epoch();
+        if self.head.as_ref().is_some_and(|head| head.root == root && head.epoch == epoch) {
+            return;
+        }
+        let ids = [epoch.saturating_sub(1), epoch, epoch + 1]
+            .map(|epoch| ShufflingId::from_state(view, epoch));
+        self.head = Some(HeadShufflings { root, epoch, ids });
+    }
+
+    pub fn get(&mut self, request: ShufflingRequest) -> stf::EpochShuffling<'_> {
+        let index = self.ensure(request, &[]);
+        self.entries[index].shuffling()
+    }
+
+    /// `None` unless the state is in the block's epoch and holds both decision
+    /// roots.
+    pub fn for_block(
+        &mut self,
+        view: &StateReadView,
+        epoch: Epoch,
+    ) -> Option<stf::ShufflingRef<'_>> {
+        if epoch != view.slot.current_epoch() {
+            return None;
+        }
+        let [curr, prev] = self.ensure_pair(view, epoch)?;
+        Some(stf::ShufflingRef {
+            curr: self.entries[curr].shuffling(),
+            prev: self.entries[prev].shuffling(),
+        })
+    }
+
+    /// Warm an epoch and its predecessor, including their committee aggregates.
+    pub fn precompute(&mut self, view: &StateReadView, epoch: Epoch) {
+        let Some(indices) = self.ensure_pair(view, epoch) else {
+            return;
+        };
+        for index in indices {
+            self.entries[index].fill_committee_aggs(view, &mut self.aggregator);
+        }
+    }
+
+    /// Protects both identities while filling, so the second fill cannot evict
+    /// the first. Different in a side branch to 3 identities in HeadShufflings.
+    fn ensure_pair(&mut self, view: &StateReadView, epoch: Epoch) -> Option<[usize; 2]> {
+        let requests = [
+            ShufflingRequest::new(view, epoch)?,
+            ShufflingRequest::new(view, epoch.saturating_sub(1))?,
+        ];
+        let protected = requests.map(|request| request.id);
+        Some(requests.map(|request| self.ensure(request, &protected)))
+    }
+
+    fn ensure(&mut self, request: ShufflingRequest, protected: &[ShufflingId]) -> usize {
+        let id = request.id;
+        if let Some(index) = self.entries.iter().position(|entry| entry.id == Some(id)) {
+            return index;
+        }
+        // Linear search in cache this small is fast and simple. Also, we `expect`
+        // below at most 5 entries are protected in an 8-entry cache.
+        const _: () = assert!(
+            MAX_SHUFFLING_CACHE > (3 + 2) && MAX_SHUFFLING_CACHE <= 8,
+            "cache must be small and have space for at least 1 unprotected entry"
+        );
+        let index = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.id.is_none_or(|held| !protected.contains(&held)))
+            .filter(|(_, entry)| {
+                entry.id.is_none_or(|held| {
+                    self.head.as_ref().is_none_or(|head| !head.ids.contains(&Some(held)))
+                })
+            })
+            .min_by_key(|(_, entry)| {
+                entry.id.map(|held| (held.epoch.abs_diff(id.epoch) <= 1, held.epoch))
+            })
+            .map(|(index, _)| index)
+            .expect("at most five identities protected in an eight-entry cache");
+        self.entries[index].fill(request);
+        index
+    }
+
+    /// Publish only the head's current and next epochs. Publication history
+    /// survives cache eviction and changes only after a successful send.
     pub fn post_fresh(
         &mut self,
-        from_epoch: Epoch,
+        view: &StateReadView,
         producer: &mut TProducer,
         mut emit: impl FnMut(BeaconStateEvent),
     ) -> bool {
+        let epoch = view.slot.current_epoch();
         let mut any_posted = false;
-        for entry in self.entries.iter_mut().filter(|e| e.is_valid && !e.posted) {
-            if entry.epoch < from_epoch {
-                entry.posted = true;
+        for epoch in [epoch, epoch + 1] {
+            let request = ShufflingRequest::new(view, epoch)
+                .expect("head shuffling decision is in state history");
+            let id = request.id;
+            let slot = (epoch % 2) as usize;
+            if self.posted[slot] == Some(id) {
                 continue;
             }
-            entry.posted = entry.shuffling().post(entry.epoch, producer, &mut emit);
-            any_posted |= entry.posted;
+            let index = self.ensure(request, &[]);
+            if self.entries[index].post(producer, &mut emit) {
+                self.posted[slot] = Some(id);
+                any_posted = true;
+            }
         }
         any_posted
-    }
-
-    /// Cached alongside the shuffling because it is the validity key: a
-    /// different mix for the same epoch means the shuffle must be redone.
-    fn mix(view: &StateReadView, epoch: Epoch) -> B256 {
-        view.randao_mixes.seed_mix(epoch)
-    }
-
-    fn window(epoch: Epoch) -> impl Iterator<Item = Epoch> {
-        [Some(epoch), epoch.checked_sub(1)].into_iter().flatten()
-    }
-
-    /// Maintains the 2-epoch window so attestations with
-    /// `target_epoch ∈ {epoch, epoch - 1}` resolve.
-    pub fn ensure_window(&mut self, view: &StateReadView, epoch: Epoch) {
-        for cached_epoch in Self::window(epoch) {
-            self.ensure(view, cached_epoch);
-        }
-    }
-
-    fn ensure(&mut self, view: &StateReadView, epoch: Epoch) {
-        let mix = Self::mix(view, epoch);
-        if self.entries.iter().any(|e| e.is_valid_for(epoch, mix)) {
-            return;
-        }
-        self.compute_and_cache(view, epoch, mix);
-    }
-
-    #[timed]
-    fn compute_and_cache(&mut self, view: &StateReadView, epoch: Epoch, mix: B256) {
-        let slot = self.find_slot(epoch);
-        self.entries[slot].make_valid_for(view, epoch, mix);
-    }
-
-    /// Real work at most once per cached `(epoch, mix)` — ~150ns per active
-    /// validator — so every other block of the epoch is a no-op.
-    pub fn try_cache_committee_aggs(&mut self, view: &StateReadView, epoch: Epoch) {
-        for cached_epoch in Self::window(epoch) {
-            self.try_cache_aggs_for(view, cached_epoch);
-        }
-    }
-
-    fn try_cache_aggs_for(&mut self, view: &StateReadView, epoch: Epoch) {
-        let mix = Self::mix(view, epoch);
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.is_valid_for(epoch, mix)) {
-            entry.fill_committee_aggs(view, &mut self.aggregator);
-        }
-    }
-
-    /// Empty slot first, otherwise the lowest-epoch live entry outside
-    /// `inserted_epoch ± 1` (falling back to plain lowest): an insert must
-    /// never evict its window partner, or `ensure_window`'s second insert
-    /// could evict its first when far-epoch entries crowd the cache.
-    fn find_slot(&self, inserted_epoch: Epoch) -> usize {
-        if let Some(empty) = self.entries.iter().position(|e| !e.is_valid) {
-            return empty;
-        }
-        self.entries
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, e)| (e.epoch.abs_diff(inserted_epoch) <= 1, e.epoch))
-            .map_or(0, |(slot, _)| slot)
-    }
-
-    fn get(&self, epoch: Epoch, mix: B256) -> Option<&ShufflingEntry> {
-        self.entries.iter().find(|e| e.is_valid_for(epoch, mix))
-    }
-
-    /// First cached shuffled active-index slice for `epoch`, mix-agnostic.
-    /// Test helper — production lookups key on the mix too.
-    #[cfg(test)]
-    pub(crate) fn shuffled_by_epoch(&self, epoch: Epoch) -> Option<&[u32]> {
-        self.entries
-            .iter()
-            .find(|e| e.is_valid && e.epoch == epoch)
-            .map(|e| e.shuffled_indices.as_slice())
-    }
-
-    /// Cached shuffling for `epoch` against `view`'s state, or `None` if not
-    /// cached (caller should have run [`ensure_window`] first).
-    pub fn lookup<'a>(
-        &'a self,
-        view: &StateReadView,
-        epoch: Epoch,
-    ) -> Option<stf::EpochShuffling<'a>> {
-        let mix = Self::mix(view, epoch);
-        self.get(epoch, mix).map(ShufflingEntry::shuffling)
-    }
-
-    /// Assemble a [`stf::ShufflingRef`] over the cached current+previous epoch
-    /// shufflings for `block_epoch`. Panics if either is uncached.
-    pub fn build_ref<'a>(
-        &'a self,
-        view: &StateReadView,
-        block_epoch: Epoch,
-    ) -> stf::ShufflingRef<'a> {
-        let prev_epoch = block_epoch.saturating_sub(1);
-        let (curr_mix, prev_mix) = (Self::mix(view, block_epoch), Self::mix(view, prev_epoch));
-        let curr = self.get(block_epoch, curr_mix).expect("ensure_window cached current epoch");
-        let prev = self.get(prev_epoch, prev_mix).expect("ensure_window cached previous epoch");
-        stf::ShufflingRef { curr: curr.shuffling(), prev: prev.shuffling() }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use silver_beacon_state_data::{
+        BeaconState, BeaconStateOwner, EpochStateFinalized, StateId, ValSeed,
+    };
+
     use super::*;
+    use crate::test_signing;
 
-    fn cache_with_epochs(epochs: &[Epoch]) -> Box<ShufflingCache> {
-        let mut cache = ShufflingCache::with_capacity(0);
-        for (entry, &epoch) in cache.entries.iter_mut().zip(epochs) {
-            entry.epoch = epoch;
-            entry.is_valid = true;
+    fn state(branch: u8, active: usize, count: usize) -> (BeaconStateOwner, StateId) {
+        let seeds = (0..count)
+            .map(|i| ValSeed {
+                pubkey: test_signing::pubkey_pk(i % test_signing::PRIVKEY_HEX.len()).to_bytes(),
+                activation_epoch: if i < active { 0 } else { u64::MAX },
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let mut owner = BeaconStateOwner::new(BeaconState::for_test(
+            EpochStateFinalized::default(),
+            &seeds,
+            70,
+        ));
+        let base = owner.roll_fresh();
+        let mut fork = owner.apply_block_view(base);
+        fork.view.slot.state_mut().latest_block_root = [branch; 32];
+        for slot in [0, 31, 63] {
+            fork.view.block_roots.set(slot, [branch; 32]);
         }
-        cache
+        let id = fork.commit();
+        (owner, id)
+    }
+
+    fn members(shuffling: &stf::EpochShuffling<'_>, epoch: Epoch) -> Vec<u32> {
+        let mut members = (epoch * SLOTS_PER_EPOCH..(epoch + 1) * SLOTS_PER_EPOCH)
+            .flat_map(|slot| {
+                (0..shuffling.committees_per_slot)
+                    .flat_map(move |committee| shuffling.committee(slot, committee).iter().copied())
+            })
+            .collect::<Vec<_>>();
+        members.sort_unstable();
+        members
+    }
+
+    fn cached<'a>(
+        cache: &'a mut ShufflingCache,
+        view: &StateReadView,
+        epoch: Epoch,
+    ) -> stf::EpochShuffling<'a> {
+        cache.get(ShufflingRequest::new(view, epoch).unwrap())
     }
 
     #[test]
-    fn find_slot_prefers_empty() {
-        let cache = cache_with_epochs(&[10, 11, 12]);
-        assert!(cache.find_slot(11) >= 3);
+    fn head_shufflings_survive_competing_branch_requests() {
+        let (owner, id) = state(1, 8, 8);
+        let head = owner.read_view(id);
+        let mut cache = ShufflingCache::with_capacity(8);
+        cache.protect_head(&head);
+        cache.precompute(&head, 2);
+        cache.precompute(&head, 3);
+
+        for branch in 2..20 {
+            let (other, id) = state(branch, 7, 8);
+            let view = other.read_view(id);
+            cache.precompute(&view, 2);
+            let pair = cache.for_block(&view, 2).unwrap();
+            assert_eq!(members(&pair.curr, 2), (0..7).collect::<Vec<_>>());
+            assert_eq!(members(&pair.prev, 1), (0..7).collect::<Vec<_>>());
+            for epoch in 1..=3 {
+                let shuffling = cached(&mut cache, &head, epoch);
+                assert!(shuffling.committee_aggs.is_some(), "head entry must not be rebuilt");
+                assert_eq!(members(&shuffling, epoch), (0..8).collect::<Vec<_>>());
+            }
+        }
     }
 
     #[test]
-    fn find_slot_never_evicts_adjacent_epochs() {
-        let cache = cache_with_epochs(&[10, 11, 12, 100, 101, 102]);
-        // {10, 11, 12} are within ±1 of the insert; lowest eligible is 100.
-        assert_eq!(cache.find_slot(11), 3);
+    fn protection_moves_to_the_new_head_and_releases_old_entries() {
+        let mut cache = ShufflingCache::with_capacity(8);
+        for branch in 1..20 {
+            let (owner, id) = state(branch, 8, 8);
+            let view = owner.read_view(id);
+            cache.protect_head(&view);
+            cache.precompute(&view, 2);
+            cache.precompute(&view, 3);
+            let (other, id) = state(branch + 20, 7, 8);
+            let other = other.read_view(id);
+            cache.precompute(&other, 2);
+            cache.precompute(&other, 3);
+            for epoch in 1..=3 {
+                assert!(cached(&mut cache, &view, epoch).committee_aggs.is_some());
+            }
+        }
     }
 
     #[test]
-    fn find_slot_window_pair_survives_far_epoch_squatters() {
-        let mut cache = cache_with_epochs(&[50, 51, 52, 53, 54, 55]);
-        // ensure_window(10) inserts 10 then 9: the first insert takes the
-        // lowest live slot, and the second must not evict it.
-        let first = cache.find_slot(10);
-        assert_eq!(cache.entries[first].epoch, 50);
-        cache.entries[first].epoch = 10;
-        let second = cache.find_slot(9);
-        assert_ne!(second, first);
-        assert_eq!(cache.entries[second].epoch, 51);
+    fn protection_advances_with_empty_slots_on_the_same_head() {
+        let (mut owner, id) = state(1, 8, 8);
+        let mut cache = ShufflingCache::with_capacity(8);
+        cache.protect_head(&owner.read_view(id));
+        let mut fork = owner.apply_block_view(id);
+        fork.view.slot.state_mut().slot = 96;
+        fork.view.block_roots.set(95, [1; 32]);
+        let advanced = fork.commit();
+        let view = owner.read_view(advanced);
+        cache.protect_head(&view);
+        assert_eq!(
+            cache.head.as_ref().unwrap().ids,
+            [2, 3, 4].map(|epoch| ShufflingId::from_state(&view, epoch)),
+        );
     }
 
     #[test]
-    fn find_slot_falls_back_to_lowest_when_all_adjacent() {
-        let cache = cache_with_epochs(&[10, 11, 12, 11, 10, 12]);
-        assert_eq!(cache.find_slot(11), 0);
+    fn verification_and_aggregates_follow_branch_identity_with_the_same_mix() {
+        let (a, a_id) = state(1, 8, 8);
+        let (b, b_id) = state(2, 7, 8);
+        let a = a.read_view(a_id);
+        let b = b.read_view(b_id);
+        assert_eq!(a.randao_mixes.seed_mix(2), b.randao_mixes.seed_mix(2));
+        let mut cache = ShufflingCache::with_capacity(8);
+        for (view, active) in [(&a, 8), (&b, 7), (&a, 8)] {
+            cache.precompute(view, 2);
+            let pair = cache.for_block(view, 2).unwrap();
+            for (epoch, shuffling) in [(2, pair.curr), (1, pair.prev)] {
+                assert_eq!(members(&shuffling, epoch), (0..active).collect::<Vec<_>>());
+                let aggregates = shuffling.committee_aggs.unwrap();
+                for slot in 0..SLOTS_PER_EPOCH {
+                    let committee = shuffling.committee(slot, 0);
+                    if let [validator] = committee {
+                        assert_eq!(
+                            aggregates[slot as usize].to_bytes(),
+                            *view.validators.pubkey(*validator as usize)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_identity_reuses_aggregates_without_requiring_unrelated_validators() {
+        let (large, large_id) = state(1, 8, 9);
+        let (small, small_id) = state(1, 8, 8);
+        let large = large.read_view(large_id);
+        let small = small.read_view(small_id);
+        assert_eq!(ShufflingId::from_state(&large, 2), ShufflingId::from_state(&small, 2));
+        let mut cache = ShufflingCache::with_capacity(9);
+        cache.precompute(&large, 2);
+        let shuffling = cached(&mut cache, &small, 2);
+        assert!(shuffling.committee_aggs.is_some(), "same identity reuses precomputed aggregates");
+        assert!(shuffling.indices_in_range(8));
+        assert!(!shuffling.indices_in_range(7), "an active index must remain addressable");
+    }
+
+    #[test]
+    fn two_epoch_requests_survive_competing_branches_in_a_full_cache() {
+        let mut cache = ShufflingCache::with_capacity(8);
+        for branch in 1..=MAX_SHUFFLING_CACHE as u8 + 2 {
+            let (owner, id) = state(branch, branch as usize, 8);
+            let view = owner.read_view(id);
+            cached(&mut cache, &view, 2);
+        }
+        let (owner, id) = state(20, 5, 8);
+        let view = owner.read_view(id);
+        // Insert the older half first. Filling the newer half must retain it.
+        cache.precompute(&view, 1);
+        // Displace epoch zero so the requested previous epoch is the oldest.
+        cached(&mut cache, &view, 3);
+        let pair = cache.for_block(&view, 2).unwrap();
+        assert_eq!(members(&pair.curr, 2), (0..5).collect::<Vec<_>>());
+        assert_eq!(members(&pair.prev, 1), (0..5).collect::<Vec<_>>());
+        assert!(pair.prev.committee_aggs.is_some(), "requested identity was retained");
+        for branch in 21..=28 {
+            let (owner, id) = state(branch, 6, 8);
+            let view = owner.read_view(id);
+            let pair = cache.for_block(&view, 2).unwrap();
+            assert_eq!(members(&pair.curr, 2), (0..6).collect::<Vec<_>>());
+            assert_eq!(members(&pair.prev, 1), (0..6).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn unavailable_decisions_do_not_poison_a_cached_identity() {
+        let (owner, id) = state(1, 8, 8);
+        let view = owner.read_view(id);
+        let mut cache = ShufflingCache::with_capacity(8);
+        cache.precompute(&view, 2);
+        for epoch in [1, 3, 4] {
+            assert!(cache.for_block(&view, epoch).is_none());
+        }
+        assert!(cached(&mut cache, &view, 2).committee_aggs.is_some());
     }
 }

@@ -7,7 +7,7 @@ use silver_beacon_state_data::{
     BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
     Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
+    SYNC_COMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
 #[cfg(feature = "ef_tests")]
 use silver_common::ProducedBlock;
@@ -36,6 +36,7 @@ use super::{
     block::{ParsedBlock, StagedBlock},
     block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
+    shuffling_cache::ShufflingRequest,
     *,
 };
 use crate::{
@@ -321,7 +322,7 @@ fn arm_tile_state(
     );
 
     let view = tile.state.read_view(anchor);
-    tile.shuffling_cache.ensure_window(&view, start_slot / SLOTS_PER_EPOCH);
+    tile.shuffling_cache.for_block(&view, start_slot / SLOTS_PER_EPOCH).unwrap();
 }
 
 fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
@@ -2552,10 +2553,11 @@ fn block_known_parent_bad_sig_rejected() {
 // ── attestation / aggregate (committee resolution via shuffling cache) ──
 
 /// Locate `(slot, committee_index, pos_in_committee, committee_size)` for
-/// `validator` in epoch 0. The seed arms exactly one cache entry per epoch.
+/// `validator` in epoch 0.
 fn find_committee_for(tile: &BeaconStateTile, validator: u32) -> (Slot, usize, usize, usize) {
-    let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
-    let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, 0, &mut indices);
     for s in 0..SLOTS_PER_EPOCH {
         for ci in 0..shuffling.committees_per_slot {
             let c = shuffling.committee(s, ci);
@@ -2574,11 +2576,10 @@ fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize)
 /// Spec `compute_subnet_for_attestation`, recomputed independently of the
 /// production helper.
 fn expected_subnet(tile: &BeaconStateTile, slot: Slot, ci: usize) -> u64 {
-    let shuffled = tile
-        .shuffling_cache
-        .shuffled_by_epoch(slot / SLOTS_PER_EPOCH)
-        .expect("shuffling for epoch");
-    let cps = stf::EpochShuffling::new(shuffled, tile.head_validator_count()).committees_per_slot;
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, slot / SLOTS_PER_EPOCH, &mut indices);
+    let cps = shuffling.committees_per_slot;
     (cps as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64
 }
 
@@ -2623,6 +2624,171 @@ fn attestation_weighs_its_block() {
     );
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
+}
+
+/// Slot processing records the anchor under its header root, so fork choice
+/// must name it the same way for decision roots to agree after an advance.
+fn anchor_at_header_root(tile: &mut BeaconStateTile) -> B256 {
+    let base = tile.last_applied;
+    let (root, anchor) = {
+        let mut g = tile.state.write();
+        let mut sw = g.slot_states.roll_from(base.slot_idx);
+        let state = sw.state_mut();
+        state.latest_block_header.state_root = ANCHOR_STATE_ROOT;
+        let root = ssz_hash::hash_tree_root_block_header(&state.latest_block_header);
+        state.latest_block_root = root;
+        (root, StateId { slot_idx: sw.commit(), ..base })
+    };
+    tile.last_applied = anchor;
+    tile.state.publish_state_id(anchor);
+    let cp = Checkpoint { epoch: 0, root };
+    let slot = tile.slot_state_at(anchor).slot;
+    let validators = tile.head_validator_count();
+    tile.fork_choice = ForkChoice::init(
+        cp,
+        cp,
+        slot,
+        root,
+        ANCHOR_STATE_ROOT,
+        [0u8; 32],
+        false,
+        anchor,
+        validators,
+    );
+    root
+}
+
+fn import_test_block(
+    tile: &mut BeaconStateTile,
+    block_root: B256,
+    slot: Slot,
+    parent_root: B256,
+    state_id: StateId,
+) {
+    let cp = tile.fork_choice.justified_checkpoint;
+    tile.fork_choice.on_block(BlockImport {
+        slot,
+        block_root,
+        state_root: state_root_of(block_root),
+        parent_root,
+        execution_block_hash: [0u8; 32],
+        justified: cp,
+        unrealized_justified: cp,
+        unrealized_finalized: cp,
+        state_id,
+        bid_block_hash: [0u8; 32],
+        parent_payload_status: PayloadStatus::Full,
+        payload_verified: true,
+        is_gloas: false,
+    });
+}
+
+/// The head's committees cannot vouch for a branch that left the head before
+/// the shuffling's decision slot.
+#[test]
+fn attestations_from_another_decision_branch_are_ignored() {
+    const HEAD: B256 = [0xCC; 32];
+    const SIDE: B256 = [0xBB; 32];
+    let epoch = 2;
+    let first_slot = epoch * SLOTS_PER_EPOCH;
+    for aggregate in [false, true] {
+        for (voted, expected) in [(HEAD, Feedback::Accept), (SIDE, Feedback::Ignore)] {
+            let mut tile = make_tile_at_wall_slot(first_slot + SLOTS_PER_EPOCH - 1);
+            seed_tile_with_keys(&mut tile, 128, 0);
+            let anchor_root = anchor_at_header_root(&mut tile);
+            let anchor = tile.last_applied;
+            let advanced = tile.epoch_start_state(anchor, first_slot);
+            let head_state = {
+                let mut g = tile.state.write();
+                let mut sw = g.slot_states.roll_from(advanced.slot_idx);
+                sw.state_mut().latest_block_root = HEAD;
+                StateId { slot_idx: sw.commit(), ..advanced }
+            };
+            import_test_block(&mut tile, HEAD, first_slot, anchor_root, head_state);
+            import_test_block(&mut tile, SIDE, 20, anchor_root, anchor);
+            assert_eq!(tile.fork_choice.find_head(), HEAD);
+
+            let view = tile.state.read_view(head_state);
+            assert_eq!(
+                ShufflingId::from_state(&view, epoch).unwrap().dependent_root,
+                anchor_root,
+                "the head inherits the anchor's decision",
+            );
+            let mut indices = Vec::new();
+            let shuffling = stf::EpochShuffling::from_state(&view, epoch, &mut indices);
+            let (slot, ci, position, size) = (first_slot..first_slot + SLOTS_PER_EPOCH)
+                .find_map(|slot| {
+                    (0..shuffling.committees_per_slot).find_map(|ci| {
+                        let committee = shuffling.committee(slot, ci);
+                        committee
+                            .iter()
+                            .position(|&vi| vi == 0)
+                            .map(|position| (slot, ci, position, committee.len()))
+                    })
+                })
+                .unwrap();
+            let subnet =
+                (shuffling.committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64;
+            let imm = seed_immutable(&tile);
+            let result = if aggregate {
+                let bytes = test_signing::sign_aggregate_and_proof(
+                    0, 0, slot, epoch, voted, voted, ci, position, size, &imm,
+                );
+                tile.handle_aggregate_and_proof(&bytes)
+            } else {
+                let bytes = test_signing::sign_single_attestation(
+                    0, 0, ci as u64, slot, voted, epoch, voted, &imm,
+                );
+                tile.handle_attestation(&bytes, subnet)
+            };
+            assert_eq!(result, expected, "aggregate={aggregate}");
+        }
+    }
+}
+
+#[test]
+fn gossip_verification_resolves_shufflings_after_multiple_empty_epochs() {
+    let epoch = 3;
+    let first_slot = epoch * SLOTS_PER_EPOCH;
+    for aggregate in [false, true] {
+        let mut tile = make_tile_at_wall_slot(first_slot + SLOTS_PER_EPOCH - 1);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        anchor_at_header_root(&mut tile);
+        let canonical = tile.canonical_state_id();
+        let advanced = tile.epoch_start_state(canonical, first_slot);
+        let view = tile.state.read_view(advanced);
+        let mut indices = Vec::new();
+        let shuffling = stf::EpochShuffling::from_state(&view, epoch, &mut indices);
+        let (slot, ci, position, size) = (first_slot..first_slot + SLOTS_PER_EPOCH)
+            .find_map(|slot| {
+                (0..shuffling.committees_per_slot).find_map(|ci| {
+                    let committee = shuffling.committee(slot, ci);
+                    committee
+                        .iter()
+                        .position(|&vi| vi == 0)
+                        .map(|position| (slot, ci, position, committee.len()))
+                })
+            })
+            .unwrap();
+        let subnet =
+            (shuffling.committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64;
+        let imm = seed_immutable(&tile);
+        let root = tile.head_block_root();
+        assert_eq!(tile.slot_state_at(tile.canonical_state_id()).slot, 0);
+        let result = if aggregate {
+            let bytes = test_signing::sign_aggregate_and_proof(
+                0, 0, slot, epoch, root, root, ci, position, size, &imm,
+            );
+            tile.handle_aggregate_and_proof(&bytes)
+        } else {
+            let bytes = test_signing::sign_single_attestation(
+                0, 0, ci as u64, slot, root, epoch, root, &imm,
+            );
+            tile.handle_attestation(&bytes, subnet)
+        };
+        assert_eq!(result, Feedback::Accept, "aggregate={aggregate}");
+        assert_eq!(tile.canonical_state_id(), canonical, "verification does not replace the head");
+    }
 }
 
 /// Distinct payloads expose relays that substitute the protobuf handle for SSZ.
@@ -3940,8 +4106,9 @@ fn agg_failed_validation_does_not_mark_aggregator() {
 /// First committee (skipping the wall slot) holding two members whose
 /// registry keys differ (vi % 3), so the aggregate is genuinely multi-key.
 fn find_committee_with_two_signers(tile: &BeaconStateTile) -> (Slot, usize, u32, u32) {
-    let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
-    let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, 0, &mut indices);
     for s in 0..SLOTS_PER_EPOCH - 1 {
         for ci in 0..shuffling.committees_per_slot {
             let c = shuffling.committee(s, ci);
@@ -3956,11 +4123,10 @@ fn find_committee_with_two_signers(tile: &BeaconStateTile) -> (Slot, usize, u32,
 }
 
 fn committee_of(tile: &BeaconStateTile, slot: Slot, ci: usize) -> Vec<u32> {
-    let shuffled = tile
-        .shuffling_cache
-        .shuffled_by_epoch(slot / SLOTS_PER_EPOCH)
-        .expect("shuffling for epoch");
-    stf::EpochShuffling::new(shuffled, tile.head_validator_count()).committee(slot, ci).to_vec()
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let mut indices = Vec::new();
+    let shuffling = stf::EpochShuffling::from_state(&view, slot / SLOTS_PER_EPOCH, &mut indices);
+    shuffling.committee(slot, ci).to_vec()
 }
 
 /// Wrap an inner aggregate with `vi` as aggregator (registry keys cycle
@@ -4828,39 +4994,136 @@ fn assert_non_block_relay(
     assert_eq!(relays, [(topic, msg_seq)], "the relay names the message's own decompressed bytes");
 }
 
-/// Each computed shuffling is posted once: the first post carries the epochs
-/// the precompute filled, and a second post carries nothing.
+/// Publication follows the selected head, even when a reorg restores a
+/// previously posted branch. Computing a losing branch must not publish it.
 #[test]
-fn fresh_shufflings_are_posted_once() {
+fn shufflings_follow_head_selection_across_reorgs() {
     let mut rig = HeadRig::new();
-    let posted = |producer: &TProducer, published: Published| -> Vec<(Epoch, usize)> {
-        published
+    let posted = |published: Published| {
+        let mut ids = published
             .0
-            .iter()
+            .into_iter()
             .filter_map(|event| match event {
-                BeaconStateEvent::AttestersShuffling { epoch, indices } => {
-                    Some((*epoch, producer.read_buffer(*indices).unwrap().len()))
-                }
+                BeaconStateEvent::AttestersShuffling { id, .. } => Some(id),
                 _ => None,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| id.epoch);
+        ids
     };
+    let selected_ids = |tile: &BeaconStateTile| {
+        let view = tile.state.read_view(tile.last_applied);
+        let epoch = view.slot.current_epoch();
+        [epoch, epoch + 1].map(|epoch| ShufflingId::from_state(&view, epoch).unwrap())
+    };
+    let original = selected_ids(&rig.tile);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty(), "unchanged selection is already posted");
 
-    rig.tile.precompute_next_epoch_shuffling(4);
+    for branch in 10..20 {
+        let fork = rig.post_state(rig.anchor, [branch; 32], 70, [branch; 32], [branch; 32]);
+        let view = rig.tile.state.read_view(fork);
+        rig.tile.shuffling_cache.for_block(&view, 2).unwrap();
+    }
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty(), "eviction does not change the published selection");
+
+    let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
+    let fork = {
+        let mut fork = rig.tile.state.apply_block_view(fork);
+        fork.view.randao_mixes.mix_in_reveal(0, &[0xBB; 32]);
+        fork.view.randao_mixes.mix_in_reveal(1, &[0xCC; 32]);
+        fork.commit()
+    };
+    let view = rig.tile.state.read_view(fork);
+    rig.tile.shuffling_cache.precompute(&view, view.slot.current_epoch() + 1);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty(), "computing a losing branch cannot replace API duties");
+
+    rig.tile.last_applied = fork;
+    let fork_ids = selected_ids(&rig.tile);
+    assert_ne!(original, fork_ids, "fixture has different decision roots");
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert_eq!(posted(rig.drain()), fork_ids);
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert!(posted(rig.drain()).is_empty());
+
+    rig.tile.last_applied = rig.anchor;
+    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    assert_eq!(posted(rig.drain()), original, "restored branch must be reposted");
+}
+
+#[test]
+fn selected_head_shufflings_survive_side_branch_cache_pressure() {
+    let mut rig = HeadRig::new();
+    for branch in 2..5 {
+        let root = [branch; 32];
+        rig.import(root, 71, root, root);
+        assert_eq!(rig.tile.head_block_root(), root);
+        let head = rig.tile.last_applied;
+        {
+            let view = rig.tile.state.read_view(head);
+            rig.tile.shuffling_cache.precompute(&view, 2);
+            rig.tile.shuffling_cache.precompute(&view, 3);
+        }
+        for other in 10..20 {
+            let root = [other; 32];
+            let fork = rig.post_state(rig.anchor, root, 71, root, root);
+            let view = rig.tile.state.read_view(fork);
+            rig.tile.shuffling_cache.precompute(&view, 2);
+            rig.tile.shuffling_cache.for_block(&view, 2).unwrap();
+        }
+        let view = rig.tile.state.read_view(head);
+        for epoch in 1..=3 {
+            assert!(
+                rig.tile
+                    .shuffling_cache
+                    .get(ShufflingRequest::new(&view, epoch).unwrap())
+                    .committee_aggs
+                    .is_some(),
+                "selected head's shuffling must remain cached after competing branch requests",
+            );
+        }
+    }
+}
+
+/// A matching RANDAO mix alone does not identify the active validator set.
+#[test]
+fn published_shuffling_uses_the_selected_branches_active_set() {
+    let mut rig = HeadRig::new();
+    let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
+    let fork = {
+        let mut fork = rig.tile.state.apply_block_view(fork);
+        fork.view.validators.set_exit_epoch(7, 2);
+        fork.commit()
+    };
+    let original = rig.tile.state.read_view(rig.anchor);
+    let selected = rig.tile.state.read_view(fork);
+    for epoch in [2, 3] {
+        assert_eq!(original.randao_mixes.seed_mix(epoch), selected.randao_mixes.seed_mix(epoch));
+    }
+    rig.tile.last_applied = fork;
     rig.tile.post_shufflings(&mut rig.adapter.producers);
     let published = rig.drain();
-    let mut posted_now = posted(&rig.tile.events_producer, published);
-    posted_now.sort_unstable();
-    let expected: Vec<_> = [4, 5]
-        .into_iter()
-        .map(|epoch| (epoch, rig.tile.shuffling_cache.shuffled_by_epoch(epoch).unwrap().len() * 4))
-        .collect();
-    assert_eq!(posted_now, expected);
-
-    rig.tile.precompute_next_epoch_shuffling(4);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
-    let published = rig.drain();
-    assert_eq!(posted(&rig.tile.events_producer, published), []);
+    let mut epochs = Vec::new();
+    for event in published.0 {
+        if let BeaconStateEvent::AttestersShuffling { id, indices } = event {
+            epochs.push(id.epoch);
+            let bytes = rig.tile.events_producer.read_buffer(indices).unwrap();
+            let mut validators = bytes
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            validators.sort_unstable();
+            assert_eq!(
+                validators,
+                (0..7).collect::<Vec<_>>(),
+                "exited validator must not have duties"
+            );
+        }
+    }
+    epochs.sort_unstable();
+    assert_eq!(epochs, [2, 3]);
 }
 
 fn register_proposer(tile: &mut BeaconStateTile, validator_index: u64, fee_recipient: [u8; 20]) {

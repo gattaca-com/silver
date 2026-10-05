@@ -156,7 +156,7 @@ impl<'a> AttestedCommittees<'a> {
             return Ok(());
         }
         Err(AttestationError::ValidatorOutOfRange {
-            vi: self.shuffling.built_against - 1,
+            vi: self.shuffling.required_validator_count - 1,
             count: validators_count,
         })
     }

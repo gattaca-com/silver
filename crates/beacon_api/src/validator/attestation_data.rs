@@ -51,7 +51,10 @@ impl CommitteeQuery {
             return None;
         }
         let epoch = slot / SLOTS_PER_EPOCH;
-        if ctx.shufflings.committees_per_slot(epoch).is_some_and(|count| committee_index >= count) {
+        if ctx
+            .read_state(|view| ctx.shufflings.committees_per_slot(&view, epoch))
+            .is_some_and(|count| committee_index >= count)
+        {
             resp.error(400, "committee_index is past the epoch's committee count");
             return None;
         }
@@ -175,7 +178,7 @@ pub(crate) fn uint64_query(req: &Request<'_>, name: &str) -> Option<u64> {
 mod tests {
     use silver_beacon_state_data::{
         BeaconBlockHeader, BeaconState, BeaconStateOwner, EpochState, EpochStateFinalized,
-        SlotState, SlotStateFinalized, SlotStateGroup, SpecConfig,
+        ShufflingId, SlotState, SlotStateFinalized, SlotStateGroup, SpecConfig,
     };
     use silver_common::SyncUpdate;
     use silver_httpcore::ParsedRequest;
@@ -221,7 +224,8 @@ mod tests {
         ctx.node_status.head_payload = PayloadResolution::Full;
         ctx.node_status.wall_slot = state_slot + 1;
         ctx.node_status.target = Some(SyncUpdate::Following);
-        ctx.shufflings.record(STATE_EPOCH, &[0u8; 4 * size_of::<u32>()]);
+        let id = ctx.read_state(|view| ShufflingId::from_state(&view, STATE_EPOCH).unwrap());
+        ctx.shufflings.record(id, &[0u8; 4 * size_of::<u32>()]);
         ctx
     }
 
@@ -278,8 +282,9 @@ mod tests {
     #[test]
     fn committee_index_past_the_posted_committees_is_400() {
         let mut ctx = mainnet_ctx();
-        let past_the_count =
-            ctx.shufflings.committees_per_slot(STATE_EPOCH).expect("the fixture posts a shuffling");
+        let past_the_count = ctx
+            .read_state(|view| ctx.shufflings.committees_per_slot(&view, STATE_EPOCH))
+            .expect("the fixture posts a shuffling");
         let query = format!("slot={STATE_SLOT}&committee_index={past_the_count}");
         assert_eq!(status_code(&get(&ctx, &query)), "400");
 
