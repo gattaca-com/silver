@@ -6,7 +6,7 @@
 import { SourceClass, TimingChannel } from './wire.js';
 import { escape } from './view.js';
 import {
-  AB, BS, COLOUR_STEPS, CTL, DC, NET, NO_BUCKETS, STO, TILES, chartSlot, colourRamp, detailPanel,
+  BS, COLOUR_STEPS, CTL, DC, IO, NET, NO_BUCKETS, TILES, chartSlot, colourRamp, detailPanel,
   drawTrunks, fmtNs, fmtRate, logWidth, spotRadius, widthSwatch,
 } from './flow_layout.js';
 
@@ -17,29 +17,30 @@ const RATE_DECADES = 5;
 // docs/spine-message-flow.md; update both together. Every consumer of a
 // broadcast queue reads every producer's messages, so the cross product is
 // the expected pair set: drawn grey until its timer reports traffic.
-// `engine_health` and `peer_stats` have no in-process consumer.
+// `engine_health` and `peer_stats` have no in-process consumer. Storage and
+// ApplicationBoundary run as one IoTile, so traffic between them is
+// self-consumption: listed on the node, not drawn.
 const QUEUES = [
   ['gossip_in', 'GossipMsgIn', [NET], [CTL]],
   ['new_gossip', 'NewGossipMsg', [CTL], [BS, DC]],
-  ['p2p_send', 'P2pSend', [CTL, STO], [NET]],
-  ['rpc_inbound', 'RpcInbound', [NET], [CTL, BS, DC, STO]],
+  ['p2p_send', 'P2pSend', [CTL, IO], [NET]],
+  ['rpc_inbound', 'RpcInbound', [NET], [CTL, BS, DC, IO]],
   ['cluster_inbound', 'ClusterIn', [NET], [CTL]],
   ['cluster_outbound', 'ClusterMsgOut', [CTL], [NET]],
-  ['beacon_api_requests', 'BeaconApiRequest', [AB], [CTL, BS, STO]],
-  ['beacon_api_responses', 'BeaconApiResponse', [CTL, BS, STO], [AB]],
-  ['peer_events', 'PeerEvent', [NET, CTL, BS, DC, STO], [CTL, AB]],
-  ['peer_control', 'PeerControl', [CTL], [NET, STO]],
-  ['beacon_events', 'BeaconStateEvent', [BS], [CTL, NET, STO, DC, AB]],
-  ['data_columns', 'DataColumnsEvent', [DC], [CTL, BS, STO, AB]],
+  ['beacon_api_requests', 'BeaconApiRequest', [IO], [CTL, BS, IO]],
+  ['beacon_api_responses', 'BeaconApiResponse', [CTL, BS, IO], [IO]],
+  ['peer_events', 'PeerEvent', [NET, CTL, BS, DC, IO], [CTL, IO]],
+  ['peer_control', 'PeerControl', [CTL], [NET, IO]],
+  ['beacon_events', 'BeaconStateEvent', [BS], [CTL, NET, IO, DC]],
+  ['data_columns', 'DataColumnsEvent', [DC], [CTL, BS, IO]],
   ['retention', 'RetentionEvent', [CTL], [DC]],
   ['cells', 'CellStoreEvent', [CTL, DC], [CTL, DC]],
-  ['sync_target', 'SyncUpdate', [CTL], [BS, DC, STO, AB]],
-  ['sync_needs', 'SyncNeed', [CTL, BS, DC, STO], [CTL]],
-  ['replay_blocks', 'ReplayBlock', [STO], [BS]],
-  ['syncing_strategy', 'SyncingStrategy', [CTL], [STO]],
-  ['engine_reqs', 'EngineReq', [BS, DC], [AB]],
-  // AB consumes its own NewPayload responses; the self-edge is not drawn.
-  ['engine_resps', 'EngineResp', [AB], [BS, DC, AB]],
+  ['sync_target', 'SyncUpdate', [CTL], [BS, DC, IO]],
+  ['sync_needs', 'SyncNeed', [CTL, BS, DC, IO], [CTL]],
+  ['replay_blocks', 'ReplayBlock', [IO], [BS]],
+  ['syncing_strategy', 'SyncingStrategy', [CTL], [IO]],
+  ['engine_reqs', 'EngineReq', [BS, DC], [IO]],
+  ['engine_resps', 'EngineResp', [IO], [BS, DC, IO]],
 ];
 
 const QUEUE_OF = new Map(QUEUES.map(([queue, msg]) => [msg, queue]));

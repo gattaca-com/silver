@@ -13,14 +13,13 @@ pub struct CompositeTile<S: FluxSpine, T1: Tile<S>, T2: Tile<S>> {
 }
 
 impl<S: FluxSpine, T1: Tile<S>, T2: Tile<S>> CompositeTile<S, T1, T2> {
-    pub fn new(tile_1: T1, tile_2: T2) -> Self {
-        let name = tile_1.name().as_str().to_string() + "_" + tile_2.name().as_str();
+    pub fn new(tile_1: T1, tile_2: T2, name: &'static str) -> Self {
         Self {
             tile_1, 
             tile_2, 
             tile_1_init: false,
             tile_2_init: false,
-            name: TileName::from_str_truncate(name.as_str()),
+            name: TileName::from_str_truncate(name),
             _spine: PhantomData::default(),
         }
     }

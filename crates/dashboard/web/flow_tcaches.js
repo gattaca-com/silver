@@ -9,7 +9,7 @@ import { tcacheMinTail } from './state.js';
 import { tcacheTable } from './tcaches.js';
 import { escape, fmtBytes } from './view.js';
 import {
-  AB, BS, COLOUR_STEPS, CTL, DC, NET, STO, TILES, colourRamp, drawTrunks, fmtBytesRate, logWidth,
+  BS, COLOUR_STEPS, CTL, DC, IO, NET, TILES, colourRamp, drawTrunks, fmtBytesRate, logWidth,
   spotRadius, widthSwatch,
 } from './flow_layout.js';
 
@@ -31,8 +31,8 @@ const TCACHES = [
   ['control_rpc', CTL],
   ['cluster_outbound', CTL],
   ['control_slot', CTL],
-  ['storage_delivery', STO],
-  ['boundary_processing', AB],
+  ['storage_delivery', IO],
+  ['boundary_processing', IO],
   ['beacon_state_handoff', BS],
 ];
 
@@ -45,9 +45,9 @@ const CONSUMER_PREFIXES = [
   ['gossip_', CTL],
   ['bs_', BS],
   ['dc_', DC],
-  ['ds_', STO],
-  ['api_', AB],
-  ['eng_', AB],
+  ['ds_', IO],
+  ['api_', IO],
+  ['eng_', IO],
   ['p2p_', NET],
   ['peer_', NET],
   ['network_', NET],
@@ -58,11 +58,11 @@ const CONSUMER_PREFIXES = [
 // them. The forwarder relays refs only: receivers read the producer's ring.
 // DataColumns declaring its own emitter (persist reader) is left out.
 const FORWARDS = [
-  ['network_processing', BS, 'bs_network_processing', [CTL, DC, STO, AB]],
-  ['network_processing', DC, 'dc_network_processing', [CTL, STO, AB]],
-  ['control_processing', BS, 'bs_control_processing', [DC, STO, AB]],
-  ['control_processing', DC, 'dc_control_processing', [STO, AB]],
-  ['control_slot', DC, 'dc_control_slot', [STO, AB]],
+  ['network_processing', BS, 'bs_network_processing', [CTL, DC, IO]],
+  ['network_processing', DC, 'dc_network_processing', [CTL, IO]],
+  ['control_processing', BS, 'bs_control_processing', [DC, IO]],
+  ['control_processing', DC, 'dc_control_processing', [IO]],
+  ['control_slot', DC, 'dc_control_slot', [IO]],
   ['control_gossip', CTL, 'gossip_mcache', [NET]],
   ['control_gossip', DC, 'dc_control_gossip', [NET, CTL]],
 ];

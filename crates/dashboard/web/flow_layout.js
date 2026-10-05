@@ -20,22 +20,22 @@ const TRUNK_HIT = 12;
 const NEAR_BOX = 220;
 
 /** Keyed by the tile's Rust type name, as flux names its metrics files.
- *  A hexagon: Network and BeaconState at the middle left and right, the
- *  others at the top and bottom, mirrored about the centre. Every straight
- *  tile-to-tile line clears every other box by ≥ 40. */
+ *  Network and BeaconState at the middle left and right, Control and
+ *  DataColumns at the top, IoTile (Storage and ApplicationBoundary in one
+ *  `CompositeTile`) at the bottom centre. Every straight tile-to-tile line
+ *  clears every other box by ≥ 40. */
 export const TILES = {
   NetworkTile: { label: 'Network', x: 75, y: 230 },
   Controller: { label: 'Control', x: 240, y: 40 },
   DataColumnsTile: { label: 'DataColumns', x: 520, y: 40 },
-  ApplicationBoundaryTile: { label: 'API', x: 240, y: 420 },
-  StorageTile: { label: 'Storage', x: 520, y: 420 },
+  IoTile: { label: 'IO', x: 380, y: 420 },
   BeaconStateTile: { label: 'BeaconState', x: 685, y: 230 },
 };
 
 const DEFAULTS = Object.fromEntries(Object.entries(TILES).map(([name, t]) => [name, { x: t.x, y: t.y }]));
 /** Versioned with the default layout, so a layout saved against an older
  *  default is not applied over a newer one. */
-const LAYOUT_KEY = 'silver-dashboard.tile-layout.v3';
+const LAYOUT_KEY = 'silver-dashboard.tile-layout.v4';
 
 const atDefault = (name) => TILES[name].x === DEFAULTS[name].x && TILES[name].y === DEFAULTS[name].y;
 
@@ -79,9 +79,8 @@ loadLayout();
 export const NET = 'NetworkTile';
 export const CTL = 'Controller';
 export const BS = 'BeaconStateTile';
-export const STO = 'StorageTile';
 export const DC = 'DataColumnsTile';
-export const AB = 'ApplicationBoundaryTile';
+export const IO = 'IoTile';
 
 export function fmtRate(r) {
   if (r >= 1e6) return `${(r / 1e6).toFixed(1)}M/s`;

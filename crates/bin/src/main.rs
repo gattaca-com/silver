@@ -367,7 +367,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         boundary_processing_producer,
     );
 
-    let storage_api_tile = CompositeTile::new(storage_tile, application_boundary_tile);
+    let storage_api_tile = CompositeTile::new(storage_tile, application_boundary_tile, "IoTile");
 
     // Spine
     let spine = SilverSpine::new(None);
