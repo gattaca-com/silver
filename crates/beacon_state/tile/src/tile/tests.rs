@@ -4,7 +4,11 @@ use std::{fs, path::PathBuf};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PendingDeposit, PendingPartialWithdrawal, ShufflingId, StateReadView, SyncCommittee, ValSeed, Withdrawals, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE
+    BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
+    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
+    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, PendingPartialWithdrawal,
+    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee,
+    ValSeed, Withdrawals,
 };
 #[cfg(feature = "ef_tests")]
 use silver_common::ProducedBlock;
