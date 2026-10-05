@@ -183,6 +183,8 @@ impl ShufflingCache {
         }
     }
 
+    /// Protects both identities while filling, so the second fill cannot evict
+    /// the first. Different in a side branch to 3 identities in HeadShufflings.
     fn ensure_pair(&mut self, view: &StateReadView, epoch: Epoch) -> Option<[usize; 2]> {
         let requests = [
             ShufflingRequest::new(view, epoch)?,
@@ -197,6 +199,12 @@ impl ShufflingCache {
         if let Some(index) = self.entries.iter().position(|entry| entry.id == Some(id)) {
             return index;
         }
+        // Linear search in cache this small is fast and simple. Also, we `expect`
+        // below at most 5 entries are protected in an 8-entry cache.
+        const _: () = assert!(
+            MAX_SHUFFLING_CACHE > (3 + 2) && MAX_SHUFFLING_CACHE <= 8,
+            "cache must be small and have space for at least 1 unprotected entry"
+        );
         let index = self
             .entries
             .iter()
