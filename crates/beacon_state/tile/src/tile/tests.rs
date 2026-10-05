@@ -5734,9 +5734,8 @@ fn pooled_attestations_land_in_the_produced_block() {
         *view.validators.pubkey(0),
         "fixture premise: spec test keys"
     );
-    tile.shuffling_cache.ensure_window(&view, epoch);
-    let committee =
-        tile.shuffling_cache.lookup(&view, epoch).unwrap().committee(att_slot, 0).to_vec();
+    let request = ShufflingRequest::new(&view, epoch).unwrap();
+    let committee = tile.shuffling_cache.get(request).committee(att_slot, 0).to_vec();
     assert!(committee.len() > 1, "fixture premise: a committee to leave one out of");
 
     let mut data = [0u8; ATTESTATION_DATA_SIZE];
@@ -5795,7 +5794,7 @@ fn pooled_attestations_land_in_the_produced_block() {
     assert_eq!(AttestationView::committee_bits(attestation), &1u64.to_le_bytes());
 
     let view = tile.state.read_view(parent);
-    let shuffling = tile.shuffling_cache.build_ref(&view, epoch);
+    let shuffling = tile.shuffling_cache.for_block(&view, epoch).unwrap();
     let mut sigs = bls::SigBatch::new();
     stf::collect_sigs_attestations(
         view.imm,
