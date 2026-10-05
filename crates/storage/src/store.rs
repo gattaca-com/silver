@@ -664,6 +664,12 @@ impl Store {
         &self.store_dir
     }
 
+    pub(super) fn finalized_envelope(&self, slot: u64) -> Option<PathBuf> {
+        (slot >= self.spec.gloas_fork_slot())
+            .then(|| envelope_path(&self.store_dir, slot))
+            .filter(|path| path.exists())
+    }
+
     pub(super) fn replay_entries(&self) -> Vec<ReplayEntry> {
         let checkpoint_slot = self.last_persisted_finalized_slot;
         let mut entries = Vec::with_capacity(self.unfinalized.len());
@@ -693,12 +699,7 @@ impl Store {
             if slot > checkpoint_slot {
                 let block = block_path(&self.store_dir, slot);
 
-                // Promoted envelopes are keyed by slot, so presence on disk is
-                // the whole test
-                let envelope = (slot >= self.spec.gloas_fork_slot())
-                    .then(|| envelope_path(&self.store_dir, slot))
-                    .filter(|path| path.exists());
-
+                let envelope = self.finalized_envelope(slot);
                 entries.push(ReplayEntry { slot, block, columns_on_disk: true, envelope });
             }
         }

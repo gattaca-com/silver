@@ -2020,6 +2020,18 @@ fn backfill_envelope_response_is_not_parked() {
     assert!(tile.pending_envelopes.contains_key(&unknown_root), "live envelope parks");
 }
 
+/// A replayed block can wait, e.g. on its parent's payload, while its envelope
+/// replays right after it: the envelope parks until the block imports.
+#[test]
+fn replayed_envelope_before_its_block_imports_parks() {
+    let (mut tile, _gp, mut rp, _spine, _adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+
+    let waiting_root = [0xE6u8; 32];
+    tile.replay_envelope(rpc_envelope(&mut rp, waiting_root));
+    assert!(tile.pending_envelopes.contains_key(&waiting_root));
+}
+
 #[test]
 fn orphan_below_cap_is_buffered() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);

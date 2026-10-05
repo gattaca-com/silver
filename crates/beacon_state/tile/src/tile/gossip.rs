@@ -1137,7 +1137,7 @@ impl BeaconStateTile {
         Feedback::Accept
     }
 
-    fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
+    pub(super) fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
         let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
             self.pending_envelopes.contains_key(&block_root);
         if !has_room {
