@@ -463,7 +463,7 @@ impl BeaconStateTile {
                 silver_log::error!(
                     block_epoch,
                     state_epoch = view.slot.current_epoch(),
-                    "block shuffling state is in the wrong epoch"
+                    "block shuffling unavailable from the parent state"
                 );
                 Error::invalid_block(parsed.header.state_root, BlockError::SlotStateMismatch {
                     block: parsed.header.slot,

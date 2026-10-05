@@ -1,8 +1,8 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
     B256, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
-    SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId,
-    StateReadView, SyncSubcommittee, gloas::PTC_SIZE,
+    SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView,
+    SyncSubcommittee, gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -26,6 +26,7 @@ use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
     attestation_pool::InsertOutcome, fork_data_roots::ForkDataRoots, held_blocks::BlockSourceMsg,
     seen_aggregates::Coverage, seen_proposer_preferences::ProposerPreferences,
+    shuffling_cache::ShufflingRequest,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
@@ -196,13 +197,13 @@ impl BeaconStateTile {
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
         // Validate committee membership against the canonical head.
         let view = self.state.read_view(canon_id);
-        let Some(id) = ShufflingId::from_state(&view, att_epoch) else {
+        let Some(request) = ShufflingRequest::new(&view, att_epoch) else {
             return Err(Feedback::Ignore);
         };
-        if !self.fork_choice.shares_shuffling(&block_root, id) {
+        if !self.fork_choice.shares_shuffling(&block_root, request.id()) {
             return Err(Feedback::Ignore);
         }
-        let shuffling = self.shuffling_cache.get(&view, id);
+        let shuffling = self.shuffling_cache.get(request);
         if committee_index >= shuffling.committees_per_slot {
             return Err(Feedback::Reject(None));
         }
@@ -867,13 +868,13 @@ impl BeaconStateTile {
         {
             let view = self.state.read_view(canon_id);
             let n = view.validators.count();
-            let Some(id) = ShufflingId::from_state(&view, att_epoch) else {
+            let Some(request) = ShufflingRequest::new(&view, att_epoch) else {
                 return Feedback::Ignore;
             };
-            if !self.fork_choice.shares_shuffling(data.beacon_block_root(), id) {
+            if !self.fork_choice.shares_shuffling(data.beacon_block_root(), request.id()) {
                 return Feedback::Ignore;
             }
-            let shuffling = self.shuffling_cache.get(&view, id);
+            let shuffling = self.shuffling_cache.get(request);
             if stf::AttestedCommittees::new(att, &shuffling)
                 .and_then(|c| c.attesters_into(n, &mut self.stf_scratch.active))
                 .is_err()
@@ -960,13 +961,13 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        let Some(id) = ShufflingId::from_state(&view, parsed.att_epoch) else {
+        let Some(request) = ShufflingRequest::new(&view, parsed.att_epoch) else {
             return Feedback::Ignore;
         };
-        if !self.fork_choice.shares_shuffling(parsed.agg_data.beacon_block_root(), id) {
+        if !self.fork_choice.shares_shuffling(parsed.agg_data.beacon_block_root(), request.id()) {
             return Feedback::Ignore;
         }
-        let shuffling = self.shuffling_cache.get(&view, id);
+        let shuffling = self.shuffling_cache.get(request);
         if committee_index >= shuffling.committees_per_slot {
             return Feedback::Reject(None);
         }

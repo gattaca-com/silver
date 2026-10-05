@@ -33,6 +33,7 @@ use super::{
     block::{ParsedBlock, StagedBlock},
     block_production::Proposal,
     held_blocks::{BlockSourceMsg, ORPHAN_TIMEOUT_SLOTS},
+    shuffling_cache::ShufflingRequest,
     *,
 };
 use crate::{
@@ -4916,7 +4917,7 @@ fn selected_head_shufflings_survive_side_branch_cache_pressure() {
             assert!(
                 rig.tile
                     .shuffling_cache
-                    .get(&view, ShufflingId::from_state(&view, epoch).unwrap())
+                    .get(ShufflingRequest::new(&view, epoch).unwrap())
                     .committee_aggs
                     .is_some(),
                 "selected head's shuffling must remain cached after competing branch requests",

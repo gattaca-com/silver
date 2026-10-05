@@ -519,7 +519,7 @@ impl BeaconStateTile {
                 silver_log::error!(
                     epoch,
                     state_epoch = view.slot.current_epoch(),
-                    "production shuffling state is in the wrong epoch"
+                    "production shuffling unavailable from the parent state"
                 );
                 ProduceBlockFailure::Internal
             })?
