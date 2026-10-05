@@ -2,32 +2,79 @@
 
 import { escape, fmtBytes } from './view.js';
 
-export const W = 1420;
-export const H = 760;
-export const NODE_W = 240;
+export const W = 760;
+export const H = 460;
+export const NODE_W = 130;
 export const NODE_H = 66;
 /** Room left of the canvas for the p2p arrows into and out of Network. */
-export const P2P_MARGIN = 170;
+export const P2P_MARGIN = 100;
 export const COLOUR_STEPS = 10;
-export const WIDTH_MIN = 1.5;
+const WIDTH_MIN = 1.5;
 export const WIDTH_MAX = 10;
 const LANE_GAP = 16;
+/** Spacing at the midpoint between the lines of a split trunk. */
+const SPLIT_GAP = 12;
+const TRUNK_HIT = 12;
 /** A box whose centre sits within this of a pair's line pushes its lanes to
  *  the other side. */
 const NEAR_BOX = 220;
 
 /** Keyed by the tile's Rust type name, as flux names its metrics files.
- *  Network and ApplicationBoundary flank the two columns; BeaconState sits
- *  just right of centre so the Control–ApplicationBoundary line clears it,
- *  and the layout mirrors about the Network–ApplicationBoundary axis. */
+ *  A hexagon: Network and BeaconState at the middle left and right, the
+ *  others at the top and bottom, mirrored about the centre. Every straight
+ *  tile-to-tile line clears every other box by ≥ 40. */
 export const TILES = {
-  NetworkTile: { label: 'Network', x: 150, y: 380 },
-  Controller: { label: 'Control', x: 440, y: 50 },
-  StorageTile: { label: 'Storage', x: 440, y: 710 },
-  BeaconStateTile: { label: 'BeaconState', x: 760, y: 270 },
-  DataColumnsTile: { label: 'DataColumns', x: 760, y: 490 },
-  ApplicationBoundaryTile: { label: 'ApplicationBoundary', x: 1270, y: 380 },
+  NetworkTile: { label: 'Network', x: 75, y: 230 },
+  Controller: { label: 'Control', x: 240, y: 40 },
+  DataColumnsTile: { label: 'DataColumns', x: 520, y: 40 },
+  ApplicationBoundaryTile: { label: 'API', x: 240, y: 420 },
+  StorageTile: { label: 'Storage', x: 520, y: 420 },
+  BeaconStateTile: { label: 'BeaconState', x: 685, y: 230 },
 };
+
+const DEFAULTS = Object.fromEntries(Object.entries(TILES).map(([name, t]) => [name, { x: t.x, y: t.y }]));
+/** Versioned with the default layout, so a layout saved against an older
+ *  default is not applied over a newer one. */
+const LAYOUT_KEY = 'silver-dashboard.tile-layout.v3';
+
+const atDefault = (name) => TILES[name].x === DEFAULTS[name].x && TILES[name].y === DEFAULTS[name].y;
+
+export function isDefaultLayout() {
+  return Object.keys(TILES).every(atDefault);
+}
+
+/** Centre of `name`, kept inside the diagram. */
+export function moveTile(name, x, y) {
+  TILES[name].x = Math.round(Math.min(W - NODE_W / 2, Math.max(NODE_W / 2, x)));
+  TILES[name].y = Math.round(Math.min(H - NODE_H / 2, Math.max(NODE_H / 2, y)));
+}
+
+/** Per browser; storage may be unavailable, and then the layout lives only
+ *  until reload. */
+export function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(Object.fromEntries(Object.entries(TILES).map(([n, t]) => [n, { x: t.x, y: t.y }]))));
+  } catch {}
+}
+
+export function resetLayout() {
+  for (const [name, p] of Object.entries(DEFAULTS)) moveTile(name, p.x, p.y);
+  try {
+    localStorage.removeItem(LAYOUT_KEY);
+  } catch {}
+}
+
+function loadLayout() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null');
+  } catch {}
+  for (const [name, p] of Object.entries(saved ?? {})) {
+    if (TILES[name] && Number.isFinite(p?.x) && Number.isFinite(p?.y)) moveTile(name, p.x, p.y);
+  }
+}
+loadLayout();
+
 
 export const NET = 'NetworkTile';
 export const CTL = 'Controller';
@@ -61,7 +108,7 @@ export function logWidth(value, floor, decades) {
 }
 
 /** Where the segment from the box centre towards (tx, ty) leaves the box. */
-export function border(node, tx, ty) {
+function border(node, tx, ty) {
   const dx = tx - node.x;
   const dy = ty - node.y;
   const sx = dx === 0 ? Infinity : NODE_W / 2 / Math.abs(dx);
@@ -71,16 +118,103 @@ export function border(node, tx, ty) {
 }
 
 /** Quadratic curve between two points, bowed perpendicular by `bow`. */
-export function curve(a, b, bow) {
+function curve(a, b, bow) {
   const mx = (a.x + b.x) / 2;
   const my = (a.y + b.y) / 2;
   const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
   const cx = mx - ((b.y - a.y) / len) * bow;
   const cy = my + ((b.x - a.x) / len) * bow;
+  const at = (t) => ({
+    x: (1 - t) ** 2 * a.x + 2 * (1 - t) * t * cx + t ** 2 * b.x,
+    y: (1 - t) ** 2 * a.y + 2 * (1 - t) * t * cy + t ** 2 * b.y,
+  });
   return {
     d: `M${a.x.toFixed(1)},${a.y.toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${b.x.toFixed(1)},${b.y.toFixed(1)}`,
-    mid: { x: (a.x + 2 * cx + b.x) / 4, y: (a.y + 2 * cy + b.y) / 4 },
+    mid: at(0.5),
+    at,
   };
+}
+
+const SPOT_R_MIN = 3;
+/** % of orange in an idle line's colour mix with the panel. */
+const TRUNK_HEAT_MIN = 25;
+const SPOT_R_MAX = 8;
+
+/** Spot radius for a stroke width from `logWidth`, on the same log scale. */
+export function spotRadius(width) {
+  return SPOT_R_MIN + ((SPOT_R_MAX - SPOT_R_MIN) * (width - WIDTH_MIN)) / (WIDTH_MAX - WIDTH_MIN);
+}
+
+/** One line per direction between two tiles, as wide as `width(total)` of
+ *  its items' rates, with one spot per item spaced evenly in list order, so a
+ *  spot keeps its place as traffic comes and goes. An item is `{ fromName,
+ *  toName, rate, counted, fill, r, hollow, show, mark, attrs, title, label,
+ *  pinned }`:
+ *  `counted` adds its rate to the line, `fill` is the spot's class, `show`
+ *  the hovered item's labels, `mark`
+ *  (`selected` / `related`) also marks its line, `attrs` carries its selection
+ *  and hover keys. Idle spots are painted first, marked ones last.
+ *  Hovering a trunk splits it: each item gets its own line in its spot's
+ *  colour, selectable like its spot, and its spot and label move onto it.
+ *  `split` is the hovered trunk's key, so a re-render keeps it split. */
+export function drawTrunks(items, width, split) {
+  const trunks = new Map();
+  for (const it of items) {
+    const k = `${it.fromName}>${it.toName}`;
+    let t = trunks.get(k);
+    if (!t) trunks.set(k, (t = { fromName: it.fromName, toName: it.toName, items: [], total: 0, mark: '' }));
+    t.items.push(it);
+    if (it.counted) t.total += it.rate ?? 0;
+    if (it.mark === 'selected' || (it.mark && !t.mark)) t.mark = it.mark;
+  }
+  const list = [...trunks.values()];
+  const bows = laneBows(list);
+  const lines = [];
+  const idle = [];
+  const active = [];
+  const top = [];
+  const labels = [];
+  list.forEach((t, i) => {
+    const from = TILES[t.fromName];
+    const to = TILES[t.toName];
+    const a = border(from, to.x, to.y);
+    const b = border(to, from.x, from.y);
+    const { d, at } = curve(a, b, bows[i]);
+    const busy = t.total > 0;
+    const w = busy ? width(t.total) : WIDTH_MIN;
+    const mark = t.mark ? ` ${t.mark}` : '';
+    const key = escape(`${t.fromName}>${t.toName}`);
+    const cls = `${t.fromName}>${t.toName}` === split ? ' split' : '';
+    const n = t.items.length;
+    // Orange strength follows traffic on the width's scale; idle is faintest.
+    const heat = Math.round(TRUNK_HEAT_MIN + ((100 - TRUNK_HEAT_MIN) * (w - WIDTH_MIN)) / (WIDTH_MAX - WIDTH_MIN));
+    lines.push(`<path class="trunk${mark}${cls}" data-trunk="${key}" d="${d}" stroke-width="${w.toFixed(1)}" style="--heat:${heat}%" marker-end="url(#ah-trunk)"/>`);
+    lines.push(`<path class="trunk-hit${cls}" data-trunk="${key}" d="${d}" style="--fan:${((n - 1) * SPLIT_GAP + TRUNK_HIT).toFixed(0)}px"/>`);
+    t.items.forEach((it, k) => {
+      const tk = (k + 1) / (n + 1);
+      const p = at(tk);
+      const [x, y] = [p.x.toFixed(1), p.y.toFixed(1)];
+      // A quadratic's midpoint moves half its bow, so double the gap.
+      const own = curve(a, b, bows[i] + (k - (n - 1) / 2) * SPLIT_GAP * 2);
+      const q = own.at(tk);
+      const shift = `--sx:${(q.x - p.x).toFixed(1)}px;--sy:${(q.y - p.y).toFixed(1)}px`;
+      const step = it.fill.slice('qf'.length);
+      const ownW = it.counted && it.rate > 0 ? width(it.rate) : WIDTH_MIN;
+      const dash = it.hollow ? ' hollow' : '';
+      const ownMark = it.mark ? ` ${it.mark}` : '';
+      lines.push(`<path class="subline q${step}${dash}${ownMark}${cls}" data-trunk="${key}" d="${own.d}" stroke-width="${ownW.toFixed(1)}" marker-end="url(#ah-${step.replace(/^-/, '')})"/>`);
+      lines.push(`<path class="subline-hit${cls}" ${it.attrs} data-trunk="${key}" d="${own.d}"><title>${escape(it.title)}</title></path>`);
+      const fill = it.hollow ? `spot hollow ${it.fill}` : `spot ${it.fill}`;
+      const show = it.show ? ' show' : '';
+      const group = `<g class="edge${show}${it.mark ? ` ${it.mark}` : ''}${cls}" ${it.attrs} data-trunk="${key}" style="${shift}"><title>${escape(it.title)}</title>
+        <circle class="hit" cx="${x}" cy="${y}" r="${SPOT_R_MAX + 3}"/>
+        <circle class="${fill}" cx="${x}" cy="${y}" r="${it.r.toFixed(1)}"/></g>`;
+      (it.mark ? top : it.fill === 'qf-idle' ? idle : active).push(group);
+      const pinned = it.pinned ? ' sel' : '';
+      labels.push(`<text class="elabel${show}${pinned}${cls}" ${it.attrs} data-trunk="${key}" style="${shift}" x="${x}" y="${(p.y - SPOT_R_MAX - 4).toFixed(1)}">${escape(it.label)}</text>`);
+    });
+  });
+  return { paths: lines.join('') + idle.join('') + active.join('') + top.join(''), labels: labels.join('') };
 }
 
 /** Side of the sorted pair's line A→B, as the sign of the bow `curve` bends
@@ -106,7 +240,7 @@ function laneSide(aName, bName) {
 /** Bow per edge, `{ fromName, toName }`, so parallel edges between one tile
  *  pair fan apart. Assigned in list order: a fixed order keeps each edge in
  *  its lane as its traffic comes and goes. */
-export function laneBows(edges) {
+function laneBows(edges) {
   const pairKey = (e) => (e.fromName < e.toName ? `${e.fromName}|${e.toName}` : `${e.toName}|${e.fromName}`);
   const lanes = new Map();
   for (const e of edges) lanes.set(pairKey(e), (lanes.get(pairKey(e)) ?? 0) + 1);
@@ -129,12 +263,10 @@ export function laneBows(edges) {
 
 /** Arrowhead of a selected line; markers do not inherit their line's colour. */
 export const SEL_MARKER = 'sel';
-/** Arrowhead of a line related to the selected one, fainter. */
-export const REL_MARKER = 'rel';
 
 export function markers() {
   const steps = [...Array(COLOUR_STEPS).keys()].map((s) => [s, `qf${s}`]);
-  return [...steps, ['idle', 'qf-idle'], [SEL_MARKER, 'qf-sel'], [REL_MARKER, 'qf-rel']]
+  return [...steps, ['idle', 'qf-idle'], ['trunk', 'qf-trunk'], [SEL_MARKER, 'qf-sel']]
     .map(
       ([id, cls]) =>
         `<marker id="ah-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse" style="overflow:visible"><path class="${cls}" d="M0,0 L10,5 L0,10 z" transform="scale(1.4)"/></marker>`,
@@ -151,7 +283,7 @@ export function drawNodes(utils, notes) {
       const pct = busy === null ? 0 : Math.round(busy * 100);
       const detail = u ? `busy ${pct}%` : 'no tile metrics';
       const extra = (notes.get(name) ?? []).map((l) => `\n${l}`).join('');
-      return `<g class="node" transform="translate(${t.x - NODE_W / 2},${t.y - NODE_H / 2})">
+      return `<g class="node" data-tile="${name}" transform="translate(${t.x - NODE_W / 2},${t.y - NODE_H / 2})">
         <title>${escape(`${t.label} (${name})\n${detail}${extra}`)}</title>
         <rect width="${NODE_W}" height="${NODE_H}" rx="6" style="--busy:${pct}%"/>
         <text class="nlabel" x="${NODE_W / 2}" y="26">${escape(t.label)}</text>
@@ -166,7 +298,7 @@ export function colourRamp() {
 }
 
 export function widthSwatch(width, label) {
-  return `<span><svg width="36" height="12"><line x1="2" y1="6" x2="34" y2="6" class="q5" stroke-width="${width}"/></svg>${label}</span>`;
+  return `<span><svg width="36" height="12"><line x1="2" y1="6" x2="34" y2="6" class="trunk" style="--heat:100%" stroke-width="${width}"/></svg>${label}</span>`;
 }
 
 export function detailPanel(title, body) {

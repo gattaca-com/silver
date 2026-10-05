@@ -1,5 +1,5 @@
 import { BlockTrace, SlotClock } from './trace.js';
-import { Kind, SourceClass, Stage, TimingChannel } from './wire.js';
+import { Kind, Stage, TimingChannel } from './wire.js';
 
 /** Datagram silence after which an instance renders as stale. */
 const STALE_MS = 5000;
@@ -142,7 +142,6 @@ export class Instance {
     this.slotNames = new Map();
     this.counters = new Map();
     this.prevCounters = new Map();
-    this.tcacheMaxLength = new Map();
     /** Per-slot value and rate history of every counter source, by id. */
     this.counterHistory = new Map();
     /** Per `fast:` source id; kept apart from the 1 s bucket history. */
@@ -280,7 +279,6 @@ export class Instance {
       return;
     }
     const cur = this.counters.get(d.sourceId);
-    const tcache = this.sources.get(d.sourceId)?.cls === SourceClass.TCache;
     if (cur && cur.tsNs !== tsNs) {
       // `cur` is complete once a newer bucket starts.
       const prev = this.prevCounters.get(d.sourceId);
@@ -295,13 +293,6 @@ export class Instance {
     entry.tsNs = tsNs;
     for (let i = 0; i < d.values.length; i++) entry.values[d.firstSlot + i] = d.values[i];
     this.counters.set(d.sourceId, entry);
-
-    // Datagrams preceding the first Sources descriptor of a replay carry no
-    // class yet and do not count towards the maximum.
-    if (tcache) {
-      const prev = this.tcacheMaxLength.get(d.sourceId) ?? 0;
-      this.tcacheMaxLength.set(d.sourceId, Math.max(prev, tcacheLength(entry.values)));
-    }
   }
 
   /** Per-second rate of slot `i` over the last completed bucket. */
