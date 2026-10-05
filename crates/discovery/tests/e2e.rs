@@ -30,11 +30,13 @@ impl TestNode {
     fn build(port: u16, config: DiscoveryConfig, with_ip: bool) -> Self {
         let sk = SecretKey::new(&mut rand::thread_rng());
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-        let enr = if with_ip {
+        let mut enr = if with_ip {
             Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(port).build(&sk).unwrap()
         } else {
             Enr::builder().build(&sk).unwrap()
         };
+        // A beacon node on fork digest `[0; 4]`: only those reach the peer manager.
+        enr.set_eth2([0u8; 16], &sk).unwrap();
         let node_enr = enr.clone();
         Self { disco: DiscV5::new(config, sk, enr, [0u8; 4]), addr, enr: node_enr }
     }

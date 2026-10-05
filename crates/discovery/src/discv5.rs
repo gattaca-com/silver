@@ -830,9 +830,12 @@ impl DiscV5 {
         );
     }
 
+    /// A node without `eth2` is no beacon node (e.g. a discv5-only bootnode):
+    /// it stays for routing, but the peer manager would ban it, and a ban
+    /// evicts it from the table.
     fn emit_to_pm(&self, enr: &Enr) -> bool {
         let Some(eth2) = enr.eth2() else {
-            return true;
+            return false;
         };
         eth2[..4] == self.fork_digest ||
             self.previous_fork_digest.is_some_and(|previous| eth2[..4] == previous)
@@ -1679,29 +1682,34 @@ mod tests {
         let (mut b, b_addr) = make_node(19052);
         do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
-        // Build two ENRs:
-        // - good: no eth2 field (surfaced to PM)
-        // - bad: eth2 with wrong fork_digest (kept for routing, not surfaced)
+        // - good: our fork digest (surfaced to PM)
+        // - bad: another fork digest (kept for routing, not surfaced)
+        // - boot: no eth2, a discv5-only bootnode (kept for routing, not surfaced)
         let sk_good = SecretKey::new(&mut rand::thread_rng());
-        let enr_good =
+        let mut enr_good =
             Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 1)).udp4(19053u16).build(&sk_good).unwrap();
+        let mut good_eth2 = [0u8; 16];
+        good_eth2[..4].copy_from_slice(&fork_digest);
+        enr_good.set_eth2(good_eth2, &sk_good).unwrap();
         let id_good = enr_good.node_id();
 
         let sk_bad = SecretKey::new(&mut rand::thread_rng());
         let mut enr_bad =
             Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 2)).udp4(19054u16).build(&sk_bad).unwrap();
-        // Wrong fork digest: all zeros.
         enr_bad.set_eth2([0u8; 16], &sk_bad).unwrap();
         let id_bad = enr_bad.node_id();
 
-        let mut good_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-        enr_good.encode(&mut good_raw);
-        let mut bad_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-        enr_bad.encode(&mut bad_raw);
+        let sk_boot = SecretKey::new(&mut rand::thread_rng());
+        let enr_boot =
+            Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 3)).udp4(19055u16).build(&sk_boot).unwrap();
+        let id_boot = enr_boot.node_id();
 
         let mut nodes: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 8> = ArrayVec::new();
-        nodes.push(bad_raw);
-        nodes.push(good_raw);
+        for enr in [&enr_bad, &enr_good, &enr_boot] {
+            let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+            enr.encode(&mut raw);
+            nodes.push(raw);
+        }
 
         inject_message(
             &mut b,
@@ -1712,30 +1720,23 @@ mod tests {
         );
         let events = collect_events(&mut a);
 
-        // Fork-agnostic routing: both nodes are kept in the table.
-        assert!(
-            a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_good),
-            "good (no-eth2) node should be in kbuckets"
-        );
-        assert!(
-            a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_bad),
-            "bad (wrong fork_digest) node should still be kept for routing"
-        );
+        // Fork-agnostic routing: every node is kept in the table.
+        for (id, name) in [(id_good, "good"), (id_bad, "bad"), (id_boot, "boot")] {
+            assert!(
+                a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id),
+                "{name} node should be in kbuckets"
+            );
+        }
 
-        // PM gating happens at NodeFound emission: only the matching-fork
-        // (here no-eth2 → allowed) node is surfaced.
-        assert!(
+        // PM gating happens at NodeFound emission: only the matching-fork node.
+        let surfaced = |id| {
             events
                 .iter()
-                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_good)),
-            "good (no-eth2) node should be surfaced to PM"
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_bad)),
-            "bad (wrong fork_digest) node should not be surfaced to PM"
-        );
+                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id))
+        };
+        assert!(surfaced(id_good), "good node should be surfaced to PM");
+        assert!(!surfaced(id_bad), "bad (wrong fork_digest) node should not be surfaced to PM");
+        assert!(!surfaced(id_boot), "boot (no eth2) node should not be surfaced to PM");
     }
 
     #[test]
