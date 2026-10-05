@@ -1,5 +1,7 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot};
+use silver_beacon_state_data::{
+    B256, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, ShufflingId, Slot,
+};
 use silver_common::PayloadResolution;
 
 use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, node::PTC_SIZE};
@@ -151,6 +153,15 @@ impl ForkChoice {
         // Children follow their parent in `nodes`.
         self.nodes[idx + 1..].iter().any(|n| n.parent_ix == idx && n.slot > dependent_slot) ||
             self.find_head() == self.nodes[idx].block_root
+    }
+
+    /// Every branch shares the decision block when it precedes the anchor.
+    pub fn shares_shuffling(&self, block_root: &B256, id: ShufflingId) -> bool {
+        let Some(idx) = self.find_node_idx(block_root) else {
+            return false;
+        };
+        self.checkpoint_block_of(idx, id.decision_slot())
+            .is_none_or(|decision_root| decision_root == id.dependent_root)
     }
 
     pub fn checkpoint_block_of(&self, mut idx: usize, epoch_start_slot: Slot) -> Option<B256> {

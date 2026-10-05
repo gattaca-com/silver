@@ -132,12 +132,10 @@ impl ShufflingCache {
         self.head = Some(HeadShufflings { root, epoch, ids });
     }
 
-    /// Resolve and cache one epoch against the selected state. An unavailable
-    /// decision root leaves the cache untouched.
-    pub fn get(&mut self, view: &StateReadView, epoch: Epoch) -> Option<stf::EpochShuffling<'_>> {
-        let id = ShufflingId::from_state(view, epoch)?;
+    pub fn get(&mut self, view: &StateReadView, id: ShufflingId) -> stf::EpochShuffling<'_> {
+        debug_assert_eq!(ShufflingId::from_state(view, id.epoch), Some(id));
         let index = self.ensure(view, id, &[]);
-        Some(self.entries[index].shuffling())
+        self.entries[index].shuffling()
     }
 
     /// The state must already be in the block's epoch. Missing cache identities
@@ -284,6 +282,14 @@ mod tests {
         members
     }
 
+    fn cached<'a>(
+        cache: &'a mut ShufflingCache,
+        view: &StateReadView,
+        epoch: Epoch,
+    ) -> stf::EpochShuffling<'a> {
+        cache.get(view, ShufflingId::from_state(view, epoch).unwrap())
+    }
+
     #[test]
     fn head_shufflings_survive_competing_branch_requests() {
         let (owner, id) = state(1, 8, 8);
@@ -301,7 +307,7 @@ mod tests {
             assert_eq!(members(&pair.curr, 2), (0..7).collect::<Vec<_>>());
             assert_eq!(members(&pair.prev, 1), (0..7).collect::<Vec<_>>());
             for epoch in 1..=3 {
-                let shuffling = cache.get(&head, epoch).unwrap();
+                let shuffling = cached(&mut cache, &head, epoch);
                 assert!(shuffling.committee_aggs.is_some(), "head entry must not be rebuilt");
                 assert_eq!(members(&shuffling, epoch), (0..8).collect::<Vec<_>>());
             }
@@ -322,7 +328,7 @@ mod tests {
             cache.precompute(&other, 2);
             cache.precompute(&other, 3);
             for epoch in 1..=3 {
-                assert!(cache.get(&view, epoch).unwrap().committee_aggs.is_some());
+                assert!(cached(&mut cache, &view, epoch).committee_aggs.is_some());
             }
         }
     }
@@ -380,7 +386,7 @@ mod tests {
         assert_eq!(ShufflingId::from_state(&large, 2), ShufflingId::from_state(&small, 2));
         let mut cache = ShufflingCache::with_capacity(9);
         cache.precompute(&large, 2);
-        let shuffling = cache.get(&small, 2).unwrap();
+        let shuffling = cached(&mut cache, &small, 2);
         assert!(shuffling.committee_aggs.is_some(), "same identity reuses precomputed aggregates");
         assert!(shuffling.indices_in_range(8));
         assert!(!shuffling.indices_in_range(7), "an active index must remain addressable");
@@ -392,14 +398,14 @@ mod tests {
         for branch in 1..=MAX_SHUFFLING_CACHE as u8 + 2 {
             let (owner, id) = state(branch, branch as usize, 8);
             let view = owner.read_view(id);
-            cache.get(&view, 2).unwrap();
+            cached(&mut cache, &view, 2);
         }
         let (owner, id) = state(20, 5, 8);
         let view = owner.read_view(id);
         // Insert the older half first. Filling the newer half must retain it.
         cache.precompute(&view, 1);
         // Displace epoch zero so the requested previous epoch is the oldest.
-        cache.get(&view, 3).unwrap();
+        cached(&mut cache, &view, 3);
         let pair = cache.for_block(&view, 2).unwrap();
         assert_eq!(members(&pair.curr, 2), (0..5).collect::<Vec<_>>());
         assert_eq!(members(&pair.prev, 1), (0..5).collect::<Vec<_>>());
@@ -442,10 +448,9 @@ mod tests {
         let view = owner.read_view(id);
         let mut cache = ShufflingCache::with_capacity(8);
         cache.precompute(&view, 2);
-        assert!(cache.get(&view, 4).is_none());
         for epoch in [1, 3, 4] {
             assert!(cache.for_block(&view, epoch).is_none());
         }
-        assert!(cache.get(&view, 2).unwrap().committee_aggs.is_some());
+        assert!(cached(&mut cache, &view, 2).committee_aggs.is_some());
     }
 }

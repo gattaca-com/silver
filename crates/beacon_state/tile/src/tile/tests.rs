@@ -2577,6 +2577,126 @@ fn attestation_weighs_its_block() {
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
 }
 
+/// Slot processing records the anchor under its header root, so fork choice
+/// must name it the same way for decision roots to agree after an advance.
+fn anchor_at_header_root(tile: &mut BeaconStateTile) -> B256 {
+    let base = tile.last_applied;
+    let (root, anchor) = {
+        let mut g = tile.state.write();
+        let mut sw = g.slot_states.roll_from(base.slot_idx);
+        let state = sw.state_mut();
+        state.latest_block_header.state_root = ANCHOR_STATE_ROOT;
+        let root = ssz_hash::hash_tree_root_block_header(&state.latest_block_header);
+        state.latest_block_root = root;
+        (root, StateId { slot_idx: sw.commit(), ..base })
+    };
+    tile.last_applied = anchor;
+    tile.state.publish_state_id(anchor);
+    let cp = Checkpoint { epoch: 0, root };
+    let slot = tile.slot_state_at(anchor).slot;
+    let validators = tile.head_validator_count();
+    tile.fork_choice = ForkChoice::init(
+        cp,
+        cp,
+        slot,
+        root,
+        ANCHOR_STATE_ROOT,
+        [0u8; 32],
+        false,
+        anchor,
+        validators,
+    );
+    root
+}
+
+fn import_test_block(
+    tile: &mut BeaconStateTile,
+    block_root: B256,
+    slot: Slot,
+    parent_root: B256,
+    state_id: StateId,
+) {
+    let cp = tile.fork_choice.justified_checkpoint;
+    tile.fork_choice.on_block(BlockImport {
+        slot,
+        block_root,
+        state_root: state_root_of(block_root),
+        parent_root,
+        execution_block_hash: [0u8; 32],
+        justified: cp,
+        unrealized_justified: cp,
+        unrealized_finalized: cp,
+        state_id,
+        bid_block_hash: [0u8; 32],
+        parent_payload_status: PayloadStatus::Full,
+        payload_verified: true,
+        is_gloas: false,
+    });
+}
+
+/// The head's committees cannot vouch for a branch that left the head before
+/// the shuffling's decision slot.
+#[test]
+fn attestations_from_another_decision_branch_are_ignored() {
+    const HEAD: B256 = [0xCC; 32];
+    const SIDE: B256 = [0xBB; 32];
+    let epoch = 2;
+    let first_slot = epoch * SLOTS_PER_EPOCH;
+    for aggregate in [false, true] {
+        for (voted, expected) in [(HEAD, Feedback::Accept), (SIDE, Feedback::Ignore)] {
+            let mut tile = make_tile_at_wall_slot(first_slot + SLOTS_PER_EPOCH - 1);
+            seed_tile_with_keys(&mut tile, 128, 0);
+            let anchor_root = anchor_at_header_root(&mut tile);
+            let anchor = tile.last_applied;
+            let advanced = tile.epoch_start_state(anchor, first_slot);
+            let head_state = {
+                let mut g = tile.state.write();
+                let mut sw = g.slot_states.roll_from(advanced.slot_idx);
+                sw.state_mut().latest_block_root = HEAD;
+                StateId { slot_idx: sw.commit(), ..advanced }
+            };
+            import_test_block(&mut tile, HEAD, first_slot, anchor_root, head_state);
+            import_test_block(&mut tile, SIDE, 20, anchor_root, anchor);
+            assert_eq!(tile.fork_choice.find_head(), HEAD);
+
+            let view = tile.state.read_view(head_state);
+            assert_eq!(
+                ShufflingId::from_state(&view, epoch).unwrap().dependent_root,
+                anchor_root,
+                "the head inherits the anchor's decision",
+            );
+            let mut indices = Vec::new();
+            let shuffling = stf::EpochShuffling::from_state(&view, epoch, &mut indices);
+            let (slot, ci, position, size) = (first_slot..first_slot + SLOTS_PER_EPOCH)
+                .find_map(|slot| {
+                    (0..shuffling.committees_per_slot).find_map(|ci| {
+                        let committee = shuffling.committee(slot, ci);
+                        committee
+                            .iter()
+                            .position(|&vi| vi == 0)
+                            .map(|position| (slot, ci, position, committee.len()))
+                    })
+                })
+                .unwrap();
+            let subnet =
+                (shuffling.committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64;
+            let imm = seed_immutable(&tile);
+            let result = if aggregate {
+                let bytes = test_signing::sign_aggregate_and_proof(
+                    0, 0, slot, epoch, voted, voted, ci, position, size, &imm,
+                );
+                tile.handle_aggregate_and_proof(&bytes)
+            } else {
+                let bytes = test_signing::sign_single_attestation(
+                    0, 0, ci as u64, slot, voted, epoch, voted, &imm,
+                );
+                tile.handle_attestation(&bytes, subnet)
+            };
+            assert_eq!(result, expected, "aggregate={aggregate}");
+        }
+    }
+}
+
 #[test]
 fn gossip_verification_resolves_shufflings_after_multiple_empty_epochs() {
     let epoch = 3;
@@ -2584,6 +2704,7 @@ fn gossip_verification_resolves_shufflings_after_multiple_empty_epochs() {
     for aggregate in [false, true] {
         let mut tile = make_tile_at_wall_slot(first_slot + SLOTS_PER_EPOCH - 1);
         seed_tile_with_keys(&mut tile, 128, 0);
+        anchor_at_header_root(&mut tile);
         let canonical = tile.canonical_state_id();
         let advanced = tile.epoch_start_state(canonical, first_slot);
         let view = tile.state.read_view(advanced);
@@ -4793,7 +4914,11 @@ fn selected_head_shufflings_survive_side_branch_cache_pressure() {
         let view = rig.tile.state.read_view(head);
         for epoch in 1..=3 {
             assert!(
-                rig.tile.shuffling_cache.get(&view, epoch).unwrap().committee_aggs.is_some(),
+                rig.tile
+                    .shuffling_cache
+                    .get(&view, ShufflingId::from_state(&view, epoch).unwrap())
+                    .committee_aggs
+                    .is_some(),
                 "selected head's shuffling must remain cached after competing branch requests",
             );
         }

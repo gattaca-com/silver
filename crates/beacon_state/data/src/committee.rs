@@ -29,6 +29,10 @@ impl ShufflingId {
         )?;
         Some(Self { epoch, dependent_root })
     }
+
+    pub fn decision_slot(&self) -> Slot {
+        (self.epoch.saturating_sub(1) * SLOTS_PER_EPOCH).saturating_sub(1)
+    }
 }
 
 pub const TARGET_COMMITTEE_SIZE: usize = 128;
