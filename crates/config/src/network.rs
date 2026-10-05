@@ -39,6 +39,9 @@ const MAINNET_BOOTNODES: [&str; 17] = [
     "enr:-KG4QPUf8-g_jU-KrwzG42AGt0wWM1BTnQxgZXlvCEIfTQ5hSmptkmgmMbRkpOqv6kzb33SlhPHJp7x4rLWWiVq5lSECgmlkgnY0gmlwhFPlR9KDaXA2kCoGxcAJAAAVAAAAAAAAABCJc2VjcDI1NmsxoQLdUv9Eo9sxCt0tc_CheLOWnX59yHJtkBSOL7kpxdJ6GYN1ZHCCIyiEdWRwNoIjKA",
 ];
 
+const MAINNET_GENESIS_VALIDATORS_ROOT: &str =
+    "4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95";
+
 const HOODI_CHECKPOINT_SYNC_URLS: [&str; 6] = [
     "https://hoodi.beaconstate.ethstaker.cc",
     "https://hoodi-checkpoint-sync.attestant.io",
@@ -59,6 +62,9 @@ const HOODI_BOOTNODES: [&str; 8] = [
     "enr:-LK4QPYl2HnMPQ7b1es6Nf_tFYkyya5bj9IqAKOEj2cmoqVkN8ANbJJJK40MX4kciL7pZszPHw6vLNyeC-O3HUrLQv8Mh2F0dG5ldHOIAAAAAAAAAMCEZXRoMpDS8Zl_YAAJEAAIAAAAAAAAgmlkgnY0gmlwhAMYRG-Jc2VjcDI1NmsxoQPQ35tjr6q1qUqwAnegQmYQyfqxC_6437CObkZneI9n34N0Y3CCIyiDdWRwgiMo",
 ];
 
+const HOODI_GENESIS_VALIDATORS_ROOT: &str =
+    "212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f";
+
 const SEPOLIA_CHECKPOINT_SYNC_URLS: [&str; 2] =
     ["https://checkpoint-sync.sepolia.ethpandaops.io", "https://beaconstate-sepolia.chainsafe.io"];
 
@@ -71,6 +77,9 @@ const SEPOLIA_BOOTNODES: [&str; 7] = [
     "enr:-KO4QP7MmB3juk8rUjJHcUoxZDU9Np4FlW0HyDEGIjSO7GD9PbSsabu7713cWSUWKDkxIypIXg1A-6lG7ySRGOMZHeGCAmuEZXRoMpDTH2GRkAAAc___________gmlkgnY0gmlwhBSoyGOJc2VjcDI1NmsxoQNta5b_bexSSwwrGW2Re24MjfMntzFd0f2SAxQtMj3ueYN0Y3CCIyiDdWRwgiMo",
     "enr:-KG4QJejf8KVtMeAPWFhN_P0c4efuwu1pZHELTveiXUeim6nKYcYcMIQpGxxdgT2Xp9h-M5pr9gn2NbbwEAtxzu50Y8BgmlkgnY0gmlwhEEVkQCDaXA2kCoBBPnAEJg4AAAAAAAAAAGJc2VjcDI1NmsxoQLEh_eVvk07AQABvLkTGBQTrrIOQkzouMgSBtNHIRUxOIN1ZHCCIyiEdWRwNoIjKA",
 ];
+
+const SEPOLIA_GENESIS_VALIDATORS_ROOT: &str =
+    "d8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078";
 
 /// The chain silver runs: a public network it knows by name, or a devnet's
 /// published metadata directory. The bundled bootnodes and checkpoint
@@ -104,21 +113,34 @@ impl Network {
         })
     }
 
-    /// A named network's state is told apart by its fork versions alone; a
-    /// devnet can reuse them across re-genesis, so its `genesis.ssz` decides.
-    pub fn devnet_genesis(&self) -> Result<Option<Genesis>, Error> {
-        let Self::Devnet(dir) = self else { return Ok(None) };
-        let genesis = dir.join("genesis.ssz");
-        genesis.exists().then(|| Genesis::from_state_file(&genesis)).transpose()
+    /// Devnets often share a `CONFIG_NAME` (ethpandaops' are all `testnet`),
+    /// so a devnet is named after its root instead.
+    pub fn data_dir_name(&self, spec: &SpecConfig, genesis_validators_root: &[u8; 32]) -> String {
+        match self {
+            Self::Devnet(_) => format!("devnet-{}", hex::encode(&genesis_validators_root[..4])),
+            _ => spec.network_name(),
+        }
     }
 
-    /// Devnets often share a `CONFIG_NAME` (ethpandaops' are all `testnet`),
-    /// so a devnet with a genesis is named after its root instead.
-    pub fn data_dir_name(&self, spec: &SpecConfig) -> Result<String, Error> {
-        Ok(match self.devnet_genesis()? {
-            Some(genesis) => format!("devnet-{}", hex::encode(&genesis.validators_root[..4])),
-            None => spec.network_name(),
-        })
+    /// Every state of the chain carries it. A devnet can reuse its
+    /// `CONFIG_NAME` and fork versions across re-genesis, so its
+    /// `genesis.ssz` decides.
+    pub fn genesis_validators_root(&self) -> Result<[u8; 32], Error> {
+        let root = match self {
+            Self::Mainnet => MAINNET_GENESIS_VALIDATORS_ROOT,
+            Self::Hoodi => HOODI_GENESIS_VALIDATORS_ROOT,
+            Self::Sepolia => SEPOLIA_GENESIS_VALIDATORS_ROOT,
+            Self::Devnet(dir) => {
+                let genesis = dir.join("genesis.ssz");
+                if !genesis.exists() {
+                    return Err(Error::ConfigError(format!("{} has no genesis.ssz", dir.display())));
+                }
+                return Ok(Genesis::from_state_file(&genesis)?.validators_root);
+            }
+        };
+        let mut bytes = [0; 32];
+        hex::decode_to_slice(root, &mut bytes).expect("bundled genesis_validators_root");
+        Ok(bytes)
     }
 
     pub fn bootnodes(&self) -> Result<Vec<Enr>, Error> {
@@ -147,15 +169,7 @@ impl Network {
             Self::Hoodi => &HOODI_CHECKPOINT_SYNC_URLS,
             Self::Sepolia => &SEPOLIA_CHECKPOINT_SYNC_URLS,
             Self::Devnet(dir) => {
-                let genesis = dir.join("genesis.ssz");
-                if !genesis.exists() {
-                    return Err(Error::ConfigError(format!(
-                        "{} has no genesis.ssz; set chain_config.checkpoint_file or \
-                         checkpoint_sync_urls",
-                        dir.display()
-                    )));
-                }
-                return Ok(BootSource::File { ssz: genesis, pubkeys: None });
+                return Ok(BootSource::File { ssz: dir.join("genesis.ssz"), pubkeys: None });
             }
         };
         Ok(BootSource::Providers(urls.iter().map(|url| url.to_string()).collect()))
