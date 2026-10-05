@@ -6,6 +6,8 @@ import { fmtBytes } from './view.js';
 
 const BIN_S = 0.1;
 const HEIGHT = 160;
+/** x axis until a client has described its chain: mainnet's slot. */
+const DEFAULT_SLOT_S = 12;
 /** Every attestation-data root lookup: single attestations past the
  *  committee checks, plus aggregates. */
 const ATTESTATIONS = { source: 'beacon_state', counters: ['AttestationRootMemoHit', 'AttestationRootMemoMiss'] };
@@ -17,13 +19,15 @@ function slotAt(clock, unixS) {
 
 /** Per bin of the slot starting at `startS`, the summed counters' growth: each
  *  sample's delta lands in the bin holding its timestamp. A bin with no sample
- *  is null; a counter reset breaks the delta. */
+ *  is null; a counter reset breaks the delta. A client without samples keeps
+ *  an all-null line, so the chart stays up. */
 function binnedSeries(inst, { source, counters }, slot, startS, bins) {
-  const s = inst.samples(source);
-  if (!s) return null;
-  const cols = counters.map((n) => s.history.values[s.names.indexOf(n)]);
-  if (cols.some((c) => !c)) return null;
   const ys = new Array(bins).fill(null);
+  const block = inst.traces.find((t) => t.slot === slot && t.receivedAt !== null);
+  const blockX = block ? (Number(block.base) + block.receivedAt) / 1e9 - startS : null;
+  const s = inst.samples(source);
+  const cols = s ? counters.map((n) => s.history.values[s.names.indexOf(n)]) : [];
+  if (!s || cols.some((c) => !c)) return { label: inst.label, ys, blockX };
   let prevTotal = null;
   s.history.ts.forEach((x, k) => {
     const parts = cols.map((c) => c[k]);
@@ -34,9 +38,6 @@ function binnedSeries(inst, { source, counters }, slot, startS, bins) {
     }
     prevTotal = total;
   });
-  if (!ys.some((v) => v !== null)) return null;
-  const block = inst.traces.find((t) => t.slot === slot && t.receivedAt !== null);
-  const blockX = block ? (Number(block.base) + block.receivedAt) / 1e9 - startS : null;
   return { label: inst.label, ys, blockX };
 }
 
@@ -46,13 +47,11 @@ function binnedSeries(inst, { source, counters }, slot, startS, bins) {
  *  the top-right totals sum each client's bins so far. */
 function slotSpec(instances, nowS, counter, fmt) {
   const clock = instances.find((i) => i.clock)?.clock;
-  if (!clock) return null;
-  const slotS = clock.slotNs / 1e9;
-  const slot = slotAt(clock, nowS);
-  const startS = Number(clock.slotStart(slot)) / 1e9;
-  const bins = Math.min(Math.floor((nowS - startS) / BIN_S) + 1, Math.round(slotS / BIN_S));
-  const series = instances.map((inst) => binnedSeries(inst, counter, slot, startS, bins)).filter(Boolean);
-  if (!series.length) return null;
+  const slotS = clock ? clock.slotNs / 1e9 : DEFAULT_SLOT_S;
+  const slot = clock ? slotAt(clock, nowS) : null;
+  const startS = clock ? Number(clock.slotStart(slot)) / 1e9 : nowS;
+  const bins = clock ? Math.min(Math.floor((nowS - startS) / BIN_S) + 1, Math.round(slotS / BIN_S)) : 0;
+  const series = instances.map((inst) => binnedSeries(inst, counter, slot, startS, bins));
   const xs = Array.from({ length: bins }, (_, i) => Math.round(i * BIN_S * 10) / 10);
   const spec = {
     labels: series.map((s) => s.label),
@@ -72,7 +71,8 @@ function card(key, title) {
   return `<div><p class="meta">${title}</p><div class="chart" data-chart="${key}"></div></div>`;
 }
 
-/** Chart placeholders, with their specs added to `specs`. */
+/** Chart placeholders, with their specs added to `specs`. Both are always
+ *  drawn, empty until data arrives. */
 export function slotCharts(fleet, specs) {
   const nowS = Date.now() / 1000;
   const instances = fleet.sorted();
@@ -80,13 +80,12 @@ export function slotCharts(fleet, specs) {
     { key: 'slots-p2p', what: 'p2p bytes received', counter: P2P_RECV, fmt: (v) => fmtBytes(Math.round(v)) },
     { key: 'slots-att', what: 'attestations', counter: ATTESTATIONS, fmt: (v) => String(Math.round(v)) },
   ];
-  const cards = [];
-  for (const { key, what, counter, fmt } of charts) {
+  const cards = charts.map(({ key, what, counter, fmt }) => {
     const built = slotSpec(instances, nowS, counter, fmt);
-    if (!built) continue;
-    const start = new Date(built.startS * 1000).toISOString().slice(11, 23);
     specs.set(key, built.spec);
-    cards.push(card(key, `${what} per 100 ms, slot ${built.slot} from ${start} UTC`));
-  }
-  return cards.length ? `<div class="slot-charts">${cards.join('')}</div>` : '';
+    if (built.slot === null) return card(key, `${what} per 100 ms`);
+    const start = new Date(built.startS * 1000).toISOString().slice(11, 23);
+    return card(key, `${what} per 100 ms, slot ${built.slot} from ${start} UTC`);
+  });
+  return `<div class="slot-charts">${cards.join('')}</div>`;
 }
