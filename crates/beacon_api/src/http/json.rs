@@ -11,8 +11,10 @@ use silver_beacon_state_data::{
 use silver_common::{
     AGENT_VERSION,
     ssz_view::{
-        AttestationView, BYTES_PER_KZG_COMMITMENT, SINGLE_ATT_SIZE,
-        SYNC_COMMITTEE_CONTRIBUTION_SIZE, SingleAttestationView, SyncCommitteeContributionView,
+        AttestationView, BYTES_PER_KZG_COMMITMENT, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
+        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
+        SyncCommitteeContributionView,
     },
 };
 
@@ -468,6 +470,36 @@ impl Json<'_> {
         self.quoted_u64(slot);
         self.key("block");
         self.hex(block_root);
+        self.end_object();
+    }
+
+    pub(crate) fn voluntary_exit(&mut self, ssz: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE]) {
+        self.begin_object();
+        self.key("message");
+        self.begin_object();
+        self.key("epoch");
+        self.quoted_u64(SignedVoluntaryExitView::epoch(ssz));
+        self.key("validator_index");
+        self.quoted_u64(SignedVoluntaryExitView::validator_index(ssz));
+        self.end_object();
+        self.key("signature");
+        self.hex(SignedVoluntaryExitView::signature(ssz));
+        self.end_object();
+    }
+
+    pub(crate) fn bls_to_execution_change(&mut self, ssz: &[u8; SIGNED_BLS_CHANGE_SIZE]) {
+        self.begin_object();
+        self.key("message");
+        self.begin_object();
+        self.key("validator_index");
+        self.quoted_u64(SignedBlsToExecutionChangeView::validator_index(ssz));
+        self.key("from_bls_pubkey");
+        self.hex(SignedBlsToExecutionChangeView::from_bls_pubkey(ssz));
+        self.key("to_execution_address");
+        self.hex(SignedBlsToExecutionChangeView::to_execution_address(ssz));
+        self.end_object();
+        self.key("signature");
+        self.hex(SignedBlsToExecutionChangeView::signature(ssz));
         self.end_object();
     }
 

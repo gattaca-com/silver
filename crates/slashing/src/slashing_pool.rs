@@ -38,6 +38,8 @@ pub enum Admission {
 pub struct Selection {
     proposer_slashings: Vec<u8>,
     attester_slashings: Vec<u8>,
+    /// Every offender named by the selected proofs, slashable or not.
+    offenders: Vec<usize>,
 }
 
 impl Selection {
@@ -49,9 +51,14 @@ impl Selection {
         &self.attester_slashings
     }
 
+    pub fn offenders(&self) -> &[usize] {
+        &self.offenders
+    }
+
     pub fn clear(&mut self) {
         self.proposer_slashings.clear();
         self.attester_slashings.clear();
+        self.offenders.clear();
     }
 }
 
@@ -133,6 +140,7 @@ impl SlashingPool {
             into.proposer_slashings.extend_from_slice(&p.ssz);
         }
         let slashed = &slashed[..slashed_len];
+        into.offenders.extend_from_slice(slashed);
 
         let attester_slashing = self
             .attester
@@ -145,6 +153,7 @@ impl SlashingPool {
             let only_offset = size_of::<u32>() as u32;
             into.attester_slashings.extend_from_slice(&only_offset.to_le_bytes());
             into.attester_slashings.extend_from_slice(&a.ssz);
+            into.offenders.extend(a.offenders.iter().map(|&vi| vi as usize));
         }
     }
 

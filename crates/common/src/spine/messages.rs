@@ -17,8 +17,8 @@ use crate::{
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
         EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
-        SszView, StatusView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
+        SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, SszView, StatusView,
     },
 };
 
@@ -1215,6 +1215,17 @@ pub enum BeaconStateEvent {
         slot: u64,
         block_root: [u8; 32],
     },
+    PoolChange(PoolChange),
+}
+
+/// A membership change in Beacon State's operation pools, which hold at most
+/// one entry per validator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolChange {
+    ExitAdded([u8; SIGNED_VOLUNTARY_EXIT_SIZE]),
+    ExitRemoved { validator_index: u32 },
+    BlsChangeAdded([u8; SIGNED_BLS_CHANGE_SIZE]),
+    BlsChangeRemoved { validator_index: u32 },
 }
 
 /// Why a received block is not in fork choice yet, or that it is.
@@ -1470,7 +1481,8 @@ impl BeaconStateEvent {
             Self::LocalGossipVerdict { .. } |
             Self::BlockReceived { .. } |
             Self::AttestersShuffling { .. } |
-            Self::Reorg { .. } => SszView::None,
+            Self::Reorg { .. } |
+            Self::PoolChange(_) => SszView::None,
         }
     }
 }

@@ -1364,9 +1364,6 @@ impl BeaconStateTile {
             silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
             return Feedback::reject("exit invalid");
         }
-        if stf::get_pending_balance_to_withdraw(&view.pending, vi_u as u32) != 0 {
-            return Feedback::reject("exit with pending withdrawal");
-        }
 
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
         let imm = view.imm;
@@ -1381,6 +1378,7 @@ impl BeaconStateTile {
             return Feedback::reject("exit bad signature");
         }
         self.seen_exits.mark(vi);
+        self.exit_pool.insert(buf);
         Feedback::Accept
     }
 
@@ -1514,6 +1512,7 @@ impl BeaconStateTile {
             return Feedback::reject("bls change bad signature");
         }
         self.seen_bls_changes.mark(vi);
+        self.bls_change_pool.insert(buf);
         Feedback::Accept
     }
 

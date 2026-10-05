@@ -8,6 +8,7 @@ use silver_common::{Enr, Identify, Keypair};
 
 use crate::{
     NodeStatus,
+    beacon::pools::OperationPools,
     config::spec_body,
     http::{
         ids::is_recognized_id,
@@ -27,6 +28,7 @@ pub(crate) struct ApiCtx {
     pub(crate) peers: PeerTable,
     pub(crate) shufflings: PostedShufflings,
     pub(crate) has_sidecar: bool,
+    pub(crate) pools: OperationPools,
 }
 
 impl ApiCtx {
@@ -52,6 +54,7 @@ impl ApiCtx {
             peers: PeerTable::new(),
             shufflings: PostedShufflings::default(),
             has_sidecar,
+            pools: OperationPools::default(),
         }
     }
 

@@ -630,6 +630,7 @@ impl BeaconApi {
                     }
                 }
             }
+            BeaconStateEvent::PoolChange(change) => self.ctx.pools.apply(change),
             _ => {}
         }
     }

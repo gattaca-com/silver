@@ -71,5 +71,7 @@ impl BeaconStateTile {
 
         let finalized = self.state.read_view(self.fork_choice.node(0).state_id);
         self.slashing_pool.prune(&finalized);
+        self.exit_pool.prune(&finalized);
+        self.bls_change_pool.prune(&finalized);
     }
 }

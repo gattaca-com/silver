@@ -2,7 +2,8 @@ use crate::{
     beacon::{
         block_submission::post_block_v2,
         blocks::{block, block_header, block_root},
-        operations::post_attestations,
+        operations::{post_attestations, post_bls_to_execution_changes, post_voluntary_exit},
+        pools::{get_bls_to_execution_changes, get_voluntary_exits},
         states::{genesis, state_finality_checkpoints, state_fork},
         sync_committees::post_sync_committee_messages,
         validators::{get_state_validators, post_state_validators, state_validator},
@@ -43,7 +44,11 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
     (Method::Get, "/eth/v1/beacon/headers/{block_id}", block_header),
+    (Method::Get, "/eth/v1/beacon/pool/bls_to_execution_changes", get_bls_to_execution_changes),
+    (Method::Post, "/eth/v1/beacon/pool/bls_to_execution_changes", post_bls_to_execution_changes),
     (Method::Post, "/eth/v1/beacon/pool/sync_committees", post_sync_committee_messages),
+    (Method::Get, "/eth/v1/beacon/pool/voluntary_exits", get_voluntary_exits),
+    (Method::Post, "/eth/v1/beacon/pool/voluntary_exits", post_voluntary_exit),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
