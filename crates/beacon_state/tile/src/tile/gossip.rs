@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
     B256, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
@@ -11,7 +13,8 @@ use silver_common::{
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
-        ExecutionPayloadEnvelopeView as Envelope, PROPOSER_SLASHING_SIZE,
+        ExecutionPayloadEnvelopeView as Envelope, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
+        PROPOSER_SLASHING_SIZE, PayloadAttestationDataView, PayloadAttestationMessageView,
         ProposerPreferencesView as Prefs, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
@@ -28,7 +31,7 @@ use super::{
     seen_aggregates::Coverage, seen_proposer_preferences::ProposerPreferences,
 };
 use crate::{
-    bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
+    bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
     error::ExecutionPayloadBidError as BidError,
     fork_choice::{
@@ -98,6 +101,14 @@ impl PreparedVote {
         }
     }
 
+    /// Only attestations keep their bytes past preparation.
+    fn message(&self) -> &[u8] {
+        match self {
+            Self::Attestation(p) => &p.buf,
+            Self::SyncMessage(_) | Self::Ptc(_) => &[],
+        }
+    }
+
     fn is_seen(&self, tile: &BeaconStateTile) -> bool {
         match self {
             Self::Attestation(p) => {
@@ -139,7 +150,7 @@ impl BeaconStateTile {
             Err(feedback) => return feedback,
         };
         if !bls::verify_one_checked(&prepared.pubkey, &prepared.signature, &prepared.signing_root) {
-            return Feedback::Reject(None);
+            return Feedback::reject("attestation bad signature");
         }
         self.commit_attestation(&prepared);
         Feedback::Accept
@@ -159,7 +170,7 @@ impl BeaconStateTile {
         // strict-SSZ peers reject the relayed message — their P4 lands on us,
         // not the originator.
         if data.len() != SINGLE_ATT_SIZE {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attestation size"));
         }
         let buf: &[u8; SINGLE_ATT_SIZE] = data[..SINGLE_ATT_SIZE].try_into().unwrap();
         let attester_index = SingleAttestationView::attester_index(buf) as usize;
@@ -183,7 +194,7 @@ impl BeaconStateTile {
         let data_index = SingleAttestationView::data_index(buf);
         let is_gloas = self.spec.is_gloas_at(target_epoch);
         if !validate::attestation_index_ok(is_gloas, data_index) {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attestation data index"));
         }
         self.validate_attestation_target(SingleAttestationView::data(buf))?;
         let payload_present = if is_gloas {
@@ -201,7 +212,7 @@ impl BeaconStateTile {
             return Err(Feedback::Ignore);
         };
         if committee_index >= shuffling.committees_per_slot {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attestation committee index out of range"));
         }
         if subnet !=
             compute_subnet_for_attestation(
@@ -210,18 +221,18 @@ impl BeaconStateTile {
                 committee_index as u64,
             )
         {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attestation wrong subnet"));
         }
         let committee = shuffling.committee(att_slot, committee_index);
         let Some(committee_position) = committee.iter().position(|&v| v == attester_index as u32)
         else {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attester not in committee"));
         };
         let committee_len = committee.len();
         if attester_index >= view.validators.count() {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attester index out of range"));
         }
-        let fork_version = view.epoch.fork_version_at(target_epoch);
+        let fork_version = self.spec.fork_version_at(target_epoch);
         let domain = bls::domain_from_fork_data(
             bls::DOMAIN_BEACON_ATTESTER,
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
@@ -229,7 +240,7 @@ impl BeaconStateTile {
         let (data_root, signing_root) =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
         let Some(signature) = CheckedSignature::parse(SingleAttestationView::signature(buf)) else {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attestation signature malformed"));
         };
 
         Ok(PreparedAttestation {
@@ -344,7 +355,9 @@ impl BeaconStateTile {
                     }
                     self.vote_pending.push((vote, p));
                 }
-                Err(Feedback::Reject(_)) => Self::reject_gossip(&vote, producers),
+                Err(Feedback::Reject { reason, .. }) => {
+                    self.reject_gossip(&vote, data, reason, producers)
+                }
                 Err(feedback @ Feedback::RequestEnvelope { block_root, att_slot }) => {
                     producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
                     Self::local_verdict(&vote, feedback, producers);
@@ -383,7 +396,7 @@ impl BeaconStateTile {
                 Self::relay_gossip(&m, producers);
                 accepted = true;
             } else {
-                Self::reject_gossip(&m, producers);
+                self.reject_gossip(&m, p.message(), "vote bad signature", producers);
             }
         }
 
@@ -404,7 +417,7 @@ impl BeaconStateTile {
         subnet: u64,
     ) -> Result<PreparedSyncMessage, Feedback> {
         if data.len() != SYNC_COMMITTEE_MSG_SIZE {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("sync message size"));
         }
         let buf: &[u8; SYNC_COMMITTEE_MSG_SIZE] =
             data[..SYNC_COMMITTEE_MSG_SIZE].try_into().unwrap();
@@ -412,7 +425,7 @@ impl BeaconStateTile {
         let validator = SyncCommitteeView::validator_index(buf);
 
         if subnet >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("sync message subnet out of range"));
         }
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
             return Err(self.slot_window_miss(slot));
@@ -427,24 +440,24 @@ impl BeaconStateTile {
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
         if validator as usize >= view.validators.count() {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("sync message validator out of range"));
         }
 
         let committee = SyncSubcommittee::of(&view, subnet as usize);
         let positions = committee.positions(validator as usize, &view.validators);
         if positions.iter().all(|&word| word == 0) {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("sync message validator not in subcommittee"));
         }
 
         let block_root = *SyncCommitteeView::beacon_block_root(buf);
-        let fork_version = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let fork_version = self.spec.fork_version_at(slot / SLOTS_PER_EPOCH);
         let domain = bls::domain_from_fork_data(
             bls::DOMAIN_SYNC_COMMITTEE,
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
         );
         let signing_root = bls::compute_signing_root(&block_root, &domain);
         let Some(signature) = CheckedSignature::parse(SyncCommitteeView::signature(buf)) else {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("sync message signature malformed"));
         };
 
         Ok(PreparedSyncMessage {
@@ -483,7 +496,7 @@ impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_sync_contribution(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_CONTRIBUTION_AND_PROOF_SIZE {
-            return Feedback::Reject(None);
+            return Feedback::reject("contribution size");
         }
         let buf: &[u8; SIGNED_CONTRIBUTION_AND_PROOF_SIZE] =
             data[..SIGNED_CONTRIBUTION_AND_PROOF_SIZE].try_into().unwrap();
@@ -494,7 +507,7 @@ impl BeaconStateTile {
         let bits = SignedSyncCommitteeProofView::aggregation_bits(buf);
 
         if subcommittee >= silver_common::SYNC_COMMITTEE_SUBNETS as u64 {
-            return Feedback::Reject(None);
+            return Feedback::reject("contribution subcommittee out of range");
         }
         if !self.ticker.is_current_slot_with_disparity(slot, MAXIMUM_GOSSIP_CLOCK_DISPARITY) {
             return self.slot_window_miss(slot);
@@ -511,21 +524,21 @@ impl BeaconStateTile {
         }
 
         if !is_sync_aggregator(SignedSyncCommitteeProofView::selection_proof(buf)) {
-            return Feedback::Reject(None);
+            return Feedback::reject("contribution aggregator not selected");
         }
 
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
         let count = view.validators.count();
         if aggregator as usize >= count {
-            return Feedback::Reject(None);
+            return Feedback::reject("contribution aggregator out of range");
         }
         let committee = SyncSubcommittee::of(&view, subcommittee as usize);
         if !committee.contains(aggregator as usize, &view.validators) {
-            return Feedback::Reject(None);
+            return Feedback::reject("contribution aggregator not in subcommittee");
         }
 
-        let fv = view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH);
+        let fv = self.spec.fork_version_at(slot / SLOTS_PER_EPOCH);
         let fork_data_root = self.fork_data_roots.root(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
@@ -579,7 +592,7 @@ impl BeaconStateTile {
             sr_agg,
         );
         if unknown || participants == 0 || !self.sig_batch.verify_all() {
-            return Feedback::Reject(None);
+            return Feedback::reject("contribution bad signature");
         }
 
         self.seen_aggregates.record(slot, subcommittee, block_root, bits);
@@ -593,7 +606,7 @@ impl BeaconStateTile {
     #[timed]
     fn handle_execution_payload_bid(&mut self, signed_bid: &[u8]) -> Feedback {
         let Ok(bid) = decode_bid(signed_bid) else {
-            return Feedback::Reject(None);
+            return Feedback::reject("bid malformed");
         };
         let signature = SignedExecutionPayloadBidView::signature(signed_bid);
 
@@ -609,15 +622,15 @@ impl BeaconStateTile {
         // In-protocol bids pay only through `value`; the pool also ranks
         // out-of-protocol bids, so this belongs to gossip, not the pool.
         if bid.execution_payment != 0 {
-            return Feedback::Reject(None);
+            return Feedback::reject("bid has execution payment");
         }
         if bid.block_hash == bid.parent_block_hash {
-            return Feedback::Reject(None);
+            return Feedback::reject("bid block hash equals parent");
         }
         let bid_epoch = bid.slot / SLOTS_PER_EPOCH;
         let max_blobs = self.spec.blob_params_at(bid_epoch).max_blobs_per_block as usize;
         if bid.blob_kzg_commitments.len() > max_blobs {
-            return Feedback::Reject(None);
+            return Feedback::reject("bid too many blob commitments");
         }
 
         let Some(idx) = self.fork_choice.find_node_idx(&bid.parent_block_root) else {
@@ -625,7 +638,7 @@ impl BeaconStateTile {
         };
         let node = self.fork_choice.node(idx);
         if bid.slot <= node.slot {
-            return Feedback::Reject(None);
+            return Feedback::reject("bid slot not after parent");
         }
         let (parent_state, parent_payload) = (node.state_id, node.payload);
         let full = match self.check_bid_against_parent_payload(
@@ -656,7 +669,7 @@ impl BeaconStateTile {
             }
             Err(e) => {
                 silver_log::debug!(?e, "invalid execution payload bid");
-                return Feedback::Reject(None);
+                return Feedback::reject("bid invalid");
             }
         }
         // The parent payload's exits apply only in the bid's own block, so the
@@ -681,7 +694,7 @@ impl BeaconStateTile {
             signature,
         ) {
             silver_log::debug!(?e, "execution payload bid signature rejected");
-            return Feedback::Reject(None);
+            return Feedback::reject("bid bad signature");
         }
 
         self.payload_bids_pool.add(bid, *signature);
@@ -747,7 +760,7 @@ impl BeaconStateTile {
         }
 
         if bid.prev_randao != parent.randao_mixes.at_epoch(parent_epoch) {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("bid prev_randao mismatch"));
         }
         Ok(full)
     }
@@ -786,7 +799,7 @@ impl BeaconStateTile {
     #[timed]
     fn handle_proposer_preferences(&mut self, data: &[u8]) -> Feedback {
         let Ok(signed) = <&[u8; SIGNED_PROPOSER_PREFERENCES_SIZE]>::try_from(data) else {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer preferences size");
         };
         let prefs = SignedProposerPreferencesView::message(signed);
         let proposal_slot = Prefs::proposal_slot(prefs);
@@ -812,7 +825,7 @@ impl BeaconStateTile {
         };
         let dependent_slot = compute_shuffling_dependent_slot(proposal_epoch);
         if self.fork_choice.node(idx).slot > dependent_slot {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer preferences dependent root too late");
         }
         if !self.fork_choice.is_valid_dependent_root(idx, dependent_slot) {
             return Feedback::Ignore;
@@ -824,7 +837,7 @@ impl BeaconStateTile {
         let validator_index = Prefs::validator_index(prefs);
         let lookahead_idx = (proposal_slot - lookahead_start) as usize;
         if view.epoch.proposer_at(lookahead_idx) != Some(validator_index) {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer preferences wrong proposer");
         }
 
         // `compute_fork_version(proposal_epoch)`: Gloas is the last scheduled fork.
@@ -837,7 +850,7 @@ impl BeaconStateTile {
         let pubkey = view.validators.pubkey_decompressed(validator_index as usize);
         if !bls::verify_one(pubkey, SignedProposerPreferencesView::signature(signed), &signing_root)
         {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer preferences bad signature");
         }
 
         self.seen_proposer_preferences.insert(proposal_slot, dependent_root, ProposerPreferences {
@@ -872,7 +885,7 @@ impl BeaconStateTile {
                 .and_then(|c| c.attesters_into(n, &mut self.stf_scratch.active))
                 .is_err()
             {
-                return Feedback::Reject(None);
+                return Feedback::reject("attestation committees invalid");
             }
         }
 
@@ -898,7 +911,7 @@ impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
         let Some(parsed) = ParsedAggregateAndProof::try_from(data) else {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregate malformed");
         };
 
         // Gossip-rule checks (no state access). Pre-Gloas requires index 0;
@@ -906,7 +919,7 @@ impl BeaconStateTile {
         let is_gloas = self.spec.is_gloas_at(parsed.att_epoch);
         let index_ok = validate::attestation_index_ok(is_gloas, parsed.agg_data_index);
         if !index_ok || parsed.agg_data.target_epoch() != parsed.att_epoch {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregate data index");
         }
         if !self.attestation_slot_is_open(parsed.agg_slot) {
             return self.slot_window_miss(parsed.agg_slot);
@@ -918,7 +931,7 @@ impl BeaconStateTile {
         }
 
         if parsed.committee_bits.count_ones() != 1 {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregate committee bits");
         }
         let committee_index = parsed.committee_bits.trailing_zeros() as usize;
 
@@ -951,44 +964,61 @@ impl BeaconStateTile {
         self.shuffling_cache.ensure_window(&view, parsed.att_epoch);
         let count = view.validators.count();
         if parsed.aggregator_index >= count {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregator index out of range");
         }
 
         let Some(shuffling) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
             return Feedback::Ignore;
         };
         if committee_index >= shuffling.committees_per_slot {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregate committee index out of range");
         }
         let committee = shuffling.committee(parsed.agg_slot, committee_index);
         if !committee.contains(&(parsed.aggregator_index as u32)) {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregator not in committee");
         }
         let committee_len = committee.len();
 
         let Ok(committees) = stf::AttestedCommittees::new(parsed.aggregate_bytes, &shuffling)
         else {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregate committees invalid");
         };
         if committees.attesters_into(count, &mut self.stf_scratch.active).is_err() ||
             self.stf_scratch.active.is_empty()
         {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregate has no attesters");
         }
 
         if !is_aggregator(committee_len, parsed.selection_proof) {
-            return Feedback::Reject(None);
+            return Feedback::reject("aggregator not selected");
         }
 
-        if !Self::verify_aggregate_and_proof_sigs(
+        let Some(signature) = Self::verify_aggregate_and_proof_sigs(
             &view,
+            self.spec.fork_version_at(parsed.agg_data.target_epoch()),
             &parsed,
             &committees,
             data_root,
             &mut self.fork_data_roots,
             &mut self.sig_batch,
-        ) {
-            return Feedback::Reject(None);
+        ) else {
+            return Feedback::reject("aggregate bad signature");
+        };
+        let outcome = self.attestation_pool.insert_verified_aggregate(
+            parsed.agg_data,
+            committee_index as u64,
+            data_root,
+            committee_len,
+            parsed.aggregation_bits,
+            &signature,
+        );
+        if outcome == InsertOutcome::Full {
+            BeaconStateCounters::AttestationPoolFull.inc();
+            silver_log::debug!(
+                slot = parsed.agg_slot,
+                committee = committee_index,
+                "attestation pool full"
+            );
         }
 
         // A union-covered aggregate's votes are all already folded; it still
@@ -1063,7 +1093,7 @@ impl BeaconStateTile {
                 return Feedback::Ignore;
             }
             EnvelopeCheck::Ignore => return Feedback::Ignore,
-            EnvelopeCheck::Reject => return Feedback::Reject(None),
+            EnvelopeCheck::Reject => return Feedback::reject("envelope invalid"),
         };
 
         let rv = self.state.read_view(state_id);
@@ -1087,7 +1117,7 @@ impl BeaconStateTile {
         let mut versioned_hashes = [[0u8; 32]; MAX_BLOBS_PER_BLOCK];
         let hash_count = match slot_state.bid_versioned_hashes_len(&mut versioned_hashes) {
             Some(n) => n as u8,
-            None => return Feedback::Reject(None),
+            None => return Feedback::reject("envelope bid versioned hashes"),
         };
 
         self.mark_envelope_verified(block_root, ssz);
@@ -1107,7 +1137,7 @@ impl BeaconStateTile {
         Feedback::Accept
     }
 
-    fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
+    pub(super) fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
         let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
             self.pending_envelopes.contains_key(&block_root);
         if !has_room {
@@ -1162,7 +1192,7 @@ impl BeaconStateTile {
             return Err(Feedback::Ignore);
         };
         if self.fork_choice.node(idx).slot == att_slot {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("payload present for same-slot block"));
         }
         if !self.fork_choice.is_payload_verified(block_root) {
             return Err(Feedback::RequestEnvelope { block_root: *block_root, att_slot });
@@ -1172,7 +1202,7 @@ impl BeaconStateTile {
         match self.fork_choice.node(idx).execution_status {
             ExecutionStatus::Valid => Ok(true),
             ExecutionStatus::Optimistic => Err(Feedback::Ignore),
-            ExecutionStatus::Invalid => Err(Feedback::Reject(None)),
+            ExecutionStatus::Invalid => Err(Feedback::reject("attested payload invalid")),
         }
     }
 
@@ -1210,7 +1240,7 @@ impl BeaconStateTile {
         let att_slot = data.slot();
         let target_epoch = data.target_epoch();
         if target_epoch != att_slot / SLOTS_PER_EPOCH {
-            return Err(Feedback::Reject(None));
+            return Err(Feedback::reject("attestation target epoch mismatch"));
         }
         let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
             BeaconStateCounters::AttestationUnknownRoot.inc();
@@ -1218,26 +1248,26 @@ impl BeaconStateTile {
         };
         match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {
             Some(r) if r == *data.target_root() => {}
-            Some(_) => return Err(Feedback::Reject(None)),
+            Some(_) => return Err(Feedback::reject("attestation target root mismatch")),
             None => return Err(Feedback::Ignore),
         }
         if self.fork_choice.node(idx).slot <= att_slot {
             Ok(())
         } else {
-            Err(Feedback::Reject(None))
+            Err(Feedback::reject("attestation block newer than slot"))
         }
     }
 
     fn verify_aggregate_and_proof_sigs(
         view: &StateReadView,
+        fork_version: [u8; 4],
         parsed: &ParsedAggregateAndProof<'_>,
         committees: &stf::AttestedCommittees<'_>,
         data_root: B256,
         fork_data_roots: &mut ForkDataRoots,
         sig_batch: &mut bls::SigBatch,
-    ) -> bool {
-        let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
-        let fork_data_root = fork_data_roots.root(fv, &view.imm.genesis_validators_root);
+    ) -> Option<Signature> {
+        let fork_data_root = fork_data_roots.root(fork_version, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
@@ -1250,7 +1280,7 @@ impl BeaconStateTile {
             parsed.aggregate_bytes,
             data_root,
             parsed.selection_proof,
-            fv == view.imm.gloas_fork_version,
+            fork_version == view.imm.gloas_fork_version,
         );
         let sr_aap =
             bls::compute_signing_root(&agg_proof_root, &domain(bls::DOMAIN_AGGREGATE_AND_PROOF));
@@ -1263,13 +1293,16 @@ impl BeaconStateTile {
         sig_batch.push_one(aggregator_pk, parsed.selection_proof, sr_sp);
         sig_batch.push_one(aggregator_pk, parsed.outer_sig, sr_aap);
         committees.push_aggregate_sig(&view.validators, parsed.agg_sig, sr_att, sig_batch);
-        sig_batch.verify_all()
+        if !sig_batch.verify_all() {
+            return None;
+        }
+        sig_batch.last_signature().copied()
     }
 
     #[timed]
     pub(super) fn handle_voluntary_exit(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_VOLUNTARY_EXIT_SIZE {
-            return Feedback::Reject(None);
+            return Feedback::reject("exit size");
         }
         let buf: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] =
             data[..SIGNED_VOLUNTARY_EXIT_SIZE].try_into().unwrap();
@@ -1287,7 +1320,7 @@ impl BeaconStateTile {
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
         if vi >= view.validators.count() {
-            return Feedback::Reject(None);
+            return Feedback::reject("exit validator out of range");
         }
         if view.validators.exit_epoch(vi) != u64::MAX {
             return Feedback::Ignore;
@@ -1300,10 +1333,10 @@ impl BeaconStateTile {
             current_epoch,
         ) {
             silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
-            return Feedback::Reject(None);
+            return Feedback::reject("exit invalid");
         }
         if stf::get_pending_balance_to_withdraw(&view.pending, vi_u as u32) != 0 {
-            return Feedback::Reject(None);
+            return Feedback::reject("exit with pending withdrawal");
         }
 
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
@@ -1316,7 +1349,7 @@ impl BeaconStateTile {
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
         if !bls::verify_one(view.validators.pubkey_decompressed(vi), sig, &signing_root) {
-            return Feedback::Reject(None);
+            return Feedback::reject("exit bad signature");
         }
         self.seen_exits.mark(vi);
         Feedback::Accept
@@ -1324,12 +1357,12 @@ impl BeaconStateTile {
 
     pub(super) fn handle_proposer_slashing(&mut self, data: &[u8]) -> Feedback {
         if data.len() != PROPOSER_SLASHING_SIZE {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer slashing size");
         }
         let buf: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
         if let Err(e) = validate::validate_proposer_slashing(buf) {
             silver_log::debug!(error = %e, "proposer_slashing gossip rejected");
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer slashing invalid");
         }
 
         let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
@@ -1340,10 +1373,10 @@ impl BeaconStateTile {
         let view = self.state.read_view(canon_id);
         let current_epoch = view.slot.current_epoch();
         if proposer_index >= view.validators.count() {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer slashing index out of range");
         }
         if !view.validators.is_slashable(proposer_index, current_epoch) {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer not slashable");
         }
 
         let h1_epoch = ProposerSlashingView::h1_slot(buf) / SLOTS_PER_EPOCH;
@@ -1360,7 +1393,7 @@ impl BeaconStateTile {
         self.sig_batch.push_one(pubkey, sig1, sr1);
         self.sig_batch.push_one(pubkey, sig2, sr2);
         if !self.sig_batch.verify_all() {
-            return Feedback::Reject(None);
+            return Feedback::reject("proposer slashing bad signature");
         }
         self.seen_proposer_slashings.mark(proposer_index);
         let admission = self.slashing_pool.insert_proposer_slashing(buf, &view);
@@ -1370,7 +1403,7 @@ impl BeaconStateTile {
 
     pub(super) fn handle_attester_slashing(&mut self, data: &[u8]) -> Feedback {
         if !AttesterSlashingView::check_size(data) {
-            return Feedback::Reject(None);
+            return Feedback::reject("attester slashing size");
         }
         let canon_id = self.canonical_state_id();
         let slashed = &mut self.stf_scratch.active;
@@ -1380,7 +1413,7 @@ impl BeaconStateTile {
             // validity REJECT.
             let seen = |vi| self.seen_attester_slashed.contains(vi);
             match stf::attester_slashing_names_unseen(data, seen) {
-                None => Feedback::Reject(None),
+                None => Feedback::reject("attester slashing invalid"),
                 Some(false) => Feedback::Ignore,
                 Some(true) => {
                     let valid = stf::validate_attester_slashing_for_gossip(
@@ -1389,7 +1422,11 @@ impl BeaconStateTile {
                         slashed,
                         &mut self.sig_batch,
                     );
-                    if valid { Feedback::Accept } else { Feedback::Reject(None) }
+                    if valid {
+                        Feedback::Accept
+                    } else {
+                        Feedback::reject("attester slashing bad signature")
+                    }
                 }
             }
         };
@@ -1410,7 +1447,7 @@ impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_BLS_CHANGE_SIZE {
-            return Feedback::Reject(None);
+            return Feedback::reject("bls change size");
         }
         let buf: &[u8; SIGNED_BLS_CHANGE_SIZE] = data[..SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
 
@@ -1423,7 +1460,7 @@ impl BeaconStateTile {
             return Feedback::AlreadySeen;
         }
         if vi >= view.validators.count() {
-            return Feedback::Reject(None);
+            return Feedback::reject("bls change validator out of range");
         }
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
@@ -1431,7 +1468,7 @@ impl BeaconStateTile {
             validate::validate_bls_to_execution_change(&view.validators, vi_u as u32, from_pubkey)
         {
             silver_log::debug!(error = %e, "bls_to_execution_change gossip rejected");
-            return Feedback::Reject(None);
+            return Feedback::reject("bls change invalid");
         }
 
         let object_root = ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
@@ -1445,7 +1482,7 @@ impl BeaconStateTile {
         let sig = SignedBlsToExecutionChangeView::signature(buf);
         // Signer is the message's `from_bls_pubkey`, not a cached key.
         if !bls::verify_one_compressed(from_pubkey, sig, &signing_root) {
-            return Feedback::Reject(None);
+            return Feedback::reject("bls change bad signature");
         }
         self.seen_bls_changes.mark(vi);
         Feedback::Accept
@@ -1469,13 +1506,12 @@ impl BeaconStateTile {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
                         Self::relay_gossip(&m, producers)
                     }
-                    Err(err) if matches!(err.feedback(), Feedback::Reject(_)) => {
-                        producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                    Err(err) if matches!(err.feedback(), Feedback::Reject { .. }) => producers
+                        .produce(PeerEvent::P2pGossipInvalidMsg {
                             p2p_peer: m.stream_id.peer(),
                             topic: m.topic,
                             hash: m.msg_hash,
-                        })
-                    }
+                        }),
                     _ => {}
                 }
                 return true;
@@ -1514,7 +1550,7 @@ impl BeaconStateTile {
             _ => return true,
         };
         match feedback {
-            Feedback::Reject(_) => Self::reject_gossip(&m, producers),
+            Feedback::Reject { reason, .. } => self.reject_gossip(&m, data, reason, producers),
             Feedback::Accept => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
@@ -1564,10 +1600,28 @@ impl BeaconStateTile {
         Self::local_verdict(m, Feedback::Accept, producers);
     }
 
-    fn reject_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+    fn reject_gossip(
+        &self,
+        m: &NewGossipMsg,
+        data: &[u8],
+        reason: &'static str,
+        producers: &mut Producers,
+    ) {
         if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
-            return Self::local_verdict(m, Feedback::Reject(None), producers);
+            return Self::local_verdict(m, Feedback::reject(reason), producers);
         }
+        silver_log::warn!(
+            p2p_peer = m.stream_id.peer(),
+            topic = ?m.topic,
+            reason,
+            message = %GossipFields { topic: m.topic, data },
+            head_slot = self.head_state_slot(),
+            wall_slot = self.ticker.current_slot(),
+            time_into_slot = ?self.ticker.slot_time_elapsed(),
+            justified_epoch = self.fork_choice.justified_checkpoint.epoch,
+            finalized_epoch = self.fork_choice.finalized_checkpoint.epoch,
+            "gossip rejected"
+        );
         producers.produce(PeerEvent::P2pGossipInvalidMsg {
             p2p_peer: m.stream_id.peer(),
             topic: m.topic,
@@ -1583,7 +1637,7 @@ impl BeaconStateTile {
         }
         let result = match feedback {
             Feedback::Accept => Ok(()),
-            Feedback::Reject(_) => Err(LocalGossipFailure::Invalid),
+            Feedback::Reject { .. } => Err(LocalGossipFailure::Invalid),
             // Already on the network is published, as fallback validator
             // clients that submit to several nodes rely on.
             Feedback::AlreadySeen => Ok(()),
@@ -1641,7 +1695,7 @@ impl BeaconStateTile {
     fn ef_verify_and_commit(&mut self, prepared: PreparedVote) -> Feedback {
         let (pk, sig, root) = prepared.sig_parts();
         if !bls::verify_one_checked(pk, &sig, root) {
-            return Feedback::Reject(None);
+            return Feedback::reject("vote bad signature");
         }
         match &prepared {
             PreparedVote::Attestation(p) => self.commit_attestation(p),
@@ -1650,5 +1704,78 @@ impl BeaconStateTile {
         }
         self.recompute_head();
         Feedback::Accept
+    }
+}
+
+/// A rejected message's identifying fields, decoded only when logged.
+struct GossipFields<'a> {
+    topic: GossipTopic,
+    data: &'a [u8],
+}
+
+impl Display for GossipFields<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let data = self.data;
+        match self.topic {
+            GossipTopic::BeaconAttestation(_) if data.len() == SINGLE_ATT_SIZE => {
+                let buf = data[..SINGLE_ATT_SIZE].try_into().unwrap();
+                let d = SingleAttestationView::data(buf);
+                write!(
+                    f,
+                    "slot={} committee={} attester={} index={} block_root={} source_epoch={} \
+                     target={}/{}",
+                    d.slot(),
+                    SingleAttestationView::committee_index(buf),
+                    SingleAttestationView::attester_index(buf),
+                    d.index(),
+                    hex32(d.beacon_block_root()),
+                    d.source_epoch(),
+                    d.target_epoch(),
+                    hex32(d.target_root()),
+                )
+            }
+            GossipTopic::BeaconAggregateAndProof => match ParsedAggregateAndProof::try_from(data) {
+                Some(p) => write!(
+                    f,
+                    "slot={} aggregator={} committee_bits={:#x} index={} block_root={} \
+                     source_epoch={} target={}/{}",
+                    p.agg_slot,
+                    p.aggregator_index,
+                    p.committee_bits,
+                    p.agg_data_index,
+                    hex32(p.agg_data.beacon_block_root()),
+                    p.agg_data.source_epoch(),
+                    p.agg_data.target_epoch(),
+                    hex32(p.agg_data.target_root()),
+                ),
+                None => write!(f, "len={}", data.len()),
+            },
+            GossipTopic::SyncCommittee(_) if data.len() == SYNC_COMMITTEE_MSG_SIZE => {
+                let buf = data[..SYNC_COMMITTEE_MSG_SIZE].try_into().unwrap();
+                write!(
+                    f,
+                    "slot={} validator={} block_root={}",
+                    SyncCommitteeView::slot(buf),
+                    SyncCommitteeView::validator_index(buf),
+                    hex32(SyncCommitteeView::beacon_block_root(buf)),
+                )
+            }
+            GossipTopic::PayloadAttestationMessage
+                if data.len() == PAYLOAD_ATTESTATION_MESSAGE_SIZE =>
+            {
+                let buf = data[..PAYLOAD_ATTESTATION_MESSAGE_SIZE].try_into().unwrap();
+                let d = PayloadAttestationMessageView::data(buf);
+                write!(
+                    f,
+                    "slot={} validator={} block_root={} present={} blob_data_available={}",
+                    PayloadAttestationDataView::slot(d),
+                    PayloadAttestationMessageView::validator_index(buf),
+                    hex32(PayloadAttestationDataView::beacon_block_root(d)),
+                    PayloadAttestationDataView::payload_present(d),
+                    PayloadAttestationDataView::blob_data_available(d),
+                )
+            }
+            _ => write!(f, "len={}", data.len()),
+        }
     }
 }

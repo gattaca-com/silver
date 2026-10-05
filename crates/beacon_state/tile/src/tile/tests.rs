@@ -9,6 +9,8 @@ use silver_beacon_state_data::{
     Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, ValSeed, Withdrawals,
 };
+#[cfg(feature = "ef_tests")]
+use silver_common::ProducedBlock;
 use silver_common::{
     BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
@@ -25,6 +27,7 @@ use silver_common::{
     },
     test_util::ShmemDir,
 };
+use silver_slashing::Selection;
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
 #[cfg(feature = "ef_tests")]
@@ -1249,7 +1252,10 @@ fn short_gossip_block_rejected_before_any_field_read() {
             &mut adapter.producers,
             |_| panic!("a malformed block must never be relayed"),
         );
-        assert!(matches!(feedback, Feedback::Reject(None)), "len {len}: {feedback:?}");
+        assert!(
+            matches!(feedback, Feedback::Reject { block_root: None, .. }),
+            "len {len}: {feedback:?}"
+        );
     }
 
     // Control: a well-formed block gets through the gate, so the assertions
@@ -1607,7 +1613,7 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
         // only the precheck rejections are observable through the feedback.
         if !want_accepted {
             assert!(
-                matches!(feedback, Feedback::Reject(_)),
+                matches!(feedback, Feedback::Reject { .. }),
                 "stamp={stamp} commitments={commitments}: {feedback:?}"
             );
         }
@@ -1684,7 +1690,11 @@ fn non_canonical_body_is_rejected_before_relay() {
             |_| relayed = true,
         );
 
-        assert_eq!(matches!(feedback, Feedback::Reject(None)), want_reject, "{feedback:?}");
+        assert_eq!(
+            matches!(feedback, Feedback::Reject { block_root: None, .. }),
+            want_reject,
+            "{feedback:?}"
+        );
         assert_eq!(relayed, !want_reject, "relay must follow the canonical check");
     }
 }
@@ -2010,6 +2020,18 @@ fn backfill_envelope_response_is_not_parked() {
     assert!(tile.pending_envelopes.contains_key(&unknown_root), "live envelope parks");
 }
 
+/// A replayed block can wait, e.g. on its parent's payload, while its envelope
+/// replays right after it: the envelope parks until the block imports.
+#[test]
+fn replayed_envelope_before_its_block_imports_parks() {
+    let (mut tile, _gp, mut rp, _spine, _adapter) = tile_with_producers(200);
+    seed_tile(&mut tile, 4, 10);
+
+    let waiting_root = [0xE6u8; 32];
+    tile.replay_envelope(rpc_envelope(&mut rp, waiting_root));
+    assert!(tile.pending_envelopes.contains_key(&waiting_root));
+}
+
 #[test]
 fn orphan_below_cap_is_buffered() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(200);
@@ -2124,7 +2146,7 @@ fn ve_unknown_validator_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
     buf[8..16].copy_from_slice(&999u64.to_le_bytes());
-    assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_voluntary_exit(&buf), Feedback::Reject { block_root: None, .. }));
 }
 
 #[test]
@@ -2142,7 +2164,10 @@ fn ps_identical_headers_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let buf = [0u8; PROPOSER_SLASHING_SIZE];
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2153,7 +2178,10 @@ fn ps_unknown_proposer_rejected() {
     buf[8..16].copy_from_slice(&999u64.to_le_bytes());
     buf[216..224].copy_from_slice(&999u64.to_le_bytes());
     buf[208 + 80] = 0xFF; // distinct body_root in h2
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2171,7 +2199,10 @@ fn ps_mismatched_slot_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
     buf[208] = 1; // h2.slot differs
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2180,7 +2211,10 @@ fn ps_mismatched_proposer_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
     buf[208 + 8] = 1; // h2.proposer_index differs
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// IndexedAttestation with `attesting_indices = indices`, zero sig — for
@@ -2242,9 +2276,11 @@ fn as_zero_intersection_with_valid_sigs_ignored() {
 // Reads the private pool because the tile has no block-production consumer.
 fn pooled(tile: &BeaconStateTile) -> (Vec<[u8; PROPOSER_SLASHING_SIZE]>, Option<Vec<u8>>) {
     let view = tile.state.read_view(tile.canonical_state_id());
-    let selection = tile.slashing_pool.select(&view);
-    let proposer_slashings = selection.proposer_slashings.into_iter().copied().collect();
-    (proposer_slashings, selection.attester_slashing.map(<[u8]>::to_vec))
+    let mut selection = Selection::default();
+    tile.slashing_pool.select(&view, &mut selection);
+    let proposer_slashings = selection.proposer_slashings().as_chunks().0.to_vec();
+    let attester_slashing = selection.attester_slashings().get(size_of::<u32>()..);
+    (proposer_slashings, attester_slashing.map(<[u8]>::to_vec))
 }
 
 // Exercises slashing processing and signature verification, not full block
@@ -2309,7 +2345,10 @@ fn ps_rejected_is_not_pooled() {
     let valid = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
     let mut buf = test_signing::sign_proposer_slashing(1, 0, 0, &imm);
     buf[208..320].copy_from_slice(&valid[208..320]);
-    assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_proposer_slashing(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
     assert!(pooled(&tile).0.is_empty());
 }
 
@@ -2396,11 +2435,14 @@ fn finalization_prunes_proofs_against_the_finalized_state() {
         StateId { validators_idx: w.commit(), ..base }
     };
     let view = tile.state.read_view(both_slashable);
-    let selection = tile.slashing_pool.select(&view);
+    let mut selection = Selection::default();
+    tile.slashing_pool.select(&view, &mut selection);
     let offenders: Vec<_> = selection
-        .proposer_slashings
+        .proposer_slashings()
+        .as_chunks()
+        .0
         .iter()
-        .map(|p| ProposerSlashingView::h1_proposer_index(p))
+        .map(ProposerSlashingView::h1_proposer_index)
         .collect();
     assert_eq!(offenders, [0]);
 }
@@ -2411,7 +2453,10 @@ fn bls_change_unknown_validator_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = [0u8; SIGNED_BLS_CHANGE_SIZE];
     buf[0..8].copy_from_slice(&999u64.to_le_bytes());
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2435,7 +2480,10 @@ fn bls_change_wrong_prefix_rejected() {
     let epoch_base = epoch_base_with(cp, cp);
     arm_tile(&mut tile, epoch_base, &seeds, 0);
     let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi = 0
-    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -2871,6 +2919,28 @@ fn ignored_local_aggregate_emits_a_terminal_verdict() {
     ]);
 }
 
+#[test]
+fn gossip_reject_carries_its_reason_and_penalizes_the_peer() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&[0u8; 10]),
+        Feedback::reject("aggregate malformed")
+    );
+
+    let message = gossip_msg(&mut gp, &[0u8; 10], GossipTopic::BeaconAggregateAndProof);
+    tile.handle_gossip(message.ssz, message, true, false, &mut adapter.producers);
+    let mut invalid = 0;
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::P2pGossipInvalidMsg { .. } = event {
+            invalid += 1;
+        }
+    });
+    assert_eq!(invalid, 1);
+}
+
 /// A non-attestation gossip message flushes the pending batch first, so
 /// queue order is preserved.
 #[test]
@@ -2888,6 +2958,37 @@ fn attestation_batch_flushed_before_other_gossip() {
     exit.topic = GossipTopic::VoluntaryExit;
     tile.on_gossip(exit, &mut adapter.producers);
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
+}
+
+/// Validators sign for a fork from its first slot, while the canonical head
+/// can still be a pre-fork state; the domain must follow the fork schedule.
+#[test]
+fn sync_message_at_fork_boundary_verifies_against_the_scheduled_fork() {
+    let spec = SpecConfig { gloas_fork_epoch: 1, ..SpecConfig::mainnet() };
+    let fork_slot = SLOTS_PER_EPOCH;
+    let fork_version = spec.fork_version_at(1);
+    let (mut tile, mut gp, _rp, _spine, mut adapter) =
+        tile_with_producers_on(fork_slot, BeaconState::empty_test(0), spec);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let imm = seed_immutable(&tile);
+    adapter.consume(|_: PeerEvent, _| {});
+    let bbr = tile.head_block_root();
+    assert_ne!(
+        tile.state.read_view(tile.canonical_state_id()).epoch.fork_version_at(1),
+        fork_version,
+        "the head state has not upgraded yet"
+    );
+
+    let mut msg = test_signing::sign_sync_committee_message(0, 0, fork_slot, bbr, &imm);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fork_version, &imm.genesis_validators_root);
+    msg[48..144].copy_from_slice(&test_signing::sign(0, &bls::compute_signing_root(&bbr, &domain)));
+    let m = gossip_msg(&mut gp, &msg, GossipTopic::SyncCommittee(1));
+    tile.defer_vote(m, &mut adapter.producers);
+    tile.flush_votes(&mut adapter.producers);
+
+    assert!(tile.seen_sync_msgs[1].contains(fork_slot, 0), "accepted under the new fork");
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
 }
 
 #[test]
@@ -2965,7 +3066,10 @@ fn sync_message_uses_next_committee_at_period_handoff() {
         handoff.head_block_root(),
         &imm,
     );
-    assert!(matches!(handoff.prepare_sync_message(&msg, 0), Err(Feedback::Reject(None))));
+    assert!(matches!(
+        handoff.prepare_sync_message(&msg, 0),
+        Err(Feedback::Reject { block_root: None, .. })
+    ));
 }
 
 #[test]
@@ -3114,7 +3218,10 @@ fn sync_contribution_non_aggregator_rejected() {
     let bbr = tile.head_block_root();
 
     let buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3127,7 +3234,10 @@ fn sync_contribution_forged_outer_signature_rejected() {
 
     let mut buf = test_signing::sign_contribution_and_proof(0, 0, slot, sub, 3, 0, bbr, &imm);
     buf[300] ^= 0x01;
-    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject(None)));
+    assert!(matches!(tile.handle_sync_contribution(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3145,7 +3255,7 @@ fn ptc_rejects_non_canonical_bool_bytes() {
         &seed_immutable(&tile),
     );
 
-    assert!(matches!(tile.prepare_ptc(&msg), Err(Feedback::Reject(None))));
+    assert!(matches!(tile.prepare_ptc(&msg), Err(Feedback::Reject { block_root: None, .. })));
 }
 
 #[test]
@@ -3249,7 +3359,10 @@ fn single_att_mismatched_target_rejected() {
         wrong_target,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&buf, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// Fulu: a single attestation with a non-zero `AttestationData.index` is
@@ -3275,7 +3388,10 @@ fn single_att_nonzero_data_index_rejected() {
     );
     // AttestationData.index @ buf[24..32]; non-zero is illegal post-Electra.
     buf[24] = 1;
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&buf, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// Spec `validate_on_attestation`: a current-slot vote is held until the
@@ -3331,7 +3447,10 @@ fn single_att_wrong_subnet_rejected() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
     // The reject must not have marked the attester seen.
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept);
 }
@@ -3394,7 +3513,10 @@ fn single_att_failed_validation_does_not_mark_seen() {
         bbr,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&bad, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 
     let honest = test_signing::sign_single_attestation(
         0,
@@ -3554,7 +3676,10 @@ fn agg_multi_committee_bits_rejected() {
     seed_tile(&mut tile, 4, 0);
     let mut buf = empty_aggregate();
     buf[436] = 0b0000_0011; // two committee bits
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3575,6 +3700,27 @@ fn agg_accept() {
     let beacon_block_root = tile.head_block_root();
     assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::BeaconAggregateAndProof);
     assert_eq!(voted_weight(&mut tile, beacon_block_root), MAX_EFFECTIVE_BALANCE);
+}
+
+#[test]
+fn agg_accept_pools_the_aggregate() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let buf = build_agg_for_vi0(&tile);
+    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let data_root =
+        ssz_hash::hash_attestation_data(SignedAggregateAndProofView::agg_data(&buf).as_bytes());
+    let pooled = tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap();
+    assert_eq!(
+        AttestationView::aggregation_bits(&pooled),
+        SignedAggregateAndProofView::agg_aggregation_bits(&buf)
+    );
+    assert_eq!(
+        AttestationView::signature(&pooled),
+        SignedAggregateAndProofView::agg_signature(&buf)
+    );
 }
 
 /// `handle_attestation` derives the attester domain from the state's
@@ -3607,7 +3753,10 @@ fn single_att_accept_with_nonzero_genesis_validators_root() {
         bbr,
         &Immutable::default(),
     );
-    assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+    assert!(matches!(tile.handle_attestation(&bad, subnet), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 
     let mut imm = Immutable::default();
     imm.genesis_validators_root = GVR;
@@ -3729,7 +3878,10 @@ fn agg_committee_index_oor_rejected() {
         buf[436 + i] = 0;
     }
     buf[436] = 0b0000_0010; // committee_index 1, OOR for committees_per_slot=1
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 #[test]
@@ -3752,7 +3904,10 @@ fn agg_is_aggregator_false_rejected() {
         assert!(b < 256, "no parity-flipping byte found (impossible)");
     }
     buf[sp_off..sp_off + 96].copy_from_slice(&sig_arr);
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
 }
 
 /// Spec [IGNORE]: at most one aggregate per (aggregator, target epoch) —
@@ -3775,7 +3930,10 @@ fn agg_failed_validation_does_not_mark_aggregator() {
     let buf = build_agg_for_vi0(&tile);
     let mut forged = buf.clone();
     forged[50] ^= 0xFF; // outer signature = buf[4..100)
-    assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject(None));
+    assert!(matches!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject {
+        block_root: None,
+        ..
+    }));
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
 }
 
@@ -4359,7 +4517,10 @@ fn child_of_transition_failed_block_is_rejected() {
         reason: RejectReason::FailedTransition,
         ..
     }));
-    assert_eq!(err.feedback(), Feedback::Reject(Some(block_root_fulu(&child))));
+    assert!(matches!(
+        err.feedback(),
+        Feedback::Reject { block_root: Some(r), .. } if r == block_root_fulu(&child)
+    ));
 }
 
 /// Below a finalized target nothing waits for its columns, and range sync
@@ -5017,33 +5178,11 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     let slot = SignedBeaconBlockView::slot(&block_ssz);
     let (mut tile, mut gp, _rp, mut spine, mut adapter) =
         tile_with_producers_on(slot, state, SpecConfig::mainnet());
-    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
-    engine_requests(&mut sink);
-    produced_blocks(&mut sink);
-    register_proposer(&mut tile, SignedBeaconBlockView::proposer_index(&block_ssz), [7; 20]);
 
     let message = &block_ssz[100..];
     let frame = fixture_payload_frame(&block_ssz);
-    let proposal = fixture_proposal(&tile, &block_ssz);
-    tile.produce_block(5, proposal, &mut adapter.producers);
-    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
-        panic!("expected a payload preparation");
-    };
-    prepared(&mut tile, prepare.id, [1; 8], &mut adapter.producers);
-    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
-        panic!("expected a payload fetch");
-    };
-    let (_, read) = publish_block_bytes(&mut gp, &frame);
-    let response = EngineGetPayloadResp { id: fetch.id, data: Some(read) };
-    tile.handle_engine_response(EngineResp::GetPayload(response), &mut adapter.producers);
-
-    let mut produced = Vec::new();
-    sink.consume(|response: BeaconApiResponse, _| {
-        if let BeaconApiResponse::ProducedBlock { block, .. } = response {
-            produced.push(block);
-        }
-    });
-    let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
+    let (block, read) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
     assert_eq!(block.execution_payload_value, [3; 32]);
     assert_eq!(block.payload, read, "the engine's bytes stay in the payload frame");
     let header = tile.events_producer.read_buffer(block.header).unwrap();
@@ -5088,6 +5227,44 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     // Checked before a blob block is staged on its columns.
     assert!(matches!(feedback, Feedback::AwaitData(_)), "{feedback:?}");
     assert_eq!(tile.block_production.state_ids_mut().count(), 0, "import takes the post-state");
+}
+
+/// Serves a block request on the `one_blob` fixture's payload through the
+/// engine round trip.
+#[cfg(feature = "ef_tests")]
+fn produce_fixture_block(
+    tile: &mut BeaconStateTile,
+    gp: &mut TProducer,
+    spine: &mut TestSpine,
+    adapter: &mut SpineAdapter<SilverSpine>,
+    block_ssz: &[u8],
+) -> (ProducedBlock, TCacheRead) {
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    engine_requests(&mut sink);
+    produced_blocks(&mut sink);
+    register_proposer(tile, SignedBeaconBlockView::proposer_index(block_ssz), [7; 20]);
+
+    let proposal = fixture_proposal(tile, block_ssz);
+    tile.produce_block(5, proposal, &mut adapter.producers);
+    let [EngineReq::PreparePayload(prepare)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload preparation");
+    };
+    prepared(tile, prepare.id, [1; 8], &mut adapter.producers);
+    let [EngineReq::GetPayload(fetch)] = engine_requests(&mut sink)[..] else {
+        panic!("expected a payload fetch");
+    };
+    let (_, read) = publish_block_bytes(gp, &fixture_payload_frame(block_ssz));
+    let response = EngineGetPayloadResp { id: fetch.id, data: Some(read) };
+    tile.handle_engine_response(EngineResp::GetPayload(response), &mut adapter.producers);
+
+    let mut produced = Vec::new();
+    sink.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::ProducedBlock { block, .. } = response {
+            produced.push(block);
+        }
+    });
+    let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
+    (block, read)
 }
 
 /// The `PayloadFrame` the EL would answer with for `block_ssz`'s payload,
@@ -5141,6 +5318,241 @@ fn fixture_proposal(tile: &BeaconStateTile, block_ssz: &[u8]) -> Proposal {
         randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
         graffiti: *BeaconBlockBodyFuluView::graffiti(body),
     }
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_slashings_land_in_the_produced_block() {
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let head = tile.state.read_view(tile.canonical_state_id());
+    let count = head.validators.count() as u64;
+    let proposer = SignedBeaconBlockView::proposer_index(&block_ssz);
+    let [equivocator, double_voter] = [1, 2].map(|i| (proposer + i) % count);
+    let proposer_slashing = |offender: u64| {
+        let mut proof = [0u8; PROPOSER_SLASHING_SIZE];
+        for header in [0, 208] {
+            proof[header..header + 8].copy_from_slice(&slot.to_le_bytes());
+            proof[header + 8..header + 16].copy_from_slice(&offender.to_le_bytes());
+        }
+        proof[208 + 80] = 1;
+        proof
+    };
+    let equivocation = proposer_slashing(equivocator);
+    let epoch = slot / SLOTS_PER_EPOCH;
+    let double_vote = wrap_attester_slashing(
+        &build_ia_with_indices(epoch, 0xAA, &[double_voter]),
+        &build_ia_with_indices(epoch, 0xBB, &[double_voter]),
+    );
+    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head);
+    tile.slashing_pool.insert_proposer_slashing(&proposer_slashing(count + 5), &head);
+    tile.slashing_pool.insert_attester_slashing(&double_vote, &[double_voter as u32], &head);
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body = &header[12 + 84..];
+    let field = |from: u32, to: u32| &body[from as usize..to as usize];
+    let proposer_slashings = field(
+        BeaconBlockBodyFuluView::proposer_slashings_offset(body),
+        BeaconBlockBodyFuluView::attester_slashings_offset(body),
+    );
+    let attester_slashings = field(
+        BeaconBlockBodyFuluView::attester_slashings_offset(body),
+        BeaconBlockBodyFuluView::attestations_offset(body),
+    );
+    assert_eq!(proposer_slashings, equivocation, "the unknown offender is filtered out");
+    assert_eq!(attester_slashings, [&4u32.to_le_bytes()[..], &double_vote].concat());
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let validators = tile.state.read_view(post_state).validators;
+    assert!(validators.is_slashed(equivocator as usize));
+    assert!(validators.is_slashed(double_voter as usize));
+
+    let pre_state = tile.state.read_view(tile.canonical_state_id());
+    let whistleblower_rewards: u64 = [equivocator, double_voter]
+        .map(|vi| pre_state.validators.effective_balance(vi as usize) / 4096)
+        .iter()
+        .sum();
+    assert_eq!(consensus_value_gwei(&block), whistleblower_rewards);
+}
+
+/// The produced block's `consensus_block_value`, which is a whole number of
+/// gwei.
+#[cfg(feature = "ef_tests")]
+fn consensus_value_gwei(block: &ProducedBlock) -> u64 {
+    let wei = u128::from_le_bytes(block.consensus_block_value[..16].try_into().unwrap());
+    assert_eq!(block.consensus_block_value[16..], [0; 16]);
+    assert_eq!(wei % 1_000_000_000, 0);
+    (wei / 1_000_000_000) as u64
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_sync_messages_land_in_the_produced_block() {
+    use blst::min_pk::{AggregateSignature, Signature};
+    use silver_beacon_state_data::SyncSubcommittee;
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+    use silver_ssz::block_body::EMPTY_SYNC_AGGREGATE;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let head = tile.state.read_view(tile.canonical_state_id());
+    let committee = SyncSubcommittee::of(&head, 1);
+    let participant = committee.validator_at(3, &head.validators).unwrap();
+    let positions = committee.positions(participant, &head.validators);
+    let balance_before = head.balances.get(participant);
+    let signature = Signature::from_bytes(&test_signing::sign(0, &[0xCD; 32])).unwrap();
+    let parent_root = tile.head_block_root();
+    tile.sync_contribution_pool.insert_verified(slot - 1, 1, parent_root, &positions, &signature);
+    tile.sync_contribution_pool.insert_verified(slot - 1, 2, [0xBC; 32], &positions, &signature);
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let sync_aggregate = BeaconBlockBodyFuluView::sync_aggregate(&header[12 + 84..]);
+    let mut expected = EMPTY_SYNC_AGGREGATE;
+    for (word, bytes) in positions.iter().zip(expected[16..32].as_chunks_mut().0) {
+        *bytes = word.to_le_bytes();
+    }
+    let copies = positions.iter().map(|word| word.count_ones()).sum::<u32>();
+    let copies = vec![&signature; copies as usize];
+    let expected_signature = AggregateSignature::aggregate(&copies, false).unwrap();
+    expected[64..].copy_from_slice(&expected_signature.to_signature().to_bytes());
+    assert_eq!(sync_aggregate, &expected, "only the parent's messages are packed");
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let balance_after = tile.state.read_view(post_state).balances.get(participant);
+    assert!(balance_after > balance_before, "{balance_after} <= {balance_before}");
+    assert!(consensus_value_gwei(&block) > 0, "the aggregate pays the proposer");
+}
+
+/// Fixture validator `vi` signs with the spec's test key `vi + 1`.
+#[cfg(feature = "ef_tests")]
+fn fixture_secret_key(vi: usize) -> blst::min_pk::SecretKey {
+    let mut scalar = [0u8; 32];
+    scalar[24..].copy_from_slice(&(vi as u64 + 1).to_be_bytes());
+    blst::min_pk::SecretKey::from_bytes(&scalar).unwrap()
+}
+
+/// Every member of the parent slot's first committee but one attests the
+/// parent, singly. The packed attestation carries their bits and verifies
+/// against the parent state. A larger vote with the wrong source is left out.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_attestations_land_in_the_produced_block() {
+    use silver_common::ssz_view::BeaconBlockBodyFuluView;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let parent = tile.canonical_state_id();
+    let parent_root = tile.head_block_root();
+    let (att_slot, epoch) = (slot - 1, slot / SLOTS_PER_EPOCH);
+    assert_eq!(att_slot / SLOTS_PER_EPOCH, epoch, "fixture premise: one epoch");
+    let view = tile.state.read_view(parent);
+    assert_eq!(
+        fixture_secret_key(0).sk_to_pk().to_bytes(),
+        *view.validators.pubkey(0),
+        "fixture premise: spec test keys"
+    );
+    tile.shuffling_cache.ensure_window(&view, epoch);
+    let committee =
+        tile.shuffling_cache.lookup(&view, epoch).unwrap().committee(att_slot, 0).to_vec();
+    assert!(committee.len() > 1, "fixture premise: a committee to leave one out of");
+
+    let mut data = [0u8; ATTESTATION_DATA_SIZE];
+    let justified = view.epoch.state().current_justified_checkpoint;
+    let epoch_start = epoch * SLOTS_PER_EPOCH;
+    let target_root = if epoch_start < view.slot.slot_number() {
+        view.block_roots.at_slot(epoch_start)
+    } else {
+        parent_root
+    };
+    data[0..8].copy_from_slice(&att_slot.to_le_bytes());
+    data[16..48].copy_from_slice(&parent_root);
+    data[48..56].copy_from_slice(&justified.epoch.to_le_bytes());
+    data[56..88].copy_from_slice(&justified.root);
+    data[88..96].copy_from_slice(&epoch.to_le_bytes());
+    data[96..128].copy_from_slice(&target_root);
+    let data_root = ssz_hash::hash_attestation_data(&data);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        view.epoch.fork_version_at(epoch),
+        &view.imm.genesis_validators_root,
+    );
+    let signing_root = bls::compute_signing_root(&data_root, &domain);
+    let attesters = &committee[1..];
+    for (position, &vi) in committee.iter().enumerate().skip(1) {
+        let signature = fixture_secret_key(vi as usize).sign(&signing_root, bls::DST, &[]);
+        let mut single = [0u8; SINGLE_ATT_SIZE];
+        single[8..16].copy_from_slice(&(vi as u64).to_le_bytes());
+        single[16..144].copy_from_slice(&data);
+        single[144..].copy_from_slice(&signature.to_bytes());
+        let verified = bls::VerifiedSingleAttestation { data_root, signature };
+        tile.attestation_pool.insert_verified(&single, position, committee.len(), &verified);
+    }
+
+    let mut wrong_source = data;
+    wrong_source[56] ^= 1;
+    let data_root = ssz_hash::hash_attestation_data(&wrong_source);
+    for position in 0..committee.len() {
+        let mut single = [0u8; SINGLE_ATT_SIZE];
+        single[16..144].copy_from_slice(&wrong_source);
+        let signature = fixture_secret_key(0).sign(&signing_root, bls::DST, &[]);
+        let verified = bls::VerifiedSingleAttestation { data_root, signature };
+        tile.attestation_pool.insert_verified(&single, position, committee.len(), &verified);
+    }
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body = &header[12 + 84..];
+    let attestations = &body[BeaconBlockBodyFuluView::attestations_offset(body) as usize..
+        BeaconBlockBodyFuluView::deposits_offset(body) as usize];
+    let attestation = &attestations[4..];
+    assert_eq!(&attestations[..4], &4u32.to_le_bytes(), "one attestation");
+    assert_eq!(AttestationView::data(attestation).as_bytes(), &data, "not the wrong source");
+    assert_eq!(AttestationView::committee_bits(attestation), &1u64.to_le_bytes());
+
+    let view = tile.state.read_view(parent);
+    let shuffling = tile.shuffling_cache.build_ref(&view, epoch);
+    let mut sigs = bls::SigBatch::new();
+    stf::collect_sigs_attestations(
+        view.imm,
+        &view.epoch,
+        &view.validators,
+        attestations,
+        slot,
+        &shuffling,
+        &mut sigs,
+    )
+    .unwrap();
+    assert!(sigs.verify_all(), "the packed signature verifies");
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let post_state = tile.state.read_view(post_state);
+    assert_eq!(post_state.current_participation.get(committee[0] as usize), 0);
+    for &vi in attesters {
+        assert_ne!(post_state.current_participation.get(vi as usize), 0, "validator {vi}");
+    }
+    assert!(consensus_value_gwei(&block) > 0, "the attestation pays the proposer");
 }
 
 #[cfg(feature = "ef_tests")]

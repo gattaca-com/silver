@@ -12,6 +12,7 @@ use std::{
     time::Instant,
 };
 
+use fxhash::FxHashMap;
 use silver_common::{
     AgentString, CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId,
     rpc_rate_limit::{N_STREAM_PROTOCOLS, RpcRateLimitSet},
@@ -43,13 +44,13 @@ pub(crate) struct PeerState {
     pub user_agent: AgentString,
 
     // Subscriptions observed from the peer's SUBSCRIBE frames.
-    pub subscriptions: HashMap<([u8; 4], GossipTopic), PartialCapabilities>,
+    pub subscriptions: FxHashMap<([u8; 4], GossipTopic), PartialCapabilities>,
 
     // Stream-wide gossipsub 1.3 extension announcement.
     pub partial_extensions: bool,
 
     // Per-topic scoring. Sparse — entry created on first meshed activity.
-    pub topic_stats: HashMap<GossipTopic, TopicScore>,
+    pub topic_stats: FxHashMap<GossipTopic, TopicScore>,
 
     // WANT/ DONTWANT message id cache. For mesh peers this cache contains DONTWANT msg ids
     // and for non-mesh peers it tracks WANT requests.
@@ -76,7 +77,12 @@ pub(crate) struct PeerState {
     pub outbound_in_flight: [u32; N_STREAM_PROTOCOLS],
 
     // Prune backoff deadlines per topic
-    pub backoffs: HashMap<GossipTopic, Instant>,
+    pub backoffs: FxHashMap<GossipTopic, Instant>,
+
+    // Backoff deadlines we sent this peer in our PRUNEs. Only a GRAFT before
+    // one of these breaks the protocol; `backoffs` also holds our own,
+    // escalated waits after the peer pruned us.
+    pub advertised_backoffs: FxHashMap<GossipTopic, Instant>,
 
     // Cached score value + recomputation timestamp. `last_breakdown.total ==
     // cached_score`; both refreshed together by `rescore_all` so decisions
@@ -104,9 +110,15 @@ impl PeerState {
             connected_at: now,
             local_dialler: false,
             user_agent: AgentString::default(),
-            subscriptions: HashMap::with_capacity(TOPICS_PER_PEER_CAP * 2),
+            subscriptions: FxHashMap::with_capacity_and_hasher(
+                TOPICS_PER_PEER_CAP * 2,
+                Default::default(),
+            ),
             partial_extensions: false,
-            topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
+            topic_stats: FxHashMap::with_capacity_and_hasher(
+                TOPICS_PER_PEER_CAP,
+                Default::default(),
+            ),
             msg_cache: CountingWitherFilter::default(),
             application_score: 0.0,
             behaviour_penalty: 0.0,
@@ -114,7 +126,8 @@ impl PeerState {
             iwant_ids_sent: 0,
             outbound_rpc_limits: RpcRateLimitSet::default(),
             outbound_in_flight: [0; N_STREAM_PROTOCOLS],
-            backoffs: HashMap::new(),
+            backoffs: FxHashMap::default(),
+            advertised_backoffs: FxHashMap::default(),
             cached_score: 0.0,
             score_valid_at: now,
             last_breakdown: ScoreBreakdown::default(),
@@ -194,7 +207,7 @@ pub(crate) struct TopicScore {
 pub(crate) struct ArchivedState {
     pub application_score: f64,
     pub behaviour_penalty: f64,
-    pub topic_stats: HashMap<GossipTopic, TopicScore>,
+    pub topic_stats: FxHashMap<GossipTopic, TopicScore>,
     pub archived_at: Instant,
 }
 

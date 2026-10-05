@@ -517,8 +517,8 @@ impl PeerManager {
                     "rpc serve outcome"
                 );
             }
-            PeerEvent::RpcMisbehaviour { p2p_peer, severity } => {
-                self.on_rpc_misbehaviour(p2p_peer, severity, "rpc chunk/framing violation");
+            PeerEvent::RpcMisbehaviour { p2p_peer, severity, offence } => {
+                self.on_rpc_misbehaviour(p2p_peer, severity, offence.as_str());
             }
             PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
                 silver_log::trace!(p2p_peer, "Got peer status");

@@ -1,5 +1,5 @@
 use clap::Parser;
-use silver_config::Config;
+use silver_config::{Config, Network, Overrides};
 
 use crate::BUILD_INFO;
 
@@ -11,6 +11,11 @@ pub struct Args {
     /// mainnet node.
     #[arg(long)]
     config: Option<String>,
+    /// `mainnet` (default), `hoodi`, `sepolia`, or a devnet's metadata
+    /// directory holding its `config.yaml` and, optionally,
+    /// `bootstrap_nodes.yaml`.
+    #[arg(long)]
+    network: Option<Network>,
     /// Engine API URL of the execution client, e.g. `http://localhost:8551`.
     #[arg(long)]
     execution_endpoint: Option<String>,
@@ -24,20 +29,14 @@ pub struct Args {
 }
 
 impl Args {
-    pub fn config(&self) -> Result<Config, silver_common::Error> {
-        let mut config = match &self.config {
-            Some(path) => Config::from_file(path)?,
-            None => Config::mainnet()?,
+    pub fn config(self) -> Result<Config, silver_common::Error> {
+        let overrides = Overrides {
+            network: self.network,
+            execution_endpoint: self.execution_endpoint,
+            jwt_secret: self.jwt_secret,
+            unsafe_no_el: self.unsafe_no_el,
         };
-        if let Some(url) = &self.execution_endpoint {
-            config = config.with_execution_endpoint(url.clone());
-        }
-        if let Some(path) = &self.jwt_secret {
-            config = config.with_jwt_secret(path.clone());
-        }
-        if self.unsafe_no_el {
-            config = config.with_unsafe_no_el(true);
-        }
+        let config = Config::load(self.config.as_deref(), overrides)?;
 
         silver_log::info!("loaded config: {config:#?}");
 

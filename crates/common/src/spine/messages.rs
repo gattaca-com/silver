@@ -228,6 +228,8 @@ pub struct ProducedBlock {
     pub payload: TCacheRead,
     /// Little-endian wei.
     pub execution_payload_value: [u8; 32],
+    /// Little-endian wei.
+    pub consensus_block_value: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -682,6 +684,7 @@ pub enum PeerEvent {
     RpcMisbehaviour {
         p2p_peer: usize,
         severity: RpcSeverity,
+        offence: RpcOffence,
     },
     /// Peer status received over RPC
     P2pPeerStatus {
@@ -893,6 +896,32 @@ impl core::fmt::Debug for SyncUpdate {
 pub enum PeerStatus {
     V1([u8; STATUS_V1_SIZE]),
     V2([u8; STATUS_V2_SIZE]),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RpcOffence {
+    ChunkFraming,
+    ErrorResponse,
+    OversizedBlock,
+    InvalidBlock,
+    InvalidColumn,
+    KzgProof,
+    InvalidBackfillColumn,
+}
+
+impl RpcOffence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChunkFraming => "rpc chunk/framing violation",
+            Self::ErrorResponse => "rpc error response",
+            Self::OversizedBlock => "oversized rpc block",
+            Self::InvalidBlock => "invalid rpc block",
+            Self::InvalidColumn => "invalid data column",
+            Self::KzgProof => "data column kzg proof failed",
+            Self::InvalidBackfillColumn => "invalid backfill data column",
+        }
+    }
 }
 
 /// Severity levels for RPC misbehaviour reports. Mirrors lighthouse's

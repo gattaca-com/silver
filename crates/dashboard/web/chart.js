@@ -34,10 +34,53 @@ function endLabels(colours, holder) {
   };
 }
 
-/** Optional spec fields: `height`; `xRange` / `yRange`, fixed [min, max]
+/** A dashed full-height line at each `{ x, series }` of `holder.spec.markers`,
+ *  in that series' colour. */
+function markers(colours, holder) {
+  return (u) => {
+    const dpr = devicePixelRatio;
+    const { ctx } = u;
+    const { top, height } = u.bbox;
+    ctx.save();
+    ctx.lineWidth = dpr;
+    ctx.setLineDash([4 * dpr, 3 * dpr]);
+    for (const { x, series } of holder.spec.markers ?? []) {
+      const px = u.valToPos(x, 'x', true);
+      ctx.strokeStyle = colours[series];
+      ctx.beginPath();
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, top + height);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+}
+
+/** `holder.spec.cornerLabels[i]`, stacked in the plot's top-right corner in
+ *  series `i`'s colour. */
+function cornerLabels(colours, holder) {
+  return (u) => {
+    const dpr = devicePixelRatio;
+    const { ctx } = u;
+    const { left, top, width } = u.bbox;
+    ctx.save();
+    ctx.font = `${11 * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    holder.spec.cornerLabels.forEach((text, i) => {
+      ctx.fillStyle = colours[i];
+      ctx.fillText(text, left + width - 4 * dpr, top + (4 + 14 * i) * dpr);
+    });
+    ctx.restore();
+  };
+}
+
+/** Optional spec fields: `height`; `xSeconds`, a plain seconds x axis in
+ *  place of wall-clock time; `xRange` / `yRange`, fixed [min, max]
  *  re-read on every redraw; `right` (series indexes on a right axis) with
  *  `fmtRight`; `stepped`; `spanGaps`; `endLabel(i, v)` for a label at each
- *  series' last point. `holder.spec` is the latest spec. */
+ *  series' last point; `markers`; `cornerLabels`. `holder.spec` is the latest
+ *  spec. */
 function options(spec, width, holder) {
   const muted = cssVar('--muted');
   const grid = { stroke: cssVar('--line'), width: 1 };
@@ -45,10 +88,11 @@ function options(spec, width, holder) {
   const colours = spec.labels.map((_, i) => cssVar(`--series-${i + 1}`));
   const onRight = (i) => spec.right?.includes(i) ?? false;
   const fmtOf = (i) => (onRight(i) ? spec.fmtRight : spec.fmt);
-  const scales = { x: { time: true }, y: {} };
+  const scales = { x: { time: !spec.xSeconds }, y: {} };
   if (spec.xRange) scales.x.range = () => holder.spec.xRange;
   if (spec.yRange) scales.y.range = () => holder.spec.yRange;
-  const axes = [axis, { ...axis, size: 80, values: (_u, vals) => vals.map((v) => spec.fmt(v)) }];
+  const xAxis = spec.xSeconds ? { ...axis, values: (_u, vals) => vals.map((v) => `${v}s`) } : axis;
+  const axes = [xAxis, { ...axis, size: 80, values: (_u, vals) => vals.map((v) => spec.fmt(v)) }];
   if (spec.right) {
     scales.y2 = {};
     axes.push({ ...axis, scale: 'y2', side: 1, size: 70, grid: { show: false }, values: (_u, vals) => vals.map((v) => spec.fmtRight(v)) });
@@ -71,26 +115,15 @@ function options(spec, width, holder) {
         value: (_u, v) => (v === null ? '·' : fmtOf(i)(v)),
       })),
     ],
-    hooks: spec.endLabel ? { draw: [endLabels(colours, holder)] } : {},
+    hooks: {
+      draw: [
+        ...(spec.endLabel ? [endLabels(colours, holder)] : []),
+        ...(spec.markers ? [markers(colours, holder)] : []),
+        ...(spec.cornerLabels ? [cornerLabels(colours, holder)] : []),
+      ],
+    },
     legend: { live: true },
   };
-}
-
-/** Series with their own x values on the union of those values; a series
- *  is null where it has no point. */
-export function alignSeries(series) {
-  const xs = [...new Set(series.flatMap((s) => s.xs))].sort((a, b) => a - b);
-  const at = new Map(xs.map((x, i) => [x, i]));
-  return [
-    xs,
-    ...series.map((s) => {
-      const ys = new Array(xs.length).fill(null);
-      s.xs.forEach((x, k) => {
-        ys[at.get(x)] = s.ys[k];
-      });
-      return ys;
-    }),
-  ];
 }
 
 export class LineCharts {
@@ -111,7 +144,7 @@ export class LineCharts {
       const width = Math.max(slot.clientWidth, 200);
       // Series identity, layout and theme are baked into the plot; a change
       // rebuilds it.
-      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xRange, !!spec.yRange, !!spec.endLabel];
+      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels];
       const shape = `${spec.labels.join('\u0000')}|${JSON.stringify(layout)}|${cssVar('--series-1')}`;
       let chart = this.charts.get(key);
       if (chart && chart.shape !== shape) {

@@ -11,7 +11,10 @@ use silver_common::{
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
-use crate::{StorageCounters, store::Store};
+use crate::{
+    StorageCounters,
+    store::{ReplayEntry, Store},
+};
 
 const MAX_REPLAY_BLOCKS_PER_LOOP: usize = 16;
 
@@ -21,6 +24,31 @@ enum ReplayStep {
 }
 
 impl ReplayStep {
+    /// Block-then-envelope steps in slot order, from the anchor block up.
+    /// Unfinalized leftovers below it would be ignored as pre-finalized,
+    /// leaving their envelopes without a block.
+    fn sequence(
+        mut entries: Vec<ReplayEntry>,
+        anchor_block_slot: u64,
+        anchor_envelope: Option<PathBuf>,
+    ) -> VecDeque<Self> {
+        entries.retain(|e| e.slot >= anchor_block_slot);
+        entries.sort_unstable_by_key(|e| e.slot);
+        let entries_replay_anchor = entries.first().is_some_and(|e| e.slot == anchor_block_slot);
+        let anchor_envelope = anchor_envelope.filter(|_| !entries_replay_anchor);
+
+        anchor_envelope
+            .map(|path| Self::Envelope { path })
+            .into_iter()
+            .chain(entries.into_iter().flat_map(|e| {
+                [Some(Self::Block { path: e.block, columns_on_disk: e.columns_on_disk })]
+                    .into_iter()
+                    .chain([e.envelope.map(|path| Self::Envelope { path })])
+                    .flatten()
+            }))
+            .collect()
+    }
+
     fn path(&self) -> &PathBuf {
         match self {
             Self::Block { path, .. } | Self::Envelope { path } => path,
@@ -82,17 +110,13 @@ impl StorageTile {
             .expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
         let replay_steps = if replay_from_disk {
-            let mut entries = store.replay_entries();
-            entries.sort_unstable_by_key(|e| e.slot);
-            entries
-                .into_iter()
-                .flat_map(|e| {
-                    [Some(ReplayStep::Block { path: e.block, columns_on_disk: e.columns_on_disk })]
-                        .into_iter()
-                        .chain([e.envelope.map(|path| ReplayStep::Envelope { path })])
-                        .flatten()
-                })
-                .collect()
+            let anchor_block_slot =
+                beacon_state.read(|v| v.slot.state().latest_block_header.slot).unwrap_or(0);
+            ReplayStep::sequence(
+                store.replay_entries(),
+                anchor_block_slot,
+                store.finalized_envelope(anchor_block_slot),
+            )
         } else {
             VecDeque::new()
         };
@@ -523,6 +547,38 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// Leftovers below a newer checkpoint anchor are not replayed; the anchor
+    /// block's own envelope still is.
+    #[test]
+    fn replay_starts_at_the_anchor_block() {
+        let entry = |slot: u64| ReplayEntry {
+            slot,
+            block: PathBuf::from(format!("b{slot}")),
+            columns_on_disk: true,
+            envelope: Some(PathBuf::from(format!("e{slot}"))),
+        };
+        let anchor = Some(PathBuf::from("finalized-e10"));
+        let steps = ReplayStep::sequence(vec![entry(12), entry(5), entry(10)], 10, anchor);
+        let paths: Vec<_> = steps.iter().map(|s| s.path().to_str().unwrap()).collect();
+        assert_eq!(paths, ["b10", "e10", "b12", "e12"]);
+    }
+
+    /// A persisted-checkpoint anchor is no replay entry: its finalized
+    /// envelope leads, so the first child's parent payload is verified.
+    #[test]
+    fn replay_leads_with_the_finalized_anchor_envelope() {
+        let entry = |slot: u64| ReplayEntry {
+            slot,
+            block: PathBuf::from(format!("b{slot}")),
+            columns_on_disk: true,
+            envelope: Some(PathBuf::from(format!("e{slot}"))),
+        };
+        let anchor = Some(PathBuf::from("e10"));
+        let steps = ReplayStep::sequence(vec![entry(12), entry(11)], 10, anchor);
+        let paths: Vec<_> = steps.iter().map(|s| s.path().to_str().unwrap()).collect();
+        assert_eq!(paths, ["e10", "b11", "e11", "b12", "e12"]);
+    }
 
     /// Synthetic SignedBeaconBlock: message at 100, slot at [100..108), body
     /// at 184. `has_data_columns` is `blob_kzg_commitments_offset <

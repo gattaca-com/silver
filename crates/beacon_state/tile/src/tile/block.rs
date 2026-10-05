@@ -74,6 +74,11 @@ impl AppliedBlock {
     pub(super) fn state_id_mut(&mut self) -> &mut StateId {
         &mut self.id
     }
+
+    /// Gwei.
+    pub(super) fn proposer_reward(&self) -> u64 {
+        self.votes.proposer_reward
+    }
 }
 
 /// A block whose post-state is committed but which waits for its data columns
@@ -192,7 +197,7 @@ impl BeaconStateTile {
             Feedback::AwaitData(_) => {
                 self.emit_block_received(data, block_root, BlockStage::AwaitData, source, producers)
             }
-            Feedback::Reject(_) => {
+            Feedback::Reject { .. } => {
                 producers.produce(BeaconStateEvent::BlockRejected { block_root, source })
             }
             _ => {}
@@ -285,9 +290,10 @@ impl BeaconStateTile {
         let feedback = self.try_apply_block(data);
 
         match feedback {
-            Feedback::Reject(block_root) => silver_log::error!(
+            Feedback::Reject { block_root, reason } => silver_log::error!(
                 block_slot,
                 block_root = ?block_root.map(|r| hex32(&r)),
+                reason,
                 "replayed block rejected",
             ),
             _ => silver_log::info!(
@@ -319,10 +325,13 @@ impl BeaconStateTile {
                 self.mark_envelope_verified(block_root, data);
                 self.recompute_head();
             }
-            EnvelopeCheck::AwaitBlock(block_root) => silver_log::error!(
-                block = hex32(&block_root),
-                "replayed envelope precedes its block; replay is misordered"
-            ),
+            EnvelopeCheck::AwaitBlock(block_root) => {
+                silver_log::info!(
+                    block = hex32(&block_root),
+                    "replayed envelope parked until its block imports"
+                );
+                self.buffer_pending_envelope(block_root, acquired);
+            }
             EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 silver_log::warn!("replayed on-disk envelope rejected")
             }
@@ -398,7 +407,7 @@ impl BeaconStateTile {
                     "block rejected"
                 );
                 self.held.reject(parsed.block_root, parsed.header.slot);
-                Err(Feedback::Reject(Some(parsed.block_root)))
+                Err(Feedback::reject_block(parsed.block_root, "block failed transition"))
             }
         }
     }

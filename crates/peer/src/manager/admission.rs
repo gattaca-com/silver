@@ -394,6 +394,7 @@ impl PeerManager {
             silver_log::warn!(
                 peer_id = ?peer.peer_id,
                 addr = ?peer.addr,
+                user_agent = peer.user_agent.as_str(),
                 total = b.total,
                 threshold,
                 dc_subscribed,
@@ -1580,7 +1581,11 @@ mod tests {
         cap.0.clear();
 
         mgr.handle_event(
-            PeerEvent::RpcMisbehaviour { p2p_peer: 1, severity: silver_common::RpcSeverity::Fatal },
+            PeerEvent::RpcMisbehaviour {
+                p2p_peer: 1,
+                severity: silver_common::RpcSeverity::Fatal,
+                offence: silver_common::RpcOffence::InvalidBlock,
+            },
             now,
             &mut |c| cap.0.push(c),
         );
@@ -1606,6 +1611,7 @@ mod tests {
             PeerEvent::RpcMisbehaviour {
                 p2p_peer: 1,
                 severity: silver_common::RpcSeverity::LowTolerance,
+                offence: silver_common::RpcOffence::ChunkFraming,
             },
             now,
             &mut |c| cap.0.push(c),
@@ -1634,6 +1640,7 @@ mod tests {
                 PeerEvent::RpcMisbehaviour {
                     p2p_peer: 1,
                     severity: silver_common::RpcSeverity::LowTolerance,
+                    offence: silver_common::RpcOffence::ChunkFraming,
                 },
                 now,
                 &mut |c| cap.0.push(c),

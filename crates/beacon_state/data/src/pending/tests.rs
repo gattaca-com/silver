@@ -170,6 +170,41 @@ fn rebase_when_survivor_drained_past_inherited() {
     assert_consistent(&g, fresh[1]);
 }
 
+/// The Gloas fork block's builder onboarding drains the whole queue and
+/// re-pushes what stays. A descendant that drains into those re-pushes, rebased
+/// against an older winner, must still drop only its own share when the fork
+/// block itself finalizes next (regression: `drain_front` past the end).
+#[test]
+fn rebase_twice_after_survivor_drained_an_ancestors_appends() {
+    let mut g = group_from(&[1, 2, 3]);
+    let older = {
+        let mut wv = g.roll_fresh();
+        wv.push(4);
+        wv.commit()
+    };
+    let full_drain = {
+        let mut wv = g.roll_from(older);
+        wv.drain(4);
+        wv.push(10);
+        wv.push(11);
+        wv.push(12);
+        wv.commit()
+    };
+    let survivor = {
+        let mut wv = g.roll_from(full_drain);
+        wv.drain(1);
+        wv.commit()
+    };
+
+    let fresh = g.finalize(older, &[older, full_drain, survivor]);
+    assert_eq!(effective(&g.view(fresh[2])), vec![11, 12]);
+
+    let fresh = g.finalize(fresh[1], &[fresh[1], fresh[2]]);
+    assert_eq!(effective(&g.view(fresh[0])), vec![10, 11, 12]); // promoted base
+    assert_eq!(effective(&g.view(fresh[1])), vec![11, 12]);
+    assert_consistent(&g, fresh[1]);
+}
+
 /// The common shape: drains stay within the base; the survivor drops the
 /// full inherited prefix and keeps a relative drain.
 #[test]
