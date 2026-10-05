@@ -21,13 +21,7 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    APP_NAME, GossipTopic, Keypair, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES, ProtoIdentify,
-    SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
-    cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION},
-    column_util::data_column_sidecar_len,
-    profiler::enable_profiler,
-    ssz_view::NUMBER_OF_COLUMNS,
-    tracing::initialise_tracing_log,
+    cell_store::{CellStoreConfig, GOSSIP_DELIVERY_RETENTION}, column_util::data_column_sidecar_len, profiler::enable_profiler, ssz_view::NUMBER_OF_COLUMNS, tracing::initialise_tracing_log, CompositeTile, GossipTopic, Keypair, ProtoIdentify, SilverSpine, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, APP_NAME, MAX_BLOBS_PER_BLOCK, MAX_CLUSTER_MESSAGE_BYTES
 };
 use silver_config::Genesis;
 use silver_control::{Controller, sync_engine::SyncEngine};
@@ -373,13 +367,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         boundary_processing_producer,
     );
 
+    let dc_api_tile = CompositeTile::new(data_columns_tile, application_boundary_tile);
+
     // Spine
     let spine = SilverSpine::new(None);
     spine.start(None, None, |scoped_spine| {
         // Attach application_boundary_tiles first so its `on_attach` can subscribe to
         // peer events before their producers start.
         attach_tile(
-            application_boundary_tile,
+            dc_api_tile,
             scoped_spine,
             TileConfig::new(5, Some(ThreadNiceness::Highest)),
         );
@@ -392,11 +388,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             TileConfig::new(3, Some(ThreadNiceness::Highest)),
         );
         attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
-        attach_tile(
-            data_columns_tile,
-            scoped_spine,
-            TileConfig::new(6, Some(ThreadNiceness::Highest)),
-        );
+        // attach_tile(
+        //     data_columns_tile,
+        //     scoped_spine,
+        //     TileConfig::new(6, Some(ThreadNiceness::Highest)),
+        // );
     });
 
     Ok(())

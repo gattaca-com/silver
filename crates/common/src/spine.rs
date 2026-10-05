@@ -1,6 +1,7 @@
 #![allow(improper_ctypes, improper_ctypes_definitions)]
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
+pub use composite::CompositeTile;
 pub use messages::*;
 pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
 pub use stream_protocol::{
@@ -10,6 +11,7 @@ pub use tcache::*;
 
 use crate::cell_store::{CellStoreEvent, RetentionEvent};
 
+mod composite;
 mod messages;
 mod stream_id;
 mod stream_protocol;
