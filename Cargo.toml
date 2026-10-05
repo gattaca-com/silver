@@ -98,12 +98,12 @@ silver_observe_wire = { path = "crates/observe_wire" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
-flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
-flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
-flux-network = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "5ea14c2a1c110689db8e3eb08456042853b3356e"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
+flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
+flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
+flux-network = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
 
 # External
 backtrace = "0.3"
