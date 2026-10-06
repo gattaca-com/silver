@@ -79,13 +79,14 @@ function cornerLabels(colours, holder) {
  *  place of wall-clock time; `xRange` / `yRange`, fixed [min, max]
  *  re-read on every redraw; `right` (series indexes on a right axis) with
  *  `fmtRight`; `stepped`; `spanGaps`; `endLabel(i, v)` for a label at each
- *  series' last point; `markers`; `cornerLabels`. `holder.spec` is the latest
- *  spec. */
+ *  series' last point; `markers`; `cornerLabels`; `colourOf[i]`, the colour
+ *  slot of series `i` (default `i`); `dashed`, series indexes drawn dashed.
+ *  `holder.spec` is the latest spec. */
 function options(spec, width, holder) {
   const muted = cssVar('--muted');
   const grid = { stroke: cssVar('--line'), width: 1 };
   const axis = { stroke: muted, grid, ticks: grid };
-  const colours = spec.labels.map((_, i) => cssVar(`--series-${i + 1}`));
+  const colours = spec.labels.map((_, i) => cssVar(`--series-${(spec.colourOf?.[i] ?? i) + 1}`));
   const onRight = (i) => spec.right?.includes(i) ?? false;
   const fmtOf = (i) => (onRight(i) ? spec.fmtRight : spec.fmt);
   const scales = { x: { time: !spec.xSeconds }, y: {} };
@@ -109,6 +110,7 @@ function options(spec, width, holder) {
         scale: onRight(i) ? 'y2' : 'y',
         stroke: colours[i],
         width: 2,
+        ...(spec.dashed?.includes(i) ? { dash: [6, 4] } : {}),
         points: { show: false },
         spanGaps: spec.spanGaps ?? false,
         ...(spec.stepped ? { paths: uPlot.paths.stepped({ align: 1 }) } : {}),
@@ -144,7 +146,7 @@ export class LineCharts {
       const width = Math.max(slot.clientWidth, 200);
       // Series identity, layout and theme are baked into the plot; a change
       // rebuilds it.
-      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels];
+      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels, spec.colourOf, spec.dashed];
       const shape = `${spec.labels.join('\u0000')}|${JSON.stringify(layout)}|${cssVar('--series-1')}`;
       let chart = this.charts.get(key);
       if (chart && chart.shape !== shape) {

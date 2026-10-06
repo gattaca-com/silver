@@ -23,8 +23,9 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{
-            Leased, OutboundGossip, SegmentedGossipLimits, SendResult, leased::OutboundLeaseWheel,
-            stream::StreamIoImpl,
+            Leased, OutboundGossip, SegmentedGossipLimits, SendResult,
+            leased::OutboundLeaseWheel,
+            stream::{StreamByteCounters, StreamIoImpl},
         },
         streams::{
             AcquiredRpcOutbound, RpcCodec, RpcCodecDirection, RpcCodecPool, StreamError,
@@ -988,7 +989,11 @@ impl Stream {
         // error/teardown log can report which protocol phase it failed in.
         let state_name = state.name();
         let was_negotiate = matches!(state, StreamState::Negotiate(_));
-        let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
+        let mut io = StreamIoImpl {
+            connection,
+            outbound: &mut self.out_buffer,
+            byte_counters: StreamByteCounters::for_state(&state),
+        };
 
         let result = state.spin(
             &mut io,
@@ -1020,6 +1025,7 @@ impl Stream {
                     };
                     self.rpc_codec = Some(rpc_codec_pool.acquire(direction));
                 }
+                io.byte_counters = StreamByteCounters::for_state(&state);
                 state.spin(
                     &mut io,
                     &mut self.p2p_id,

@@ -16,6 +16,12 @@ silver_common::declare_counters! {
         DiscBytesSent,
         P2pBytesRecv,
         P2pBytesSent,
+        // Stream payload after decryption; excludes QUIC/TLS overhead and
+        // retransmits, so gossip + rpc < P2pBytes*.
+        P2pGossipBytesRecv,
+        P2pGossipBytesSent,
+        P2pRpcBytesRecv,
+        P2pRpcBytesSent,
         P2pConnections,
         // Connection-lifecycle diagnostics.
         DialAttempts,

@@ -22,7 +22,12 @@ const TCACHE_FIXED_SLOTS: usize = 2;
 /// `fast:{source}`, for intra-slot resolution the 1 s bucket cannot give.
 const FAST: &[(&str, &[&str])] = &[
     ("beacon_state", &["AttestationRootMemoHit", "AttestationRootMemoMiss"]),
-    ("network", &["P2pBytesRecv"]),
+    ("network", &[
+        "P2pGossipBytesRecv",
+        "P2pGossipBytesSent",
+        "P2pRpcBytesRecv",
+        "P2pRpcBytesSent",
+    ]),
 ];
 
 struct CounterSource {

@@ -4,21 +4,59 @@ use bytes::Bytes;
 use quinn_proto::{Connection, StreamId, WriteError};
 use silver_common::AcquiredWithOffset;
 
-use crate::p2p::{
-    quic::{OutboundGossip, leased::Leased, peer::OutboundBuffer},
-    streams::{AcquiredRpcOutbound, StreamError, StreamIo},
+use crate::{
+    NetworkCounters,
+    p2p::{
+        quic::{OutboundGossip, leased::Leased, peer::OutboundBuffer},
+        streams::{AcquiredRpcOutbound, StreamError, StreamIo, StreamState},
+    },
 };
+
+#[derive(Clone, Copy)]
+pub struct StreamByteCounters {
+    recv: NetworkCounters,
+    sent: NetworkCounters,
+}
+
+impl StreamByteCounters {
+    pub fn for_state(state: &StreamState) -> Option<Self> {
+        match state {
+            StreamState::Gossip { .. } => Some(Self {
+                recv: NetworkCounters::P2pGossipBytesRecv,
+                sent: NetworkCounters::P2pGossipBytesSent,
+            }),
+            StreamState::IncomingRpc { .. } | StreamState::OutgoingRpc { .. } => Some(Self {
+                recv: NetworkCounters::P2pRpcBytesRecv,
+                sent: NetworkCounters::P2pRpcBytesSent,
+            }),
+            _ => None,
+        }
+    }
+}
 
 pub struct StreamIoImpl<'a> {
     pub connection: &'a mut Connection,
     pub outbound: &'a mut OutboundBuffer,
+    pub byte_counters: Option<StreamByteCounters>,
+}
+
+impl StreamIoImpl<'_> {
+    #[inline]
+    fn count_sent(&self, n: usize) {
+        if let Some(c) = self.byte_counters {
+            c.sent.add(n as u64);
+        }
+    }
 }
 
 impl<'a> StreamIo for StreamIoImpl<'a> {
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError> {
         let mut stream = self.connection.send_stream(id);
         match stream.write(data) {
-            Ok(wrote) => Ok(wrote),
+            Ok(wrote) => {
+                self.count_sent(wrote);
+                Ok(wrote)
+            }
             Err(WriteError::Blocked) => Ok(0),
             Err(e) => Err(e.into()),
         }
@@ -32,7 +70,10 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         let data = Bytes::from_owner(data);
         let mut stream = self.connection.send_stream(id);
         match stream.write_chunks(&mut [data]) {
-            Ok(wrote) => Ok(wrote.bytes),
+            Ok(wrote) => {
+                self.count_sent(wrote.bytes);
+                Ok(wrote.bytes)
+            }
             Err(WriteError::Blocked) => Ok(0),
             Err(e) => Err(e.into()),
         }
@@ -68,12 +109,18 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
             }
         }
         let _ = chunks.finalize();
+        if let Some(c) = self.byte_counters {
+            c.recv.add(offset as u64);
+        }
         Ok(offset)
     }
 
     fn write_chunks(&mut self, id: StreamId, chunks: &mut [Bytes]) -> Result<usize, StreamError> {
         match self.connection.send_stream(id).write_chunks(chunks) {
-            Ok(wrote) => Ok(wrote.bytes),
+            Ok(wrote) => {
+                self.count_sent(wrote.bytes);
+                Ok(wrote.bytes)
+            }
             Err(WriteError::Blocked) => Ok(0),
             Err(e) => Err(e.into()),
         }
