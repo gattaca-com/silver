@@ -91,7 +91,7 @@ fn verify_checkpoint_restart(harness: &PmBsHarness) {
 }
 
 /// Replay `fixtures.blocks` onto a freshly-built `PmBsHarness` anchored
-/// at `fixtures.state_ssz`, then drain the in-process timing sink.
+/// at the fixtures' finalized state, then drain the in-process timing sink.
 ///
 /// Panics if the harness fails to reach the final block slot — a stuck
 /// replay should fail loudly rather than silently report bad timings.
@@ -107,8 +107,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     // code.
     let recorder = InProcessReader::start();
 
-    let mut harness =
-        PmBsHarness::with_pubkeys(&fixtures.state_ssz, &fixtures.pubkeys, blocks.len());
+    let mut harness = fixtures.harness();
     let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
     let first_block_slot = block_slot(&blocks[0]);
     assert_eq!(StatusView::head_slot(harness.local_status()) + 1, first_block_slot);
