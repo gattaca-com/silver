@@ -3,7 +3,11 @@
 
 use std::{env, fs, path::Path, process::ExitCode, thread, time::Duration};
 
-use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::fixtures_dir::BlockFixtures};
+use silver_e2e::{
+    mainnet_api::fetch_canonical_state_root,
+    perf::{fixtures_dir::BlockFixtures, replay::PersistedCheckpoint},
+    utils::PmBsHarness,
+};
 
 use self::http::BlockFetch;
 
@@ -71,6 +75,10 @@ fn run(fixtures: &BlockFixtures, args: Args) -> Result<(), String> {
         fetch_finalized_state(fixtures)?
     };
 
+    if !resume || !fixtures.root().finalized_pubkeys().exists() {
+        write_pubkeys_sidecar(fixtures)?;
+    }
+
     let saved = fetch_following_blocks(fixtures, finalized_slot, n_blocks)?;
     if saved < n_blocks {
         let lookahead = (n_blocks as u64 * 3 / 2).max(8);
@@ -113,6 +121,15 @@ fn fetch_finalized_state(fixtures: &BlockFixtures) -> Result<u64, String> {
     );
     http::fetch_state_ssz_to(&path, &finalized_slot.to_string())?;
     Ok(finalized_slot)
+}
+
+/// The sidecar the production checkpoint writer would persist with this state.
+fn write_pubkeys_sidecar(fixtures: &BlockFixtures) -> Result<(), String> {
+    let (state, _) = fixtures.root().read_finalized_state()?;
+    let harness = PmBsHarness::new(&state, 1);
+    let pubkeys = PersistedCheckpoint::read(&harness.state_reader()).pubkeys;
+    let path = fixtures.root().finalized_pubkeys();
+    fs::write(&path, pubkeys).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 fn fetch_following_blocks(

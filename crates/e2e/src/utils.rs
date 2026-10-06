@@ -118,6 +118,12 @@ impl PmBsHarness {
     /// The rpc-inbound cache is sized to hold `n_blocks` mainnet blocks
     /// (~300 KB each).
     pub fn new(checkpoint: &[u8], n_blocks: usize) -> Self {
+        Self::with_pubkeys(checkpoint, &[], n_blocks)
+    }
+
+    /// `pubkeys` is a checkpoint pubkey sidecar; empty decompresses every key
+    /// from the SSZ.
+    pub fn with_pubkeys(checkpoint: &[u8], pubkeys: &[u8], n_blocks: usize) -> Self {
         let base = ShmemDir::new().expect("tempdir");
         let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
 
@@ -145,7 +151,7 @@ impl PmBsHarness {
             // Replays a committed fixture whose anchor is intentionally old; the
             // weak-subjectivity guard is for live bootstrap, not fixed replay.
             false,
-            CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), &[]),
+            CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), pubkeys),
             None,
         );
         bs.open_tcaches().expect("bs tcaches");

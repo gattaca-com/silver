@@ -41,7 +41,7 @@ Fetches a fresh finalized state + N blocks, overwriting existing fixtures.
 via git-lfs:
 
 ```sh
-git add crates/e2e/data/perf/{finalized_state.ssz,next_block_*.ssz,expected.json}
+git add crates/e2e/data/perf/{finalized_state.ssz,finalized_state.pubkeys,next_block_*.ssz,expected.json}
 git lfs ls-files | grep next_block_    # must list them — else lfs filter didn't run
 git commit -m "Refresh perf fixtures"
 ```
