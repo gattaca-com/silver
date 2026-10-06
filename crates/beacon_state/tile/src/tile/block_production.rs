@@ -520,26 +520,31 @@ impl BeaconStateTile {
         if let Some(block) = self.block_production.built_for(&proposal) {
             return Ok(block);
         }
-        let invalid = |built: &Result<_, _>| matches!(built, Err(ProduceBlockFailure::Invalid));
+
         let without_exits = Operations { voluntary_exits: &[], ..operations };
-        let mut built = self.build_block(proposal, payload, operations);
-        // A Gloas parent payload's requests apply before the block's exits and
-        // can invalidate an exit that held on the packing state.
-        if invalid(&built) && without_exits != operations {
-            silver_log::warn!(
-                slot = proposal.slot,
-                "packed exits fail the block; built without them"
-            );
-            built = self.build_block(proposal, payload, without_exits);
-        }
-        if invalid(&built) && without_exits != Operations::NONE {
-            silver_log::warn!(
-                slot = proposal.slot,
-                "packed operations fail the block; built without them"
-            );
-            built = self.build_block(proposal, payload, Operations::NONE);
-        }
-        let built = built?;
+        let built = self
+            .build_block(proposal, payload, operations)
+            .or_else(|failure| match failure {
+                ProduceBlockFailure::Invalid if without_exits != operations => {
+                    silver_log::warn!(
+                        slot = proposal.slot,
+                        "packed exits fail the block; built without them"
+                    );
+                    self.build_block(proposal, payload, without_exits)
+                }
+                failure => Err(failure),
+            })
+            .or_else(|failure| match failure {
+                ProduceBlockFailure::Invalid if without_exits != Operations::NONE => {
+                    silver_log::warn!(
+                        slot = proposal.slot,
+                        "packed operations fail the block; built without them"
+                    );
+                    self.build_block(proposal, payload, Operations::NONE)
+                }
+                failure => Err(failure),
+            })?;
+
         let block = built.block;
         self.block_production.built = Some(built);
         Ok(block)
