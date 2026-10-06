@@ -305,6 +305,10 @@ impl NetworkTile {
 }
 
 impl Tile<SilverSpine> for NetworkTile {
+    fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.subscribe_broadcast::<BeaconStateEvent>();
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.body(adapter);
     }

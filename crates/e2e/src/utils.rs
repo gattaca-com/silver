@@ -150,6 +150,7 @@ impl PmBsHarness {
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
+        bs.on_attach(&mut bs_a);
 
         // One config for both: the engine used to read this off the PM, so a
         // divergence here would silently change what the harness exercises.
@@ -195,6 +196,7 @@ impl PmBsHarness {
         .expect("controller");
         ctl.open_tcaches().expect("ctl tcaches");
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
+        ctl.on_attach(&mut ctl_a);
 
         let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);
         // Snap every cursor we consume on to head=0 before anyone produces.
@@ -202,9 +204,6 @@ impl PmBsHarness {
         inj_a.consume(|_: PeerControl, _| {});
         inj_a.consume(|_: BeaconStateEvent, _| {});
 
-        // Controller before BS so its cursors snap to head=0 before BS emits
-        // its initial Status.
-        ctl.loop_body(&mut ctl_a);
         bs.loop_body(&mut bs_a);
         ctl.loop_body(&mut ctl_a);
 

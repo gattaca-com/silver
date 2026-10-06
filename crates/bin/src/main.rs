@@ -4,12 +4,14 @@ use std::{
     net::IpAddr,
     path::Path,
     sync::Arc,
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
 use flux::{
-    tile::{TileConfig, attach_tile},
+    spine::ScopedSpine,
+    tile::{Tile, TileConfig, TileName, tile_runner},
     utils::ThreadNiceness,
 };
 use mimalloc::MiMalloc;
@@ -372,30 +374,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Spine
     let spine = SilverSpine::new(None);
     spine.start(None, None, |scoped_spine| {
-        // Attach application_boundary_tiles first so its `on_attach` can subscribe to
-        // peer events before their producers start.
-        attach_tile(
-            application_boundary_tile,
-            scoped_spine,
-            TileConfig::new(5, Some(ThreadNiceness::Highest)),
-        );
-
-        attach_tile(control_tile, scoped_spine, TileConfig::new(1, Some(ThreadNiceness::Highest)));
-        attach_tile(network_tile, scoped_spine, TileConfig::new(2, Some(ThreadNiceness::Highest)));
-        attach_tile(
-            beacon_state_tile,
-            scoped_spine,
-            TileConfig::new(3, Some(ThreadNiceness::Highest)),
-        );
-        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
-        attach_tile(
-            data_columns_tile,
-            scoped_spine,
-            TileConfig::new(6, Some(ThreadNiceness::Highest)),
-        );
+        let tiles = [
+            attached(control_tile, scoped_spine, 1),
+            attached(network_tile, scoped_spine, 2),
+            attached(beacon_state_tile, scoped_spine, 3),
+            attached(storage_tile, scoped_spine, 4),
+            attached(application_boundary_tile, scoped_spine, 5),
+            attached(data_columns_tile, scoped_spine, 6),
+        ];
+        for (name, run) in tiles {
+            thread::Builder::new()
+                .name(name.as_str().to_owned())
+                .spawn_scoped(scoped_spine.scope, run)
+                .expect("spawn tile thread");
+        }
     });
 
     Ok(())
+}
+
+fn attached<'a, T: Tile<SilverSpine> + 'a>(
+    tile: T,
+    spine: &mut ScopedSpine<'a, '_, SilverSpine>,
+    core: usize,
+) -> (TileName, Box<dyn FnOnce() + Send + 'a>) {
+    let name = tile.name();
+    let config = TileConfig::new(core, Some(ThreadNiceness::Highest));
+    (name, Box::new(tile_runner(tile, spine, config)))
 }
 
 fn sleep_until_genesis(genesis_unix_secs: u64) {

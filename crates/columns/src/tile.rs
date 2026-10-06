@@ -866,6 +866,11 @@ impl DataColumnsTile {
 }
 
 impl Tile<SilverSpine> for DataColumnsTile {
+    fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.subscribe_broadcast::<SyncUpdate>();
+        adapter.subscribe_broadcast::<BeaconStateEvent>();
+    }
+
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         util::warm_kzg_settings();
         self.open_tcaches().expect("tcache wiring");

@@ -22,8 +22,8 @@ impl BeaconStateTile {
         );
         self.held.clear_outdated(finalized_slot);
 
-        self.pending_envelopes.retain(|root, handle| {
-            let held = handle.buffer().is_ok();
+        self.pending_envelopes.retain(|root, parked| {
+            let held = parked.read.buffer().is_ok();
             if !held {
                 silver_log::error!(
                     block = hex32(root),

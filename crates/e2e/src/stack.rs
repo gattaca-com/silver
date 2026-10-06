@@ -329,8 +329,10 @@ impl PublisherStack {
 
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
-        let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
-        let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
+        let mut network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
+        network.on_attach(&mut network_adapter);
+        let mut controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
+        controller.on_attach(&mut controller_adapter);
         let injector_tile = Injector;
         let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
 
@@ -468,8 +470,10 @@ impl EchoStack {
         controller.open_tcaches().map_err(std::io::Error::other)?;
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
-        let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
-        let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
+        let mut network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
+        network.on_attach(&mut network_adapter);
+        let mut controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
+        controller.on_attach(&mut controller_adapter);
         let injector_tile = Injector;
         let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
         let stats_tile = StatsSink;

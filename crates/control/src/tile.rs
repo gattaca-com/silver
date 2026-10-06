@@ -460,6 +460,10 @@ impl Controller {
 }
 
 impl Tile<SilverSpine> for Controller {
+    fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.subscribe_broadcast::<BeaconStateEvent>();
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.gossip_handler.loop_start();
         self.rpc_producer.loop_start();

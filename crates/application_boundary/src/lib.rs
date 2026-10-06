@@ -29,6 +29,8 @@ pub struct ApplicationBoundaryTile {
 impl Tile<SilverSpine> for ApplicationBoundaryTile {
     fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.subscribe_broadcast::<PeerEvent>();
+        adapter.subscribe_broadcast::<BeaconStateEvent>();
+        adapter.subscribe_broadcast::<SyncUpdate>();
     }
 
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {

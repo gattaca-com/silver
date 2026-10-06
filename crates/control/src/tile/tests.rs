@@ -36,6 +36,29 @@ impl Tile<SilverSpine> for Observer {
 
 impl GossipPublications {
     fn new(topic: GossipTopic, bytes: &[u8]) -> Self {
+        let mut capture = Self::attach(topic, bytes);
+        capture.crank();
+        for peer in 1..=2u8 {
+            capture.observer.produce(PeerEvent::P2pNewConnection {
+                p2p_peer_id: peer as usize,
+                peer_id_full: Keypair::from_secret(&[peer; 32]).unwrap().peer_id(),
+                ip: IpBytes::V4([10, 0, 0, peer]),
+                port: 4000 + peer as u16,
+                local_dial: false,
+            });
+            capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {
+                p2p_peer: peer as usize,
+                topic,
+                digest: [0; 4],
+            });
+        }
+        capture.crank();
+        capture.sent();
+        capture
+    }
+
+    /// Wired to the spine but not yet run: no consumer has read anything.
+    fn attach(topic: GossipTopic, bytes: &[u8]) -> Self {
         let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let cluster_in = TCache::producer(TCacheId::ClusterInbound, 1 << 16);
         let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
@@ -85,7 +108,7 @@ impl GossipPublications {
         let adapter = SpineAdapter::connect_tile(&controller, &mut *spine);
         let mut observer = SpineAdapter::connect_tile(&Observer, &mut *spine);
         observer.consume(|_: P2pSend, _| {});
-        let mut capture = Self {
+        Self {
             controller,
             adapter,
             observer,
@@ -95,25 +118,7 @@ impl GossipPublications {
             outbound,
             _spine: spine,
             _dir: dir,
-        };
-        capture.crank();
-        for peer in 1..=2u8 {
-            capture.observer.produce(PeerEvent::P2pNewConnection {
-                p2p_peer_id: peer as usize,
-                peer_id_full: Keypair::from_secret(&[peer; 32]).unwrap().peer_id(),
-                ip: IpBytes::V4([10, 0, 0, peer]),
-                port: 4000 + peer as u16,
-                local_dial: false,
-            });
-            capture.observer.produce(PeerEvent::P2pGossipTopicSubscribe {
-                p2p_peer: peer as usize,
-                topic,
-                digest: [0; 4],
-            });
         }
-        capture.crank();
-        capture.sent();
-        capture
     }
 
     fn crank(&mut self) {
@@ -182,6 +187,30 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     reservation.write_all(bytes).unwrap();
     reservation.flush().unwrap();
     reservation.read()
+}
+
+/// Beacon state publishes its first status as soon as its thread runs, which
+/// can be before the controller's first loop. The subscription made at attach
+/// still delivers it; a consumer that first reads in its loop starts past it.
+#[test]
+fn status_published_before_the_first_loop_is_received() {
+    let mut capture = GossipPublications::attach(GossipTopic::BeaconBlock, &[]);
+    capture.controller.on_attach(&mut capture.adapter);
+
+    capture.observer.produce(BeaconStateEvent::Status {
+        ssz: [0; STATUS_V2_SIZE],
+        latest_block_slot: 0,
+        wall_slot: 0,
+        head_optimistic: false,
+        enr_fork_id: [0; 16],
+        head_roots: None,
+        head_payload: PayloadResolution::Full,
+        head_change: HeadChange::None,
+        epoch_transition: false,
+    });
+    capture.crank();
+
+    assert!(capture.controller.peer_manager.status().is_some());
 }
 
 #[test]
