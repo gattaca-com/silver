@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/gattaca-com/silver?include_prereleases)](https://github.com/gattaca-com/silver/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A high-performance Ethereum consensus client by Gattaca.
+A high-performance Ethereum consensus client.
 
 Silver runs Fulu and Gloas. Prebuilt binaries are linux-x86_64 only.
 
@@ -81,7 +81,7 @@ Silver reads only these files from it:
 
 | File | Use |
 |---|---|
-| `config.yaml` | The spec. Keys it omits keep mainnet's values. |
+| `config.yaml` | The spec. Missing keys default to mainnet values. |
 | `genesis.ssz` | The boot state, read on every start. Required. |
 | `bootstrap_nodes.yaml` | The bootnodes, as a list of ENRs. Optional. |
 
@@ -90,15 +90,18 @@ path at startup.
 
 ## Flags
 
-`silver --help` lists every flag; `silver --version` prints the version. The
-common ones are `--network <name or dir>`, `--config <path>`,
-`--execution-endpoint <url>` and `--jwt-secret <path>`. Flags override the
-config file.
+`silver --help` lists every flag, and `silver --version` prints the version.
+Flags override the config file. The common ones are:
+
+- `--network <name or dir>`
+- `--config <path>`
+- `--execution-endpoint <url>`
+- `--jwt-secret <path>`
 
 ## Config file
 
-Pass it with `--config <path>`. Every key is optional; an empty file runs a
-mainnet node. Unknown keys are ignored, so check spelling. A malformed config
+Pass it with `--config <path>`. Every key is optional. Missing keys default to
+mainnet values. Unknown keys are ignored, so check spelling. A malformed config
 stops Silver at startup.
 
 ```toml
@@ -111,7 +114,8 @@ jwt_secret = "/etc/silver/jwt.hex"
 ```
 
 A supernode custodies every data column and joins every attestation subnet.
-It needs much more bandwidth and disk than the default node:
+On mainnet it averages about 100 Mbit/s each way, but bursts reach about
+500 Mbit/s. Its data directory holds about 400 GB:
 
 ```toml
 data_column_custody_group_count = 128  # default 8

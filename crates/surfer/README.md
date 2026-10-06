@@ -15,8 +15,8 @@ it, `/` searches, and `q` quits.
 
 ## Events
 
-How fast Silver makes each block ready to attest to. Validators must attest
-within 4 s of the slot start.
+This tab shows how fast Silver makes each block ready to attest to. As of
+Fulu, validators must attest within 4 s of the slot start.
 
 There is one row per block, newest on top. The bar runs from the block's
 arrival to the moment it was ready, on a time-into-slot axis.
@@ -52,13 +52,19 @@ the node, and the title names its client.
 | `mesh` | Topics where the peer is in the node's gossip mesh |
 | `p1`…`p7`, `total` | Gossipsub score parts and their sum |
 
-The score parts: `p1` time in mesh, `p2` first deliveries, `p3`/`p3b` missed
-mesh deliveries, `p4` invalid messages, `p5` application score, `p6` shared IP,
-`p7` misbehaviour.
+The score parts:
+
+- `p1`: time in mesh
+- `p2`: first deliveries
+- `p3` / `p3b`: missed mesh deliveries
+- `p4`: invalid messages
+- `p5`: application score
+- `p6`: shared IP
+- `p7`: misbehaviour
 
 **Look for:** dozens of peers, and positive totals. Negative `p3b` or `p4`
 marks a peer that drops or sends invalid messages. `←` / `→` sort by another
-column, `r` reverses the sort.
+column, `r` reverses the sort, and `t` scrolls to the top.
 
 ## Gossip
 
