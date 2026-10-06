@@ -35,7 +35,7 @@ resolver = "2"
 edition = "2024"
 repository = "https://github.com/gattaca-com/silver"
 rust-version = "1.91.0"
-version = "0.0.1"
+version = "0.1.0-alpha.1"
 
 [profile.release]
 codegen-units = 1

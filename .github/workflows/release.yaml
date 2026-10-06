@@ -1,0 +1,90 @@
+name: release
+
+# Publishes `v<version>` the first time a push to main carries a workspace
+# version that has no release yet. Run it by hand to retry a failed one.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  unreleased-version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        run: |
+          tag="v$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag is already released"
+          else
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux-x86_64:
+    needs: unreleased-version
+    if: needs.unreleased-version.outputs.tag != ''
+    # The oldest supported runner: its glibc sets the floor for users' distros.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.unreleased-version.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Build
+        run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer
+
+      - name: Package
+        run: |
+          cp target/release-prod/silver silver-linux-x86_64
+          cp target/release-prod/silver_surfer silver_surfer-linux-x86_64
+          ./silver-linux-x86_64 --version
+          for bin in silver silver_surfer; do
+            sha256sum $bin-linux-x86_64 > $bin-linux-x86_64.sha256
+          done
+
+      - name: Attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            silver-linux-x86_64
+            silver_surfer-linux-x86_64
+
+      # Creates the tag at this commit, so a failed build leaves no tag behind.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" --target "$GITHUB_SHA" --generate-notes --latest \
+            silver-linux-x86_64 silver-linux-x86_64.sha256 \
+            silver_surfer-linux-x86_64 silver_surfer-linux-x86_64.sha256
