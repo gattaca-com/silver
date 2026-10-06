@@ -18,6 +18,7 @@ use silver_beacon_state::{
     },
 };
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig};
+use silver_bls_simd::in_g2;
 use silver_common::ssz_view::{
     BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyFuluView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
 };
@@ -234,6 +235,16 @@ fn bench_g2_parse(c: &mut Criterion) {
         g.throughput(Throughput::Elements(n as u64));
         g.bench_with_input(BenchmarkId::new("blst", n), &sigs[..n], |b, sigs| {
             b.iter(|| sigs.iter().filter(|s| CheckedSignature::parse(s).is_some()).count())
+        });
+        g.bench_with_input(BenchmarkId::new("kernel", n), &sigs[..n], |b, sigs| {
+            b.iter(|| {
+                let points: Vec<_> = sigs
+                    .iter()
+                    .filter_map(|s| Signature::from_bytes(s).ok())
+                    .map(Into::into)
+                    .collect();
+                in_g2(&points).into_iter().filter(|&member| member).count()
+            })
         });
     }
 }

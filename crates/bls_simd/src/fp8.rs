@@ -14,6 +14,7 @@ use std::arch::x86_64::{
 
 use crate::constants::{
     LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
+    TWO_POW_448_MOD_P,
 };
 
 pub const LANES: usize = 8;
@@ -213,6 +214,12 @@ impl Fp8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn to_plain(self) -> [Limbs; LANES] {
         self.mul(&Self::splat_limbs(&ONE_PLAIN)).canonical().store()
+    }
+
+    /// Lane `l` takes `values[l]` from blst's Montgomery form (R = 2^384).
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn from_blst_limbs(values: &[[u64; 6]; LANES]) -> Self {
+        Self::load(&values.map(|v| unpack52(&v))).mul(&Self::splat_limbs(&TWO_POW_448_MOD_P))
     }
 
     /// Same values in blst's Montgomery form (R = 2^384), as its six 64-bit

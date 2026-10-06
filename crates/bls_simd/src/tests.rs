@@ -1,7 +1,7 @@
 use blst::{
     BLST_ERROR, blst_fp, blst_fp_add, blst_fp_from_uint64, blst_fp_mul, blst_fp_sub,
-    blst_hash_to_g2, blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_affine_in_g2,
-    blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
+    blst_hash_to_g2, blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_from_affine,
+    blst_p2_is_inf, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
@@ -28,10 +28,6 @@ fn times<const N: usize>(p: &blst_p2, scalar: &[u64; N]) -> blst_p2 {
     // SAFETY: x86_64 is little-endian, so the limbs are the scalar's bytes.
     unsafe { blst_p2_mult(&mut out, p, scalar.as_ptr().cast(), 64 * N) };
     out
-}
-
-fn in_g2(p: &blst_p2_affine) -> bool {
-    unsafe { blst_p2_affine_in_g2(p) }
 }
 
 fn affine(p: &blst_p2) -> blst_p2_affine {
@@ -124,7 +120,7 @@ impl G2Cases {
             G2Kind::Infinity => blst_p2_affine::default(),
         };
         let member = matches!(kind, G2Kind::Member | G2Kind::Infinity);
-        assert_eq!(in_g2(&point), member, "{kind:?} point");
+        assert_eq!(in_g2_blst(&point), member, "{kind:?} point");
         (kind, point)
     }
 
@@ -148,7 +144,7 @@ fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> 
     for case in 0..cases {
         let batch = cases_gen.batch();
         let points: Vec<_> = batch.iter().map(|(_, p)| *p).collect();
-        let want: Vec<_> = points.iter().map(in_g2).collect();
+        let want: Vec<_> = points.iter().map(in_g2_blst).collect();
         assert_eq!(check(&points), want, "seed {seed}, case {case}");
         for (kind, _) in &batch {
             kinds[*kind as usize] += 1;
@@ -158,8 +154,12 @@ fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> 
 }
 
 #[test]
-fn g2_cases_cover_every_kind() {
-    let kinds = assert_in_g2_matches_blst(|points| points.iter().map(in_g2).collect());
+fn in_g2_matches_blst_on_every_kind() {
+    assert!(
+        simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
+        "SILVER_REQUIRE_IFMA is set, but this CPU has no avx512ifma"
+    );
+    let kinds = assert_in_g2_matches_blst(in_g2);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
 }
 
