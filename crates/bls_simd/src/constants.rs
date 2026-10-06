@@ -15,6 +15,14 @@ pub const P: [u64; LIMBS] = [
     0x1ea397fe69a4b,
     0x000000001a011,
 ];
+pub const P_U64: [u64; 6] = [
+    0xb9feffffffffaaab,
+    0x1eabfffeb153ffff,
+    0x6730d2a0f6b0f624,
+    0x64774b84f38512bf,
+    0x4b1ba7b6434bacd7,
+    0x1a0111ea397fe69a,
+];
 /// `-p^-1 mod 2^52`.
 pub const P_INV52: u64 = 0x3fffcfffcfffd;
 /// Montgomery one.

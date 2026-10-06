@@ -1,8 +1,8 @@
 pub(crate) use blst::min_pk::{PublicKey, Signature};
-use blst::{BLST_ERROR, blst_p2_affine, min_pk::AggregatePublicKey};
+use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
-use silver_bls_simd::in_g2;
+use silver_bls_simd::uncompress_in_g2;
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
@@ -142,37 +142,21 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
     verify_one_compressed(pubkey, sig, signing_root)
 }
 
-/// A decompressed signature whose G2 subgroup check has not run yet.
-#[derive(Clone, Copy)]
-pub struct UncheckedSignature(Signature);
-
-impl UncheckedSignature {
-    pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
-        Signature::from_bytes(bytes).ok().map(Self)
-    }
-
-    pub fn check(&self) -> Option<CheckedSignature> {
-        CheckedSignature::check_all([self]).pop().flatten()
-    }
-}
-
 /// A signature known to lie in G2, so batch verify and downstream
 /// aggregation need no re-check. `check_all` is the only constructor.
 #[derive(Clone, Copy)]
 pub struct CheckedSignature(Signature);
 
 impl CheckedSignature {
-    /// One subgroup check over every signature, in input order.
-    pub fn check_all<'a>(
-        sigs: impl IntoIterator<Item = &'a UncheckedSignature>,
-    ) -> Vec<Option<Self>> {
-        let points: Vec<blst_p2_affine> = sigs.into_iter().map(|s| s.0.into()).collect();
-        let verdicts = in_g2(&points);
-        verdicts.into_iter().zip(points).map(|(member, p)| member.then(|| Self(p.into()))).collect()
+    /// One decompression and subgroup check over every signature, in input
+    /// order.
+    pub fn check_all<'a>(sigs: impl IntoIterator<Item = &'a [u8; 96]>) -> Vec<Option<Self>> {
+        let sigs: Vec<[u8; 96]> = sigs.into_iter().copied().collect();
+        uncompress_in_g2(&sigs).into_iter().map(|p| p.map(|p| Self(p.into()))).collect()
     }
 
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
-        UncheckedSignature::parse(bytes)?.check()
+        Self::check_all([bytes]).pop().flatten()
     }
 
     pub(crate) fn as_sig(&self) -> &Signature {

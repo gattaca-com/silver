@@ -3111,6 +3111,25 @@ fn invalid_vote_does_not_deduplicate_later_valid_vote() {
 }
 
 #[test]
+fn malformed_signature_does_not_deduplicate_later_valid_vote() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.head_block_root();
+
+    let (valid, subnet) = batched_att(&tile, 0, 0);
+    let mut malformed = valid;
+    let signature_start = SINGLE_ATT_SIZE - 96;
+    assert_eq!(&malformed[signature_start..], SingleAttestationView::signature(&valid));
+    // Without the compression flag, no G2 decoder accepts the bytes.
+    malformed[signature_start] &= 0x7f;
+    tile.defer_vote(gossip_att_msg(&mut gp, &malformed, subnet), &mut adapter.producers);
+    tile.defer_vote(gossip_att_msg(&mut gp, &valid, subnet), &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
+}
+
+#[test]
 fn ignored_local_attestation_emits_a_terminal_verdict() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);

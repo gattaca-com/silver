@@ -1076,7 +1076,7 @@ impl BeaconStateTile {
     pub fn ef_apply_payload_attestation(&mut self, ssz: &[u8]) -> bool {
         match self.prepare_ptc(ssz) {
             Ok(p) => {
-                let Some(signature) = p.signature.check() else {
+                let Some(signature) = CheckedSignature::parse(&p.signature) else {
                     return false;
                 };
                 self.commit_ptc(&p, &signature);

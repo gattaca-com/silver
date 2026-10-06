@@ -14,7 +14,7 @@ use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
 use super::{BeaconStateTile, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers};
 use crate::{
-    bls::{self, CheckedSignature, UncheckedSignature},
+    bls::{self, CheckedSignature},
     stf,
     tile::{Feedback, gossip::PreparedPtc},
 };
@@ -219,10 +219,7 @@ impl BeaconStateTile {
         );
         let signing_root =
             bls::compute_signing_root(&stf::hash_payload_attestation_data(data), &domain);
-        let Some(signature) = UncheckedSignature::parse(PayloadAttestationMessage::signature(buf))
-        else {
-            return Err(Feedback::reject("ptc signature malformed"));
-        };
+        let signature = *PayloadAttestationMessage::signature(buf);
 
         Ok(PreparedPtc {
             block_root,

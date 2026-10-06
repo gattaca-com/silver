@@ -1,15 +1,18 @@
 use std::time::{Duration, Instant};
 
 use blst::{
-    BLST_ERROR, blst_fp, blst_fp_add, blst_fp_from_uint64, blst_fp_mul, blst_fp_sub,
-    blst_hash_to_g2, blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_affine_compress,
-    blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
+    blst_bendian_from_fp, blst_fp, blst_fp_add, blst_fp_from_uint64, blst_fp_inverse, blst_fp_mul,
+    blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_hash_to_g2, blst_p2, blst_p2_add_or_double,
+    blst_p2_compress, blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::*;
-use crate::fp8::{Fp8, LANES, Limbs, pack64, unpack52};
+use crate::{
+    constants::P_U64,
+    fp8::{Fp8, LANES, Limbs, pack64, unpack52},
+};
 
 const R_LIMBS: [u64; 4] =
     [0xffffffff00000001, 0x53bda402fffe5bfe, 0x3339d80809a1d805, 0x73eda753299d7d48];
@@ -32,9 +35,29 @@ fn times<const N: usize>(p: &blst_p2, scalar: &[u64; N]) -> blst_p2 {
     out
 }
 
-fn affine(p: &blst_p2) -> blst_p2_affine {
-    let mut out = blst_p2_affine::default();
-    unsafe { blst_p2_to_affine(&mut out, p) };
+fn compress_g2(p: &blst_p2) -> [u8; G2_COMPRESSED_LEN] {
+    let mut out = [0u8; G2_COMPRESSED_LEN];
+    unsafe { blst_p2_compress(out.as_mut_ptr(), p) };
+    out
+}
+
+const G2_INFINITY: [u8; G2_COMPRESSED_LEN] = {
+    let mut bytes = [0u8; G2_COMPRESSED_LEN];
+    bytes[0] = 0xc0;
+    bytes
+};
+
+/// `be + p` for a 48-byte big-endian coordinate below p, so no carry leaves
+/// the top byte.
+fn plus_p(be: &[u8]) -> [u8; 48] {
+    let p: Vec<u8> = P_U64.iter().rev().flat_map(|w| w.to_be_bytes()).collect();
+    let mut out = [0u8; 48];
+    let mut carry = 0;
+    for i in (0..48).rev() {
+        let sum = be[i] as u16 + p[i] as u16 + carry;
+        out[i] = sum as u8;
+        carry = sum >> 8;
+    }
     out
 }
 
@@ -45,22 +68,45 @@ enum G2Kind {
     Torsion,
     MemberPlusTorsion,
     Infinity,
+    /// Random coordinates, each at or above p about a fifth of the time.
+    RandomX,
+    /// A member's or infinity's encoding with random flag bits.
+    Flags,
+    /// A member's encoding with a coordinate made non-canonical.
+    NonCanonical,
+    /// x with one component of x³ + 4(1 + i) zero.
+    ZeroComponent,
 }
 
-/// Seeded G2 test points. Every draw comes from one ChaCha8 stream in a
+const G2_KINDS: [G2Kind; 9] = [
+    G2Kind::Member,
+    G2Kind::OutsideG2,
+    G2Kind::Torsion,
+    G2Kind::MemberPlusTorsion,
+    G2Kind::Infinity,
+    G2Kind::RandomX,
+    G2Kind::Flags,
+    G2Kind::NonCanonical,
+    G2Kind::ZeroComponent,
+];
+
+/// Seeded G2 test encodings. Every draw comes from one ChaCha8 stream in a
 /// fixed order, and retries consult blst only, so a seed always yields the
 /// same cases whatever implementation is under test.
 struct G2Cases(ChaCha8Rng);
 
 impl G2Cases {
+    fn random_x(&mut self) -> [u8; G2_COMPRESSED_LEN] {
+        let mut bytes = [0u8; G2_COMPRESSED_LEN];
+        self.0.fill(&mut bytes[..]);
+        bytes[0] = 0x80 | (bytes[0] & 0x3f);
+        bytes[48] &= 0x1f;
+        bytes
+    }
+
     fn curve_point(&mut self) -> blst_p2 {
         loop {
-            let mut bytes = [0u8; 96];
-            self.0.fill(&mut bytes[..]);
-            bytes[0] = 0x80 | (bytes[0] & 0x3f);
-            bytes[48] &= 0x1f;
-            let mut a = blst_p2_affine::default();
-            if unsafe { blst_p2_uncompress(&mut a, bytes.as_ptr()) } == BLST_ERROR::BLST_SUCCESS {
+            if let Some(a) = uncompress_g2(&self.random_x()) {
                 let mut p = blst_p2::default();
                 unsafe { blst_p2_from_affine(&mut p, &a) };
                 return p;
@@ -101,34 +147,110 @@ impl G2Cases {
         }
     }
 
-    fn point(&mut self) -> (G2Kind, blst_p2_affine) {
-        let kind = match self.0.gen_range(0..5) {
-            0 => G2Kind::Member,
-            1 => G2Kind::OutsideG2,
-            2 => G2Kind::Torsion,
-            3 => G2Kind::MemberPlusTorsion,
-            _ => G2Kind::Infinity,
-        };
-        let point = match kind {
-            G2Kind::Member => affine(&self.member()),
-            G2Kind::OutsideG2 => affine(&self.curve_point()),
-            G2Kind::Torsion => affine(&self.torsion()),
+    /// blst must reject the result. It adds p to x0, which always fits its
+    /// 48 bytes, or to x1 where that fits under the flag bits. Or it sets high
+    /// bits of x0, which only coordinate data can hold.
+    fn non_canonical(&mut self) -> [u8; G2_COMPRESSED_LEN] {
+        let mut bytes = compress_g2(&self.member());
+        let flags = bytes[0] & 0xe0;
+        bytes[0] &= 0x1f;
+        let x1_plus_p = plus_p(&bytes[..48]);
+        match self.0.gen_range(0..3) {
+            0 if x1_plus_p[0] < 0x20 => bytes[..48].copy_from_slice(&x1_plus_p),
+            1 => bytes[48] |= self.0.gen_range(1..8u8) << 5,
+            _ => {
+                let x0_plus_p = plus_p(&bytes[48..]);
+                bytes[48..].copy_from_slice(&x0_plus_p);
+            }
+        }
+        bytes[0] |= flags;
+        bytes
+    }
+
+    /// x = u + v·i with one component of x³ + 4(1 + i) zero. Every element
+    /// of Fp is a square in Fp2, and so is i times one, so x is on the curve.
+    /// A zero imaginary part makes blst's root take its a + n = 0 select or
+    /// come out real.
+    fn zero_component(&mut self) -> [u8; G2_COMPRESSED_LEN] {
+        let (four, three) = (fp_from(&[4, 0, 0, 0, 0, 0]), fp_from(&[3, 0, 0, 0, 0, 0]));
+        loop {
+            let s = fp_from(&random_fp_limbs(&mut self.0));
+            let imaginary_zero: bool = self.0.r#gen();
+            let negate: bool = self.0.r#gen();
+            let larger: bool = self.0.r#gen();
+            let (mut w, mut den, mut root) =
+                (blst_fp::default(), blst_fp::default(), blst_fp::default());
+            // Imaginary part 3u²v - v³ + 4 = 0 at v = s: u² = (s³ - 4) / 3s.
+            // Real part u³ - 3uv² + 4 = 0 at u = s: v² = (s³ + 4) / 3s.
+            let has_root = unsafe {
+                blst_fp_sqr(&mut w, &s);
+                blst_fp_mul(&mut w, &w, &s);
+                if imaginary_zero {
+                    blst_fp_sub(&mut w, &w, &four);
+                } else {
+                    blst_fp_add(&mut w, &w, &four);
+                }
+                blst_fp_mul(&mut den, &three, &s);
+                blst_fp_inverse(&mut den, &den);
+                blst_fp_mul(&mut w, &w, &den);
+                blst_fp_sqrt(&mut root, &w)
+            };
+            if !has_root {
+                continue;
+            }
+            if negate {
+                unsafe { blst_fp_sub(&mut root, &blst_fp::default(), &root) };
+            }
+            let (u, v) = if imaginary_zero { (root, s) } else { (s, root) };
+            let mut bytes = [0u8; G2_COMPRESSED_LEN];
+            unsafe {
+                blst_bendian_from_fp(bytes.as_mut_ptr(), &v);
+                blst_bendian_from_fp(bytes[48..].as_mut_ptr(), &u);
+            }
+            bytes[0] |= 0x80 | if larger { 0x20 } else { 0 };
+            return bytes;
+        }
+    }
+
+    fn encoding(&mut self) -> (G2Kind, [u8; G2_COMPRESSED_LEN]) {
+        let kind = G2_KINDS[self.0.gen_range(0..G2_KINDS.len())];
+        let bytes = match kind {
+            G2Kind::Member => compress_g2(&self.member()),
+            G2Kind::OutsideG2 => compress_g2(&self.curve_point()),
+            G2Kind::Torsion => compress_g2(&self.torsion()),
             G2Kind::MemberPlusTorsion => {
                 let (m, t) = (self.member(), self.torsion());
                 let mut sum = blst_p2::default();
                 unsafe { blst_p2_add_or_double(&mut sum, &m, &t) };
-                affine(&sum)
+                compress_g2(&sum)
             }
-            G2Kind::Infinity => blst_p2_affine::default(),
+            G2Kind::Infinity => G2_INFINITY,
+            G2Kind::RandomX => self.random_x(),
+            G2Kind::Flags => {
+                let mut bytes =
+                    if self.0.r#gen() { compress_g2(&self.member()) } else { G2_INFINITY };
+                bytes[0] = (bytes[0] & 0x1f) | (self.0.r#gen::<u8>() & 0xe0);
+                bytes
+            }
+            G2Kind::NonCanonical => self.non_canonical(),
+            G2Kind::ZeroComponent => self.zero_component(),
         };
-        let member = matches!(kind, G2Kind::Member | G2Kind::Infinity);
-        assert_eq!(in_g2_blst(&point), member, "{kind:?} point");
-        (kind, point)
+        let member = uncompress_in_g2_blst(&bytes).is_some();
+        match kind {
+            G2Kind::Member | G2Kind::Infinity => assert!(member, "{kind:?}"),
+            G2Kind::OutsideG2 |
+            G2Kind::Torsion |
+            G2Kind::MemberPlusTorsion |
+            G2Kind::NonCanonical => assert!(!member, "{kind:?}"),
+            G2Kind::ZeroComponent => assert!(uncompress_g2(&bytes).is_some(), "{kind:?}"),
+            G2Kind::RandomX | G2Kind::Flags => {}
+        }
+        (kind, bytes)
     }
 
-    fn batch(&mut self) -> Vec<(G2Kind, blst_p2_affine)> {
+    fn batch(&mut self) -> Vec<(G2Kind, [u8; G2_COMPRESSED_LEN])> {
         let len = self.0.gen_range(0..=2 * LANES + 1);
-        (0..len).map(|_| self.point()).collect()
+        (0..len).map(|_| self.encoding()).collect()
     }
 }
 
@@ -140,11 +262,19 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Raw limbs, so a non-canonical representation cannot hide behind equal
+/// field values.
+fn g2_limbs(p: &Option<blst_p2_affine>) -> Option<[[u64; 6]; 4]> {
+    p.map(|p| [p.x.fp[0].l, p.x.fp[1].l, p.y.fp[0].l, p.y.fp[1].l])
+}
+
 /// Runs `SILVER_G2_CASES` seeded batches through `check` (default 64;
 /// `forever` runs until interrupted, reporting progress every 10 s) and
 /// compares every lane with blst. Each divergence is printed with the seed and
-/// case that replay it. Returns how many points of each kind it ran.
-fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> [usize; 5] {
+/// case that replay it. Returns how many encodings of each kind it ran.
+fn assert_uncompress_in_g2_matches_blst(
+    check: impl Fn(&[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>>,
+) -> [usize; G2_KINDS.len()] {
     let seed = env_u64("SILVER_G2_SEED", 1);
     let cases = match std::env::var("SILVER_G2_CASES").as_deref() {
         Ok("forever") => u64::MAX,
@@ -152,37 +282,37 @@ fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> 
         Err(_) => 64,
     };
     let mut cases_gen = G2Cases(ChaCha8Rng::seed_from_u64(seed));
-    let mut kinds = [0; 5];
+    let mut kinds = [0; G2_KINDS.len()];
     let mut divergences = 0;
     let started = Instant::now();
     let mut last_report = started;
     for case in 0..cases {
         let batch = cases_gen.batch();
-        let points: Vec<_> = batch.iter().map(|(_, p)| *p).collect();
-        let got = check(&points);
-        assert_eq!(got.len(), points.len(), "seed {seed}, case {case}");
-        for (lane, ((kind, point), got)) in batch.iter().zip(got).enumerate() {
-            let want = in_g2_blst(point);
-            if got != want {
+        let inputs: Vec<_> = batch.iter().map(|(_, bytes)| *bytes).collect();
+        let got = check(&inputs);
+        assert_eq!(got.len(), inputs.len(), "seed {seed}, case {case}");
+        for (lane, ((kind, bytes), got)) in batch.iter().zip(got).enumerate() {
+            let want = uncompress_in_g2_blst(bytes);
+            if g2_limbs(&got) != g2_limbs(&want) {
                 divergences += 1;
-                let mut bytes = [0u8; 96];
-                unsafe { blst_p2_affine_compress(bytes.as_mut_ptr(), point) };
                 eprintln!(
                     "DIVERGENCE seed {seed} case {case} lane {lane} of {}: {kind:?}, \
-                     check {got}, blst {want}, point {}",
+                     check {:?}, blst {:?}, encoding {}",
                     batch.len(),
-                    hex(&bytes)
+                    g2_limbs(&got),
+                    g2_limbs(&want),
+                    hex(bytes)
                 );
             }
             kinds[*kind as usize] += 1;
         }
         if last_report.elapsed() >= Duration::from_secs(10) {
             last_report = Instant::now();
-            let points: usize = kinds.iter().sum();
+            let encodings: usize = kinds.iter().sum();
             eprintln!(
-                "seed {seed}: {} cases, {points} points ({:.0}/s), {divergences} divergences",
+                "seed {seed}: {} cases, {encodings} encodings ({:.0}/s), {divergences} divergences",
                 case + 1,
-                points as f64 / started.elapsed().as_secs_f64()
+                encodings as f64 / started.elapsed().as_secs_f64()
             );
         }
     }
@@ -191,18 +321,18 @@ fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> 
 }
 
 #[test]
-fn in_g2_matches_blst_on_every_kind() {
+fn uncompress_in_g2_matches_blst_on_every_kind() {
     assert!(
         simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
         "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
     );
-    let kinds = assert_in_g2_matches_blst(in_g2);
+    let kinds = assert_uncompress_in_g2_matches_blst(uncompress_in_g2);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
 }
 
 /// Plain value below p, as blst's six limbs: 47 random bytes under a zero
 /// byte.
-fn random_fp_limbs(rng: &mut StdRng) -> [u64; 6] {
+fn random_fp_limbs(rng: &mut impl Rng) -> [u64; 6] {
     let mut limbs = [0u64; 6];
     rng.fill(&mut limbs[..]);
     limbs[5] &= 0x00ff_ffff_ffff_ffff;

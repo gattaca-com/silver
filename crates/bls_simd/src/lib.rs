@@ -21,8 +21,9 @@ pub mod g2x8;
 use std::arch::x86_64::__mmask8;
 
 pub use blst::blst_p2_affine;
-use blst::blst_p2_affine_in_g2;
+use blst::{BLST_ERROR, blst_p2_affine_in_g2, blst_p2_uncompress};
 
+pub const G2_COMPRESSED_LEN: usize = 96;
 const LANES: usize = 8;
 /// A kernel call costs about as much as blst on two or three points, so
 /// smaller chunks stay on blst.
@@ -50,13 +51,32 @@ pub fn simd_available() -> bool {
     false
 }
 
-pub fn in_g2_blst(point: &blst_p2_affine) -> bool {
+fn uncompress_g2(bytes: &[u8; G2_COMPRESSED_LEN]) -> Option<blst_p2_affine> {
+    let mut point = blst_p2_affine::default();
+    // SAFETY: both pointers are valid for the lengths blst reads and writes.
+    let ok = unsafe { blst_p2_uncompress(&mut point, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS };
+    ok.then_some(point)
+}
+
+fn in_g2_blst(point: &blst_p2_affine) -> bool {
     // SAFETY: blst reads one affine point through a valid reference.
     unsafe { blst_p2_affine_in_g2(point) }
 }
 
-/// One verdict per point, identical to `in_g2_blst` on each.
-pub fn in_g2(points: &[blst_p2_affine]) -> Vec<bool> {
+/// `Some` iff blst accepts the encoding as a point of G2.
+pub fn uncompress_in_g2_blst(bytes: &[u8; G2_COMPRESSED_LEN]) -> Option<blst_p2_affine> {
+    uncompress_g2(bytes).filter(in_g2_blst)
+}
+
+/// One verdict per input, identical to `uncompress_in_g2_blst` on each.
+pub fn uncompress_in_g2(inputs: &[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>> {
+    let decoded: Vec<_> = inputs.iter().map(uncompress_g2).collect();
+    let points: Vec<_> = decoded.iter().flatten().copied().collect();
+    let mut members = in_g2(&points).into_iter();
+    decoded.into_iter().map(|p| p.filter(|_| members.next() == Some(true))).collect()
+}
+
+fn in_g2(points: &[blst_p2_affine]) -> Vec<bool> {
     let simd = simd_available();
     let mut out = Vec::with_capacity(points.len());
     for chunk in points.chunks(LANES) {
