@@ -23,7 +23,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 use silver_slashing::SlashingPool;
 
 use crate::{
-    bls,
+    bls::{self, CheckedSignature},
     fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice},
     ssz_hash, stf,
     tile::{
@@ -182,7 +182,8 @@ pub struct BeaconStateTile {
     attestation_root_memo: AttestationRootMemo,
     // Pinned: the tail moves as later reads in the same pass arrive.
     vote_batch: Vec<BatchedVote>,
-    vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote)>,
+    vote_prepared: Vec<(BatchedVote, gossip::PreparedVote)>,
+    vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote, CheckedSignature)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
     proposer_preparations: ProposerPreparations,
@@ -285,6 +286,7 @@ impl BeaconStateTile {
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
             vote_batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            vote_prepared: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
@@ -1074,7 +1076,10 @@ impl BeaconStateTile {
     pub fn ef_apply_payload_attestation(&mut self, ssz: &[u8]) -> bool {
         match self.prepare_ptc(ssz) {
             Ok(p) => {
-                self.commit_ptc(&p);
+                let Some(signature) = p.signature.check() else {
+                    return false;
+                };
+                self.commit_ptc(&p, &signature);
                 self.recompute_head();
                 true
             }

@@ -1,7 +1,8 @@
 pub(crate) use blst::min_pk::{PublicKey, Signature};
-use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
+use blst::{BLST_ERROR, blst_p2_affine, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
+use silver_bls_simd::in_g2;
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
@@ -141,17 +142,37 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
     verify_one_compressed(pubkey, sig, signing_root)
 }
 
-/// Signature parsed and G2-subgroup-checked at construction — the only way
-/// in is `parse` — so batch verify and downstream aggregation need no
-/// re-check. Constructing it at gossip arrival keeps the ~27µs/sig check
-/// off the batched-flush critical path.
+/// A decompressed signature whose G2 subgroup check has not run yet.
+#[derive(Clone, Copy)]
+pub struct UncheckedSignature(Signature);
+
+impl UncheckedSignature {
+    pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
+        Signature::from_bytes(bytes).ok().map(Self)
+    }
+
+    pub fn check(&self) -> Option<CheckedSignature> {
+        CheckedSignature::check_all([self]).pop().flatten()
+    }
+}
+
+/// A signature known to lie in G2, so batch verify and downstream
+/// aggregation need no re-check. `check_all` is the only constructor.
 #[derive(Clone, Copy)]
 pub struct CheckedSignature(Signature);
 
 impl CheckedSignature {
+    /// One subgroup check over every signature, in input order.
+    pub fn check_all<'a>(
+        sigs: impl IntoIterator<Item = &'a UncheckedSignature>,
+    ) -> Vec<Option<Self>> {
+        let points: Vec<blst_p2_affine> = sigs.into_iter().map(|s| s.0.into()).collect();
+        let verdicts = in_g2(&points);
+        verdicts.into_iter().zip(points).map(|(member, p)| member.then(|| Self(p.into()))).collect()
+    }
+
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
-        let sig = Signature::from_bytes(bytes).ok()?;
-        sig.subgroup_check().then_some(Self(sig))
+        UncheckedSignature::parse(bytes)?.check()
     }
 
     pub(crate) fn as_sig(&self) -> &Signature {
