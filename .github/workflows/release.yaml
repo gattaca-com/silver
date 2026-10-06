@@ -42,11 +42,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    env:
-      TAG: ${{ needs.unreleased-version.outputs.tag }}
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -66,25 +62,49 @@ jobs:
 
       - name: Package
         run: |
-          cp target/release-prod/silver silver-linux-x86_64
-          cp target/release-prod/silver_surfer silver_surfer-linux-x86_64
-          ./silver-linux-x86_64 --version
+          mkdir dist && cd dist
           for bin in silver silver_surfer; do
+            cp ../target/release-prod/$bin $bin-linux-x86_64
             sha256sum $bin-linux-x86_64 > $bin-linux-x86_64.sha256
           done
+          ./silver-linux-x86_64 --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [unreleased-version, linux-x86_64]
+    runs-on: [self-hosted, silver]
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      # Self-hosted workspaces persist, and nothing here checks out a fresh one.
+      - run: rm -rf dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/
 
       - name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: |
-            silver-linux-x86_64
-            silver_surfer-linux-x86_64
+          subject-path: dist/*-linux-x86_64
 
       # Creates the tag at this commit, so a failed build leaves no tag behind.
       - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$TAG" --target "$GITHUB_SHA" --generate-notes --latest \
-            silver-linux-x86_64 silver-linux-x86_64.sha256 \
-            silver_surfer-linux-x86_64 silver_surfer-linux-x86_64.sha256
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.unreleased-version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: dist/*
