@@ -11,8 +11,9 @@ use silver_httpcore::TokenRange;
 
 use crate::{
     EngineClient,
-    client::{ReqKind, exchange_capabilities, get_client_version, get_sync_status},
-    pool::HEALTHCHECK_OVERSHOOT,
+    client::{
+        HEALTHCHECK_OVERSHOOT, ReqKind, exchange_capabilities, get_client_version, get_sync_status,
+    },
     req_handlers::{handle_request, handle_request_no_el},
     resp_handlers::*,
     types::FRAME_SLACK,

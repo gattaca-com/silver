@@ -198,6 +198,8 @@ pub struct Config {
     cluster_config: Option<ClusterConfig>,
     #[serde(default, deserialize_with = "optional_address::deserialize")]
     suggested_fee_recipient: Option<[u8; 20]>,
+    #[serde(default)]
+    pbs_endpoint: Option<String>,
 }
 
 impl Config {
@@ -212,6 +214,9 @@ impl Config {
             self.engine_config.jwt_secret = path;
         }
         self.engine_config.unsafe_no_el |= overrides.unsafe_no_el;
+        if let Some(url) = overrides.pbs_endpoint {
+            self.pbs_endpoint = Some(url);
+        }
     }
 }
 
@@ -222,6 +227,7 @@ pub struct Overrides {
     pub execution_endpoint: Option<String>,
     pub jwt_secret: Option<String>,
     pub unsafe_no_el: bool,
+    pub pbs_endpoint: Option<String>,
 }
 
 impl Config {
@@ -276,6 +282,10 @@ impl Config {
 
     pub fn suggested_fee_recipient(&self) -> Option<[u8; 20]> {
         self.suggested_fee_recipient
+    }
+
+    pub fn pbs_endpoint(&self) -> Option<&str> {
+        self.pbs_endpoint.as_deref()
     }
 
     pub fn enr(&self, keypair: &Keypair, enr_fork_id: [u8; 16]) -> Result<Enr, Error> {
