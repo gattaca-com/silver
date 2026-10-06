@@ -36,6 +36,12 @@ impl FixtureRoot {
         self.0.join("finalized_state.ssz")
     }
 
+    /// The state's checkpoint pubkey sidecar, so loading skips decompressing
+    /// every validator key.
+    pub fn finalized_pubkeys(&self) -> PathBuf {
+        self.0.join("finalized_state.pubkeys")
+    }
+
     pub fn read_finalized_state(&self) -> Result<(Vec<u8>, u64), String> {
         let path = self.finalized_state();
         let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;

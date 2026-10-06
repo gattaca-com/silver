@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use silver_beacon_state::ssz_hash::{hash_tree_root_block_header, hash_tree_root_state};
 use silver_beacon_state_data::{
-    BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
+    BeaconState, BeaconStateOwner, BeaconStateReader, CheckpointChunk, SpecConfig,
+    decode_checkpoint_pubkeys,
 };
 use silver_common::{profiler::InProcessReader, ssz_view::StatusView};
 use silver_control::sync_engine::BATCH;
@@ -34,29 +35,41 @@ pub struct ReplayOutcome {
     pub head_state_root: [u8; 32],
 }
 
+/// The published finalized base as the production checkpoint cursor streams it.
+pub struct PersistedCheckpoint {
+    pub ssz: Vec<u8>,
+    pub pubkeys: Vec<u8>,
+    pub slot: u64,
+}
+
+impl PersistedCheckpoint {
+    pub fn read(reader: &BeaconStateReader) -> Self {
+        let mut cursor = reader.begin_checkpoint().expect("published snapshot");
+        let (mut ssz, mut pubkeys, mut buf) = (Vec::new(), Vec::new(), Vec::new());
+        loop {
+            match reader.checkpoint_chunk(&mut cursor, &mut buf).expect("checkpoint chunk") {
+                CheckpointChunk::Ssz => ssz.extend_from_slice(&buf),
+                CheckpointChunk::Pubkeys => pubkeys.extend_from_slice(&buf),
+                CheckpointChunk::Restarted => {
+                    ssz.clear();
+                    pubkeys.clear();
+                }
+                CheckpointChunk::Done => break,
+            }
+        }
+        Self { ssz, pubkeys, slot: cursor.slot() }
+    }
+}
+
 /// Restart-equivalence gate: stream the finalized base out through the
 /// production checkpoint cursor, reload it the way bootstrap does, and require
 /// the re-derived `seed_anchor` block root to equal the fork-choice finalized
 /// root. Catches a tier persisting its boot-time base while staying
 /// live-correct — invisible to the head state-root check.
 fn verify_checkpoint_restart(harness: &PmBsHarness) {
-    let reader = harness.state_reader();
-    let mut cursor = reader.begin_checkpoint().expect("published snapshot");
-    let (mut ssz, mut pubkeys_raw, mut buf) = (Vec::new(), Vec::new(), Vec::new());
-    loop {
-        match reader.checkpoint_chunk(&mut cursor, &mut buf).expect("checkpoint chunk") {
-            CheckpointChunk::Ssz => ssz.extend_from_slice(&buf),
-            CheckpointChunk::Pubkeys => pubkeys_raw.extend_from_slice(&buf),
-            CheckpointChunk::Restarted => {
-                ssz.clear();
-                pubkeys_raw.clear();
-            }
-            CheckpointChunk::Done => break,
-        }
-    }
-
-    let pubkeys = decode_checkpoint_pubkeys(&pubkeys_raw).expect("pubkeys sidecar");
-    let state = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), Some(&pubkeys))
+    let checkpoint = PersistedCheckpoint::read(&harness.state_reader());
+    let pubkeys = decode_checkpoint_pubkeys(&checkpoint.pubkeys).expect("pubkeys sidecar");
+    let state = BeaconState::decompose(&checkpoint.ssz, &SpecConfig::mainnet(), Some(&pubkeys))
         .expect("decompose persisted checkpoint");
     let mut owner = BeaconStateOwner::new(state);
     let anchor = owner.roll_fresh();
@@ -72,7 +85,7 @@ fn verify_checkpoint_restart(harness: &PmBsHarness) {
         block_root,
         harness.fork_choice_finalized_root(),
         "restart from the persisted checkpoint (slot {}) would fail the parent precheck",
-        cursor.slot(),
+        checkpoint.slot,
     );
     eprintln!("perf: checkpoint restart re-derives the finalized block root ✓");
 }
@@ -94,7 +107,8 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     // code.
     let recorder = InProcessReader::start();
 
-    let mut harness = PmBsHarness::new(&fixtures.state_ssz, blocks.len());
+    let mut harness =
+        PmBsHarness::with_pubkeys(&fixtures.state_ssz, &fixtures.pubkeys, blocks.len());
     let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
     let first_block_slot = block_slot(&blocks[0]);
     assert_eq!(StatusView::head_slot(harness.local_status()) + 1, first_block_slot);

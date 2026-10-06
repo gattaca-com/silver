@@ -7,7 +7,7 @@ pub mod report;
 pub mod thresholds;
 pub mod workload;
 
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 pub use fixtures_dir::BlockFixtures;
 pub use replay::ReplayOutcome;
@@ -17,6 +17,8 @@ pub use workload::BlockWorkload;
 pub struct Fixtures {
     pub finalized_slot: u64,
     pub state_ssz: Vec<u8>,
+    /// Empty when absent: loading then decompresses every key.
+    pub pubkeys: Vec<u8>,
     pub blocks: Vec<Vec<u8>>,
     pub expected_head_state_root: [u8; 32],
     pub thresholds: Vec<thresholds::Threshold>,
@@ -29,6 +31,7 @@ impl Fixtures {
             .root()
             .read_finalized_state()
             .map_err(|e| format!("{e} — run `git lfs pull` or `just perf-update-fixtures`"))?;
+        let pubkeys = fs::read(fixtures.root().finalized_pubkeys()).unwrap_or_default();
         let blocks: Vec<_> =
             fixtures.read_sorted_next_blocks().into_iter().map(|(_, b)| b).collect();
 
@@ -42,7 +45,14 @@ impl Fixtures {
 
         let expected_head_state_root = fixtures.read_expected()?;
         let thresholds = fixtures.read_thresholds()?;
-        Ok(Self { finalized_slot, state_ssz, blocks, expected_head_state_root, thresholds })
+        Ok(Self {
+            finalized_slot,
+            state_ssz,
+            pubkeys,
+            blocks,
+            expected_head_state_root,
+            thresholds,
+        })
     }
 }
 
