@@ -353,12 +353,141 @@ impl HttpPool {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::net::UnixListener;
+    use std::{
+        io::{ErrorKind, Read, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        path::Path,
+    };
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::{Method, Readiness};
+
+    /// Longer than any test's 10 s spin deadline: the sweep never fires.
+    const LONG_TIMEOUT: Duration = Duration::from_secs(60);
+
+    const CAPACITY: BufferCapacity = BufferCapacity { read: 4096, write: 4096 };
+
+    fn post(body: &[u8]) -> ClientRequest<'_> {
+        ClientRequest { method: Method::Post, path: "/", body, authorization: None }
+    }
+
+    /// A server that accepts and reads, and answers only when told to.
+    struct Server {
+        listener: UnixListener,
+        stream: Option<UnixStream>,
+        received: usize,
+    }
+
+    impl Server {
+        fn bind(socket: &Path) -> Self {
+            let listener = UnixListener::bind(socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            Self { listener, stream: None, received: 0 }
+        }
+
+        /// Accepts the next connection and reads what has arrived on it.
+        fn pump(&mut self) {
+            if let Ok((stream, _)) = self.listener.accept() {
+                stream.set_nonblocking(true).unwrap();
+                self.stream = Some(stream);
+            }
+            let Some(stream) = &mut self.stream else { return };
+            let mut buf = [0u8; 4096];
+            match stream.read(&mut buf) {
+                Ok(n) => self.received += n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) => panic!("read: {e}"),
+            }
+        }
+
+        fn answer_ok(&mut self) {
+            let stream = self.stream.as_mut().unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+        }
+    }
+
+    /// Spins the pool until a request completes, returning its id and status.
+    fn complete(
+        pool: &mut HttpPool,
+        readiness: &mut Readiness,
+        mut server: impl FnMut(),
+    ) -> (u64, Option<u16>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(Instant::now() < deadline, "no request completed");
+            readiness.wait(Duration::from_millis(1));
+            let mut completed = None;
+            pool.dispatch_events(readiness.events(), readiness.registry(), &mut |id, response| {
+                completed = Some((id, response.ok().map(|response| response.status)));
+            });
+            if let Some(completed) = completed {
+                return completed;
+            }
+            server();
+        }
+    }
+
+    /// With a cap of one, the pool has capacity again only if the failed
+    /// connection was freed.
+    #[test]
+    fn connect_failure_fails_the_request_and_frees_the_connection() {
+        let dir = TempDir::new().unwrap();
+        let endpoint = Endpoint::Uds(dir.path().join("missing.sock"));
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT);
+        let mut readiness = Readiness::new(1);
+
+        pool.enqueue(3, &post(b"{}"), readiness.registry());
+        assert!(!pool.has_capacity());
+        assert_eq!(complete(&mut pool, &mut readiness, || {}), (3, None));
+        assert!(pool.has_capacity());
+    }
+
+    #[test]
+    fn peer_closing_fails_the_request_in_flight() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("server.sock");
+        let mut server = Server::bind(&socket);
+        let endpoint = Endpoint::Uds(socket);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, LONG_TIMEOUT);
+        let mut readiness = Readiness::new(1);
+
+        pool.enqueue(9, &post(b"{}"), readiness.registry());
+        let completed = complete(&mut pool, &mut readiness, || {
+            server.pump();
+            if server.received > 0 {
+                server.stream = None;
+            }
+        });
+        assert_eq!(completed, (9, None));
+    }
+
+    #[test]
+    fn unanswered_request_times_out_and_frees_the_connection() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("server.sock");
+        let mut server = Server::bind(&socket);
+        let timeout = Duration::from_millis(200);
+        let endpoint = Endpoint::Uds(socket);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, timeout);
+        let mut readiness = Readiness::new(1);
+
+        pool.enqueue(1, &post(b"{}"), readiness.registry());
+        assert_eq!(complete(&mut pool, &mut readiness, || server.pump()), (1, None));
+        assert!(server.received > 0, "the server got the request it never answered");
+        assert!(pool.has_capacity());
+
+        server.received = 0;
+        pool.enqueue(2, &post(b"{}"), readiness.registry());
+        let completed = complete(&mut pool, &mut readiness, || {
+            server.pump();
+            if std::mem::take(&mut server.received) > 0 {
+                server.answer_ok();
+            }
+        });
+        assert_eq!(completed, (2, Some(200)), "the next request is served");
+    }
 
     /// A blackholed connect (SYN dropped) is not cheaply reproducible in a unit
     /// test, so with no events ever delivered the connection stays in
@@ -370,19 +499,16 @@ mod tests {
         let socket = dir.path().join("server.sock");
         let _listener = UnixListener::bind(&socket).unwrap();
 
-        let capacity = BufferCapacity { read: 4096, write: 4096 };
         let mut pool = HttpPool::new(
             Endpoint::Uds(socket),
             TokenRange::whole(),
-            capacity,
+            CAPACITY,
             1,
             Duration::from_millis(100),
         );
         let readiness = Readiness::new(1);
 
-        let request =
-            ClientRequest { method: Method::Post, path: "/", body: b"{}", authorization: None };
-        pool.enqueue(7, &request, readiness.registry());
+        pool.enqueue(7, &post(b"{}"), readiness.registry());
         assert!(matches!(pool.connections[0].conn, Conn::Connecting(_)));
         assert!(!pool.has_capacity());
 

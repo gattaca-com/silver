@@ -142,20 +142,6 @@ impl FakeEl {
         self.send(request_index, response.as_bytes());
     }
 
-    pub fn respond_chunked(&mut self, request_index: usize, result_json: &str, chunk_len: usize) {
-        let body = self.result_body(request_index, result_json);
-        let mut response =
-            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
-                .to_vec();
-        for chunk in body.as_bytes().chunks(chunk_len) {
-            response.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
-            response.extend_from_slice(chunk);
-            response.extend_from_slice(b"\r\n");
-        }
-        response.extend_from_slice(b"0\r\n\r\n");
-        self.send(request_index, &response);
-    }
-
     fn result_body(&self, request_index: usize, result_json: &str) -> String {
         let id = self.requests[request_index].id;
         format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result_json}}}"#)
@@ -171,10 +157,6 @@ impl FakeEl {
                 Err(e) => panic!("write: {e}"),
             }
         }
-    }
-
-    pub fn close_connection_of(&mut self, request_index: usize) {
-        self.conns[self.requests[request_index].conn] = None;
     }
 }
 

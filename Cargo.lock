@@ -5262,7 +5262,7 @@ version = "0.1.0-alpha.1"
 
 [[package]]
 name = "silver_pbs"
-version = "0.0.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "mio",
  "silver_httpcore",

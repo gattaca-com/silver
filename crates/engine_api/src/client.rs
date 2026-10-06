@@ -468,6 +468,8 @@ mod tests {
 
         let request =
             el.requests.iter().find(|r| r.method == "engine_forkchoiceUpdatedV3").unwrap();
+        let token = request.authorization.as_deref().and_then(|auth| auth.strip_prefix("Bearer "));
+        assert_eq!(token.expect("JWT bearer header").split('.').count(), 3, "three-part JWT");
         let mut body = request.body.as_bytes().to_vec();
         let body = simd_json::to_borrowed_value(&mut body).unwrap();
         assert_eq!(body["params"][1]["timestamp"].as_str(), Some("0xc"));
@@ -545,6 +547,3 @@ mod tests {
         assert_eq!(body2["id"].as_u64(), Some(6));
     }
 }
-
-#[cfg(test)]
-mod transport_tests;

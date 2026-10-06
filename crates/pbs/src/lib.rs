@@ -5,8 +5,10 @@ use silver_httpcore::{
     BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, Method, TokenRange,
 };
 
-/// The sidecar tries each relay up to three times, 3 s apiece.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(3 * 3 + 3);
+/// One second past Commit-Boost's `timeout_register_validator_ms` default,
+/// which bounds every relay's retries together. A sidecar configured above
+/// 3 s outlasts this.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(3 + 1);
 
 /// Buffers grow past this for a large registration set.
 const CONNECTION_CAPACITY: BufferCapacity = BufferCapacity { read: 64 << 10, write: 64 << 10 };
