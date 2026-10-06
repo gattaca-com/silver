@@ -2,7 +2,38 @@ use std::ops::Range;
 
 use silver_ssz::ssz_view::MAX_COMMITTEES_PER_SLOT;
 
-use crate::types::{SLOTS_PER_EPOCH, Slot};
+use crate::{
+    StateReadView,
+    types::{B256, Epoch, SLOTS_PER_EPOCH, Slot},
+};
+
+/// Identifies an attester shuffling by its epoch and attester-duty decision
+/// root. Blocks after that decision can share the same shuffling across
+/// branches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShufflingId {
+    pub epoch: Epoch,
+    pub dependent_root: B256,
+}
+
+impl ShufflingId {
+    pub fn from_state(view: &StateReadView<'_>, epoch: Epoch) -> Option<Self> {
+        if epoch > view.slot.current_epoch().saturating_add(1) {
+            return None;
+        }
+        let slot = view.slot.state();
+        let dependent_root = view.block_roots.duty_dependent_root(
+            epoch.saturating_sub(1),
+            slot.latest_block_root,
+            slot.slot,
+        )?;
+        Some(Self { epoch, dependent_root })
+    }
+
+    pub fn decision_slot(&self) -> Slot {
+        (self.epoch.saturating_sub(1) * SLOTS_PER_EPOCH).saturating_sub(1)
+    }
+}
 
 pub const TARGET_COMMITTEE_SIZE: usize = 128;
 

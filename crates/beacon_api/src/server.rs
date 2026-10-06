@@ -615,11 +615,13 @@ impl BeaconApi {
                 stage: BlockStage::Applied,
                 ..
             } => self.publish_block(slot, &block_root),
-            BeaconStateEvent::AttestersShuffling { epoch, indices } => {
+            BeaconStateEvent::AttestersShuffling { id, indices } => {
                 let posted = self.reader.acquire(indices);
                 match posted.buffer() {
-                    Ok((bytes, _)) => self.ctx.shufflings.record(epoch, bytes),
-                    Err(e) => silver_log::warn!(?e, epoch, "posted shuffling unavailable"),
+                    Ok((bytes, _)) => self.ctx.shufflings.record(id, bytes),
+                    Err(e) => {
+                        silver_log::warn!(?e, epoch = id.epoch, "posted shuffling unavailable")
+                    }
                 }
             }
             _ => {}

@@ -29,6 +29,7 @@ use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
     attestation_pool::InsertOutcome, fork_data_roots::ForkDataRoots, held_blocks::BlockSourceMsg,
     seen_aggregates::Coverage, seen_proposer_preferences::ProposerPreferences,
+    shuffling_cache::ShufflingRequest,
 };
 use crate::{
     bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
@@ -203,14 +204,17 @@ impl BeaconStateTile {
             false
         };
 
-        let canon_id = self.canonical_state_id();
+        let canon_id = self.epoch_start_state(self.canonical_state_id(), att_slot);
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
         // Validate committee membership against the canonical head.
         let view = self.state.read_view(canon_id);
-        self.shuffling_cache.ensure_window(&view, att_epoch);
-        let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
+        let Some(request) = ShufflingRequest::new(&view, att_epoch) else {
             return Err(Feedback::Ignore);
         };
+        if !self.fork_choice.shares_shuffling(&block_root, request.id()) {
+            return Err(Feedback::Ignore);
+        }
+        let shuffling = self.shuffling_cache.get(request);
         if committee_index >= shuffling.committees_per_slot {
             return Err(Feedback::reject("attestation committee index out of range"));
         }
@@ -872,15 +876,18 @@ impl BeaconStateTile {
             return f;
         }
 
-        let canon_id = self.canonical_state_id();
+        let canon_id = self.epoch_start_state(self.canonical_state_id(), data.slot());
         let att_epoch = data.slot() / SLOTS_PER_EPOCH;
-        let n = self.head_validator_count();
         {
             let view = self.state.read_view(canon_id);
-            self.shuffling_cache.ensure_window(&view, att_epoch);
-            let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
+            let n = view.validators.count();
+            let Some(request) = ShufflingRequest::new(&view, att_epoch) else {
                 return Feedback::Ignore;
             };
+            if !self.fork_choice.shares_shuffling(data.beacon_block_root(), request.id()) {
+                return Feedback::Ignore;
+            }
+            let shuffling = self.shuffling_cache.get(request);
             if stf::AttestedCommittees::new(att, &shuffling)
                 .and_then(|c| c.attesters_into(n, &mut self.stf_scratch.active))
                 .is_err()
@@ -889,6 +896,7 @@ impl BeaconStateTile {
             }
         }
 
+        let n = self.state.read_view(canon_id).validators.count();
         self.record_attester_votes(data, n);
         Feedback::Accept
     }
@@ -959,17 +967,20 @@ impl BeaconStateTile {
             }
         }
 
-        let canon_id = self.canonical_state_id();
+        let canon_id = self.epoch_start_state(self.canonical_state_id(), parsed.agg_slot);
         let view = self.state.read_view(canon_id);
-        self.shuffling_cache.ensure_window(&view, parsed.att_epoch);
         let count = view.validators.count();
         if parsed.aggregator_index >= count {
             return Feedback::reject("aggregator index out of range");
         }
 
-        let Some(shuffling) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
+        let Some(request) = ShufflingRequest::new(&view, parsed.att_epoch) else {
             return Feedback::Ignore;
         };
+        if !self.fork_choice.shares_shuffling(parsed.agg_data.beacon_block_root(), request.id()) {
+            return Feedback::Ignore;
+        }
+        let shuffling = self.shuffling_cache.get(request);
         if committee_index >= shuffling.committees_per_slot {
             return Feedback::reject("aggregate committee index out of range");
         }

@@ -37,6 +37,7 @@ pub struct ChainConfig {
     pub boot: BootSource,
     pub bootstrap_enrs: Vec<Enr>,
     pub spec: SpecConfig,
+    pub genesis_validators_root: [u8; 32],
     pub data_dir: String,
 }
 
@@ -60,9 +61,10 @@ impl ChainConfig {
             (None, None) => network.boot_source()?,
         };
         let spec = network.spec()?;
+        let genesis_validators_root = network.genesis_validators_root()?;
         let data_dir = match data_dir {
             Some(dir) => dir.to_owned(),
-            None => default_data_dir(&network.data_dir_name(&spec)?),
+            None => default_data_dir(&network.data_dir_name(&spec, &genesis_validators_root)),
         };
         Ok(Self {
             prepare_payload_lookahead_millis: overrides
@@ -71,6 +73,7 @@ impl ChainConfig {
             boot,
             bootstrap_enrs,
             spec,
+            genesis_validators_root,
             data_dir,
         })
     }
@@ -82,8 +85,9 @@ impl ChainConfig {
         (since_genesis / self.slot_duration().as_millis()) as u64 / SLOTS_PER_EPOCH
     }
 
-    /// Refuses a spec that puts `epoch` earlier than Fulu.
-    pub fn checked_fork_digest(&self, epoch: u64, genesis: &Genesis) -> Result<[u8; 4], Error> {
+    /// Refuses a spec that puts the wall epoch earlier than Fulu.
+    pub fn fork_digest(&self, genesis: &Genesis) -> Result<[u8; 4], Error> {
+        let epoch = self.wall_epoch(genesis);
         let fork = self.spec.fork_at(epoch);
         if fork < ForkName::Fulu {
             return Err(Error::ConfigError(format!(

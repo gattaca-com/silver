@@ -271,10 +271,6 @@ impl Config {
             )));
         }
 
-        if let BootSource::File { ssz, .. } = &chain.boot {
-            let genesis = Genesis::from_state_file(ssz)?;
-            chain.checked_fork_digest(chain.wall_epoch(&genesis), &genesis)?;
-        }
         Ok(chain)
     }
 
@@ -552,6 +548,7 @@ mod tests {
         let gvr = [7u8; 32];
         let genesis = 1_600_000_000;
         let anchor = write_anchor(dir.path(), genesis, gvr);
+        std::fs::copy(&anchor, dir.path().join("genesis.ssz")).unwrap();
         write_file(
             dir.path(),
             "config.yaml",
@@ -584,7 +581,7 @@ mod tests {
         assert_eq!(state_genesis.unix_secs, genesis);
         let epoch = chain.wall_epoch(&state_genesis);
         assert_eq!(
-            chain.checked_fork_digest(epoch, &state_genesis).unwrap(),
+            chain.fork_digest(&state_genesis).unwrap(),
             chain.spec.fork_digest_at(epoch, &gvr)
         );
     }
@@ -600,6 +597,7 @@ mod tests {
         // below mainnet's fulu_fork_epoch, which is the default in force here.
         let recent = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 3600;
         let anchor = write_anchor(dir.path(), recent, [7u8; 32]);
+        std::fs::copy(&anchor, dir.path().join("genesis.ssz")).unwrap();
         write_file(
             dir.path(),
             "config.yaml",
@@ -617,7 +615,8 @@ mod tests {
         );
 
         let cfg = Config::load(Some(&config_file), Overrides::default()).unwrap();
-        let err = cfg.chain().unwrap_err();
+        let genesis = Genesis::from_state_file(Path::new(&anchor)).unwrap();
+        let err = cfg.chain().unwrap().fork_digest(&genesis).unwrap_err();
         let text = format!("{err}");
         assert!(text.contains("FULU_FORK_EPOCH"), "error should name the key: {text}");
     }

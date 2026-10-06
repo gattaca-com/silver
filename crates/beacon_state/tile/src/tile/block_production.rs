@@ -620,8 +620,14 @@ impl BeaconStateTile {
         let epoch = slot / SLOTS_PER_EPOCH;
         let shuffling = {
             let view = self.state.read_view(parent);
-            self.shuffling_cache.ensure_window(&view, epoch);
-            self.shuffling_cache.build_ref(&view, epoch)
+            self.shuffling_cache.for_block(&view, epoch).ok_or_else(|| {
+                silver_log::error!(
+                    epoch,
+                    state_epoch = view.slot.current_epoch(),
+                    "production shuffling unavailable from the parent state"
+                );
+                ProduceBlockFailure::Internal
+            })?
         };
         let mut fork = self.state.apply_block_view(parent);
         let mut votes = self.stf_scratch.votes.take();

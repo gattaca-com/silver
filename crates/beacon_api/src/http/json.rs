@@ -571,6 +571,21 @@ impl Json<'_> {
         });
     }
 
+    pub(crate) fn liveness(&mut self, entries: impl Iterator<Item = (u64, bool)>) {
+        self.data_envelope(|json| {
+            json.begin_array();
+            for (index, is_live) in entries {
+                json.begin_object();
+                json.key("index");
+                json.quoted_u64(index);
+                json.key("is_live");
+                json.bool(is_live);
+                json.end_object();
+            }
+            json.end_array();
+        });
+    }
+
     fn duty(&mut self, pubkey: &BLSPubkey, validator_index: u64, rest: impl FnOnce(&mut Self)) {
         self.begin_object();
         self.key("pubkey");

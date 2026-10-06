@@ -25,6 +25,7 @@ use crate::{
         attestation_data::attestation_data,
         attester_duties::post_attester_duties,
         contribution_submission::post_contribution_and_proofs,
+        liveness::post_liveness,
         produce_block::produce_block_v3,
         proposer_duties::{proposer_duties, proposer_duties_v2},
         registration::{post_prepare_beacon_proposer, post_register_validator},
@@ -72,7 +73,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Post, "/eth/v1/validator/duties/attester/{epoch}", post_attester_duties),
     (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", proposer_duties),
     (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", post_sync_duties),
-    (Method::Post, "/eth/v1/validator/liveness/{epoch}", not_implemented),
+    (Method::Post, "/eth/v1/validator/liveness/{epoch}", post_liveness),
     (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),
     (Method::Post, "/eth/v1/validator/register_validator", post_register_validator),
     (Method::Get, "/eth/v1/validator/sync_committee_contribution", sync_committee_contribution),
@@ -91,26 +92,15 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/metrics", metrics),
 ];
 
-/// The surface a request can name ahead of what silver serves: each of these
-/// routes needs data the node does not yet keep (a block store, duty
-/// shuffling, liveness tracking), so
-/// the honest answer is the 501 that tells the client to look elsewhere,
-/// rather than a partial answer assembled from the wrong data.
-fn not_implemented(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
-    resp.error(501, "endpoint not implemented by this beacon node");
-}
-
 fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
     resp.empty(METRICS_CONTENT_TYPE);
 }
 
 #[cfg(test)]
 mod tests {
-    use silver_httpcore::ParsedRequest;
-
     use crate::{
         ctx::anchor_ctx,
-        testing::{answer, body, posting, request},
+        testing::{answer, body, request},
     };
 
     #[test]
@@ -120,22 +110,5 @@ mod tests {
         assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(s.contains("text/plain; version=0.0.4; charset=utf-8"));
         assert_eq!(body(&resp), b"");
-    }
-
-    /// Every stubbed route answers 501 whatever the node's state: routed, so
-    /// a client can tell "this node does not serve it" (501) from "no such
-    /// endpoint exists" (404).
-    #[test]
-    fn stubbed_routes_answer_501_not_404() {
-        let ctx = anchor_ctx();
-        for (method, path) in [("POST", "/eth/v1/validator/liveness/0")] {
-            let out = answer(&ctx, &ParsedRequest { method, ..posting(path, "[]") });
-            assert!(out.starts_with(b"HTTP/1.1 501 Not Implemented\r\n"), "{method} {path}");
-            assert_eq!(
-                body(&out),
-                br#"{"code":501,"message":"endpoint not implemented by this beacon node"}"#,
-                "{method} {path}"
-            );
-        }
     }
 }

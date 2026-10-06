@@ -2,7 +2,7 @@ pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, F
 pub use checkpoint_state::CheckpointState;
 pub use column::*;
 pub use committee::{
-    CommitteeSlot, TARGET_COMMITTEE_SIZE, committee_at_position, committee_range,
+    CommitteeSlot, ShufflingId, TARGET_COMMITTEE_SIZE, committee_at_position, committee_range,
     committees_per_slot,
 };
 pub use decompose::DecomposeError;
