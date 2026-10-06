@@ -36,9 +36,13 @@ pub struct Membership {
     pub undecided: __mmask8,
 }
 
+/// Built without the `simd` feature, every point goes to blst, as on a CPU
+/// without the instructions.
 #[cfg(target_arch = "x86_64")]
 pub fn simd_available() -> bool {
-    is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512ifma")
+    cfg!(feature = "simd") &&
+        is_x86_feature_detected!("avx512f") &&
+        is_x86_feature_detected!("avx512ifma")
 }
 
 #[cfg(not(target_arch = "x86_64"))]

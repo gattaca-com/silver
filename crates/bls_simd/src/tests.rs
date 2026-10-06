@@ -157,7 +157,7 @@ fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> 
 fn in_g2_matches_blst_on_every_kind() {
     assert!(
         simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
-        "SILVER_REQUIRE_IFMA is set, but this CPU has no avx512ifma"
+        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
     );
     let kinds = assert_in_g2_matches_blst(in_g2);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");

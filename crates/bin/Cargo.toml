@@ -41,8 +41,11 @@ tempfile = "3"
 workspace = true
 
 [features]
-default = ["thread_park"]
+default = ["bls_simd", "thread_park"]
 alloc-profile = ["silver_common/alloc-profile"]
+# AVX-512 IFMA BLS kernels on CPUs that have them. Without it, every point goes
+# to blst.
+bls_simd = ["silver_beacon_state/bls_simd"]
 # Hardware-counter dimension for `#[timed]`: per-call counters via rdpmc on
 # perf-{fn} queues (dev; needs `sudo sysctl kernel.perf_event_paranoid=2`).
 # Surfer picks the queues up when present; non-perf builds are unaffected.
