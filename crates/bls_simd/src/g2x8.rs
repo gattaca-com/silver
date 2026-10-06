@@ -8,13 +8,11 @@
 
 use std::arch::x86_64::__mmask8;
 
-use blst::blst_p2_affine;
-
 use crate::{
     Membership,
     constants::{PSI_X_MONT, PSI_Y_MONT, Z_BITS},
     fp2x8::Fp2x8,
-    fp8::{Fp8, LANES},
+    fp8::Fp8,
 };
 
 pub struct G2x8 {
@@ -81,10 +79,8 @@ impl G2x8 {
     /// Scott's test (eprint 2021/1130): a curve point is in G2 iff
     /// `psi(P) == [z] P`, which is `[-z] P` negated.
     #[target_feature(enable = "avx512f,avx512ifma")]
-    pub fn scott_membership(points: &[blst_p2_affine; LANES]) -> Membership {
-        let px = Fp2x8::from_blst(&points.map(|p| p.x));
-        let py = Fp2x8::from_blst(&points.map(|p| p.y));
-        let (mzp, chain_undecided) = Self::times_minus_z(&px, &py);
+    pub fn scott_membership(px: &Fp2x8, py: &Fp2x8) -> Membership {
+        let (mzp, chain_undecided) = Self::times_minus_z(px, py);
         let undecided = chain_undecided | mzp.z.is_zero_mask();
 
         let psi_scale = Fp8::splat_limbs(&PSI_X_MONT);

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use blst::{
     blst_bendian_from_fp, blst_fp, blst_fp_add, blst_fp_from_uint64, blst_fp_inverse, blst_fp_mul,
     blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_hash_to_g2, blst_p2, blst_p2_add_or_double,
-    blst_p2_compress, blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult,
+    blst_p2_compress, blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
@@ -33,6 +33,13 @@ fn times<const N: usize>(p: &blst_p2, scalar: &[u64; N]) -> blst_p2 {
     // SAFETY: x86_64 is little-endian, so the limbs are the scalar's bytes.
     unsafe { blst_p2_mult(&mut out, p, scalar.as_ptr().cast(), 64 * N) };
     out
+}
+
+/// blst's decompression alone, members of G2 or not.
+fn uncompress_g2(bytes: &[u8; G2_COMPRESSED_LEN]) -> Option<blst_p2_affine> {
+    let mut point = blst_p2_affine::default();
+    let ok = unsafe { blst_p2_uncompress(&mut point, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS };
+    ok.then_some(point)
 }
 
 fn compress_g2(p: &blst_p2) -> [u8; G2_COMPRESSED_LEN] {
@@ -268,10 +275,31 @@ fn g2_limbs(p: &Option<blst_p2_affine>) -> Option<[[u64; 6]; 4]> {
     p.map(|p| [p.x.fp[0].l, p.x.fp[1].l, p.y.fp[0].l, p.y.fp[1].l])
 }
 
+/// Lanes whose decoding by the kernel differs from blst's, members of G2 or
+/// not, as (lane, kernel, blst). Infinity lanes, which the kernel leaves to
+/// blst, are skipped. Empty without IFMA.
+fn decoding_divergences(
+    chunk: &[[u8; G2_COMPRESSED_LEN]; LANES],
+) -> Vec<(usize, Option<blst_p2_affine>, Option<blst_p2_affine>)> {
+    if !simd_available() {
+        return Vec::new();
+    }
+    let batch = unsafe { decompress_g2::decompress(chunk) };
+    (0..LANES)
+        .filter(|lane| (batch.on_curve | !batch.undecided) & (1 << lane) != 0)
+        .map(|lane| {
+            let got = (batch.on_curve & (1 << lane) != 0).then_some(batch.points[lane]);
+            (lane, got, uncompress_g2(&chunk[lane]))
+        })
+        .filter(|(_, got, want)| g2_limbs(got) != g2_limbs(want))
+        .collect()
+}
+
 /// Runs `SILVER_G2_CASES` seeded batches through `check` (default 64;
 /// `forever` runs until interrupted, reporting progress every 10 s) and
-/// compares every lane with blst. Each divergence is printed with the seed and
-/// case that replay it. Returns how many encodings of each kind it ran.
+/// compares every lane with blst, as well as the kernel's decoding of every
+/// full chunk. Each divergence is printed with the seed and case that replay
+/// it. Returns how many encodings of each kind it ran.
 fn assert_uncompress_in_g2_matches_blst(
     check: impl Fn(&[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>>,
 ) -> [usize; G2_KINDS.len()] {
@@ -306,6 +334,19 @@ fn assert_uncompress_in_g2_matches_blst(
             }
             kinds[*kind as usize] += 1;
         }
+        for (chunk_index, chunk) in inputs.chunks_exact(LANES).enumerate() {
+            for (lane, got, want) in decoding_divergences(chunk.try_into().unwrap()) {
+                divergences += 1;
+                eprintln!(
+                    "DECODE DIVERGENCE seed {seed} case {case} lane {}: kernel {:?}, blst {:?}, \
+                     encoding {}",
+                    chunk_index * LANES + lane,
+                    g2_limbs(&got),
+                    g2_limbs(&want),
+                    hex(&chunk[lane])
+                );
+            }
+        }
         if last_report.elapsed() >= Duration::from_secs(10) {
             last_report = Instant::now();
             let encodings: usize = kinds.iter().sum();
@@ -328,6 +369,74 @@ fn uncompress_in_g2_matches_blst_on_every_kind() {
     );
     let kinds = assert_uncompress_in_g2_matches_blst(uncompress_in_g2);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
+}
+
+#[test]
+fn kernel_decodes_both_rare_square_root_branches_like_blst() {
+    if !simd_available() {
+        return;
+    }
+    let mut cases = G2Cases(ChaCha8Rng::seed_from_u64(1));
+    let (mut real, mut imaginary) = (0, 0);
+    for _ in 0..4 {
+        let chunk = std::array::from_fn(|_| cases.zero_component());
+        assert!(decoding_divergences(&chunk).is_empty());
+        for bytes in &chunk {
+            let y = uncompress_g2(bytes).expect("on the curve").y;
+            real += (y.fp[1].l == [0; 6]) as usize;
+            imaginary += (y.fp[0].l == [0; 6]) as usize;
+        }
+    }
+    assert!(real > 0 && imaginary > 0, "{real} real and {imaginary} imaginary roots");
+}
+
+/// Fixed chunks: one with no decodable lane, one with no lane on the curve,
+/// and one with a member beside them. Infinity must survive every return.
+#[test]
+fn kernel_early_returns_leave_infinity_to_blst() {
+    if !simd_available() {
+        return;
+    }
+    let with_flags = |flags: u8| {
+        let mut bytes = [0u8; G2_COMPRESSED_LEN];
+        bytes[0] = flags;
+        bytes
+    };
+    let p = plus_p(&[0; 48]);
+    let mut x1_is_p = with_flags(0);
+    x1_is_p[..48].copy_from_slice(&p);
+    x1_is_p[0] |= 0x80;
+    let mut x0_is_p = with_flags(0x80);
+    x0_is_p[48..].copy_from_slice(&p);
+    let member = compress_g2(&G2Cases(ChaCha8Rng::seed_from_u64(1)).member());
+    let mut uncompressed = member;
+    uncompressed[0] &= 0x7f;
+
+    let undecodable = [
+        G2_INFINITY,
+        with_flags(0xe0),
+        with_flags(0x40),
+        with_flags(0x20),
+        uncompressed,
+        x1_is_p,
+        x0_is_p,
+        with_flags(0),
+    ];
+    // x = 0 is off the curve: 4 + 4i has norm 32, a non-residue mod p.
+    let mut off_curve = undecodable;
+    off_curve[6] = with_flags(0x80);
+    off_curve[7] = with_flags(0xa0);
+    let mut beside_member = off_curve;
+    beside_member[7] = member;
+
+    for chunk in [undecodable, off_curve, beside_member] {
+        let got = uncompress_in_g2(&chunk);
+        for (lane, bytes) in chunk.iter().enumerate() {
+            assert_eq!(g2_limbs(&got[lane]), g2_limbs(&uncompress_in_g2_blst(bytes)), "{lane}");
+        }
+        assert!(decoding_divergences(&chunk).is_empty());
+    }
+    assert!(uncompress_in_g2_blst(&G2_INFINITY).is_some(), "infinity is in G2");
 }
 
 /// Plain value below p, as blst's six limbs: 47 random bytes under a zero

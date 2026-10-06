@@ -230,7 +230,7 @@ fn bench_g2_parse(c: &mut Criterion) {
         .map(|i| keypair(5000 + i).0.sign(&i.to_le_bytes(), DST, &[]).to_bytes())
         .collect();
     let mut g = c.benchmark_group("g2_parse");
-    for n in [1, 2, 4, 8, 16, 1024] {
+    for n in [1, 2, 3, 4, 8, 16, 1024] {
         g.throughput(Throughput::Elements(n as u64));
         g.bench_with_input(BenchmarkId::new("blst", n), &sigs[..n], |b, sigs| {
             b.iter(|| sigs.iter().filter(|s| CheckedSignature::parse(s).is_some()).count())

@@ -13,8 +13,8 @@ use std::arch::x86_64::{
 };
 
 use crate::constants::{
-    LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
-    TWO_POW_448_MOD_P,
+    HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
+    P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
 };
 
 pub const LANES: usize = 8;
@@ -216,12 +216,6 @@ impl Fp8 {
         self.mul(&Self::splat_limbs(&ONE_PLAIN)).canonical().store()
     }
 
-    /// Lane `l` takes `values[l]` from blst's Montgomery form (R = 2^384).
-    #[target_feature(enable = "avx512f,avx512ifma")]
-    pub fn from_blst_limbs(values: &[[u64; 6]; LANES]) -> Self {
-        Self::load(&values.map(|v| unpack52(&v))).mul(&Self::splat_limbs(&TWO_POW_448_MOD_P))
-    }
-
     /// Same values in blst's Montgomery form (R = 2^384), as its six 64-bit
     /// limbs.
     #[target_feature(enable = "avx512f,avx512ifma")]
@@ -307,6 +301,11 @@ impl Fp8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn half(&self) -> Self {
+        self.mul(&Self::splat_limbs(&HALF_MONT))
+    }
+
+    #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn eq_mask(&self, rhs: &Self) -> __mmask8 {
         let (a, b) = (self.canonical(), rhs.canonical());
         let mut k: __mmask8 = 0xff;
@@ -330,6 +329,42 @@ impl Fp8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn select(k: __mmask8, a: &Self, b: &Self) -> Self {
         Self(blend(k, &a.0, &b.0))
+    }
+
+    /// `self^((p-3)/4)`: the reciprocal square root when `self` is a
+    /// quadratic residue (p = 3 mod 4). The exponent is shared by every lane,
+    /// so a fixed 4-bit window needs no per-lane table lookups.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn pow_p_minus_3_over_4(&self) -> Self {
+        let mut table = [Self::one(); 16];
+        table[1] = *self;
+        for k in 2..16 {
+            table[k] = table[k - 1].mul(self);
+        }
+        let mut r = table[P_MINUS_3_OVER_4_WINDOWS[94] as usize];
+        for w in (0..94).rev() {
+            r = r.square().square().square().square();
+            let digit = P_MINUS_3_OVER_4_WINDOWS[w] as usize;
+            if digit != 0 {
+                r = r.mul(&table[digit]);
+            }
+        }
+        r
+    }
+
+    /// `self^((p+1)/4)`: the square root when `self` is a quadratic residue.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn sqrt_candidate(&self) -> Self {
+        self.pow_p_minus_3_over_4().mul(self)
+    }
+
+    /// Lanes whose plain value exceeds (p - 1) / 2: the lexicographically
+    /// larger of the two square roots.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn is_larger_root_mask(&self) -> __mmask8 {
+        let plain = Self::load(&self.to_plain());
+        let (_, borrow) = sub_limbs(&splat_limbs(&HALF_P_MINUS_1), &plain.0);
+        borrowed(borrow)
     }
 }
 

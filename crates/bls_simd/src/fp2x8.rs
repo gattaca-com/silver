@@ -2,9 +2,7 @@
 
 use std::arch::x86_64::__mmask8;
 
-use blst::blst_fp2;
-
-use crate::fp8::{Fp8, LANES, Limbs};
+use crate::fp8::{Fp8, Limbs};
 
 #[derive(Clone, Copy)]
 pub struct Fp2x8 {
@@ -13,15 +11,6 @@ pub struct Fp2x8 {
 }
 
 impl Fp2x8 {
-    /// Lane `l` takes `values[l]`, in blst's Montgomery form.
-    #[target_feature(enable = "avx512f,avx512ifma")]
-    pub fn from_blst(values: &[blst_fp2; LANES]) -> Self {
-        Self {
-            c0: Fp8::from_blst_limbs(&values.map(|v| v.fp[0].l)),
-            c1: Fp8::from_blst_limbs(&values.map(|v| v.fp[1].l)),
-        }
-    }
-
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn splat(limbs: &[Limbs; 2]) -> Self {
         Self { c0: Fp8::splat_limbs(&limbs[0]), c1: Fp8::splat_limbs(&limbs[1]) }
@@ -72,6 +61,42 @@ impl Fp2x8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn conjugate(&self) -> Self {
         Self { c0: self.c0, c1: self.c1.neg() }
+    }
+
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn mul_by_i(&self) -> Self {
+        Self { c0: self.c1.neg(), c1: self.c0 }
+    }
+
+    /// Lanes of `k` take `b`, the rest `a`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn select(k: __mmask8, a: &Self, b: &Self) -> Self {
+        Self { c0: Fp8::select(k, &a.c0, &b.c0), c1: Fp8::select(k, &a.c1, &b.c1) }
+    }
+
+    /// blst's `sqrt_fp2`: two Fp exponentiations give a candidate whose
+    /// square is χ(t)·self whenever self is a square, so one rotation by i
+    /// covers blst's four alignments. The mask marks the lanes that have a
+    /// root.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn sqrt(&self) -> (Self, __mmask8) {
+        let n = self.c0.square().add(&self.c1.square()).sqrt_candidate();
+        let plus = self.c0.add(&n);
+        let t = Fp8::select(plus.is_zero_mask(), &plus, &self.c0.sub(&n)).half();
+        let r = t.pow_p_minus_3_over_4();
+        let candidate = Self { c0: t.mul(&r), c1: self.c1.half().mul(&r) };
+        let square = candidate.square();
+        let squares_to_self = square.eq_mask(self);
+        let squares_to_neg = square.eq_mask(&self.neg());
+        let root = Self::select(squares_to_neg, &candidate, &candidate.mul_by_i());
+        (root, squares_to_self | squares_to_neg)
+    }
+
+    /// Lanes holding the lexicographically larger of two square roots: c1
+    /// decides, and c0 only where c1 = 0.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn is_larger_root_mask(&self) -> __mmask8 {
+        self.c1.is_larger_root_mask() | (self.c0.is_larger_root_mask() & self.c1.is_zero_mask())
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]

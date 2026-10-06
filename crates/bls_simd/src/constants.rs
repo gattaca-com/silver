@@ -61,6 +61,35 @@ pub const TWO_POW_384_MOD_P: [u64; LIMBS] = [
     0x0000000015f65,
 ];
 pub const ONE_PLAIN: [u64; LIMBS] = [1, 0, 0, 0, 0, 0, 0, 0];
+/// Curve coefficient b = 4, Montgomery form.
+pub const FOUR_MONT: [u64; LIMBS] = [
+    0xc203aa3a7e6bb,
+    0x99c5b63f91e5d,
+    0xec2218e49b9f5,
+    0xb47d6b297d25b,
+    0x36f29b533dd05,
+    0xaac3b92d6d85a,
+    0x25d100f5559b6,
+    0x0000000005208,
+];
+/// `(p - 1) / 2`, plain: y above it is the lexicographically larger root.
+pub const HALF_P_MINUS_1: [u64; LIMBS] = [
+    0xf7fffffffd555,
+    0xff58a9ffffdcf,
+    0xb587b120f55ff,
+    0x895fb39869507,
+    0xbb23ba5c279c2,
+    0x8dd3db21a5d66,
+    0x8f51cbff34d25,
+    0x000000000d008,
+];
+/// `(p - 3) / 4` as 4-bit windows, least significant first; 379 bits.
+pub const P_MINUS_3_OVER_4_WINDOWS: [u8; 95] = [
+    10, 10, 10, 14, 15, 15, 15, 15, 15, 15, 15, 11, 15, 7, 14, 14, 15, 15, 15, 15, 4, 5, 12, 10,
+    15, 15, 15, 15, 10, 10, 7, 0, 9, 8, 13, 3, 12, 10, 13, 3, 8, 10, 4, 3, 12, 12, 9, 13, 15, 10,
+    4, 4, 1, 14, 12, 3, 1, 14, 2, 13, 13, 1, 9, 13, 5, 3, 11, 14, 2, 13, 0, 9, 13, 14, 9, 14, 6,
+    12, 2, 9, 6, 10, 9, 15, 15, 5, 14, 8, 10, 7, 4, 4, 0, 8, 6,
+];
 /// Set bits of z = 0xd201000000010000, the BLS12-381 curve parameter, high to
 /// low.
 pub const Z_BITS: [u32; 6] = [63, 62, 60, 57, 48, 16];
@@ -100,15 +129,14 @@ pub const PSI_Y_MONT: [[u64; LIMBS]; 2] = [
         0x0000000010e93,
     ],
 ];
-/// Multiplying blst's Montgomery form (R = 2^384), loaded as plain limbs, by
-/// this yields ours (R = 2^416).
-pub const TWO_POW_448_MOD_P: [u64; LIMBS] = [
-    0x7fde37dba9366,
-    0x4e27525bc342b,
-    0x1f5b1e9778489,
-    0xb872b2b91b9dc,
-    0xb206f497dfcaf,
-    0x4137cc89a9b0b,
-    0xd9d20d7e39959,
-    0x000000000411c,
+/// 1/2, Montgomery form.
+pub const HALF_MONT: [u64; LIMBS] = [
+    0xaa4075474b22d,
+    0xb213e047f1ff7,
+    0xfb31b91640dbe,
+    0x26f727afe7f18,
+    0x0e5cd98bad0b5,
+    0x8d8b36a08fe7f,
+    0xff89451d47238,
+    0x000000001764f,
 ];
