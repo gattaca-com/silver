@@ -1,8 +1,11 @@
-use std::cmp::Reverse;
+use std::{cmp::Reverse, mem};
 
+use flux::spine::SpineProducer;
 use silver_beacon_state_data::{
     Epoch, EpochView, SLOTS_PER_EPOCH, StateReadView, ValidatorsView, Version,
 };
+use silver_common::{BeaconStateEvent, PoolChange, TCacheProducer, TCacheRead, TProducer};
+use silver_log::warn;
 use silver_ssz::ssz_view::{
     AttesterSlashingView, MAX_ATTESTER_SLASHINGS_ELECTRA, MAX_PROPOSER_SLASHINGS,
     PROPOSER_SLASHING_SIZE, ProposerSlashingView,
@@ -20,6 +23,9 @@ const _: () =
 pub struct SlashingPool {
     proposer: Bounded<ProposerSlashing, PROPOSER_SLASHINGS_CAPACITY>,
     attester: Bounded<AttesterSlashing, ATTESTER_SLASHINGS_CAPACITY>,
+    /// Shared by both kinds, so ids order proofs by admission.
+    next_id: u64,
+    events: Option<SpineProducer<BeaconStateEvent>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,19 +70,35 @@ impl Selection {
 
 impl Default for SlashingPool {
     fn default() -> Self {
-        Self { proposer: Bounded::new(), attester: Bounded::new() }
+        Self { proposer: Bounded::new(), attester: Bounded::new(), next_id: 0, events: None }
     }
 }
 
 impl SlashingPool {
-    /// `head` values the stored proofs when the pool is full.
+    pub fn with_producer(&mut self, events: SpineProducer<BeaconStateEvent>) {
+        self.events = Some(events);
+    }
+
+    /// `head` values the stored proofs when the pool is full; `handoff`
+    /// carries an admitted proof's bytes to the pool's mirrors.
     pub fn insert_proposer_slashing(
         &mut self,
         ssz: &[u8; PROPOSER_SLASHING_SIZE],
         head: &StateReadView,
+        handoff: &mut TProducer,
     ) -> Admission {
         let head = ForkFacts::of(head);
-        self.proposer.admit(ProposerSlashing::new(ssz, head), |p| p.value(head))
+        let id = self.next_id;
+        let (admission, evicted) =
+            self.proposer.admit(ProposerSlashing::new(ssz, head, id), |p| p.value(head));
+        if let Some(evicted) = evicted {
+            publish(&mut self.events, PoolChange::ProposerSlashingRemoved { id: evicted.id });
+        }
+        if admission != Admission::Dropped {
+            self.next_id += 1;
+            self.publish_added(handoff, ssz, |ssz| PoolChange::ProposerSlashingAdded { id, ssz });
+        }
+        admission
     }
 
     /// `offenders` are the validators both attestations name; `head` values
@@ -86,6 +108,7 @@ impl SlashingPool {
         ssz: &[u8],
         offenders: &[u32],
         head: &StateReadView,
+        handoff: &mut TProducer,
     ) -> Admission {
         debug_assert!(AttesterSlashingView::check_size(ssz));
         let finalized = head.validators.finalized().validator_count() as u64;
@@ -102,7 +125,35 @@ impl SlashingPool {
             return Admission::UnfinalizedSigner;
         }
         let head = ForkFacts::of(head);
-        self.attester.admit(AttesterSlashing::new(ssz, offenders, head), |a| a.value(head, &[]))
+        let id = self.next_id;
+        let (admission, evicted) = self
+            .attester
+            .admit(AttesterSlashing::new(ssz, offenders, head, id), |a| a.value(head, &[]));
+        if let Some(evicted) = evicted {
+            publish(&mut self.events, PoolChange::AttesterSlashingRemoved { id: evicted.id });
+        }
+        if admission != Admission::Dropped {
+            self.next_id += 1;
+            self.publish_added(handoff, ssz, |ssz| PoolChange::AttesterSlashingAdded { id, ssz });
+        }
+        admission
+    }
+
+    /// Without room in `handoff` the mirrors miss this proof.
+    fn publish_added(
+        &mut self,
+        handoff: &mut TProducer,
+        ssz: &[u8],
+        change: impl FnOnce(TCacheRead) -> PoolChange,
+    ) {
+        if self.events.is_none() {
+            return;
+        }
+        let Some(read) = handoff.write_with(ssz.len(), |buf| buf.copy_from_slice(ssz)) else {
+            warn!(len = ssz.len(), "beacon_state tcache full; pooled slashing not published");
+            return;
+        };
+        publish(&mut self.events, change(read));
     }
 
     /// `pre_state` must be the proposal's parent state advanced into its epoch.
@@ -162,19 +213,39 @@ impl SlashingPool {
     /// before finalization.
     pub fn prune(&mut self, finalized: &StateReadView) {
         let finalized = ForkFacts::of(finalized);
-        self.proposer.0.retain(|p| !p.is_retired(finalized));
-        self.attester.0.retain(|a| !a.is_retired(finalized));
+        let Self { proposer, attester, events, .. } = self;
+        proposer.0.retain(|p| {
+            let retired = p.is_retired(finalized);
+            if retired {
+                publish(events, PoolChange::ProposerSlashingRemoved { id: p.id });
+            }
+            !retired
+        });
+        attester.0.retain(|a| {
+            let retired = a.is_retired(finalized);
+            if retired {
+                publish(events, PoolChange::AttesterSlashingRemoved { id: a.id });
+            }
+            !retired
+        });
+    }
+}
+
+fn publish(events: &mut Option<SpineProducer<BeaconStateEvent>>, change: PoolChange) {
+    if let Some(events) = events {
+        events.produce(&BeaconStateEvent::PoolChange(change).into());
     }
 }
 
 struct ProposerSlashing {
     ssz: [u8; PROPOSER_SLASHING_SIZE],
     signing_version: Version,
+    id: u64,
 }
 
 impl ProposerSlashing {
-    fn new(ssz: &[u8; PROPOSER_SLASHING_SIZE], head: ForkFacts) -> Self {
-        let mut slashing = Self { ssz: *ssz, signing_version: Version::default() };
+    fn new(ssz: &[u8; PROPOSER_SLASHING_SIZE], head: ForkFacts, id: u64) -> Self {
+        let mut slashing = Self { ssz: *ssz, signing_version: Version::default(), id };
         slashing.signing_version = head.signing_version(slashing.signing_epoch());
         slashing
     }
@@ -204,14 +275,16 @@ struct AttesterSlashing {
     ssz: Vec<u8>,
     offenders: Vec<u32>,
     signing_versions: [Version; 2],
+    id: u64,
 }
 
 impl AttesterSlashing {
-    fn new(ssz: &[u8], offenders: &[u32], head: ForkFacts) -> Self {
+    fn new(ssz: &[u8], offenders: &[u32], head: ForkFacts, id: u64) -> Self {
         let mut slashing = Self {
             ssz: ssz.to_vec(),
             offenders: offenders.to_vec(),
             signing_versions: Default::default(),
+            id,
         };
         slashing.signing_versions = slashing.signing_epochs().map(|e| head.signing_version(e));
         slashing
@@ -252,18 +325,18 @@ impl<T, const N: usize> Bounded<T, N> {
         Self(Vec::with_capacity(N))
     }
 
-    fn admit(&mut self, incoming: T, value: impl Fn(&T) -> u64) -> Admission {
+    /// Also returns the proof a replacement evicted.
+    fn admit(&mut self, incoming: T, value: impl Fn(&T) -> u64) -> (Admission, Option<T>) {
         if self.0.len() < N {
             self.0.push(incoming);
-            return Admission::Stored;
+            return (Admission::Stored, None);
         }
         let least = self.0.iter().enumerate().map(|(i, e)| (i, value(e))).min_by_key(|&(_, v)| v);
         match least {
             Some((i, least_value)) if value(&incoming) > least_value => {
-                self.0[i] = incoming;
-                Admission::Replaced
+                (Admission::Replaced, Some(mem::replace(&mut self.0[i], incoming)))
             }
-            _ => Admission::Dropped,
+            _ => (Admission::Dropped, None),
         }
     }
 }

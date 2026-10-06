@@ -1218,14 +1218,19 @@ pub enum BeaconStateEvent {
     PoolChange(PoolChange),
 }
 
-/// A membership change in Beacon State's operation pools, which hold at most
-/// one entry per validator.
+/// A membership change in Beacon State's operation pools. Exits and BLS
+/// changes are keyed by validator; slashings by an id the pool assigns in
+/// admission order, with their SSZ in the handoff tcache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolChange {
     ExitAdded([u8; SIGNED_VOLUNTARY_EXIT_SIZE]),
     ExitRemoved { validator_index: u32 },
     BlsChangeAdded([u8; SIGNED_BLS_CHANGE_SIZE]),
     BlsChangeRemoved { validator_index: u32 },
+    ProposerSlashingAdded { id: u64, ssz: TCacheRead },
+    ProposerSlashingRemoved { id: u64 },
+    AttesterSlashingAdded { id: u64, ssz: TCacheRead },
+    AttesterSlashingRemoved { id: u64 },
 }
 
 /// Why a received block is not in fork choice yet, or that it is.

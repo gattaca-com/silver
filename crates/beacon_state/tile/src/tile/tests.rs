@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(feature = "ef_tests")]
-use std::{fs, path::PathBuf};
+use std::{fs, mem, path::PathBuf};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
@@ -16,8 +16,8 @@ use silver_common::{
     BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
-    PeerEvent, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed,
+    TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
@@ -28,7 +28,7 @@ use silver_common::{
     },
     test_util::ShmemDir,
 };
-use silver_slashing::Selection;
+use silver_slashing::{Admission, Selection};
 use silver_ssz::ssz_view::{EXECUTION_PAYLOAD_ENVELOPE_MIN, SyncCommitteeContributionView};
 
 #[cfg(feature = "ef_tests")]
@@ -2461,7 +2461,11 @@ fn finalization_prunes_proofs_against_the_finalized_state() {
     for vi in [0u64, 1] {
         let mut proof = [0u8; PROPOSER_SLASHING_SIZE];
         proof[8..16].copy_from_slice(&vi.to_le_bytes());
-        forks.tile.slashing_pool.insert_proposer_slashing(&proof, &head);
+        forks.tile.slashing_pool.insert_proposer_slashing(
+            &proof,
+            &head,
+            &mut forks.tile.events_producer,
+        );
     }
 
     forks.tile.maybe_finalize();
@@ -2535,6 +2539,52 @@ fn bls_change_accept() {
     let to_addr = [0x42u8; 20];
     let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
     assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::BlsToExecutionChange);
+}
+
+/// The slashing pool publishes an admission with its bytes handed off, and a
+/// prune by the admission's id.
+#[test]
+fn slashing_pool_publishes_admissions_and_prunes() {
+    let (mut tile, _gp, _rp, _spine, mut adapter) = tile_with_producers(1);
+    seed_tile_with_keys(&mut tile, 4, 0);
+    tile.slashing_pool.with_producer(adapter.producers.beacon_events);
+    // The consumer attaches on first use; what was produced before is unseen.
+    adapter.consume(|_: BeaconStateEvent, _| {});
+    let mut proof = [0u8; PROPOSER_SLASHING_SIZE];
+    for header in [0, PROPOSER_SLASHING_SIZE / 2] {
+        proof[header + 8..header + 16].copy_from_slice(&1u64.to_le_bytes());
+    }
+    proof[PROPOSER_SLASHING_SIZE / 2 + 80] = 1;
+    let head_id = tile.canonical_state_id();
+    let admission = {
+        let head = tile.state.read_view(head_id);
+        tile.slashing_pool.insert_proposer_slashing(&proof, &head, &mut tile.events_producer)
+    };
+    assert_eq!(admission, Admission::Stored);
+
+    let mut changes = Vec::new();
+    let mut drain = |adapter: &mut SpineAdapter<SilverSpine>| {
+        adapter.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::PoolChange(change) = event {
+                changes.push(change);
+            }
+        });
+        mem::take(&mut changes)
+    };
+    let added = drain(&mut adapter);
+    let [PoolChange::ProposerSlashingAdded { id, ssz }] = added[..] else {
+        panic!("one admission: {added:?}")
+    };
+    assert_eq!(tile.events_producer.read_buffer(ssz).unwrap(), proof);
+
+    let validators_idx = {
+        let mut g = tile.state.write();
+        let mut w = g.validators.roll_from(head_id.validators_idx);
+        w.set_slashed(1, true);
+        w.commit()
+    };
+    tile.slashing_pool.prune(&tile.state.read_view(StateId { validators_idx, ..head_id }));
+    assert_eq!(drain(&mut adapter), [PoolChange::ProposerSlashingRemoved { id }]);
 }
 
 /// A tile past the shard-committee period, with accepted exits for `vis`.
@@ -5749,9 +5799,18 @@ fn pooled_slashings_land_in_the_produced_block() {
         &build_ia_with_indices(epoch, 0xAA, &[double_voter]),
         &build_ia_with_indices(epoch, 0xBB, &[double_voter]),
     );
-    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head);
-    tile.slashing_pool.insert_proposer_slashing(&proposer_slashing(count + 5), &head);
-    tile.slashing_pool.insert_attester_slashing(&double_vote, &[double_voter as u32], &head);
+    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head, &mut tile.events_producer);
+    tile.slashing_pool.insert_proposer_slashing(
+        &proposer_slashing(count + 5),
+        &head,
+        &mut tile.events_producer,
+    );
+    tile.slashing_pool.insert_attester_slashing(
+        &double_vote,
+        &[double_voter as u32],
+        &head,
+        &mut tile.events_producer,
+    );
 
     let (block, _) =
         produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
@@ -6051,7 +6110,7 @@ fn pooled_exits_and_bls_changes_land_in_the_produced_block() {
     }
     equivocation[208 + 80] = 1;
     let head = tile.state.read_view(tile.canonical_state_id());
-    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head);
+    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head, &mut tile.events_producer);
 
     let (block, _) =
         produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);

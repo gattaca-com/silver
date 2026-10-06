@@ -81,6 +81,16 @@ pub(crate) fn uint64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, 
     parse_uint64(text).ok_or_else(|| de::Error::custom("not a Uint64"))
 }
 
+/// A JSON array of quoted `Uint64`s.
+pub(crate) fn uint64_list<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<u64>, D::Error> {
+    #[derive(Deserialize)]
+    struct Quoted(#[serde(deserialize_with = "uint64")] u64);
+    let quoted = Vec::<Quoted>::deserialize(deserializer)?;
+    Ok(quoted.into_iter().map(|Quoted(value)| value).collect())
+}
+
 /// The schemas' `Bytes`: `0x`-prefixed hex spelling exactly `N` bytes.
 pub(crate) fn bytes<'de, D: Deserializer<'de>, const N: usize>(
     deserializer: D,

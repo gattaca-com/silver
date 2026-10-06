@@ -1423,7 +1423,8 @@ impl BeaconStateTile {
             return Feedback::reject("proposer slashing bad signature");
         }
         self.seen_proposer_slashings.mark(proposer_index);
-        let admission = self.slashing_pool.insert_proposer_slashing(buf, &view);
+        let admission =
+            self.slashing_pool.insert_proposer_slashing(buf, &view, &mut self.events_producer);
         silver_log::info!(proposer_index, ?admission, "proposer slashing pooled");
         Feedback::Accept
     }
@@ -1465,7 +1466,12 @@ impl BeaconStateTile {
                 self.seen_attester_slashed.mark(idx as usize);
             }
             let view = self.state.read_view(canon_id);
-            let admission = self.slashing_pool.insert_attester_slashing(data, slashed, &view);
+            let admission = self.slashing_pool.insert_attester_slashing(
+                data,
+                slashed,
+                &view,
+                &mut self.events_producer,
+            );
             silver_log::info!(offenders = slashed.len(), ?admission, "attester slashing pooled");
         }
         feedback

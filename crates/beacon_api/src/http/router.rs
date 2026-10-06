@@ -67,6 +67,7 @@ pub(crate) struct Request<'a> {
     pub(crate) query: &'a str,
     pub(crate) accept: Option<&'a str>,
     pub(crate) content_type: Option<&'a str>,
+    pub(crate) eth_consensus_version: Option<&'a str>,
     pub(crate) body: &'a [u8],
 }
 
@@ -200,6 +201,7 @@ impl Router {
                 query: req.query,
                 accept: req.accept,
                 content_type: req.content_type,
+                eth_consensus_version: req.eth_consensus_version,
                 body: req.body,
             };
             let mut response = Response::new(out, submissions);

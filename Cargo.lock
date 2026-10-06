@@ -5296,7 +5296,10 @@ dependencies = [
 name = "silver_slashing"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "flux",
  "silver_beacon_state_data",
+ "silver_common",
+ "silver_log",
  "silver_ssz",
 ]
 

@@ -1207,6 +1207,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         self.open_tcaches().expect("tcache wiring");
         self.bls_change_pool.with_producer(&adapter.producers);
         self.exit_pool.with_producer(&adapter.producers);
+        self.slashing_pool.with_producer(adapter.producers.beacon_events);
         true
     }
 
