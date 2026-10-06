@@ -80,8 +80,9 @@ function cornerLabels(colours, holder) {
  *  re-read on every redraw; `right` (series indexes on a right axis) with
  *  `fmtRight`; `stepped`; `spanGaps`; `endLabel(i, v)` for a label at each
  *  series' last point; `markers`; `cornerLabels`; `colourOf[i]`, the colour
- *  slot of series `i` (default `i`); `dashed`, series indexes drawn dashed.
- *  `holder.spec` is the latest spec. */
+ *  slot of series `i` (default `i`); `dashed`, series indexes drawn dashed;
+ *  `legend: false` hides the per-series legend. `holder.spec` is the latest
+ *  spec. */
 function options(spec, width, holder) {
   const muted = cssVar('--muted');
   const grid = { stroke: cssVar('--line'), width: 1 };
@@ -124,7 +125,7 @@ function options(spec, width, holder) {
         ...(spec.cornerLabels ? [cornerLabels(colours, holder)] : []),
       ],
     },
-    legend: { live: true },
+    legend: { show: spec.legend ?? true, live: true },
   };
 }
 
@@ -146,7 +147,7 @@ export class LineCharts {
       const width = Math.max(slot.clientWidth, 200);
       // Series identity, layout and theme are baked into the plot; a change
       // rebuilds it.
-      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels, spec.colourOf, spec.dashed];
+      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels, spec.colourOf, spec.dashed, spec.legend];
       const shape = `${spec.labels.join('\u0000')}|${JSON.stringify(layout)}|${cssVar('--series-1')}`;
       let chart = this.charts.get(key);
       if (chart && chart.shape !== shape) {

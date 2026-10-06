@@ -2,10 +2,16 @@
 // (gossip solid, rpc dashed) and attestations processed, per 100 ms of the
 // current slot, from the 50 ms `fast:` counter samples.
 
-import { fmtBytes } from './view.js';
+import { escape, fmtBytes } from './view.js';
 
 const BIN_S = 0.1;
 const HEIGHT = 160;
+/** `.slot-charts` row gap and `.meta` height + margin in index.html. */
+const SLOT_ROW_GAP = 8;
+const SLOT_TITLE_H = 16;
+/** The right chart spans both left rows: their two plots, one more title and
+ *  the gap between them. */
+const RIGHT_HEIGHT = 2 * HEIGHT + SLOT_TITLE_H + SLOT_ROW_GAP;
 /** x axis until a client has described its chain: mainnet's slot. */
 const DEFAULT_SLOT_S = 12;
 /** Every attestation-data root lookup: single attestations past the
@@ -54,7 +60,7 @@ function binnedSeries(inst, { source, counters }, slot, startS, bins) {
  *  lines grow across the slot and restart at the next one. A dashed vertical
  *  marks when each client received a block this slot; the top-right totals
  *  sum each client's bins so far across all its lines. */
-function slotSpec(instances, nowS, lines, fmt) {
+function slotSpec(instances, nowS, lines, fmt, height) {
   const clock = instances.find((i) => i.clock)?.clock;
   const slotS = clock ? clock.slotNs / 1e9 : DEFAULT_SLOT_S;
   const slot = clock ? slotAt(clock, nowS) : null;
@@ -73,7 +79,8 @@ function slotSpec(instances, nowS, lines, fmt) {
     colourOf: perLine.flatMap((line) => line.map((_, i) => i)),
     dashed: lines.flatMap((line, l) => (line.dashed ? instances.map((_, i) => l * instances.length + i) : [])),
     fmt,
-    height: HEIGHT,
+    height,
+    legend: false,
     xSeconds: true,
     xRange: [0, slotS],
     spanGaps: true,
@@ -83,8 +90,17 @@ function slotSpec(instances, nowS, lines, fmt) {
   return { spec, slot, startS };
 }
 
-function card(key, title) {
-  return `<div><p class="meta">${title}</p><div class="chart" data-chart="${key}"></div></div>`;
+function card(key, place, title) {
+  return `<div class="${place}"><p class="meta" title="${title}">${title}</p><div class="chart" data-chart="${key}"></div></div>`;
+}
+
+/** Client colours, shared by all charts, and the gossip/rpc line styles. */
+function legend(instances) {
+  const clients = instances.map(
+    (inst, i) => `<span><i style="border-top-color: var(--series-${i + 1})"></i>${escape(inst.label)}</span>`,
+  );
+  const styles = ['<span><i></i>gossip</span>', '<span><i class="dashed"></i>rpc</span>'];
+  return `<div class="slot-legend">${[...clients, ...styles].join('')}</div>`;
 }
 
 /** Chart placeholders, with their specs added to `specs`. All are always
@@ -94,16 +110,23 @@ export function slotCharts(fleet, specs) {
   const instances = fleet.sorted();
   const bytes = (v) => fmtBytes(Math.round(v));
   const charts = [
-    { key: 'slots-recv', what: 'bytes received (gossip solid, rpc dashed)', lines: BYTES_RECV, fmt: bytes },
-    { key: 'slots-sent', what: 'bytes sent (gossip solid, rpc dashed)', lines: BYTES_SENT, fmt: bytes },
-    { key: 'slots-att', what: 'attestations', lines: [{ counter: ATTESTATIONS }], fmt: (v) => String(Math.round(v)) },
+    { key: 'slots-recv', place: 'left-1', what: 'bytes received', lines: BYTES_RECV, fmt: bytes, height: HEIGHT },
+    { key: 'slots-sent', place: 'left-2', what: 'bytes sent', lines: BYTES_SENT, fmt: bytes, height: HEIGHT },
+    {
+      key: 'slots-att',
+      place: 'right',
+      what: 'attestations',
+      lines: [{ counter: ATTESTATIONS }],
+      fmt: (v) => String(Math.round(v)),
+      height: RIGHT_HEIGHT,
+    },
   ];
-  const cards = charts.map(({ key, what, lines, fmt }) => {
-    const built = slotSpec(instances, nowS, lines, fmt);
+  const cards = charts.map(({ key, place, what, lines, fmt, height }) => {
+    const built = slotSpec(instances, nowS, lines, fmt, height);
     specs.set(key, built.spec);
-    if (built.slot === null) return card(key, `${what} per 100 ms`);
+    if (built.slot === null) return card(key, place, `${what} per 100 ms`);
     const start = new Date(built.startS * 1000).toISOString().slice(11, 23);
-    return card(key, `${what} per 100 ms, slot ${built.slot} from ${start} UTC`);
+    return card(key, place, `${what} per 100 ms, slot ${built.slot} from ${start} UTC`);
   });
-  return `<div class="slot-charts">${cards.join('')}</div>`;
+  return `<div class="slot-charts">${cards.join('')}${legend(instances)}</div>`;
 }

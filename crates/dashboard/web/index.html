@@ -162,8 +162,17 @@
   .flow-detail .close { margin-left: auto; font: inherit; font-size: 16px; line-height: 1; color: var(--muted); background: none; border: none; cursor: pointer; }
   .flow-charts { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
   .flow-charts .meta { margin: 0 0 2px; }
-  .slot-charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); margin-bottom: 14px; }
-  .slot-charts .meta { margin: 0 0 2px; }
+  /* Row gap and title height are mirrored by SLOT_ROW_GAP / SLOT_TITLE_H in
+     slot_charts.js, which size the right chart to the left column. */
+  .slot-charts { display: grid; column-gap: 12px; row-gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-bottom: 14px; }
+  .slot-charts .meta { margin: 0 0 2px; height: 14px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .slot-charts .left-1 { grid-column: 1; grid-row: 1; }
+  .slot-charts .left-2 { grid-column: 1; grid-row: 2; }
+  .slot-charts .right { grid-column: 2; grid-row: 1 / span 2; }
+  .slot-legend { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; }
+  .slot-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .slot-legend i { display: inline-block; width: 16px; border-top: 2px solid var(--muted); }
+  .slot-legend i.dashed { border-top-style: dashed; }
   .flow .q-idle { stroke: var(--idle); } .flow .qf-idle { fill: var(--idle); }
   .q0 { stroke: var(--seq-0); } .qf0 { fill: var(--seq-0); } .qb0 { background: var(--seq-0); }
   .q1 { stroke: var(--seq-1); } .qf1 { fill: var(--seq-1); } .qb1 { background: var(--seq-1); }
