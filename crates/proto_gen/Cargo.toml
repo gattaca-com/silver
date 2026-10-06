@@ -1,0 +1,14 @@
+[package]
+name = "silver_proto_gen"
+edition.workspace = true
+publish = false
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+buffa-build.workspace = true
+glob.workspace = true
+
+[lints]
+workspace = true

@@ -36,6 +36,7 @@ Use the `justfile` — don't invent your own cargo invocations:
 - `just clippy` — `--all-features -D warnings` (with `collapsible_if` allowed).
 - `just test` / `just nextest` — mirrors CI: every crate, with
   `silver_beacon_state/ef_tests` and `silver_e2e/lh-client` features on.
+- `just proto` — after adding or editing a `.proto`; see `docs/protobuf.md`.
 - **Verify with `--all-features`.** Feature-gated test binaries (`ef_tests`, e2e
   `lh-client`) are invisible to a plain `cargo check --all-targets`; a change that compiles
   without features can still break them.

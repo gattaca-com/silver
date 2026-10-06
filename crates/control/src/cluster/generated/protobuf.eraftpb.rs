@@ -160,11 +160,13 @@ pub struct Entry {
     ///Field 3: `index`
     pub index: u64,
     ///Field 4: `data`
-    pub data: ::bytes::Bytes,
+    pub data: ::buffa::alloc::vec::Vec<u8>,
     ///Field 5: `sync_log`
     pub sync_log: bool,
     ///Field 6: `context`
-    pub context: ::bytes::Bytes,
+    pub context: ::buffa::alloc::vec::Vec<u8>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
     pub __buffa_cached_size: ::buffa::__private::CachedSize,
 }
@@ -224,6 +226,7 @@ impl ::buffa::Message for Entry {
         if !self.context.is_empty() {
             size += 1u32 + ::buffa::types::bytes_encoded_len(&self.context) as u32;
         }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
         self.__buffa_cached_size.set(size);
         size
     }
@@ -269,6 +272,7 @@ impl ::buffa::Message for Entry {
                 .encode(buf);
             ::buffa::types::encode_bytes(&self.context, buf);
         }
+        self.__buffa_unknown_fields.write_to(buf);
     }
     fn merge_field(
         &mut self,
@@ -321,7 +325,7 @@ impl ::buffa::Message for Entry {
                         actual: tag.wire_type() as u8,
                     });
                 }
-                self.data = ::bytes::Bytes::from(::buffa::types::decode_bytes(buf)?);
+                ::buffa::types::merge_bytes(&mut self.data, buf)?;
             }
             5u32 => {
                 if tag.wire_type() != ::buffa::encoding::WireType::Varint {
@@ -341,10 +345,11 @@ impl ::buffa::Message for Entry {
                         actual: tag.wire_type() as u8,
                     });
                 }
-                self.context = ::bytes::Bytes::from(::buffa::types::decode_bytes(buf)?);
+                ::buffa::types::merge_bytes(&mut self.context, buf)?;
             }
             _ => {
-                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
             }
         }
         ::core::result::Result::Ok(())
@@ -356,9 +361,10 @@ impl ::buffa::Message for Entry {
         self.entry_type = ::buffa::EnumValue::from(0);
         self.term = 0u64;
         self.index = 0u64;
-        self.data = ::bytes::Bytes::new();
+        self.data.clear();
         self.sync_log = false;
-        self.context = ::bytes::Bytes::new();
+        self.context.clear();
+        self.__buffa_unknown_fields.clear();
         self.__buffa_cached_size.set(0);
     }
 }
@@ -376,6 +382,7 @@ pub struct EntryView<'a> {
     pub sync_log: bool,
     ///Field 6: `context`
     pub context: &'a [u8],
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> EntryView<'a> {
     /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
@@ -412,6 +419,7 @@ impl<'a> EntryView<'a> {
         let view = self;
         let mut cur: &'a [u8] = buf;
         while !cur.is_empty() {
+            let before_tag = cur;
             let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
             match tag.field_number() {
                 1u32 => {
@@ -478,6 +486,8 @@ impl<'a> EntryView<'a> {
                 }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
                 }
             }
         }
@@ -504,9 +514,13 @@ impl<'a> ::buffa::MessageView<'a> for EntryView<'a> {
             entry_type: self.entry_type,
             term: self.term,
             index: self.index,
-            data: ::bytes::Bytes::copy_from_slice(self.data),
+            data: (self.data).to_vec(),
             sync_log: self.sync_log,
-            context: ::bytes::Bytes::copy_from_slice(self.context),
+            context: (self.context).to_vec(),
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
             ..::core::default::Default::default()
         }
     }
@@ -532,6 +546,8 @@ pub struct ConfState {
     pub learners_next: ::buffa::alloc::vec::Vec<u64>,
     ///Field 5: `auto_leave`
     pub auto_leave: bool,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
     pub __buffa_cached_size: ::buffa::__private::CachedSize,
 }
@@ -608,6 +624,7 @@ impl ::buffa::Message for ConfState {
             size
                 += 1u32 + ::buffa::encoding::varint_len(payload as u64) as u32 + payload;
         }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
         self.__buffa_cached_size.set(size);
         size
     }
@@ -683,6 +700,7 @@ impl ::buffa::Message for ConfState {
                 ::buffa::types::encode_uint64(v, buf);
             }
         }
+        self.__buffa_unknown_fields.write_to(buf);
     }
     fn merge_field(
         &mut self,
@@ -824,7 +842,8 @@ impl ::buffa::Message for ConfState {
                 }
             }
             _ => {
-                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
             }
         }
         ::core::result::Result::Ok(())
@@ -838,6 +857,7 @@ impl ::buffa::Message for ConfState {
         self.learners.clear();
         self.voters_outgoing.clear();
         self.learners_next.clear();
+        self.__buffa_unknown_fields.clear();
         self.__buffa_cached_size.set(0);
     }
 }
@@ -853,6 +873,7 @@ pub struct ConfStateView<'a> {
     pub learners_next: ::buffa::RepeatedView<'a, u64>,
     ///Field 5: `auto_leave`
     pub auto_leave: bool,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ConfStateView<'a> {
     /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
@@ -889,6 +910,7 @@ impl<'a> ConfStateView<'a> {
         let view = self;
         let mut cur: &'a [u8] = buf;
         while !cur.is_empty() {
+            let before_tag = cur;
             let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
             match tag.field_number() {
                 5u32 => {
@@ -976,6 +998,8 @@ impl<'a> ConfStateView<'a> {
                 }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
                 }
             }
         }
@@ -1004,6 +1028,10 @@ impl<'a> ::buffa::MessageView<'a> for ConfStateView<'a> {
             voters_outgoing: self.voters_outgoing.to_vec(),
             learners_next: self.learners_next.to_vec(),
             auto_leave: self.auto_leave,
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
             ..::core::default::Default::default()
         }
     }
@@ -1025,6 +1053,8 @@ pub struct SnapshotMetadata {
     pub index: u64,
     ///Field 3: `term`
     pub term: u64,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
     pub __buffa_cached_size: ::buffa::__private::CachedSize,
 }
@@ -1073,6 +1103,7 @@ impl ::buffa::Message for SnapshotMetadata {
         if self.term != 0u64 {
             size += 1u32 + ::buffa::types::uint64_encoded_len(self.term) as u32;
         }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
         self.__buffa_cached_size.set(size);
         size
     }
@@ -1098,6 +1129,7 @@ impl ::buffa::Message for SnapshotMetadata {
                 .encode(buf);
             ::buffa::types::encode_uint64(self.term, buf);
         }
+        self.__buffa_unknown_fields.write_to(buf);
     }
     fn merge_field(
         &mut self,
@@ -1145,7 +1177,8 @@ impl ::buffa::Message for SnapshotMetadata {
                 self.term = ::buffa::types::decode_uint64(buf)?;
             }
             _ => {
-                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
             }
         }
         ::core::result::Result::Ok(())
@@ -1157,6 +1190,7 @@ impl ::buffa::Message for SnapshotMetadata {
         self.conf_state = ::buffa::MessageField::none();
         self.index = 0u64;
         self.term = 0u64;
+        self.__buffa_unknown_fields.clear();
         self.__buffa_cached_size.set(0);
     }
 }
@@ -1168,6 +1202,7 @@ pub struct SnapshotMetadataView<'a> {
     pub index: u64,
     ///Field 3: `term`
     pub term: u64,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> SnapshotMetadataView<'a> {
     /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
@@ -1204,6 +1239,7 @@ impl<'a> SnapshotMetadataView<'a> {
         let view = self;
         let mut cur: &'a [u8] = buf;
         while !cur.is_empty() {
+            let before_tag = cur;
             let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
             match tag.field_number() {
                 1u32 => {
@@ -1249,6 +1285,8 @@ impl<'a> SnapshotMetadataView<'a> {
                 }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
                 }
             }
         }
@@ -1278,6 +1316,10 @@ impl<'a> ::buffa::MessageView<'a> for SnapshotMetadataView<'a> {
             },
             index: self.index,
             term: self.term,
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
             ..::core::default::Default::default()
         }
     }
@@ -1297,9 +1339,11 @@ unsafe impl<'a> ::buffa::HasDefaultViewInstance for SnapshotMetadataView<'a> {
 #[derive(Clone, PartialEq, Default)]
 pub struct Snapshot {
     ///Field 1: `data`
-    pub data: ::bytes::Bytes,
+    pub data: ::buffa::alloc::vec::Vec<u8>,
     ///Field 2: `metadata`
     pub metadata: ::buffa::MessageField<SnapshotMetadata>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
     pub __buffa_cached_size: ::buffa::__private::CachedSize,
 }
@@ -1343,6 +1387,7 @@ impl ::buffa::Message for Snapshot {
                 += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
                     + inner_size;
         }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
         self.__buffa_cached_size.set(size);
         size
     }
@@ -1366,6 +1411,7 @@ impl ::buffa::Message for Snapshot {
             ::buffa::encoding::encode_varint(self.metadata.cached_size() as u64, buf);
             self.metadata.write_to(buf);
         }
+        self.__buffa_unknown_fields.write_to(buf);
     }
     fn merge_field(
         &mut self,
@@ -1386,7 +1432,7 @@ impl ::buffa::Message for Snapshot {
                         actual: tag.wire_type() as u8,
                     });
                 }
-                self.data = ::bytes::Bytes::from(::buffa::types::decode_bytes(buf)?);
+                ::buffa::types::merge_bytes(&mut self.data, buf)?;
             }
             2u32 => {
                 if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
@@ -1403,7 +1449,8 @@ impl ::buffa::Message for Snapshot {
                 )?;
             }
             _ => {
-                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
             }
         }
         ::core::result::Result::Ok(())
@@ -1412,8 +1459,9 @@ impl ::buffa::Message for Snapshot {
         self.__buffa_cached_size.get()
     }
     fn clear(&mut self) {
-        self.data = ::bytes::Bytes::new();
+        self.data.clear();
         self.metadata = ::buffa::MessageField::none();
+        self.__buffa_unknown_fields.clear();
         self.__buffa_cached_size.set(0);
     }
 }
@@ -1423,6 +1471,7 @@ pub struct SnapshotView<'a> {
     pub data: &'a [u8],
     ///Field 2: `metadata`
     pub metadata: ::buffa::MessageFieldView<SnapshotMetadataView<'a>>,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> SnapshotView<'a> {
     /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
@@ -1459,6 +1508,7 @@ impl<'a> SnapshotView<'a> {
         let view = self;
         let mut cur: &'a [u8] = buf;
         while !cur.is_empty() {
+            let before_tag = cur;
             let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
             match tag.field_number() {
                 1u32 => {
@@ -1494,6 +1544,8 @@ impl<'a> SnapshotView<'a> {
                 }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
                 }
             }
         }
@@ -1517,13 +1569,17 @@ impl<'a> ::buffa::MessageView<'a> for SnapshotView<'a> {
         #[allow(unused_imports)]
         use ::buffa::alloc::string::ToString as _;
         Snapshot {
-            data: ::bytes::Bytes::copy_from_slice(self.data),
+            data: (self.data).to_vec(),
             metadata: match self.metadata.as_option() {
                 Some(v) => {
                     ::buffa::MessageField::<SnapshotMetadata>::some(v.to_owned_message())
                 }
                 None => ::buffa::MessageField::none(),
             },
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
             ..::core::default::Default::default()
         }
     }
@@ -1562,7 +1618,7 @@ pub struct Message {
     ///Field 11: `reject_hint`
     pub reject_hint: u64,
     ///Field 12: `context`
-    pub context: ::bytes::Bytes,
+    pub context: ::buffa::alloc::vec::Vec<u8>,
     ///Field 13: `request_snapshot`
     pub request_snapshot: u64,
     ///Field 14: `deprecated_priority`
@@ -1571,6 +1627,8 @@ pub struct Message {
     pub commit_term: u64,
     ///Field 16: `priority`
     pub priority: i64,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
     #[doc(hidden)]
     pub __buffa_cached_size: ::buffa::__private::CachedSize,
 }
@@ -1681,6 +1739,7 @@ impl ::buffa::Message for Message {
                 += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
                     + inner_size;
         }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
         self.__buffa_cached_size.set(size);
         size
     }
@@ -1781,6 +1840,7 @@ impl ::buffa::Message for Message {
             ::buffa::encoding::encode_varint(v.cached_size() as u64, buf);
             v.write_to(buf);
         }
+        self.__buffa_unknown_fields.write_to(buf);
     }
     fn merge_field(
         &mut self,
@@ -1907,7 +1967,7 @@ impl ::buffa::Message for Message {
                         actual: tag.wire_type() as u8,
                     });
                 }
-                self.context = ::bytes::Bytes::from(::buffa::types::decode_bytes(buf)?);
+                ::buffa::types::merge_bytes(&mut self.context, buf)?;
             }
             13u32 => {
                 if tag.wire_type() != ::buffa::encoding::WireType::Varint {
@@ -1962,7 +2022,8 @@ impl ::buffa::Message for Message {
                 self.entries.push(elem);
             }
             _ => {
-                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
             }
         }
         ::core::result::Result::Ok(())
@@ -1981,12 +2042,13 @@ impl ::buffa::Message for Message {
         self.snapshot = ::buffa::MessageField::none();
         self.reject = false;
         self.reject_hint = 0u64;
-        self.context = ::bytes::Bytes::new();
+        self.context.clear();
         self.request_snapshot = 0u64;
         self.deprecated_priority = 0u64;
         self.commit_term = 0u64;
         self.priority = 0i64;
         self.entries.clear();
+        self.__buffa_unknown_fields.clear();
         self.__buffa_cached_size.set(0);
     }
 }
@@ -2024,6 +2086,7 @@ pub struct MessageView<'a> {
     pub commit_term: u64,
     ///Field 16: `priority`
     pub priority: i64,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> MessageView<'a> {
     /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
@@ -2060,6 +2123,7 @@ impl<'a> MessageView<'a> {
         let view = self;
         let mut cur: &'a [u8] = buf;
         while !cur.is_empty() {
+            let before_tag = cur;
             let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
             match tag.field_number() {
                 1u32 => {
@@ -2241,6 +2305,8 @@ impl<'a> MessageView<'a> {
                 }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                    let span_len = before_tag.len() - cur.len();
+                    view.__buffa_unknown_fields.push_raw(&before_tag[..span_len]);
                 }
             }
         }
@@ -2278,11 +2344,15 @@ impl<'a> ::buffa::MessageView<'a> for MessageView<'a> {
             },
             reject: self.reject,
             reject_hint: self.reject_hint,
-            context: ::bytes::Bytes::copy_from_slice(self.context),
+            context: (self.context).to_vec(),
             request_snapshot: self.request_snapshot,
             deprecated_priority: self.deprecated_priority,
             commit_term: self.commit_term,
             priority: self.priority,
+            __buffa_unknown_fields: self
+                .__buffa_unknown_fields
+                .to_owned()
+                .unwrap_or_default(),
             ..::core::default::Default::default()
         }
     }

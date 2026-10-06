@@ -22,6 +22,7 @@ members = [
   "crates/observe",
   "crates/observe_wire",
   "crates/peer",
+  "crates/proto_gen",
   "crates/ssz",
   "crates/slashing",
   "crates/stages",
@@ -114,6 +115,7 @@ alloy-rlp = { version = "0.3.12", default-features = false, features = ["derive"
 base64 = "0.22"
 blst = {version = "0.3.16", features = ["no-threads"]}
 buffa = "0.2.0"
+buffa-build = "0.2.0"
 build-info = { version = "0.0.46", default-features = false }
 build-info-build = "0.0.46"
 # `ethereum_kzg_settings` feature bundles the mainnet trusted setup as a static
@@ -130,6 +132,7 @@ crossterm = "0.28"
 ctr = "0.9"
 flate2 = "1"
 fxhash = "0.2.1"
+glob = "0.3.3"
 hashtree-rs = "0.2"
 hdrhistogram = "7.5.4"
 hex = { version = "0.4", features = ["serde"] }

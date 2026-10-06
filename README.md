@@ -134,8 +134,7 @@ These `[chain_config]` keys replace the network's own values:
 
 ## Build from source
 
-Requires Rust (pinned in `rust-toolchain.toml`), `clang` and
-[`buf`](https://buf.build/docs/installation).
+Requires Rust (pinned in `rust-toolchain.toml`) and `clang`.
 
 ```bash
 cargo build --profile release-prod --locked --bin silver

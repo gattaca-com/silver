@@ -4990,7 +4990,6 @@ dependencies = [
  "base64 0.22.1",
  "blst",
  "buffa",
- "buffa-build",
  "bytes",
  "c-kzg",
  "flux",
@@ -5044,7 +5043,6 @@ name = "silver_control"
 version = "0.1.0-alpha.1"
 dependencies = [
  "buffa",
- "buffa-build",
  "bytes",
  "crc32c",
  "flux",
@@ -5165,7 +5163,6 @@ name = "silver_gossip"
 version = "0.1.0-alpha.1"
 dependencies = [
  "buffa",
- "buffa-build",
  "criterion",
  "flux",
  "fxhash",
@@ -5275,6 +5272,14 @@ dependencies = [
  "silver_config",
  "silver_log",
  "slab",
+]
+
+[[package]]
+name = "silver_proto_gen"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "buffa-build",
+ "glob",
 ]
 
 [[package]]
