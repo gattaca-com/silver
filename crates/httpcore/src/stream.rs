@@ -247,7 +247,7 @@ impl Source for Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{ClientConnection, frame_request};
+    use crate::client::{ClientConnection, ClientRequest, Method, frame_request};
 
     #[test]
     fn parse_socket_addr_is_tcp() {
@@ -350,7 +350,13 @@ mod tests {
         let mut conn = ClientConnection::with_capacity(4096, 4096);
 
         let body = br#"{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":7}"#;
-        frame_request(conn.begin_request(), "localhost", body, Some("Bearer t.t.t"), true);
+        let post = ClientRequest {
+            method: Method::Post,
+            path: "/",
+            body,
+            authorization: Some("Bearer t.t.t"),
+        };
+        frame_request(conn.begin_request(), "localhost", &post, true);
         while !conn.pending_write().is_empty() {
             match stream.write(conn.pending_write()) {
                 Ok(n) => conn.commit_write(n),
@@ -376,7 +382,7 @@ mod tests {
 
         loop {
             if let Some(got) = conn.take_response() {
-                assert_eq!(got, response_body);
+                assert_eq!(got.body, response_body);
                 break;
             }
             match stream.read(conn.read_space()) {

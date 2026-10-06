@@ -15,7 +15,27 @@ pub struct ClientConnection {
     read_buf: Vec<u8>,
     read_end: usize,
     read_offset: usize,
+    status: u16,
     framing: Framing,
+}
+
+pub struct ClientResponse<'a> {
+    pub status: u16,
+    pub body: &'a mut [u8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    Get,
+    Post,
+}
+
+/// A GET carries no body: `body` must be empty for it.
+pub struct ClientRequest<'a> {
+    pub method: Method,
+    pub path: &'a str,
+    pub body: &'a [u8],
+    pub authorization: Option<&'a str>,
 }
 
 enum Framing {
@@ -54,6 +74,7 @@ impl ClientConnection {
             read_buf: Vec::with_capacity(read_capacity),
             read_end: 0,
             read_offset: 0,
+            status: 0,
             framing: Framing::Head,
         }
     }
@@ -95,7 +116,10 @@ impl ClientConnection {
         self.read_end += n;
         if matches!(self.framing, Framing::Head) {
             match parse_response_head(&self.read_buf[self.read_offset..self.read_end])? {
-                Some(framing) => self.framing = framing,
+                Some((status, framing)) => {
+                    self.status = status;
+                    self.framing = framing;
+                }
                 None => return Ok(()),
             }
         }
@@ -105,13 +129,13 @@ impl ClientConnection {
         Ok(())
     }
 
-    pub fn take_response(&mut self) -> Option<&mut [u8]> {
+    pub fn take_response(&mut self) -> Option<ClientResponse<'_>> {
         let (body, consumed) = self.framing.complete_body(self.read_end - self.read_offset)?;
         let start = self.read_offset + body.start;
         let end = self.read_offset + body.end;
         self.read_offset += consumed;
         self.framing = Framing::Head;
-        Some(&mut self.read_buf[start..end])
+        Some(ClientResponse { status: self.status, body: &mut self.read_buf[start..end] })
     }
 
     pub fn reset(&mut self) {
@@ -119,6 +143,7 @@ impl ClientConnection {
         self.write_pos = 0;
         self.read_end = 0;
         self.read_offset = 0;
+        self.status = 0;
         self.framing = Framing::Head;
     }
 }
@@ -126,7 +151,7 @@ impl ClientConnection {
 // Returns the body framing when headers are complete, None if partial. A
 // response that declares neither Content-Length nor chunked encoding is an
 // error: its body would only be delimited by the connection closing.
-fn parse_response_head(buf: &[u8]) -> io::Result<Option<Framing>> {
+fn parse_response_head(buf: &[u8]) -> io::Result<Option<(u16, Framing)>> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp = httparse::Response::new(&mut headers);
     let header_end = match resp.parse(buf) {
@@ -134,6 +159,7 @@ fn parse_response_head(buf: &[u8]) -> io::Result<Option<Framing>> {
         Ok(httparse::Status::Partial) => return Ok(None),
         Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("httparse: {e}"))),
     };
+    let status = resp.code.expect("a complete head has a status code");
 
     let mut content_length = None;
     let mut chunked = false;
@@ -150,42 +176,36 @@ fn parse_response_head(buf: &[u8]) -> io::Result<Option<Framing>> {
 
     // RFC 9112 6.1: Transfer-Encoding overrides any Content-Length.
     if chunked {
-        return Ok(Some(Framing::Chunked(ChunkedDecoder::new(header_end))));
+        return Ok(Some((status, Framing::Chunked(ChunkedDecoder::new(header_end)))));
     }
     match content_length {
         Some(value) if !value.is_empty() && value.iter().all(|b| b.is_ascii_digit()) => {
             let cl = value.iter().copied().fold(0usize, |acc, b| acc * 10 + (b - b'0') as usize);
-            Ok(Some(Framing::Length { body_start: header_end, total: header_end + cl }))
+            Ok(Some((status, Framing::Length { body_start: header_end, total: header_end + cl })))
         }
         Some(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length")),
         None => Err(io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length")),
     }
 }
 
-pub fn frame_request(
-    out: &mut Vec<u8>,
-    host: &str,
-    body: &[u8],
-    authorization: Option<&str>,
-    keep_alive: bool,
-) {
-    let connection = if keep_alive { "keep-alive" } else { "close" };
-    match authorization {
-        Some(bearer) => write!(
-            out,
-            "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
-             Content-Length: {len}\r\nAuthorization: {bearer}\r\nConnection: {connection}\r\n\r\n",
-            len = body.len(),
-        ),
-        None => write!(
-            out,
-            "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
-             Content-Length: {len}\r\nConnection: {connection}\r\n\r\n",
-            len = body.len(),
-        ),
+pub fn frame_request(out: &mut Vec<u8>, host: &str, request: &ClientRequest<'_>, keep_alive: bool) {
+    let method = match request.method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+    };
+    write!(out, "{method} {} HTTP/1.1\r\nHost: {host}\r\n", request.path).unwrap();
+    if request.method == Method::Post {
+        write!(out, "Content-Type: application/json\r\nContent-Length: {}\r\n", request.body.len())
+            .unwrap();
+    } else {
+        debug_assert!(request.body.is_empty(), "a GET carries no body");
     }
-    .unwrap();
-    out.extend_from_slice(body);
+    if let Some(bearer) = request.authorization {
+        write!(out, "Authorization: {bearer}\r\n").unwrap();
+    }
+    let connection = if keep_alive { "keep-alive" } else { "close" };
+    write!(out, "Connection: {connection}\r\n\r\n").unwrap();
+    out.extend_from_slice(request.body);
 }
 
 #[cfg(test)]
@@ -194,6 +214,10 @@ mod tests {
 
     const BODY: &[u8] = br#"{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}"#;
     const BEARER: &str = "Bearer aGVhZGVy.cGF5bG9hZA.c2ln";
+
+    fn post<'a>(body: &'a [u8], authorization: Option<&'a str>) -> ClientRequest<'a> {
+        ClientRequest { method: Method::Post, path: "/", body, authorization }
+    }
 
     fn machine() -> ClientConnection {
         ClientConnection::with_capacity(4096, 4096)
@@ -248,7 +272,7 @@ mod tests {
     #[test]
     fn golden_request_bytes_keep_alive() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "localhost:8551", BODY, Some(BEARER), true);
+        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), true);
         let expected: Vec<u8> = [
             b"POST / HTTP/1.1\r\nHost: localhost:8551\r\nContent-Type: application/json\r\n\
               Content-Length: 59\r\nAuthorization: Bearer aGVhZGVy.cGF5bG9hZA.c2ln\r\n\
@@ -263,7 +287,7 @@ mod tests {
     #[test]
     fn golden_request_bytes_connection_close() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "localhost:8551", BODY, Some(BEARER), false);
+        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), false);
         let expected: Vec<u8> = [
             b"POST / HTTP/1.1\r\nHost: localhost:8551\r\nContent-Type: application/json\r\n\
               Content-Length: 59\r\nAuthorization: Bearer aGVhZGVy.cGF5bG9hZA.c2ln\r\n\
@@ -278,16 +302,55 @@ mod tests {
     #[test]
     fn frame_request_without_authorization_omits_header() {
         let mut out = Vec::new();
-        frame_request(&mut out, "localhost:8551", b"{}", None, true);
+        frame_request(&mut out, "localhost:8551", &post(b"{}", None), true);
         let text = String::from_utf8(out).unwrap();
         assert!(!text.contains("Authorization"));
         assert!(text.contains("Content-Length: 2\r\n"));
     }
 
     #[test]
+    fn get_against_a_path_carries_no_body_headers() {
+        let mut out = Vec::new();
+        let request = ClientRequest {
+            method: Method::Get,
+            path: "/eth/v1/builder/status",
+            body: b"",
+            authorization: None,
+        };
+        frame_request(&mut out, "localhost:18550", &request, true);
+        assert_eq!(
+            out,
+            b"GET /eth/v1/builder/status HTTP/1.1\r\nHost: localhost:18550\r\n\
+              Connection: keep-alive\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn post_against_a_path_names_it_in_the_request_line() {
+        let mut out = Vec::new();
+        let request = ClientRequest {
+            method: Method::Post,
+            path: "/eth/v1/builder/validators",
+            body: b"[]",
+            authorization: None,
+        };
+        frame_request(&mut out, "h", &request, true);
+        assert!(out.starts_with(b"POST /eth/v1/builder/validators HTTP/1.1\r\n"));
+        assert!(out.ends_with(b"Content-Length: 2\r\nConnection: keep-alive\r\n\r\n[]"));
+    }
+
+    #[test]
+    fn response_carries_its_status_code() {
+        let mut conn = machine();
+        feed(&mut conn, b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 2\r\n\r\n{}").unwrap();
+        let response = conn.take_response().unwrap();
+        assert_eq!((response.status, &*response.body), (502, b"{}".as_ref()));
+    }
+
+    #[test]
     fn request_drained_in_small_chunks() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "localhost:8551", BODY, Some(BEARER), true);
+        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), true);
         let expected = conn.pending_write().to_vec();
 
         let mut wire = Vec::new();
@@ -309,7 +372,7 @@ mod tests {
             assert!(conn.take_response().is_none(), "byte {i}");
             feed(&mut conn, &[*byte]).unwrap();
         }
-        assert_eq!(conn.take_response().unwrap(), body);
+        assert_eq!(conn.take_response().unwrap().body, body);
         assert!(conn.take_response().is_none());
     }
 
@@ -321,7 +384,7 @@ mod tests {
         feed(&mut conn, &response).unwrap();
         assert!(conn.take_response().is_none());
         feed(&mut conn, br#":1}"#).unwrap();
-        assert_eq!(conn.take_response().unwrap(), br#"{"result":1}"#.as_ref());
+        assert_eq!(conn.take_response().unwrap().body, br#"{"result":1}"#.as_ref());
     }
 
     #[test]
@@ -363,20 +426,20 @@ mod tests {
             conn.commit_read(n).unwrap();
             sent += n;
         }
-        assert_eq!(conn.take_response().unwrap(), body);
+        assert_eq!(conn.take_response().unwrap().body, body);
     }
 
     #[test]
     fn keep_alive_connection_serves_second_request() {
         let mut conn = machine();
         for body in [br#"{"id":1}"#.as_ref(), br#"{"id":2}"#.as_ref()] {
-            frame_request(conn.begin_request(), "h", body, None, true);
+            frame_request(conn.begin_request(), "h", &post(body, None), true);
             while !conn.pending_write().is_empty() {
                 let n = conn.pending_write().len();
                 conn.commit_write(n);
             }
             feed(&mut conn, &make_response(body)).unwrap();
-            assert_eq!(conn.take_response().unwrap(), body);
+            assert_eq!(conn.take_response().unwrap().body, body);
         }
     }
 
@@ -384,21 +447,21 @@ mod tests {
     fn two_connections_complete_out_of_order() {
         let mut first = machine();
         let mut second = machine();
-        frame_request(first.begin_request(), "h", br#"{"id":1}"#, None, true);
-        frame_request(second.begin_request(), "h", br#"{"id":2}"#, None, true);
+        frame_request(first.begin_request(), "h", &post(br#"{"id":1}"#, None), true);
+        frame_request(second.begin_request(), "h", &post(br#"{"id":2}"#, None), true);
 
         feed(&mut second, &make_response(br#"{"id":2,"result":"b"}"#)).unwrap();
         assert!(first.take_response().is_none());
-        assert_eq!(second.take_response().unwrap(), br#"{"id":2,"result":"b"}"#.as_ref());
+        assert_eq!(second.take_response().unwrap().body, br#"{"id":2,"result":"b"}"#.as_ref());
 
         feed(&mut first, &make_response(br#"{"id":1,"result":"a"}"#)).unwrap();
-        assert_eq!(first.take_response().unwrap(), br#"{"id":1,"result":"a"}"#.as_ref());
+        assert_eq!(first.take_response().unwrap().body, br#"{"id":1,"result":"a"}"#.as_ref());
     }
 
     #[test]
     fn reset_clears_partial_state_but_keeps_capacity() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "h", b"{}", None, true);
+        frame_request(conn.begin_request(), "h", &post(b"{}", None), true);
         feed(&mut conn, b"HTTP/1.1 200 OK\r\nContent-Le").unwrap();
 
         conn.reset();
@@ -406,7 +469,7 @@ mod tests {
         assert!(conn.take_response().is_none());
 
         feed(&mut conn, &make_response(b"{}")).unwrap();
-        assert_eq!(conn.take_response().unwrap(), b"{}");
+        assert_eq!(conn.take_response().unwrap().body, b"{}");
     }
 
     #[test]
@@ -414,7 +477,7 @@ mod tests {
         let mut conn = machine();
         let body = br#"{"jsonrpc":"2.0","result":[{"blob":"0xabcd"}]}"#;
         feed_all(&mut conn, &chunked_response(&[body])).unwrap();
-        assert_eq!(conn.take_response().unwrap(), body.as_ref());
+        assert_eq!(conn.take_response().unwrap().body, body.as_ref());
         assert!(conn.take_response().is_none());
     }
 
@@ -424,7 +487,7 @@ mod tests {
         let parts: [&[u8]; 3] =
             [br#"{"result":["#, br#"{"blob":"0x01"},"#, br#"{"blob":"0x02"}]}"#];
         feed_all(&mut conn, &chunked_response(&parts)).unwrap();
-        assert_eq!(conn.take_response().unwrap(), parts.concat());
+        assert_eq!(conn.take_response().unwrap().body, parts.concat());
     }
 
     /// Every framing boundary — header block, size line, chunk data, the
@@ -440,7 +503,7 @@ mod tests {
             assert!(conn.take_response().is_none(), "byte {i}");
             feed(&mut conn, &[*byte]).unwrap();
         }
-        assert_eq!(conn.take_response().unwrap(), parts.concat());
+        assert_eq!(conn.take_response().unwrap().body, parts.concat());
     }
 
     #[test]
@@ -448,16 +511,16 @@ mod tests {
         let mut conn = machine();
         let chunk = vec![b'x'; 256 << 10];
         feed_all(&mut conn, &chunked_response(&[&chunk, &chunk])).unwrap();
-        assert_eq!(conn.take_response().unwrap(), [chunk.clone(), chunk].concat());
+        assert_eq!(conn.take_response().unwrap().body, [chunk.clone(), chunk].concat());
     }
 
     #[test]
     fn a_chunked_response_after_a_content_length_one_decodes() {
         let mut conn = machine();
         feed(&mut conn, &make_response(br#"{"result":null}"#)).unwrap();
-        assert_eq!(conn.take_response().unwrap(), br#"{"result":null}"#.as_ref());
+        assert_eq!(conn.take_response().unwrap().body, br#"{"result":null}"#.as_ref());
         feed_all(&mut conn, &chunked_response(&[b"blobs"])).unwrap();
-        assert_eq!(conn.take_response().unwrap(), b"blobs");
+        assert_eq!(conn.take_response().unwrap().body, b"blobs");
     }
 
     #[test]

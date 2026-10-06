@@ -26,6 +26,7 @@ pub(crate) struct ApiCtx {
     pub(crate) node_status: NodeStatus,
     pub(crate) peers: PeerTable,
     pub(crate) shufflings: PostedShufflings,
+    pub(crate) has_sidecar: bool,
 }
 
 impl ApiCtx {
@@ -35,6 +36,7 @@ impl ApiCtx {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        has_sidecar: bool,
     ) -> Self {
         let (head_slot, anchor_root, anchor_epoch) = state
             .read(|view: StateReadView<'_>| {
@@ -49,6 +51,7 @@ impl ApiCtx {
             node_status: NodeStatus::at_anchor(head_slot, anchor_root, anchor_epoch),
             peers: PeerTable::new(),
             shufflings: PostedShufflings::default(),
+            has_sidecar,
         }
     }
 
@@ -172,5 +175,5 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
     let enr = Enr::builder().build(keypair.secret_key()).unwrap();
     let mut identify = Identify::default();
     identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-    ApiCtx::new(&keypair, &enr, &identify, spec, state)
+    ApiCtx::new(&keypair, &enr, &identify, spec, state, false)
 }

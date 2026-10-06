@@ -367,6 +367,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &spec,
         beacon_state_tile.reader(),
         config.engine_config(),
+        config.pbs_endpoint(),
         tcaches,
         boundary_processing_producer,
     );

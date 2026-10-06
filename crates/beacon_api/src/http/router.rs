@@ -48,6 +48,7 @@ pub(crate) enum Outcome {
     AwaitingContribution(SyncCommitteeContributionRequest),
     AwaitingProducedBlock(ProduceBlockRequest),
     AwaitingVerdicts(Submission),
+    AwaitingSidecarResponse { path: &'static str },
 }
 
 impl Default for Outcome {

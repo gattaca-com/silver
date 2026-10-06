@@ -3,11 +3,10 @@ use std::{convert::Infallible, path::PathBuf, time::Duration};
 use mio::{Events, Registry};
 use rustc_hash::FxHashMap;
 use silver_common::merkle::B256;
-use silver_httpcore::TokenRange;
+use silver_httpcore::{BufferCapacity, ClientRequest, Endpoint, HttpPool, Method, TokenRange};
 
 use crate::{
     EngineError, JwtSecret,
-    pool::{Endpoint, HttpPool},
     types::{
         ForkchoiceState, PayloadAttributesV3, write_new_payload_params_fulu,
         write_new_payload_params_gloas,
@@ -17,6 +16,19 @@ use crate::{
 // Sized for the largest expected outgoing request: newPayload with a full block
 // (~30M gas of transactions, hex-encoded in JSON).
 const SCRATCH_CAPACITY: usize = 10 * 1024 * 1024;
+
+const CONNECTION_CAPACITY: BufferCapacity = BufferCapacity {
+    // The largest expected EL response: getPayload with a full blobsBundle
+    // (~21 blobs × 256 KB hex-encoded + execution payload transactions).
+    read: 10 * 1024 * 1024,
+    // newPayload's scratch plus HTTP headers.
+    write: SCRATCH_CAPACITY,
+};
+
+/// The first-run healthcheck trio issues three requests against one
+/// `has_capacity` gate, so the pool can exceed `max_connections` by two
+/// connections, once.
+pub(crate) const HEALTHCHECK_OVERSHOOT: usize = 2;
 
 const OUR_CAPABILITIES: &[&str] = &[
     "engine_forkchoiceUpdatedV3",
@@ -41,6 +53,7 @@ pub enum ReqKind {
 
 pub struct EngineClient {
     pool: HttpPool,
+    jwt: JwtSecret,
     registry: Registry,
     id: u64,
     pending_requests: FxHashMap<u64, ReqKind>,
@@ -92,9 +105,23 @@ impl EngineClient {
         max_connections: usize,
         request_timeout: Duration,
     ) -> Self {
+        let tokens_needed = max_connections.checked_add(HEALTHCHECK_OVERSHOOT);
+        assert!(
+            tokens_needed.is_some_and(|needed| needed <= tokens.span()),
+            "engine api needs a token per pooled connection: a cap of {max_connections} plus the \
+             healthcheck's overshoot of {HEALTHCHECK_OVERSHOOT} does not fit a span of {}",
+            tokens.span()
+        );
         let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
-            pool: HttpPool::new(endpoint, jwt, tokens, max_connections, request_timeout),
+            pool: HttpPool::new(
+                endpoint,
+                tokens,
+                CONNECTION_CAPACITY,
+                max_connections,
+                request_timeout,
+            ),
+            jwt,
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),
             id: 1,
             pending_requests: FxHashMap::default(),
@@ -116,9 +143,22 @@ impl EngineClient {
         let Self { pool, registry, pending_requests, .. } = self;
         pool.dispatch_events(events, registry, &mut |rpc_id, res| {
             if let Some(req_kind) = pending_requests.remove(&rpc_id) {
+                let res = res
+                    .map(|response| response.body)
+                    .map_err(|msg| EngineError::Http(msg.to_owned()));
                 on_complete(req_kind, res);
             }
         });
+    }
+
+    fn enqueue_scratch(&mut self, rpc_id: u64) {
+        let request = ClientRequest {
+            method: Method::Post,
+            path: "/",
+            body: &self.scratch,
+            authorization: Some(self.jwt.bearer_token()),
+        };
+        self.pool.enqueue(rpc_id, &request, &self.registry);
     }
 }
 
@@ -163,7 +203,7 @@ fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
         silver_log::warn!("failed to serialize RPC body: {e}");
         return;
     }
-    c.pool.enqueue(rpc_id, &c.scratch, &c.registry);
+    c.enqueue_scratch(rpc_id);
 }
 
 pub fn send_fcu(c: &mut EngineClient, block_root: B256, state: ForkchoiceState) {
@@ -236,7 +276,7 @@ fn enqueue_with<E>(
     c.scratch.extend_from_slice(b",\"id\":");
     append_decimal_u64(rpc_id, &mut c.scratch);
     c.scratch.push(b'}');
-    c.pool.enqueue(rpc_id, &c.scratch, &c.registry);
+    c.enqueue_scratch(rpc_id);
     c.pending_requests.insert(rpc_id, kind);
     Ok(())
 }
@@ -428,6 +468,8 @@ mod tests {
 
         let request =
             el.requests.iter().find(|r| r.method == "engine_forkchoiceUpdatedV3").unwrap();
+        let token = request.authorization.as_deref().and_then(|auth| auth.strip_prefix("Bearer "));
+        assert_eq!(token.expect("JWT bearer header").split('.').count(), 3, "three-part JWT");
         let mut body = request.body.as_bytes().to_vec();
         let body = simd_json::to_borrowed_value(&mut body).unwrap();
         assert_eq!(body["params"][1]["timestamp"].as_str(), Some("0xc"));

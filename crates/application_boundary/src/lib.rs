@@ -10,17 +10,20 @@ use silver_common::{
 use silver_config::EngineConfig;
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
+use silver_pbs::PbsClient;
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
-const TENANTS: usize = 2;
+const TENANTS: usize = 3;
 const BEACON_TOKENS: TokenRange = TokenRange::share(0, TENANTS);
 const ENGINE_TOKENS: TokenRange = TokenRange::share(1, TENANTS);
+const PBS_TOKENS: TokenRange = TokenRange::share(2, TENANTS);
 
 pub struct ApplicationBoundaryTile {
     readiness: Readiness,
     pub beacon: BeaconApi,
     engine: EngineApi,
+    pbs: Option<PbsClient>,
     /// The tile's one producer, shared by engine responses and the messages
     /// the beacon api publishes.
     processing: TProducer,
@@ -42,10 +45,30 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
         self.processing.loop_start();
         self.engine.intake(adapter, &mut self.processing);
         self.readiness.wait(Duration::ZERO);
+
         self.engine.spin(adapter, self.readiness.events(), &mut self.processing);
+
+        if let Some(pbs) = &mut self.pbs {
+            let Self { readiness, beacon, processing, .. } = self;
+            pbs.spin(readiness.events(), &mut |request_id, answer| {
+                beacon.handle_sidecar_response(request_id, answer, processing)
+            });
+        }
+
         self.consume_spine_events(adapter);
-        let events = self.readiness.events();
-        if self.beacon.pump(events, &mut self.processing, &mut |request| adapter.produce(request)) {
+
+        let Self { readiness, beacon, pbs, processing, .. } = self;
+        let did_work = beacon.pump(
+            readiness.events(),
+            processing,
+            &mut |request| adapter.produce(request),
+            &mut |request_id, path, body| {
+                pbs.as_mut()
+                    .expect("a sidecar request needs a pbs_endpoint")
+                    .send(request_id, path, body)
+            },
+        );
+        if did_work {
             adapter.mark_work();
         }
     }
@@ -63,13 +86,16 @@ impl ApplicationBoundaryTile {
         spec: &SpecConfig,
         state: BeaconStateReader,
         engine_config: EngineConfig,
+        pbs_endpoint: Option<&str>,
         tcaches: TCacheTable,
         processing: TProducer,
     ) -> Self {
         // A batch too small for every socket the tile can register leaves the
         // rest of a busy iteration's readiness for the next one.
-        let sockets =
-            binds.len() + max_connections + EngineApi::max_sockets(engine_config.max_connections);
+        let sockets = binds.len() +
+            max_connections +
+            EngineApi::max_sockets(engine_config.max_connections) +
+            PbsClient::MAX_SOCKETS;
 
         let readiness = Readiness::new(sockets);
         let beacon = BeaconApi::new(
@@ -83,10 +109,13 @@ impl ApplicationBoundaryTile {
             identify,
             spec,
             state,
+            pbs_endpoint.is_some(),
             tcaches,
         );
         let engine = EngineApi::new(readiness.registry(), ENGINE_TOKENS, engine_config, tcaches);
-        Self { readiness, beacon, engine, processing }
+        let pbs =
+            pbs_endpoint.map(|endpoint| PbsClient::new(readiness.registry(), PBS_TOKENS, endpoint));
+        Self { readiness, beacon, engine, pbs, processing }
     }
 
     pub fn open_tcaches(&mut self) -> Result<(), TCacheError> {

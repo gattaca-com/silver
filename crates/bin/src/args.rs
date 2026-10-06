@@ -26,6 +26,9 @@ pub struct Args {
     /// testing only.
     #[arg(long)]
     unsafe_no_el: bool,
+    /// Builder API URL of the PBS sidecar, e.g. `http://localhost:18550`.
+    #[arg(long)]
+    pbs_endpoint: Option<String>,
 }
 
 impl Args {
@@ -35,6 +38,7 @@ impl Args {
             execution_endpoint: self.execution_endpoint,
             jwt_secret: self.jwt_secret,
             unsafe_no_el: self.unsafe_no_el,
+            pbs_endpoint: self.pbs_endpoint,
         };
         let config = Config::load(self.config.as_deref(), overrides)?;
 

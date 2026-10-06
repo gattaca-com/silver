@@ -11,12 +11,14 @@ use crate::{
     },
 };
 
+const SIDECAR_REGISTER_VALIDATORS: &str = "/eth/v1/builder/validators";
+
 /// The phrase `UnsupportedMediaType` carries in `types/http.yaml`.
 const UNSUPPORTED_MEDIA_TYPE: &str = "Cannot read the supplied content type.";
 
 /// `registerValidator` is the only schema here that declares a 415, and the
 /// only one that declares an SSZ request body beside the JSON one.
-pub(crate) fn post_register_validator(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
+pub(crate) fn post_register_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !req.body_is_json() {
         resp.error(415, UNSUPPORTED_MEDIA_TYPE);
         return;
@@ -24,11 +26,11 @@ pub(crate) fn post_register_validator(req: &Request<'_>, _ctx: &ApiCtx, resp: &m
     let Some(registrations) = received(req.body, resp, Registration::well_formed) else {
         return;
     };
-    silver_log::debug!(
-        count = registrations.len(),
-        "validator registrations discarded: silver reaches no builder network"
-    );
-    resp.ok();
+    silver_log::debug!(count = registrations.len(), "validator registrations received");
+    if registrations.is_empty() || !ctx.has_sidecar {
+        return resp.ok();
+    }
+    resp.await_sidecar(SIDECAR_REGISTER_VALIDATORS);
 }
 
 pub(crate) fn post_prepare_beacon_proposer(
@@ -160,6 +162,10 @@ mod tests {
 
     fn post(path: &str, content_type: Option<&str>, body: &str) -> Vec<u8> {
         dispatch(&anchor_ctx(), &ParsedRequest { content_type, ..posting(path, body) }).1
+    }
+
+    fn json_posting<'a>(path: &'a str, body: &'a str) -> ParsedRequest<'a> {
+        ParsedRequest { content_type: Some("application/json"), ..posting(path, body) }
     }
 
     fn json_post(path: &str, body: &str) -> Vec<u8> {
@@ -298,5 +304,29 @@ mod tests {
             PreparationRecord { validator_index: 1, fee_recipient: [0xab; 20] },
             PreparationRecord { validator_index: 9, fee_recipient: [0x11; 20] },
         ]));
+    }
+
+    #[test]
+    fn registrations_wait_on_the_sidecar() {
+        let mut ctx = anchor_ctx();
+        ctx.has_sidecar = true;
+        let body = format!("[{}]", registration());
+        let (outcome, response) = dispatch(&ctx, &json_posting(REGISTER, &body));
+        assert!(response.is_empty(), "answered once the sidecar has");
+        assert_eq!(outcome, Outcome::AwaitingSidecarResponse { path: SIDECAR_REGISTER_VALIDATORS });
+    }
+
+    #[test]
+    fn without_a_sidecar_registrations_are_acknowledged() {
+        let body = format!("[{}]", registration());
+        let (outcome, response) = dispatch(&anchor_ctx(), &json_posting(REGISTER, &body));
+        assert_eq!(response, BODYLESS_OK);
+        assert_eq!(outcome, Outcome::Response(None));
+    }
+
+    #[test]
+    fn an_empty_array_is_not_handed_on() {
+        let (outcome, _) = dispatch(&anchor_ctx(), &json_posting(REGISTER, "[]"));
+        assert_eq!(outcome, Outcome::Response(None));
     }
 }

@@ -1,9 +1,10 @@
 use std::{io::Write, mem, str};
 
+use serde::Deserialize;
 use silver_common::{
     BeaconApiRequest, GossipTopic, LocalGossipFailure, TCacheProducer, TCacheRead, TProducer,
 };
-use silver_httpcore::{frame_chunked_head, frame_response_with_headers};
+use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_headers};
 
 use crate::{
     events::ChannelSet,
@@ -83,6 +84,23 @@ impl<'a> Response<'a> {
         match self.submissions.write_with(len, encode) {
             Some(read) => self.notify(request(read)),
             None => self.error(500, "api submissions cache full"),
+        }
+    }
+
+    pub(crate) fn await_sidecar(&mut self, path: &'static str) {
+        self.outcome = Outcome::AwaitingSidecarResponse { path };
+    }
+
+    pub(crate) fn sidecar_response(&mut self, answer: Result<ClientResponse<'_>, &str>) {
+        match answer {
+            Ok(response) if response.status == 200 => self.ok(),
+            Ok(response) => {
+                let code = if response.status == 400 { 400 } else { 500 };
+                let message =
+                    sidecar_message(response.body).unwrap_or("sidecar rejected the request");
+                self.error(code, message);
+            }
+            Err(error) => self.error(500, &format!("sidecar unavailable: {error}")),
         }
     }
 
@@ -242,6 +260,18 @@ fn status_line(code: u16) -> Option<&'static str> {
         503 => "503 Service Unavailable",
         _ => return None,
     })
+}
+
+/// The `message` of a builder-specs `ErrorMessage`, else the body's text.
+fn sidecar_message(body: &[u8]) -> Option<&str> {
+    #[derive(Deserialize)]
+    struct ErrorMessage<'a> {
+        message: &'a str,
+    }
+    match serde_json::from_slice::<ErrorMessage<'_>>(body) {
+        Ok(error) => Some(error.message),
+        Err(_) => str::from_utf8(body).ok().map(str::trim).filter(|text| !text.is_empty()),
+    }
 }
 
 #[cfg(test)]
