@@ -21,6 +21,7 @@ members = [
   "crates/network",
   "crates/observe",
   "crates/observe_wire",
+  "crates/pbs",
   "crates/peer",
   "crates/proto_gen",
   "crates/ssz",
@@ -96,6 +97,7 @@ silver_httpcore = { path = "crates/httpcore" }
 silver_network = {path = "crates/network" }
 silver_observe = { path = "crates/observe" }
 silver_observe_wire = { path = "crates/observe_wire" }
+silver_pbs = { path = "crates/pbs" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }

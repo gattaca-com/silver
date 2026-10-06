@@ -1,0 +1,14 @@
+[package]
+name = "silver_pbs"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+mio.workspace = true
+silver_httpcore.workspace = true
+silver_log.workspace = true
+
+[lints]
+workspace = true

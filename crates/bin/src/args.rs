@@ -26,7 +26,7 @@ pub struct Args {
     /// testing only.
     #[arg(long)]
     unsafe_no_el: bool,
-    /// commit-boost's PBS module URL, e.g. `http://localhost:18550`.
+    /// Builder API URL of the PBS sidecar, e.g. `http://localhost:18550`.
     #[arg(long)]
     pbs_endpoint: Option<String>,
 }

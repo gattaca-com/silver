@@ -16,8 +16,8 @@ use silver_common::{
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
 use silver_httpcore::{
-    AfterResponse, Bind, ChunkedResponse, Closed, Listener, ParsedRequest, ServerConnection,
-    Stream, TokenRange,
+    AfterResponse, Bind, ChunkedResponse, ClientResponse, Closed, Listener, ParsedRequest,
+    ServerConnection, Stream, TokenRange,
 };
 
 use crate::{
@@ -91,6 +91,7 @@ enum Pending {
     Contribution { request_id: u64, request: SyncCommitteeContributionRequest },
     ProducedBlock { request_id: u64, request: ProduceBlockRequest },
     Submission(PendingSubmission),
+    SidecarResponse { request_id: u64 },
 }
 
 /// Request ids span the whole body from `first_id`, one per entry, so an
@@ -173,6 +174,9 @@ impl Pending {
                 };
                 (Self::Submission(pending), body_len as u64)
             }
+            Outcome::AwaitingSidecarResponse { .. } => {
+                (Self::SidecarResponse { request_id: first_id }, 1)
+            }
             Outcome::Response(_) | Outcome::Stream(_) => {
                 unreachable!("answered without deferring")
             }
@@ -184,7 +188,8 @@ impl Pending {
             Self::Block { request_id: awaited, .. } |
             Self::Aggregate { request_id: awaited, .. } |
             Self::Contribution { request_id: awaited, .. } |
-            Self::ProducedBlock { request_id: awaited, .. } => *awaited == request_id,
+            Self::ProducedBlock { request_id: awaited, .. } |
+            Self::SidecarResponse { request_id: awaited } => *awaited == request_id,
             Self::Submission(pending) => pending.awaits(request_id),
         }
     }
@@ -480,6 +485,7 @@ impl BeaconApi {
         identify: &Identify,
         spec: &SpecConfig,
         state: BeaconStateReader,
+        has_sidecar: bool,
         tcaches: TCacheTable,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
@@ -517,7 +523,7 @@ impl BeaconApi {
             connections: HashMap::new(),
             frame: Vec::new(),
             router: Router::new(ROUTES),
-            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
+            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, has_sidecar),
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
             reader: TCacheReader::new(tcaches),
@@ -871,6 +877,26 @@ impl BeaconApi {
         }
     }
 
+    pub fn handle_sidecar_response(
+        &mut self,
+        request_id: u64,
+        answer: Result<ClientResponse<'_>, &str>,
+        submissions: &mut TProducer,
+    ) {
+        let Some(token) = self.token_awaiting(request_id) else {
+            silver_log::debug!(request_id, "sidecar answer for a connection already closed");
+            return;
+        };
+        let requests = self
+            .connections
+            .get_mut(&token)
+            .and_then(Connection::requests_mut)
+            .expect("found awaiting above");
+        Response::new(requests.http.write_buf_mut(), submissions).sidecar_response(answer);
+        requests.pending = None;
+        self.resume_writing(token);
+    }
+
     fn token_awaiting(&self, request_id: u64) -> Option<Token> {
         self.connections.iter().find_map(|(token, conn)| conn.awaits(request_id).then_some(*token))
     }
@@ -889,6 +915,7 @@ impl BeaconApi {
         events: &Events,
         submissions: &mut TProducer,
         emit: &mut impl FnMut(BeaconApiRequest),
+        to_sidecar: &mut impl FnMut(u64, &'static str, &[u8]),
     ) -> bool {
         self.reader.free();
         let now = Instant::now();
@@ -901,7 +928,7 @@ impl BeaconApi {
             did_work |= if offset < self.listeners.len() {
                 self.accept_all(offset, now)
             } else {
-                self.serve(event, now, submissions, emit)
+                self.serve(event, now, submissions, emit, to_sidecar)
             };
         }
 
@@ -952,13 +979,19 @@ impl BeaconApi {
         now: Instant,
         submissions: &mut TProducer,
         emit: &mut impl FnMut(BeaconApiRequest),
+        forward_to_sidecar: &mut impl FnMut(u64, &'static str, &[u8]),
     ) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
         let mut dispatched = Outcome::Response(None);
-        let Self { registry, router, ctx, .. } = self;
+        let Self { registry, router, ctx, next_request_id, .. } = self;
         let outcome = conn.handle_event(registry, event, now, &mut |req, out| {
             dispatched = router.dispatch(req, ctx, submissions, out);
+            // The body is borrowed only here; `Pending::defer` below numbers
+            // the wait with the same id.
+            if let Outcome::AwaitingSidecarResponse { path } = dispatched {
+                forward_to_sidecar(*next_request_id, path, req.body);
+            }
         });
         if let Outcome::Response(Some(request)) = dispatched {
             emit(request);
@@ -1094,6 +1127,9 @@ mod tests {
         requests: Vec<BeaconApiRequest>,
         /// Stands in for the boundary tile's producer handlers publish into.
         submissions: TProducer,
+        /// Stands in for the PBS client: each request id, path and body
+        /// handed to it.
+        sidecar: Vec<(u64, &'static str, Vec<u8>)>,
     }
 
     impl Server {
@@ -1130,10 +1166,18 @@ mod tests {
                 &Identify::default(),
                 &SpecConfig::mainnet(),
                 BeaconStateOwner::published_empty_test(0).reader(),
+                false,
                 tcaches,
             );
             api.open_tcaches().unwrap();
-            Self { readiness, api, served: cache, requests: Vec::new(), submissions }
+            Self {
+                readiness,
+                api,
+                served: cache,
+                requests: Vec::new(),
+                submissions,
+                sidecar: Vec::new(),
+            }
         }
 
         /// A finalized, canonical block; empty `bytes` answer the facts alone.
@@ -1156,8 +1200,13 @@ mod tests {
 
         fn pump(&mut self) -> bool {
             self.readiness.wait(Duration::ZERO);
-            let Self { readiness, api, requests, submissions, .. } = self;
-            api.pump(readiness.events(), submissions, &mut |request| requests.push(request))
+            let Self { readiness, api, requests, submissions, sidecar, .. } = self;
+            api.pump(
+                readiness.events(),
+                submissions,
+                &mut |request| requests.push(request),
+                &mut |request_id, path, body| sidecar.push((request_id, path, body.to_vec())),
+            )
         }
     }
 
@@ -2390,6 +2439,61 @@ mod tests {
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
             BeaconApiRequest::SyncCommitteeSubscriptions { .. } |
             BeaconApiRequest::ProposerPreparations { .. } => unreachable!("never answered"),
+        }
+    }
+
+    /// The validator client waits on the sidecar and hears its verdict.
+    fn register_through_sidecar(server: &mut Server, answer: Result<(u16, &str), &str>) -> String {
+        server.api.ctx.has_sidecar = true;
+        let body = format!(
+            "[{{\"message\":{{\"fee_recipient\":\"0x{}\",\"gas_limit\":\"30000000\",\
+             \"timestamp\":\"1\",\"pubkey\":\"0x{}\"}},\"signature\":\"0x{}\"}}]",
+            "ab".repeat(20),
+            "cd".repeat(48),
+            "ef".repeat(96),
+        );
+        let client = connect(tcp_addr(server));
+        post(&client, "/eth/v1/validator/register_validator", &body);
+        pump_until(server, "registration handed on", |server| !server.sidecar.is_empty());
+        let (request_id, path, sent) = server.sidecar.remove(0);
+        assert_eq!((path, sent), ("/eth/v1/builder/validators", body.into_bytes()));
+        assert!(server.requests.is_empty(), "nothing goes to the spine");
+
+        let mut sidecar_body = Vec::new();
+        let answer = answer.map(|(status, body)| {
+            sidecar_body.extend_from_slice(body.as_bytes());
+            ClientResponse { status, body: &mut sidecar_body }
+        });
+        server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        String::from_utf8(serve(server, reader, "registration answer")).unwrap()
+    }
+
+    #[test]
+    fn registrations_answer_with_the_sidecar_verdict() {
+        for (answer, line, message) in [
+            (Ok((200, "")), "HTTP/1.1 200 OK\r\n", ""),
+            (
+                Ok((400, r#"{"code":400,"message":"invalid signature"}"#)),
+                "HTTP/1.1 400 Bad Request\r\n",
+                "invalid signature",
+            ),
+            (
+                Ok((502, "no response from relays")),
+                "HTTP/1.1 500 Internal Server Error\r\n",
+                "no response from relays",
+            ),
+            (Ok((500, "")), "HTTP/1.1 500 Internal Server Error\r\n", "sidecar rejected"),
+            (
+                Err("request timed out"),
+                "HTTP/1.1 500 Internal Server Error\r\n",
+                "sidecar unavailable: request timed out",
+            ),
+        ] {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            let response = register_through_sidecar(&mut server, answer);
+            assert!(response.starts_with(line), "{answer:?}: {response}");
+            assert!(response.contains(message), "{answer:?}: {response}");
         }
     }
 

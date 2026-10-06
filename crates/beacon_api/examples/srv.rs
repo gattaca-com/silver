@@ -35,6 +35,7 @@ fn main() {
         &Identify::default(),
         &SpecConfig::mainnet(),
         state,
+        false,
         tcaches,
     );
     api.open_tcaches().unwrap();
@@ -42,7 +43,7 @@ fn main() {
     println!("serving on {:?}", api.local_addrs());
     loop {
         readiness.wait(Duration::ZERO);
-        api.pump(readiness.events(), &mut submissions, &mut |_| {});
+        api.pump(readiness.events(), &mut submissions, &mut |_| {}, &mut |_, _, _| {});
         std::thread::sleep(Duration::from_millis(1));
     }
 }
