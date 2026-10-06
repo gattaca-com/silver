@@ -6,7 +6,7 @@ use crate::stf::MAX_PENDING_DEPOSITS_PER_EPOCH;
 pub(crate) const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
 
 /// What one attestation votes for; shared by every attester it carries.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VoteTarget {
     pub block_root: B256,
     pub target_epoch: Epoch,

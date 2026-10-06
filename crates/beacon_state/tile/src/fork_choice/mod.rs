@@ -11,6 +11,7 @@ mod payload;
 #[cfg(test)]
 mod tests;
 mod vote;
+mod vote_targets;
 
 pub(crate) use head::{compute_shuffling_dependent_slot, compute_shuffling_lookahead_start_slot};
 pub use justified_balances::JustifiedBalances;
@@ -244,6 +245,7 @@ impl ForkChoice {
         for i in 0..self.nodes.len() {
             self.lookup.insert(self.nodes[i].block_root, i);
         }
+        self.vote_tracker.compact_targets();
         self.head_moved = true;
     }
 
