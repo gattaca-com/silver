@@ -1,5 +1,5 @@
 [
-  { "frame": "decompose", "stat": "total", "max": "6s" },
+  { "frame": "decompose", "stat": "total", "max": "3s" },
   { "frame": "apply_and_import<BeaconStateTile>", "stat": "p50", "max": "20ms" },
   { "frame": "apply_and_import<BeaconStateTile>", "stat": "max", "max": "30ms" },
   { "frame": "process_epoch", "stat": "avg", "max": "140ms" },
