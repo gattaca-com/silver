@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 
 use blst::min_pk::{AggregatePublicKey, AggregateSignature, PublicKey, SecretKey, Signature};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
-    bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
+    bls::{self, CheckedSignature, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
     ssz_hash::hash_attestation_data,
     stf::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
@@ -223,6 +223,21 @@ fn bench_att_batches(c: &mut Criterion) {
     }
 }
 
+/// Decompress plus subgroup check, the per-vote cost in the flush's prepare
+/// phase, at the flush sizes a batched kernel is compared at.
+fn bench_g2_parse(c: &mut Criterion) {
+    let sigs: Vec<[u8; 96]> = (0..1024u64)
+        .map(|i| keypair(5000 + i).0.sign(&i.to_le_bytes(), DST, &[]).to_bytes())
+        .collect();
+    let mut g = c.benchmark_group("g2_parse");
+    for n in [1, 2, 4, 8, 16, 1024] {
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::new("blst", n), &sigs[..n], |b, sigs| {
+            b.iter(|| sigs.iter().filter(|s| CheckedSignature::parse(s).is_some()).count())
+        });
+    }
+}
+
 // ---- (5) Top-level registration -------------------------------------------
 
 fn bench_pair<F: Fn() -> SigBatch>(
@@ -248,5 +263,11 @@ fn bench_envelopes(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_verify_single_attestation, bench_envelopes, bench_att_batches);
+criterion_group!(
+    benches,
+    bench_verify_single_attestation,
+    bench_envelopes,
+    bench_att_batches,
+    bench_g2_parse
+);
 criterion_main!(benches);
