@@ -23,8 +23,6 @@ fxhash.workspace = true
 crc32c.workspace = true
 flux-disk.workspace = true
 
-[build-dependencies]
-buffa-build = "0.2.0"
 
 [dev-dependencies]
 silver_columns.workspace = true

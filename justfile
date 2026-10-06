@@ -30,6 +30,10 @@ cooldown-check:
   out=$(cargo +{{nightly}} update --dry-run -Z min-publish-age 2>&1 | grep -E "Downgrading|is too new" || true); \
   if [ -n "$out" ]; then echo "WARNING: lockfile pins crates younger than the publish-age cooldown:"; echo "$out"; fi
 
+# Regenerate the checked-in protobuf code after editing a `.proto`; needs `buf`.
+proto:
+  cargo run -q -p silver_proto_gen
+
 fmt:
   rustup toolchain install {{nightly}} --component rustfmt > /dev/null 2>&1 && \
   cargo +{{nightly}} fmt

@@ -86,7 +86,7 @@ fn to_wire_message(mut message: Message) -> wire::Message {
         snapshot,
         reject: message.reject,
         reject_hint: message.reject_hint,
-        context: message.context,
+        context: message.context.into(),
         request_snapshot: message.request_snapshot,
         deprecated_priority: message.deprecated_priority,
         commit_term: message.commit_term,
@@ -100,9 +100,9 @@ pub(super) fn to_wire_entry(entry: Entry) -> wire::Entry {
         entry_type: (entry.entry_type as i32).into(),
         term: entry.term,
         index: entry.index,
-        data: entry.data,
+        data: entry.data.into(),
         sync_log: entry.sync_log,
-        context: entry.context,
+        context: entry.context.into(),
         ..wire::Entry::default()
     }
 }
@@ -113,7 +113,7 @@ pub(super) fn to_wire_snapshot(mut snapshot: Snapshot) -> wire::Snapshot {
     } else {
         buffa::MessageField::default()
     };
-    wire::Snapshot { data: snapshot.data, metadata, ..wire::Snapshot::default() }
+    wire::Snapshot { data: snapshot.data.into(), metadata, ..wire::Snapshot::default() }
 }
 
 fn to_wire_snapshot_metadata(mut metadata: SnapshotMetadata) -> wire::SnapshotMetadata {
@@ -160,7 +160,7 @@ fn from_wire_message(message: wire::Message) -> Result<Message, DecodeError> {
     }
     decoded.set_reject(message.reject);
     decoded.set_reject_hint(message.reject_hint);
-    decoded.set_context(message.context);
+    decoded.set_context(message.context.into());
     decoded.set_request_snapshot(message.request_snapshot);
     decoded.set_deprecated_priority(message.deprecated_priority);
     decoded.set_commit_term(message.commit_term);
@@ -173,16 +173,16 @@ pub(super) fn from_wire_entry(entry: wire::Entry) -> Result<Entry, DecodeError> 
     decoded.set_entry_type(entry_type(entry.entry_type.to_i32())?);
     decoded.set_term(entry.term);
     decoded.set_index(entry.index);
-    decoded.set_data(entry.data);
+    decoded.set_data(entry.data.into());
     decoded.set_sync_log(entry.sync_log);
-    decoded.set_context(entry.context);
+    decoded.set_context(entry.context.into());
     Ok(decoded)
 }
 
 pub(super) fn from_wire_snapshot(snapshot: wire::Snapshot) -> Result<Snapshot, DecodeError> {
     let metadata = snapshot.metadata.into_option().map(from_wire_snapshot_metadata).transpose()?;
     let mut decoded = Snapshot::default();
-    decoded.set_data(snapshot.data);
+    decoded.set_data(snapshot.data.into());
     if let Some(metadata) = metadata {
         decoded.set_metadata(metadata);
     }
