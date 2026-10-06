@@ -1,15 +1,18 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Epoch, Slot};
+use silver_beacon_state_data::{Epoch, Slot};
 
-use super::{ForkChoice, ForkChoiceNode, PayloadStatus};
+use super::{ForkChoice, ForkChoiceNode, PayloadStatus, vote_targets::VoteTargets};
 use crate::stf::VoteTarget;
 
+/// Each vote stores two small ids into `targets`, not the targets themselves.
+/// A vote is then 8 bytes, so a scan over all validators reads far less memory.
 #[derive(Default)]
 pub struct VoteTracker {
     pub(super) votes: Box<[Vote]>,
     /// Validator indices whose vote moved since the last `recompute_head`.
     pub(super) dirty: Vec<u32>,
     equivocating: Box<[u64]>,
+    targets: VoteTargets,
 }
 
 impl VoteTracker {
@@ -18,6 +21,7 @@ impl VoteTracker {
             votes: vec![Vote::default(); capacity].into_boxed_slice(),
             dirty: Vec::with_capacity(capacity),
             equivocating: vec![0u64; capacity.div_ceil(64)].into_boxed_slice(),
+            targets: VoteTargets::default(),
         }
     }
 
@@ -27,26 +31,25 @@ impl VoteTracker {
         validators: &[u32],
         validator_count: usize,
     ) {
+        if self.targets.needs_compaction() {
+            self.compact_targets();
+        }
+        let id = self.targets.get_or_insert(target);
         for &validator in validators {
-            self.record_vote(target, validator, validator_count);
+            self.record_vote(id, target.target_epoch, validator, validator_count);
         }
     }
 
-    pub fn record_vote(&mut self, target: &VoteTarget, validator: u32, validator_count: usize) {
+    fn record_vote(&mut self, id: u32, epoch: Epoch, validator: u32, validator_count: usize) {
         let validator_idx = validator as usize;
         if validator_idx >= validator_count || self.is_equivocating(validator_idx) {
             return;
         }
-        // Zero `latest_root` is the uninitialised sentinel — first vote always
-        // takes; a real attestation never has a zero `beacon_block_root`.
         let v = &mut self.votes[validator_idx];
-        if v.latest_root != [0u8; 32] && target.target_epoch <= v.latest_epoch {
+        if v.latest != 0 && epoch <= self.targets.get(v.latest).target_epoch {
             return;
         }
-        v.latest_root = target.block_root;
-        v.latest_epoch = target.target_epoch;
-        v.latest_slot = target.attestation_slot;
-        v.latest_payload_present = target.payload_present;
+        v.latest = id;
         self.dirty.push(validator);
     }
 
@@ -65,25 +68,24 @@ impl VoteTracker {
         }
         *word |= 1u64 << b;
         if let Some(v) = self.votes.get_mut(idx) &&
-            (v.applied_root != [0u8; 32] || v.latest_root != [0u8; 32])
+            (v.applied != 0 || v.latest != 0)
         {
-            v.latest_root = [0u8; 32];
+            v.latest = 0;
             self.dirty.push(idx as u32);
         }
     }
+
+    /// Walks every validator's vote. So it runs only at finalization, or when
+    /// the target table has doubled, never per block.
+    pub(super) fn compact_targets(&mut self) {
+        self.targets.compact(self.votes.iter_mut().flat_map(|v| [&mut v.latest, &mut v.applied]));
+    }
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Vote {
-    pub applied_root: B256,
-    pub latest_root: B256,
-    pub latest_epoch: Epoch,
-
-    pub applied_slot: Slot,
-    pub applied_payload_present: bool,
-    pub latest_slot: Slot,
-    pub latest_payload_present: bool,
+    latest: u32,
+    applied: u32,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -131,52 +133,26 @@ impl ForkChoice {
         let Self { vote_tracker, lookup, nodes, justified, weight_deltas: deltas, .. } = self;
         let (applied_balances, balances, unapplied) = justified.pending_weight_update();
         let validator_count = balances.len();
-        let votes = &mut vote_tracker.votes;
+        let VoteTracker { votes, dirty, targets, .. } = vote_tracker;
 
         deltas.clear();
         deltas.resize(nodes.len(), WeightDelta::default());
 
+        let resolved = targets.resolve(lookup, nodes);
         let mut apply = |vote: &mut Vote, old_balance: u64, new_balance: u64| {
-            // Unchanged only when target, balance, AND payload branch all match — a
-            // re-vote that flips the payload branch must still move weight.
-            if vote.applied_root == vote.latest_root &&
-                vote.applied_slot == vote.latest_slot &&
-                vote.applied_payload_present == vote.latest_payload_present &&
-                old_balance == new_balance
-            {
+            if vote.applied == vote.latest && old_balance == new_balance {
                 return;
             }
-
-            if vote.applied_root != [0u8; 32] &&
-                let Some(old_idx) = lookup.get(&vote.applied_root)
-            {
-                let branch = branch_voted_for(
-                    &nodes[old_idx],
-                    vote.applied_slot,
-                    vote.applied_payload_present,
-                );
-                add_vote_weight_changes(&mut deltas[old_idx], branch, -(old_balance as i64));
+            if let Some((node, branch)) = resolved[vote.applied as usize] {
+                add_vote_weight_changes(&mut deltas[node], branch, -(old_balance as i64));
             }
-
-            // Add new balance to new target.
-            if vote.latest_root != [0u8; 32] &&
-                let Some(new_idx) = lookup.get(&vote.latest_root)
-            {
-                let branch = branch_voted_for(
-                    &nodes[new_idx],
-                    vote.latest_slot,
-                    vote.latest_payload_present,
-                );
-                add_vote_weight_changes(&mut deltas[new_idx], branch, new_balance as i64);
+            if let Some((node, branch)) = resolved[vote.latest as usize] {
+                add_vote_weight_changes(&mut deltas[node], branch, new_balance as i64);
             }
-
-            // Note: if latest_root is non-zero but unknown (pruned/never-imported),
-            // we still bump applied_root, "consuming" the vote with no delta
-            // contribution. Self-heals on the validator's next attestation.
-            // Matches Lighthouse proto_array.
-            vote.applied_root = vote.latest_root;
-            vote.applied_slot = vote.latest_slot;
-            vote.applied_payload_present = vote.latest_payload_present;
+            // Mark the vote applied even if its block is not in the tree. It then
+            // carries no weight until the validator attests again. Lighthouse's
+            // proto_array does the same.
+            vote.applied = vote.latest;
         };
 
         // `applied_balances` may be shorter than the current validator set;
@@ -188,7 +164,7 @@ impl ForkChoice {
                 apply(&mut votes[vi], applied_balance, balances[vi]);
             }
         }
-        for &vi in vote_tracker.dirty.iter() {
+        for &vi in dirty.iter() {
             let vi = vi as usize;
             if vi < validator_count {
                 apply(&mut votes[vi], balances[vi], balances[vi]);
@@ -236,5 +212,41 @@ impl ForkChoice {
             vote_tracker.record_votes(target, validators, validator_count);
             false
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VoteTracker;
+    use crate::{fork_choice::vote_targets::MIN_COMPACT_AT, stf::VoteTarget};
+
+    /// Without finality, `prune` never runs, yet every epoch adds new targets.
+    /// The table must still shrink on its own and keep each validator's newest
+    /// vote.
+    #[test]
+    fn targets_stay_bounded_without_finality() {
+        const VALIDATORS: u32 = 64;
+        let mut tracker = VoteTracker::with_capacity(VALIDATORS as usize);
+        let target = |epoch: u64, slot: u64| VoteTarget {
+            block_root: [(slot % 251) as u8; 32],
+            target_epoch: epoch,
+            attestation_slot: slot,
+            payload_present: false,
+        };
+        for epoch in 1..=1000u64 {
+            for slot in epoch * 32..epoch * 32 + 32 {
+                let validator = (slot % 32) as u32;
+                tracker.record_votes(
+                    &target(epoch, slot),
+                    &[validator, validator + 32],
+                    VALIDATORS as usize,
+                );
+            }
+        }
+        assert!(tracker.targets.len() <= 2 * MIN_COMPACT_AT, "{} targets", tracker.targets.len());
+        for (validator, vote) in tracker.votes.iter().enumerate() {
+            let epoch = tracker.targets.get(vote.latest).target_epoch;
+            assert_eq!(epoch, 1000, "validator {validator} lost its newest vote");
+        }
     }
 }
