@@ -42,11 +42,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    env:
-      TAG: ${{ needs.unreleased-version.outputs.tag }}
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +69,32 @@ jobs:
             sha256sum $bin-linux-x86_64 > $bin-linux-x86_64.sha256
           done
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            silver-linux-x86_64
+            silver-linux-x86_64.sha256
+            silver_surfer-linux-x86_64
+            silver_surfer-linux-x86_64.sha256
+          if-no-files-found: error
+
+  # The org's IP allow list rejects GitHub-hosted runners on the attestation
+  # and release APIs, so these calls run on our own runner.
+  publish:
+    needs: [unreleased-version, linux-x86_64]
+    runs-on: [self-hosted, silver]
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+
       - name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -82,9 +104,15 @@ jobs:
 
       # Creates the tag at this commit, so a failed build leaves no tag behind.
       - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$TAG" --target "$GITHUB_SHA" --generate-notes --latest \
-            silver-linux-x86_64 silver-linux-x86_64.sha256 \
-            silver_surfer-linux-x86_64 silver_surfer-linux-x86_64.sha256
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.unreleased-version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            silver-linux-x86_64
+            silver-linux-x86_64.sha256
+            silver_surfer-linux-x86_64
+            silver_surfer-linux-x86_64.sha256
