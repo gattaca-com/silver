@@ -132,11 +132,9 @@ impl Node {
         );
 
         let mut conn = SpineAdapter::connect_tile(&tile, &mut spine);
+        tile.on_attach(&mut conn);
         let mut inj = SpineAdapter::connect_tile(&Injector, &mut spine);
         tile.try_init(&mut conn);
-        // Cursors snap on their first consume, so give the tile a turn before
-        // anything it must see is produced.
-        tile.loop_body(&mut conn);
         inj.consume(|_: DataColumnsEvent, _| {});
         inj.consume(|_: SyncNeed, _| {});
         inj.produce(SyncUpdate::Following);

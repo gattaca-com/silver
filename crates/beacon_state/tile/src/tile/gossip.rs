@@ -131,6 +131,11 @@ impl PreparedVote {
     }
 }
 
+pub(super) struct ParkedEnvelope {
+    pub(super) read: TRead,
+    from_disk: bool,
+}
+
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
     AwaitBlock(B256),
@@ -1100,7 +1105,7 @@ impl BeaconStateTile {
         let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
             EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
             EnvelopeCheck::AwaitBlock(block_root) => {
-                self.buffer_pending_envelope(block_root, acquired);
+                self.buffer_pending_envelope(block_root, acquired, false);
                 return Feedback::Ignore;
             }
             EnvelopeCheck::Ignore => return Feedback::Ignore,
@@ -1148,7 +1153,12 @@ impl BeaconStateTile {
         Feedback::Accept
     }
 
-    pub(super) fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
+    pub(super) fn buffer_pending_envelope(
+        &mut self,
+        block_root: B256,
+        read: TRead,
+        from_disk: bool,
+    ) {
         let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
             self.pending_envelopes.contains_key(&block_root);
         if !has_room {
@@ -1159,7 +1169,7 @@ impl BeaconStateTile {
             );
             return;
         }
-        self.pending_envelopes.insert(block_root, acquired);
+        self.pending_envelopes.insert(block_root, ParkedEnvelope { read, from_disk });
     }
 
     pub(super) fn drain_pending_envelope(
@@ -1168,11 +1178,11 @@ impl BeaconStateTile {
         slot: Slot,
         producers: &mut Producers,
     ) {
-        let Some(acquired) = self.pending_envelopes.remove(&block_root) else {
+        let Some(parked) = self.pending_envelopes.remove(&block_root) else {
             return;
         };
 
-        let Some((ssz, _)) = acquired.buffer().ok() else {
+        let Some((ssz, _)) = parked.read.buffer().ok() else {
             silver_log::warn!(
                 block = hex32(&block_root),
                 slot,
@@ -1182,8 +1192,11 @@ impl BeaconStateTile {
             return;
         };
 
+        if parked.from_disk {
+            return self.apply_disk_envelope(parked.read);
+        }
         self.handle_execution_payload_envelope(
-            acquired.clone(),
+            parked.read.clone(),
             ssz,
             BlockSource::Gossip,
             producers,

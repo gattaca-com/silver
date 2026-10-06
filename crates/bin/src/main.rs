@@ -375,11 +375,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let spine = SilverSpine::new(None);
     spine.start(None, None, |scoped_spine| {
         let tiles = [
-            attached(application_boundary_tile, scoped_spine, 5),
             attached(control_tile, scoped_spine, 1),
             attached(network_tile, scoped_spine, 2),
             attached(beacon_state_tile, scoped_spine, 3),
             attached(storage_tile, scoped_spine, 4),
+            attached(application_boundary_tile, scoped_spine, 5),
             attached(data_columns_tile, scoped_spine, 6),
         ];
         for (name, run) in tiles {

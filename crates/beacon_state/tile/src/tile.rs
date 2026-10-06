@@ -14,7 +14,7 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
     ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
-    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TRead,
+    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer,
     TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
@@ -32,7 +32,7 @@ use crate::{
         bid_pool::BidPool,
         block_production::{BlockProduction, Proposal},
         fork_data_roots::ForkDataRoots,
-        gossip::BatchedVote,
+        gossip::{BatchedVote, ParkedEnvelope},
         held_blocks::{HeldBlocks, StagedVerdict},
         payload_builder_exits::PayloadBuilderExits,
         precomputed_epochs::PrecomputedEpochs,
@@ -219,7 +219,7 @@ pub struct BeaconStateTile {
     sig_batch: bls::SigBatch,
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
-    pending_envelopes: FxHashMap<B256, TRead>,
+    pending_envelopes: FxHashMap<B256, ParkedEnvelope>,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
     payload_builder_exits: PayloadBuilderExits,
@@ -1190,6 +1190,11 @@ impl BeaconStateTile {
 }
 
 impl Tile<SilverSpine> for BeaconStateTile {
+    fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.subscribe_broadcast::<SyncUpdate>();
+        adapter.subscribe_broadcast::<ReplayBlock>();
+    }
+
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.open_tcaches().expect("tcache wiring");
         true
