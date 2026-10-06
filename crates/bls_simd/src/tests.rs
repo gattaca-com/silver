@@ -1,7 +1,9 @@
+use std::time::{Duration, Instant};
+
 use blst::{
     BLST_ERROR, blst_fp, blst_fp_add, blst_fp_from_uint64, blst_fp_mul, blst_fp_sub,
-    blst_hash_to_g2, blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_from_affine,
-    blst_p2_is_inf, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
+    blst_hash_to_g2, blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_affine_compress,
+    blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
@@ -134,22 +136,57 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
 }
 
-/// Runs `SILVER_G2_CASES` seeded batches through `check` and compares every
-/// lane with blst. Returns how many points of each kind it ran.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Runs `SILVER_G2_CASES` seeded batches through `check` (default 64;
+/// `forever` runs until interrupted, reporting progress every 10 s) and
+/// compares every lane with blst. Each divergence is printed with the seed and
+/// case that replay it. Returns how many points of each kind it ran.
 fn assert_in_g2_matches_blst(check: impl Fn(&[blst_p2_affine]) -> Vec<bool>) -> [usize; 5] {
     let seed = env_u64("SILVER_G2_SEED", 1);
-    let cases = env_u64("SILVER_G2_CASES", 64);
+    let cases = match std::env::var("SILVER_G2_CASES").as_deref() {
+        Ok("forever") => u64::MAX,
+        Ok(n) => n.parse().expect("SILVER_G2_CASES"),
+        Err(_) => 64,
+    };
     let mut cases_gen = G2Cases(ChaCha8Rng::seed_from_u64(seed));
     let mut kinds = [0; 5];
+    let mut divergences = 0;
+    let started = Instant::now();
+    let mut last_report = started;
     for case in 0..cases {
         let batch = cases_gen.batch();
         let points: Vec<_> = batch.iter().map(|(_, p)| *p).collect();
-        let want: Vec<_> = points.iter().map(in_g2_blst).collect();
-        assert_eq!(check(&points), want, "seed {seed}, case {case}");
-        for (kind, _) in &batch {
+        let got = check(&points);
+        assert_eq!(got.len(), points.len(), "seed {seed}, case {case}");
+        for (lane, ((kind, point), got)) in batch.iter().zip(got).enumerate() {
+            let want = in_g2_blst(point);
+            if got != want {
+                divergences += 1;
+                let mut bytes = [0u8; 96];
+                unsafe { blst_p2_affine_compress(bytes.as_mut_ptr(), point) };
+                eprintln!(
+                    "DIVERGENCE seed {seed} case {case} lane {lane} of {}: {kind:?}, \
+                     check {got}, blst {want}, point {}",
+                    batch.len(),
+                    hex(&bytes)
+                );
+            }
             kinds[*kind as usize] += 1;
         }
+        if last_report.elapsed() >= Duration::from_secs(10) {
+            last_report = Instant::now();
+            let points: usize = kinds.iter().sum();
+            eprintln!(
+                "seed {seed}: {} cases, {points} points ({:.0}/s), {divergences} divergences",
+                case + 1,
+                points as f64 / started.elapsed().as_secs_f64()
+            );
+        }
     }
+    assert_eq!(divergences, 0, "seed {seed}: divergences from blst");
     kinds
 }
 
