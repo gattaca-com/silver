@@ -324,6 +324,55 @@ impl BeaconStateTile {
         debug_assert!(!self.vote_batch.is_empty());
         BeaconStateCounters::VoteBatchSize.set(self.vote_batch.len() as u64);
 
+        self.prepare_votes(producers);
+
+        let batch_ok = self.sig_batch.verify_all();
+        if !batch_ok && !self.vote_pending.is_empty() {
+            BeaconStateCounters::VoteBatchFallback.inc();
+        }
+
+        let mut accepted = false;
+        let mut committed_ptc = false;
+        self.vote_pending.reverse();
+        while let Some((m, p)) = self.vote_pending.pop() {
+            // Deduplicate only against votes whose signatures have already
+            // verified and been committed. An invalid earlier arrival with
+            // the same key must not suppress a later valid vote.
+            if p.is_seen(self) {
+                Self::local_verdict(&m, Feedback::AlreadySeen, producers);
+                continue;
+            }
+            let (pk, sig, root) = p.sig_parts();
+            let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
+            if valid {
+                match &p {
+                    PreparedVote::Attestation(p) => self.commit_attestation(p),
+                    PreparedVote::SyncMessage(p) => self.commit_sync_message(p),
+                    PreparedVote::Ptc(p) => {
+                        self.commit_ptc(p);
+                        committed_ptc = true;
+                    }
+                }
+                Self::relay_gossip(&m, producers);
+                accepted = true;
+            } else {
+                self.reject_gossip(&m, p.message(), "vote bad signature", producers);
+            }
+        }
+
+        // PTC votes all dirty the same fork-choice structure; fold the whole
+        // flush in one head recomputation rather than once per message.
+        if committed_ptc {
+            self.recompute_head();
+        }
+
+        if accepted {
+            self.publish_status(producers);
+        }
+    }
+
+    #[timed]
+    fn prepare_votes(&mut self, producers: &mut Producers) {
         self.sig_batch.clear();
         debug_assert!(self.vote_pending.is_empty());
 
@@ -373,50 +422,6 @@ impl BeaconStateTile {
                 }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
-        }
-
-        let batch_ok = self.sig_batch.verify_all();
-        if !batch_ok && !self.vote_pending.is_empty() {
-            BeaconStateCounters::VoteBatchFallback.inc();
-        }
-
-        let mut accepted = false;
-        let mut committed_ptc = false;
-        self.vote_pending.reverse();
-        while let Some((m, p)) = self.vote_pending.pop() {
-            // Deduplicate only against votes whose signatures have already
-            // verified and been committed. An invalid earlier arrival with
-            // the same key must not suppress a later valid vote.
-            if p.is_seen(self) {
-                Self::local_verdict(&m, Feedback::AlreadySeen, producers);
-                continue;
-            }
-            let (pk, sig, root) = p.sig_parts();
-            let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
-            if valid {
-                match &p {
-                    PreparedVote::Attestation(p) => self.commit_attestation(p),
-                    PreparedVote::SyncMessage(p) => self.commit_sync_message(p),
-                    PreparedVote::Ptc(p) => {
-                        self.commit_ptc(p);
-                        committed_ptc = true;
-                    }
-                }
-                Self::relay_gossip(&m, producers);
-                accepted = true;
-            } else {
-                self.reject_gossip(&m, p.message(), "vote bad signature", producers);
-            }
-        }
-
-        // PTC votes all dirty the same fork-choice structure; fold the whole
-        // flush in one head recomputation rather than once per message.
-        if committed_ptc {
-            self.recompute_head();
-        }
-
-        if accepted {
-            self.publish_status(producers);
         }
     }
 
