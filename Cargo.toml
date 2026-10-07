@@ -124,7 +124,7 @@ build-info-build = "0.0.46"
 # so callers don't have to ship the ~880 KB JSON file. Default features pin
 # `blst/portable` which conflicts with our explicit `blst` selection above;
 # pull in c-kzg with default features off and re-enable just what we need.
-c-kzg = { version = "2.1", default-features = false, features = [
+c-kzg = { version = "2.1.8", default-features = false, features = [
     "ethereum_kzg_settings",
 ] }
 bytes = "1.11.1"
