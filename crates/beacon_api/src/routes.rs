@@ -2,6 +2,7 @@ use crate::{
     beacon::{
         block_submission::post_block_v2,
         blocks::{block, block_header, block_root},
+        committees::get_epoch_committees,
         operations::{
             post_attestations, post_attester_slashing, post_bls_to_execution_changes,
             post_proposer_slashing, post_voluntary_exit,
@@ -12,7 +13,10 @@ use crate::{
         },
         states::{genesis, state_finality_checkpoints, state_fork},
         sync_committees::post_sync_committee_messages,
-        validators::{get_state_validators, post_state_validators, state_validator},
+        validators::{
+            get_state_validator_balances, get_state_validators, post_state_validator_balances,
+            post_state_validators, state_validator,
+        },
     },
     config::{deposit_contract, fork_schedule, spec},
     ctx::ApiCtx,
@@ -57,12 +61,23 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Post, "/eth/v1/beacon/pool/sync_committees", post_sync_committee_messages),
     (Method::Get, "/eth/v1/beacon/pool/voluntary_exits", get_voluntary_exits),
     (Method::Post, "/eth/v1/beacon/pool/voluntary_exits", post_voluntary_exit),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/committees", get_epoch_committees),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
         state_finality_checkpoints,
     ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
+    (
+        Method::Get,
+        "/eth/v1/beacon/states/{state_id}/validator_balances",
+        get_state_validator_balances,
+    ),
+    (
+        Method::Post,
+        "/eth/v1/beacon/states/{state_id}/validator_balances",
+        post_state_validator_balances,
+    ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", get_state_validators),
     (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", post_state_validators),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/validators/{validator_id}", state_validator),

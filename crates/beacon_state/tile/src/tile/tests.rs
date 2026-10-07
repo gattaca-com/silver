@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(feature = "ef_tests")]
-use std::{fs, mem, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
@@ -2569,7 +2569,7 @@ fn slashing_pool_publishes_admissions_and_prunes() {
                 changes.push(change);
             }
         });
-        mem::take(&mut changes)
+        std::mem::take(&mut changes)
     };
     let added = drain(&mut adapter);
     let [PoolChange::ProposerSlashingAdded { id, ssz }] = added[..] else {

@@ -17,7 +17,7 @@ use crate::{
         router::Request,
     },
     node::{identity::identity_body, peers::PeerTable},
-    validator::attester_duties::PostedShufflings,
+    validator::shufflings::PostedShufflings,
 };
 
 pub(crate) struct ApiCtx {
@@ -102,6 +102,33 @@ impl ApiCtx {
                 json.flagged_envelope(read_flags(node_status, &view), |json| render(&view, json));
             });
         });
+    }
+
+    /// [`Self::state_response`] whose `render` may refuse the read; the
+    /// refusal answers with its code in place of the body.
+    pub(crate) fn try_state_response(
+        &self,
+        req: &Request<'_>,
+        resp: &mut Response<'_>,
+        mut render: impl FnMut(&StateReadView<'_>, &mut Json<'_>) -> Result<(), (u16, &'static str)>,
+    ) {
+        if !self.serves_state(req, resp) {
+            return;
+        }
+        let node_status = self.node_status;
+        let result = resp.try_json_body(|json| {
+            self.read_state(|view| {
+                json.restart();
+                let mut result = Ok(());
+                json.flagged_envelope(read_flags(node_status, &view), |json| {
+                    result = render(&view, json);
+                });
+                result
+            })
+        });
+        if let Err((code, message)) = result {
+            resp.error(code, message);
+        }
     }
 
     pub(crate) fn follows_chain(&self, resp: &mut Response<'_>) -> bool {
