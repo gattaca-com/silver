@@ -5,6 +5,7 @@ use std::{
 
 use flux_disk::FailedOp;
 use raft::{Storage as _, storage::MemStorage};
+use silver_common::SLOTS_PER_EPOCH;
 
 use super::*;
 use crate::cluster::{
@@ -241,11 +242,12 @@ fn sync_failure_keeps_storage_failed() {
 fn committed_epoch_locks_can_be_rebuilt_without_applying_the_uncommitted_suffix() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("raft.wal");
-    let command = AttestationLockCommand {
+    let mut command = AttestationLockCommand {
         key: AttestationKey { attester_index: 7, slot: 100 },
         subnet: 0,
         ssz: [0; silver_common::ssz_view::SINGLE_ATT_SIZE],
     };
+    command.ssz[104..112].copy_from_slice(&(command.key.slot / SLOTS_PER_EPOCH).to_le_bytes());
     let mut later = command;
     later.key.attester_index = 8;
     let entries = [

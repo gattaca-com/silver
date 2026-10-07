@@ -497,7 +497,9 @@ impl SlashingProtectionHandler {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::{TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TReadMode};
+    use silver_common::{
+        SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TReadMode,
+    };
 
     use super::*;
     use crate::{
@@ -648,10 +650,25 @@ mod tests {
         }
 
         fn submit(&mut self, request_id: u64, slot: u64, validator: u8, root: u8, now: Instant) {
-            let mut ssz = [0; SINGLE_ATT_SIZE];
-            ssz[8..16].copy_from_slice(&u64::from(validator).to_le_bytes());
-            ssz[16..24].copy_from_slice(&slot.to_le_bytes());
+            let mut ssz = attestation(slot, validator);
             ssz[32..64].fill(root);
+            self.submit_ssz(request_id, ssz, now);
+        }
+
+        fn submit_vote(
+            &mut self,
+            request_id: u64,
+            validator: u8,
+            source: u64,
+            slot: u64,
+            now: Instant,
+        ) {
+            let mut ssz = attestation(slot, validator);
+            ssz[64..72].copy_from_slice(&source.to_le_bytes());
+            self.submit_ssz(request_id, ssz, now);
+        }
+
+        fn submit_ssz(&mut self, request_id: u64, ssz: [u8; SINGLE_ATT_SIZE], now: Instant) {
             let Harness { local_gossip, gossip, adapter, .. } = &mut self.harness;
             self.handler.on_local_attestation(
                 PendingAttestation::new(request_id, 0, ssz),
@@ -661,6 +678,42 @@ mod tests {
                 &mut adapter.producers,
             );
         }
+    }
+
+    fn attestation(slot: u64, validator: u8) -> [u8; SINGLE_ATT_SIZE] {
+        let mut ssz = [0; SINGLE_ATT_SIZE];
+        ssz[8..16].copy_from_slice(&u64::from(validator).to_le_bytes());
+        ssz[16..24].copy_from_slice(&slot.to_le_bytes());
+        ssz[104..112].copy_from_slice(&(slot / SLOTS_PER_EPOCH).to_le_bytes());
+        ssz
+    }
+
+    #[test]
+    fn standalone_refuses_surround_votes_while_selected_and_once_evicted() {
+        let now = Instant::now();
+        let mut standalone = Standalone::new(now);
+        standalone.handler.on_status(10, 10);
+        standalone.handler.on_status(100, 100);
+        standalone.submit_vote(1, 7, 2, 100, now);
+        standalone.harness.pop_gossip();
+
+        standalone.handler.on_status(130, 130);
+        standalone.submit_vote(2, 7, 1, 130, now);
+        standalone.handler.on_status(170, 170);
+        standalone.submit_vote(3, 7, 1, 170, now);
+        let mut wrong_target = attestation(170, 7);
+        wrong_target[104..112].copy_from_slice(&4u64.to_le_bytes());
+        standalone.submit_ssz(4, wrong_target, now);
+        assert_eq!(standalone.harness.responses(), [
+            (2, Err(LocalGossipFailure::ConflictingAttestation)),
+            (3, Err(LocalGossipFailure::ConflictingAttestation)),
+            (4, Err(LocalGossipFailure::Invalid)),
+        ]);
+        assert!(standalone.harness.gossip.pop_event().is_none());
+
+        standalone.submit_vote(5, 7, 2, 170, now);
+        standalone.harness.pop_gossip();
+        assert!(standalone.harness.responses().is_empty());
     }
 
     #[test]
@@ -897,8 +950,9 @@ fn decision_response(
 fn lock_response(result: LockResult, conflict: LocalGossipFailure) -> LocalGossipResult {
     match result {
         LockResult::Accepted | LockResult::AlreadyAcceptedSame => Ok(()),
-        LockResult::Conflicting => Err(conflict),
+        LockResult::Conflicting | LockResult::Surrounding => Err(conflict),
         LockResult::TooOld => Err(LocalGossipFailure::TooOld),
+        LockResult::Invalid => Err(LocalGossipFailure::Invalid),
     }
 }
 
