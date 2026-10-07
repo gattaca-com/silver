@@ -8,7 +8,10 @@ pub use committee::{
 pub use decompose::DecomposeError;
 pub use delta_view::{StateReadView, StateWriterView};
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
-pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView, PtcWindow};
+pub use epoch::{
+    EffectiveIncrements, EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView,
+    PtcWindow,
+};
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use fork_writer::ForkWriter;
 pub use gloas::{
@@ -212,6 +215,7 @@ impl BeaconState {
             &zeros(1),
             slot / SLOTS_PER_EPOCH,
         );
+        let epoch_base = epoch_base.with_increments(validators.finalized().effective_balances());
         Self {
             immutable: Immutable::default(),
             validators,

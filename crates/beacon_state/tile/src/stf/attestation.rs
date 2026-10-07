@@ -493,14 +493,20 @@ impl<'a> BlockAttestations<'a> {
         flags: u8,
     ) -> AppliedFlags {
         let mut applied = AppliedFlags::default();
+        let epoch_increments = self.epoch.increments();
         for &vi in attesters {
             let prev = participation.get(vi as usize);
             let gained = flags & !prev;
             if gained == 0 {
                 continue;
             }
-            let effective_balance = validators.effective_balance(vi as usize);
-            let increments = effective_balance / EFFECTIVE_BALANCE_INCREMENT;
+            let increments = epoch_increments.get(vi);
+            let effective_balance = increments * EFFECTIVE_BALANCE_INCREMENT;
+            debug_assert_eq!(
+                effective_balance,
+                validators.effective_balance(vi as usize),
+                "stale effective-balance increment for validator {vi}",
+            );
             let weight: u64 =
                 (0..3).map(|fi| u64::from(gained >> fi & 1) * PARTICIPATION_WEIGHTS[fi]).sum();
             applied.proposer_reward_numerator +=

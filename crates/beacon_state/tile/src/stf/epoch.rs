@@ -83,6 +83,7 @@ pub fn process_epoch(
         process_builder_pending_payments(view, current_epoch);
     }
     process_effective_balance_updates(view, &mut scratch.replace_u64);
+    epoch.set_increments(view.validators.iter_effective_balances());
     process_slashings_reset(view);
     process_randao_mixes_reset(view, current_epoch);
     if rotates_summary {
