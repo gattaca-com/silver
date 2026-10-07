@@ -118,7 +118,11 @@ impl StagedBlock {
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
         match self.parse_and_verify_block(data, false) {
-            Ok(parsed) => self.apply_and_import(parsed, data, None),
+            Ok(parsed) => {
+                let feedback = self.apply_and_import(parsed, data, None);
+                self.maybe_finalize();
+                feedback
+            }
             Err(err) => err.feedback(),
         }
     }
@@ -216,8 +220,10 @@ impl BeaconStateTile {
 
     /// Everything the rest of the node learns from an import, in the order it
     /// needs it: the stage, the bytes to persist, the FCU, the head, the
-    /// blocks that waited on this one, and last the work the next block would
-    /// otherwise do inline. A parked envelope decides the head's payload
+    /// storage rebase onto new finality (before any other block imports, so
+    /// pruned branches can no longer be built on), the blocks that waited on
+    /// this one, and last the work the next block would otherwise do inline.
+    /// A parked envelope decides the head's payload
     /// resolution, so it is applied before the Status that carries it; orphans
     /// only extend beyond the head, so they follow it.
     fn announce_imported(
@@ -242,6 +248,7 @@ impl BeaconStateTile {
 
         self.drain_pending_envelope(block_root, slot, producers);
         self.publish_status(producers);
+        self.maybe_finalize();
 
         self.replay_orphans(block_root, producers);
         self.precompute_for_next_block();
@@ -606,8 +613,7 @@ impl BeaconStateTile {
         if self.last_applied == new_id {
             self.state.publish_state_id(new_id);
         }
-
-        self.maybe_finalize();
+        self.fork_choice.lift_finalized(self.head_finalized_checkpoint());
     }
 
     fn check_block_size(data: &[u8]) -> Result<(), PrecheckError> {
