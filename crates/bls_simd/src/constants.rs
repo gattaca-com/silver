@@ -1,5 +1,5 @@
-//! BLS12-381 Fp in radix 2^52 with R = 2^416. Generated from the modulus in
-//! Python; every array is little-endian limbs.
+//! BLS12-381 Fp in radix 2^52 with R = 2^416. Generated from the modulus with
+//! `scripts/kzg_libs_bench`-style Python; every array is little-endian limbs.
 
 pub const LIMBS: usize = 8;
 pub const LIMB_BITS: u32 = 52;
@@ -71,6 +71,18 @@ pub const FOUR_MONT: [u64; LIMBS] = [
     0xaac3b92d6d85a,
     0x25d100f5559b6,
     0x0000000005208,
+];
+/// The cube root of unity for which (beta * x, y) = [z^2 - 1] P on G1, so that
+/// applying it twice gives [-z^2] P — Scott's membership test. Montgomery form.
+pub const BETA_MONT: [u64; LIMBS] = [
+    0xa424657e25648,
+    0xc75706049e739,
+    0xb59085299e0e2,
+    0xd9cf17286a964,
+    0x069ec7cb33aa8,
+    0x35e995b239c7e,
+    0x82faa0ff3c329,
+    0x0000000017601,
 ];
 /// `(p - 1) / 2`, plain: y above it is the lexicographically larger root.
 pub const HALF_P_MINUS_1: [u64; LIMBS] = [

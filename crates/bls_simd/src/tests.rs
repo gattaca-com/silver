@@ -2,11 +2,17 @@ mod g2_cases;
 
 use std::time::{Duration, Instant};
 
-use blst::{blst_fp, blst_fp_add, blst_fp_mul, blst_fp_sub};
-use g2_cases::{
-    G2_INFINITY, G2_KINDS, G2Cases, compress_g2, fp_from, plus_p, random_fp_limbs, uncompress_g2,
+use blst::{
+    blst_fp, blst_fp_add, blst_fp_mul, blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_hash_to_g1,
+    blst_p1, blst_p1_add_or_double, blst_p1_affine_compress, blst_p1_affine_in_g1,
+    blst_p1_affine_serialize, blst_p1_from_affine, blst_p1_is_inf, blst_p1_mult, blst_p1_to_affine,
+    blst_p1_uncompress,
 };
-use rand::{SeedableRng, rngs::StdRng};
+use g2_cases::{
+    G2_INFINITY, G2_KINDS, G2Cases, R_LIMBS, compress_g2, fp_from, plus_p, random_fp_limbs,
+    uncompress_g2,
+};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::*;
@@ -229,6 +235,67 @@ fn kernel_early_returns_leave_infinity_to_blst() {
     assert!(uncompress_in_g2_blst(&G2_INFINITY).is_some(), "infinity is in G2");
 }
 
+fn serialized(p: &Option<blst_p1_affine>) -> Option<[u8; 96]> {
+    p.map(|p| {
+        let mut out = [0u8; 96];
+        unsafe { blst_p1_affine_serialize(out.as_mut_ptr(), &p) };
+        out
+    })
+}
+
+fn compress(p: &blst_p1_affine) -> [u8; COMPRESSED_LEN] {
+    let mut out = [0u8; COMPRESSED_LEN];
+    unsafe { blst_p1_affine_compress(out.as_mut_ptr(), p) };
+    out
+}
+
+fn g1_points(n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
+    (0..n)
+        .map(|i| {
+            let msg = format!("point {i}");
+            let mut p = blst_p1::default();
+            let mut a = blst_p1_affine::default();
+            unsafe {
+                blst_hash_to_g1(
+                    &mut p,
+                    msg.as_ptr(),
+                    msg.len(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                );
+                blst_p1_to_affine(&mut a, &p);
+            }
+            compress(&a)
+        })
+        .collect()
+}
+
+/// Points on the curve but, with overwhelming probability, not in G1.
+fn curve_points_outside_g1(rng: &mut StdRng, n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
+    let four = fp_from(&[4, 0, 0, 0, 0, 0]);
+    let mut out = Vec::with_capacity(n);
+    while out.len() < n {
+        let x = fp_from(&random_fp_limbs(rng));
+        let mut rhs = blst_fp::default();
+        let mut y = blst_fp::default();
+        let has_root = unsafe {
+            blst_fp_sqr(&mut rhs, &x);
+            blst_fp_mul(&mut rhs, &rhs, &x);
+            blst_fp_add(&mut rhs, &rhs, &four);
+            blst_fp_sqrt(&mut y, &rhs)
+        };
+        if !has_root {
+            continue;
+        }
+        let point = blst_p1_affine { x, y };
+        assert!(!unsafe { blst_p1_affine_in_g1(&point) });
+        out.push(compress(&point));
+    }
+    out
+}
+
 #[target_feature(enable = "avx512f,avx512ifma")]
 fn field_ops(a: &[Limbs; LANES], b: &[Limbs; LANES]) -> [[[u64; 6]; LANES]; 4] {
     let a = Fp8::from_plain(a);
@@ -273,4 +340,134 @@ fn field_ops_match_blst() {
             assert_eq!(neg[lane], want.l, "neg lane {lane}");
         }
     }
+}
+
+#[test]
+fn verdicts_match_blst_on_members_non_members_and_garbage() {
+    if !simd_available() {
+        return;
+    }
+    let mut rng = StdRng::seed_from_u64(11);
+    let mut inputs = g1_points(40);
+    inputs.extend(curve_points_outside_g1(&mut rng, 20));
+    for i in 0..12 {
+        let mut bad = inputs[i];
+        match i % 4 {
+            0 => bad[20] ^= 0x01,
+            1 => bad[0] &= 0x7f,
+            2 => bad[0] ^= 0x20,
+            _ => {
+                bad[0] |= 0x1f;
+                bad[1..].fill(0xff);
+            }
+        }
+        inputs.push(bad);
+    }
+    let mut infinity = [0u8; COMPRESSED_LEN];
+    infinity[0] = 0xc0;
+    inputs.push(infinity);
+    for i in (1..inputs.len()).rev() {
+        let j = rng.gen_range(0..=i);
+        inputs.swap(i, j);
+    }
+
+    let got = uncompress_in_g1(&inputs);
+    assert_eq!(got.len(), inputs.len());
+    let mut members = 0;
+    for (i, input) in inputs.iter().enumerate() {
+        let want = uncompress_in_g1_blst(input);
+        assert_eq!(serialized(&got[i]), serialized(&want), "input {i}");
+        members += want.is_some() as usize;
+    }
+    assert_eq!(
+        members, 44,
+        "40 G1 points, infinity, and the 3 sign flips that only negate a member"
+    );
+}
+
+/// h1 = 3 · 11² · 10177² · 859267² · 52437899², as (prime, exponent).
+const H1_PRIMES: [(u64, u32); 5] = [(3, 1), (11, 2), (10177, 2), (859267, 2), (52437899, 2)];
+
+fn g1_times<const N: usize>(p: &blst_p1, scalar: &[u64; N]) -> blst_p1 {
+    let mut out = blst_p1::default();
+    // SAFETY: x86_64 is little-endian, so the limbs are the scalar's bytes.
+    unsafe { blst_p1_mult(&mut out, p, scalar.as_ptr().cast(), 64 * N) };
+    out
+}
+
+fn g1_affine(p: &blst_p1) -> blst_p1_affine {
+    let mut out = blst_p1_affine::default();
+    unsafe { blst_p1_to_affine(&mut out, p) };
+    out
+}
+
+/// Seeded G1 points of small prime order, built like `G2Cases::torsion`.
+struct G1Torsion(ChaCha8Rng);
+
+impl G1Torsion {
+    fn curve_point(&mut self) -> blst_p1 {
+        loop {
+            let mut bytes = [0u8; COMPRESSED_LEN];
+            self.0.fill(&mut bytes[..]);
+            bytes[0] = 0x80 | (bytes[0] & 0x3f);
+            let mut a = blst_p1_affine::default();
+            if unsafe { blst_p1_uncompress(&mut a, bytes.as_ptr()) } == BLST_ERROR::BLST_SUCCESS {
+                let mut p = blst_p1::default();
+                unsafe { blst_p1_from_affine(&mut p, &a) };
+                return p;
+            }
+        }
+    }
+
+    fn of_order(&mut self, prime_index: usize) -> blst_p1 {
+        let order = H1_PRIMES[prime_index].0;
+        loop {
+            let mut t = g1_times(&self.curve_point(), &R_LIMBS);
+            for (i, (prime, exponent)) in H1_PRIMES.iter().enumerate() {
+                if i != prime_index {
+                    t = g1_times(&t, &[prime.pow(*exponent)]);
+                }
+            }
+            let mut next = g1_times(&t, &[order]);
+            while unsafe { !blst_p1_is_inf(&next) } {
+                t = next;
+                next = g1_times(&t, &[order]);
+            }
+            if unsafe { !blst_p1_is_inf(&t) } {
+                return t;
+            }
+        }
+    }
+}
+
+#[test]
+fn verdicts_match_blst_on_small_order_components() {
+    if !simd_available() {
+        return;
+    }
+    let mut torsion = G1Torsion(ChaCha8Rng::seed_from_u64(13));
+    let mut inputs = g1_points(LANES);
+    for prime_index in 0..H1_PRIMES.len() {
+        let member = uncompress_in_g1_blst(&inputs[prime_index]).expect("a G1 member");
+        let mut m = blst_p1::default();
+        unsafe { blst_p1_from_affine(&mut m, &member) };
+        for _ in 0..4 {
+            let t = torsion.of_order(prime_index);
+            let mut sum = blst_p1::default();
+            unsafe { blst_p1_add_or_double(&mut sum, &m, &t) };
+            inputs.push(compress(&g1_affine(&t)));
+            inputs.push(compress(&g1_affine(&sum)));
+        }
+    }
+    for i in (1..inputs.len()).rev() {
+        let j = torsion.0.gen_range(0..=i);
+        inputs.swap(i, j);
+    }
+    assert_eq!(inputs.len() % LANES, 0, "every input goes through the vector path");
+
+    let got = uncompress_in_g1(&inputs);
+    for (i, input) in inputs.iter().enumerate() {
+        assert_eq!(serialized(&got[i]), serialized(&uncompress_in_g1_blst(input)), "input {i}");
+    }
+    assert_eq!(got.iter().flatten().count(), LANES, "only the members are in G1");
 }
