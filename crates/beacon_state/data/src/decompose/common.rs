@@ -239,6 +239,7 @@ impl BeaconState {
         );
         let slot = slot.with_epoch_balances(epoch_balances);
 
+        let epoch = epoch.with_increments(validators.finalized().effective_balances());
         let state = Self {
             immutable,
             validators,

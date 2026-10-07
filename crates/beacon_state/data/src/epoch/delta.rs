@@ -1,4 +1,7 @@
-use super::{EpochGroup, EpochId, finalized::EpochStateFinalized, ptc_window::PtcWindow};
+use super::{
+    EpochGroup, EpochId, effective_increments::EffectiveIncrements, finalized::EpochStateFinalized,
+    ptc_window::PtcWindow,
+};
 use crate::{
     gloas::{PTC_WINDOW_LEN, PtcCommittee},
     ring::{Reset, Slot as RingSlot},
@@ -10,19 +13,21 @@ pub(crate) struct EpochStateDelta {
     pub(super) state: EpochState,
     // [New in Gloas]
     pub(super) ptc_window: PtcWindow,
+    pub(super) increments: EffectiveIncrements,
 }
 
 impl Reset for EpochStateDelta {
     fn reset(&mut self) {
         self.state = Default::default();
-        // `ptc_window` is left as-is: every roll overwrites it (`fresh` copies
-        // the base's, `reset_from` the parent's), so zeroing the 393 KB box
-        // here would be redundant work.
+        // `ptc_window` and `increments` are left as-is: every roll overwrites
+        // them (`fresh` copies the base's, `reset_from` the parent's), so
+        // zeroing their buffers here would be redundant work.
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.state = other.state;
         self.ptc_window.clone_from(&other.ptc_window);
+        self.increments.clone_from(&other.increments);
     }
 }
 
@@ -49,6 +54,11 @@ impl<'a> EpochView<'a> {
     #[inline]
     pub fn ptc_window(&self) -> &'a PtcWindow {
         self.delta.map_or(&self.base.ptc_window, |d| &d.ptc_window)
+    }
+
+    #[inline]
+    pub fn increments(&self) -> &'a EffectiveIncrements {
+        self.delta.map_or(&self.base.increments, |d| &d.increments)
     }
 
     /// Expected proposer at `lookahead_idx` (slots since the lookahead's
@@ -93,6 +103,7 @@ impl<'a> EpochWriteView<'a> {
     pub(super) fn fresh(base: &'a EpochStateFinalized, mut fork: RingSlot<'a, EpochGroup>) -> Self {
         fork.state = base.state;
         fork.ptc_window.clone_from(&base.ptc_window);
+        fork.increments.clone_from(&base.increments);
         Self { base, fork }
     }
 
@@ -120,6 +131,10 @@ impl<'a> EpochWriteView<'a> {
     #[inline]
     pub fn set_ptc_window(&mut self, committees: Box<[PtcCommittee; PTC_WINDOW_LEN]>) {
         self.fork.ptc_window = PtcWindow::new(committees);
+    }
+
+    pub fn set_increments(&mut self, effective_balances: impl Iterator<Item = u64>) {
+        self.fork.increments.refill(effective_balances);
     }
 
     #[inline]

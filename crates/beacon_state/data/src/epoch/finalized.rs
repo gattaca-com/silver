@@ -1,6 +1,8 @@
 use flux_profiler::timed;
 
-use super::{delta::EpochStateDelta, ptc_window::PtcWindow};
+use super::{
+    delta::EpochStateDelta, effective_increments::EffectiveIncrements, ptc_window::PtcWindow,
+};
 use crate::{
     decompose::{
         common::{F17, F18, F19, F20, F29, F37, read_checkpoint, read_fork, u64_le},
@@ -17,6 +19,7 @@ pub struct EpochStateFinalized {
     pub(crate) state: EpochState,
     /// [New in Gloas]
     pub(crate) ptc_window: PtcWindow,
+    pub(crate) increments: EffectiveIncrements,
 }
 
 impl EpochStateFinalized {
@@ -27,18 +30,24 @@ impl EpochStateFinalized {
 
     /// The published base is mutated only via [`promote`](Self::promote).
     pub fn from_state(state: EpochState) -> Self {
-        Self { state, ptc_window: PtcWindow::default() }
+        Self { state, ..Default::default() }
+    }
+
+    pub(crate) fn with_increments(mut self, effective_balances: impl Iterator<Item = u64>) -> Self {
+        self.increments.refill(effective_balances);
+        self
     }
 
     /// Adopt a fork's delta as the base — the data half of finalization.
     pub(super) fn promote(&mut self, delta: &EpochStateDelta) {
         self.state = delta.state;
         self.ptc_window.clone_from(&delta.ptc_window);
+        self.increments.clone_from(&delta.increments);
     }
 
     #[timed]
     pub(crate) fn from_ssz_fulu(ssz: &[u8]) -> Self {
-        Self { state: read_epoch_state(ssz, F37, F29), ptc_window: PtcWindow::default() }
+        Self { state: read_epoch_state(ssz, F37, F29), ..Default::default() }
     }
 
     pub(crate) fn from_ssz_gloas(ssz: &[u8]) -> Self {
@@ -52,6 +61,7 @@ impl EpochStateFinalized {
         Self {
             state: read_epoch_state(ssz, G_PROPOSER_LOOKAHEAD, G_DEPOSIT_BALANCE_TO_CONSUME),
             ptc_window: PtcWindow::new(ptc_window),
+            increments: EffectiveIncrements::default(),
         }
     }
 }

@@ -52,6 +52,7 @@ pub const PENDING_CONSOLIDATIONS_LIMIT: usize = 1 << 18;
 
 pub const SLOTS_PER_EPOCH: u64 = 32;
 pub const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
+pub(crate) const MAX_EFFECTIVE_BALANCE_COMPOUNDING: u64 = 2048 * EFFECTIVE_BALANCE_INCREMENT;
 pub const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
 pub const TIMELY_TARGET_FLAG: u8 = 1 << 1;
 pub const TIMELY_HEAD_FLAG: u8 = 1 << 2;
@@ -490,7 +491,6 @@ impl Withdrawals {
     #[inline]
     pub fn max_effective_balance(&self) -> u64 {
         const MIN_ACTIVATION_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
-        const MAX_EFFECTIVE_BALANCE_COMPOUNDING: u64 = 2048 * EFFECTIVE_BALANCE_INCREMENT;
         if self.has_compounding_credential() {
             MAX_EFFECTIVE_BALANCE_COMPOUNDING
         } else {

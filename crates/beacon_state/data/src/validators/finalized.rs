@@ -273,6 +273,10 @@ impl FinalizedValidators {
         self.slashed[i / 8] & (1u8 << (i % 8)) != 0
     }
 
+    pub(crate) fn effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
+        self.effective_balance[..self.validator_count].iter().copied()
+    }
+
     pub(crate) fn sweep_epoch_balances(
         &self,
         prev_participation: &[u8],
