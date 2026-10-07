@@ -18,11 +18,11 @@ use crate::{
     merkle,
     ssz_hash::{self, PayloadRoots, hash_tree_root_block_header},
     stf::{
-        BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
+        BlockAttestations, BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
         collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_execution_payload_bid,
         collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
-        gloas::collect_sigs_payload_attestations, process_attestations, process_attester_slashings,
+        gloas::collect_sigs_payload_attestations, process_attester_slashings,
         process_bls_to_execution_changes, process_epoch, process_execution_payload,
         process_execution_payload_bid, process_execution_requests,
         process_parent_execution_payload, process_payload_attestations, process_proposer_slashings,
@@ -553,17 +553,10 @@ fn apply_block_body(
             process_attester_slashings(&mut *view, epoch, cfg, section, &mut out.slashed)?;
     }
     if let Some(section) = offsets.attestations() {
-        proposer_reward += process_attestations(
-            &mut *view,
-            epoch,
-            section,
-            block_slot,
-            parent_slot,
-            proposer_index,
-            input.shuffling,
-            &mut out.votes,
-            scratch,
-        )?;
+        let attestations =
+            BlockAttestations::new(&view.slot, epoch, block_slot, parent_slot, input.shuffling);
+        proposer_reward +=
+            attestations.process_body(view, section, proposer_index, &mut out.votes, scratch)?;
     }
 
     if let Some(section) = offsets.voluntary_exits() {

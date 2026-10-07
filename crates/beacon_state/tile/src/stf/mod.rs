@@ -12,8 +12,8 @@ mod validator;
 mod withdrawals;
 
 pub use attestation::{
-    AttestedCommittees, collect_sigs_attestations, collect_sigs_single_attestation,
-    process_attestations, process_single_attestation,
+    AttestedCommittees, BlockAttestations, collect_sigs_attestations,
+    collect_sigs_single_attestation,
 };
 #[cfg(feature = "ef_tests")]
 pub use block::apply_signed_block_debug;

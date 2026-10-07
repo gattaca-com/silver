@@ -254,18 +254,9 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
         let parent_slot = e
             .is_gloas(view.imm.gloas_fork_version)
             .then(|| view.slot.state().latest_execution_payload_bid.slot);
-        stf::process_attestations(
-            view,
-            *e,
-            &list,
-            block_slot,
-            parent_slot,
-            proposer_index,
-            &sref,
-            &mut votes_sink,
-            &mut scratch,
-        )
-        .is_ok()
+        stf::BlockAttestations::new(&view.slot, *e, block_slot, parent_slot, &sref)
+            .process_body(view, &list, proposer_index, &mut votes_sink, &mut scratch)
+            .is_ok()
     })
 }
 
