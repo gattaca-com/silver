@@ -7,7 +7,7 @@ use silver_httpcore::Query;
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{parse_pubkey, parse_uint64},
+        ids::{each_body_entry, parse_pubkey, parse_uint64},
         json::Json,
         response::Response,
         router::Request,
@@ -17,14 +17,32 @@ use crate::{
 const MAX_VALIDATOR_IDS: usize = 32 * 1024;
 
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    respond_selection(req, ctx, resp, Selection::from_query(req.query));
+    respond_selection(req, ctx, resp, Selection::from_query(req.query), Selection::render);
 }
 
 pub(crate) fn post_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let selection = serde_json::from_slice::<SelectionBody>(req.body)
         .map_err(|_| Rejection::bad_request("invalid request body"))
         .and_then(|body| Selection::from_body(&body));
-    respond_selection(req, ctx, resp, selection);
+    respond_selection(req, ctx, resp, selection, Selection::render);
+}
+
+pub(crate) fn get_state_validator_balances(
+    req: &Request<'_>,
+    ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+) {
+    let selection = Selection::ids_from_query(req.query);
+    respond_selection(req, ctx, resp, selection, Selection::render_balances);
+}
+
+pub(crate) fn post_state_validator_balances(
+    req: &Request<'_>,
+    ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+) {
+    let selection = Selection::from_id_array(req.body);
+    respond_selection(req, ctx, resp, selection, Selection::render_balances);
 }
 
 struct Rejection {
@@ -46,6 +64,7 @@ fn respond_selection(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
     selection: Result<Selection, Rejection>,
+    render: fn(&Selection, &StateReadView<'_>, &mut Json<'_>),
 ) {
     let mut selection = match selection {
         Ok(selection) if !selection.ids.is_empty() => selection,
@@ -60,7 +79,7 @@ fn respond_selection(
     };
     selection.ids.sort_unstable();
     selection.ids.dedup();
-    ctx.state_response(req, resp, |view, json| selection.render(view, json));
+    ctx.state_response(req, resp, |view, json| render(&selection, view, json));
 }
 
 pub(crate) fn state_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -115,6 +134,26 @@ impl Selection {
         Ok(selection)
     }
 
+    /// `getStateValidatorBalances` takes ids only; any `status` is ignored.
+    fn ids_from_query(query: &str) -> Result<Self, Rejection> {
+        let mut selection = Self { over_limit: 414, ..Self::default() };
+        for (name, value) in Query::new(query) {
+            if name == "id" {
+                value.split(',').try_for_each(|id| selection.push_id(id))?;
+            }
+        }
+        Ok(selection)
+    }
+
+    /// `postStateValidatorBalances` posts the ids as a bare array.
+    fn from_id_array(body: &[u8]) -> Result<Self, Rejection> {
+        let mut ids: Vec<&str> = Vec::new();
+        each_body_entry(body, |_, id| ids.push(id)).map_err(Rejection::bad_request)?;
+        let mut selection = Self { over_limit: 400, ..Self::default() };
+        ids.iter().try_for_each(|id| selection.push_id(id))?;
+        Ok(selection)
+    }
+
     fn from_body(body: &SelectionBody<'_>) -> Result<Self, Rejection> {
         let mut selection = Self { over_limit: 400, ..Self::default() };
         body.ids.iter().flatten().try_for_each(|id| selection.push_id(id))?;
@@ -138,14 +177,26 @@ impl Selection {
     }
 
     /// Ids that name no validator are dropped, as the schema asks.
+    fn resolved<'s>(&'s self, view: &'s StateReadView<'_>) -> impl Iterator<Item = usize> + 's {
+        self.ids.iter().filter_map(|id| id.resolve(&view.validators))
+    }
+
     fn render(&self, view: &StateReadView<'_>, json: &mut Json<'_>) {
         let current_epoch = view.slot.current_epoch();
         json.begin_array();
-        for ix in self.ids.iter().filter_map(|id| id.resolve(&view.validators)) {
+        for ix in self.resolved(view) {
             let record = ValidatorRecord::read(view, current_epoch, ix);
             if self.statuses.admits(record.status) {
                 json.validator(&record);
             }
+        }
+        json.end_array();
+    }
+
+    fn render_balances(&self, view: &StateReadView<'_>, json: &mut Json<'_>) {
+        json.begin_array();
+        for ix in self.resolved(view) {
+            json.validator_balance(ix as u64, view.balances.get(ix));
         }
         json.end_array();
     }
@@ -542,6 +593,44 @@ mod tests {
         {
             assert_eq!(status_code(&post(body)), "400", "{body:?}");
         }
+    }
+
+    const BALANCES: &str = "/eth/v1/beacon/states/head/validator_balances";
+
+    fn balance_json(index: u64, balance: u64) -> String {
+        format!("{{\"index\":\"{index}\",\"balance\":\"{balance}\"}}")
+    }
+
+    #[test]
+    fn balances_answer_ids_by_index_and_pubkey_and_drop_unknown_ones() {
+        let query = format!("id=2,99,{}", hex(&pubkey(0xa1)));
+        let expected = format!("[{},{}]", balance_json(2, 7), balance_json(0, 32_000_000_123));
+        assert_eq!(data(&get(BALANCES, &query)), expected);
+    }
+
+    /// The balances schema has no status filter, so a `status` parameter,
+    /// even a malformed one, changes nothing.
+    #[test]
+    fn balances_ignore_any_status() {
+        let expected = format!("[{}]", balance_json(1, 32_000_000_000));
+        assert_eq!(data(&get(BALANCES, "id=1&status=exited_slashed")), expected);
+        assert_eq!(data(&get(BALANCES, "id=1&status=nonsense")), expected);
+    }
+
+    #[test]
+    fn balances_post_a_bare_id_array() {
+        let body = format!("[\"0\",\"{}\"]", hex(&pubkey(0xa3)));
+        let expected = format!("[{},{}]", balance_json(0, 32_000_000_123), balance_json(2, 7));
+        assert_eq!(data(&dispatch("POST", BALANCES, "", &body)), expected);
+        for body in ["{\"ids\":[\"0\"]}", "[\"x\"]", "nonsense"] {
+            assert_eq!(status_code(&dispatch("POST", BALANCES, "", body)), "400", "{body}");
+        }
+    }
+
+    #[test]
+    fn balances_need_at_least_one_id() {
+        assert_eq!(status_code(&get(BALANCES, "")), "400");
+        assert_eq!(status_code(&dispatch("POST", BALANCES, "", "[]")), "400");
     }
 
     #[test]

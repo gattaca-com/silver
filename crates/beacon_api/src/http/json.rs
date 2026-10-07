@@ -739,6 +739,30 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn validator_balance(&mut self, index: u64, balance: u64) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(index);
+        self.key("balance");
+        self.quoted_u64(balance);
+        self.end_object();
+    }
+
+    pub(crate) fn committee(&mut self, index: u64, slot: u64, validators: &[u32]) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(index);
+        self.key("slot");
+        self.quoted_u64(slot);
+        self.key("validators");
+        self.begin_array();
+        for &validator in validators {
+            self.quoted_u64(validator as u64);
+        }
+        self.end_array();
+        self.end_object();
+    }
+
     pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
         self.begin_object();
         self.key("previous_justified");

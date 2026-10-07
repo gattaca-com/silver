@@ -1,12 +1,14 @@
 use silver_beacon_state_data::{
     BLSPubkey, Epoch, SLOTS_PER_EPOCH, ShufflingId, Slot, StateReadView, committee_at_position,
-    committees_per_slot,
 };
 
 use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
-    validator::duties::{epoch_param, requested_indices},
+    validator::{
+        duties::{epoch_param, requested_indices},
+        shufflings::Shuffling,
+    },
 };
 
 pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -53,93 +55,6 @@ pub(crate) fn post_attester_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
     }
 }
 
-#[derive(Default)]
-pub(crate) struct PostedShufflings {
-    entries: [Shuffling; 3],
-}
-
-const NOT_ACTIVE: u32 = u32::MAX;
-
-#[derive(Default)]
-struct Shuffling {
-    id: Option<ShufflingId>,
-    shuffled_len: usize,
-    /// Position in the shuffled active set per validator index; empty until
-    /// posted.
-    position_of: Vec<u32>,
-}
-
-impl PostedShufflings {
-    pub(crate) fn record(&mut self, id: ShufflingId, bytes: &[u8]) {
-        if bytes.len() < size_of::<u32>() {
-            silver_log::error!(epoch = id.epoch, "shuffling posted with no active validators");
-            return;
-        }
-        self.entry_for(id.epoch).fill(id, bytes);
-    }
-
-    fn entry_for(&mut self, epoch: Epoch) -> &mut Shuffling {
-        let held =
-            self.entries.iter().position(|entry| entry.id.is_some_and(|id| id.epoch == epoch));
-        let oldest = || {
-            let (index, _) = self
-                .entries
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, entry)| entry.id.map(|id| id.epoch))
-                .expect("three entries");
-            index
-        };
-        &mut self.entries[held.unwrap_or_else(oldest)]
-    }
-
-    pub(crate) fn committees_per_slot(
-        &self,
-        view: &StateReadView<'_>,
-        epoch: Epoch,
-    ) -> Option<u64> {
-        self.get(ShufflingId::from_state(view, epoch)?)
-            .map(|shuffling| committees_per_slot(shuffling.shuffled_len) as u64)
-    }
-
-    fn get(&self, id: ShufflingId) -> Option<&Shuffling> {
-        self.entries.iter().find(|entry| entry.id == Some(id) && !entry.position_of.is_empty())
-    }
-}
-
-fn posted_indices(bytes: &[u8]) -> impl Iterator<Item = u32> {
-    bytes
-        .chunks_exact(size_of::<u32>())
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("four bytes")))
-}
-
-impl Shuffling {
-    /// Replaces whatever this entry held, reusing the table's allocation.
-    fn fill(&mut self, id: ShufflingId, bytes: &[u8]) {
-        self.id = Some(id);
-        self.shuffled_len = bytes.len() / size_of::<u32>();
-        self.fill_positions(bytes);
-    }
-
-    /// Inverts the posted order, so a request resolves its own validators
-    /// without a walk over the whole set.
-    fn fill_positions(&mut self, bytes: &[u8]) {
-        self.position_of.clear();
-        for (position, validator_index) in posted_indices(bytes).enumerate() {
-            let ix = validator_index as usize;
-            if ix >= self.position_of.len() {
-                self.position_of.resize(ix + 1, NOT_ACTIVE);
-            }
-            self.position_of[ix] = position as u32;
-        }
-    }
-
-    fn position(&self, validator_index: u64) -> Option<u32> {
-        let position = *self.position_of.get(usize::try_from(validator_index).ok()?)?;
-        (position != NOT_ACTIVE).then_some(position)
-    }
-}
-
 pub(crate) struct AttesterDuty {
     pub(crate) pubkey: BLSPubkey,
     pub(crate) validator_index: u64,
@@ -159,11 +74,12 @@ impl AttesterDuty {
         epoch: Epoch,
         validator_index: u64,
     ) -> Option<Self> {
-        let committees_at_slot = committees_per_slot(shuffling.shuffled_len);
+        let committees_at_slot = shuffling.committees_per_slot();
         let position = shuffling.position(validator_index)? as usize;
         let index =
             usize::try_from(validator_index).ok().filter(|&ix| ix < view.validators.count())?;
-        let committee = committee_at_position(shuffling.shuffled_len, committees_at_slot, position);
+        let committee =
+            committee_at_position(shuffling.shuffled_len(), committees_at_slot, position);
         Some(Self {
             pubkey: *view.validators.pubkey(index),
             validator_index,
@@ -181,6 +97,7 @@ mod tests {
     use silver_beacon_state_data::{
         BeaconBlockHeader, BeaconState, BeaconStateOwner, EpochStateFinalized, SlotState,
         SlotStateFinalized, SlotStateGroup, SpecConfig, StateId, ValSeed, committee_range,
+        committees_per_slot,
     };
     use silver_common::SyncUpdate;
 
@@ -191,6 +108,7 @@ mod tests {
             answer, block_roots_ring, field, indices_body, json, posting, pubkey, ring_root,
             status_code,
         },
+        validator::shufflings::PostedShufflings,
     };
 
     const ACTIVE: u64 = 8192;
@@ -202,10 +120,6 @@ mod tests {
     /// epoch so the two epochs differ.
     fn posted_order(epoch: u64) -> Vec<u32> {
         (0..ACTIVE as u32).rev().map(|i| (i + epoch as u32) % ACTIVE as u32).collect()
-    }
-
-    fn test_id(epoch: u64) -> ShufflingId {
-        ShufflingId { epoch, dependent_root: [0; 32] }
     }
 
     fn posted_bytes(epoch: u64) -> Vec<u8> {
@@ -372,46 +286,5 @@ mod tests {
         for body in ["", "{}", "[]", "[0]", "[\"-1\"]", "[\"a\"]"] {
             assert_eq!(status_code(&post(&ctx, &STATE_EPOCH.to_string(), body)), "400", "{body:?}");
         }
-    }
-
-    /// An empty shuffling has no committee to divide into; answering one
-    /// would divide by zero.
-    #[test]
-    fn empty_shufflings_are_not_recorded() {
-        let mut posted = PostedShufflings::default();
-        posted.record(test_id(10), &[]);
-        assert!(posted.get(test_id(10)).is_none());
-    }
-
-    /// A repost for an epoch replaces it; a newer epoch evicts the oldest
-    /// held.
-    #[test]
-    fn posted_shufflings_hold_the_three_newest_epochs() {
-        let mut posted = PostedShufflings::default();
-        posted.record(test_id(10), &posted_bytes(10));
-        posted.record(test_id(11), &posted_bytes(11));
-        posted.record(test_id(12), &posted_bytes(12));
-        posted.record(test_id(10), &posted_bytes(13));
-        for (position, &validator_index) in posted_order(13).iter().enumerate() {
-            assert_eq!(
-                posted.get(test_id(10)).unwrap().position(validator_index as u64),
-                Some(position as u32)
-            );
-        }
-
-        posted.record(test_id(13), &posted_bytes(13));
-        assert!(posted.get(test_id(10)).is_none());
-        assert!([11, 12, 13].iter().all(|&epoch| posted.get(test_id(epoch)).is_some()));
-    }
-
-    /// Epoch zero is a real epoch, so recording it must not leave an unfilled
-    /// slot looking like the oldest.
-    #[test]
-    fn epoch_zero_fills_one_slot_and_leaves_the_others_free() {
-        let mut posted = PostedShufflings::default();
-        posted.record(test_id(0), &posted_bytes(0));
-        posted.record(test_id(1), &posted_bytes(1));
-        posted.record(test_id(2), &posted_bytes(2));
-        assert!([0, 1, 2].iter().all(|&epoch| posted.get(test_id(epoch)).is_some()));
     }
 }

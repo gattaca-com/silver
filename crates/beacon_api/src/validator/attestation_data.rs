@@ -188,7 +188,7 @@ mod tests {
         HeadStatus,
         ctx::test_ctx,
         testing::{answer, block_roots_ring, json, request, ring_root, status_code},
-        validator::attester_duties::PostedShufflings,
+        validator::shufflings::PostedShufflings,
     };
 
     const STATE_EPOCH: u64 = 300;

@@ -1,5 +1,6 @@
 pub(crate) mod block_submission;
 pub(crate) mod blocks;
+pub(crate) mod committees;
 pub(crate) mod operations;
 pub(crate) mod pools;
 pub(crate) mod states;

@@ -8,6 +8,7 @@ pub(crate) mod liveness;
 pub(crate) mod produce_block;
 pub(crate) mod proposer_duties;
 pub(crate) mod registration;
+pub(crate) mod shufflings;
 pub(crate) mod subnet_subscriptions;
 pub(crate) mod sync_contribution;
 pub(crate) mod sync_duties;
