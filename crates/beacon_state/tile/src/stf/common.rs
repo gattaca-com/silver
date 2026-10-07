@@ -133,8 +133,6 @@ pub struct StfScratch {
     /// epoch-transition passes.
     pub replace_u64: Vec<(u32, u64)>,
     pub eff: Vec<u64>,
-    /// One attestation's changed participation flags, sorted for `set_many`.
-    pub flag_updates: Vec<(u32, u8)>,
     pub votes: VotePool,
 }
 
@@ -145,7 +143,6 @@ impl StfScratch {
             postponed: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             replace_u64: Vec::with_capacity(validator_cap),
             eff: Vec::with_capacity(validator_cap),
-            flag_updates: Vec::with_capacity(MAX_ATTESTING_INDICES),
             votes: VotePool::default(),
         }
     }

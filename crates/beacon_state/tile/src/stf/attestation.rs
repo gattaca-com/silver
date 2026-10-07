@@ -3,7 +3,8 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BlockRoots, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS,
     ParticipationWriteView, RootsWriteView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot,
-    SlotStateWriteView, StateWriterView, TIMELY_TARGET_FLAG, ValidatorsView,
+    SlotStateWriteView, StateWriterView, TIMELY_HEAD_FLAG, TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG,
+    ValidatorsView,
 };
 use silver_common::ssz_view::AttestationView;
 
@@ -21,8 +22,6 @@ use crate::{
 
 const GLOAS_PAYLOAD_ABSENT: u64 = 0;
 const GLOAS_PAYLOAD_PRESENT: u64 = 1;
-
-const TIMELY_HEAD_FLAG_INDEX: usize = 2;
 
 pub fn collect_sigs_attestations(
     imm: &Immutable,
@@ -245,160 +244,277 @@ pub fn collect_sigs_single_attestation(
 
 /// Pass 2 — full data + state-dep validation, apply participation flags +
 /// proposer rewards.
-#[timed]
-#[allow(clippy::too_many_arguments)]
-pub fn process_attestations(
-    view: &mut StateWriterView,
-    epoch: EpochView,
-    attestation_data: &[u8],
-    block_slot: Slot,
-    parent_slot: Option<Slot>,
-    proposer_index: u32,
-    shuffling: &ShufflingRef<'_>,
-    votes_sink: &mut VoteBatch,
-    scratch: &mut StfScratch,
-) -> Result<u64, AttestationError> {
-    if attestation_data.is_empty() {
-        return Ok(0);
-    }
-    let current_epoch = block_slot / SLOTS_PER_EPOCH;
-    let previous_epoch = current_epoch.saturating_sub(1);
-
-    let total_active = view.slot.total_active_balance(current_epoch);
-    let mut proposer_rewards = 0;
-    for_each_ssz_list_item(
-        attestation_data,
-        |start, end| AttestationError::BadOffsets {
-            start,
-            end,
-            parent_len: attestation_data.len(),
-        },
-        |att| {
-            let reward = process_single_attestation(
-                view,
-                epoch,
-                att,
-                current_epoch,
-                previous_epoch,
-                parent_slot,
-                total_active,
-                shuffling,
-                votes_sink,
-                scratch,
-            )?;
-            if reward > 0 && (proposer_index as usize) < view.validators.count() {
-                let proposer_reward_denominator =
-                    (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
-                let proposer_reward = reward / proposer_reward_denominator;
-                let balance = view.balances.get(proposer_index as usize);
-                view.balances.set(proposer_index, balance.saturating_add(proposer_reward));
-                proposer_rewards += proposer_reward;
-            }
-            Ok(())
-        },
-    )?;
-    Ok(proposer_rewards)
-}
-
-/// Pass 2 single-attestation worker — full data + state-dep validation +
-/// participation flag updates. Returns the proposer reward numerator on
-/// success. `parent_slot` is required from Gloas on: the payload-availability
-/// bit lives at the parent block's slot, not at `data.slot`, and the two differ
-/// across skipped slots.
-#[allow(clippy::too_many_arguments)]
-pub fn process_single_attestation(
-    view: &mut StateWriterView,
-    epoch: EpochView,
-    att: &[u8],
+pub struct BlockAttestations<'a> {
+    epoch: EpochView<'a>,
     current_epoch: Epoch,
     previous_epoch: Epoch,
+    /// Required from Gloas on: the payload-availability bit lives at the
+    /// parent block's slot, not at `data.slot`, and the two differ across
+    /// skipped slots.
     parent_slot: Option<Slot>,
-    total_active: u64,
-    shuffling: &ShufflingRef<'_>,
-    votes_sink: &mut VoteBatch,
-    scratch: &mut StfScratch,
-) -> Result<u64, AttestationError> {
-    let current_slot = view.slot.state().slot;
-    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
-    validate::validate_attestation_data(
-        att,
-        current_slot,
-        current_epoch,
-        previous_epoch,
-        is_gloas,
-    )?;
+    base_reward_per_increment: u64,
+    shuffling: &'a ShufflingRef<'a>,
+}
 
-    let parsed = ParsedAttestationData::parse(att);
-    let is_current =
-        check_attestation_target_window(parsed.target_epoch, current_epoch, previous_epoch)?;
-    check_attestation_source(epoch, is_current, parsed.source_epoch, parsed.source_root)?;
-
-    let mut flag_weights = compute_attestation_flags(&view.block_roots, &parsed, current_slot);
-
-    let (same_slot, payload_present) = if is_gloas {
-        let parent_slot = parent_slot.ok_or(AttestationError::MissingParentSlot)?;
-        (
-            gloas_payload_vote_is_same_slot(view, att, &parsed, parent_slot, &mut flag_weights)?,
-            gloas_payload_is_present(att),
-        )
-    } else {
-        (false, false)
-    };
-
-    let target = VoteTarget {
-        block_root: parsed.beacon_block_root,
-        target_epoch: parsed.target_epoch,
-        attestation_slot: parsed.att_slot,
-        payload_present,
-    };
-    collect_attestation_participants(
-        view.validators.count(),
-        att,
-        shuffling,
-        is_current,
-        &mut scratch.active,
-    )?;
-    votes_sink.push(target, &scratch.active);
-    let attesters = &scratch.active;
-
-    if !flag_weights.iter().any(|&f| f) {
-        return Ok(0);
-    }
-    // Distinct `Previous`/`Current` types can't share one binding, so branch
-    // and let each arm monomorphise the generic helper for its column.
-    let validators = view.validators.reader();
-    let flags = if is_current {
-        apply_attestation_participation_flags(
-            &validators,
-            &mut view.current_participation,
-            attesters,
-            total_active,
-            flag_weights,
-            &mut scratch.flag_updates,
-        )
-    } else {
-        apply_attestation_participation_flags(
-            &validators,
-            &mut view.previous_participation,
-            attesters,
-            total_active,
-            flag_weights,
-            &mut scratch.flag_updates,
-        )
-    };
-
-    view.slot.epoch_balances_mut().add_target_attesters(is_current, flags.new_target_eb);
-
-    if same_slot && flags.first_participation_eb > 0 {
-        accrue_builder_payment_weight(
-            &mut view.slot,
-            parsed.att_slot,
-            is_current,
-            flags.first_participation_eb,
-        );
+impl<'a> BlockAttestations<'a> {
+    pub fn new(
+        slot: &SlotStateWriteView,
+        epoch: EpochView<'a>,
+        block_slot: Slot,
+        parent_slot: Option<Slot>,
+        shuffling: &'a ShufflingRef<'a>,
+    ) -> Self {
+        let current_epoch = block_slot / SLOTS_PER_EPOCH;
+        Self {
+            epoch,
+            current_epoch,
+            previous_epoch: current_epoch.saturating_sub(1),
+            parent_slot,
+            base_reward_per_increment: EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR /
+                integer_sqrt(slot.total_active_balance(current_epoch)),
+            shuffling,
+        }
     }
 
-    Ok(flags.proposer_reward_numerator)
+    /// Participation leaves are rehashed once for the whole body: every
+    /// attestation dirties a large share of the tree's upper levels.
+    #[timed]
+    pub fn process_body(
+        &self,
+        view: &mut StateWriterView,
+        attestation_data: &[u8],
+        proposer_index: u32,
+        votes_sink: &mut VoteBatch,
+        scratch: &mut StfScratch,
+    ) -> Result<u64, AttestationError> {
+        if attestation_data.is_empty() {
+            return Ok(0);
+        }
+        let proposer_reward_denominator =
+            (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
+        let mut proposer_reward = 0u64;
+        for_each_ssz_list_item(
+            attestation_data,
+            |start, end| AttestationError::BadOffsets {
+                start,
+                end,
+                parent_len: attestation_data.len(),
+            },
+            |att| {
+                let reward_numerator = self.process(view, att, votes_sink, scratch)?;
+                proposer_reward += reward_numerator / proposer_reward_denominator;
+                Ok(())
+            },
+        )?;
+
+        view.current_participation.rehash_unsorted();
+        view.previous_participation.rehash_unsorted();
+        let balance = view.balances.get(proposer_index as usize);
+        view.balances.set(proposer_index, balance.saturating_add(proposer_reward));
+        Ok(proposer_reward)
+    }
+
+    /// Returns the proposer reward numerator.
+    fn process(
+        &self,
+        view: &mut StateWriterView,
+        att: &[u8],
+        votes_sink: &mut VoteBatch,
+        scratch: &mut StfScratch,
+    ) -> Result<u64, AttestationError> {
+        let current_slot = view.slot.state().slot;
+        let is_gloas = self.epoch.is_gloas(view.imm.gloas_fork_version);
+        validate::validate_attestation_data(
+            att,
+            current_slot,
+            self.current_epoch,
+            self.previous_epoch,
+            is_gloas,
+        )?;
+
+        let parsed = ParsedAttestationData::parse(att);
+        let is_current = self.target_is_current(parsed.target_epoch)?;
+        self.check_source(is_current, parsed.source_epoch, parsed.source_root)?;
+
+        let mut flags = parsed.flags(&view.block_roots, current_slot);
+
+        let (same_slot, payload_present) = if is_gloas {
+            (
+                self.gloas_payload_vote_is_same_slot(view, att, &parsed, &mut flags)?,
+                gloas_payload_is_present(att),
+            )
+        } else {
+            (false, false)
+        };
+
+        let target = VoteTarget {
+            block_root: parsed.beacon_block_root,
+            target_epoch: parsed.target_epoch,
+            attestation_slot: parsed.att_slot,
+            payload_present,
+        };
+        self.collect_participants(view.validators.count(), att, is_current, &mut scratch.active)?;
+        votes_sink.push(target, &scratch.active);
+        let attesters = &scratch.active;
+
+        if flags == 0 {
+            return Ok(0);
+        }
+        // Distinct `Previous`/`Current` types can't share one binding, so branch
+        // and let each arm monomorphise the generic helper for its column.
+        let validators = view.validators.reader();
+        let applied = if is_current {
+            self.apply_flags(&mut view.current_participation, &validators, attesters, flags)
+        } else {
+            self.apply_flags(&mut view.previous_participation, &validators, attesters, flags)
+        };
+
+        view.slot.epoch_balances_mut().add_target_attesters(is_current, applied.new_target_eb);
+
+        if same_slot && applied.first_participation_eb > 0 {
+            accrue_builder_payment_weight(
+                &mut view.slot,
+                parsed.att_slot,
+                is_current,
+                applied.first_participation_eb,
+            );
+        }
+
+        Ok(applied.proposer_reward_numerator)
+    }
+
+    fn target_is_current(&self, target: Epoch) -> Result<bool, AttestationError> {
+        let (curr, prev) = (self.current_epoch, self.previous_epoch);
+        if target == curr {
+            Ok(true)
+        } else if target == prev {
+            Ok(false)
+        } else {
+            Err(AttestationError::TargetEpochOutOfWindow { target, prev, curr })
+        }
+    }
+
+    fn check_source(
+        &self,
+        is_current: bool,
+        source_epoch: Epoch,
+        source_root: B256,
+    ) -> Result<(), AttestationError> {
+        let es = self.epoch.state();
+        let justified = if is_current {
+            es.current_justified_checkpoint
+        } else {
+            es.previous_justified_checkpoint
+        };
+        if source_epoch != justified.epoch || source_root != justified.root {
+            return Err(AttestationError::SourceMismatch {
+                expected_epoch: justified.epoch,
+                expected_root: justified.root,
+                got_epoch: source_epoch,
+                got_root: source_root,
+            });
+        }
+        Ok(())
+    }
+
+    fn gloas_payload_vote_is_same_slot(
+        &self,
+        view: &StateWriterView,
+        att: &[u8],
+        parsed: &ParsedAttestationData,
+        flags: &mut u8,
+    ) -> Result<bool, AttestationError> {
+        let parent_slot = self.parent_slot.ok_or(AttestationError::MissingParentSlot)?;
+        let index = AttestationView::data(att).index();
+        if index > GLOAS_PAYLOAD_PRESENT {
+            return Err(AttestationError::InvalidPayloadIndex { index });
+        }
+        let same_slot = is_attestation_same_slot(&view.block_roots, parsed);
+        let payload_matches = if same_slot {
+            // The payload is revealed after the block, so a same-slot vote must
+            // claim "absent".
+            if index != GLOAS_PAYLOAD_ABSENT {
+                return Err(AttestationError::InvalidPayloadIndex { index });
+            }
+            true
+        } else {
+            index == payload_availability_bit(&view.slot, parent_slot)
+        };
+        if !payload_matches {
+            *flags &= !TIMELY_HEAD_FLAG;
+        }
+        Ok(same_slot)
+    }
+
+    /// Append the attesting validator indices to `out`, in ascending order:
+    /// committee order is shuffled, and a monotonic sweep makes the
+    /// per-attester column reads that follow sequential.
+    fn collect_participants(
+        &self,
+        validator_count: usize,
+        att: &[u8],
+        is_current: bool,
+        out: &mut Vec<u32>,
+    ) -> Result<(), AttestationError> {
+        let committees =
+            AttestedCommittees::resolve(att, self.shuffling, is_current, validator_count)?;
+
+        out.clear();
+        let mut agg_offset = 0usize;
+        for (committee, base) in committees.committees() {
+            let before = out.len();
+            for (j, &validator_idx) in committee.iter().enumerate() {
+                if committees.attested(base + j) {
+                    out.push(validator_idx);
+                }
+            }
+            if out.len() == before {
+                return Err(AttestationError::EmptyCommittee);
+            }
+            agg_offset += committee.len();
+        }
+
+        let bitlist_len = merkle::bitlist_len(AttestationView::aggregation_bits(att));
+        if bitlist_len != agg_offset {
+            return Err(AttestationError::BitlistLenMismatch {
+                expected: agg_offset,
+                got: bitlist_len,
+            });
+        }
+        out.sort_unstable();
+        Ok(())
+    }
+
+    fn apply_flags<M: ColumnSpec<Val = u8>>(
+        &self,
+        participation: &mut ParticipationWriteView<M>,
+        validators: &ValidatorsView,
+        attesters: &[u32],
+        flags: u8,
+    ) -> AppliedFlags {
+        let mut applied = AppliedFlags::default();
+        for &vi in attesters {
+            let prev = participation.get(vi as usize);
+            let gained = flags & !prev;
+            if gained == 0 {
+                continue;
+            }
+            let effective_balance = validators.effective_balance(vi as usize);
+            let increments = effective_balance / EFFECTIVE_BALANCE_INCREMENT;
+            let weight: u64 =
+                (0..3).map(|fi| u64::from(gained >> fi & 1) * PARTICIPATION_WEIGHTS[fi]).sum();
+            applied.proposer_reward_numerator +=
+                increments * self.base_reward_per_increment * weight;
+            if gained & TIMELY_TARGET_FLAG != 0 && !validators.is_slashed(vi as usize) {
+                applied.new_target_eb += effective_balance;
+            }
+            if prev == 0 {
+                applied.first_participation_eb += effective_balance;
+            }
+            participation.set_deferred(vi, prev | gained);
+        }
+        applied
+    }
 }
 
 fn accrue_builder_payment_weight(
@@ -413,32 +529,6 @@ fn accrue_builder_payment_weight(
     if slot.state().builder_pending_payments[ring].withdrawal.amount > 0 {
         slot.state_mut().builder_pending_payments[ring].weight += first_participation_eb;
     }
-}
-
-fn gloas_payload_vote_is_same_slot(
-    view: &StateWriterView,
-    att: &[u8],
-    parsed: &ParsedAttestationData,
-    parent_slot: Slot,
-    flag_weights: &mut [bool; 3],
-) -> Result<bool, AttestationError> {
-    let index = AttestationView::data(att).index();
-    if index > GLOAS_PAYLOAD_PRESENT {
-        return Err(AttestationError::InvalidPayloadIndex { index });
-    }
-    let same_slot = is_attestation_same_slot(&view.block_roots, parsed);
-    let payload_matches = if same_slot {
-        // The payload is revealed after the block, so a same-slot vote must
-        // claim "absent".
-        if index != GLOAS_PAYLOAD_ABSENT {
-            return Err(AttestationError::InvalidPayloadIndex { index });
-        }
-        true
-    } else {
-        index == payload_availability_bit(&view.slot, parent_slot)
-    };
-    flag_weights[TIMELY_HEAD_FLAG_INDEX] &= payload_matches;
-    Ok(same_slot)
 }
 
 fn gloas_payload_is_present(att: &[u8]) -> bool {
@@ -482,91 +572,21 @@ impl ParsedAttestationData {
             target_root: *data.target_root(),
         }
     }
-}
 
-fn check_attestation_target_window(
-    target: Epoch,
-    curr: Epoch,
-    prev: Epoch,
-) -> Result<bool, AttestationError> {
-    if target == curr {
-        Ok(true)
-    } else if target == prev {
-        Ok(false)
-    } else {
-        Err(AttestationError::TargetEpochOutOfWindow { target, prev, curr })
+    fn flags(&self, block_roots: &RootsWriteView<BlockRoots>, current_slot: Slot) -> u8 {
+        let expected_target_root = block_roots.at_slot(self.target_epoch * SLOTS_PER_EPOCH);
+        let is_matching_target = self.target_root == expected_target_root;
+        let expected_head_root = block_roots.at_slot(self.att_slot);
+        let is_matching_head = is_matching_target && self.beacon_block_root == expected_head_root;
+        let inclusion_delay = current_slot.saturating_sub(self.att_slot);
+
+        (u8::from(inclusion_delay <= 5) * TIMELY_SOURCE_FLAG) |
+            (u8::from(is_matching_target) * TIMELY_TARGET_FLAG) |
+            (u8::from(is_matching_head && inclusion_delay == 1) * TIMELY_HEAD_FLAG)
     }
 }
 
-fn check_attestation_source(
-    epoch: EpochView,
-    is_current: bool,
-    source_epoch: Epoch,
-    source_root: B256,
-) -> Result<(), AttestationError> {
-    let es = epoch.state();
-    let justified =
-        if is_current { es.current_justified_checkpoint } else { es.previous_justified_checkpoint };
-    if source_epoch != justified.epoch || source_root != justified.root {
-        return Err(AttestationError::SourceMismatch {
-            expected_epoch: justified.epoch,
-            expected_root: justified.root,
-            got_epoch: source_epoch,
-            got_root: source_root,
-        });
-    }
-    Ok(())
-}
-
-fn compute_attestation_flags(
-    block_roots: &RootsWriteView<BlockRoots>,
-    parsed: &ParsedAttestationData,
-    current_slot: Slot,
-) -> [bool; 3] {
-    let expected_target_root = block_roots.at_slot(parsed.target_epoch * SLOTS_PER_EPOCH);
-    let is_matching_target = parsed.target_root == expected_target_root;
-    let expected_head_root = block_roots.at_slot(parsed.att_slot);
-    let is_matching_head = is_matching_target && parsed.beacon_block_root == expected_head_root;
-    let inclusion_delay = current_slot.saturating_sub(parsed.att_slot);
-
-    [inclusion_delay <= 5, is_matching_target, is_matching_head && inclusion_delay == 1]
-}
-
-/// Append the attesting validator indices to `out`, in ascending order:
-/// committee order is shuffled, and a monotonic sweep makes the per-attester
-/// column reads that follow sequential.
-fn collect_attestation_participants(
-    validator_count: usize,
-    att: &[u8],
-    shuffling: &ShufflingRef<'_>,
-    is_current: bool,
-    out: &mut Vec<u32>,
-) -> Result<(), AttestationError> {
-    let committees = AttestedCommittees::resolve(att, shuffling, is_current, validator_count)?;
-
-    out.clear();
-    let mut agg_offset = 0usize;
-    for (committee, base) in committees.committees() {
-        let before = out.len();
-        for (j, &validator_idx) in committee.iter().enumerate() {
-            if committees.attested(base + j) {
-                out.push(validator_idx);
-            }
-        }
-        if out.len() == before {
-            return Err(AttestationError::EmptyCommittee);
-        }
-        agg_offset += committee.len();
-    }
-
-    let bitlist_len = merkle::bitlist_len(AttestationView::aggregation_bits(att));
-    if bitlist_len != agg_offset {
-        return Err(AttestationError::BitlistLenMismatch { expected: agg_offset, got: bitlist_len });
-    }
-    out.sort_unstable();
-    Ok(())
-}
-
+#[derive(Default)]
 struct AppliedFlags {
     proposer_reward_numerator: u64,
     /// Gloas builder-payment weight: effective balance of the attesters this
@@ -574,51 +594,6 @@ struct AppliedFlags {
     first_participation_eb: u64,
     /// Unslashed attesters that newly earned TIMELY_TARGET.
     new_target_eb: u64,
-}
-
-fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
-    validators: &ValidatorsView,
-    participation: &mut ParticipationWriteView<M>,
-    attesters: &[u32],
-    total_active: u64,
-    flag_weights: [bool; 3],
-    updates: &mut Vec<(u32, u8)>,
-) -> AppliedFlags {
-    let sqrt_total = integer_sqrt(total_active);
-    let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
-
-    let mut proposer_reward_numerator = 0u64;
-    // Collect the changed flags, then apply them in one sorted merge:
-    // `attesters` is ascending and dup-free, so `updates` is too.
-    updates.clear();
-    let mut first_participation_eb = 0u64;
-    let mut new_target_eb = 0u64;
-    for &vi in attesters {
-        let prev_p = participation.get(vi as usize);
-        let mut p = prev_p;
-        let effective_balance = validators.effective_balance(vi as usize);
-        let base_reward =
-            (effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
-        for (fi, &weight) in PARTICIPATION_WEIGHTS.iter().enumerate() {
-            let flag_bit = 1u8 << fi;
-            if flag_weights[fi] && p & flag_bit == 0 {
-                p |= flag_bit;
-                proposer_reward_numerator += base_reward * weight;
-                if flag_bit == TIMELY_TARGET_FLAG && !validators.is_slashed(vi as usize) {
-                    new_target_eb += effective_balance;
-                }
-            }
-        }
-        if p != prev_p {
-            updates.push((vi, p));
-            if prev_p == 0 {
-                first_participation_eb += effective_balance;
-            }
-        }
-    }
-    debug_assert!(updates.is_sorted_by_key(|(idx, _)| *idx));
-    participation.set_many(updates);
-    AppliedFlags { proposer_reward_numerator, first_participation_eb, new_target_eb }
 }
 
 #[cfg(test)]
