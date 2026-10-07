@@ -13,7 +13,7 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{G2_COMPRESSED_LEN, LANES, P_U64, uncompress_in_g2_blst};
 
-const R_LIMBS: [u64; 4] =
+pub(super) const R_LIMBS: [u64; 4] =
     [0xffffffff00000001, 0x53bda402fffe5bfe, 0x3339d80809a1d805, 0x73eda753299d7d48];
 /// h2 = 13² · 23² · 2713 · 11953 · 262069 · H2_LARGE, as (prime, exponent).
 const H2_SMALL_PRIMES: [(u64, u32); 5] = [(13, 2), (23, 2), (2713, 1), (11953, 1), (262069, 1)];

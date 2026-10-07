@@ -5120,6 +5120,7 @@ name = "silver_e2e"
 version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
+ "blst",
  "buffa",
  "flux",
  "futures",
@@ -5133,6 +5134,7 @@ dependencies = [
  "serde_json",
  "silver_beacon_state",
  "silver_beacon_state_data",
+ "silver_bls_simd",
  "silver_columns",
  "silver_common",
  "silver_config",

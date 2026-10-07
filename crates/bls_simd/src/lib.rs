@@ -1,7 +1,7 @@
-//! AVX-512 IFMA fast path for BLS12-381 G2 point decompression with subgroup
-//! membership, eight points per step. Lanes the vector path declines, short
-//! chunks, and CPUs without the instructions go through blst, so the verdicts
-//! are blst's either way.
+//! AVX-512 IFMA fast path for BLS12-381 G1 and G2 point decompression with
+//! subgroup membership, eight points per step. Lanes the vector path declines,
+//! short chunks, and CPUs without the instructions go through blst, so the
+//! verdicts are blst's either way.
 //!
 //! The fast path is available when the `simd` build feature is enabled. It
 //! additionally requires AVX-512F and AVX-512 IFMA support enabled at run time.
@@ -21,6 +21,9 @@
 pub mod constants;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+pub mod decompress;
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::missing_safety_doc)]
 pub mod decompress_g2;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
@@ -30,18 +33,24 @@ pub mod fp2x8;
 pub mod fp8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+pub mod g1x8;
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::missing_safety_doc)]
 pub mod g2x8;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__mmask8;
 
-pub use blst::blst_p2_affine;
-use blst::{BLST_ERROR, blst_p2_affine_in_g2, blst_p2_uncompress};
+use blst::{
+    BLST_ERROR, blst_p1_affine_in_g1, blst_p1_uncompress, blst_p2_affine_in_g2, blst_p2_uncompress,
+};
+pub use blst::{blst_p1_affine, blst_p2_affine};
 
+pub const COMPRESSED_LEN: usize = 48;
 pub const G2_COMPRESSED_LEN: usize = 96;
 const LANES: usize = 8;
 /// A kernel call costs about as much as blst on two or three points, so
-/// smaller chunks stay on blst.
+/// smaller G2 chunks stay on blst.
 const MIN_KERNEL_LANES: usize = 3;
 
 /// Lanes where a Scott test decided membership, and lanes it could not
@@ -64,6 +73,56 @@ pub fn simd_available() -> bool {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn simd_available() -> bool {
     false
+}
+
+/// `Some` iff blst accepts the encoding as a point of G1.
+pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
+    let mut point = blst_p1_affine::default();
+    // SAFETY: both pointers are valid for the lengths blst reads and writes.
+    let ok = unsafe {
+        blst_p1_uncompress(&mut point, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS &&
+            blst_p1_affine_in_g1(&point)
+    };
+    ok.then_some(point)
+}
+
+/// One verdict per input, identical to `uncompress_in_g1_blst` on each.
+pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]]) -> Vec<Option<blst_p1_affine>> {
+    let mut out = Vec::with_capacity(inputs.len());
+    let mut chunks = inputs.chunks_exact(LANES);
+    if simd_available() {
+        for chunk in &mut chunks {
+            decompress_chunk(chunk, &mut out);
+        }
+    } else {
+        for chunk in &mut chunks {
+            out.extend(chunk.iter().map(uncompress_in_g1_blst));
+        }
+    }
+    out.extend(chunks.remainder().iter().map(uncompress_in_g1_blst));
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+fn decompress_chunk(chunk: &[[u8; COMPRESSED_LEN]], out: &mut Vec<Option<blst_p1_affine>>) {
+    let inputs: &[[u8; COMPRESSED_LEN]; LANES] = chunk.try_into().expect("eight encodings");
+    // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+    let batch = unsafe { decompress::decompress(inputs) };
+    for (lane, (input, point)) in inputs.iter().zip(&batch.points).enumerate() {
+        let bit = 1u8 << lane;
+        out.push(if batch.undecided & bit != 0 {
+            uncompress_in_g1_blst(input)
+        } else if batch.valid & bit != 0 {
+            Some(*point)
+        } else {
+            None
+        });
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn decompress_chunk(chunk: &[[u8; COMPRESSED_LEN]], out: &mut Vec<Option<blst_p1_affine>>) {
+    out.extend(chunk.iter().map(uncompress_in_g1_blst));
 }
 
 /// `Some` iff blst accepts the encoding as a point of G2.

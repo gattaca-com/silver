@@ -15,9 +15,9 @@ use crate::{
 };
 
 const FP_BYTES: usize = G2_COMPRESSED_LEN / 2;
-const FLAG_COMPRESSED: u8 = 0x80;
-const FLAG_INFINITY: u8 = 0x40;
-const FLAG_LARGER_ROOT: u8 = 0x20;
+pub(crate) const FLAG_COMPRESSED: u8 = 0x80;
+pub(crate) const FLAG_INFINITY: u8 = 0x40;
+pub(crate) const FLAG_LARGER_ROOT: u8 = 0x20;
 
 /// Per-lane verdicts for one batch of eight.
 pub struct Batch {
@@ -90,7 +90,7 @@ fn point(x0: [u64; 6], x1: [u64; 6], y0: [u64; 6], y1: [u64; 6]) -> blst_p2_affi
 
 /// A 48-byte big-endian coordinate as little-endian 64-bit words.
 #[inline]
-fn fp_words(be: &[u8]) -> [u64; 6] {
+pub(crate) fn fp_words(be: &[u8]) -> [u64; 6] {
     let mut words = [0u64; 6];
     for w in 0..6 {
         let mut bytes = [0u8; 8];
@@ -101,7 +101,7 @@ fn fp_words(be: &[u8]) -> [u64; 6] {
 }
 
 #[inline]
-fn less_than_p(x: &[u64; 6]) -> bool {
+pub(crate) fn less_than_p(x: &[u64; 6]) -> bool {
     let mut w = 6;
     while w > 0 {
         w -= 1;

@@ -82,3 +82,7 @@ required-features = ["lh-client"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+blst.workspace = true
+silver_bls_simd = { workspace = true, features = ["simd"] }
