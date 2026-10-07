@@ -258,6 +258,13 @@ impl SyncEngine {
             "fetch ceiling {FETCH_CEILING} exceeds max_dc {}",
             cfg.pending.max_dc
         );
+        assert!(
+            FETCH_CEILING <= cfg.pending.max_chain_len as u64 &&
+                FETCH_CEILING <= cfg.pending.max_parents as u64,
+            "fetch ceiling {FETCH_CEILING} exceeds the orphan bounds: max_chain_len {}, max_parents {}",
+            cfg.pending.max_chain_len,
+            cfg.pending.max_parents
+        );
 
         // A staged block may want its columns and, once lapped, its bytes.
         let by_root_cap = cfg.pending.max_parents + 2 * cfg.pending.max_dc;

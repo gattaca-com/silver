@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{default_u64, default_usize};
 
+/// The range fetch window: every block fetched ahead of the head must park.
+const FETCH_WINDOW: usize = 128;
 /// The range fetch window plus room for blocks staged off gossip.
-const DEFAULT_MAX_DC: usize = 128 + 64;
+const DEFAULT_MAX_DC: usize = FETCH_WINDOW + 64;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SyncingConfig {
@@ -53,7 +55,7 @@ pub struct PendingBounds {
     #[serde(default = "default_u64::<2>")]
     pub future_tolerance: u64,
     /// Max distinct missing-parent roots buffered.
-    #[serde(default = "default_usize::<64>")]
+    #[serde(default = "default_usize::<FETCH_WINDOW>")]
     pub max_parents: usize,
     /// Max blocks staged on their data columns, each holding a committed
     /// post-state; also caps the gloas payload-pending and envelope pools.
@@ -61,12 +63,17 @@ pub struct PendingBounds {
     pub max_dc: usize,
     /// Max forward slot gap (orphan slot − head) tolerated for by-root
     /// backtracking; beyond it syncing covers the gap instead.
-    #[serde(default = "default_usize::<64>")]
+    #[serde(default = "default_usize::<FETCH_WINDOW>")]
     pub max_chain_len: usize,
 }
 
 impl Default for PendingBounds {
     fn default() -> Self {
-        Self { future_tolerance: 2, max_parents: 64, max_dc: DEFAULT_MAX_DC, max_chain_len: 64 }
+        Self {
+            future_tolerance: 2,
+            max_parents: FETCH_WINDOW,
+            max_dc: DEFAULT_MAX_DC,
+            max_chain_len: FETCH_WINDOW,
+        }
     }
 }
