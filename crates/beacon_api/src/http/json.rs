@@ -11,7 +11,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     AGENT_VERSION,
     ssz_view::{
-        AttestationView, BYTES_PER_KZG_COMMITMENT, SIGNED_BLS_CHANGE_SIZE,
+        AttestationView, BEACON_BLOCK_HEADER_SIZE, BYTES_PER_KZG_COMMITMENT, BeaconBlockHeaderView,
+        IndexedAttestationView, PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
         SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
         SyncCommitteeContributionView,
@@ -500,6 +501,65 @@ impl Json<'_> {
         self.end_object();
         self.key("signature");
         self.hex(SignedBlsToExecutionChangeView::signature(ssz));
+        self.end_object();
+    }
+
+    pub(crate) fn proposer_slashing(&mut self, ssz: &[u8; PROPOSER_SLASHING_SIZE]) {
+        let (first, second) = ssz.split_at(PROPOSER_SLASHING_SIZE / 2);
+        self.begin_object();
+        self.key("signed_header_1");
+        self.signed_block_header(first);
+        self.key("signed_header_2");
+        self.signed_block_header(second);
+        self.end_object();
+    }
+
+    /// `ssz` is one `SignedBeaconBlockHeader`.
+    fn signed_block_header(&mut self, ssz: &[u8]) {
+        let (header, signature) = ssz.split_at(BEACON_BLOCK_HEADER_SIZE);
+        let header = header.try_into().expect("BEACON_BLOCK_HEADER_SIZE bytes");
+        self.begin_object();
+        self.key("message");
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(BeaconBlockHeaderView::slot(header));
+        self.key("proposer_index");
+        self.quoted_u64(BeaconBlockHeaderView::proposer_index(header));
+        self.key("parent_root");
+        self.hex(BeaconBlockHeaderView::parent_root(header));
+        self.key("state_root");
+        self.hex(BeaconBlockHeaderView::state_root(header));
+        self.key("body_root");
+        self.hex(BeaconBlockHeaderView::body_root(header));
+        self.end_object();
+        self.key("signature");
+        self.hex(signature);
+        self.end_object();
+    }
+
+    /// `ssz` came out of the slashing pool, so its framing holds.
+    pub(crate) fn attester_slashing(&mut self, ssz: &[u8]) {
+        let second = u32::from_le_bytes(ssz[4..8].try_into().unwrap()) as usize;
+        self.begin_object();
+        self.key("attestation_1");
+        self.indexed_attestation(&ssz[8..second]);
+        self.key("attestation_2");
+        self.indexed_attestation(&ssz[second..]);
+        self.end_object();
+    }
+
+    fn indexed_attestation(&mut self, ssz: &[u8]) {
+        self.begin_object();
+        self.key("attesting_indices");
+        self.begin_array();
+        for index in IndexedAttestationView::attesting_indices(ssz).chunks_exact(8) {
+            self.quoted_u64(u64::from_le_bytes(index.try_into().unwrap()));
+        }
+        self.end_array();
+        self.key("data");
+        self.attestation_data(&IndexedAttestationView::data(ssz).into());
+        self.key("signature");
+        self.hex(IndexedAttestationView::signature(ssz));
         self.end_object();
     }
 

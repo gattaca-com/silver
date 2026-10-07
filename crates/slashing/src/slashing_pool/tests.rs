@@ -2,6 +2,7 @@ use silver_beacon_state_data::{
     BeaconState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH, StateId, StateReadView,
     StateWriterView, ValSeed, Withdrawals,
 };
+use silver_common::{TCache, TCacheId};
 
 use super::*;
 
@@ -125,6 +126,10 @@ impl Selection {
     }
 }
 
+fn handoff() -> TProducer {
+    TCache::producer(TCacheId::BeaconStateHandoff, 1 << 16)
+}
+
 fn selected(pool: &SlashingPool, pre_state: &StateReadView) -> Selection {
     let mut selection = Selection::default();
     pool.select(pre_state, &mut selection);
@@ -133,12 +138,13 @@ fn selected(pool: &SlashingPool, pre_state: &StateReadView) -> Selection {
 
 #[test]
 fn select_ranks_proposer_slashings_by_slashable_balance() {
+    let mut handoff = handoff();
     let eth: Vec<_> = (1..=MAX_PROPOSER_SLASHINGS as u64 + 4).collect();
     let chain = Chain::new(&eth);
     let head = chain.view(chain.base);
     let mut pool = SlashingPool::default();
     for vi in 0..eth.len() as u64 {
-        pool.insert_proposer_slashing(&proposer_proof(vi), &head);
+        pool.insert_proposer_slashing(&proposer_proof(vi), &head, &mut handoff);
     }
 
     let selection = selected(&pool, &head);
@@ -149,16 +155,17 @@ fn select_ranks_proposer_slashings_by_slashable_balance() {
 
 #[test]
 fn select_skips_offenders_the_fork_cannot_slash() {
+    let mut handoff = handoff();
     let mut chain = Chain::new(&[32; 4]);
     let fork = chain.retiring_0_and_1_activating_2();
     let head = chain.view(chain.base);
     let mut proposers = SlashingPool::default();
     for vi in 0..4 {
-        proposers.insert_proposer_slashing(&proposer_proof(vi), &head);
+        proposers.insert_proposer_slashing(&proposer_proof(vi), &head, &mut handoff);
     }
     let mut attesters = SlashingPool::default();
     let unslashable = double_vote(&[0, 1, 2]);
-    attesters.insert_attester_slashing(&unslashable, &[0, 1, 2], &head);
+    attesters.insert_attester_slashing(&unslashable, &[0, 1, 2], &head, &mut handoff);
 
     assert_eq!(selected(&proposers, &head).proposer_offenders(), [0, 1, 2, 3]);
     assert_eq!(selected(&attesters, &head).attester_slashing(), Some(&unslashable[..]));
@@ -170,16 +177,17 @@ fn select_skips_offenders_the_fork_cannot_slash() {
 
 #[test]
 fn attester_slashing_is_valued_without_proposer_slashed_offenders() {
+    let mut handoff = handoff();
     let chain = Chain::new(&[2048, 32, 64]);
     let head = chain.view(chain.base);
     let mut pool = SlashingPool::default();
     let with_the_whale = double_vote(&[0, 1]);
     let without = double_vote(&[2]);
-    pool.insert_attester_slashing(&with_the_whale, &[0, 1], &head);
-    pool.insert_attester_slashing(&without, &[2], &head);
+    pool.insert_attester_slashing(&with_the_whale, &[0, 1], &head, &mut handoff);
+    pool.insert_attester_slashing(&without, &[2], &head, &mut handoff);
     assert_eq!(selected(&pool, &head).attester_slashing(), Some(&with_the_whale[..]));
 
-    pool.insert_proposer_slashing(&proposer_proof(0), &head);
+    pool.insert_proposer_slashing(&proposer_proof(0), &head, &mut handoff);
 
     let selection = selected(&pool, &head);
     assert_eq!(selection.proposer_offenders(), [0]);
@@ -188,24 +196,26 @@ fn attester_slashing_is_valued_without_proposer_slashed_offenders() {
 
 #[test]
 fn attester_slashing_left_slashing_nobody_is_not_selected() {
+    let mut handoff = handoff();
     let chain = Chain::new(&[32]);
     let head = chain.view(chain.base);
     let mut pool = SlashingPool::default();
-    pool.insert_attester_slashing(&double_vote(&[0]), &[0], &head);
+    pool.insert_attester_slashing(&double_vote(&[0]), &[0], &head, &mut handoff);
     assert!(selected(&pool, &head).attester_slashing().is_some());
 
-    pool.insert_proposer_slashing(&proposer_proof(0), &head);
+    pool.insert_proposer_slashing(&proposer_proof(0), &head, &mut handoff);
 
     assert_eq!(selected(&pool, &head).attester_slashing(), None);
 }
 
 #[test]
 fn selection_lists_every_offender_and_resets_on_reuse() {
+    let mut handoff = handoff();
     let chain = Chain::new(&[32; 3]);
     let head = chain.view(chain.base);
     let mut pool = SlashingPool::default();
-    pool.insert_proposer_slashing(&proposer_proof(0), &head);
-    pool.insert_attester_slashing(&double_vote(&[1, 2]), &[1, 2], &head);
+    pool.insert_proposer_slashing(&proposer_proof(0), &head, &mut handoff);
+    pool.insert_attester_slashing(&double_vote(&[1, 2]), &[1, 2], &head, &mut handoff);
 
     let mut selection = Selection::default();
     pool.select(&head, &mut selection);
@@ -219,20 +229,22 @@ fn selection_lists_every_offender_and_resets_on_reuse() {
 
 #[test]
 fn select_includes_one_proof_per_proposer() {
+    let mut handoff = handoff();
     let chain = Chain::new(&[32]);
     let head = chain.view(chain.base);
     let mut pool = SlashingPool::default();
     let first = proposer_proof(0);
     let mut second = first;
     second[PROPOSER_SLASHING_SIZE - 1] = 1;
-    pool.insert_proposer_slashing(&first, &head);
-    pool.insert_proposer_slashing(&second, &head);
+    pool.insert_proposer_slashing(&first, &head, &mut handoff);
+    pool.insert_proposer_slashing(&second, &head, &mut handoff);
 
     assert_eq!(selected(&pool, &head).proposer_offenders().len(), 1);
 }
 
 #[test]
 fn attester_slashing_with_an_unfinalized_signer_is_refused() {
+    let mut handoff = handoff();
     let mut chain = Chain::new(&[32; 2]);
     let appended = chain.fork(|v| {
         v.append_validator([0xAA; 48], Default::default(), Withdrawals::default());
@@ -241,31 +253,39 @@ fn attester_slashing_with_an_unfinalized_signer_is_refused() {
     let mut pool = SlashingPool::default();
 
     for signers in [[&[0, 2][..], &[0]], [&[0], &[0, 2]]] {
-        let admission =
-            pool.insert_attester_slashing(&attester_proof(signers, [EPOCH; 2]), &[0], &head);
+        let admission = pool.insert_attester_slashing(
+            &attester_proof(signers, [EPOCH; 2]),
+            &[0],
+            &head,
+            &mut handoff,
+        );
         assert_eq!(admission, Admission::UnfinalizedSigner);
     }
     assert_eq!(selected(&pool, &head).attester_slashing(), None);
 
     let finalized_signers = attester_proof([&[0, 1], &[0]], [EPOCH; 2]);
-    assert_eq!(pool.insert_attester_slashing(&finalized_signers, &[0], &head), Admission::Stored);
+    assert_eq!(
+        pool.insert_attester_slashing(&finalized_signers, &[0], &head, &mut handoff),
+        Admission::Stored
+    );
 }
 
 #[test]
 fn select_skips_proofs_whose_signing_version_the_fork_changed() {
+    let mut handoff = handoff();
     let mut chain = Chain::new(&[64, 48, 32]);
     let (head, upgraded) = chain.before_and_after_upgrade();
     let (head, upgraded) = (chain.view(head), chain.view(upgraded));
     let mut proposers = SlashingPool::default();
-    proposers.insert_proposer_slashing(&proposer_proof_at(0, 3), &head);
-    proposers.insert_proposer_slashing(&proposer_proof_at(1, 7), &head);
+    proposers.insert_proposer_slashing(&proposer_proof_at(0, 3), &head, &mut handoff);
+    proposers.insert_proposer_slashing(&proposer_proof_at(1, 7), &head, &mut handoff);
     let mut attesters = SlashingPool::default();
     let second_stale = attester_proof([&[0], &[0]], [7, 3]);
     let first_stale = attester_proof([&[1], &[1]], [EPOCH, 7]);
     let fresh = attester_proof([&[2], &[2]], [7, 7]);
-    attesters.insert_attester_slashing(&second_stale, &[0], &head);
-    attesters.insert_attester_slashing(&first_stale, &[1], &head);
-    attesters.insert_attester_slashing(&fresh, &[2], &head);
+    attesters.insert_attester_slashing(&second_stale, &[0], &head, &mut handoff);
+    attesters.insert_attester_slashing(&first_stale, &[1], &head, &mut handoff);
+    attesters.insert_attester_slashing(&fresh, &[2], &head, &mut handoff);
 
     assert_eq!(selected(&proposers, &head).proposer_offenders(), [0, 1]);
     assert_eq!(selected(&attesters, &head).attester_slashing(), Some(&second_stale[..]));
@@ -276,6 +296,7 @@ fn select_skips_proofs_whose_signing_version_the_fork_changed() {
 
 #[test]
 fn full_proposer_pool_replaces_its_least_valuable_proof() {
+    let mut handoff = handoff();
     let eth: Vec<_> = (1..=PROPOSER_SLASHINGS_CAPACITY as u64 + 2).collect();
     let richest = eth.len() as u64 - 1;
     let mut chain = Chain::new(&eth);
@@ -284,16 +305,19 @@ fn full_proposer_pool_replaces_its_least_valuable_proof() {
     let mut pool = SlashingPool::default();
     let head = chain.view(chain.base);
     for vi in 1..=PROPOSER_SLASHINGS_CAPACITY as u64 {
-        assert_eq!(pool.insert_proposer_slashing(&proposer_proof(vi), &head), Admission::Stored);
+        assert_eq!(
+            pool.insert_proposer_slashing(&proposer_proof(vi), &head, &mut handoff),
+            Admission::Stored
+        );
     }
     assert_eq!(selected(&pool, &chain.view(only_1_slashable)).proposer_offenders(), [1]);
 
     let cheaper = proposer_proof(0);
     let as_cheap = proposer_proof(1);
     let richer = proposer_proof(richest);
-    assert_eq!(pool.insert_proposer_slashing(&cheaper, &head), Admission::Dropped);
-    assert_eq!(pool.insert_proposer_slashing(&as_cheap, &head), Admission::Dropped);
-    assert_eq!(pool.insert_proposer_slashing(&richer, &head), Admission::Replaced);
+    assert_eq!(pool.insert_proposer_slashing(&cheaper, &head, &mut handoff), Admission::Dropped);
+    assert_eq!(pool.insert_proposer_slashing(&as_cheap, &head, &mut handoff), Admission::Dropped);
+    assert_eq!(pool.insert_proposer_slashing(&richer, &head, &mut handoff), Admission::Replaced);
 
     assert!(selected(&pool, &chain.view(only_1_slashable)).proposer_slashings.is_empty());
     let survivors = selected(&pool, &chain.view(only_richest_slashable));
@@ -302,6 +326,7 @@ fn full_proposer_pool_replaces_its_least_valuable_proof() {
 
 #[test]
 fn full_attester_pool_replaces_its_least_valuable_proof() {
+    let mut handoff = handoff();
     let eth: Vec<_> = (1..=ATTESTER_SLASHINGS_CAPACITY as u64 + 2).collect();
     let richest = eth.len() as u32 - 1;
     let mut chain = Chain::new(&eth);
@@ -310,7 +335,8 @@ fn full_attester_pool_replaces_its_least_valuable_proof() {
     let mut pool = SlashingPool::default();
     let head = chain.view(chain.base);
     for vi in 1..=ATTESTER_SLASHINGS_CAPACITY as u32 {
-        let admission = pool.insert_attester_slashing(&double_vote(&[vi]), &[vi], &head);
+        let admission =
+            pool.insert_attester_slashing(&double_vote(&[vi]), &[vi], &head, &mut handoff);
         assert_eq!(admission, Admission::Stored);
     }
     let least = double_vote(&[1]);
@@ -320,9 +346,18 @@ fn full_attester_pool_replaces_its_least_valuable_proof() {
     );
 
     let richer = double_vote(&[richest]);
-    assert_eq!(pool.insert_attester_slashing(&double_vote(&[0]), &[0], &head), Admission::Dropped);
-    assert_eq!(pool.insert_attester_slashing(&least, &[1], &head), Admission::Dropped);
-    assert_eq!(pool.insert_attester_slashing(&richer, &[richest], &head), Admission::Replaced);
+    assert_eq!(
+        pool.insert_attester_slashing(&double_vote(&[0]), &[0], &head, &mut handoff),
+        Admission::Dropped
+    );
+    assert_eq!(
+        pool.insert_attester_slashing(&least, &[1], &head, &mut handoff),
+        Admission::Dropped
+    );
+    assert_eq!(
+        pool.insert_attester_slashing(&richer, &[richest], &head, &mut handoff),
+        Admission::Replaced
+    );
 
     assert_eq!(selected(&pool, &chain.view(only_1_slashable)).attester_slashing(), None);
     let survivor = selected(&pool, &chain.view(only_richest_slashable));
@@ -331,12 +366,13 @@ fn full_attester_pool_replaces_its_least_valuable_proof() {
 
 #[test]
 fn prune_drops_proposer_slashings_no_descendant_can_include() {
+    let mut handoff = handoff();
     let mut chain = Chain::new(&[32; 4]);
     let finalized = chain.retiring_0_and_1_activating_2();
     let mut pool = SlashingPool::default();
     let head = chain.view(chain.base);
     for vi in 0..4 {
-        pool.insert_proposer_slashing(&proposer_proof(vi), &head);
+        pool.insert_proposer_slashing(&proposer_proof(vi), &head, &mut handoff);
     }
 
     pool.prune(&head);
@@ -348,14 +384,15 @@ fn prune_drops_proposer_slashings_no_descendant_can_include() {
 
 #[test]
 fn prune_drops_attester_slashings_whose_offenders_all_retired() {
+    let mut handoff = handoff();
     let mut chain = Chain::new(&[32, 64, 32, 32]);
     let finalized = chain.retiring_0_and_1_activating_2();
     let mut pool = SlashingPool::default();
     let head = chain.view(chain.base);
     let retired = double_vote(&[0, 1]);
     let pending_activation = double_vote(&[0, 2]);
-    pool.insert_attester_slashing(&retired, &[0, 1], &head);
-    pool.insert_attester_slashing(&pending_activation, &[0, 2], &head);
+    pool.insert_attester_slashing(&retired, &[0, 1], &head, &mut handoff);
+    pool.insert_attester_slashing(&pending_activation, &[0, 2], &head, &mut handoff);
 
     pool.prune(&head);
     assert_eq!(selected(&pool, &head).attester_slashing(), Some(&retired[..]));
@@ -366,14 +403,15 @@ fn prune_drops_attester_slashings_whose_offenders_all_retired() {
 
 #[test]
 fn prune_keeps_proofs_signed_after_the_finalized_state_upgrades() {
+    let mut handoff = handoff();
     let mut chain = Chain::new(&[32, 32]);
     let (finalized, head) = chain.before_and_after_upgrade();
     let (finalized, head) = (chain.view(finalized), chain.view(head));
     let mut proposers = SlashingPool::default();
-    proposers.insert_proposer_slashing(&proposer_proof_at(0, EPOCH), &head);
+    proposers.insert_proposer_slashing(&proposer_proof_at(0, EPOCH), &head, &mut handoff);
     let mut attesters = SlashingPool::default();
     let upgraded = attester_proof([&[1], &[1]], [EPOCH; 2]);
-    attesters.insert_attester_slashing(&upgraded, &[1], &head);
+    attesters.insert_attester_slashing(&upgraded, &[1], &head, &mut handoff);
 
     proposers.prune(&finalized);
     attesters.prune(&finalized);

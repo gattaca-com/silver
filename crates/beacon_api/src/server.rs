@@ -630,7 +630,19 @@ impl BeaconApi {
                     }
                 }
             }
-            BeaconStateEvent::PoolChange(change) => self.ctx.pools.apply(change),
+            BeaconStateEvent::PoolChange(change) => {
+                let reader = &mut self.reader;
+                self.ctx.pools.apply(change, |ssz| {
+                    let handed_off = reader.acquire(ssz);
+                    match handed_off.buffer() {
+                        Ok((bytes, _)) => Some(bytes.into()),
+                        Err(e) => {
+                            silver_log::warn!(?e, "pooled slashing overwritten before mirroring");
+                            None
+                        }
+                    }
+                })
+            }
             _ => {}
         }
     }

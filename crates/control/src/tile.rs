@@ -231,15 +231,16 @@ impl Controller {
                 &mut self.gossip_handler,
                 producers,
             ),
-            // Neither carries a slot; `slot` only labels the logs.
-            GossipTopic::VoluntaryExit | GossipTopic::BlsToExecutionChange => {
-                self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot: 0 },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                )
-            }
+            // None carries a slot; `slot` only labels the logs.
+            GossipTopic::VoluntaryExit |
+            GossipTopic::BlsToExecutionChange |
+            GossipTopic::ProposerSlashing |
+            GossipTopic::AttesterSlashing => self.local_gossip.submit(
+                LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot: 0 },
+                now,
+                &mut self.gossip_handler,
+                producers,
+            ),
             topic => {
                 silver_log::error!(request_id, ?topic, "no local submission path for the topic");
                 produce_response(producers, request_id, Err(LocalGossipFailure::Internal))
