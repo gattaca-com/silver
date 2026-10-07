@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     BeaconApiResponse, GossipTopic, LocalGossipFailure, LocalGossipResult, MessageId, Nanos,
@@ -83,6 +84,7 @@ impl LocalGossipHandler {
         }
     }
 
+    #[timed]
     pub(super) fn expire(&mut self, now: Instant, producers: &mut SilverSpineProducers) {
         if self.next_deadline.is_none_or(|deadline| deadline > now) {
             return;

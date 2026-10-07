@@ -716,6 +716,7 @@ impl PeerManager {
     /// metadata seq. No-op if local metadata hasn't been initialised.
     /// Each emission bumps the per-peer Ping in-flight counter; release
     /// happens in `on_rpc_inbound` on the response chunk.
+    #[timed]
     pub fn fan_out_ping(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let metadata = self.metadata();
         let ping = RpcRequest::Ping(MetadataView::seq_number(metadata).to_le_bytes());
@@ -742,6 +743,7 @@ impl PeerManager {
     /// Send a Status (V2) to every connected peer using the current local
     /// status. Runs while syncing too — peers use our advancing
     /// finalized/head to score us; suppressing would let their view rot.
+    #[timed]
     pub fn fan_out_status(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let Some(status) = self.status().copied() else {
             return;
