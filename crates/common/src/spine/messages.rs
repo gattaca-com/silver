@@ -1233,18 +1233,14 @@ pub enum PoolChange {
     AttesterSlashingRemoved { id: u64 },
 }
 
-/// Why a received block is not in fork choice yet, or that it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BlockStage {
-    /// Held on a missing parent or parent payload; nothing computed yet.
+    /// Nothing computed yet.
     AwaitParent,
-    /// State transition committed; fork choice waits on the block's data
-    /// columns.
+    /// State transition committed.
     AwaitData,
-    /// In fork choice.
     Applied,
-    /// Root already present in fork choice when this receipt was checked.
     AlreadyKnown,
 }
 
