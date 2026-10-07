@@ -7,6 +7,7 @@ use flux::{
     spine::{SpineAdapter, SpineProducers},
     tile::Tile,
 };
+use flux_profiler::timed;
 use silver_chain_spec::SpecConfig;
 use silver_common::{
     BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, IngestionTime,
@@ -396,6 +397,7 @@ impl Controller {
         &self.peer_manager
     }
 
+    #[timed]
     fn handle_latest_status(
         &mut self,
         latest_status_event: Option<([u8; 92], u64, u64)>,
@@ -468,12 +470,14 @@ impl Tile<SilverSpine> for Controller {
         self.gossip_handler.loop_start();
         self.rpc_producer.loop_start();
         self.slashing_protection.loop_start();
+        
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.loop_start();
         }
         let now = Instant::now();
         self.advance_gossip_domains(now, &mut adapter.producers);
         self.reader.free();
+
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
             if let Some(exchange) = &mut self.partial_exchange {

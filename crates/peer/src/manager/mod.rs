@@ -548,6 +548,7 @@ impl PeerManager {
 
     /// The periodic sweep: gauges, scoring decay, redials, stalled attempts.
     /// Off the per-event path, so walking every peer is affordable here.
+    #[timed]
     pub fn tick(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         // Mesh-size gauges refreshed here rather than at each mutation site —
         // mesh entries persist (empty vecs stay), so this is exact.

@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     DataColumnsEvent, ForkName, GossipTopic, P2pSend, PeerEvent, SyncNeed, TProducer,
@@ -239,6 +240,7 @@ impl PartialExchange {
         }
     }
 
+    #[timed]
     pub fn peer_event(&mut self, event: &PeerEvent, now: Instant) {
         match *event {
             PeerEvent::P2pOutboundMessageDropped {
@@ -455,6 +457,7 @@ impl PartialExchange {
 
     /// Advance the slot and heartbeat before processing this loop's incoming
     /// events.
+    #[timed]
     pub fn advance(
         &mut self,
         ingress: &CellIngress,

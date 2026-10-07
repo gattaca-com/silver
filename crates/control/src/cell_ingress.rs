@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use flux::spine::SpineProducers;
+use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     ColumnOrigin, DataColumnsEvent, ForkName, GossipTopic, PeerControl, PeerEvent,
@@ -18,6 +19,7 @@ use crate::cell_allocator::CellAllocator;
 mod partial;
 use partial::PartialBudget;
 
+#[timed]
 pub(super) fn handle_data_column_event<F>(
     event: DataColumnsEvent,
     reader: &mut TCacheReader,
@@ -103,6 +105,7 @@ impl CellIngress {
         self.min_slot = self.min_slot.max(min_slot);
     }
 
+    #[timed]
     pub fn spin(&mut self, now: Instant, producers: &SilverSpineProducers) {
         let expired = now >= self.allocator.slot_window().1;
         if let Some(event) = self.allocator.advance(now, self.min_slot) {
@@ -114,6 +117,7 @@ impl CellIngress {
         }
     }
 
+    #[timed]
     pub fn handle(
         &mut self,
         event: CellStoreEvent,

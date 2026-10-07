@@ -608,6 +608,7 @@ impl PeerManager {
         self.params.unsubscribe_backoff + self.params.heartbeat_interval
     }
 
+    #[timed]
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
         for &topic in &self.our_topics {
             for digest in self.active_topic_digests(topic).into_iter().flatten() {

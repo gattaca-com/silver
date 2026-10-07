@@ -259,6 +259,7 @@ impl PeerManager {
     /// stream and serves them. For responses this maps errors to severity,
     /// updates peer database via `handle_event`, and releases the outbound
     /// in-flight slot on a terminal chunk.
+    #[timed]
     pub fn on_rpc_inbound(
         &mut self,
         rpc: RpcInbound,

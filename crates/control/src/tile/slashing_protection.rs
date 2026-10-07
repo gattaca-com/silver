@@ -104,6 +104,7 @@ impl SlashingProtectionHandler {
     /// Consume inbound Raft messages and pump all work currently ready in the
     /// state machine. This is called once per Control tile loop and never
     /// waits for network or timer work.
+    #[timed]
     pub(super) fn spin(
         &mut self,
         now: Instant,
