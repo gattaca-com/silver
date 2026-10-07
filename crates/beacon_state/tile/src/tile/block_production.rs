@@ -88,7 +88,9 @@ impl Operations<'static> {
 pub(super) struct PackedOperations {
     slashings: Selection,
     attestations: Vec<u8>,
+    voluntary_exits: Vec<u8>,
     sync_aggregate: [u8; BLOCK_SYNC_AGGREGATE_SIZE],
+    bls_to_execution_changes: Vec<u8>,
 }
 
 impl Default for PackedOperations {
@@ -96,7 +98,9 @@ impl Default for PackedOperations {
         Self {
             slashings: Selection::default(),
             attestations: Vec::new(),
+            voluntary_exits: Vec::new(),
             sync_aggregate: EMPTY_SYNC_AGGREGATE,
+            bls_to_execution_changes: Vec::new(),
         }
     }
 }
@@ -105,7 +109,9 @@ impl PackedOperations {
     fn clear(&mut self) {
         self.slashings.clear();
         self.attestations.clear();
+        self.voluntary_exits.clear();
         self.sync_aggregate = EMPTY_SYNC_AGGREGATE;
+        self.bls_to_execution_changes.clear();
     }
 
     fn operations(&self) -> Operations<'_> {
@@ -113,8 +119,9 @@ impl PackedOperations {
             proposer_slashings: self.slashings.proposer_slashings(),
             attester_slashings: self.slashings.attester_slashings(),
             attestations: &self.attestations,
+            voluntary_exits: &self.voluntary_exits,
             sync_aggregate: &self.sync_aggregate,
-            ..Operations::NONE
+            bls_to_execution_changes: &self.bls_to_execution_changes,
         }
     }
 }
@@ -477,6 +484,11 @@ impl BeaconStateTile {
             proposal.parent_root,
             &mut packed.sync_aggregate,
         );
+        packed.voluntary_exits.clear();
+        let slashed = packed.slashings.offenders();
+        self.exit_pool.select(&self.spec, &pre_state, slashed, &mut packed.voluntary_exits);
+        packed.bls_to_execution_changes.clear();
+        self.bls_change_pool.select(&pre_state, &mut packed.bls_to_execution_changes);
     }
 
     /// The built block's `(body_root, fork)` when `body` is its body. Comparing
@@ -508,16 +520,31 @@ impl BeaconStateTile {
         if let Some(block) = self.block_production.built_for(&proposal) {
             return Ok(block);
         }
-        let built = match self.build_block(proposal, payload, operations) {
-            Err(ProduceBlockFailure::Invalid) if operations != Operations::NONE => {
-                silver_log::warn!(
-                    slot = proposal.slot,
-                    "packed operations fail the block; built without them"
-                );
-                self.build_block(proposal, payload, Operations::NONE)
-            }
-            built => built,
-        }?;
+
+        let without_exits = Operations { voluntary_exits: &[], ..operations };
+        let built = self
+            .build_block(proposal, payload, operations)
+            .or_else(|failure| match failure {
+                ProduceBlockFailure::Invalid if without_exits != operations => {
+                    silver_log::warn!(
+                        slot = proposal.slot,
+                        "packed exits fail the block; built without them"
+                    );
+                    self.build_block(proposal, payload, without_exits)
+                }
+                failure => Err(failure),
+            })
+            .or_else(|failure| match failure {
+                ProduceBlockFailure::Invalid if without_exits != Operations::NONE => {
+                    silver_log::warn!(
+                        slot = proposal.slot,
+                        "packed operations fail the block; built without them"
+                    );
+                    self.build_block(proposal, payload, Operations::NONE)
+                }
+                failure => Err(failure),
+            })?;
+
         let block = built.block;
         self.block_production.built = Some(built);
         Ok(block)

@@ -11,24 +11,51 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    if !ctx.follows_chain(resp) {
+    if !reads_submission(req, ctx, resp) {
         return;
     }
-    if !req.body_is_json() {
-        resp.error(415, "only application/json bodies are read");
-        return;
-    }
-
-    let parsed = each_body_entry(req.body, |body_index, entry: T| match entry.accept(ctx) {
-        Ok(topics) => {
-            resp.await_verdicts(body_index, topics, entry.ssz_len(), |out| entry.encode(out))
-        }
-        Err(message) => resp.fail_entry(body_index, message),
-    });
+    let parsed =
+        each_body_entry(req.body, |body_index, entry: T| submit(ctx, resp, body_index, entry));
     match parsed {
         Err(message) => resp.error(400, message),
         Ok(0) => resp.error(400, "the body must name at least one entry"),
         Ok(_) => {}
+    }
+}
+
+/// For endpoints whose body is one entry, not an array. It answers as entry 0
+/// of an array would; the indexed 400 still carries `ErrorMessage`'s fields.
+pub(crate) fn post_single_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
+    req: &Request<'a>,
+    ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+) {
+    if !reads_submission(req, ctx, resp) {
+        return;
+    }
+    match serde_json::from_slice::<T>(req.body) {
+        Ok(entry) => submit(ctx, resp, 0, entry),
+        Err(_) => resp.error(400, "invalid request body"),
+    }
+}
+
+fn reads_submission(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) -> bool {
+    if !ctx.follows_chain(resp) {
+        return false;
+    }
+    if !req.body_is_json() {
+        resp.error(415, "only application/json bodies are read");
+        return false;
+    }
+    true
+}
+
+fn submit(ctx: &ApiCtx, resp: &mut Response<'_>, body_index: usize, entry: impl SubmittedEntry) {
+    match entry.accept(ctx) {
+        Ok(topics) => {
+            resp.await_verdicts(body_index, topics, entry.ssz_len(), |out| entry.encode(out))
+        }
+        Err(message) => resp.fail_entry(body_index, message),
     }
 }
 
@@ -87,7 +114,7 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
         LocalGossipFailure::TimedOut => "validation did not complete in time",
         LocalGossipFailure::Invalid => "rejected as invalid",
         LocalGossipFailure::Unverifiable => {
-            "the node does not know the attested block, its target or the committee"
+            "the node cannot verify it against its view of the chain"
         }
         LocalGossipFailure::Internal => "the node could not publish it",
     }

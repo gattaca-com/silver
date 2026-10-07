@@ -6,8 +6,9 @@ use flux::timing::Nanos;
 use silver_beacon_state_data::{
     BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
     EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
-    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, ValSeed, Withdrawals,
+    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, PendingPartialWithdrawal,
+    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee,
+    ValSeed, Withdrawals,
 };
 #[cfg(feature = "ef_tests")]
 use silver_common::ProducedBlock;
@@ -22,8 +23,8 @@ use silver_common::{
         EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED, PROPOSER_SLASHING_SIZE,
         ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BEACON_BLOCK_MIN,
         SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
-        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView, SingleAttestationView,
-        StatusView,
+        SINGLE_ATT_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView,
+        SignedVoluntaryExitView, SingleAttestationView, StatusView,
     },
     test_util::ShmemDir,
 };
@@ -43,7 +44,7 @@ use crate::{
     error::{PrecheckError, RejectReason},
     fork_choice::{BlockImport, PROPOSER_SCORE_BOOST_PERCENT, PayloadAxis, PayloadStatus},
     merkle, ssz_hash,
-    stf::VoteTarget,
+    stf::{self, VoteTarget},
     test_signing,
 };
 
@@ -2160,6 +2161,45 @@ fn ve_accept() {
     assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::VoluntaryExit);
 }
 
+/// Electra's no-pending-withdrawal assert is a block-processing condition,
+/// absent from gossip validation: the exit still relays.
+#[test]
+fn ve_with_pending_partial_withdrawal_accepted() {
+    let (mut tile, mut gossip, _rpc) = make_tile_with_gossip(1, BeaconState::empty_test(0));
+    seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
+
+    // Roll a pending fork carrying a withdrawal for validator 0 and repoint
+    // every live state id, the canonical head's included, at it.
+    let old = tile.last_applied.pending_idx;
+    let new = {
+        let mut g = tile.state.write();
+        let mut pw = g.pending.roll_from(old);
+        pw.partial_withdrawals.push(PendingPartialWithdrawal {
+            index: 0,
+            amount: 1,
+            withdrawable_epoch: u64::MAX,
+        });
+        pw.commit()
+    };
+    tile.last_applied.pending_idx = new;
+    for id in tile.fork_choice.live_state_ids_mut() {
+        if id.pending_idx == old {
+            id.pending_idx = new;
+        }
+    }
+    let canon = tile.canonical_state_id();
+    let rv = tile.state.read_view(canon);
+    assert_ne!(
+        stf::get_pending_balance_to_withdraw(&rv.pending, 0),
+        0,
+        "fixture: withdrawal pending"
+    );
+
+    let imm = seed_immutable(&tile);
+    let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
+    assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::VoluntaryExit);
+}
+
 #[test]
 fn ps_identical_headers_rejected() {
     let mut tile = make_tile();
@@ -2495,6 +2535,102 @@ fn bls_change_accept() {
     let to_addr = [0x42u8; 20];
     let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
     assert_non_block_relay(&mut tile, &mut gossip, &buf, GossipTopic::BlsToExecutionChange);
+}
+
+/// A tile past the shard-committee period, with accepted exits for `vis`.
+fn tile_with_pooled_exits(vis: &[u64]) -> BeaconStateTile {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
+    let imm = seed_immutable(&tile);
+    for &vi in vis {
+        let buf = test_signing::sign_voluntary_exit(vi as usize, 0, vi, &imm);
+        assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept);
+    }
+    tile
+}
+
+fn selected_exits(tile: &BeaconStateTile, state: StateId, slashed: &[usize]) -> Vec<u64> {
+    let mut out = Vec::new();
+    tile.exit_pool.select(&tile.spec, &tile.state.read_view(state), slashed, &mut out);
+    out.chunks_exact(SIGNED_VOLUNTARY_EXIT_SIZE)
+        .map(|c| SignedVoluntaryExitView::validator_index(c.try_into().unwrap()))
+        .collect()
+}
+
+#[test]
+fn exit_pool_packs_accepted_exits_in_validator_order() {
+    let tile = tile_with_pooled_exits(&[1, 0]);
+    assert_eq!(tile.exit_pool.len(), 2);
+    let head = tile.canonical_state_id();
+    assert_eq!(selected_exits(&tile, head, &[]), [0, 1]);
+    assert_eq!(
+        selected_exits(&tile, head, &[0]),
+        [1],
+        "an exit after its slashing fails the block"
+    );
+}
+
+#[test]
+fn exit_pool_holds_exits_until_withdrawals_drain() {
+    let mut tile = tile_with_pooled_exits(&[0]);
+    let head = tile.canonical_state_id();
+    let pending_idx = {
+        let mut g = tile.state.write();
+        let mut pw = g.pending.roll_from(head.pending_idx);
+        pw.partial_withdrawals.push(PendingPartialWithdrawal {
+            index: 0,
+            amount: 1,
+            withdrawable_epoch: u64::MAX,
+        });
+        pw.commit()
+    };
+    assert!(selected_exits(&tile, StateId { pending_idx, ..head }, &[]).is_empty());
+    tile.exit_pool.prune(&tile.state.read_view(StateId { pending_idx, ..head }));
+    assert_eq!(tile.exit_pool.len(), 1, "includable once the withdrawal is paid out");
+}
+
+#[test]
+fn exit_pool_prunes_exits_whose_exit_is_initiated() {
+    let mut tile = tile_with_pooled_exits(&[0, 1]);
+    let head = tile.canonical_state_id();
+    let validators_idx = {
+        let mut g = tile.state.write();
+        let mut w = g.validators.roll_from(head.validators_idx);
+        w.set_exit_epoch(0, 300);
+        w.commit()
+    };
+    tile.exit_pool.prune(&tile.state.read_view(StateId { validators_idx, ..head }));
+    assert_eq!(tile.exit_pool.len(), 1);
+    assert_eq!(selected_exits(&tile, head, &[]), [1]);
+}
+
+#[test]
+fn bls_change_pool_packs_until_credentials_change() {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, 0);
+    let imm = seed_immutable(&tile);
+    let buf = test_signing::sign_bls_to_execution_change(0, 0, &[0x42; 20], &imm);
+    assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept);
+    let rebuf = test_signing::sign_bls_to_execution_change(0, 0, &[0x43; 20], &imm);
+    assert_eq!(tile.handle_bls_to_execution_change(&rebuf), Feedback::AlreadySeen);
+
+    let head = tile.canonical_state_id();
+    let mut out = Vec::new();
+    tile.bls_change_pool.select(&tile.state.read_view(head), &mut out);
+    assert_eq!(out, buf, "the first valid change, alone");
+
+    let validators_idx = {
+        let mut g = tile.state.write();
+        let mut w = g.validators.roll_from(head.validators_idx);
+        w.set_credentials(0, Withdrawals([0x01; 32]));
+        w.commit()
+    };
+    let changed = tile.state.read_view(StateId { validators_idx, ..head });
+    out.clear();
+    tile.bls_change_pool.select(&changed, &mut out);
+    assert!(out.is_empty(), "credentials already changed");
+    tile.bls_change_pool.prune(&changed);
+    assert_eq!(tile.bls_change_pool.len(), 0);
 }
 
 #[test]
@@ -5839,6 +5975,161 @@ fn operations_the_block_rejects_are_dropped_not_the_block() {
     assert_eq!(
         BeaconBlockBodyFuluView::voluntary_exits_offset(body_fixed),
         BeaconBlockBodyFuluView::execution_payload_offset(body_fixed),
+        "the exit is left out"
+    );
+}
+
+/// Exits and BLS changes accepted on gossip land in the produced block, minus
+/// the exit of a validator the same block slashes.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn pooled_exits_and_bls_changes_land_in_the_produced_block() {
+    use silver_common::ssz_view::{
+        BeaconBlockBodyFuluView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+    };
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    // The fixture sits in its first epochs; exits need no seasoning here.
+    let spec = SpecConfig { shard_committee_period: 0, ..SpecConfig::mainnet() };
+    let state = BeaconState::from_checkpoint(&pre_ssz, &spec, &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) = tile_with_producers_on(slot, state, spec);
+
+    let head = tile.state.read_view(tile.canonical_state_id());
+    let count = head.validators.count() as u64;
+    let proposer = SignedBeaconBlockView::proposer_index(&block_ssz);
+    let [exiter, slashed_exiter] = [1, 2].map(|i| (proposer + i) % count);
+    let changer = (3..count)
+        .map(|i| (proposer + i) % count)
+        .find(|&vi| head.validators.credentials(vi as usize).0[0] == 0x00)
+        .expect("fixture premise: a validator with BLS credentials");
+    let (genesis_validators_root, capella_fork_version, genesis_fork_version) = (
+        head.imm.genesis_validators_root,
+        head.imm.capella_fork_version,
+        head.imm.genesis_fork_version,
+    );
+    let sign = |key: usize, object_root: B256, domain_type, version| {
+        let domain = bls::compute_domain(domain_type, version, &genesis_validators_root);
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        fixture_secret_key(key).sign(&signing_root, bls::DST, &[]).to_bytes()
+    };
+    let exit = |vi: u64| {
+        let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
+        buf[8..16].copy_from_slice(&vi.to_le_bytes());
+        let root = ssz_hash::hash_tree_root_voluntary_exit(0, vi);
+        buf[16..].copy_from_slice(&sign(
+            vi as usize,
+            root,
+            bls::DOMAIN_VOLUNTARY_EXIT,
+            capella_fork_version,
+        ));
+        buf
+    };
+    let mut change = [0u8; SIGNED_BLS_CHANGE_SIZE];
+    // Mock genesis commits validator `i` to withdrawal key `8191 - i`.
+    let withdrawal_key = 32 * 256 - 1 - changer as usize;
+    let from_pubkey = fixture_secret_key(withdrawal_key).sk_to_pk().to_bytes();
+    change[0..8].copy_from_slice(&changer.to_le_bytes());
+    change[8..56].copy_from_slice(&from_pubkey);
+    change[56..76].copy_from_slice(&[0x42; 20]);
+    let root = ssz_hash::hash_tree_root_bls_change(changer, &from_pubkey, &[0x42; 20]);
+    change[76..].copy_from_slice(&sign(
+        withdrawal_key,
+        root,
+        bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
+        genesis_fork_version,
+    ));
+
+    let kept_exit = exit(exiter);
+    assert_eq!(tile.handle_voluntary_exit(&kept_exit), Feedback::Accept);
+    assert_eq!(tile.handle_voluntary_exit(&exit(slashed_exiter)), Feedback::Accept);
+    assert_eq!(tile.handle_bls_to_execution_change(&change), Feedback::Accept);
+    let mut equivocation = [0u8; PROPOSER_SLASHING_SIZE];
+    for header in [0, 208] {
+        equivocation[header..header + 8].copy_from_slice(&slot.to_le_bytes());
+        equivocation[header + 8..header + 16].copy_from_slice(&slashed_exiter.to_le_bytes());
+    }
+    equivocation[208 + 80] = 1;
+    let head = tile.state.read_view(tile.canonical_state_id());
+    tile.slashing_pool.insert_proposer_slashing(&equivocation, &head);
+
+    let (block, _) =
+        produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body = &header[12 + 84..];
+    let field = |from: u32, to: u32| &body[from as usize..to as usize];
+    let proposer_slashings = field(
+        BeaconBlockBodyFuluView::proposer_slashings_offset(body),
+        BeaconBlockBodyFuluView::attester_slashings_offset(body),
+    );
+    let exits = field(
+        BeaconBlockBodyFuluView::voluntary_exits_offset(body),
+        BeaconBlockBodyFuluView::execution_payload_offset(body),
+    );
+    // The header buffer stops at the payload and carries the changes after it.
+    let bls_changes = &header[block.payload_at as usize..];
+    assert_eq!(proposer_slashings, equivocation);
+    assert_eq!(exits, kept_exit, "the slashed validator's exit is left out");
+    assert_eq!(bls_changes, change);
+
+    let post_state = *tile.block_production.state_ids_mut().next().unwrap();
+    let validators = tile.state.read_view(post_state).validators;
+    assert_ne!(validators.exit_epoch(exiter as usize), u64::MAX);
+    assert_eq!(validators.credentials(changer as usize).0[0], 0x01);
+}
+
+/// An exit the block rejects is dropped alone; the rest of the packing stays.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn a_rejected_exit_keeps_the_other_operations() {
+    use silver_common::ssz_view::{
+        BeaconBlockBodyFuluView, PROPOSER_SLASHING_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+    };
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, _spine, _adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+    let (_, payload) = publish_block_bytes(&mut gp, &fixture_payload_frame(&block_ssz));
+
+    // Two signed headers of validator 1 for one slot, differing in body.
+    let offender = 1;
+    let view = tile.state.read_view(tile.canonical_state_id());
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_PROPOSER,
+        view.epoch.fork_version_at(slot / SLOTS_PER_EPOCH),
+        &view.imm.genesis_validators_root,
+    );
+    let mut slashing = [0u8; PROPOSER_SLASHING_SIZE];
+    for (i, body_root) in [[1u8; 32], [2u8; 32]].into_iter().enumerate() {
+        let header =
+            BeaconBlockHeader { slot, proposer_index: offender, body_root, ..Default::default() };
+        let root = ssz_hash::hash_tree_root_block_header(&header);
+        let signing_root = bls::compute_signing_root(&root, &domain);
+        let signature = fixture_secret_key(offender as usize).sign(&signing_root, bls::DST, &[]);
+        let signed = &mut slashing[i * 208..(i + 1) * 208];
+        signed[0..8].copy_from_slice(&slot.to_le_bytes());
+        signed[8..16].copy_from_slice(&offender.to_le_bytes());
+        signed[80..112].copy_from_slice(&body_root);
+        signed[112..].copy_from_slice(&signature.to_bytes());
+    }
+    let exit = [0; SIGNED_VOLUNTARY_EXIT_SIZE];
+    let operations =
+        Operations { proposer_slashings: &slashing, voluntary_exits: &exit, ..Operations::NONE };
+
+    let proposal = fixture_proposal(&tile, &block_ssz);
+    let block = tile.block_for(proposal, payload, operations).expect("built without the exit");
+
+    let header = tile.events_producer.read_buffer(block.header).unwrap();
+    let body = &header[12 + 84..];
+    let slashings = BeaconBlockBodyFuluView::proposer_slashings_offset(body)..
+        BeaconBlockBodyFuluView::attester_slashings_offset(body);
+    assert_eq!(slashings.len(), PROPOSER_SLASHING_SIZE, "the slashing stays");
+    assert_eq!(
+        BeaconBlockBodyFuluView::voluntary_exits_offset(body),
+        BeaconBlockBodyFuluView::execution_payload_offset(body),
         "the exit is left out"
     );
 }

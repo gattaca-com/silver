@@ -200,6 +200,24 @@ fn attester_slashing_left_slashing_nobody_is_not_selected() {
 }
 
 #[test]
+fn selection_lists_every_offender_and_resets_on_reuse() {
+    let chain = Chain::new(&[32; 3]);
+    let head = chain.view(chain.base);
+    let mut pool = SlashingPool::default();
+    pool.insert_proposer_slashing(&proposer_proof(0), &head);
+    pool.insert_attester_slashing(&double_vote(&[1, 2]), &[1, 2], &head);
+
+    let mut selection = Selection::default();
+    pool.select(&head, &mut selection);
+    let mut offenders = selection.offenders().to_vec();
+    offenders.sort_unstable();
+    assert_eq!(offenders, [0, 1, 2]);
+
+    SlashingPool::default().select(&head, &mut selection);
+    assert!(selection.offenders().is_empty());
+}
+
+#[test]
 fn select_includes_one_proof_per_proposer() {
     let chain = Chain::new(&[32]);
     let head = chain.view(chain.base);

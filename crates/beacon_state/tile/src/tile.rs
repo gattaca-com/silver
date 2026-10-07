@@ -31,6 +31,8 @@ use crate::{
         attestation_root_memo::AttestationRootMemo,
         bid_pool::BidPool,
         block_production::{BlockProduction, Proposal},
+        bls_change_pool::BlsChangePool,
+        exit_pool::ExitPool,
         fork_data_roots::ForkDataRoots,
         gossip::{BatchedVote, ParkedEnvelope},
         held_blocks::{HeldBlocks, StagedVerdict},
@@ -53,6 +55,8 @@ pub mod attestation_root_memo;
 mod bid_pool;
 mod block;
 mod block_production;
+mod bls_change_pool;
+mod exit_pool;
 mod finalize;
 mod fork_choice;
 mod fork_data_roots;
@@ -189,6 +193,8 @@ pub struct BeaconStateTile {
     seen_proposer_slashings: SeenIndices,
     seen_attester_slashed: SeenIndices,
     slashing_pool: SlashingPool,
+    exit_pool: ExitPool,
+    bls_change_pool: BlsChangePool,
     fork_data_roots: ForkDataRoots,
 
     /// Canonical in-process state: finalized base + per-fork per-tier rings.
@@ -289,6 +295,8 @@ impl BeaconStateTile {
             seen_proposer_slashings: SeenIndices::new(val_cap),
             seen_attester_slashed: SeenIndices::new(val_cap),
             slashing_pool: SlashingPool::default(),
+            exit_pool: ExitPool::default(),
+            bls_change_pool: BlsChangePool::default(),
             attestation_root_memo: AttestationRootMemo::default(),
             fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
@@ -1195,8 +1203,10 @@ impl Tile<SilverSpine> for BeaconStateTile {
         adapter.subscribe_broadcast::<ReplayBlock>();
     }
 
-    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+    fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         self.open_tcaches().expect("tcache wiring");
+        self.bls_change_pool.with_producer(&adapter.producers);
+        self.exit_pool.with_producer(&adapter.producers);
         true
     }
 
