@@ -707,10 +707,12 @@ mod tests {
     fn fork_schedule_keeps_one_entry_per_fork_when_several_share_an_epoch() {
         let forks = data(&fork_schedule_body(&SpecConfig::hoodi()));
         let forks = forks.as_array().unwrap();
-        assert_eq!(forks.len(), 7);
+        assert_eq!(forks.len(), 8);
         assert_eq!(forks.iter().filter(|f| f["epoch"] == "0").count(), 5);
         assert_eq!(forks[5]["epoch"], "2048");
         assert_eq!(forks[6]["current_version"], "0x70000910");
+        assert_eq!(forks[7]["current_version"], "0x80000910");
+        assert_eq!(forks[7]["epoch"], "132352");
     }
 
     #[test]

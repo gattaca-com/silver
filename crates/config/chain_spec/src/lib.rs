@@ -542,7 +542,7 @@ impl SpecConfig {
     }
 
     /// Hoodi testnet (launched 2025-03-17), transcribed from
-    /// `eth-clients/hoodi/metadata/config.yaml` as of 2026-08-19. Preset
+    /// `eth-clients/hoodi/metadata/config.yaml` as of 2026-10-08. Preset
     /// dimensions, validator lifecycle, inactivity, slashing and churn
     /// scalars are all mainnet's; what differs is the `0xN0000910`
     /// fork-version pattern (N = fork ordinal), the fork epochs, genesis time
@@ -573,7 +573,7 @@ impl SpecConfig {
             fulu_fork_version: default_fork_version::<0x70000910>(),
             fulu_fork_epoch: 50688,
             gloas_fork_version: default_fork_version::<0x80000910>(),
-            gloas_fork_epoch: unscheduled(),
+            gloas_fork_epoch: 132352,
             blob_schedule: vec![
                 BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
                 BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
@@ -796,6 +796,7 @@ mod tests {
         assert_eq!(spec.genesis_delay, 600);
         assert_eq!(spec.seconds_per_eth1_block, 12);
         assert_eq!(spec.terminal_total_difficulty, 0);
+        assert_eq!(spec.gloas_fork_epoch, 132352);
         assert_eq!(spec.blob_schedule, [
             BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
             BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
@@ -903,6 +904,8 @@ mod tests {
             (spec.electra_fork_epoch, spec.electra_fork_version),
             (spec.fulu_fork_epoch - 1, spec.electra_fork_version),
             (spec.fulu_fork_epoch, spec.fulu_fork_version),
+            (spec.gloas_fork_epoch - 1, spec.fulu_fork_version),
+            (spec.gloas_fork_epoch, spec.gloas_fork_version),
         ] {
             assert_eq!(spec.fork_version_at(epoch), version, "epoch {epoch}");
         }
