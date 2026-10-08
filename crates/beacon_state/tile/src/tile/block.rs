@@ -351,7 +351,7 @@ impl BeaconStateTile {
                     block = hex32(&block_root),
                     "replayed envelope parked until its block imports"
                 );
-                self.buffer_pending_envelope(block_root, acquired, true);
+                self.pending_envelopes.park(block_root, acquired, true);
             }
             EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 silver_log::warn!("replayed on-disk envelope rejected")

@@ -2030,14 +2030,17 @@ fn backfill_envelope_response_is_not_parked() {
     for kind in [DataKind::Envelope, DataKind::Block] {
         let ssz = rpc_envelope(&mut rp, unknown_root);
         tile.on_rpc_inbound(response(kind, Origin::Backfill, ssz), &mut adapter.producers);
-        assert!(tile.pending_envelopes.is_empty(), "backfill {kind:?} response not parked");
+        assert!(
+            !tile.pending_envelopes.holds(&unknown_root),
+            "backfill {kind:?} response not parked"
+        );
     }
 
     // Control: the live origin on the same bytes *does* park, so the
     // assertions above are about the guard and not about malformed input.
     let ssz = rpc_envelope(&mut rp, unknown_root);
     tile.on_rpc_inbound(response(DataKind::Envelope, Origin::Live, ssz), &mut adapter.producers);
-    assert!(tile.pending_envelopes.contains_key(&unknown_root), "live envelope parks");
+    assert!(tile.pending_envelopes.holds(&unknown_root), "live envelope parks");
 }
 
 /// A replayed block can wait, e.g. on its parent's payload, while its envelope
@@ -2049,7 +2052,7 @@ fn replayed_envelope_before_its_block_imports_parks() {
 
     let waiting_root = [0xE6u8; 32];
     tile.replay_envelope(rpc_envelope(&mut rp, waiting_root));
-    assert!(tile.pending_envelopes.contains_key(&waiting_root));
+    assert!(tile.pending_envelopes.holds(&waiting_root));
 }
 
 #[test]

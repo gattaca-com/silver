@@ -22,16 +22,7 @@ impl BeaconStateTile {
         );
         self.held.clear_outdated(finalized_slot);
 
-        self.pending_envelopes.retain(|root, parked| {
-            let held = parked.read.buffer().is_ok();
-            if !held {
-                silver_log::error!(
-                    block = hex32(root),
-                    "parked envelope lapped in the tcache before its block arrived"
-                );
-            }
-            held
-        });
+        self.pending_envelopes.drop_evicted();
     }
 
     pub(super) fn replay_orphans(&mut self, parent_root: B256, producers: &mut Producers) {
@@ -99,8 +90,9 @@ impl BeaconStateTile {
         self.held.orphans.expire(wall_slot, |parent, slot| {
             producers.produce(SyncNeed::missing_block(*parent, slot));
         });
+        let envelopes = &self.pending_envelopes;
         self.held.payload_orphans.expire(wall_slot, |parent, slot| {
-            producers.produce(SyncNeed::missing_envelope(*parent, slot));
+            envelopes.request(*parent, slot, producers);
         });
     }
 
@@ -117,7 +109,7 @@ impl BeaconStateTile {
         if !self.held.payload_orphans.park(parent_root, orphan) {
             return false;
         }
-        producers.produce(SyncNeed::missing_envelope(parent_root, block_slot));
+        self.pending_envelopes.request(parent_root, block_slot, producers);
         true
     }
 
