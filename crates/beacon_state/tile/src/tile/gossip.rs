@@ -322,14 +322,14 @@ impl BeaconStateTile {
 
     pub(super) fn defer_vote(&mut self, vote: NewGossipMsg, producers: &mut Producers) {
         let pin = self.reader.acquire(vote.ssz);
-        self.vote_batch.push(BatchedVote { vote, pin });
-        if self.vote_batch.len() >= VOTE_BATCH_CAP {
+        self.votes.batch.push(BatchedVote { vote, pin });
+        if self.votes.batch.len() >= VOTE_BATCH_CAP {
             self.flush_votes(producers);
         }
     }
 
     pub(super) fn flush_votes(&mut self, producers: &mut Producers) {
-        if !self.vote_batch.is_empty() {
+        if !self.votes.batch.is_empty() {
             self.verify_and_commit_votes(producers);
         }
     }
@@ -340,20 +340,20 @@ impl BeaconStateTile {
     /// per-message verification so only the culprits are rejected.
     #[timed]
     fn verify_and_commit_votes(&mut self, producers: &mut Producers) {
-        debug_assert!(!self.vote_batch.is_empty());
-        BeaconStateCounters::VoteBatchSize.set(self.vote_batch.len() as u64);
+        debug_assert!(!self.votes.batch.is_empty());
+        BeaconStateCounters::VoteBatchSize.set(self.votes.batch.len() as u64);
 
         self.prepare_votes(producers);
 
         let batch_ok = self.sig_batch.verify_all();
-        if !batch_ok && !self.vote_pending.is_empty() {
+        if !batch_ok && !self.votes.pending.is_empty() {
             BeaconStateCounters::VoteBatchFallback.inc();
         }
 
         let mut accepted = false;
         let mut committed_ptc = false;
-        self.vote_pending.reverse();
-        while let Some((m, p, sig)) = self.vote_pending.pop() {
+        self.votes.pending.reverse();
+        while let Some((m, p, sig)) = self.votes.pending.pop() {
             // Deduplicate only against votes whose signatures have already
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
@@ -396,12 +396,12 @@ impl BeaconStateTile {
     fn prepare_votes(&mut self, producers: &mut Producers) {
         self.sig_batch.clear();
         debug_assert!(
-            self.vote_prepared.is_empty() &&
-                self.vote_checked.is_empty() &&
-                self.vote_pending.is_empty()
+            self.votes.prepared.is_empty() &&
+                self.votes.checked.is_empty() &&
+                self.votes.pending.is_empty()
         );
 
-        let mut batch = std::mem::take(&mut self.vote_batch);
+        let mut batch = std::mem::take(&mut self.votes.batch);
         for BatchedVote { vote, pin } in batch.drain(..) {
             let Some(data) = pin.buffer().ok().map(|(d, _)| d) else {
                 Self::local_verdict(&vote, Feedback::Ignore, producers);
@@ -420,7 +420,7 @@ impl BeaconStateTile {
                 _ => continue,
             };
             match prepared {
-                Ok(p) => self.vote_prepared.push((BatchedVote { vote, pin }, p)),
+                Ok(p) => self.votes.prepared.push((BatchedVote { vote, pin }, p)),
                 Err(Feedback::Reject { reason, .. }) => {
                     self.reject_gossip(&vote, data, reason, producers)
                 }
@@ -431,10 +431,10 @@ impl BeaconStateTile {
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
         }
-        self.vote_batch = batch;
+        self.votes.batch = batch;
 
-        let mut prepared = std::mem::take(&mut self.vote_prepared);
-        let mut checked = std::mem::take(&mut self.vote_checked);
+        let mut prepared = std::mem::take(&mut self.votes.prepared);
+        let mut checked = std::mem::take(&mut self.votes.checked);
         CheckedSignature::check_all(prepared.iter().map(|(_, p)| p.signature()), |s| {
             checked.push(s)
         });
@@ -451,16 +451,16 @@ impl BeaconStateTile {
             // signature, paired once.
             let key = p.dedup_key();
             let (pk, root) = p.pubkey_and_root();
-            let paired = self.vote_pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
+            let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
                 matches!(p, PreparedVote::SyncMessage(_)) &&
                     self.sig_batch.contains(pk, sig, root);
             if !paired {
                 self.sig_batch.push_parsed(pk, sig, *root);
             }
-            self.vote_pending.push((vote, p, sig));
+            self.votes.pending.push((vote, p, sig));
         }
-        self.vote_prepared = prepared;
-        self.vote_checked = checked;
+        self.votes.prepared = prepared;
+        self.votes.checked = checked;
     }
 
     pub(super) fn prepare_sync_message(

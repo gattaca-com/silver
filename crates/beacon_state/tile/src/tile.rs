@@ -166,6 +166,25 @@ struct HeadObservation {
     payload: PayloadResolution,
 }
 
+struct Votes {
+    // Pinned: the tail moves as later reads in the same pass arrive.
+    batch: Vec<BatchedVote>,
+    prepared: Vec<(BatchedVote, gossip::PreparedVote)>,
+    checked: Vec<Option<CheckedSignature>>,
+    pending: Vec<(NewGossipMsg, gossip::PreparedVote, CheckedSignature)>,
+}
+
+impl Votes {
+    fn new() -> Self {
+        Self {
+            batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            prepared: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            checked: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+        }
+    }
+}
+
 pub struct BeaconStateTile {
     sync_target: SyncUpdate,
     ticker: SlotTicker,
@@ -180,11 +199,7 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
-    // Pinned: the tail moves as later reads in the same pass arrive.
-    vote_batch: Vec<BatchedVote>,
-    vote_prepared: Vec<(BatchedVote, gossip::PreparedVote)>,
-    vote_checked: Vec<Option<CheckedSignature>>,
-    vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote, CheckedSignature)>,
+    votes: Votes,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
     proposer_preparations: ProposerPreparations,
@@ -286,10 +301,7 @@ impl BeaconStateTile {
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
-            vote_batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
-            vote_prepared: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
-            vote_checked: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
-            vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            votes: Votes::new(),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
             proposer_preparations: ProposerPreparations::default(),

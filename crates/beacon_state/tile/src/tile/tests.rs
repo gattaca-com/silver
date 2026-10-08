@@ -3068,8 +3068,8 @@ fn attestation_batch_flush_applies_all() {
 
     tile.flush_votes(&mut adapter.producers);
     assert_eq!(voted_weight(&mut tile, bbr), 2 * MAX_EFFECTIVE_BALANCE);
-    assert!(tile.vote_batch.is_empty());
-    assert!(tile.vote_pending.is_empty());
+    assert!(tile.votes.batch.is_empty());
+    assert!(tile.votes.pending.is_empty());
     assert_eq!(non_block_relays(&mut adapter), expected_topics);
 }
 
@@ -3384,7 +3384,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     // The test state's default current committee repeats validator 0 in all
     // 128 positions of each subcommittee.
     assert_eq!(SyncCommitteeContributionView::aggregation_bits(&contribution), &[0xff; 16]);
-    assert!(tile.vote_batch.is_empty() && tile.vote_pending.is_empty());
+    assert!(tile.votes.batch.is_empty() && tile.votes.pending.is_empty());
     assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
 }
 
