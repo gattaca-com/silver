@@ -36,7 +36,8 @@ use crate::{
         fork_data_roots::ForkDataRoots,
         gossip::{BatchedVote, ParkedEnvelope},
         held_blocks::{HeldBlocks, StagedVerdict},
-        payload_builder_exits::PayloadBuilderExits,
+        payload_attestation_pool::PayloadAttestationPool,
+        payload_execution_requests::PayloadExecutionRequests,
         precomputed_epochs::PrecomputedEpochs,
         proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
@@ -63,7 +64,8 @@ mod fork_data_roots;
 mod gossip;
 mod held_blocks;
 mod orphan_pool;
-mod payload_builder_exits;
+mod payload_attestation_pool;
+mod payload_execution_requests;
 mod proposer_preparations;
 mod seen_aggregates;
 mod seen_proposer_preferences;
@@ -228,7 +230,8 @@ pub struct BeaconStateTile {
     pending_envelopes: FxHashMap<B256, ParkedEnvelope>,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
-    payload_builder_exits: PayloadBuilderExits,
+    payload_execution_requests: PayloadExecutionRequests,
+    payload_attestation_pool: PayloadAttestationPool,
     seen_proposer_preferences: SeenProposerPreferences,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
@@ -310,7 +313,8 @@ impl BeaconStateTile {
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: root_map(),
             payload_bids_pool: BidPool::default(),
-            payload_builder_exits: PayloadBuilderExits::default(),
+            payload_execution_requests: PayloadExecutionRequests::default(),
+            payload_attestation_pool: PayloadAttestationPool::default(),
             seen_proposer_preferences: SeenProposerPreferences::default(),
             pending_bounds: syncing.pending,
             verify_weak_subjectivity,
@@ -784,6 +788,7 @@ impl BeaconStateTile {
         let inclusion_floor = (slot / SLOTS_PER_EPOCH).saturating_sub(1) * SLOTS_PER_EPOCH;
         self.attestation_pool.prune_before(inclusion_floor);
         self.sync_contribution_pool.prune_before(floor);
+        self.payload_attestation_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
         self.attestation_root_memo.prune_before(floor);
         self.payload_bids_pool.on_slot(slot);

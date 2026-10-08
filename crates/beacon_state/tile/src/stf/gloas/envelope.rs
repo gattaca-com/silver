@@ -6,9 +6,9 @@ use silver_beacon_state_data::{SpecConfig, StateReadView};
 use silver_common::{
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
-        BUILDER_EXIT_REQUEST_SIZE, EXECUTION_PAYLOAD_FIXED_GLOAS, ExecutionPayloadEnvelopeView,
-        ExecutionPayloadView, MAX_WITHDRAWALS_PER_PAYLOAD, SignedExecutionPayloadEnvelopeView,
-        WITHDRAWAL_SIZE, WithdrawalView,
+        EXECUTION_PAYLOAD_FIXED_GLOAS, ExecutionPayloadEnvelopeView, ExecutionPayloadView,
+        MAX_WITHDRAWALS_PER_PAYLOAD, SignedExecutionPayloadEnvelopeView, WITHDRAWAL_SIZE,
+        WithdrawalView,
     },
 };
 
@@ -78,14 +78,9 @@ pub fn verify_execution_payload_envelope(
 
 /// Only for an envelope `verify_execution_payload_envelope` accepted, which
 /// bounds and roots its requests.
-pub fn envelope_builder_exits(signed: &[u8]) -> Box<[[u8; BUILDER_EXIT_REQUEST_SIZE]]> {
+pub fn envelope_execution_requests(signed: &[u8]) -> &[u8] {
     let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
-    let requests = ExecutionPayloadEnvelopeView::execution_requests(envelope);
-    let [.., builder_exits] = ExecutionRequestsView::sections(requests);
-    builder_exits
-        .chunks_exact(BUILDER_EXIT_REQUEST_SIZE)
-        .map(|request| request.try_into().unwrap())
-        .collect()
+    ExecutionPayloadEnvelopeView::execution_requests(envelope)
 }
 
 /// `process_execution_payload`'s `payload.withdrawals ==

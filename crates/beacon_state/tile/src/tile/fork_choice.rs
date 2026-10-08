@@ -240,6 +240,14 @@ impl BeaconStateTile {
     pub(super) fn commit_ptc(&mut self, p: &PreparedPtc) {
         self.fork_choice.record_ptc_votes(&p.block_root, &p.ptc_positions, p.present, p.da);
         self.seen_ptc.mark(p.slot, p.validator as usize);
+        self.payload_attestation_pool.insert(
+            &p.block_root,
+            p.slot,
+            p.present,
+            p.da,
+            &p.ptc_positions,
+            p.signature.as_sig(),
+        );
     }
 
     pub(super) fn notify_ptc_from_block(&mut self, block_data: &[u8]) {

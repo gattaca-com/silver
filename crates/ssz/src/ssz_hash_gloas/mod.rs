@@ -14,5 +14,6 @@ mod payload_attestation;
 mod proposer_preferences;
 
 pub use execution_requests::{
-    EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView, RequestCountOutOfBounds,
+    EMPTY_EXECUTION_REQUESTS, EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView,
+    RequestCountOutOfBounds,
 };
