@@ -3,15 +3,15 @@ use std::{io::Write, mem};
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, ExecutionAddress,
-    SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
+    B256, BeaconBlockHeader, BodyFork, BodyOffsets, ExecutionAddress, SLOTS_PER_EPOCH, Slot,
+    StateId,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, EngineGetPayloadReq, EngineGetPayloadResp,
     EnginePreparePayloadReq, EnginePreparePayloadResp, EngineReq, PayloadFrame,
     ProduceBlockFailure, ProducedBlock, TCacheProducer, TCacheRead, TRead,
     ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS,
-    ssz_view::{AttestationDataView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
+    ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
 };
 use silver_slashing::Selection;
 use silver_ssz::block_body::{BeaconBlockBodyFulu, BeaconBlockBodyGloas, EMPTY_SYNC_AGGREGATE};
@@ -21,6 +21,10 @@ use crate::{
     ssz_hash,
     stf::{self, BlockFork, BlockInput, ExpectedWithdrawals, get_expected_withdrawals},
 };
+
+mod attestation_rewards;
+
+use attestation_rewards::AttestationRewards;
 
 /// Offsets of `block`, `kzg_proofs` and `blobs`.
 const BLOCK_CONTENTS_FIXED: usize = 3 * 4;
@@ -135,88 +139,6 @@ impl PackedOperations {
     }
 }
 
-/// The attestations a block on the parent state may include. A matching
-/// target puts the attesters on the parent's chain at the target epoch, so
-/// their committees match the parent's shuffling.
-struct AttestationInclusion<'s, 'v> {
-    pre_state: &'s StateReadView<'v>,
-    parent_root: B256,
-    block_slot: Slot,
-    current_epoch: Epoch,
-    /// Gloas: `index` carries the payload vote instead of naming committee 0.
-    gloas: bool,
-    /// Indexed by whether the target is the current epoch.
-    justified: [Checkpoint; 2],
-    target_roots: [B256; 2],
-}
-
-impl<'s, 'v> AttestationInclusion<'s, 'v> {
-    /// `pre_state` is the parent's state advanced into the block's epoch.
-    fn new(
-        pre_state: &'s StateReadView<'v>,
-        parent_root: B256,
-        block_slot: Slot,
-        gloas: bool,
-    ) -> Self {
-        let current_epoch = block_slot / SLOTS_PER_EPOCH;
-        let previous_epoch = current_epoch.saturating_sub(1);
-        let epoch = pre_state.epoch.state();
-        let mut inclusion = Self {
-            pre_state,
-            parent_root,
-            block_slot,
-            current_epoch,
-            gloas,
-            justified: [epoch.previous_justified_checkpoint, epoch.current_justified_checkpoint],
-            target_roots: [B256::default(); 2],
-        };
-        inclusion.target_roots =
-            [previous_epoch, current_epoch].map(|e| inclusion.root_at(e * SLOTS_PER_EPOCH));
-        inclusion
-    }
-
-    /// The parent fills every slot from the pre-state's to the block's.
-    fn root_at(&self, slot: Slot) -> B256 {
-        if slot < self.pre_state.slot.slot_number() {
-            self.pre_state.block_roots.at_slot(slot)
-        } else {
-            self.parent_root
-        }
-    }
-
-    /// Spec `is_attestation_same_slot`.
-    fn is_same_slot(&self, data: AttestationDataView) -> bool {
-        let Some(previous) = data.slot().checked_sub(1) else { return true };
-        let root = *data.beacon_block_root();
-        root == self.root_at(data.slot()) && root != self.root_at(previous)
-    }
-
-    /// Gloas: a same-slot attestation must name index 0 or fail the block.
-    fn index_admitted(&self, data: AttestationDataView) -> bool {
-        match data.index() {
-            0 => true,
-            1 => self.gloas && !self.is_same_slot(data),
-            _ => false,
-        }
-    }
-
-    fn admits(&self, data: AttestationDataView) -> bool {
-        let target_epoch = data.target_epoch();
-        let is_current = target_epoch == self.current_epoch;
-        if data.slot() >= self.block_slot ||
-            !self.index_admitted(data) ||
-            target_epoch != data.slot() / SLOTS_PER_EPOCH ||
-            !(is_current || target_epoch + 1 == self.current_epoch)
-        {
-            return false;
-        }
-        let justified = self.justified[is_current as usize];
-        data.source_epoch() == justified.epoch &&
-            *data.source_root() == justified.root &&
-            *data.target_root() == self.target_roots[is_current as usize]
-    }
-}
-
 /// The post-state is committed, so the import of the signed block skips its
 /// state transition.
 /// What a Gloas block commits to on a builder's behalf.
@@ -227,6 +149,7 @@ struct BidCommitment {
     value: u64,
     /// The parent payload's requests when building on it, else empty.
     parent_requests: Box<[u8]>,
+    builds_on_full_parent: bool,
 }
 
 struct BuiltBlock {
@@ -519,7 +442,7 @@ impl BeaconStateTile {
         for (request_id, proposal) in self.block_production.take_pending(slot, parent_root) {
             let block = match response.data {
                 Some(data) => {
-                    self.pack_operations(&proposal, &mut packed);
+                    self.pack_operations(&proposal, false, &mut packed);
                     self.block_for(proposal, data, packed.operations())
                 }
                 None => Err(ProduceBlockFailure::PayloadUnavailable),
@@ -530,16 +453,41 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    fn pack_operations(&mut self, proposal: &Proposal, packed: &mut PackedOperations) {
+    fn pack_operations(
+        &mut self,
+        proposal: &Proposal,
+        builds_on_full_parent: bool,
+        packed: &mut PackedOperations,
+    ) {
         let Ok((parent, _)) = self.proposal_parent(proposal) else {
             return packed.clear();
         };
         let pre_state = self.state.read_view(parent);
         self.slashing_pool.select(&pre_state, &mut packed.slashings);
         let gloas = self.spec.is_gloas_at_slot(proposal.slot);
-        let inclusion =
-            AttestationInclusion::new(&pre_state, proposal.parent_root, proposal.slot, gloas);
-        self.attestation_pool.pack(|data| inclusion.admits(data), &mut packed.attestations);
+        let epoch = proposal.slot / SLOTS_PER_EPOCH;
+        match self.shuffling_cache.for_block(&pre_state, epoch) {
+            Some(shuffling) => {
+                let rewards = AttestationRewards::new(
+                    &pre_state,
+                    shuffling,
+                    proposal.parent_root,
+                    proposal.slot,
+                    builds_on_full_parent,
+                );
+                self.attestation_pool.pack(
+                    |data, committee_index, weights| rewards.weigh(data, committee_index, weights),
+                    &mut packed.attestations,
+                );
+            }
+            None => {
+                silver_log::warn!(
+                    slot = proposal.slot,
+                    "no shuffling for the proposal; packed no attestations"
+                );
+                packed.attestations.clear();
+            }
+        }
         self.sync_contribution_pool.write_sync_aggregate(
             proposal.slot - 1,
             proposal.parent_root,
@@ -653,7 +601,7 @@ impl BeaconStateTile {
         let commitment = self.bid_commitment(&proposal, parent)?;
 
         let mut packed = mem::take(&mut self.block_production.packed);
-        self.pack_operations(&proposal, &mut packed);
+        self.pack_operations(&proposal, commitment.builds_on_full_parent, &mut packed);
         let block = self.build_with_fallbacks(proposal, packed.operations(), |tile, operations| {
             tile.build_gloas_block(proposal, &commitment, operations)
         });
@@ -674,10 +622,12 @@ impl BeaconStateTile {
             ProduceBlockFailure::Internal
         })?;
         let full = self.fork_choice.should_build_on_full(node, proposal.slot);
+        let parent_state = self.state.read_view(parent);
+        let parent_slot_state = parent_state.slot.state();
         let parent_hash = if full {
             self.fork_choice.node(node).payload.bid_block_hash
         } else {
-            self.state.read_view(parent).slot.state().latest_block_hash
+            parent_slot_state.latest_block_hash
         };
         let branch =
             BidBranch { slot: proposal.slot, parent_root: proposal.parent_root, parent_hash };
@@ -705,7 +655,13 @@ impl BeaconStateTile {
         } else {
             &EMPTY_EXECUTION_REQUESTS
         };
-        Ok(BidCommitment { signed_bid, value: bid.value, parent_requests: parent_requests.into() })
+        Ok(BidCommitment {
+            signed_bid,
+            value: bid.value,
+            parent_requests: parent_requests.into(),
+            builds_on_full_parent: bid.parent_block_hash ==
+                parent_slot_state.latest_execution_payload_bid.block_hash,
+        })
     }
 
     #[timed]

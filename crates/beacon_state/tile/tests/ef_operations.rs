@@ -249,11 +249,9 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
         return false;
     }
     s.with_view_and_epoch(|view, e| {
-        // The operation vectors carry no bid, so the parent slot is the one the
-        // pre-state's bid recorded, exactly what the block path reads back.
         let parent_slot = e
             .is_gloas(view.imm.gloas_fork_version)
-            .then(|| view.slot.state().latest_execution_payload_bid.slot);
+            .then(|| view.slot.state().latest_block_header.slot);
         stf::BlockAttestations::new(&view.slot, *e, block_slot, parent_slot, &sref)
             .process_body(view, &list, proposer_index, &mut votes_sink, &mut scratch)
             .is_ok()
@@ -535,7 +533,8 @@ fn gloas_parent_execution_payload() {
         }
         let body = &op[body_off..];
         s.with_view_and_epoch(|view, e| {
-            stf::process_parent_execution_payload(view, e, &cfg, body).is_ok()
+            let parent_slot = view.slot.state().latest_block_header.slot;
+            stf::process_parent_execution_payload(view, e, &cfg, body, parent_slot).is_ok()
         })
     });
 }

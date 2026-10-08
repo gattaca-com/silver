@@ -2,8 +2,8 @@ use silver_beacon_state_data::{
     Epoch, Payload, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
-    ATTESTATION_FIXED, AttestationView, ExecutionPayloadView, PROPOSER_SLASHING_SIZE,
-    ProposerSlashingView,
+    ATTESTATION_FIXED, AttestationDataView, AttestationView, ExecutionPayloadView,
+    PROPOSER_SLASHING_SIZE, ProposerSlashingView,
 };
 
 use crate::{
@@ -32,8 +32,22 @@ pub fn validate_attestation_data(
     if att.len() < ATTESTATION_FIXED {
         return Err(AttestationError::TooShort { len: att.len(), min: ATTESTATION_FIXED });
     }
+    validate_attestation_data_view(
+        AttestationView::data(att),
+        state_slot,
+        current_epoch,
+        previous_epoch,
+        is_gloas,
+    )
+}
 
-    let data = AttestationView::data(att);
+pub fn validate_attestation_data_view(
+    data: AttestationDataView,
+    state_slot: Slot,
+    current_epoch: Epoch,
+    previous_epoch: Epoch,
+    is_gloas: bool,
+) -> Result<(), AttestationError> {
     let att_slot = data.slot();
     let att_index = data.index();
     let target_epoch = data.target_epoch();

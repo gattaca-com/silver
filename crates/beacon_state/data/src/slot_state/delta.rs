@@ -6,7 +6,7 @@ use super::{
 use crate::{
     SLOTS_PER_EPOCH,
     ring::{Reset, Slot as RingSlot},
-    types::{B256, Epoch, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotState},
+    types::{B256, Epoch, Slot, SlotState},
 };
 
 // size: ~1 KB inline — the `SlotState` scalars.
@@ -139,8 +139,8 @@ impl<'a> SlotStateWriteView<'a> {
 
     #[inline]
     pub fn unset_next_payload_availability(&mut self) {
-        let next = ((self.fork.slot.slot + 1) % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
-        self.fork.slot.execution_payload_availability[next / 8] &= !(1u8 << (next % 8));
+        let next = self.fork.slot.slot + 1;
+        self.fork.slot.set_payload_available(next, false);
     }
 
     /// Fill in `state_root` on the latest block header iff it's currently

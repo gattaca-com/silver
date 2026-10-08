@@ -11,6 +11,7 @@ mod sync_aggregate;
 mod validator;
 mod withdrawals;
 
+pub(crate) use attestation::ParsedAttestationData;
 pub use attestation::{
     AttestedCommittees, BlockAttestations, collect_sigs_attestations,
     collect_sigs_single_attestation,

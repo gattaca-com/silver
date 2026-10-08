@@ -60,7 +60,7 @@ impl SyncContributionPool {
         if subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 ||
             positions.iter().all(|&word| word == 0)
         {
-            return InsertOutcome::Inconsistent;
+            return InsertOutcome::Invalid;
         }
         if slot < self.floor {
             return InsertOutcome::Stale;

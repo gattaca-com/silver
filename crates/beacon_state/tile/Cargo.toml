@@ -23,6 +23,7 @@ ring.workspace = true
 blst.workspace = true
 silver_bls_simd.workspace = true
 rustc-hash.workspace = true
+slab.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
