@@ -14,7 +14,10 @@ use crate::{
 };
 
 pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let Some(slot) = proposal_slot(req, ctx, resp) else {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
+    let Some(slot) = proposal_slot(req, resp) else {
         return;
     };
     if ctx.spec.is_gloas_at_slot(slot) {
@@ -35,7 +38,10 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
 /// The block commits to a p2p bid; the local payload is not built yet, so
 /// `include_payload` changes nothing.
 pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    let Some(slot) = proposal_slot(req, ctx, resp) else {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
+    let Some(slot) = proposal_slot(req, resp) else {
         return;
     };
     if !ctx.spec.is_gloas_at_slot(slot) {
@@ -64,10 +70,7 @@ pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     }));
 }
 
-fn proposal_slot(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) -> Option<Slot> {
-    if !ctx.follows_chain(resp) {
-        return None;
-    }
+fn proposal_slot(req: &Request<'_>, resp: &mut Response<'_>) -> Option<Slot> {
     if !req.accepts_ssz() {
         resp.error(406, "only application/octet-stream is served");
         return None;

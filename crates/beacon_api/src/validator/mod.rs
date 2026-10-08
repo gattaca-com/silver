@@ -7,6 +7,7 @@ pub(crate) mod duties;
 pub(crate) mod liveness;
 pub(crate) mod produce_block;
 pub(crate) mod proposer_duties;
+pub(crate) mod proposer_preferences;
 pub(crate) mod registration;
 pub(crate) mod shufflings;
 pub(crate) mod subnet_subscriptions;
