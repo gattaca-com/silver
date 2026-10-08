@@ -2,6 +2,13 @@
 //! membership, eight points per step. Lanes the vector path declines, short
 //! chunks, and CPUs without the instructions go through blst, so the verdicts
 //! are blst's either way.
+//!
+//! The fast path is available when the `simd` build feature is enabled. It
+//! additionally requires AVX-512F and AVX-512 IFMA support enabled at run time.
+//! IFMA is 52-bit integer multiply-add. This is expected to work on AMD Zen 4
+//! and Zen 5, and on Intel Xeon Ice Lake-SP, Sapphire Rapids, Emerald Rapids
+//! and Granite Rapids. Intel laptop and desktop CPUs from Alder Lake on do not
+//! support the required instructions.
 
 // The kernels are `#[target_feature]` functions: every one of them is unsafe to
 // call for the same single reason, that `simd_available` must have been checked
