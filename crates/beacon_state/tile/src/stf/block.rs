@@ -134,9 +134,10 @@ fn transition(
 
     // process_slots may have rolled the epoch tier.
     let epoch_view = fork.epoch.view_opt(fork.epoch_idx);
+    let parent_slot = fork.view.slot.state().latest_block_header.slot;
     process_block_header(&mut fork.view, &epoch_view, input.header, input.block_root)
         .map_err(|e| input.invalid(e))?;
-    process_block_body(cfg, fork, input, scratch, sig_batch, out)?;
+    process_block_body(cfg, fork, input, parent_slot, scratch, sig_batch, out)?;
 
     Ok(ssz_hash::hash_tree_root_state(&fork.read()))
 }
@@ -237,7 +238,15 @@ pub fn apply_signed_block_debug(
         fork: block_fork,
         shuffling: &sref,
     };
-    process_block_body(cfg, fork, &input, &mut scratch, Some(&mut sig_batch), &mut votes)?;
+    process_block_body(
+        cfg,
+        fork,
+        &input,
+        head_block_header_slot,
+        &mut scratch,
+        Some(&mut sig_batch),
+        &mut votes,
+    )?;
 
     let actual = ssz_hash::hash_tree_root_state(&fork.read());
     if actual != state_root {
@@ -470,6 +479,7 @@ pub fn process_block_body(
     cfg: &SpecConfig,
     fork: &mut ForkWriter,
     input: &BlockInput<'_>,
+    parent_slot: Slot,
     scratch: &mut StfScratch,
     sig_batch: Option<&mut SigBatch>,
     out: &mut BlockVotes,
@@ -497,7 +507,7 @@ pub fn process_block_body(
         }
     }
 
-    apply_block_body(cfg, fork, offsets, input, scratch, out)
+    apply_block_body(cfg, fork, offsets, input, parent_slot, scratch, out)
 }
 
 fn apply_block_body(
@@ -505,6 +515,7 @@ fn apply_block_body(
     fork: &mut ForkWriter,
     offsets: &BodyOffsets<'_>,
     input: &BlockInput<'_>,
+    parent_slot: Slot,
     scratch: &mut StfScratch,
     out: &mut BlockVotes,
 ) -> Result<()> {
@@ -515,14 +526,13 @@ fn apply_block_body(
     let block_slot = input.header.slot;
     let proposer_index = input.proposer_index();
 
-    let parent_slot = match input.fork {
+    match input.fork {
         BlockFork::Gloas => {
             let body = offsets.serialized().expect("a Gloas body is parsed whole");
-            process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
+            process_parent_execution_payload(&mut *view, &epoch, cfg, body, parent_slot)?;
             process_withdrawals_gloas(&mut *view);
-            match offsets.signed_bid() {
-                Some(bid) => Some(process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?),
-                None => None,
+            if let Some(bid) = offsets.signed_bid() {
+                process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?;
             }
         }
         BlockFork::Fulu { payload_roots } => {
@@ -537,9 +547,8 @@ fn apply_block_body(
                 block_slot,
                 payload_roots,
             )?;
-            None
         }
-    };
+    }
 
     process_randao(view, offsets.fixed(), block_slot / SLOTS_PER_EPOCH);
     process_eth1_data(&mut view.slot, &mut view.eth1, offsets.fixed());
@@ -553,6 +562,7 @@ fn apply_block_body(
             process_attester_slashings(&mut *view, epoch, cfg, section, &mut out.slashed)?;
     }
     if let Some(section) = offsets.attestations() {
+        let parent_slot = is_gloas.then_some(parent_slot);
         let attestations =
             BlockAttestations::new(&view.slot, epoch, block_slot, parent_slot, input.shuffling);
         proposer_reward +=

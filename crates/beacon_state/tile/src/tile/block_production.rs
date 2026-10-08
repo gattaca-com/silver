@@ -149,6 +149,7 @@ struct BidCommitment {
     value: u64,
     /// The parent payload's requests when building on it, else empty.
     parent_requests: Box<[u8]>,
+    builds_on_full_parent: bool,
 }
 
 struct BuiltBlock {
@@ -441,7 +442,7 @@ impl BeaconStateTile {
         for (request_id, proposal) in self.block_production.take_pending(slot, parent_root) {
             let block = match response.data {
                 Some(data) => {
-                    self.pack_operations(&proposal, &mut packed);
+                    self.pack_operations(&proposal, false, &mut packed);
                     self.block_for(proposal, data, packed.operations())
                 }
                 None => Err(ProduceBlockFailure::PayloadUnavailable),
@@ -452,7 +453,12 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    fn pack_operations(&mut self, proposal: &Proposal, packed: &mut PackedOperations) {
+    fn pack_operations(
+        &mut self,
+        proposal: &Proposal,
+        builds_on_full_parent: bool,
+        packed: &mut PackedOperations,
+    ) {
         let Ok((parent, _)) = self.proposal_parent(proposal) else {
             return packed.clear();
         };
@@ -467,6 +473,7 @@ impl BeaconStateTile {
                     shuffling,
                     proposal.parent_root,
                     proposal.slot,
+                    builds_on_full_parent,
                 );
                 self.attestation_pool.pack(
                     |data, committee_index, weights| rewards.weigh(data, committee_index, weights),
@@ -594,7 +601,7 @@ impl BeaconStateTile {
         let commitment = self.bid_commitment(&proposal, parent)?;
 
         let mut packed = mem::take(&mut self.block_production.packed);
-        self.pack_operations(&proposal, &mut packed);
+        self.pack_operations(&proposal, commitment.builds_on_full_parent, &mut packed);
         let block = self.build_with_fallbacks(proposal, packed.operations(), |tile, operations| {
             tile.build_gloas_block(proposal, &commitment, operations)
         });
@@ -615,10 +622,12 @@ impl BeaconStateTile {
             ProduceBlockFailure::Internal
         })?;
         let full = self.fork_choice.should_build_on_full(node, proposal.slot);
+        let parent_state = self.state.read_view(parent);
+        let parent_slot_state = parent_state.slot.state();
         let parent_hash = if full {
             self.fork_choice.node(node).payload.bid_block_hash
         } else {
-            self.state.read_view(parent).slot.state().latest_block_hash
+            parent_slot_state.latest_block_hash
         };
         let branch =
             BidBranch { slot: proposal.slot, parent_root: proposal.parent_root, parent_hash };
@@ -646,7 +655,13 @@ impl BeaconStateTile {
         } else {
             &EMPTY_EXECUTION_REQUESTS
         };
-        Ok(BidCommitment { signed_bid, value: bid.value, parent_requests: parent_requests.into() })
+        Ok(BidCommitment {
+            signed_bid,
+            value: bid.value,
+            parent_requests: parent_requests.into(),
+            builds_on_full_parent: bid.parent_block_hash ==
+                parent_slot_state.latest_execution_payload_bid.block_hash,
+        })
     }
 
     #[timed]

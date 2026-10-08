@@ -130,6 +130,19 @@ pub struct SlotState {
     pub latest_block_root: B256,
 }
 
+impl SlotState {
+    pub fn payload_available(&self, slot: Slot) -> bool {
+        let bit = (slot % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
+        self.execution_payload_availability[bit / 8] & 1 << (bit % 8) != 0
+    }
+
+    pub fn set_payload_available(&mut self, slot: Slot, available: bool) {
+        let bit = (slot % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
+        let byte = &mut self.execution_payload_availability[bit / 8];
+        *byte = *byte & !(1 << (bit % 8)) | (available as u8) << (bit % 8);
+    }
+}
+
 impl Default for SlotState {
     fn default() -> Self {
         Self {

@@ -1,6 +1,5 @@
 use silver_beacon_state_data::{
-    BuilderPendingWithdrawal, EpochView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SpecConfig,
-    StateWriterView,
+    BuilderPendingWithdrawal, EpochView, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView,
 };
 use silver_common::{
     ssz_hash_gloas::{EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView},
@@ -27,6 +26,7 @@ pub fn process_parent_execution_payload(
     epoch: &EpochView,
     cfg: &SpecConfig,
     body: &[u8],
+    parent_slot: Slot,
 ) -> Result<(), E> {
     let (signed_bid, requests) = body_sections(body)?;
     let bid_parent_block_hash: [u8; 32] = *ExecutionPayloadBidView::parent_block_hash(
@@ -49,7 +49,7 @@ pub fn process_parent_execution_payload(
         return Err(E::RequestsRootMismatch { expected, got });
     }
     ExecutionRequestsView::check_counts(requests)?;
-    apply_parent_execution_payload(view, epoch, cfg, requests);
+    apply_parent_execution_payload(view, epoch, cfg, requests, parent_slot);
     Ok(())
 }
 
@@ -58,10 +58,11 @@ fn apply_parent_execution_payload(
     epoch: &EpochView,
     cfg: &SpecConfig,
     requests: &[u8],
+    parent_slot: Slot,
 ) {
-    let (parent_slot, parent_value, parent_fee_recipient, parent_builder_index, parent_block_hash) = {
+    let (parent_value, parent_fee_recipient, parent_builder_index, parent_block_hash) = {
         let pb = &view.slot.state().latest_execution_payload_bid;
-        (pb.slot, pb.value, pb.fee_recipient, pb.builder_index, pb.block_hash)
+        (pb.value, pb.fee_recipient, pb.builder_index, pb.block_hash)
     };
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
@@ -101,9 +102,8 @@ fn apply_parent_execution_payload(
         });
     }
 
-    let bit = (parent_slot % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
     let slot = view.slot.state_mut();
-    slot.execution_payload_availability[bit / 8] |= 1u8 << (bit % 8);
+    slot.set_payload_available(parent_slot, true);
     slot.latest_block_hash = parent_block_hash;
 }
 

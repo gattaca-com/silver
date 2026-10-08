@@ -23,6 +23,9 @@ pub(super) struct AttestationRewards<'a> {
     current_epoch: Epoch,
     /// Indexed by whether the target is the current epoch.
     justified: [Checkpoint; 2],
+    /// Gloas: the parent slot's payload availability bit once the block has
+    /// applied its parent's payload; `None` before Gloas.
+    payload_index: Option<u64>,
     /// Indexed by a participation flag mask.
     flags_weight: [u64; 8],
 }
@@ -33,7 +36,13 @@ impl<'a> AttestationRewards<'a> {
         shuffling: ShufflingRef<'a>,
         parent_root: B256,
         block_slot: Slot,
+        builds_on_full_parent: bool,
     ) -> Self {
+        let slot_state = pre_state.slot.state();
+        let payload_index = pre_state.is_gloas().then(|| {
+            let parent_slot = slot_state.latest_block_header.slot;
+            (builds_on_full_parent || slot_state.payload_available(parent_slot)) as u64
+        });
         let epoch = pre_state.epoch.state();
         let justified = [epoch.previous_justified_checkpoint, epoch.current_justified_checkpoint];
         let flags_weight = array::from_fn(|mask| {
@@ -47,6 +56,7 @@ impl<'a> AttestationRewards<'a> {
             block_slot,
             current_epoch: block_slot / SLOTS_PER_EPOCH,
             justified,
+            payload_index,
             flags_weight,
         }
     }
@@ -67,13 +77,14 @@ impl<'a> AttestationRewards<'a> {
             self.block_slot,
             self.current_epoch,
             previous_epoch,
-            false,
+            self.payload_index.is_some(),
         )
         .ok()?;
         let vote = ParsedAttestationData::parse(data);
         let is_current = vote.target_epoch == self.current_epoch;
         vote.check_source(self.justified[is_current as usize]).ok()?;
-        let flags = vote.flags(|slot| self.root_at(slot), self.block_slot);
+        let flags =
+            vote.flags(|slot| self.root_at(slot), self.block_slot, self.payload_index).ok()?;
         (flags & TIMELY_TARGET_FLAG != 0).then_some(flags)
     }
 
@@ -125,8 +136,8 @@ impl<'a> AttestationRewards<'a> {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, EpochState, EpochStateFinalized, StateId, TIMELY_HEAD_FLAG,
-        TIMELY_SOURCE_FLAG, ValSeed,
+        BeaconState, EpochState, EpochStateFinalized, Fork, StateId, TIMELY_HEAD_FLAG,
+        TIMELY_SOURCE_FLAG, ValSeed, gloas::GLOAS_FORK_VERSION,
     };
     use silver_common::ssz_view::ATTESTATION_DATA_SIZE;
 
@@ -145,8 +156,17 @@ mod tests {
     const VALIDATORS: usize = 2 * SLOTS_PER_EPOCH as usize;
     const SOURCE_TARGET_HEAD: u64 = 14 + 26 + 14;
 
-    /// Validator `i` holds `i + 1` increments of effective balance.
     fn state(participation: &[(u32, u8)]) -> (BeaconState, StateId) {
+        state_at_fork(participation, Fork::default())
+    }
+
+    fn gloas_state() -> (BeaconState, StateId) {
+        let fork = Fork { current_version: GLOAS_FORK_VERSION, ..Fork::default() };
+        state_at_fork(&[], fork)
+    }
+
+    /// Validator `i` holds `i + 1` increments of effective balance.
+    fn state_at_fork(participation: &[(u32, u8)], fork: Fork) -> (BeaconState, StateId) {
         let seeds: Vec<_> = (0..VALIDATORS as u64)
             .map(|i| ValSeed {
                 effective_balance: (i + 1) * EFFECTIVE_BALANCE_INCREMENT,
@@ -158,6 +178,7 @@ mod tests {
             finalized_checkpoint: Checkpoint { epoch: EPOCH, root: [0; 32] },
             current_justified_checkpoint: CURRENT_JUSTIFIED,
             previous_justified_checkpoint: PREVIOUS_JUSTIFIED,
+            fork,
             ..Default::default()
         });
         let mut st = TestState::new(epoch_base, &seeds);
@@ -189,14 +210,24 @@ mod tests {
         data
     }
 
+    /// `vote` claiming payload status `index`.
+    fn with_index(
+        mut data: [u8; ATTESTATION_DATA_SIZE],
+        index: u64,
+    ) -> [u8; ATTESTATION_DATA_SIZE] {
+        data[8..16].copy_from_slice(&index.to_le_bytes());
+        data
+    }
+
     fn weights(state: &(BeaconState, StateId), data: &[u8; ATTESTATION_DATA_SIZE]) -> [u64; 2] {
-        weights_of(state, data, 0)
+        weights_of(state, data, 0, false)
     }
 
     fn weights_of(
         (bs, id): &(BeaconState, StateId),
         data: &[u8; ATTESTATION_DATA_SIZE],
         committee_index: u64,
+        builds_on_full_parent: bool,
     ) -> [u64; 2] {
         let pre_state = bs.read_view(*id);
         let shuffled: Vec<_> = (0..VALIDATORS as u32).collect();
@@ -204,7 +235,13 @@ mod tests {
             curr: EpochShuffling::with_committees_per_slot(&shuffled, 1),
             prev: EpochShuffling::with_committees_per_slot(&shuffled, 1),
         };
-        let rewards = AttestationRewards::new(&pre_state, shuffling, PARENT_ROOT, BLOCK_SLOT);
+        let rewards = AttestationRewards::new(
+            &pre_state,
+            shuffling,
+            PARENT_ROOT,
+            BLOCK_SLOT,
+            builds_on_full_parent,
+        );
         let mut weights = [u64::MAX; 2];
         rewards.weigh(AttestationDataView::new(data), committee_index, &mut weights);
         weights
@@ -282,6 +319,38 @@ mod tests {
             mutate(&mut data);
             assert_eq!(weights(&state, &data), [0, 0]);
         }
-        assert_eq!(weights_of(&state, &vote(slot, PARENT_ROOT), 1), [0, 0]);
+        assert_eq!(weights_of(&state, &vote(slot, PARENT_ROOT), 1, false), [0, 0]);
+    }
+
+    #[test]
+    fn gloas_head_needs_the_payload_status_the_block_leaves_its_parent() {
+        let state = gloas_state();
+        let slot = BLOCK_SLOT - 1;
+        let paid = |index, builds_on_full_parent| {
+            weights_of(
+                &state,
+                &with_index(vote(slot, PARENT_ROOT), index),
+                0,
+                builds_on_full_parent,
+            )
+        };
+
+        let every_flag = increments(slot).map(|i| i * SOURCE_TARGET_HEAD);
+        let no_head = increments(slot).map(|i| i * (14 + 26));
+        assert_eq!(paid(0, false), every_flag);
+        assert_eq!(paid(1, false), no_head);
+        assert_eq!(paid(1, true), every_flag);
+        assert_eq!(paid(0, true), no_head);
+    }
+
+    #[test]
+    fn gloas_same_slot_vote_claiming_a_payload_is_never_included() {
+        let state = gloas_state();
+        // The parent is proposed at the state's slot, over an older root.
+        let same_slot = vote(STATE_SLOT, PARENT_ROOT);
+
+        assert_eq!(weights_of(&state, &with_index(same_slot, 1), 0, true), [0, 0]);
+        let target_only = increments(STATE_SLOT).map(|i| i * 26);
+        assert_eq!(weights_of(&state, &same_slot, 0, true), target_only);
     }
 }

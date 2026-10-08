@@ -10,10 +10,11 @@ use super::{InsertOutcome, committee_store::CommitteeId};
 /// Retention is the inclusion window, the previous and current epoch, plus
 /// one slot of clock disparity past it.
 pub(super) const RETAINED_SLOTS: usize = 2 * SLOTS_PER_EPOCH as usize + 1;
-/// Competing vote candidates a slot holds. Honest traffic keeps ~1 per slot,
-/// and each costs an attacker a real committee member's one attestation per
-/// epoch.
-pub(super) const MAX_SLOT_CANDIDATES: usize = 4;
+/// Competing vote candidates a slot holds. Honest traffic keeps ~1 per slot.
+/// On Gloas, a late or missed block splits it into up to 3: a vote for an
+/// earlier block also names that block's payload status. Each candidate costs
+/// an attacker a real committee member's one attestation per epoch.
+pub(super) const MAX_SLOT_CANDIDATES: usize = 8;
 pub(super) const MAX_CANDIDATES: usize = RETAINED_SLOTS * MAX_SLOT_CANDIDATES;
 
 /// The vote candidates of the retained slots. A candidate's id is
