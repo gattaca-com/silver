@@ -35,9 +35,6 @@ impl ForkChoice {
         None
     }
 
-    /// Status of the execution chain a node's post-state builds on. A Gloas
-    /// node's own status is its envelope's verdict, which its block does not
-    /// depend on.
     pub fn chain_execution_status(&self, idx: usize) -> ExecutionStatus {
         let node = &self.nodes[idx];
         if !node.payload.is_gloas {
