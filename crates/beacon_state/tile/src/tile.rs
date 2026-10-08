@@ -552,7 +552,7 @@ impl BeaconStateTile {
         let root = self.fork_choice.find_head();
         let idx =
             self.fork_choice.find_node_idx(&root).expect("find_head returns a node-resident root");
-        let optimistic = self.fork_choice.node(idx).execution_status != ExecutionStatus::Valid;
+        let optimistic = self.fork_choice.chain_execution_status(idx) != ExecutionStatus::Valid;
         let payload = self.fork_choice.payload_resolution(idx);
         SelectedHead { observation: HeadObservation { root, optimistic, payload }, idx }
     }
