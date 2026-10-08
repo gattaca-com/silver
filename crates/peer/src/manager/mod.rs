@@ -210,15 +210,15 @@ pub struct PeerManager {
 
     /// Slot of the highest block BS has imported (`last_applied`), from the
     /// `latest_block_slot` on the Status event. Used by the data-column peer
-    /// picker (`best_peer_for_data_columns`) for earliest-available gating.
+    /// picker (`collect_column_candidates`) for earliest-available gating.
     pub(crate) local_head_imported_slot: u64,
 
     pub(crate) outbound_attempts: Vec<attempts::OutboundAttempt>,
     /// `(request_id, peer, delivered)` per *logical* request that has ended —
     /// drained by the control tile into the sync engine.
     pub(crate) finished_requests: Vec<(u64, usize, bool)>,
-    /// Peers already served from during one column fan-out.
-    column_fanout_tried: Vec<usize>,
+    /// Reused across column fan-outs.
+    column_candidates: Vec<rpc::ColumnCandidate>,
     sweep_work: sweep::SweepWork,
 }
 
@@ -292,7 +292,7 @@ impl PeerManager {
             local_head_imported_slot: 0,
             outbound_attempts: Vec::with_capacity(PEERS_CAP),
             finished_requests: Vec::with_capacity(PEERS_CAP),
-            column_fanout_tried: Vec::with_capacity(PEERS_CAP),
+            column_candidates: Vec::with_capacity(PEERS_CAP),
             sweep_work: sweep::SweepWork::default(),
         }
     }

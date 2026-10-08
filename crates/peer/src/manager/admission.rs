@@ -645,6 +645,27 @@ mod tests {
         assert_eq!(dials(&cap), 1, "peer should be redialed after backoff expiry");
     }
 
+    /// Two connections can name one record; it stays live until the last
+    /// one closes, and re-registering a connection does not count it twice.
+    #[test]
+    fn record_is_not_redialed_while_any_connection_to_it_is_open() {
+        let now = Instant::now();
+        let (mut mgr, _) = fixture(vec![], ScoreParams::default());
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+        let candidates = |mgr: &PeerManager| mgr.database.redial_candidates(now).count();
+        assert_eq!(candidates(&mgr), 1);
+
+        mgr.database.add_peer_id(peer_id(5), 1);
+        mgr.database.add_peer_id(peer_id(5), 1);
+        mgr.database.add_peer_id(peer_id(5), 2);
+        mgr.database.peer_disconnected(1);
+        assert_eq!(candidates(&mgr), 0, "connection 2 is still open");
+        mgr.database.peer_disconnected(2);
+        assert_eq!(candidates(&mgr), 1);
+    }
+
     #[test]
     fn failed_dial_zombie_disconnect_backs_off() {
         let now = Instant::now();

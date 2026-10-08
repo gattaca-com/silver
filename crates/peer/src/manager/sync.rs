@@ -89,7 +89,7 @@ impl PeerManager {
     }
 
     /// Track the engine-selected sync target (the engine is authoritative) so
-    /// `pick_sync_peer` / `best_peer_for_data_columns` can match peers against
+    /// `pick_sync_peer` / `collect_column_candidates` can match peers against
     /// it. Watermark + column resets are the engine's.
     pub fn set_sync_target(&mut self, new_target: SyncUpdate) {
         self.current_target = new_target;

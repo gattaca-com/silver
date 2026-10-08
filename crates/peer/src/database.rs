@@ -84,7 +84,12 @@ impl PeerDatabase {
         };
         self.by_node_id.insert(node_id, index);
         self.by_peer_id.insert(peer_id, index);
-        self.by_p2p_id.insert(p2p_id, index);
+        if let Some(replaced) = self.by_p2p_id.insert(p2p_id, index) {
+            self.release_connection(replaced);
+        }
+        if let Some(record) = self.peers.get_mut(index) {
+            record.live_connections += 1;
+        }
 
         new_record
     }
@@ -111,7 +116,16 @@ impl PeerDatabase {
     }
 
     pub fn peer_disconnected(&mut self, p2p_id: usize) -> Option<&PeerRecord> {
-        self.by_p2p_id.remove(&p2p_id).and_then(|idx| self.peers.get(idx))
+        let index = self.by_p2p_id.remove(&p2p_id)?;
+        self.release_connection(index);
+        self.peers.get(index)
+    }
+
+    fn release_connection(&mut self, index: usize) {
+        if let Some(record) = self.peers.get_mut(index) {
+            debug_assert!(record.live_connections > 0, "record {index} was not live");
+            record.live_connections = record.live_connections.saturating_sub(1);
+        }
     }
 
     pub fn dial_backoff_active(&self, peer_id: &PeerId, now: Instant) -> bool {
@@ -135,7 +149,7 @@ impl PeerDatabase {
     /// an ENR with a QUIC endpoint, no live connection, dial backoff expired.
     /// The caller applies its own gates (bans, in-flight dials, fork digest).
     pub fn redial_candidates(&self, now: Instant) -> impl Iterator<Item = &PeerRecord> + '_ {
-        self.peers.iter().filter_map(move |(idx, record)| {
+        self.peers.iter().filter_map(move |(_, record)| {
             record.peer_id.as_ref()?;
             let enr = record.enr.as_ref()?;
             if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
@@ -144,7 +158,7 @@ impl PeerDatabase {
             if record.dial_backoff_until.is_some_and(|t| t > now) {
                 return None;
             }
-            if self.by_p2p_id.values().any(|i| *i == idx) {
+            if record.live_connections > 0 {
                 return None;
             }
             Some(record)
@@ -265,4 +279,7 @@ pub struct PeerRecord {
     pub dial_backoff_until: Option<Instant>,
     /// Trusted peer
     pub is_trusted: bool,
+    /// Connections in `by_p2p_id` naming this record; more than one while a
+    /// duplicate connection is open.
+    pub(crate) live_connections: u32,
 }

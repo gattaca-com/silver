@@ -1,4 +1,4 @@
-use std::{ops::Deref, time::Instant};
+use std::{mem, ops::Deref, time::Instant};
 
 use flux_profiler::timed;
 use silver_common::{
@@ -14,6 +14,14 @@ use crate::{PeerManager, manager::attempts::OutboundAttempt};
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
 /// single peer and keeps fan-out useful when many ranges are pending.
 pub(super) const MAX_RPC_PROTOCOL_IN_FLIGHT: u32 = 2;
+
+#[derive(Clone, Copy)]
+pub(super) struct ColumnCandidate {
+    peer: usize,
+    /// The requested columns it custodies.
+    custody: u128,
+    score: f64,
+}
 
 /// Cap on concurrent by-root column requests across all peers.
 pub(crate) const MAX_COLUMN_ROOT_REQUESTS: usize = 4;
@@ -156,14 +164,42 @@ impl PeerManager {
         }
     }
 
-    /// The peer covering the most of `remaining` for `request`, and the subset
-    /// it can serve. Eligible peers advertise the protocol, custody some of
-    /// `remaining`, hold the slots asked for, and have outbound capacity left.
-    fn best_peer_for_data_columns(
+    /// Peers that advertise the protocol, hold the slots asked for, and custody
+    /// some of `request.columns`. These do not change while one request is
+    /// placed, so they are gathered once.
+    fn collect_column_candidates(&self, request: &SyncRequest, out: &mut Vec<ColumnCandidate>) {
+        // By-range only: a peer whose claimed head is below the range start
+        // could not cover one requested slot, so its `Complete` proves nothing.
+        let min_head = match request.scope {
+            Scope::Range { start, .. } => start,
+            Scope::Root(_) => 0,
+        };
+        out.clear();
+        out.extend(self.database.live_peers_supporting(request.protocol()).filter_map(|p| {
+            if min_head > 0 &&
+                self.database.peer_status_bytes(p).map(StatusView::head_slot).unwrap_or(0) <
+                    min_head
+            {
+                return None;
+            }
+            if !self.serves(p, request) {
+                return None;
+            }
+            let custody = self.database.data_column_custody_groups_intersection(p, request.columns);
+            if custody == 0 {
+                return None;
+            }
+            Some(ColumnCandidate { peer: p, custody, score: self.peers.get(&p)?.cached_score })
+        }));
+    }
+
+    /// Index into `candidates` of the peer covering the most of `remaining`,
+    /// and the subset it can serve. Ties go to the higher score.
+    fn best_column_candidate(
         &self,
+        candidates: &[ColumnCandidate],
         request: &SyncRequest,
         remaining: u128,
-        exclude: &[usize],
         now: Instant,
     ) -> Option<(usize, u128)> {
         let protocol = request.protocol();
@@ -171,36 +207,16 @@ impl PeerManager {
             Origin::Backfill => MAX_RPC_PROTOCOL_IN_FLIGHT / 2,
             Origin::Live => MAX_RPC_PROTOCOL_IN_FLIGHT,
         };
-        // By-range only: a peer whose claimed head is below the range start
-        // could not cover one requested slot, so its `Complete` proves nothing.
-        let min_head = match request.scope {
-            Scope::Range { start, .. } => start,
-            Scope::Root(_) => 0,
-        };
-
-        self.database
-            .live_peers_supporting(protocol)
-            .filter_map(|p| {
-                if exclude.contains(&p) {
-                    return None;
-                }
-                if min_head > 0 &&
-                    self.database.peer_status_bytes(p).map(StatusView::head_slot).unwrap_or(0) <
-                        min_head
-                {
-                    return None;
-                }
-
-                if !self.serves(p, request) {
-                    return None;
-                }
-
-                let overlap = self.database.data_column_custody_groups_intersection(p, remaining);
+        candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                let p = candidate.peer;
+                let overlap = candidate.custody & remaining;
                 silver_log::trace!(peer = p, overlap, remaining, "peer data columns overlap");
                 if overlap == 0 {
                     return None;
                 }
-
                 let tokens = SyncRequest { columns: overlap, ..*request }.tokens();
                 if !self.outbound_has_capacity(p, protocol, tokens, now, max_in_flight) {
                     silver_log::trace!(
@@ -212,15 +228,14 @@ impl PeerManager {
                     );
                     return None;
                 }
-
-                Some((p, overlap, self.peers.get(&p)?.cached_score))
+                Some((index, overlap, candidate.score))
             })
             .max_by(|a, b| {
                 a.1.count_ones()
                     .cmp(&b.1.count_ones())
                     .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
             })
-            .map(|(p, overlap, _)| (p, overlap))
+            .map(|(index, overlap, _)| (index, overlap))
     }
 
     /// Dispatch an inbound RPC event. For requests this gates on the
@@ -616,22 +631,21 @@ impl PeerManager {
     ) -> bool {
         let mut remaining = request.columns;
         let mut placed = false;
-        self.column_fanout_tried.clear();
+        let mut candidates = mem::take(&mut self.column_candidates);
+        self.collect_column_candidates(&request, &mut candidates);
 
         while remaining != 0 {
-            let Some((peer, overlap)) = self.best_peer_for_data_columns(
-                &request,
-                remaining,
-                &self.column_fanout_tried,
-                now,
-            ) else {
+            let Some((index, overlap)) =
+                self.best_column_candidate(&candidates, &request, remaining, now)
+            else {
                 break;
             };
+            let peer = candidates.swap_remove(index).peer;
             placed |=
                 self.send(peer, SyncRequest { columns: overlap, ..request }, request_id, now, emit);
-            self.column_fanout_tried.push(peer);
             remaining &= !overlap;
         }
+        self.column_candidates = candidates;
 
         if remaining != 0 {
             silver_log::debug!(request_id, remaining, "no peer custodies the rest of the request");
