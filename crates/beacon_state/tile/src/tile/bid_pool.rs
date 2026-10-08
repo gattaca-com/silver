@@ -66,9 +66,9 @@ impl BidPool {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn take(&mut self, branch: &BidBranch) -> Option<(ExecutionPayloadBid, [u8; 96])> {
-        self.best.remove(branch).map(|BidPoolEntry { bid, signature }| (bid, signature))
+    /// Left in place: a retried request commits to the same bid.
+    pub fn best(&self, branch: &BidBranch) -> Option<(&ExecutionPayloadBid, &[u8; 96])> {
+        self.best.get(branch).map(|BidPoolEntry { bid, signature }| (bid, signature))
     }
 
     /// Next-slot bids arrive during the current slot, so they are kept.
@@ -119,8 +119,8 @@ mod tests {
         assert!(!pool.is_candidate(&bid(5, 1, 1, 8, 10)), "a tie is not higher");
         assert!(pool.is_candidate(&bid(5, 1, 1, 8, 11)));
         pool.add(bid(5, 1, 1, 8, 11), [1; 96]);
-        let (best, signature) = pool.take(&branch(5, 1, 1)).unwrap();
-        assert_eq!((best.builder_index, signature), (8, [1; 96]));
+        let (best, signature) = pool.best(&branch(5, 1, 1)).unwrap();
+        assert_eq!((best.builder_index, *signature), (8, [1; 96]));
     }
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
         extreme.execution_payment = u64::MAX;
         assert!(pool.is_candidate(&extreme));
         pool.add(extreme, [2; 96]);
-        assert_eq!(pool.take(&branch(5, 1, 1)).unwrap().0.builder_index, 9);
+        assert_eq!(pool.best(&branch(5, 1, 1)).unwrap().0.builder_index, 9);
     }
 
     #[test]
@@ -144,8 +144,8 @@ mod tests {
         pool.add(bid(5, 1, 1, 7, 10), [0; 96]);
         pool.add(bid(6, 1, 1, 7, 10), [0; 96]);
         pool.on_slot(6);
-        assert!(pool.take(&branch(5, 1, 1)).is_none());
+        assert!(pool.best(&branch(5, 1, 1)).is_none());
         assert!(!pool.is_candidate(&bid(6, 1, 1, 7, 20)), "slot 6's seen set survives");
-        assert!(pool.take(&branch(6, 1, 1)).is_some());
+        assert!(pool.best(&branch(6, 1, 1)).is_some());
     }
 }

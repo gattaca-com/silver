@@ -64,28 +64,109 @@ impl<'a> BeaconBlockBodyFulu<'a> {
     }
 
     fn encode_fixed(&self, fixed: &mut [u8]) {
-        let mut offsets = [0u32; 9];
-        let mut at = BEACON_BLOCK_BODY_FIXED;
-        for (offset, field) in offsets.iter_mut().zip(self.variable_fields()) {
-            *offset = at as u32;
-            at += field.len();
-        }
+        let fields = self.variable_fields();
+        encode_fixed(
+            fixed,
+            self.randao_reveal,
+            self.eth1_data,
+            self.graffiti,
+            self.sync_aggregate,
+            &fields,
+        );
+    }
+}
 
-        let mut cursor = 0;
-        let mut put = |bytes: &[u8]| {
-            fixed[cursor..cursor + bytes.len()].copy_from_slice(bytes);
-            cursor += bytes.len();
-        };
-        put(self.randao_reveal);
-        put(self.eth1_data);
-        put(self.graffiti);
-        for offset in &offsets[..5] {
-            put(&offset.to_le_bytes());
+/// [Modified in Gloas] The payload, its commitments and its requests leave the
+/// body; the builder's bid, the PTC's attestations and the parent payload's
+/// requests take their place. The fixed part keeps Fulu's layout.
+pub struct BeaconBlockBodyGloas<'a> {
+    pub randao_reveal: &'a [u8; 96],
+    pub eth1_data: &'a [u8; 72],
+    pub graffiti: &'a [u8; 32],
+    pub proposer_slashings: &'a [u8],
+    pub attester_slashings: &'a [u8],
+    pub attestations: &'a [u8],
+    pub deposits: &'a [u8],
+    pub voluntary_exits: &'a [u8],
+    pub sync_aggregate: &'a [u8; BLOCK_SYNC_AGGREGATE_SIZE],
+    pub bls_to_execution_changes: &'a [u8],
+    pub signed_execution_payload_bid: &'a [u8],
+    pub payload_attestations: &'a [u8],
+    pub parent_execution_requests: &'a [u8],
+}
+
+impl<'a> BeaconBlockBodyGloas<'a> {
+    pub fn variable_fields(&self) -> [&'a [u8]; 9] {
+        [
+            self.proposer_slashings,
+            self.attester_slashings,
+            self.attestations,
+            self.deposits,
+            self.voluntary_exits,
+            self.bls_to_execution_changes,
+            self.signed_execution_payload_bid,
+            self.payload_attestations,
+            self.parent_execution_requests,
+        ]
+    }
+
+    pub fn ssz_len(&self) -> usize {
+        BEACON_BLOCK_BODY_FIXED +
+            self.variable_fields().iter().map(|field| field.len()).sum::<usize>()
+    }
+
+    /// `out` is exactly [`Self::ssz_len`] bytes.
+    pub fn encode(&self, out: &mut [u8]) {
+        debug_assert_eq!(out.len(), self.ssz_len());
+        let (fixed, mut rest) = out.split_at_mut(BEACON_BLOCK_BODY_FIXED);
+        let fields = self.variable_fields();
+        encode_fixed(
+            fixed,
+            self.randao_reveal,
+            self.eth1_data,
+            self.graffiti,
+            self.sync_aggregate,
+            &fields,
+        );
+        for field in fields {
+            let (at, tail) = rest.split_at_mut(field.len());
+            at.copy_from_slice(field);
+            rest = tail;
         }
-        put(self.sync_aggregate);
-        for offset in &offsets[5..] {
-            put(&offset.to_le_bytes());
-        }
+    }
+}
+
+/// Both forks' fixed part: three leading fields, five offsets, the sync
+/// aggregate, then four offsets.
+fn encode_fixed(
+    fixed: &mut [u8],
+    randao_reveal: &[u8; 96],
+    eth1_data: &[u8; 72],
+    graffiti: &[u8; 32],
+    sync_aggregate: &[u8; BLOCK_SYNC_AGGREGATE_SIZE],
+    fields: &[&[u8]; 9],
+) {
+    let mut offsets = [0u32; 9];
+    let mut at = BEACON_BLOCK_BODY_FIXED;
+    for (offset, field) in offsets.iter_mut().zip(fields) {
+        *offset = at as u32;
+        at += field.len();
+    }
+
+    let mut cursor = 0;
+    let mut put = |bytes: &[u8]| {
+        fixed[cursor..cursor + bytes.len()].copy_from_slice(bytes);
+        cursor += bytes.len();
+    };
+    put(randao_reveal);
+    put(eth1_data);
+    put(graffiti);
+    for offset in &offsets[..5] {
+        put(&offset.to_le_bytes());
+    }
+    put(sync_aggregate);
+    for offset in &offsets[5..] {
+        put(&offset.to_le_bytes());
     }
 }
 

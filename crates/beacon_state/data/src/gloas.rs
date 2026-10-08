@@ -242,7 +242,7 @@ impl ExecutionPayloadBid {
     /// SSZ-encode the bid (checkpoint encoding) — inverse of
     /// [`Self::from_ssz`]. `blob_kzg_commitments` is the sole variable
     /// field; its offset slot at byte 188 is the fixed-part size.
-    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    pub fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(&self.parent_block_hash)?; // [0..32]
         w.write_all(&self.parent_block_root)?; // [32..64]
         w.write_all(&self.block_hash)?; // [64..96]

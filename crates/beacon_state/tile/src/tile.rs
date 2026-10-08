@@ -892,9 +892,15 @@ impl BeaconStateTile {
             BeaconApiRequest::ProposerPreparations { preparations } => {
                 self.record_proposer_preparations(preparations)
             }
-            BeaconApiRequest::ProduceBlock { request_id, slot, randao_reveal, graffiti } => {
+            BeaconApiRequest::ProduceBlock {
+                request_id,
+                slot,
+                randao_reveal,
+                graffiti,
+                bid_policy,
+            } => {
                 let parent_root = self.head_block_root();
-                let proposal = Proposal { slot, parent_root, randao_reveal, graffiti };
+                let proposal = Proposal { slot, parent_root, randao_reveal, graffiti, bid_policy };
                 self.produce_block(request_id, proposal, producers)
             }
             _ => {}

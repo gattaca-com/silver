@@ -118,7 +118,30 @@ pub enum BeaconApiRequest {
         slot: u64,
         randao_reveal: [u8; 96],
         graffiti: [u8; 32],
+        bid_policy: BidPolicy,
     },
+}
+
+/// `produceBlockV4`'s terms for a p2p builder bid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BidPolicy {
+    /// Gwei.
+    pub min_bid: u64,
+    /// Percent; the local build is weighted 100.
+    pub builder_boost_factor: u64,
+}
+
+impl Default for BidPolicy {
+    fn default() -> Self {
+        Self { min_bid: 0, builder_boost_factor: 100 }
+    }
+}
+
+impl BidPolicy {
+    /// A zero boost asks for the local build whatever the bid is worth.
+    pub fn admits(&self, value_gwei: u64) -> bool {
+        self.builder_boost_factor > 0 && value_gwei >= self.min_bid
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,8 +248,10 @@ impl BeaconApiResponse {
 #[repr(C)]
 pub struct ProducedBlock {
     pub header: TCacheRead,
+    /// Where the payload goes in `header`; its end when there is none.
     pub payload_at: u32,
-    pub payload: TCacheRead,
+    /// `None` for a Gloas block, which commits to a bid and carries no payload.
+    pub payload: Option<TCacheRead>,
     /// Little-endian wei.
     pub execution_payload_value: [u8; 32],
     /// Little-endian wei.
@@ -240,6 +265,9 @@ pub enum ProduceBlockFailure {
     InvalidRandaoReveal,
     NoFeeRecipient,
     PayloadUnavailable,
+    /// Gloas: no p2p bid the request admits, and no local build to fall back
+    /// on.
+    NoAcceptableBid,
     Invalid,
     Internal,
 }
