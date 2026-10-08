@@ -19,9 +19,6 @@ pub(crate) use aggregator::PubkeyAggregator;
 pub use sig_batch::SigBatch;
 pub(crate) use signature_sum::SignatureSum;
 
-/// Fills preallocated signature slots before they are written; never
-/// added or verified.
-pub(crate) const BLANK_SIGNATURE: Signature = unsafe { std::mem::zeroed() };
 /// The empty sum, which `AggregateSignature` has no constructor for.
 pub(crate) const EMPTY_AGGREGATE: AggregateSignature = unsafe { std::mem::zeroed() };
 

@@ -4928,6 +4928,7 @@ dependencies = [
  "silver_slashing",
  "silver_ssz",
  "silver_storage",
+ "slab",
  "snap 0.1.2",
  "thiserror 1.0.69",
  "tracing-subscriber",

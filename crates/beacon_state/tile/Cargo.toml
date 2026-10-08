@@ -20,6 +20,7 @@ flux-profiler.workspace = true
 ring.workspace = true
 blst.workspace = true
 rustc-hash.workspace = true
+slab.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

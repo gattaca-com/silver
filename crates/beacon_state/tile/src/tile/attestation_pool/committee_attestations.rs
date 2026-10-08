@@ -1,11 +1,11 @@
-use silver_common::Slab;
+use slab::Slab;
 
 use super::{
     InsertOutcome,
     committee_bits::{CommitteeBits, bit_positions},
     selection::MAX_AGGREGATES,
 };
-use crate::bls::{AggregateSignature, BLANK_SIGNATURE, EMPTY_AGGREGATE, Signature};
+use crate::bls::{AggregateSignature, EMPTY_AGGREGATE, Signature};
 
 const NO_SINGLE: u32 = u32::MAX;
 
@@ -33,20 +33,12 @@ pub(super) struct Aggregate {
     pub(super) signature: Signature,
 }
 
-impl Aggregate {
-    pub(super) const BLANK: Self = Self { bits: CommitteeBits::EMPTY, signature: BLANK_SIGNATURE };
-}
-
 /// A link in its committee's list of singles.
 #[derive(Clone, Copy)]
 pub(super) struct Single {
     pub(super) member: u16,
     next: u32,
     pub(super) signature: Signature,
-}
-
-impl Single {
-    pub(super) const BLANK: Self = Self { member: 0, next: NO_SINGLE, signature: BLANK_SIGNATURE };
 }
 
 impl CommitteeAttestations {
@@ -81,7 +73,7 @@ impl CommitteeAttestations {
         let mut next = self.first_single;
         std::iter::from_fn(move || {
             (next != NO_SINGLE).then(|| {
-                let single = &singles[next];
+                let single = &singles[next as usize];
                 next = single.next;
                 single
             })
@@ -97,12 +89,12 @@ impl CommitteeAttestations {
         if self.singles.contains(member) {
             return InsertOutcome::Duplicate;
         }
+        if singles.len() == singles.capacity() {
+            return InsertOutcome::Full;
+        }
         let single =
             Single { member: member as u16, next: self.first_single, signature: *signature };
-        let Some(i) = singles.insert(single) else {
-            return InsertOutcome::Full;
-        };
-        self.first_single = i;
+        self.first_single = singles.insert(single) as u32;
         self.singles.insert(member);
         self.attesters.insert(member);
         self.singles_signature
@@ -130,10 +122,10 @@ impl CommitteeAttestations {
         if self.held == u32::MAX && !self.remove_weakest_below(added.count(), aggregates) {
             return InsertOutcome::Duplicate;
         }
-        let Some(i) = aggregates.insert(Aggregate { bits, signature: *signature }) else {
+        if aggregates.len() == aggregates.capacity() {
             return InsertOutcome::Full;
-        };
-        self.hold(i);
+        }
+        self.hold(aggregates.insert(Aggregate { bits, signature: *signature }) as u32);
         self.attesters.union_with(&bits);
         InsertOutcome::Inserted
     }
@@ -141,13 +133,11 @@ impl CommitteeAttestations {
     /// Returns its aggregates and singles to their slabs.
     pub(super) fn remove_all(&self, aggregates: &mut Slab<Aggregate>, singles: &mut Slab<Single>) {
         for (_, i) in self.aggregates() {
-            aggregates.remove(i);
+            aggregates.remove(i as usize);
         }
         let mut next = self.first_single;
         while next != NO_SINGLE {
-            let i = next;
-            next = singles[i].next;
-            singles.remove(i);
+            next = singles.remove(next as usize).next;
         }
     }
 
@@ -156,7 +146,7 @@ impl CommitteeAttestations {
     }
 
     fn held_covers(&self, bits: &CommitteeBits, aggregates: &Slab<Aggregate>) -> bool {
-        self.aggregates().any(|(_, i)| bits.is_subset(&aggregates[i].bits))
+        self.aggregates().any(|(_, i)| bits.is_subset(&aggregates[i as usize].bits))
     }
 
     /// Holds slab index `i` at the lowest free position.
@@ -170,7 +160,7 @@ impl CommitteeAttestations {
     /// `bits` covers.
     fn remove_covered_by(&mut self, bits: &CommitteeBits, aggregates: &mut Slab<Aggregate>) {
         for position in bit_positions(self.held.into()) {
-            let held = &aggregates[self.aggregates[position]].bits;
+            let held = &aggregates[self.aggregates[position] as usize].bits;
             if self.outside_singles(held).is_subset(bits) {
                 self.remove_aggregate(position, aggregates);
             }
@@ -180,9 +170,9 @@ impl CommitteeAttestations {
     /// Drops the held aggregate with the fewest committee members outside the
     /// singles, if it has fewer than `added`; `false` when none does.
     fn remove_weakest_below(&mut self, added: u32, aggregates: &mut Slab<Aggregate>) -> bool {
-        let counts = self
-            .aggregates()
-            .map(|(position, i)| (position, self.outside_singles(&aggregates[i].bits).count()));
+        let counts = self.aggregates().map(|(position, i)| {
+            (position, self.outside_singles(&aggregates[i as usize].bits).count())
+        });
         let (weakest, count) = counts.min_by_key(|&(_, count)| count).expect("held aggregates");
         if count >= added {
             return false;
@@ -192,7 +182,7 @@ impl CommitteeAttestations {
     }
 
     fn remove_aggregate(&mut self, position: usize, aggregates: &mut Slab<Aggregate>) {
-        aggregates.remove(self.aggregate(position));
+        aggregates.remove(self.aggregate(position) as usize);
         self.held &= !(1 << position);
     }
 }

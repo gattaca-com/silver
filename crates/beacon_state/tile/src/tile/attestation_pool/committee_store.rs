@@ -1,4 +1,5 @@
-use silver_common::{Slab, ssz_view::MAX_COMMITTEES_PER_SLOT};
+use silver_common::ssz_view::MAX_COMMITTEES_PER_SLOT;
+use slab::Slab;
 
 use super::{
     InsertOutcome,
@@ -43,8 +44,8 @@ impl CommitteeStore {
         debug_assert!(max_committees <= u16::MAX as usize);
         Self {
             attestations: vec![CommitteeAttestations::EMPTY; max_committees].into_boxed_slice(),
-            aggregates: Slab::new(MAX_POOLED_AGGREGATES, Aggregate::BLANK),
-            singles: Slab::new(MAX_POOLED_SINGLES, Single::BLANK),
+            aggregates: Slab::with_capacity(MAX_POOLED_AGGREGATES),
+            singles: Slab::with_capacity(MAX_POOLED_SINGLES),
         }
     }
 
@@ -97,11 +98,13 @@ impl CommitteeStore {
         &self,
         id: CommitteeId,
     ) -> impl Iterator<Item = (usize, &CommitteeBits)> + Clone {
-        self.committee(id).aggregates().map(|(position, i)| (position, &self.aggregates[i].bits))
+        self.committee(id)
+            .aggregates()
+            .map(|(position, i)| (position, &self.aggregates[i as usize].bits))
     }
 
     pub(super) fn aggregate_bits(&self, id: CommitteeId, position: usize) -> &CommitteeBits {
-        &self.aggregates[self.committee(id).aggregate(position)].bits
+        &self.aggregates[self.committee(id).aggregate(position) as usize].bits
     }
 
     #[cfg(test)]
@@ -138,7 +141,7 @@ impl CommitteeStore {
         let committee = self.committee(id);
         let mut members = CommitteeBits::EMPTY;
         for k in attestation.aggregates() {
-            let aggregate = &self.aggregates[committee.aggregate(k)];
+            let aggregate = &self.aggregates[committee.aggregate(k) as usize];
             members.union_with(&aggregate.bits);
             signature.add(&aggregate.signature);
         }

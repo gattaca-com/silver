@@ -230,7 +230,9 @@ impl CommitteeSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bls::BLANK_SIGNATURE;
+    use crate::bls::Signature;
+
+    const BLANK_SIGNATURE: Signature = unsafe { std::mem::zeroed() };
 
     fn bits(members: &[usize]) -> CommitteeBits {
         let mut bits = CommitteeBits::EMPTY;

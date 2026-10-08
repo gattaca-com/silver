@@ -26,7 +26,6 @@ mod error;
 mod payload_frame;
 mod request;
 pub mod rpc_rate_limit;
-mod slab;
 mod tape_scratch;
 pub use silver_metrics::{self as metrics, declare_counters, profiler};
 #[path = "generated/protobuf.identify.rs"]
@@ -43,7 +42,6 @@ pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
 pub use silver_beacon_state_data::{FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH};
 pub use silver_ssz::{block_contents, merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
-pub use slab::Slab;
 pub use tape_scratch::{FrameOut, TapeError, TapeScratch};
 #[cfg(feature = "test-util")]
 pub mod test_util;
