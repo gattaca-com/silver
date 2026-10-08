@@ -109,7 +109,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     pub(super) fn commit_scratch(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
         let Self { pool, finalized, ring, scratch, scratch_snapshot, .. } = self;
-        debug_assert!(!scratch.has_pending_rehash(), "deferred writes not rehashed before commit");
+        scratch.rehash();
 
         ring.grow_if_full_with(PageSnapshot::new_released, |src, dst| *dst = src.clone_for_grow());
         let (id, dst, parent_snap) = ring.roll_deriving(parent);

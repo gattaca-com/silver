@@ -162,8 +162,7 @@ impl<'a> BuildersWriteView<'a> {
     }
 
     #[inline]
-    pub fn commit(mut self) -> super::BuildersId {
-        self.hash.rehash_unsorted();
+    pub fn commit(self) -> super::BuildersId {
         super::BuildersId { data: self.fork.commit(), hash: self.hash.commit() }
     }
 
@@ -187,16 +186,14 @@ impl<'a> BuildersWriteView<'a> {
         self.hashed_reader().hash_root()
     }
 
-    /// Reader with flushed deferred leaf writes
     #[inline]
     pub fn hashed_reader(&mut self) -> BuildersView<'_> {
-        self.hash.rehash_unsorted();
-        self.reader()
+        BuildersView { base: self.base, delta: &self.fork, hash: self.hash.hashed_reader() }
     }
 
     fn refresh_leaf(&mut self, i: usize) {
         let leaf = self.reader().recompute_leaf(i);
-        self.hash.set_deferred(i as u32, leaf);
+        self.hash.set(i as u32, leaf);
     }
 
     #[inline]

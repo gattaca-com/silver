@@ -115,7 +115,7 @@ impl<C: ColumnSpec> ColumnTree<C> {
                 }
             };
         }
-        self.store_mut().load_diff(pool, loaded, target, format.num_nodes::<C>());
+        self.store_mut().load_diff(pool, loaded, target);
     }
 
     #[timed]
@@ -153,6 +153,7 @@ impl<C: ColumnSpec> ColumnTree<C> {
             ColumnTree::List(t) => t.fill_zero(),
             ColumnTree::ProgressiveList(t) => t.fill_zero(),
         }
+        self.store_mut().unhashed.clear();
         self.mark_all_dirty();
     }
 
@@ -176,7 +177,7 @@ impl<C: ColumnSpec> ColumnTree<C> {
     fn seed_write(&mut self, chunk: usize, data_node: usize) {
         let format = self.format();
         let store = self.store_mut();
-        store.push_dirty(chunk as u32);
+        store.unhashed.mark(chunk);
         match format {
             TreeFormat::Fixed { .. } => store.mark_dirty_node(data_node, 0),
             TreeFormat::Progressive { .. } => {
@@ -188,9 +189,7 @@ impl<C: ColumnSpec> ColumnTree<C> {
         }
     }
 
-    /// Write one value without rehashing; queue its chunk for a later
-    /// [`rehash_unsorted`](Self::rehash_unsorted).
-    pub fn set_val_deferred(&mut self, idx: u32, v: C::Val) {
+    pub fn set_val(&mut self, idx: u32, v: C::Val) {
         let k = C::VALS_PER_CHUNK as u32;
         let chunk = (idx / k) as usize;
         let data_node = self.leaf_pos(chunk);
@@ -209,47 +208,11 @@ impl<C: ColumnSpec> ColumnTree<C> {
 
     #[inline]
     pub(super) fn has_pending_rehash(&self) -> bool {
-        !self.store().dirty_chunks.is_empty()
+        !self.store().unhashed.is_empty()
     }
 
-    pub fn set_vals(&mut self, changes: &[(u32, C::Val)]) {
-        if changes.is_empty() {
-            return;
-        }
-        debug_assert!(
-            changes.windows(2).all(|w| w[0].0 < w[1].0),
-            "set_vals needs ascending, distinct indices",
-        );
-        debug_assert!(self.store().dirty_chunks.is_empty(), "unhashed add_at batch pending");
-        let k = C::VALS_PER_CHUNK as u32;
-        let format = self.format();
-        for group in changes.chunk_by(|a, b| a.0 / k == b.0 / k) {
-            let chunk = (group[0].0 / k) as usize;
-            let data_node = format.leaf_pos::<C>(chunk);
-            {
-                let store = self.store_mut();
-                debug_assert!(data_node < store.nodes.len(), "index out of range");
-                let leaf = &mut store.nodes[data_node];
-                for &(idx, v) in group {
-                    <C::Val>::set_lane(leaf, (idx % k) as usize, v);
-                }
-            }
-            self.seed_write(chunk, data_node);
-        }
-        self.rehash();
-    }
-
-    pub fn rehash_unsorted(&mut self) {
-        self.store_mut().sort_merge_dirty();
-        self.rehash();
-    }
-
+    #[timed]
     pub fn rehash(&mut self) {
-        debug_assert!(
-            self.store().dirty_chunks.iter().all(|r| r.start < r.end) &&
-                self.store().dirty_chunks.windows(2).all(|w| w[0].end <= w[1].start),
-            "rehash needs sorted disjoint dirty ranges; use rehash_unsorted",
-        );
         match self {
             ColumnTree::List(t) => t.rehash(),
             ColumnTree::ProgressiveList(t) => t.rehash(),

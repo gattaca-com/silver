@@ -1,7 +1,8 @@
 use std::marker::PhantomData;
 
 use super::{
-    ColumnSpec, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot, subtree::NodeRange,
+    ColumnSpec, chunk_bits::ChunkBits, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot,
+    subtree::NodeRange,
 };
 use crate::types::B256;
 
@@ -9,7 +10,8 @@ pub(super) struct NodeStore<C: ColumnSpec> {
     pub(super) nodes: Vec<B256>,
     pub(super) count: usize,
     pub(super) dirty_pages: Vec<bool>,
-    pub(super) dirty_chunks: Vec<NodeRange>,
+    pub(super) unhashed: ChunkBits,
+    unhashed_ranges: Vec<NodeRange>,
     _marker: PhantomData<fn() -> C>,
 }
 
@@ -19,7 +21,8 @@ impl<C: ColumnSpec> Default for NodeStore<C> {
             nodes: Vec::new(),
             count: 0,
             dirty_pages: Vec::new(),
-            dirty_chunks: Vec::new(),
+            unhashed: ChunkBits::default(),
+            unhashed_ranges: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -27,22 +30,29 @@ impl<C: ColumnSpec> Default for NodeStore<C> {
 
 impl<C: ColumnSpec> NodeStore<C> {
     pub(super) fn with_leaves(
-        num_nodes: usize,
+        format: TreeFormat,
         count: usize,
-        data_start: usize,
         leaves: impl Iterator<Item = B256>,
     ) -> Self {
+        let num_nodes = format.num_nodes::<C>();
         let mut store = Self {
             nodes: vec![[0u8; 32]; num_nodes],
             count,
             dirty_pages: vec![false; num_pages_for::<C>(num_nodes)],
-            dirty_chunks: Vec::new(),
-            _marker: PhantomData,
+            ..Self::default()
         };
-        for (slot, leaf) in store.nodes[data_start..].iter_mut().zip(leaves) {
+        store.unhashed.resize(format.data_capacity());
+        for (slot, leaf) in store.nodes[format.data_start::<C>()..].iter_mut().zip(leaves) {
             *slot = leaf;
         }
         store
+    }
+
+    /// The nodes, and the chunks written since the last rehash as sorted
+    /// ranges.
+    pub(super) fn drain_unhashed(&mut self) -> (&mut [B256], &mut [NodeRange]) {
+        self.unhashed.drain(&mut self.unhashed_ranges);
+        (&mut self.nodes, &mut self.unhashed_ranges)
     }
 
     #[inline]
@@ -79,9 +89,9 @@ impl<C: ColumnSpec> NodeStore<C> {
         pool: &PagePool<C::Page>,
         loaded: &PageSnapshot,
         target: &PageSnapshot,
-        num_nodes: usize,
     ) {
-        self.nodes.resize(num_nodes, [0u8; 32]);
+        let format = target.format();
+        self.nodes.resize(format.num_nodes::<C>(), [0u8; 32]);
         self.count = target.len();
         for pi in 0..target.num_pages() {
             let same = self.dirty_pages.get(pi).is_some_and(|&dirty| !dirty) &&
@@ -92,6 +102,7 @@ impl<C: ColumnSpec> NodeStore<C> {
             }
         }
         self.reset_dirty_mask();
+        self.unhashed.resize(format.data_capacity());
     }
 
     pub(super) fn to_snapshot(
@@ -128,13 +139,13 @@ impl<C: ColumnSpec> NodeStore<C> {
     }
 
     /// Start a fresh write session: no dirty pages, and no dirty chunks — an
-    /// abandoned fork can leave an unhashed `add_at` batch behind, and its ids
+    /// abandoned fork can leave an unhashed batch behind, and its ids
     /// may not even be in range of the tree loaded since.
     pub(super) fn reset_dirty_mask(&mut self) {
         let num_pages = self.num_pages();
         self.dirty_pages.clear();
         self.dirty_pages.resize(num_pages, false);
-        self.dirty_chunks.clear();
+        self.unhashed.clear();
     }
 
     pub(super) fn mark_all_dirty(&mut self) {
@@ -163,29 +174,6 @@ impl<C: ColumnSpec> NodeStore<C> {
     #[inline]
     pub(super) fn mark_dirty_page(&mut self, node: usize) {
         self.dirty_pages[node / C::PAGE_NODES] = true;
-    }
-
-    #[inline]
-    pub(super) fn push_dirty(&mut self, chunk: u32) {
-        match self.dirty_chunks.last_mut() {
-            Some(last) if last.contains(chunk) => {}
-            Some(last) if chunk == last.end => last.end += 1,
-            _ => self.dirty_chunks.push(NodeRange::single(chunk)),
-        }
-    }
-
-    pub(super) fn sort_merge_dirty(&mut self) {
-        self.dirty_chunks.sort_unstable_by_key(|r| r.start);
-        let mut n = 0;
-        for j in 0..self.dirty_chunks.len() {
-            let r = self.dirty_chunks[j];
-            if n > 0 && self.dirty_chunks[n - 1].try_merge(r) {
-                continue;
-            }
-            self.dirty_chunks[n] = r;
-            n += 1;
-        }
-        self.dirty_chunks.truncate(n);
     }
 
     /// `seg_off` is the internal node's subtree block offset (0 for a list's

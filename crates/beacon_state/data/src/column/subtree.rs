@@ -11,16 +11,6 @@ pub(super) struct NodeRange {
 
 impl NodeRange {
     #[inline]
-    pub(super) fn single(id: u32) -> Self {
-        Self { start: id, end: id + 1 }
-    }
-
-    #[inline]
-    pub(super) fn contains(self, id: u32) -> bool {
-        (self.start..self.end).contains(&id)
-    }
-
-    #[inline]
     fn parent(self, base: u32) -> Self {
         Self { start: base + (self.start >> 1), end: base + ((self.end - 1) >> 1) + 1 }
     }

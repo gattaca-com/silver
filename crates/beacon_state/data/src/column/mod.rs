@@ -1,3 +1,4 @@
+mod chunk_bits;
 mod format;
 mod group;
 mod list;

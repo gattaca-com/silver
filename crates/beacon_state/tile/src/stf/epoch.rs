@@ -273,7 +273,6 @@ pub fn process_inactivity_updates(
             view.inactivity.add_at(i as u32, delta);
         }
     }
-    view.inactivity.rehash();
 }
 
 #[timed]
@@ -343,7 +342,6 @@ pub fn process_rewards_and_penalties(
             view.balances.add_at(i as u32, reward as i64 - penalty as i64);
         }
     }
-    view.balances.rehash();
 }
 
 /// Pass 1 (pure read sweep): per-flag sum of effective-balance increments over
@@ -454,7 +452,6 @@ pub fn process_slashings(cfg: &SpecConfig, view: &mut StateWriterView, current_e
         let penalty = penalty_per_increment * (effective_balance / EFFECTIVE_BALANCE_INCREMENT);
         view.balances.add_at(i as u32, -(penalty as i64));
     }
-    view.balances.rehash();
 }
 
 #[timed]
@@ -512,7 +509,7 @@ pub fn process_effective_balance_updates(
 
 #[timed]
 pub fn process_participation_flag_updates(view: &mut StateWriterView) {
-    view.previous_participation.copy_changed_from(&view.current_participation);
+    view.previous_participation.copy_changed_from(&mut view.current_participation);
     view.current_participation.clear_to_zero();
 }
 
@@ -699,7 +696,7 @@ pub fn process_pending_consolidations(view: &mut StateWriterView) {
 /// `HISTORICAL_SUMMARY_PERIOD` multiple (which is what rolled `longtail`).
 #[timed]
 pub fn process_historical_summaries_update(
-    view: &StateWriterView,
+    view: &mut StateWriterView,
     longtail: &mut LongtailWriteView,
 ) {
     longtail.push_historical_summary(HistoricalSummary {
