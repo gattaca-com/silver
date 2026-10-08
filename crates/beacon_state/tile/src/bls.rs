@@ -2,6 +2,7 @@ pub(crate) use blst::min_pk::{PublicKey, Signature};
 use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
+use silver_bls_simd::uncompress_in_g2;
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
@@ -141,17 +142,25 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
     verify_one_compressed(pubkey, sig, signing_root)
 }
 
-/// Signature parsed and G2-subgroup-checked at construction — the only way
-/// in is `parse` — so batch verify and downstream aggregation need no
-/// re-check. Constructing it at gossip arrival keeps the ~27µs/sig check
-/// off the batched-flush critical path.
+/// A signature known to be in G2, so batch verify and downstream
+/// aggregation need no re-check. `check_all` is the only constructor.
 #[derive(Clone, Copy)]
 pub struct CheckedSignature(Signature);
 
 impl CheckedSignature {
+    /// One decompression and subgroup check over every signature, emitted in
+    /// input order.
+    pub fn check_all<'a>(
+        sigs: impl IntoIterator<Item = &'a [u8; 96]>,
+        mut emit: impl FnMut(Option<Self>),
+    ) {
+        uncompress_in_g2(sigs, |p| emit(p.map(|p| Self(p.into()))));
+    }
+
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
-        let sig = Signature::from_bytes(bytes).ok()?;
-        sig.subgroup_check().then_some(Self(sig))
+        let mut sig = None;
+        Self::check_all([bytes], |s| sig = s);
+        sig
     }
 
     pub(crate) fn as_sig(&self) -> &Signature {

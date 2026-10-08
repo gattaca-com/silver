@@ -4921,6 +4921,7 @@ dependencies = [
  "serde",
  "serde_yml",
  "silver_beacon_state_data",
+ "silver_bls_simd",
  "silver_columns",
  "silver_common",
  "silver_config",
@@ -4951,6 +4952,15 @@ dependencies = [
  "silver_ssz",
  "snap 1.1.1",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "silver_bls_simd"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "blst",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
 ]
 
 [[package]]

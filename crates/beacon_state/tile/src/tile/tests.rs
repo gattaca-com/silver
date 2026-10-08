@@ -3089,8 +3089,8 @@ fn attestation_batch_flush_applies_all() {
 
     tile.flush_votes(&mut adapter.producers);
     assert_eq!(voted_weight(&mut tile, bbr), 2 * MAX_EFFECTIVE_BALANCE);
-    assert!(tile.vote_batch.is_empty());
-    assert!(tile.vote_pending.is_empty());
+    assert!(tile.votes.batch.is_empty());
+    assert!(tile.votes.pending.is_empty());
     assert_eq!(non_block_relays(&mut adapter), expected_topics);
 }
 
@@ -3125,6 +3125,25 @@ fn invalid_vote_does_not_deduplicate_later_valid_vote() {
     let (valid, valid_subnet) = batched_att(&tile, 0, 0);
     assert_eq!(subnet, valid_subnet);
     tile.defer_vote(gossip_att_msg(&mut gp, &forged, subnet), &mut adapter.producers);
+    tile.defer_vote(gossip_att_msg(&mut gp, &valid, subnet), &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE);
+}
+
+#[test]
+fn malformed_signature_does_not_deduplicate_later_valid_vote() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.head_block_root();
+
+    let (valid, subnet) = batched_att(&tile, 0, 0);
+    let mut malformed = valid;
+    let signature_start = SINGLE_ATT_SIZE - 96;
+    assert_eq!(&malformed[signature_start..], SingleAttestationView::signature(&valid));
+    // Without the compression flag, no G2 decoder accepts the bytes.
+    malformed[signature_start] &= 0x7f;
+    tile.defer_vote(gossip_att_msg(&mut gp, &malformed, subnet), &mut adapter.producers);
     tile.defer_vote(gossip_att_msg(&mut gp, &valid, subnet), &mut adapter.producers);
 
     tile.flush_votes(&mut adapter.producers);
@@ -3386,7 +3405,7 @@ fn sync_message_batch_applies_and_marks_seen() {
     // The test state's default current committee repeats validator 0 in all
     // 128 positions of each subcommittee.
     assert_eq!(SyncCommitteeContributionView::aggregation_bits(&contribution), &[0xff; 16]);
-    assert!(tile.vote_batch.is_empty() && tile.vote_pending.is_empty());
+    assert!(tile.votes.batch.is_empty() && tile.votes.pending.is_empty());
     assert_eq!(non_block_relays(&mut adapter), [GossipTopic::SyncCommittee(1)]);
 }
 

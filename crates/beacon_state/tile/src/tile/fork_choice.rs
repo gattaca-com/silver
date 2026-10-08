@@ -219,10 +219,7 @@ impl BeaconStateTile {
         );
         let signing_root =
             bls::compute_signing_root(&stf::hash_payload_attestation_data(data), &domain);
-        let Some(signature) = CheckedSignature::parse(PayloadAttestationMessage::signature(buf))
-        else {
-            return Err(Feedback::reject("ptc signature malformed"));
-        };
+        let signature = *PayloadAttestationMessage::signature(buf);
 
         Ok(PreparedPtc {
             block_root,
@@ -237,7 +234,7 @@ impl BeaconStateTile {
         })
     }
 
-    pub(super) fn commit_ptc(&mut self, p: &PreparedPtc) {
+    pub(super) fn commit_ptc(&mut self, p: &PreparedPtc, signature: &CheckedSignature) {
         self.fork_choice.record_ptc_votes(&p.block_root, &p.ptc_positions, p.present, p.da);
         self.seen_ptc.mark(p.slot, p.validator as usize);
         self.payload_attestation_pool.insert(
@@ -246,7 +243,7 @@ impl BeaconStateTile {
             p.present,
             p.da,
             &p.ptc_positions,
-            p.signature.as_sig(),
+            signature.as_sig(),
         );
     }
 

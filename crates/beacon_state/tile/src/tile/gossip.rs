@@ -58,9 +58,14 @@ pub(super) struct PreparedAttestation {
     pubkey: PublicKey,
     signing_root: B256,
     data_root: B256,
-    signature: CheckedSignature,
     attester: u32,
     target: stf::VoteTarget,
+}
+
+impl PreparedAttestation {
+    fn signature(&self) -> &[u8; 96] {
+        SingleAttestationView::signature(&self.buf)
+    }
 }
 
 pub(super) struct PreparedSyncMessage {
@@ -71,7 +76,7 @@ pub(super) struct PreparedSyncMessage {
     positions: [u64; SYNC_SUBCOMMITTEE_MASK_WORDS],
     pubkey: PublicKey,
     signing_root: B256,
-    signature: CheckedSignature,
+    signature: [u8; 96],
 }
 
 pub(crate) struct PreparedPtc {
@@ -83,7 +88,7 @@ pub(crate) struct PreparedPtc {
     pub da: bool,
     pub pubkey: PublicKey,
     pub signing_root: B256,
-    pub signature: CheckedSignature,
+    pub signature: [u8; 96],
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -94,11 +99,27 @@ pub(super) enum PreparedVote {
 }
 
 impl PreparedVote {
-    fn sig_parts(&self) -> (&PublicKey, CheckedSignature, &B256) {
+    fn pubkey_and_root(&self) -> (&PublicKey, &B256) {
         match self {
-            Self::Attestation(p) => (&p.pubkey, p.signature, &p.signing_root),
-            Self::SyncMessage(p) => (&p.pubkey, p.signature, &p.signing_root),
-            Self::Ptc(p) => (&p.pubkey, p.signature, &p.signing_root),
+            Self::Attestation(p) => (&p.pubkey, &p.signing_root),
+            Self::SyncMessage(p) => (&p.pubkey, &p.signing_root),
+            Self::Ptc(p) => (&p.pubkey, &p.signing_root),
+        }
+    }
+
+    fn signature(&self) -> &[u8; 96] {
+        match self {
+            Self::Attestation(p) => p.signature(),
+            Self::SyncMessage(p) => &p.signature,
+            Self::Ptc(p) => &p.signature,
+        }
+    }
+
+    fn signature_malformed(&self) -> &'static str {
+        match self {
+            Self::Attestation(_) => "attestation signature malformed",
+            Self::SyncMessage(_) => "sync message signature malformed",
+            Self::Ptc(_) => "ptc signature malformed",
         }
     }
 
@@ -150,16 +171,18 @@ impl BeaconStateTile {
             Ok(prepared) => prepared,
             Err(feedback) => return feedback,
         };
-        if !bls::verify_one_checked(&prepared.pubkey, &prepared.signature, &prepared.signing_root) {
+        let Some(signature) = CheckedSignature::parse(prepared.signature()) else {
+            return Feedback::reject("attestation signature malformed");
+        };
+        if !bls::verify_one_checked(&prepared.pubkey, &signature, &prepared.signing_root) {
             return Feedback::reject("attestation bad signature");
         }
-        self.commit_attestation(&prepared);
+        self.commit_attestation(&prepared, &signature);
         Feedback::Accept
     }
 
-    /// Everything up to (but excluding) the pairing: structural checks,
-    /// dedup, committee membership, roots, signature parse + subgroup
-    /// check. The pairing runs
+    /// Everything up to (but excluding) the signature check and the pairing:
+    /// structural checks, dedup, committee membership, roots. The pairing runs
     /// either singly (`handle_attestation`) or batched
     /// (`flush_attestations`).
     fn prepare_attestation(
@@ -243,9 +266,6 @@ impl BeaconStateTile {
         );
         let (data_root, signing_root) =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
-        let Some(signature) = CheckedSignature::parse(SingleAttestationView::signature(buf)) else {
-            return Err(Feedback::reject("attestation signature malformed"));
-        };
 
         Ok(PreparedAttestation {
             buf: *buf,
@@ -254,7 +274,6 @@ impl BeaconStateTile {
             pubkey: *view.validators.pubkey_decompressed(attester_index),
             signing_root,
             data_root,
-            signature,
             attester: attester_index as u32,
             target: stf::VoteTarget {
                 block_root,
@@ -265,9 +284,9 @@ impl BeaconStateTile {
         })
     }
 
-    fn commit_attestation(&mut self, p: &PreparedAttestation) {
+    fn commit_attestation(&mut self, p: &PreparedAttestation, signature: &CheckedSignature) {
         let verified =
-            VerifiedSingleAttestation { data_root: p.data_root, signature: *p.signature.as_sig() };
+            VerifiedSingleAttestation { data_root: p.data_root, signature: *signature.as_sig() };
         let outcome = self.attestation_pool.insert_verified(
             &p.buf,
             p.committee_position,
@@ -298,14 +317,14 @@ impl BeaconStateTile {
 
     pub(super) fn defer_vote(&mut self, vote: NewGossipMsg, producers: &mut Producers) {
         let pin = self.reader.acquire(vote.ssz);
-        self.vote_batch.push(BatchedVote { vote, pin });
-        if self.vote_batch.len() >= VOTE_BATCH_CAP {
+        self.votes.batch.push(BatchedVote { vote, pin });
+        if self.votes.batch.len() >= VOTE_BATCH_CAP {
             self.flush_votes(producers);
         }
     }
 
     pub(super) fn flush_votes(&mut self, producers: &mut Producers) {
-        if !self.vote_batch.is_empty() {
+        if !self.votes.batch.is_empty() {
             self.verify_and_commit_votes(producers);
         }
     }
@@ -316,20 +335,20 @@ impl BeaconStateTile {
     /// per-message verification so only the culprits are rejected.
     #[timed]
     fn verify_and_commit_votes(&mut self, producers: &mut Producers) {
-        debug_assert!(!self.vote_batch.is_empty());
-        BeaconStateCounters::VoteBatchSize.set(self.vote_batch.len() as u64);
+        debug_assert!(!self.votes.batch.is_empty());
+        BeaconStateCounters::VoteBatchSize.set(self.votes.batch.len() as u64);
 
         self.prepare_votes(producers);
 
         let batch_ok = self.sig_batch.verify_all();
-        if !batch_ok && !self.vote_pending.is_empty() {
+        if !batch_ok && !self.votes.pending.is_empty() {
             BeaconStateCounters::VoteBatchFallback.inc();
         }
 
         let mut accepted = false;
         let mut committed_ptc = false;
-        self.vote_pending.reverse();
-        while let Some((m, p)) = self.vote_pending.pop() {
+        self.votes.pending.reverse();
+        while let Some((m, p, sig)) = self.votes.pending.pop() {
             // Deduplicate only against votes whose signatures have already
             // verified and been committed. An invalid earlier arrival with
             // the same key must not suppress a later valid vote.
@@ -337,14 +356,14 @@ impl BeaconStateTile {
                 Self::local_verdict(&m, Feedback::AlreadySeen, producers);
                 continue;
             }
-            let (pk, sig, root) = p.sig_parts();
+            let (pk, root) = p.pubkey_and_root();
             let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
             if valid {
                 match &p {
-                    PreparedVote::Attestation(p) => self.commit_attestation(p),
-                    PreparedVote::SyncMessage(p) => self.commit_sync_message(p),
+                    PreparedVote::Attestation(p) => self.commit_attestation(p, &sig),
+                    PreparedVote::SyncMessage(p) => self.commit_sync_message(p, &sig),
                     PreparedVote::Ptc(p) => {
-                        self.commit_ptc(p);
+                        self.commit_ptc(p, &sig);
                         committed_ptc = true;
                     }
                 }
@@ -366,15 +385,19 @@ impl BeaconStateTile {
         }
     }
 
+    /// Prepares every vote, decompresses and subgroup-checks all their
+    /// signatures in one batch, then pairs the survivors into `sig_batch`.
     #[timed]
     fn prepare_votes(&mut self, producers: &mut Producers) {
         self.sig_batch.clear();
-        debug_assert!(self.vote_pending.is_empty());
+        debug_assert!(
+            self.votes.prepared.is_empty() &&
+                self.votes.checked.is_empty() &&
+                self.votes.pending.is_empty()
+        );
 
-        // Drain from the back after one in-place reversal: this preserves
-        // arrival order without O(n) front-removes or another allocation.
-        self.vote_batch.reverse();
-        while let Some(BatchedVote { vote, pin }) = self.vote_batch.pop() {
+        let mut batch = std::mem::take(&mut self.votes.batch);
+        for BatchedVote { vote, pin } in batch.drain(..) {
             let Some(data) = pin.buffer().ok().map(|(d, _)| d) else {
                 Self::local_verdict(&vote, Feedback::Ignore, producers);
                 continue;
@@ -392,22 +415,7 @@ impl BeaconStateTile {
                 _ => continue,
             };
             match prepared {
-                Ok(p) => {
-                    // Pair only the first candidate for each dedup key, but
-                    // retain later candidates. If that representative makes
-                    // the batch fail, fallback verification can still find a
-                    // later valid candidate for the same key. A sync message
-                    // on several subnets carries one signature, paired once.
-                    let key = p.dedup_key();
-                    let (pk, sig, root) = p.sig_parts();
-                    let paired = self.vote_pending.iter().any(|(_, q)| q.dedup_key() == key) ||
-                        matches!(p, PreparedVote::SyncMessage(_)) &&
-                            self.sig_batch.contains(pk, sig, root);
-                    if !paired {
-                        self.sig_batch.push_parsed(pk, sig, *root);
-                    }
-                    self.vote_pending.push((vote, p));
-                }
+                Ok(p) => self.votes.prepared.push((BatchedVote { vote, pin }, p)),
                 Err(Feedback::Reject { reason, .. }) => {
                     self.reject_gossip(&vote, data, reason, producers)
                 }
@@ -418,6 +426,36 @@ impl BeaconStateTile {
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
         }
+        self.votes.batch = batch;
+
+        let mut prepared = std::mem::take(&mut self.votes.prepared);
+        let mut checked = std::mem::take(&mut self.votes.checked);
+        CheckedSignature::check_all(prepared.iter().map(|(_, p)| p.signature()), |s| {
+            checked.push(s)
+        });
+        for ((BatchedVote { vote, pin }, p), sig) in prepared.drain(..).zip(checked.drain(..)) {
+            let Some(sig) = sig else {
+                let data = pin.buffer().ok().map_or(&[][..], |(d, _)| d);
+                self.reject_gossip(&vote, data, p.signature_malformed(), producers);
+                continue;
+            };
+            // Pair only the first candidate for each dedup key, but retain
+            // later candidates. If that representative makes the batch fail,
+            // fallback verification can still find a later valid candidate
+            // for the same key. A sync message on several subnets carries one
+            // signature, paired once.
+            let key = p.dedup_key();
+            let (pk, root) = p.pubkey_and_root();
+            let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
+                matches!(p, PreparedVote::SyncMessage(_)) &&
+                    self.sig_batch.contains(pk, sig, root);
+            if !paired {
+                self.sig_batch.push_parsed(pk, sig, *root);
+            }
+            self.votes.pending.push((vote, p, sig));
+        }
+        self.votes.prepared = prepared;
+        self.votes.checked = checked;
     }
 
     pub(super) fn prepare_sync_message(
@@ -465,9 +503,7 @@ impl BeaconStateTile {
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
         );
         let signing_root = bls::compute_signing_root(&block_root, &domain);
-        let Some(signature) = CheckedSignature::parse(SyncCommitteeView::signature(buf)) else {
-            return Err(Feedback::reject("sync message signature malformed"));
-        };
+        let signature = *SyncCommitteeView::signature(buf);
 
         Ok(PreparedSyncMessage {
             slot,
@@ -481,13 +517,13 @@ impl BeaconStateTile {
         })
     }
 
-    fn commit_sync_message(&mut self, p: &PreparedSyncMessage) {
+    fn commit_sync_message(&mut self, p: &PreparedSyncMessage, signature: &CheckedSignature) {
         let outcome = self.sync_contribution_pool.insert_verified(
             p.slot,
             p.subnet,
             p.block_root,
             &p.positions,
-            p.signature.as_sig(),
+            signature.as_sig(),
         );
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
@@ -1709,14 +1745,17 @@ impl BeaconStateTile {
     }
 
     fn ef_verify_and_commit(&mut self, prepared: PreparedVote) -> Feedback {
-        let (pk, sig, root) = prepared.sig_parts();
+        let Some(sig) = CheckedSignature::parse(prepared.signature()) else {
+            return Feedback::reject(prepared.signature_malformed());
+        };
+        let (pk, root) = prepared.pubkey_and_root();
         if !bls::verify_one_checked(pk, &sig, root) {
             return Feedback::reject("vote bad signature");
         }
         match &prepared {
-            PreparedVote::Attestation(p) => self.commit_attestation(p),
-            PreparedVote::SyncMessage(p) => self.commit_sync_message(p),
-            PreparedVote::Ptc(p) => self.commit_ptc(p),
+            PreparedVote::Attestation(p) => self.commit_attestation(p, &sig),
+            PreparedVote::SyncMessage(p) => self.commit_sync_message(p, &sig),
+            PreparedVote::Ptc(p) => self.commit_ptc(p, &sig),
         }
         self.recompute_head();
         Feedback::Accept
