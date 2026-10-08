@@ -142,7 +142,7 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
     verify_one_compressed(pubkey, sig, signing_root)
 }
 
-/// A signature known to lie in G2, so batch verify and downstream
+/// A signature known to be in G2, so batch verify and downstream
 /// aggregation need no re-check. `check_all` is the only constructor.
 #[derive(Clone, Copy)]
 pub struct CheckedSignature(Signature);

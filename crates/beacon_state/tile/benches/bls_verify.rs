@@ -224,7 +224,7 @@ fn bench_att_batches(c: &mut Criterion) {
 }
 
 /// Decompress plus subgroup check, the per-vote cost in the flush's prepare
-/// phase, at the flush sizes a batched kernel is compared at.
+/// phase, at the flush sizes where the SIMD path is compared with blst.
 fn bench_g2_parse(c: &mut Criterion) {
     let sigs: Vec<[u8; 96]> = (0..1024u64)
         .map(|i| keypair(5000 + i).0.sign(&i.to_le_bytes(), DST, &[]).to_bytes())
@@ -235,7 +235,7 @@ fn bench_g2_parse(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("blst", n), &sigs[..n], |b, sigs| {
             b.iter(|| sigs.iter().filter(|s| CheckedSignature::parse(s).is_some()).count())
         });
-        g.bench_with_input(BenchmarkId::new("kernel", n), &sigs[..n], |b, sigs| {
+        g.bench_with_input(BenchmarkId::new("simd", n), &sigs[..n], |b, sigs| {
             b.iter(|| {
                 let mut checked = 0;
                 CheckedSignature::check_all(sigs, |s| checked += s.is_some() as usize);

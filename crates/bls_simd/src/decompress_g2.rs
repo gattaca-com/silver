@@ -21,7 +21,7 @@ const FLAG_LARGER_ROOT: u8 = 0x20;
 
 /// Per-lane verdicts for one batch of eight.
 pub struct Batch {
-    /// Decoded points, meaningful on the `on_curve` lanes.
+    /// Decoded points, meaningful on the `valid` lanes.
     pub points: [blst_p2_affine; LANES],
     /// Lanes whose encoding blst would decompress, member of G2 or not.
     pub on_curve: __mmask8,
