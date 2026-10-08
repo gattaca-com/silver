@@ -206,9 +206,9 @@ impl PeerManager {
     pub(super) fn data_column_peer_count(&self, exclude: usize) -> usize {
         self.peers
             .iter()
-            .filter(|(conn, state)| {
-                **conn != exclude && {
-                    let (subscribed, advertised) = self.data_column_overlap(**conn, state);
+            .filter(|&(conn, state)| {
+                conn != exclude && {
+                    let (subscribed, advertised) = self.data_column_overlap(conn, state);
                     subscribed > 0 || advertised > 0
                 }
             })

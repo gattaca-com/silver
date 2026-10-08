@@ -17,7 +17,7 @@ use silver_config::{ScoreParams, SyncingConfig};
 
 use crate::{
     database::PeerDatabase,
-    state::{ArchivedState, IpPrefix, MsgIdMap, PartialCapabilities, PeerState},
+    state::{ArchivedState, IpPrefix, MsgIdMap, PartialCapabilities},
 };
 
 pub(crate) mod admission;
@@ -27,6 +27,7 @@ mod partial;
 pub(crate) mod peers;
 pub(crate) mod promises;
 pub use partial::PartialPeer;
+mod peer_slots;
 pub(crate) mod rpc;
 mod subscribers;
 mod sweep;
@@ -70,8 +71,7 @@ const IDLE_PEER_MAX_SCORE: f64 = 0.1;
 pub struct PeerManager {
     local_peer_id: PeerId,
 
-    /// Live peers keyed by connection handle.
-    peers: HashMap<usize, PeerState>,
+    peers: peer_slots::PeerSlots,
 
     subscribers: subscribers::TopicSubscribers,
 
@@ -92,6 +92,8 @@ pub struct PeerManager {
     /// Topics we subscribe to ourselves. Drives SUBSCRIBE emission on new
     /// peers and mesh-management decisions.
     our_topics: Vec<GossipTopic>,
+    /// Bumped whenever `our_subscriptions` changes.
+    subscriptions_generation: u64,
 
     /// Our mesh per topic: connections we've grafted onto. May exceed d_high
     /// between heartbeats; trimmed back to d by `ensure_mesh_capped`. Split
@@ -249,7 +251,10 @@ impl PeerManager {
         });
 
         Self {
-            peers: HashMap::with_capacity(PEERS_CAP),
+            // Connection ids are recycled quinn-proto slab indices, and the
+            // transport refuses inbound past `max_connections`; the factor 2
+            // covers trusted inbound, dials and draining connections.
+            peers: peer_slots::PeerSlots::new(2 * params.max_connections()),
             subscribers: subscribers::TopicSubscribers::default(),
             peers_by_id: HashMap::with_capacity(PEERS_CAP),
             dialing: HashMap::with_capacity(64),
@@ -257,6 +262,7 @@ impl PeerManager {
             ip_colocations: HashMap::with_capacity(IP_COLOC_CAP),
             local_peer_id,
             our_topics,
+            subscriptions_generation: 0,
             mesh,
             promises: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
             recent_deliveries: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),

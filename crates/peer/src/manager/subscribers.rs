@@ -59,7 +59,7 @@ mod tests {
     /// The index holds exactly the live peers' announced subscriptions.
     fn assert_mirrors_peers(mgr: &PeerManager) {
         let mut announced = 0;
-        for (&conn, peer) in &mgr.peers {
+        for (conn, peer) in mgr.peers.iter() {
             for &(digest, topic) in peer.subscriptions.keys() {
                 assert!(mgr.subscribers.of(digest, topic).contains(&conn), "{conn} {topic:?}");
                 announced += 1;

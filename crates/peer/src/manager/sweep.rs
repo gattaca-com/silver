@@ -158,7 +158,7 @@ impl PeerManager {
         }
 
         let Self { peers, params, database, .. } = self;
-        for (&conn, peer) in peers.iter_mut() {
+        for (conn, peer) in peers.iter_mut() {
             for change in &work.subscriptions {
                 let SubscriptionChange { topic, digest, subscribe } = *change;
                 let (p2p, p2p_connection) = (peer.peer_id, conn);

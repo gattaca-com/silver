@@ -20,11 +20,7 @@ use super::{
     PeerManager, SHORT_LIVED_CONNECTION, SHORT_LIVED_DIAL_BACKOFF, TRANSPORT_DISCONNECT,
     build_subnet_masks, mesh, sweep::SubscriptionChange,
 };
-use crate::{
-    database::PeerRecord,
-    scoring,
-    state::{ArchivedState, PeerState},
-};
+use crate::{database::PeerRecord, scoring, state::ArchivedState};
 
 /// Remote prune this soon after graft = their heartbeat trimming an
 /// oversubscribed mesh; re-grafting on the base backoff is futile.
@@ -111,9 +107,6 @@ impl PeerManager {
         local_dialler: bool,
     ) {
         let addr = SocketAddr::new(ip_bytes_to_addr(ip), port);
-        let mut state = PeerState::new(peer_id, addr, now);
-        state.local_dialler = local_dialler;
-
         self.dialing.remove(&peer_id);
 
         let duplicate = self
@@ -144,6 +137,14 @@ impl PeerManager {
             }
         }
 
+        let Some(state) = self.peers.occupy(conn) else {
+            silver_log::error!(conn, ?peer_id, "connection id beyond the peer table; refused");
+            emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: conn });
+            return;
+        };
+        state.connect(peer_id, addr, now);
+        state.local_dialler = local_dialler;
+
         // Inherit counters if we remember this PeerId.
         if let Some(archive) = self.archived.remove(&peer_id) {
             state.restore_from_archive(archive);
@@ -171,7 +172,6 @@ impl PeerManager {
             state.is_trusted = record.is_trusted;
         }
 
-        self.peers.insert(conn, state);
         self.peers_by_id.insert(peer_id, conn);
         self.database.add_peer_id(peer_id, conn);
 
@@ -187,17 +187,23 @@ impl PeerManager {
             ))));
         }
 
-        // Announce our own topic subscriptions to this peer.
-        for &topic in &self.our_topics {
-            for digest in self.active_topic_digests(topic).into_iter().flatten() {
-                emit(PeerControl::P2pGossipSubscribe {
-                    p2p: peer_id,
-                    p2p_connection: conn,
-                    topic,
-                    digest,
-                });
-            }
+        if !self.our_topics.is_empty() {
+            emit(PeerControl::P2pGossipAnnounceSubscriptions { p2p_connection: conn });
         }
+    }
+
+    /// Every `(topic, digest)` we subscribe to on the active gossip domains.
+    pub fn our_subscriptions(&self) -> impl Iterator<Item = (GossipTopic, [u8; 4])> + '_ {
+        self.our_topics.iter().flat_map(|&topic| {
+            self.active_topic_digests(topic)
+                .into_iter()
+                .flatten()
+                .map(move |digest| (topic, digest))
+        })
+    }
+
+    pub fn subscriptions_generation(&self) -> u64 {
+        self.subscriptions_generation
     }
 
     #[timed]
@@ -226,13 +232,14 @@ impl PeerManager {
             });
         }
 
-        let mut state = self.remove_live_peer(conn).expect("live peer");
+        let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &self.peers[&conn]);
+        let state = self.peers.vacate(conn).expect("live peer");
+        self.subscribers.remove_peer(state.subscriptions.keys(), conn);
         if self.peers_by_id.get(&state.peer_id) == Some(&conn) {
             self.peers_by_id.remove(&state.peer_id);
         }
 
         let age = now.saturating_duration_since(state.connected_at);
-        let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
         let user_agent =
             self.database.by_p2p_id(conn).and_then(|r| r.identify.as_ref()).map(|i| i.user_agent());
         silver_log::info!(
@@ -275,7 +282,9 @@ impl PeerManager {
         self.archived.insert(peer_id, ArchivedState {
             application_score: state.application_score,
             behaviour_penalty: state.behaviour_penalty,
-            topic_stats: std::mem::take(&mut state.topic_stats),
+            // Drained, not taken: the slot keeps its capacity for the next
+            // connection.
+            topic_stats: state.topic_stats.drain().collect(),
             archived_at: now,
         });
 
@@ -378,6 +387,7 @@ impl PeerManager {
         }
         let old_domains = std::mem::replace(&mut self.active_gossip_domains, wanted_domains);
         self.active_gossip_digests = wanted;
+        self.subscriptions_generation += 1;
         let capacity = self.params.d_high as usize;
         for &topic in &self.our_topics {
             let topic_wanted = Self::topic_domains(wanted_domains, topic);
@@ -486,6 +496,7 @@ impl PeerManager {
                 continue;
             }
             self.our_topics.push(topic);
+            self.subscriptions_generation += 1;
             let capacity = self.params.d_high as usize;
             let digests = self.active_topic_digests(topic);
             if let Some(primary) = digests[0] {
@@ -514,6 +525,7 @@ impl PeerManager {
                 continue;
             };
             self.our_topics.remove(index);
+            self.subscriptions_generation += 1;
             while let Some((conn, digest)) = self.mesh.get(&topic).and_then(|meshes| {
                 meshes.iter().find_map(|mesh| Some((*mesh.peers.last()?, mesh.digest)))
             }) {
@@ -610,10 +622,10 @@ impl PeerManager {
         }
     }
 
-    pub(super) fn remove_live_peer(&mut self, conn: usize) -> Option<PeerState> {
-        let state = self.peers.remove(&conn)?;
-        self.subscribers.remove_peer(state.subscriptions.keys(), conn);
-        Some(state)
+    pub(super) fn remove_live_peer(&mut self, conn: usize) {
+        if let Some(state) = self.peers.vacate(conn) {
+            self.subscribers.remove_peer(state.subscriptions.keys(), conn);
+        }
     }
 
     /// Mesh size for a topic (for tests/introspection).
@@ -1347,16 +1359,16 @@ mod tests {
     }
 
     #[test]
-    fn connect_emits_subscribe_per_our_topic() {
+    fn connect_announces_our_subscriptions_once() {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock, GossipTopic::VoluntaryExit];
         let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
-        let subs = subscribe_events(&cap);
-        assert_eq!(subs.len(), 2);
-        for e in &subs {
-            assert!(matches!(e, PeerControl::P2pGossipSubscribe { .. }));
-        }
+        assert!(matches!(subscribe_events(&cap).as_slice(), [
+            PeerControl::P2pGossipAnnounceSubscriptions { p2p_connection: 1 }
+        ]));
+        let announced: Vec<_> = mgr.our_subscriptions().map(|(topic, _)| topic).collect();
+        assert_eq!(announced, topics);
     }
 
     #[test]

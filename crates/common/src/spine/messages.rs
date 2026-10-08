@@ -1033,6 +1033,10 @@ pub enum PeerControl {
         /// Fork domain digest this subscription targets.
         digest: [u8; 4],
     },
+    /// Every subscription of ours, in one frame, to a new connection.
+    P2pGossipAnnounceSubscriptions {
+        p2p_connection: usize,
+    },
     P2pGossipUnsubscribe {
         p2p: PeerId,
         p2p_connection: usize,

@@ -61,6 +61,9 @@ pub struct Controller {
     last_ping: Instant,
     last_status: Instant,
     last_peer_persist: Instant,
+    /// The peer manager's subscriptions generation the gossip handler's
+    /// frame was encoded from.
+    announced_subscriptions: Option<u64>,
 
     /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
@@ -118,6 +121,7 @@ impl Controller {
             last_ping: now,
             last_status: now,
             last_peer_persist: now,
+            announced_subscriptions: None,
             auto_ping: true,
             long_lived_pending: true,
             subnet_duties: SubnetDuties::new(Subnets {
@@ -320,6 +324,17 @@ impl Controller {
             Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
     }
 
+    /// A change after this point reaches connections made before the next
+    /// refresh through the sweep's per-peer subscription changes.
+    fn refresh_announced_subscriptions(&mut self) {
+        let generation = self.peer_manager.subscriptions_generation();
+        if self.announced_subscriptions == Some(generation) {
+            return;
+        }
+        self.announced_subscriptions = Some(generation);
+        self.gossip_handler.set_subscriptions(self.peer_manager.our_subscriptions());
+    }
+
     fn advance_gossip_domains(&mut self, now: Instant, producers: &mut SilverSpineProducers) {
         let Some(update) = self.gossip_schedule.as_mut().and_then(GossipSchedule::advance) else {
             return;
@@ -483,6 +498,7 @@ impl Tile<SilverSpine> for Controller {
         }
         let now = Instant::now();
         self.advance_gossip_domains(now, &mut adapter.producers);
+        self.refresh_announced_subscriptions();
         self.reader.free();
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);

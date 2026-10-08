@@ -66,17 +66,20 @@ fn skipped_overlap_creates_current_mesh_and_clears_old_score_residency() {
 fn connections_and_deferred_topics_subscribe_to_both_domains() {
     let now = Instant::now();
     let (mut manager, mut captured) = fixture(vec![TOPIC], ScoreParams::default());
+    let generation = manager.subscriptions_generation();
     manager.set_active_domains(OLD, Some(NEW), &mut |_| {});
     manager.run_sweep(now, &mut |_| {});
+    assert!(manager.subscriptions_generation() > generation);
     connect(&mut manager, &mut captured, 1, 1, now);
-    let digests: Vec<_> = captured
-        .0
-        .iter()
-        .filter_map(|event| match event {
-            PeerControl::P2pGossipSubscribe { digest, .. } => Some(*digest),
-            _ => None,
-        })
-        .collect();
+    assert!(
+        captured
+            .0
+            .iter()
+            .any(|event| matches!(event, PeerControl::P2pGossipAnnounceSubscriptions {
+                p2p_connection: 1
+            }))
+    );
+    let digests: Vec<_> = manager.our_subscriptions().map(|(_, digest)| digest).collect();
     assert_eq!(digests, [OLD, NEW]);
     captured.0.clear();
     manager.activate_topics([GossipTopic::BeaconBlock], &mut |event| captured.0.push(event));

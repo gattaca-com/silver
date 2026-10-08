@@ -8,7 +8,7 @@
 use std::{
     collections::HashMap,
     hash::BuildHasherDefault,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Instant,
 };
 
@@ -102,10 +102,12 @@ pub(crate) struct PeerState {
     pub is_trusted: bool,
 }
 
-impl PeerState {
-    pub fn new(peer_id: PeerId, addr: SocketAddr, now: Instant) -> Self {
+impl Default for PeerState {
+    fn default() -> Self {
+        let now = Instant::now();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
         Self {
-            peer_id,
+            peer_id: PeerId::default(),
             addr,
             ip_prefix: IpPrefix::from(addr.ip()),
             connected_at: now,
@@ -136,6 +138,70 @@ impl PeerState {
             evict_spared: false,
             is_trusted: false,
         }
+    }
+}
+
+impl PeerState {
+    /// Readies a recycled slot for a new connection.
+    pub fn connect(&mut self, peer_id: PeerId, addr: SocketAddr, now: Instant) {
+        self.clear();
+        self.peer_id = peer_id;
+        self.addr = addr;
+        self.ip_prefix = IpPrefix::from(addr.ip());
+        self.connected_at = now;
+        self.score_valid_at = now;
+    }
+
+    /// Defaults every field, keeping map capacity. `msg_cache` is kept as is:
+    /// a previous connection's ids age out like any other.
+    fn clear(&mut self) {
+        let Self {
+            peer_id,
+            addr,
+            ip_prefix,
+            connected_at: _,
+            local_dialler,
+            user_agent,
+            subscriptions,
+            partial_extensions,
+            topic_stats,
+            msg_cache: _,
+            application_score,
+            behaviour_penalty,
+            ihaves_received,
+            iwant_ids_sent,
+            outbound_rpc_limits,
+            outbound_in_flight,
+            backoffs,
+            advertised_backoffs,
+            cached_score,
+            score_valid_at: _,
+            last_breakdown,
+            goodbye_sent,
+            evict_spared,
+            is_trusted,
+        } = self;
+        *peer_id = PeerId::default();
+        *addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+        *ip_prefix = IpPrefix::from(addr.ip());
+        *local_dialler = false;
+        *user_agent = AgentString::default();
+        subscriptions.clear();
+        *partial_extensions = false;
+        topic_stats.clear();
+        *application_score = 0.0;
+        *behaviour_penalty = 0.0;
+        *ihaves_received = 0;
+        *iwant_ids_sent = 0;
+        *outbound_rpc_limits = RpcRateLimitSet::default();
+        *outbound_in_flight = [0; N_STREAM_PROTOCOLS];
+        backoffs.clear();
+        advertised_backoffs.clear();
+        *cached_score = 0.0;
+        *last_breakdown = ScoreBreakdown::default();
+        *goodbye_sent = false;
+        *evict_spared = false;
+        *is_trusted = false;
     }
 
     /// The breakdown as of the last rescore.
@@ -216,7 +282,7 @@ impl PeerState {
     pub fn restore_from_archive(&mut self, archive: ArchivedState) {
         self.application_score = archive.application_score;
         self.behaviour_penalty = archive.behaviour_penalty;
-        self.topic_stats = archive.topic_stats;
+        self.topic_stats.extend(archive.topic_stats);
         for t in self.topic_stats.values_mut() {
             t.fanout_total = 0;
             t.fanout_sent = 0;
