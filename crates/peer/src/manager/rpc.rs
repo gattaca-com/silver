@@ -5,7 +5,7 @@ use silver_common::{
     DataKind, Origin, P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOffence,
     RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
     RpcResponseInbound, RpcResponseOutbound, RpcSeverity, Scope, StreamProtocol, SyncRequest,
-    rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RpcRateLimit},
+    rpc_rate_limit::RPC_ERR_RATE_LIMITED,
     ssz_view::{MetadataView, StatusView},
 };
 
@@ -13,7 +13,7 @@ use crate::{PeerManager, manager::attempts::OutboundAttempt};
 
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
 /// single peer and keeps fan-out useful when many ranges are pending.
-const MAX_RPC_PROTOCOL_IN_FLIGHT: u32 = 2;
+pub(super) const MAX_RPC_PROTOCOL_IN_FLIGHT: u32 = 2;
 
 /// Cap on concurrent by-root column requests across all peers.
 pub(crate) const MAX_COLUMN_ROOT_REQUESTS: usize = 4;
@@ -95,26 +95,9 @@ impl PeerManager {
         now: Instant,
         max_in_flight: u32,
     ) -> bool {
-        let Some(peer_state) = self.peers.get(&peer) else {
-            return false;
-        };
-        let idx = protocol.ordinal() as usize;
-        if peer_state.outbound_in_flight[idx] >= max_in_flight {
-            return false;
-        }
-        match peer_state.outbound_rpc_limits.peek_outbound(protocol, tokens, now) {
-            RpcRateLimit::Allowed => true,
-            denied => {
-                silver_log::debug!(
-                    peer,
-                    ?protocol,
-                    tokens,
-                    ?denied,
-                    "outbound rpc request rate limited"
-                );
-                false
-            }
-        }
+        self.peers.get(&peer).is_some_and(|peer_state| {
+            peer_state.outbound_has_capacity(peer, protocol, tokens, now, max_in_flight)
+        })
     }
 
     fn try_admit(
@@ -125,21 +108,9 @@ impl PeerManager {
         now: Instant,
         claim_in_flight: bool,
     ) -> bool {
-        let Some(peer_state) = self.peers.get_mut(&peer) else {
-            return false;
-        };
-        match peer_state.outbound_rpc_limits.admit_outbound(protocol, tokens, now) {
-            RpcRateLimit::Allowed => {
-                if claim_in_flight {
-                    peer_state.outbound_in_flight[protocol.ordinal() as usize] += 1;
-                }
-                true
-            }
-            denied => {
-                silver_log::debug!(peer, ?protocol, tokens, ?denied, "outbound rpc rate limited");
-                false
-            }
-        }
+        self.peers.get_mut(&peer).is_some_and(|peer_state| {
+            peer_state.try_admit_outbound(peer, protocol, tokens, now, claim_in_flight)
+        })
     }
 
     fn holds_slots_from(&self, peer: usize, asking_for: u64) -> bool {
@@ -710,54 +681,6 @@ impl PeerManager {
             }
         }
         best.map(|(p, _)| p)
-    }
-
-    /// Send a Ping to every connected peer using the current local
-    /// metadata seq. No-op if local metadata hasn't been initialised.
-    /// Each emission bumps the per-peer Ping in-flight counter; release
-    /// happens in `on_rpc_inbound` on the response chunk.
-    pub fn fan_out_ping(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        let metadata = self.metadata();
-        let ping = RpcRequest::Ping(MetadataView::seq_number(metadata).to_le_bytes());
-        let peers: Vec<usize> = self.live_peers().collect();
-        for peer in peers {
-            if !self.outbound_has_capacity(
-                peer,
-                StreamProtocol::Ping,
-                1,
-                now,
-                MAX_RPC_PROTOCOL_IN_FLIGHT,
-            ) || !self.try_admit(peer, StreamProtocol::Ping, 1, now, true)
-            {
-                continue;
-            }
-            emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                application_id: 0,
-                peer,
-                request: ping,
-            }))));
-        }
-    }
-
-    /// Send a Status (V2) to every connected peer using the current local
-    /// status. Runs while syncing too — peers use our advancing
-    /// finalized/head to score us; suppressing would let their view rot.
-    pub fn fan_out_status(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        let Some(status) = self.status().copied() else {
-            return;
-        };
-        let request = RpcRequest::StatusV2(status);
-        let peers: Vec<usize> = self.live_peers().collect();
-        for peer in peers {
-            if !self.try_admit(peer, StreamProtocol::StatusV2, 1, now, false) {
-                continue;
-            }
-            emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                application_id: 0,
-                peer,
-                request,
-            }))));
-        }
     }
 }
 
@@ -1339,7 +1262,7 @@ mod tests {
         let later = now +
             Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
             Duration::from_millis(1);
-        mgr.tick(later, &mut |c| cap.0.push(c));
+        mgr.run_tick(later, &mut |c| cap.0.push(c));
 
         assert!(mgr.outbound_attempts.is_empty());
         assert_eq!(mgr.drain_finished_requests().next(), Some((id, 1, false)));
@@ -1432,7 +1355,7 @@ mod tests {
         let later = now +
             Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
             Duration::from_millis(1);
-        mgr.tick(later, &mut |c| cap.0.push(c));
+        mgr.run_tick(later, &mut |c| cap.0.push(c));
 
         assert!(mgr.outbound_attempts.is_empty());
         assert_eq!(

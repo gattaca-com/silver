@@ -14,8 +14,9 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    AgentString, CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId,
-    rpc_rate_limit::{N_STREAM_PROTOCOLS, RpcRateLimitSet},
+    AgentString, CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId, PeerScores,
+    StreamProtocol,
+    rpc_rate_limit::{N_STREAM_PROTOCOLS, RpcRateLimit, RpcRateLimitSet},
 };
 
 use crate::scoring::ScoreBreakdown;
@@ -134,6 +135,79 @@ impl PeerState {
             goodbye_sent: false,
             evict_spared: false,
             is_trusted: false,
+        }
+    }
+
+    /// The breakdown as of the last rescore.
+    pub(crate) fn scores(&self, mesh_count: u32) -> PeerScores {
+        let b = self.last_breakdown;
+        PeerScores {
+            id: self.peer_id,
+            user_agent: self.user_agent,
+            mesh_count,
+            p1_time_in_mesh: b.p1_time_in_mesh,
+            p2_first_deliveries: b.p2_first_deliveries,
+            p3_mesh_deficit: b.p3_mesh_deficit,
+            p3b_mesh_failure: b.p3b_mesh_failure,
+            p4_invalid: b.p4_invalid,
+            p5_application: b.p5_application,
+            p6_ip_colocation: b.p6_ip_colocation,
+            p7_behaviour: b.p7_behaviour,
+            total: b.total,
+        }
+    }
+
+    pub(crate) fn outbound_has_capacity(
+        &self,
+        conn: usize,
+        protocol: StreamProtocol,
+        tokens: u64,
+        now: Instant,
+        max_in_flight: u32,
+    ) -> bool {
+        if self.outbound_in_flight[protocol.ordinal() as usize] >= max_in_flight {
+            return false;
+        }
+        match self.outbound_rpc_limits.peek_outbound(protocol, tokens, now) {
+            RpcRateLimit::Allowed => true,
+            denied => {
+                silver_log::debug!(
+                    peer = conn,
+                    ?protocol,
+                    tokens,
+                    ?denied,
+                    "outbound rpc request rate limited"
+                );
+                false
+            }
+        }
+    }
+
+    pub(crate) fn try_admit_outbound(
+        &mut self,
+        conn: usize,
+        protocol: StreamProtocol,
+        tokens: u64,
+        now: Instant,
+        claim_in_flight: bool,
+    ) -> bool {
+        match self.outbound_rpc_limits.admit_outbound(protocol, tokens, now) {
+            RpcRateLimit::Allowed => {
+                if claim_in_flight {
+                    self.outbound_in_flight[protocol.ordinal() as usize] += 1;
+                }
+                true
+            }
+            denied => {
+                silver_log::debug!(
+                    peer = conn,
+                    ?protocol,
+                    tokens,
+                    ?denied,
+                    "outbound rpc rate limited"
+                );
+                false
+            }
         }
     }
 

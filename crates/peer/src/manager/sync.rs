@@ -280,7 +280,7 @@ mod tests {
         cap.0.clear();
 
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_b(), [0u8; 32], 0, [0u8; 32], 0));
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
@@ -298,7 +298,7 @@ mod tests {
         mgr.set_fork_digest(fork_a());
 
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0u8; 32], 10, [0u8; 32], 320));
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(mgr.score(1).is_some(), "valid Status must not evict");
         let ssz = mgr.database.peer_status_bytes(1).expect("status present");
@@ -322,7 +322,7 @@ mod tests {
             1,
             make_status_v2(fork_a(), [0xBB; 32], 42, [0xDD; 32], 42 * 32 + 5),
         );
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
@@ -345,7 +345,7 @@ mod tests {
             1,
             make_status_v2(fork_a(), [0xAA; 32], 42, [0xEE; 32], 42 * 32 + 9),
         );
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).is_some());
     }
 
@@ -368,7 +368,7 @@ mod tests {
             1,
             make_status_v2(fork_a(), [0xBB; 32], 50, [0xDD; 32], 50 * 32 + 1),
         );
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
@@ -389,7 +389,7 @@ mod tests {
 
         set_local(&mut mgr, status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0));
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_b(), [0u8; 32], 0, [0u8; 32], 0));
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).is_some());
     }
 

@@ -19,14 +19,17 @@ fn overlap_preserves_meshes_and_retires_without_score_or_backoff_penalties() {
     connect(&mut manager, &mut captured, 1, 1, now);
     manager.on_subscribe(1, TOPIC, OLD, now, &mut |_| {});
     manager.set_active_domains(OLD, Some(NEW), &mut |event| captured.0.push(event));
+    manager.run_sweep(now, &mut |event| captured.0.push(event));
     manager.on_subscribe(1, TOPIC, NEW, now + Duration::from_secs(1), &mut |_| {});
     let score = &manager.peers[&1].topic_stats[&TOPIC];
     assert_eq!(score.meshed_since, Some(now));
     manager.set_active_domains(NEW, Some(OLD), &mut |_| {});
+    manager.run_sweep(now, &mut |_| {});
     assert_eq!(manager.mesh[&TOPIC].get(NEW).unwrap().peers, [1]);
     assert_eq!(manager.mesh[&TOPIC].get(OLD).unwrap().peers, [1]);
     captured.0.clear();
     manager.set_active_domains(NEW, None, &mut |event| captured.0.push(event));
+    manager.run_sweep(now, &mut |event| captured.0.push(event));
     assert!(manager.mesh[&TOPIC].get(OLD).is_none());
     assert_eq!(manager.mesh[&TOPIC].get(NEW).unwrap().peers, [1]);
     assert!(matches!(captured.0.as_slice(), [
@@ -41,6 +44,7 @@ fn overlap_preserves_meshes_and_retires_without_score_or_backoff_penalties() {
     assert_eq!(peer.topic_stats[&TOPIC].meshed_since, Some(now));
     captured.0.clear();
     manager.set_active_domains(NEW, None, &mut |event| captured.0.push(event));
+    manager.run_sweep(now, &mut |event| captured.0.push(event));
     assert!(captured.0.is_empty());
 }
 
@@ -63,6 +67,7 @@ fn connections_and_deferred_topics_subscribe_to_both_domains() {
     let now = Instant::now();
     let (mut manager, mut captured) = fixture(vec![TOPIC], ScoreParams::default());
     manager.set_active_domains(OLD, Some(NEW), &mut |_| {});
+    manager.run_sweep(now, &mut |_| {});
     connect(&mut manager, &mut captured, 1, 1, now);
     let digests: Vec<_> = captured
         .0
@@ -75,11 +80,13 @@ fn connections_and_deferred_topics_subscribe_to_both_domains() {
     assert_eq!(digests, [OLD, NEW]);
     captured.0.clear();
     manager.activate_topics([GossipTopic::BeaconBlock], &mut |event| captured.0.push(event));
+    manager.run_sweep(now, &mut |event| captured.0.push(event));
     assert_eq!(captured.0.len(), 2);
     assert!(manager.mesh[&GossipTopic::BeaconBlock].get(OLD).is_some());
     assert!(manager.mesh[&GossipTopic::BeaconBlock].get(NEW).is_some());
     captured.0.clear();
-    manager.fan_out_subscriptions(&mut |event| captured.0.push(event));
+    manager.fan_out_subscriptions();
+    manager.run_sweep(now, &mut |event| captured.0.push(event));
     assert_eq!(captured.0.len(), 4);
 }
 
@@ -95,6 +102,7 @@ fn gloas_only_topics_subscribe_only_to_gloas_domain() {
 
     captured.0.clear();
     manager.activate_topics([topic], &mut |event| captured.0.push(event));
+    manager.run_sweep(now, &mut |event| captured.0.push(event));
     assert!(matches!(
         captured.0.as_slice(),
         [PeerControl::P2pGossipSubscribe { topic: t, digest: NEW, .. }] if *t == topic

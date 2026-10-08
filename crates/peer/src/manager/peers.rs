@@ -12,13 +12,13 @@ use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
     ATTESTATION_SUBNETS, GossipDomain, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId,
-    PeerScores, PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
+    PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
     ssz_view::MetadataView,
 };
 
 use super::{
     PeerManager, SHORT_LIVED_CONNECTION, SHORT_LIVED_DIAL_BACKOFF, TRANSPORT_DISCONNECT,
-    build_subnet_masks, mesh,
+    build_subnet_masks, mesh, sweep::SubscriptionChange,
 };
 use crate::{
     database::PeerRecord,
@@ -69,7 +69,7 @@ impl PeerManager {
         Self::topic_active_on_domains(self.active_gossip_domains, topic, digest)
     }
 
-    fn topic_active_on_domains(
+    pub(super) fn topic_active_on_domains(
         domains: [Option<GossipDomain>; 2],
         topic: GossipTopic,
         digest: [u8; 4],
@@ -323,32 +323,15 @@ impl PeerManager {
         }
     }
 
-    /// Score breakdown for every live peer, as of the last `rescore_all`.
-    pub fn peer_scores(&self, emit: &mut impl FnMut(PeerScores)) {
-        let mut mesh_counts: HashMap<usize, u32> = HashMap::with_capacity(self.peers.len());
+    /// Meshes each live peer is grafted in, across topics and digests.
+    pub(super) fn mesh_counts(&self) -> HashMap<usize, u32> {
+        let mut mesh_counts = HashMap::with_capacity(self.peers.len());
         for meshes in self.mesh.values() {
             for conn in meshes.iter().flat_map(|m| &m.peers) {
                 *mesh_counts.entry(*conn).or_insert(0) += 1;
             }
         }
-
-        for (conn, peer) in &self.peers {
-            let b = peer.last_breakdown;
-            emit(PeerScores {
-                id: peer.peer_id,
-                user_agent: peer.user_agent,
-                mesh_count: mesh_counts.get(conn).copied().unwrap_or(0),
-                p1_time_in_mesh: b.p1_time_in_mesh,
-                p2_first_deliveries: b.p2_first_deliveries,
-                p3_mesh_deficit: b.p3_mesh_deficit,
-                p3b_mesh_failure: b.p3b_mesh_failure,
-                p4_invalid: b.p4_invalid,
-                p5_application: b.p5_application,
-                p6_ip_colocation: b.p6_ip_colocation,
-                p7_behaviour: b.p7_behaviour,
-                total: b.total,
-            });
-        }
+        mesh_counts
     }
 
     pub(super) fn gc_archived(&mut self, now: Instant) {
@@ -420,14 +403,11 @@ impl PeerManager {
                 .flatten()
                 .filter(|digest| !old_digests.contains(&Some(*digest)))
             {
-                for (&conn, peer) in &self.peers {
-                    emit(PeerControl::P2pGossipSubscribe {
-                        p2p: peer.peer_id,
-                        p2p_connection: conn,
-                        topic,
-                        digest,
-                    });
-                }
+                self.sweep_work.subscriptions.push(SubscriptionChange {
+                    topic,
+                    digest,
+                    subscribe: true,
+                });
             }
 
             // Drop any live digest no longer wanted: unsubscribe + drain its
@@ -451,22 +431,14 @@ impl PeerManager {
                         backoff_seconds: None,
                     });
                 }
-                for (&conn, peer) in &self.peers {
-                    emit(PeerControl::P2pGossipUnsubscribe {
-                        p2p: peer.peer_id,
-                        p2p_connection: conn,
-                        topic,
-                        digest,
-                    });
-                }
+                self.sweep_work.subscriptions.push(SubscriptionChange {
+                    topic,
+                    digest,
+                    subscribe: false,
+                });
             }
         }
-        let active_domains = self.active_gossip_domains;
-        for peer in self.peers.values_mut() {
-            peer.subscriptions.retain(|(digest, topic), _| {
-                Self::topic_active_on_domains(active_domains, *topic, *digest)
-            });
-        }
+        self.sweep_work.drop_inactive_subscriptions = true;
     }
 
     pub fn activate_topics(
@@ -474,7 +446,7 @@ impl PeerManager {
         topics: impl IntoIterator<Item = GossipTopic>,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        self.subscribe_topics(topics, emit);
+        self.subscribe_topics(topics);
         self.on_subscriptions_changed(emit);
     }
 
@@ -503,16 +475,12 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         self.duty_attnets = attesting;
-        self.subscribe_topics(joined, emit);
+        self.subscribe_topics(joined);
         self.unsubscribe_topics(left, now, emit);
         self.on_subscriptions_changed(emit);
     }
 
-    fn subscribe_topics(
-        &mut self,
-        topics: impl IntoIterator<Item = GossipTopic>,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
+    fn subscribe_topics(&mut self, topics: impl IntoIterator<Item = GossipTopic>) {
         for topic in topics {
             if self.our_topics.contains(&topic) {
                 continue;
@@ -526,14 +494,11 @@ impl PeerManager {
                 self.mesh.insert(topic, meshes);
             }
             for digest in digests.into_iter().flatten() {
-                for (&conn, peer) in &self.peers {
-                    emit(PeerControl::P2pGossipSubscribe {
-                        p2p: peer.peer_id,
-                        p2p_connection: conn,
-                        topic,
-                        digest,
-                    });
-                }
+                self.sweep_work.subscriptions.push(SubscriptionChange {
+                    topic,
+                    digest,
+                    subscribe: true,
+                });
             }
         }
     }
@@ -569,14 +534,11 @@ impl PeerManager {
             }
             self.mesh.remove(&topic);
             for digest in self.active_topic_digests(topic).into_iter().flatten() {
-                for (&conn, peer) in &self.peers {
-                    emit(PeerControl::P2pGossipUnsubscribe {
-                        p2p: peer.peer_id,
-                        p2p_connection: conn,
-                        topic,
-                        digest,
-                    });
-                }
+                self.sweep_work.subscriptions.push(SubscriptionChange {
+                    topic,
+                    digest,
+                    subscribe: false,
+                });
             }
         }
     }
@@ -608,17 +570,15 @@ impl PeerManager {
         self.params.unsubscribe_backoff + self.params.heartbeat_interval
     }
 
-    pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        for &topic in &self.our_topics {
+    pub fn fan_out_subscriptions(&mut self) {
+        for index in 0..self.our_topics.len() {
+            let topic = self.our_topics[index];
             for digest in self.active_topic_digests(topic).into_iter().flatten() {
-                for (&conn, peer) in &self.peers {
-                    emit(PeerControl::P2pGossipSubscribe {
-                        p2p: peer.peer_id,
-                        p2p_connection: conn,
-                        topic,
-                        digest,
-                    });
-                }
+                self.sweep_work.subscriptions.push(SubscriptionChange {
+                    topic,
+                    digest,
+                    subscribe: true,
+                });
             }
         }
     }
@@ -1431,6 +1391,7 @@ mod tests {
 
         cap.0.clear();
         mgr.update_duty_subnets(0, [], [topic], now, &mut |c| cap.0.push(c));
+        mgr.run_sweep(now, &mut |c| cap.0.push(c));
         assert!(matches!(cap.0.as_slice(), [
             PeerControl::P2pGossipPrune { p2p_connection: 1, backoff_seconds: Some(10), .. },
             PeerControl::P2pGossipUnsubscribe { p2p_connection: 1, .. },
@@ -1668,7 +1629,7 @@ mod tests {
         mgr.peers.get_mut(&1).unwrap().application_score = -1.0;
         cap.0.clear();
 
-        mgr.tick(now + Duration::from_secs(1), &mut |event| cap.0.push(event));
+        mgr.run_tick(now + Duration::from_secs(1), &mut |event| cap.0.push(event));
 
         assert_eq!(mgr.mesh_size(topic), 0);
         assert!(cap.0.iter().any(|event| matches!(
@@ -2230,7 +2191,7 @@ mod tests {
             });
         }
         assert!(mgr.score(1).is_some());
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
@@ -2321,7 +2282,7 @@ mod tests {
                 &mut |c| cap.0.push(c),
             );
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         let s = mgr.score(1).unwrap();
         assert!((s - -45.0).abs() < 1e-9, "expected -45, got {s}");
@@ -2350,7 +2311,7 @@ mod tests {
         assert_eq!(mgr.archived_count(), 1);
 
         connect(&mut mgr, &mut cap, 99, 1, now);
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         let s = mgr.score(99).unwrap();
         assert!(s < 0.0, "expected restored penalty score, got {s}");
         assert_eq!(mgr.archived_count(), 0);
@@ -2371,7 +2332,7 @@ mod tests {
         assert_eq!(mgr.archived_count(), 1);
 
         now += Duration::from_secs(11);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         assert_eq!(mgr.archived_count(), 0);
     }
 
@@ -2390,7 +2351,7 @@ mod tests {
 
         for _ in 0..30 {
             now += Duration::from_secs(12);
-            mgr.tick(now, &mut |c| cap.0.push(c));
+            mgr.run_tick(now, &mut |c| cap.0.push(c));
         }
         let s = mgr.score(1).unwrap();
         assert!(s.abs() < 1e-6, "expected score ≈ 0 after decay, got {s}");

@@ -22,7 +22,7 @@ use silver_common::{
     ticker::SlotTicker,
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
-use silver_peer::PeerManager;
+use silver_peer::{PeerManager, SweepOutput};
 
 use self::{
     gossip_schedule::GossipSchedule,
@@ -686,22 +686,8 @@ impl Tile<SilverSpine> for Controller {
         // run on the periodic 300s heartbeat.
         if self.sync_engine.take_just_synced() {
             self.last_status = now;
-            self.peer_manager.fan_out_status(now, &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
-            self.peer_manager.fan_out_subscriptions(&mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
+            self.peer_manager.schedule_status();
+            self.peer_manager.fan_out_subscriptions();
         }
 
         let sync_engine = &mut self.sync_engine;
@@ -734,47 +720,20 @@ impl Tile<SilverSpine> for Controller {
                     &mut adapter.producers,
                 )
             });
-            self.peer_manager.tick(now, &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
-
-            self.peer_manager.peer_scores(&mut |scores| {
-                adapter.produce(PeerStats::Scores(scores));
-            });
+            self.peer_manager.tick(now);
             self.peer_manager.peer_topic_scores(now, &mut |topic_scores| {
                 adapter.produce(PeerStats::Topic(topic_scores));
             });
 
             if self.auto_ping && self.last_ping.elapsed() > Duration::from_secs(17) {
                 self.last_ping = now;
-                self.peer_manager.fan_out_ping(now, &mut |evt| {
-                    handle_peer_control(
-                        &mut self.gossip_handler,
-                        &mut self.rpc_producer,
-                        evt,
-                        &mut adapter.producers,
-                    )
-                });
+                self.peer_manager.schedule_ping();
             }
         }
 
         if self.last_peer_persist.elapsed() > PEER_PERSIST_INTERVAL {
             self.last_peer_persist = now;
-            for peer in self.peer_manager.live_peers_with_status() {
-                if let Some(enr) = peer.enr.as_ref() {
-                    handle_peer_control(
-                        &mut self.gossip_handler,
-                        &mut self.rpc_producer,
-                        PeerControl::PersistPeer { enr: *enr },
-                        &mut adapter.producers,
-                    );
-                }
-            }
+            self.peer_manager.schedule_persist();
         }
 
         // Off-schedule Status fan-out on a silent fall-behind. Tight 1 s
@@ -785,15 +744,16 @@ impl Tile<SilverSpine> for Controller {
             self.sync_engine.fell_behind() && self.last_status.elapsed() > Duration::from_secs(1);
         if fell_behind || self.last_status.elapsed() > Duration::from_secs(30) {
             self.last_status = now;
-            self.peer_manager.fan_out_status(now, &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
+            self.peer_manager.schedule_status();
         }
+
+        let Self { peer_manager, gossip_handler, rpc_producer, .. } = self;
+        peer_manager.sweep(now, &mut |output| match output {
+            SweepOutput::Control(evt) => {
+                handle_peer_control(gossip_handler, rpc_producer, evt, &mut adapter.producers)
+            }
+            SweepOutput::Scores(scores) => adapter.produce(PeerStats::Scores(scores)),
+        });
 
         if self.gossip_handler.spin_columns(adapter, self.cell_ingress.as_mut()) {
             adapter.mark_work();
