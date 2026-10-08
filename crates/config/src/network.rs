@@ -122,11 +122,20 @@ impl Network {
         }
     }
 
+    /// A metadata directory with a public network's genesis fork version, e.g.
+    /// a `config.yaml` ahead of the bundled preset, boots as that network.
+    fn boots_as(&self) -> Result<Self, Error> {
+        let Self::Devnet(_) = self else { return Ok(self.clone()) };
+        let name = self.spec()?.known_network();
+        let public = Self::NAMED.into_iter().find(|network| network.name() == name);
+        Ok(public.unwrap_or_else(|| self.clone()))
+    }
+
     /// Every state of the chain carries it. A devnet can reuse its
     /// `CONFIG_NAME` and fork versions across re-genesis, so its
     /// `genesis.ssz` decides.
     pub fn genesis_validators_root(&self) -> Result<[u8; 32], Error> {
-        let root = match self {
+        let root = match self.boots_as()? {
             Self::Mainnet => MAINNET_GENESIS_VALIDATORS_ROOT,
             Self::Hoodi => HOODI_GENESIS_VALIDATORS_ROOT,
             Self::Sepolia => SEPOLIA_GENESIS_VALIDATORS_ROOT,
@@ -164,7 +173,7 @@ impl Network {
     /// A public network's checkpoint providers; a devnet publishes none, but
     /// ships its genesis state.
     pub fn boot_source(&self) -> Result<BootSource, Error> {
-        let urls: &[&str] = match self {
+        let urls: &[&str] = match self.boots_as()? {
             Self::Mainnet => &MAINNET_CHECKPOINT_SYNC_URLS,
             Self::Hoodi => &HOODI_CHECKPOINT_SYNC_URLS,
             Self::Sepolia => &SEPOLIA_CHECKPOINT_SYNC_URLS,

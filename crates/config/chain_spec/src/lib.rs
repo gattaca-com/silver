@@ -523,7 +523,7 @@ impl SpecConfig {
 
     /// The network `genesis_fork_version` picks out, for the networks silver
     /// knows by name; `None` for a devnet.
-    fn known_network(&self) -> Option<&'static str> {
+    pub fn known_network(&self) -> Option<&'static str> {
         match self.genesis_fork_version {
             [0x00, 0x00, 0x00, 0x00] => Some("mainnet"),
             [0x90, 0x00, 0x00, 0x69] => Some("sepolia"),
@@ -612,7 +612,7 @@ impl SpecConfig {
     }
 
     /// Sepolia testnet, transcribed from `eth-clients/sepolia/metadata/
-    /// config.yaml` as of 2026-09-10. Like Hoodi, everything but the fork
+    /// config.yaml` as of 2026-10-06. Like Hoodi, everything but the fork
     /// schedule, genesis, TTD, deposit contract and `BLOB_SCHEDULE` is
     /// mainnet's.
     pub fn sepolia() -> Self {
@@ -639,7 +639,7 @@ impl SpecConfig {
             fulu_fork_version: default_fork_version::<0x90000075>(),
             fulu_fork_epoch: 272640,
             gloas_fork_version: default_fork_version::<0x90000076>(),
-            gloas_fork_epoch: unscheduled(),
+            gloas_fork_epoch: 353024,
             blob_schedule: vec![
                 BlobParameters { epoch: 274176, max_blobs_per_block: 15 },
                 BlobParameters { epoch: 275712, max_blobs_per_block: 21 },
