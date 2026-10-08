@@ -61,7 +61,6 @@ impl PayloadAttestationPool {
 
     /// Appends the SSZ `PayloadAttestation`s a block at `slot` on
     /// `parent_root` may carry: those of the slot before, on the parent.
-    #[allow(dead_code)] // packed by the Gloas proposal path
     pub fn select(&self, parent_root: &B256, slot: Slot, out: &mut Vec<u8>) {
         let Some(attested_slot) = slot.checked_sub(1) else { return };
         let data = |present, da| encode_data(parent_root, attested_slot, present, da);

@@ -37,7 +37,7 @@ use crate::{
         attester_duties::post_attester_duties,
         contribution_submission::post_contribution_and_proofs,
         liveness::post_liveness,
-        produce_block::produce_block_v3,
+        produce_block::{produce_block_v3, produce_block_v4},
         proposer_duties::{proposer_duties, proposer_duties_v2},
         registration::{post_prepare_beacon_proposer, post_register_validator},
         subnet_subscriptions::{
@@ -119,6 +119,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v2/validator/aggregate_attestation", aggregate_attestation),
     (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", proposer_duties_v2),
     (Method::Get, "/eth/v3/validator/blocks/{slot}", produce_block_v3),
+    (Method::Post, "/eth/v4/validator/blocks/{slot}", produce_block_v4),
     (Method::Get, "/metrics", metrics),
 ];
 

@@ -13,7 +13,7 @@ use silver_beacon_state_data::{
 #[cfg(feature = "ef_tests")]
 use silver_common::ProducedBlock;
 use silver_common::{
-    BeaconApiResponse, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
+    BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
     EnginePreparePayloadResp, EngineReq, GossipTopic, HeadChange, LOCAL_GOSSIP_STREAM_ID,
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
     PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed,
@@ -1378,8 +1378,14 @@ fn fulu_from_genesis() -> SpecConfig {
 /// `pre`, `blocks_0` and `post` of a mainnet Fulu sanity fixture, decompressed.
 #[cfg(feature = "ef_tests")]
 fn sanity_fixture(name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    sanity_fixture_of("fulu", name)
+}
+
+fn sanity_fixture_of(fork: &str, name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests")
+        .join("consensus-spec-tests/tests/mainnet")
+        .join(fork)
+        .join("sanity/blocks/pyspec_tests")
         .join(name);
     let read = |file: &str| {
         let path = dir.join(file);
@@ -5411,7 +5417,13 @@ fn unregistered_proposer_gets_no_payload_prepared() {
 /// Validator 0, the seeded proposer, signs with test key 0.
 fn proposal(tile: &BeaconStateTile, slot: Slot) -> Proposal {
     let randao_reveal = test_signing::sign_randao_reveal(0, slot, &Immutable::default());
-    Proposal { slot, parent_root: tile.head_block_root(), randao_reveal, graffiti: [0; 32] }
+    Proposal {
+        slot,
+        parent_root: tile.head_block_root(),
+        randao_reveal,
+        graffiti: [0; 32],
+        bid_policy: BidPolicy::default(),
+    }
 }
 
 /// Each answer's request id and failure, `None` for a produced block.
@@ -5645,7 +5657,7 @@ fn import_produced_fixture_block(reuse_produced_state: bool) {
     let (block, read) =
         produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
     assert_eq!(block.execution_payload_value, [3; 32]);
-    assert_eq!(block.payload, read, "the engine's bytes stay in the payload frame");
+    assert_eq!(block.payload, Some(read), "the engine's bytes stay in the payload frame");
     let header = tile.events_producer.read_buffer(block.header).unwrap();
     let (before_payload, bls_changes) = header.split_at(block.payload_at as usize);
     let frame = PayloadFrame::parse(&frame).unwrap();
@@ -5728,6 +5740,61 @@ fn produce_fixture_block(
     (block, read)
 }
 
+/// A Gloas block commits to the pool's best bid on the branch fork choice
+/// builds on, carries no payload, and passes the state transition; with no
+/// bid the request admits there is no block.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn a_gloas_block_commits_to_the_pooled_bid() {
+    use silver_beacon_state_data::{BodyFork, BodyOffsets};
+    use silver_common::ssz_view::{BeaconBlockBodyGloasView, SignedExecutionPayloadBidView};
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture_of("gloas", "empty_block_transition");
+    let spec = SpecConfig { fulu_fork_epoch: 0, gloas_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let state = BeaconState::from_checkpoint(&pre_ssz, &spec, &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers_on(slot, state, spec);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    produced_blocks(&mut sink);
+
+    let body = SignedBeaconBlockView::body(&block_ssz);
+    let signed_bid = BodyOffsets::new(body, BodyFork::Gloas).unwrap().signed_bid().unwrap();
+    let bid = stf::decode_bid(signed_bid).unwrap();
+    let parent_root = tile.head_block_root();
+    let proposal = |min_bid| Proposal {
+        slot,
+        parent_root,
+        randao_reveal: *BeaconBlockBodyGloasView::randao_reveal(body),
+        graffiti: *BeaconBlockBodyGloasView::graffiti(body),
+        bid_policy: BidPolicy { min_bid, ..BidPolicy::default() },
+    };
+    let mut produce = |tile: &mut BeaconStateTile, proposal| {
+        tile.produce_block(1, proposal, &mut adapter.producers);
+        let mut answers = Vec::new();
+        sink.consume(|response: BeaconApiResponse, _| {
+            if let BeaconApiResponse::ProducedBlock { block, .. } = response {
+                answers.push(block);
+            }
+        });
+        let [answer] = answers[..] else { panic!("one answer: {answers:?}") };
+        answer
+    };
+
+    let unpooled = proposal(0);
+    assert_eq!(produce(&mut tile, unpooled).err(), Some(ProduceBlockFailure::NoAcceptableBid));
+
+    tile.payload_bids_pool.add(bid.clone(), *SignedExecutionPayloadBidView::signature(signed_bid));
+    let block = produce(&mut tile, unpooled).expect("built on the pooled bid");
+    assert!(block.payload.is_none());
+    let produced = tile.events_producer.read_buffer(block.header).unwrap();
+    let produced_body = BodyOffsets::validated(&produced[84..], BodyFork::Gloas).unwrap();
+    assert_eq!(produced_body.signed_bid(), Some(signed_bid));
+
+    let above_the_bid = proposal(bid.value + 1);
+    let refused = produce(&mut tile, above_the_bid).err();
+    assert_eq!(refused, Some(ProduceBlockFailure::NoAcceptableBid));
+}
+
 /// The `PayloadFrame` the EL would answer with for `block_ssz`'s payload,
 /// with placeholder cell proofs and blobs.
 #[cfg(feature = "ef_tests")]
@@ -5778,6 +5845,7 @@ fn fixture_proposal(tile: &BeaconStateTile, block_ssz: &[u8]) -> Proposal {
         parent_root: tile.head_block_root(),
         randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
         graffiti: *BeaconBlockBodyFuluView::graffiti(body),
+        bid_policy: BidPolicy::default(),
     }
 }
 
