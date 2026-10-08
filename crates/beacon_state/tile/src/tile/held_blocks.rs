@@ -177,10 +177,6 @@ impl HeldBlocks {
         self.rejected.insert(block_root, Rejected { slot, reason });
     }
 
-    pub(super) fn discard_available(&mut self, block_root: &B256) {
-        self.available.remove(block_root);
-    }
-
     pub(super) fn stage(&mut self, staged: StagedBlock) -> B256 {
         let block_root = staged.parsed.block_root;
         debug_assert!(!self.staged.contains_key(&block_root));
@@ -190,7 +186,7 @@ impl HeldBlocks {
     }
 
     /// Availability is announced once, so the record outlives the release
-    /// until an import consumes it.
+    /// until finalization prunes it.
     pub(super) fn mark_available(&mut self, block_root: B256, slot: Slot) -> Option<StagedBlock> {
         self.available.insert(block_root, slot);
         self.staged.remove(&block_root)

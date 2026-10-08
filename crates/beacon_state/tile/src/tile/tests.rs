@@ -4945,9 +4945,7 @@ fn availability_outlives_a_failed_release() {
 
     let held = &mut forks.tile.held;
     assert!(held.mark_available(S_ROOT, 3).is_some(), "the held block is released");
-    assert!(held.is_available(&S_ROOT), "availability is kept until an import consumes it");
-    held.discard_available(&S_ROOT);
-    assert!(!held.is_available(&S_ROOT), "the import consumed it");
+    assert!(held.is_available(&S_ROOT), "availability is kept until finalization");
 }
 
 /// Write a sentinel into every tier on a fork, finalize it, and require the
@@ -6274,6 +6272,56 @@ fn a_rejected_exit_keeps_the_other_operations() {
         BeaconBlockBodyFuluView::execution_payload_offset(body),
         "the exit is left out"
     );
+}
+
+fn block_with_columns(tile: &BeaconStateTile, fork: stf::BlockFork) -> ParsedBlock {
+    ParsedBlock {
+        header: BeaconBlockHeader {
+            slot: 11,
+            proposer_index: 0,
+            parent_root: ANCHOR_ROOT,
+            state_root: [0u8; 32],
+            body_root: [0u8; 32],
+        },
+        block_root: [0x0C; 32],
+        has_data_columns: true,
+        parent_state_id: tile.last_applied,
+        fork,
+        parent_payload_status: PayloadStatus::Full,
+        relay_eligible: false,
+    }
+}
+
+#[test]
+fn fulu_block_with_blobs_waits_for_its_columns() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 10);
+    let fulu = stf::BlockFork::Fulu { payload_roots: Default::default() };
+    assert!(tile.waits_for_columns(&block_with_columns(&tile, fulu)));
+}
+
+#[test]
+fn gloas_block_with_bid_commitments_imports_without_its_columns() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 10);
+    assert!(!tile.waits_for_columns(&block_with_columns(&tile, stf::BlockFork::Gloas)));
+}
+
+/// The envelope's availability wait ends at `DataColumnsAvailable` for a block
+/// that was never staged. The fake envelope fails validation on release, so
+/// the drain is what empties the buffer.
+#[test]
+fn gloas_columns_available_releases_the_parked_envelope() {
+    let mut forks = ThreeForks::new();
+    let (_, _gp, mut rp, _spine, mut adapter) = tile_with_producers(2);
+    let read = rpc_envelope(&mut rp, D_ROOT);
+    let parked = forks.tile.reader.acquire(read);
+    forks.tile.pending_envelopes.park(D_ROOT, parked, false);
+
+    forks.tile.handle_data_columns_available(D_ROOT, 2, &mut adapter.producers);
+
+    assert!(!forks.tile.pending_envelopes.holds(&D_ROOT));
+    assert!(forks.tile.held.is_available(&D_ROOT), "availability outlives the release");
 }
 
 #[test]

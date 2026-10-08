@@ -1137,6 +1137,11 @@ impl BeaconStateTile {
             None => return Feedback::reject("envelope bid versioned hashes"),
         };
 
+        if hash_count > 0 && self.columns_pending(&block_root) {
+            self.pending_envelopes.park(block_root, acquired, false);
+            return Feedback::Accept;
+        }
+
         self.mark_envelope_verified(block_root, ssz);
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.to_read(),

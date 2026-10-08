@@ -228,20 +228,12 @@ impl StorageTile {
 
             // TODO: request the missing columns instead of dropping?
             let ssz = &buf[..len];
-            let has_data_columns = if SignedBeaconBlockView::check_size(ssz) {
-                let slot = SignedBeaconBlockView::slot(ssz);
-                let is_gloas = self.spec.is_gloas_at_slot(slot);
-                if is_gloas && !SignedBeaconBlockView::check_gloas_size(ssz) {
-                    silver_log::error!(?path, slot, "replay block bid out of bounds");
-                    false
-                } else {
-                    SignedBeaconBlockView::has_data_columns(ssz, is_gloas)
-                }
-            } else {
-                false
-            };
+            // Gloas checks availability on the envelope, which is persisted only after it.
+            let needs_columns = SignedBeaconBlockView::check_size(ssz) &&
+                !self.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(ssz)) &&
+                SignedBeaconBlockView::has_data_columns(ssz, false);
             if let ReplayStep::Block { columns_on_disk: false, .. } = step &&
-                has_data_columns
+                needs_columns
             {
                 silver_log::warn!(?path, "replay skip: custody columns missing on disk");
                 self.replay_steps.pop_front();

@@ -612,10 +612,6 @@ impl BeaconStateTile {
     }
 
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
-        debug_assert!(
-            !self.pending_envelopes.holds(&head.observation.root),
-            "Status would describe a head whose envelope is still pending"
-        );
         let event = self.status_event(head);
         let moved = self.emitted_head.is_some_and(|emitted| emitted.root != head.observation.root);
         self.emitted_head = Some(head.observation);
