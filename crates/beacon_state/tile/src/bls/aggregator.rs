@@ -1,20 +1,22 @@
 use blst::{
     blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg, blst_p1_is_inf,
-    blst_p1_to_affine, blst_p1s_add, blst_p2_affine,
+    blst_p1_to_affine, blst_p1s_add, blst_p2, blst_p2_affine,
 };
 use flux_profiler::timed;
 
-use super::{PublicKey, Signature};
+use super::{AggregateSignature, PublicKey, Signature};
 
-// `pk_affine` / `sig_affine` cast the blst newtypes to their inner affine
-// points. blst-rs declares both as `#[repr(transparent)]` single-field
-// wrappers.
+// `pk_affine`, `sig_affine` and `SignatureSum` cast the blst newtypes to
+// their inner points. blst-rs declares them as `#[repr(transparent)]`
+// single-field wrappers.
 const _: () = {
     use core::mem::{align_of, size_of};
     assert!(size_of::<PublicKey>() == size_of::<blst_p1_affine>());
     assert!(align_of::<PublicKey>() == align_of::<blst_p1_affine>());
     assert!(size_of::<Signature>() == size_of::<blst_p2_affine>());
     assert!(align_of::<Signature>() == align_of::<blst_p2_affine>());
+    assert!(size_of::<AggregateSignature>() == size_of::<blst_p2>());
+    assert!(align_of::<AggregateSignature>() == align_of::<blst_p2>());
 };
 
 #[inline]

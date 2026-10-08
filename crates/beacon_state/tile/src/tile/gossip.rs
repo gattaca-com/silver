@@ -274,7 +274,7 @@ impl BeaconStateTile {
             p.committee_len,
             &verified,
         );
-        debug_assert!(outcome != InsertOutcome::Inconsistent);
+        debug_assert!(outcome != InsertOutcome::Invalid);
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
             silver_log::debug!(
@@ -489,7 +489,7 @@ impl BeaconStateTile {
             &p.positions,
             p.signature.as_sig(),
         );
-        debug_assert!(outcome != InsertOutcome::Inconsistent);
+        debug_assert!(outcome != InsertOutcome::Invalid);
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::SyncContributionPoolFull.inc();
             silver_log::debug!(

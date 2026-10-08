@@ -1,4 +1,4 @@
-pub(crate) use blst::min_pk::{PublicKey, Signature};
+pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
 use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
@@ -13,9 +13,17 @@ use crate::{
 
 mod aggregator;
 mod sig_batch;
+mod signature_sum;
 
 pub(crate) use aggregator::PubkeyAggregator;
 pub use sig_batch::SigBatch;
+pub(crate) use signature_sum::SignatureSum;
+
+/// Fills preallocated signature slots before they are written; never
+/// added or verified.
+pub(crate) const BLANK_SIGNATURE: Signature = unsafe { std::mem::zeroed() };
+/// The empty sum, which `AggregateSignature` has no constructor for.
+pub(crate) const EMPTY_AGGREGATE: AggregateSignature = unsafe { std::mem::zeroed() };
 
 pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 

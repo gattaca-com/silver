@@ -1,12 +1,12 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BlockRoots, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS,
+    B256, BlockRoots, Checkpoint, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS,
     ParticipationWriteView, RootsWriteView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot,
     SlotStateWriteView, StateWriterView, TIMELY_HEAD_FLAG, TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG,
     ValidatorsView,
 };
-use silver_common::ssz_view::AttestationView;
+use silver_common::ssz_view::{AttestationDataView, AttestationView};
 
 use crate::{
     bls::{self, SigBatch},
@@ -328,11 +328,11 @@ impl<'a> BlockAttestations<'a> {
             is_gloas,
         )?;
 
-        let parsed = ParsedAttestationData::parse(att);
+        let parsed = ParsedAttestationData::parse(AttestationView::data(att));
         let is_current = self.target_is_current(parsed.target_epoch)?;
-        self.check_source(is_current, parsed.source_epoch, parsed.source_root)?;
+        parsed.check_source(self.justified(is_current))?;
 
-        let mut flags = parsed.flags(&view.block_roots, current_slot);
+        let mut flags = parsed.flags(|slot| view.block_roots.at_slot(slot), current_slot);
 
         let (same_slot, payload_present) = if is_gloas {
             (
@@ -344,7 +344,7 @@ impl<'a> BlockAttestations<'a> {
         };
 
         let target = VoteTarget {
-            block_root: parsed.beacon_block_root,
+            block_root: *parsed.beacon_block_root,
             target_epoch: parsed.target_epoch,
             attestation_slot: parsed.att_slot,
             payload_present,
@@ -390,34 +390,16 @@ impl<'a> BlockAttestations<'a> {
         }
     }
 
-    fn check_source(
-        &self,
-        is_current: bool,
-        source_epoch: Epoch,
-        source_root: B256,
-    ) -> Result<(), AttestationError> {
+    fn justified(&self, is_current: bool) -> Checkpoint {
         let es = self.epoch.state();
-        let justified = if is_current {
-            es.current_justified_checkpoint
-        } else {
-            es.previous_justified_checkpoint
-        };
-        if source_epoch != justified.epoch || source_root != justified.root {
-            return Err(AttestationError::SourceMismatch {
-                expected_epoch: justified.epoch,
-                expected_root: justified.root,
-                got_epoch: source_epoch,
-                got_root: source_root,
-            });
-        }
-        Ok(())
+        if is_current { es.current_justified_checkpoint } else { es.previous_justified_checkpoint }
     }
 
     fn gloas_payload_vote_is_same_slot(
         &self,
         view: &StateWriterView,
         att: &[u8],
-        parsed: &ParsedAttestationData,
+        parsed: &ParsedAttestationData<'_>,
         flags: &mut u8,
     ) -> Result<bool, AttestationError> {
         let parent_slot = self.parent_slot.ok_or(AttestationError::MissingParentSlot)?;
@@ -539,12 +521,12 @@ fn gloas_payload_is_present(att: &[u8]) -> bool {
 
 fn is_attestation_same_slot(
     block_roots: &RootsWriteView<BlockRoots>,
-    parsed: &ParsedAttestationData,
+    parsed: &ParsedAttestationData<'_>,
 ) -> bool {
     if parsed.att_slot == 0 {
         return true;
     }
-    let root = parsed.beacon_block_root;
+    let root = *parsed.beacon_block_root;
     root == block_roots.at_slot(parsed.att_slot) && root != block_roots.at_slot(parsed.att_slot - 1)
 }
 
@@ -553,33 +535,45 @@ fn payload_availability_bit(slot: &SlotStateWriteView, parent_slot: Slot) -> u64
     (slot.state().execution_payload_availability[i / 8] >> (i % 8) & 1) as u64
 }
 
-struct ParsedAttestationData {
-    att_slot: Slot,
-    beacon_block_root: B256,
+pub(crate) struct ParsedAttestationData<'a> {
+    pub(crate) att_slot: Slot,
+    beacon_block_root: &'a B256,
     source_epoch: Epoch,
-    source_root: B256,
-    target_epoch: Epoch,
-    target_root: B256,
+    source_root: &'a B256,
+    pub(crate) target_epoch: Epoch,
+    target_root: &'a B256,
 }
 
-impl ParsedAttestationData {
-    fn parse(att: &[u8]) -> Self {
-        let data = AttestationView::data(att);
+impl<'a> ParsedAttestationData<'a> {
+    pub(crate) fn parse(data: AttestationDataView<'a>) -> Self {
         Self {
             att_slot: data.slot(),
-            beacon_block_root: *data.beacon_block_root(),
+            beacon_block_root: data.beacon_block_root(),
             source_epoch: data.source_epoch(),
-            source_root: *data.source_root(),
+            source_root: data.source_root(),
             target_epoch: data.target_epoch(),
-            target_root: *data.target_root(),
+            target_root: data.target_root(),
         }
     }
 
-    fn flags(&self, block_roots: &RootsWriteView<BlockRoots>, current_slot: Slot) -> u8 {
-        let expected_target_root = block_roots.at_slot(self.target_epoch * SLOTS_PER_EPOCH);
-        let is_matching_target = self.target_root == expected_target_root;
-        let expected_head_root = block_roots.at_slot(self.att_slot);
-        let is_matching_head = is_matching_target && self.beacon_block_root == expected_head_root;
+    pub(crate) fn check_source(&self, justified: Checkpoint) -> Result<(), AttestationError> {
+        if self.source_epoch != justified.epoch || *self.source_root != justified.root {
+            return Err(AttestationError::SourceMismatch {
+                expected_epoch: justified.epoch,
+                expected_root: justified.root,
+                got_epoch: self.source_epoch,
+                got_root: *self.source_root,
+            });
+        }
+        Ok(())
+    }
+
+    /// `root_at` is the state's `get_block_root_at_slot`.
+    pub(crate) fn flags(&self, root_at: impl Fn(Slot) -> B256, current_slot: Slot) -> u8 {
+        let expected_target_root = root_at(self.target_epoch * SLOTS_PER_EPOCH);
+        let is_matching_target = *self.target_root == expected_target_root;
+        let expected_head_root = root_at(self.att_slot);
+        let is_matching_head = is_matching_target && *self.beacon_block_root == expected_head_root;
         let inclusion_delay = current_slot.saturating_sub(self.att_slot);
 
         (u8::from(inclusion_delay <= 5) * TIMELY_SOURCE_FLAG) |

@@ -29,8 +29,16 @@ pub const PRIVKEY_HEX: [&str; 3] = [
     "328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216",
 ];
 
+/// Past the spec keys, the scalar `idx + 1`.
 pub fn privkey(idx: usize) -> SecretKey {
-    let bytes = hex_to_bytes(PRIVKEY_HEX[idx]);
+    let bytes = match PRIVKEY_HEX.get(idx) {
+        Some(hex) => hex_to_bytes(hex),
+        None => {
+            let mut scalar = [0u8; 32];
+            scalar[24..].copy_from_slice(&(idx as u64 + 1).to_be_bytes());
+            scalar
+        }
+    };
     SecretKey::from_bytes(&bytes).unwrap()
 }
 
