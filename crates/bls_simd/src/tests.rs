@@ -265,6 +265,12 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
 }
 
+fn uncompress_all(inputs: &[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>> {
+    let mut out = Vec::new();
+    uncompress_in_g2(inputs, |p| out.push(p));
+    out
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -397,7 +403,7 @@ fn uncompress_in_g2_matches_blst_on_every_kind() {
         simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
         "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
     );
-    let kinds = assert_uncompress_in_g2_matches_blst(uncompress_in_g2);
+    let kinds = assert_uncompress_in_g2_matches_blst(uncompress_all);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
 }
 
@@ -460,7 +466,7 @@ fn kernel_early_returns_leave_infinity_to_blst() {
     beside_member[7] = member;
 
     for chunk in [undecodable, off_curve, beside_member] {
-        let got = uncompress_in_g2(&chunk);
+        let got = uncompress_all(&chunk);
         for (lane, bytes) in chunk.iter().enumerate() {
             assert_eq!(g2_limbs(&got[lane]), g2_limbs(&uncompress_in_g2_blst(bytes)), "{lane}");
         }

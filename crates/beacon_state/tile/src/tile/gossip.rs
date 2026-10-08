@@ -395,7 +395,11 @@ impl BeaconStateTile {
     #[timed]
     fn prepare_votes(&mut self, producers: &mut Producers) {
         self.sig_batch.clear();
-        debug_assert!(self.vote_prepared.is_empty() && self.vote_pending.is_empty());
+        debug_assert!(
+            self.vote_prepared.is_empty() &&
+                self.vote_checked.is_empty() &&
+                self.vote_pending.is_empty()
+        );
 
         let mut batch = std::mem::take(&mut self.vote_batch);
         for BatchedVote { vote, pin } in batch.drain(..) {
@@ -430,8 +434,11 @@ impl BeaconStateTile {
         self.vote_batch = batch;
 
         let mut prepared = std::mem::take(&mut self.vote_prepared);
-        let checked = CheckedSignature::check_all(prepared.iter().map(|(_, p)| p.signature()));
-        for ((BatchedVote { vote, pin }, p), sig) in prepared.drain(..).zip(checked) {
+        let mut checked = std::mem::take(&mut self.vote_checked);
+        CheckedSignature::check_all(prepared.iter().map(|(_, p)| p.signature()), |s| {
+            checked.push(s)
+        });
+        for ((BatchedVote { vote, pin }, p), sig) in prepared.drain(..).zip(checked.drain(..)) {
             let Some(sig) = sig else {
                 let data = pin.buffer().ok().map_or(&[][..], |(d, _)| d);
                 self.reject_gossip(&vote, data, p.signature_malformed(), producers);
@@ -453,6 +460,7 @@ impl BeaconStateTile {
             self.vote_pending.push((vote, p, sig));
         }
         self.vote_prepared = prepared;
+        self.vote_checked = checked;
     }
 
     pub(super) fn prepare_sync_message(

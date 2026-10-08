@@ -148,15 +148,19 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
 pub struct CheckedSignature(Signature);
 
 impl CheckedSignature {
-    /// One decompression and subgroup check over every signature, in input
-    /// order.
-    pub fn check_all<'a>(sigs: impl IntoIterator<Item = &'a [u8; 96]>) -> Vec<Option<Self>> {
-        let sigs: Vec<[u8; 96]> = sigs.into_iter().copied().collect();
-        uncompress_in_g2(&sigs).into_iter().map(|p| p.map(|p| Self(p.into()))).collect()
+    /// One decompression and subgroup check over every signature, emitted in
+    /// input order.
+    pub fn check_all<'a>(
+        sigs: impl IntoIterator<Item = &'a [u8; 96]>,
+        mut emit: impl FnMut(Option<Self>),
+    ) {
+        uncompress_in_g2(sigs, |p| emit(p.map(|p| Self(p.into()))));
     }
 
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
-        Self::check_all([bytes]).pop().flatten()
+        let mut sig = None;
+        Self::check_all([bytes], |s| sig = s);
+        sig
     }
 
     pub(crate) fn as_sig(&self) -> &Signature {

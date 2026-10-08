@@ -236,7 +236,11 @@ fn bench_g2_parse(c: &mut Criterion) {
             b.iter(|| sigs.iter().filter(|s| CheckedSignature::parse(s).is_some()).count())
         });
         g.bench_with_input(BenchmarkId::new("kernel", n), &sigs[..n], |b, sigs| {
-            b.iter(|| CheckedSignature::check_all(sigs).into_iter().flatten().count())
+            b.iter(|| {
+                let mut checked = 0;
+                CheckedSignature::check_all(sigs, |s| checked += s.is_some() as usize);
+                checked
+            })
         });
     }
 }

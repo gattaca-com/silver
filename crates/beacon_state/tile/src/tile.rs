@@ -183,6 +183,7 @@ pub struct BeaconStateTile {
     // Pinned: the tail moves as later reads in the same pass arrive.
     vote_batch: Vec<BatchedVote>,
     vote_prepared: Vec<(BatchedVote, gossip::PreparedVote)>,
+    vote_checked: Vec<Option<CheckedSignature>>,
     vote_pending: Vec<(NewGossipMsg, gossip::PreparedVote, CheckedSignature)>,
     seen_sync_msgs: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     sync_contribution_pool: SyncContributionPool,
@@ -287,6 +288,7 @@ impl BeaconStateTile {
             attestation_pool: AttestationPool::new(),
             vote_batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             vote_prepared: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            vote_checked: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             vote_pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             seen_sync_msgs: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             sync_contribution_pool: SyncContributionPool::new(),
