@@ -1240,3 +1240,22 @@ fn a_valid_payload_validates_its_ancestors_and_no_sibling() {
     assert!(!valid(&fc, 4), "a sibling is not on the walk");
     assert!(valid(&fc, 1), "the anchor was valid from init");
 }
+
+fn status(fc: &ForkChoice, block_root: B256) -> ExecutionStatus {
+    fc.node(fc.find_node_idx(&block_root).unwrap()).execution_status
+}
+
+#[test]
+fn payload_verdict_does_not_validate_a_payload_skipped_by_an_empty_edge() {
+    let mut fc = anchored(0);
+    let g = cp(0, 1);
+    fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, false));
+    fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Empty, false));
+    fc.on_block(gloas_block(3, root(4), root(3), g, g, PayloadStatus::Full, false));
+
+    fc.on_payload_valid(&root(4));
+
+    assert_eq!(status(&fc, root(4)), ExecutionStatus::Valid);
+    assert_eq!(status(&fc, root(3)), ExecutionStatus::Valid, "FULL edge");
+    assert_eq!(status(&fc, root(2)), ExecutionStatus::Optimistic, "EMPTY edge");
+}

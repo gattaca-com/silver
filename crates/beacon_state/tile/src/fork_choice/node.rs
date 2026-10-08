@@ -4,7 +4,7 @@ use super::NULL;
 
 pub(super) const PTC_SIZE: usize = 512;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionStatus {
     Optimistic,
     Valid,

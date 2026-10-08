@@ -2,26 +2,37 @@ use flux_profiler::timed;
 use silver_beacon_state_data::B256;
 use silver_log::info;
 
-use super::{ExecutionStatus, ForkChoice, NULL, node::PTC_SIZE};
+use super::{ExecutionStatus, ForkChoice, NULL, PayloadStatus, node::PTC_SIZE};
 
 impl ForkChoice {
     #[timed]
     pub fn on_payload_valid(&mut self, block_root: &B256) {
-        let Some(mut idx) = self.find_node_idx(block_root) else {
+        let Some(idx) = self.find_node_idx(block_root) else {
             return;
         };
         self.head_moved = true;
-        loop {
-            let n = &mut self.nodes[idx];
-            if n.execution_status == ExecutionStatus::Valid {
+        let mut next = Some(idx);
+        while let Some(idx) = next {
+            let status = &mut self.nodes[idx].execution_status;
+            if *status == ExecutionStatus::Valid {
                 break;
             }
-            n.execution_status = ExecutionStatus::Valid;
-            if n.parent_ix == NULL {
-                break;
-            }
-            idx = n.parent_ix;
+            *status = ExecutionStatus::Valid;
+            next = self.payload_parent(idx);
         }
+    }
+
+    /// The nearest ancestor whose payload this node builds on. An EMPTY edge
+    /// skips its parent's payload, so the search continues from the parent.
+    fn payload_parent(&self, idx: usize) -> Option<usize> {
+        let mut child = &self.nodes[idx];
+        while child.parent_ix != NULL {
+            if child.payload.parent_status == PayloadStatus::Full {
+                return Some(child.parent_ix);
+            }
+            child = &self.nodes[child.parent_ix];
+        }
+        None
     }
 
     #[timed]
