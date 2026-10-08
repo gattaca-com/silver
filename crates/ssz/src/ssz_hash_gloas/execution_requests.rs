@@ -31,6 +31,17 @@ impl ProgressiveContainer for ExecutionRequestsView {
     const ACTIVE_FIELDS: B256 = packed_active_fields(5);
 }
 
+/// SSZ `ExecutionRequests()`: five offsets, each to the end of the fixed part.
+pub const EMPTY_EXECUTION_REQUESTS: [u8; 20] = {
+    let mut ssz = [0; 20];
+    let mut at = 0;
+    while at < ssz.len() {
+        ssz[at] = 20;
+        at += 4;
+    }
+    ssz
+};
+
 /// `hash_tree_root(ExecutionRequests())` — a program constant (empty-parent
 /// checks and the fork block's placeholder bid both compare against it).
 pub static EMPTY_EXECUTION_REQUESTS_ROOT: LazyLock<B256> =

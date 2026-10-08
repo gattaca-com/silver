@@ -690,8 +690,8 @@ impl BeaconStateTile {
         // state above still shows the builder active.
         if full {
             let builder = view.builders.get(bid.builder_index as usize).expect("validated builder");
-            let exits = self.payload_builder_exits.get(&bid.parent_block_root);
-            if exits.iter().any(|request| {
+            let mut exits = self.payload_execution_requests.builder_exits(&bid.parent_block_root);
+            if exits.any(|request| {
                 *BuilderExitRequestView::pubkey(request) == builder.pubkey &&
                     *BuilderExitRequestView::source_address(request) == builder.execution_address
             }) {
@@ -1081,7 +1081,8 @@ impl BeaconStateTile {
     /// `signed` passed `verify_execution_payload_envelope`.
     pub(super) fn mark_envelope_verified(&mut self, block_root: B256, signed: &[u8]) {
         self.fork_choice.mark_payload_verified(&block_root);
-        self.payload_builder_exits.insert(block_root, stf::envelope_builder_exits(signed));
+        self.payload_execution_requests
+            .insert(block_root, stf::envelope_execution_requests(signed));
     }
 
     fn emit_envelope_available(

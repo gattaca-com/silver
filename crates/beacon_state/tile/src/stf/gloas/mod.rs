@@ -18,7 +18,8 @@ pub use builders::{
 pub use committee::process_ptc_window;
 pub(crate) use committee::{fill_epoch_ptc, get_ptc};
 pub use envelope::{
-    envelope_builder_exits, envelope_withdrawals_match_expected, verify_execution_payload_envelope,
+    envelope_execution_requests, envelope_withdrawals_match_expected,
+    verify_execution_payload_envelope,
 };
 pub use parent_payload::process_parent_execution_payload;
 pub(crate) use payload_attestation::hash_payload_attestation_data;
