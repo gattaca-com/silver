@@ -269,13 +269,11 @@ impl PeerManager {
         let mesh_for_topic = self.mesh.get(&topic).and_then(|meshes| meshes.get(digest));
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
-        for (conn, peer) in &self.peers {
+        for conn in self.subscribers.of(digest, topic) {
             if emitted >= cap {
                 break;
             }
-            if !peer.subscriptions.contains_key(&(digest, topic)) {
-                continue;
-            }
+            let Some(peer) = self.peers.get(conn) else { continue };
             if mesh_for_topic.is_some_and(|m| m.peers.contains(conn)) {
                 continue; // mesh peers get full-body forwards, not IHAVE
             }
@@ -376,13 +374,13 @@ impl PeerManager {
         let meshed =
             self.mesh.get(&topic).and_then(|m| m.get(digest)).map_or(&[][..], |m| &m.peers);
         let publish_threshold = self.params.publish_threshold;
-        let subscribers = self.peers.iter().filter(|&(conn, peer)| {
+        let subscribers = self.subscribers.of(digest, topic).iter().filter(|&conn| {
             !meshed.contains(conn) &&
-                peer.subscriptions.contains_key(&(digest, topic)) &&
-                peer.cached_score >= publish_threshold &&
-                !peer.msg_cache_contains(&msg_hash)
+                self.peers.get(conn).is_some_and(|peer| {
+                    peer.cached_score >= publish_threshold && !peer.msg_cache_contains(&msg_hash)
+                })
         });
-        for (&peer_id, _) in subscribers.take(count) {
+        for &peer_id in subscribers.take(count) {
             crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, tcache })));
         }

@@ -151,6 +151,11 @@ impl PeerManager {
         let status =
             if work.status { self.status().copied().map(RpcRequest::StatusV2) } else { None };
         let active_domains = self.active_gossip_domains;
+        if work.drop_inactive_subscriptions {
+            self.subscribers.retain_topics(|&(digest, topic)| {
+                Self::topic_active_on_domains(active_domains, topic, digest)
+            });
+        }
 
         let Self { peers, params, database, .. } = self;
         for (&conn, peer) in peers.iter_mut() {

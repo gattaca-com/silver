@@ -226,7 +226,7 @@ impl PeerManager {
             });
         }
 
-        let mut state = self.peers.remove(&conn).unwrap();
+        let mut state = self.remove_live_peer(conn).expect("live peer");
         if self.peers_by_id.get(&state.peer_id) == Some(&conn) {
             self.peers_by_id.remove(&state.peer_id);
         }
@@ -610,6 +610,12 @@ impl PeerManager {
         }
     }
 
+    pub(super) fn remove_live_peer(&mut self, conn: usize) -> Option<PeerState> {
+        let state = self.peers.remove(&conn)?;
+        self.subscribers.remove_peer(state.subscriptions.keys(), conn);
+        Some(state)
+    }
+
     /// Mesh size for a topic (for tests/introspection).
     #[allow(dead_code)]
     pub(crate) fn mesh_size(&self, topic: GossipTopic) -> usize {
@@ -632,7 +638,9 @@ impl PeerManager {
             let Some(peer) = self.peers.get_mut(&conn) else {
                 return;
             };
-            peer.subscriptions.entry((digest, topic)).or_default();
+            if peer.subscriptions.insert((digest, topic), Default::default()).is_none() {
+                self.subscribers.add((digest, topic), conn);
+            }
             (peer.peer_id, peer.cached_score, peer.is_trusted)
         };
 
@@ -664,7 +672,9 @@ impl PeerManager {
     ) {
         let peer_id = match self.peers.get_mut(&conn) {
             Some(p) => {
-                p.subscriptions.remove(&(digest, topic));
+                if p.subscriptions.remove(&(digest, topic)).is_some() {
+                    self.subscribers.remove(&(digest, topic), conn);
+                }
                 p.peer_id
             }
             None => return,
@@ -1072,10 +1082,7 @@ impl PeerManager {
         (0..ATTESTATION_SUBNETS as u64)
             .filter(|&subnet| self.duty_attnets >> subnet & 1 == 1)
             .filter(|&subnet| {
-                let key = (digest, GossipTopic::BeaconAttestation(subnet));
-                let subscribers =
-                    self.peers.values().filter(|peer| peer.subscriptions.contains_key(&key));
-                subscribers.take(d).count() < d
+                self.subscribers.of(digest, GossipTopic::BeaconAttestation(subnet)).len() < d
             })
             .fold(0, |mask, subnet| mask | 1 << subnet)
     }
@@ -1130,27 +1137,18 @@ impl PeerManager {
         let needed = d - current;
         // Sort requires a buffer; the emit isn't what forces it.
         let mut candidates: Vec<usize> = self
-            .peers
+            .subscribers
+            .of(digest, topic)
             .iter()
-            .filter_map(|(conn, peer)| {
-                if !peer.subscriptions.contains_key(&(digest, topic)) {
-                    return None;
-                }
-                if self
+            .copied()
+            .filter(|conn| {
+                let Some(peer) = self.peers.get(conn) else { return false };
+                let meshed = self
                     .mesh
                     .get(&topic)
                     .and_then(|m| m.get(digest))
-                    .is_some_and(|m| m.peers.contains(conn))
-                {
-                    return None;
-                }
-                if peer.cached_score < 0.0 {
-                    return None;
-                }
-                if self.is_backed_off(*conn, topic, now) {
-                    return None;
-                }
-                Some(*conn)
+                    .is_some_and(|m| m.peers.contains(conn));
+                !meshed && peer.cached_score >= 0.0 && !self.is_backed_off(*conn, topic, now)
             })
             .collect();
         candidates.shuffle(&mut rand::thread_rng());
@@ -1284,17 +1282,15 @@ impl PeerManager {
         // across them would admit every candidate.
         let bar = median(&mut global_scores);
         let mut candidates: Vec<_> = self
-            .peers
+            .subscribers
+            .of(digest, topic)
             .iter()
-            .filter_map(|(conn, peer)| {
-                if !peer.subscriptions.contains_key(&(digest, topic)) ||
-                    mesh_peers.contains(conn) ||
-                    scoring::candidate_score(peer) <= bar ||
-                    self.is_backed_off(*conn, topic, now)
-                {
-                    return None;
-                }
-                Some(*conn)
+            .copied()
+            .filter(|conn| {
+                let Some(peer) = self.peers.get(conn) else { return false };
+                !mesh_peers.contains(conn) &&
+                    scoring::candidate_score(peer) > bar &&
+                    !self.is_backed_off(*conn, topic, now)
             })
             .collect();
         candidates.shuffle(&mut rand::thread_rng());

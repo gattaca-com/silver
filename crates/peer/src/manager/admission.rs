@@ -333,7 +333,7 @@ impl PeerManager {
                 self.remote_banned_peers.insert(peer_id, now + backoff);
             }
         }
-        self.peers.remove(&p2p_peer);
+        self.remove_live_peer(p2p_peer);
     }
 
     /// Translate RPC misbehaviour severity into a P5 application-score
@@ -1405,6 +1405,7 @@ mod tests {
                 .unwrap()
                 .subscriptions
                 .insert(([0; 4], topic), Default::default());
+            mgr.subscribers.add(([0; 4], topic), conn);
         }
         cap.0.clear();
 

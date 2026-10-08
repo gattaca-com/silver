@@ -28,6 +28,7 @@ pub(crate) mod peers;
 pub(crate) mod promises;
 pub use partial::PartialPeer;
 pub(crate) mod rpc;
+mod subscribers;
 mod sweep;
 pub use sweep::SweepOutput;
 pub(crate) mod sync;
@@ -71,6 +72,8 @@ pub struct PeerManager {
 
     /// Live peers keyed by connection handle.
     peers: HashMap<usize, PeerState>,
+
+    subscribers: subscribers::TopicSubscribers,
 
     /// Live-connection index: `PeerId` → connection handle. Mirrors `peers`
     /// exactly (unlike the database's `by_peer_id`, which maps to persistent
@@ -247,6 +250,7 @@ impl PeerManager {
 
         Self {
             peers: HashMap::with_capacity(PEERS_CAP),
+            subscribers: subscribers::TopicSubscribers::default(),
             peers_by_id: HashMap::with_capacity(PEERS_CAP),
             dialing: HashMap::with_capacity(64),
             archived: HashMap::with_capacity(ARCHIVE_CAP),

@@ -573,6 +573,7 @@ impl PeerManager {
         false
     }
 
+    #[timed]
     fn place_with_one(
         &mut self,
         request: SyncRequest,
@@ -605,6 +606,7 @@ impl PeerManager {
         self.send(peer, request, request_id, now, emit)
     }
 
+    #[timed]
     fn place_across_custody(
         &mut self,
         request: SyncRequest,

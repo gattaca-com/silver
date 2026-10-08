@@ -109,7 +109,10 @@ impl PeerManager {
         topic: GossipTopic,
         digest: [u8; 4],
     ) -> impl Iterator<Item = PartialPeer> + '_ {
-        self.peers.keys().filter_map(move |&peer| self.partial_peer(peer, topic, digest))
+        self.subscribers
+            .of(digest, topic)
+            .iter()
+            .filter_map(move |&peer| self.partial_peer(peer, topic, digest))
     }
 
     pub fn lazy_gossip_limit(&self) -> usize {
