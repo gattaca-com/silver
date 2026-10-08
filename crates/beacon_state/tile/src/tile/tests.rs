@@ -958,16 +958,26 @@ fn startup_status_uses_the_seeded_anchor_on_both_forks() {
 }
 
 #[test]
-fn head_change_is_classified_against_the_last_complete_status() {
+fn fulu_head_change_is_classified_against_the_last_complete_status() {
+    let mut rig = HeadRig::new();
+    rig.import(A_ROOT, 71, A_PREVIOUS, A_CURRENT);
+    assert_eq!(rig.crank().changes(), [HeadChange::Head]);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().changes(), [HeadChange::Head], "the head stopped being optimistic");
+
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.drain().changes(), [HeadChange::None]);
+}
+
+#[test]
+fn gloas_head_change_is_classified_against_the_last_complete_status() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
     assert_eq!(rig.crank().changes(), [HeadChange::Head]);
 
     rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     assert_eq!(rig.crank().changes(), [HeadChange::Payload]);
-
-    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
-    assert_eq!(rig.crank().changes(), [HeadChange::Head]);
 
     rig.tile.publish_status(&mut rig.adapter.producers);
     assert_eq!(rig.drain().changes(), [HeadChange::None]);
@@ -1098,19 +1108,21 @@ fn head_a_empty(optimistic: bool) -> StatusHead {
 }
 
 /// Mark verification directly to isolate publication from envelope validation.
+/// A Gloas block builds on the anchor's payload, so its own payload's verdict
+/// never decides its execution status.
 #[test]
-fn payload_verification_and_execution_validation_update_the_head_independently() {
+fn gloas_payload_verification_moves_the_resolution_and_its_verdict_moves_nothing() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
-    assert_eq!(rig.crank().last_head(), head_a_empty(true));
+    assert_eq!(rig.crank().last_head(), head_a_empty(false));
 
     rig.tile.fork_choice.mark_payload_verified(&A_ROOT);
     let events = rig.crank();
-    assert_eq!(events.last_head(), head_a(true));
+    assert_eq!(events.last_head(), head_a(false));
     assert!(events.reorgs().is_empty(), "the head block did not move");
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
-    assert_eq!(rig.crank().last_head(), head_a(false));
+    assert!(!rig.crank().changes().contains(&HeadChange::Head));
 }
 
 /// An invalid Gloas payload can leave its block selected with an empty
@@ -1119,11 +1131,11 @@ fn payload_verification_and_execution_validation_update_the_head_independently()
 fn an_invalid_verdict_on_a_gloas_head_publishes_the_empty_resolution_without_a_reorg() {
     let mut rig = HeadRig::new();
     rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
-    assert_eq!(rig.crank().last_head(), head_a(true));
+    assert_eq!(rig.crank().last_head(), head_a(false));
 
     rig.verdict(A_ROOT, PayloadValidationStatus::Invalid);
     let events = rig.crank();
-    assert_eq!(events.last_head(), head_a_empty(true));
+    assert_eq!(events.last_head(), head_a_empty(false));
     assert!(events.reorgs().is_empty());
 }
 
@@ -1138,11 +1150,11 @@ fn the_tick_closing_the_previous_slot_window_publishes_the_vote_weighted_resolut
 
     rig.vote_on_payload(A_ROOT, 0..8, false);
     rig.advance_to_slot(72);
-    assert_eq!(rig.crank().last_head(), head_a(true));
+    assert_eq!(rig.crank().last_head(), head_a(false));
 
     rig.advance_to_slot(73);
     let events = rig.crank();
-    assert_eq!(events.last_head(), head_a_empty(true));
+    assert_eq!(events.last_head(), head_a_empty(false));
     assert!(events.reorgs().is_empty());
 }
 
@@ -1157,12 +1169,12 @@ fn a_ptc_majority_returns_the_head_to_the_parent_with_its_full_payload() {
 
     rig.tile.fork_choice.set_proposer_boost(B_ROOT);
     rig.import_empty_child(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT);
-    let b = StatusHead { slot: 72, ..head_b(true) };
+    let b = StatusHead { slot: 72, ..head_b(false) };
     assert_eq!(rig.crank().last_head(), b, "boost on the empty child resolves A empty");
 
     rig.ptc_majority(A_ROOT);
     let events = rig.crank();
-    assert_eq!(events.last_head(), head_a(true));
+    assert_eq!(events.last_head(), head_a(false));
     assert_eq!(events.reorgs(), [71], "the head left B for its parent");
 }
 
@@ -6191,4 +6203,31 @@ fn a_rejected_exit_keeps_the_other_operations() {
         BeaconBlockBodyFuluView::execution_payload_offset(body),
         "the exit is left out"
     );
+}
+
+#[test]
+fn gloas_head_on_a_pending_full_parent_payload_is_optimistic_until_that_verdict() {
+    let mut rig = HeadRig::new();
+    let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);
+    rig.advance_to_slot(72);
+    let _ = rig.crank();
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Syncing);
+    let full_child = PayloadAxis {
+        bid_block_hash: B_ROOT,
+        parent_status: PayloadStatus::Full,
+        verified: false,
+        is_gloas: true,
+    };
+    rig.import_node(B_ROOT, 72, A_ROOT, a, B_PREVIOUS, B_CURRENT, full_child);
+    let b = |optimistic| StatusHead {
+        slot: 72,
+        payload: PayloadResolution::Empty,
+        ..head_b(optimistic)
+    };
+    let a_full_payload_pending = b(true);
+    assert_eq!(rig.crank().last_head(), a_full_payload_pending);
+
+    rig.verdict(A_ROOT, PayloadValidationStatus::Valid);
+    assert_eq!(rig.crank().last_head(), b(false));
 }

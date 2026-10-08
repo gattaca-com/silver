@@ -1245,6 +1245,28 @@ fn status(fc: &ForkChoice, block_root: B256) -> ExecutionStatus {
     fc.node(fc.find_node_idx(&block_root).unwrap()).execution_status
 }
 
+fn chain_status(fc: &ForkChoice, block_root: B256) -> ExecutionStatus {
+    fc.chain_execution_status(fc.find_node_idx(&block_root).unwrap())
+}
+
+#[test]
+fn gloas_block_takes_its_execution_status_from_the_payload_it_builds_on() {
+    let mut fc = anchored(0);
+    let g = cp(0, 1);
+    fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, false));
+    fc.on_block(gloas_block(2, root(3), root(2), g, g, PayloadStatus::Full, false));
+    fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, false));
+    fc.on_block(gloas_block(3, root(5), root(4), g, g, PayloadStatus::Empty, false));
+
+    assert_eq!(chain_status(&fc, root(2)), ExecutionStatus::Valid, "FULL anchor payload");
+    assert_eq!(chain_status(&fc, root(3)), ExecutionStatus::Optimistic, "FULL pending payload");
+    assert_eq!(chain_status(&fc, root(4)), ExecutionStatus::Valid, "EMPTY edge skips root(2)");
+    assert_eq!(chain_status(&fc, root(5)), ExecutionStatus::Valid, "EMPTY run");
+
+    fc.on_payload_valid(&root(2));
+    assert_eq!(chain_status(&fc, root(3)), ExecutionStatus::Valid);
+}
+
 #[test]
 fn payload_verdict_does_not_validate_a_payload_skipped_by_an_empty_edge() {
     let mut fc = anchored(0);

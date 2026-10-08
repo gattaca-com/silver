@@ -649,7 +649,10 @@ impl BeaconApi {
 
     pub fn handle_engine_resp(&mut self, resp: EngineResp) {
         let EngineResp::NewPayload(r) = resp else { return };
-        if !self.ctx.node_status.is_following() {
+        // A Gloas root's verdict is on its envelope, not on the payload its
+        // block builds on: only the tile's Status speaks for a Gloas head.
+        let gloas_head = self.ctx.spec.is_gloas_at_slot(self.ctx.node_status.head.slot);
+        if !self.ctx.node_status.is_following() || gloas_head {
             return;
         }
         let Some(head) = self.head_verdict.on_verdict(r.block_root, r.status) else { return };
