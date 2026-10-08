@@ -295,6 +295,21 @@ fn decoding_divergences(
         .collect()
 }
 
+/// Lanes that blst accepts as non-identity members of G2, each with whether
+/// the kernel marked it undecided. Members never meet an exceptional case, and
+/// the blst fallback would hide one that did, so verdicts alone cannot catch
+/// it. Empty without IFMA.
+fn member_lanes_undecided(chunk: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> Vec<(usize, bool)> {
+    if !simd_available() {
+        return Vec::new();
+    }
+    let batch = unsafe { decompress_g2::decompress(chunk) };
+    (0..LANES)
+        .filter(|&lane| chunk[lane] != G2_INFINITY && uncompress_in_g2_blst(&chunk[lane]).is_some())
+        .map(|lane| (lane, batch.undecided & (1 << lane) != 0))
+        .collect()
+}
+
 /// Runs `SILVER_G2_CASES` seeded batches through `check` (default 64;
 /// `forever` runs until interrupted, reporting progress every 10 s) and
 /// compares every lane with blst, as well as the kernel's decoding of every
@@ -312,6 +327,8 @@ fn assert_uncompress_in_g2_matches_blst(
     let mut cases_gen = G2Cases(ChaCha8Rng::seed_from_u64(seed));
     let mut kinds = [0; G2_KINDS.len()];
     let mut divergences = 0;
+    let mut kernel_members = 0;
+    let mut undecided_members = 0;
     let started = Instant::now();
     let mut last_report = started;
     for case in 0..cases {
@@ -346,6 +363,17 @@ fn assert_uncompress_in_g2_matches_blst(
                     hex(&chunk[lane])
                 );
             }
+            for (lane, undecided) in member_lanes_undecided(chunk.try_into().unwrap()) {
+                kernel_members += 1;
+                if undecided {
+                    undecided_members += 1;
+                    eprintln!(
+                        "UNDECIDED MEMBER seed {seed} case {case} lane {}: encoding {}",
+                        chunk_index * LANES + lane,
+                        hex(&chunk[lane])
+                    );
+                }
+            }
         }
         if last_report.elapsed() >= Duration::from_secs(10) {
             last_report = Instant::now();
@@ -358,6 +386,8 @@ fn assert_uncompress_in_g2_matches_blst(
         }
     }
     assert_eq!(divergences, 0, "seed {seed}: divergences from blst");
+    assert_eq!(undecided_members, 0, "seed {seed}: G2 members marked undecided");
+    assert!(kernel_members > 0 || !simd_available(), "seed {seed}: no member reached the kernel");
     kinds
 }
 
